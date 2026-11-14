@@ -12,8 +12,8 @@
 //! record; no automatic retry follows. See `docs/execution.md` and ADR-0035.
 
 use std::fmt::Write as _;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ use reqwest::redirect::Policy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::control::{
@@ -319,15 +320,20 @@ fn matching_origin(profile: &PackageProfile, url: &Url) -> Result<(), FetchError
 /// replacing an existing entry. A hard link is one atomic no-replace
 /// operation in the same directory; a concurrent winner leaves this caller
 /// with `AlreadyCached`. The cache is not power-loss qualified.
-fn publish_cache_file(temporary: &Path, final_path: &Path, name: &str) -> Result<(), FetchError> {
-    fs::hard_link(temporary, final_path).map_err(|error| {
-        if fs::symlink_metadata(final_path).is_ok() {
+async fn publish_cache_file(
+    temporary: &Path,
+    final_path: &Path,
+    name: &str,
+) -> Result<(), FetchError> {
+    if let Err(error) = tokio::fs::hard_link(temporary, final_path).await {
+        let already = tokio::fs::symlink_metadata(final_path).await.is_ok();
+        return Err(if already {
             FetchError::AlreadyCached(name.to_owned())
         } else {
             FetchError::Cache(error)
-        }
-    })?;
-    let _ = fs::remove_file(temporary);
+        });
+    }
+    let _ = tokio::fs::remove_file(temporary).await;
     Ok(())
 }
 
@@ -385,11 +391,13 @@ fn perform(
         }
 
         let temporary = cache.join(format!(".{}.partial-{}", start.output_name, start.fetch_id));
-        let mut file = open_cache_file(&temporary).map_err(|error| FailedFetch {
-            error: FetchError::Cache(error),
-            reason: PackageFetchFailure::Cache,
-            status: Some(http_status),
-        })?;
+        let mut file = open_cache_file(&temporary)
+            .await
+            .map_err(|error| FailedFetch {
+                error: FetchError::Cache(error),
+                reason: PackageFetchFailure::Cache,
+                status: Some(http_status),
+            })?;
         let mut hasher = Sha256::new();
         let mut bytes = 0u64;
         loop {
@@ -401,14 +409,14 @@ fn perform(
                     // rejected, not published.
                     if Instant::now() >= deadline {
                         drop(file);
-                        let _ = fs::remove_file(&temporary);
+                        let _ = tokio::fs::remove_file(&temporary).await;
                         return Err(deadline_failure(Some(http_status)));
                     }
                     break;
                 }
                 Ok(Err(error)) => {
                     drop(file);
-                    let _ = fs::remove_file(&temporary);
+                    let _ = tokio::fs::remove_file(&temporary).await;
                     return Err(FailedFetch {
                         error: FetchError::Transport(error),
                         reason: PackageFetchFailure::Transport,
@@ -417,28 +425,28 @@ fn perform(
                 }
                 Err(_) => {
                     drop(file);
-                    let _ = fs::remove_file(&temporary);
+                    let _ = tokio::fs::remove_file(&temporary).await;
                     return Err(deadline_failure(Some(http_status)));
                 }
             };
             if Instant::now() >= deadline {
                 drop(file);
-                let _ = fs::remove_file(&temporary);
+                let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(deadline_failure(Some(http_status)));
             }
             bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
             if bytes > start.max_bytes {
                 drop(file);
-                let _ = fs::remove_file(&temporary);
+                let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(FailedFetch {
                     error: FetchError::TooLarge(start.max_bytes),
                     reason: PackageFetchFailure::TooLarge,
                     status: Some(http_status),
                 });
             }
-            if let Err(error) = file.write_all(&chunk) {
+            if let Err(error) = file.write_all(&chunk).await {
                 drop(file);
-                let _ = fs::remove_file(&temporary);
+                let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(FailedFetch {
                     error: FetchError::Cache(error),
                     reason: PackageFetchFailure::Cache,
@@ -447,9 +455,9 @@ fn perform(
             }
             hasher.update(&chunk);
         }
-        if let Err(error) = file.sync_all() {
+        if let Err(error) = file.sync_all().await {
             drop(file);
-            let _ = fs::remove_file(&temporary);
+            let _ = tokio::fs::remove_file(&temporary).await;
             return Err(FailedFetch {
                 error: FetchError::Cache(error),
                 reason: PackageFetchFailure::Cache,
@@ -463,9 +471,9 @@ fn perform(
         // publish with a hard link so two concurrent fetches cannot replace
         // each other's file. The link fails atomically when the destination
         // exists. No power-loss claim is made for this cache.
-        match fs::symlink_metadata(final_path) {
+        match tokio::fs::symlink_metadata(final_path).await {
             Ok(_) => {
-                let _ = fs::remove_file(&temporary);
+                let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(FailedFetch {
                     error: FetchError::AlreadyCached(start.output_name.clone()),
                     reason: PackageFetchFailure::Cache,
@@ -474,7 +482,7 @@ fn perform(
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                let _ = fs::remove_file(&temporary);
+                let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(FailedFetch {
                     error: FetchError::Cache(error),
                     reason: PackageFetchFailure::Cache,
@@ -482,8 +490,8 @@ fn perform(
                 });
             }
         }
-        if let Err(error) = publish_cache_file(&temporary, final_path, &start.output_name) {
-            let _ = fs::remove_file(&temporary);
+        if let Err(error) = publish_cache_file(&temporary, final_path, &start.output_name).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
             return Err(FailedFetch {
                 error,
                 reason: PackageFetchFailure::Cache,
@@ -523,15 +531,14 @@ fn deadline_failure(status: Option<u16>) -> FailedFetch {
     }
 }
 
-fn open_cache_file(path: &Path) -> io::Result<std::fs::File> {
-    let mut options = OpenOptions::new();
+async fn open_cache_file(path: &Path) -> io::Result<tokio::fs::File> {
+    let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)
+    options.open(path).await
 }
 
 /// Open existing settings, waiting briefly for another command's lock.

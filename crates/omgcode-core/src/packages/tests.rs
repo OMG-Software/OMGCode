@@ -1,5 +1,5 @@
 use super::*;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
@@ -404,7 +404,10 @@ fn concurrent_publication_never_replaces_the_winner() {
                 let final_path = final_path.clone();
                 scope.spawn(move || {
                     barrier.wait();
-                    publish_cache_file(temporary, &final_path, "pkg.bin")
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .expect("publication runtime");
+                    runtime.block_on(publish_cache_file(temporary, &final_path, "pkg.bin"))
                 })
             })
             .collect();
