@@ -262,20 +262,24 @@ fn sample_until_stopped(
                     return;
                 }
             }
-            Err(_) if state.stop.load(Ordering::SeqCst) => {
-                // Cancellation interrupted this scan. That is not a
-                // measurement failure; the supervisor is already stopping.
-                return;
-            }
             Err(error) => {
-                // Only the first error matters; the supervisor stops the tree.
-                let mut slot = state.error.lock().unwrap_or_else(PoisonError::into_inner);
-                if slot.is_none() {
-                    *slot = Some(error);
-                }
+                record_sample_error(state, error);
                 return;
             }
         }
+    }
+}
+
+/// Record a scan error unless it is the cancellation that shutdown itself
+/// requested. A real error such as a permission denial is preserved even if
+/// `stop` was set at the same time, so `finish` fails closed.
+fn record_sample_error(state: &DiskState, error: io::Error) {
+    if error.kind() == io::ErrorKind::Interrupted && state.stop.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut slot = state.error.lock().unwrap_or_else(PoisonError::into_inner);
+    if slot.is_none() {
+        *slot = Some(error);
     }
 }
 
@@ -621,6 +625,20 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700))
             .expect("restore permissions");
         assert!(measured.is_err(), "an unreadable directory was measured");
+    }
+
+    #[test]
+    fn cancellation_does_not_hide_a_real_measurement_error() {
+        let state = DiskState::default();
+        state.stop.store(true, Ordering::SeqCst);
+        record_sample_error(&state, io::Error::from(io::ErrorKind::PermissionDenied));
+        let error = take_error(&state).expect("a real error survives shutdown");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        let state = DiskState::default();
+        state.stop.store(true, Ordering::SeqCst);
+        record_sample_error(&state, io::Error::from(io::ErrorKind::Interrupted));
+        assert!(take_error(&state).is_none());
     }
 
     #[test]

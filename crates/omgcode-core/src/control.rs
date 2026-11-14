@@ -214,6 +214,11 @@ pub struct ControlSnapshot {
     /// it with the count when their run started.
     #[serde(skip)]
     grant_revocations: BTreeMap<WorkspaceId, u64>,
+    /// `model_tools` true-to-false changes per workspace since the journal
+    /// was created. Derived on replay and never serialized; run watchers
+    /// compare it with the count when their run started.
+    #[serde(skip)]
+    model_tool_revocations: BTreeMap<WorkspaceId, u64>,
 }
 
 /// One workspace's selected fetched-package cache root.
@@ -524,6 +529,7 @@ impl ControlStore {
                 provider_profiles: Vec::new(),
                 approvals: Vec::new(),
                 grant_revocations: BTreeMap::new(),
+                model_tool_revocations: BTreeMap::new(),
             },
             entries: Vec::new(),
             bytes: 0,
@@ -540,6 +546,16 @@ impl ControlStore {
     /// Current global configuration revision. Audit-only checks do not change it.
     pub const fn revision(&self) -> u64 {
         self.snapshot.revision
+    }
+    /// How many `model_tools` true-to-false changes this workspace has
+    /// recorded. A model-origin run compares this with the count at start so
+    /// a disable followed by a re-enable still stops it.
+    pub(crate) fn model_tool_revocations(&self, workspace_id: WorkspaceId) -> u64 {
+        self.snapshot
+            .model_tool_revocations
+            .get(&workspace_id)
+            .copied()
+            .unwrap_or(0)
     }
     /// Whether the user has explicitly selected a development root.
     pub const fn has_development_root(&self) -> bool {
@@ -647,6 +663,13 @@ impl ControlStore {
                 continue;
             }
             let directory = grant.directory();
+            if !directory.is_current()? {
+                // The recorded path may have moved with the ACL still
+                // attached. Include it so revocation fails closed rather
+                // than silently leaving access behind.
+                grants.push(grant.id());
+                continue;
+            }
             if directory.same_directory(root)
                 || directory.contains(root)?
                 || root.contains(directory)?
@@ -671,6 +694,14 @@ impl ControlStore {
                 continue;
             }
             let directory = grant.directory();
+            if !directory.is_current()? {
+                // A stale record may describe a directory that was renamed
+                // and still carries this container's ACL. We cannot prove
+                // separation, so refuse the selection.
+                return Err(ControlError::PackageCacheRefused(
+                    "a foreign container grant record is stale; revoke it before selecting a cache root",
+                ));
+            }
             if directory.same_directory(root)
                 || directory.contains(root)?
                 || root.contains(directory)?
@@ -1124,6 +1155,12 @@ impl ControlStore {
                     .iter_mut()
                     .find(|workspace| workspace.id == *workspace_id)
                     .ok_or(ControlError::Invalid("unknown permission workspace"))?;
+                if workspace.permissions.model_tools && !permissions.model_tools {
+                    *state
+                        .model_tool_revocations
+                        .entry(*workspace_id)
+                        .or_default() += 1;
+                }
                 workspace.permissions = *permissions;
             }
             Action::PolicyChecked {
@@ -1320,6 +1357,47 @@ mod tests {
             .expect("covering grants");
         assert!(grants.contains(&own), "{grants:?}");
         assert!(!grants.contains(&foreign), "{grants:?}");
+    }
+
+    /// A renamed directory keeps its ACL, so a stale foreign grant cannot
+    /// prove separation and must refuse the selection.
+    #[test]
+    fn a_stale_foreign_grant_refuses_a_cache_root_selection() {
+        let directory = tempfile::tempdir().expect("private temporary directory");
+        let data = directory.path().join("data");
+        let root = directory.path().join("projects");
+        fs::create_dir_all(root.join("first")).expect("development root");
+        fs::create_dir_all(root.join("second")).expect("development root");
+        let mut store = ControlStore::open(&data).expect("control store");
+        store.set_development_root(&root, 0).expect("root");
+        let first = store
+            .register_workspace(&root.join("first"), 1)
+            .expect("first workspace")
+            .id();
+        let second = store
+            .register_workspace(&root.join("second"), store.revision())
+            .expect("second workspace")
+            .id();
+        let cache = directory.path().join("cache");
+        fs::create_dir(&cache).expect("cache root");
+        let own = store.test_record_grant(first, &cache, ContainerGrantAccess::ReadExecute);
+        let _foreign = store.test_record_grant(second, &cache, ContainerGrantAccess::ReadExecute);
+        let moved = directory.path().join("moved-cache");
+        fs::rename(&cache, &moved).expect("move granted cache");
+        let selected = moved.join("selected");
+        fs::create_dir(&selected).expect("selected root");
+        let selected_record = DirectoryRecord::capture(&selected).expect("selected record");
+        assert!(matches!(
+            store.refuse_foreign_cache_grant(first, &selected_record),
+            Err(ControlError::PackageCacheRefused(_))
+        ));
+        let grants = store
+            .cache_root_grants(first, &selected_record)
+            .expect("covering grants");
+        assert!(
+            grants.contains(&own),
+            "a stale owner grant must be revoked: {grants:?}"
+        );
     }
 
     /// A failed write must leave acknowledged state unchanged and disable the writer.

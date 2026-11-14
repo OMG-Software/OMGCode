@@ -13,13 +13,13 @@
 
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use reqwest::Client;
 use reqwest::Url;
-use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -48,7 +48,6 @@ pub const MAX_FETCH_URL_BYTES: usize = 4096;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_WAIT: Duration = Duration::from_secs(10);
 const CONTROL_POLL: Duration = Duration::from_millis(20);
-const READ_CHUNK: usize = 64 * 1024;
 
 /// One requested package fetch. Every field is operator input, not a grant.
 #[derive(Clone, Debug)]
@@ -340,119 +339,116 @@ fn perform(
 ) -> Result<(FetchReport, u16), FailedFetch> {
     let timeout = Duration::from_millis(start.timeout_ms);
     let deadline = Instant::now() + timeout;
-    let client = Client::builder()
-        .no_proxy()
-        .redirect(Policy::none())
-        .retry(reqwest::retry::never())
-        .connect_timeout(CONNECT_TIMEOUT.min(timeout))
-        .timeout(timeout)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
         .build()
         .map_err(|error| FailedFetch {
-            error: FetchError::Transport(error),
+            error: FetchError::Body(io::Error::other(format!(
+                "the fetch runtime could not start: {error}"
+            ))),
             reason: PackageFetchFailure::Transport,
             status: None,
         })?;
-    let mut response = client
-        .get(url.as_str())
-        .send()
-        .map_err(|error| FailedFetch {
-            error: FetchError::Transport(error),
-            reason: PackageFetchFailure::Transport,
-            status: None,
-        })?;
-    let http_status = response.status().as_u16();
-    if !response.status().is_success() {
-        return Err(FailedFetch {
-            error: FetchError::Status(http_status),
-            reason: PackageFetchFailure::Status,
-            status: Some(http_status),
-        });
-    }
-
-    let temporary = cache.join(format!(".{}.partial-{}", start.output_name, start.fetch_id));
-    let mut file = open_cache_file(&temporary).map_err(|error| FailedFetch {
-        error: FetchError::Cache(error),
-        reason: PackageFetchFailure::Cache,
-        status: Some(http_status),
-    })?;
-    let mut hasher = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = vec![0u8; READ_CHUNK];
-    loop {
-        // reqwest's timeout bounds each read, not the whole response. A
-        // server that trickles bytes must not extend the fetch indefinitely.
-        if Instant::now() >= deadline {
-            drop(file);
-            let _ = fs::remove_file(&temporary);
-            return Err(FailedFetch {
-                error: FetchError::Body(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "the package fetch deadline passed",
-                )),
+    runtime.block_on(async {
+        let client = Client::builder()
+            .no_proxy()
+            .redirect(Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(CONNECT_TIMEOUT.min(timeout))
+            .build()
+            .map_err(|error| FailedFetch {
+                error: FetchError::Transport(error),
                 reason: PackageFetchFailure::Transport,
-                status: Some(http_status),
-            });
-        }
-        let read = match response.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) => {
-                let _ = fs::remove_file(&temporary);
-                return Err(FailedFetch {
-                    error: FetchError::Body(error),
-                    reason: PackageFetchFailure::Transport,
-                    status: Some(http_status),
-                });
-            }
-        };
-        bytes = bytes.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-        if bytes > start.max_bytes {
-            drop(file);
-            let _ = fs::remove_file(&temporary);
+                status: None,
+            })?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut response =
+            match tokio::time::timeout(remaining, client.get(url.as_str()).send()).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    return Err(FailedFetch {
+                        error: FetchError::Transport(error),
+                        reason: PackageFetchFailure::Transport,
+                        status: None,
+                    });
+                }
+                Err(_) => return Err(deadline_failure(None)),
+            };
+        let http_status = response.status().as_u16();
+        if !response.status().is_success() {
             return Err(FailedFetch {
-                error: FetchError::TooLarge(start.max_bytes),
-                reason: PackageFetchFailure::TooLarge,
+                error: FetchError::Status(http_status),
+                reason: PackageFetchFailure::Status,
                 status: Some(http_status),
             });
         }
-        if let Err(error) = file.write_all(&buffer[..read]) {
-            drop(file);
-            let _ = fs::remove_file(&temporary);
-            return Err(FailedFetch {
-                error: FetchError::Cache(error),
-                reason: PackageFetchFailure::Cache,
-                status: Some(http_status),
-            });
-        }
-        hasher.update(&buffer[..read]);
-    }
-    if let Err(error) = file.sync_all() {
-        drop(file);
-        let _ = fs::remove_file(&temporary);
-        return Err(FailedFetch {
+
+        let temporary = cache.join(format!(".{}.partial-{}", start.output_name, start.fetch_id));
+        let mut file = open_cache_file(&temporary).map_err(|error| FailedFetch {
             error: FetchError::Cache(error),
             reason: PackageFetchFailure::Cache,
             status: Some(http_status),
-        });
-    }
-    drop(file);
-
-    // The cache is private to the user; a same-user writer can already change
-    // it. Refuse a name that appeared after the pre-check, and publish with a
-    // hard link so two concurrent fetches cannot replace each other's file.
-    // The link fails atomically when the destination exists. No power-loss
-    // claim is made for this cache.
-    match fs::symlink_metadata(final_path) {
-        Ok(_) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(FailedFetch {
-                error: FetchError::AlreadyCached(start.output_name.clone()),
-                reason: PackageFetchFailure::Cache,
-                status: Some(http_status),
-            });
+        })?;
+        let mut hasher = Sha256::new();
+        let mut bytes = 0u64;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let chunk = match tokio::time::timeout(remaining, response.chunk()).await {
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) => {
+                    // A body that completes at or after the deadline is
+                    // rejected, not published.
+                    if Instant::now() >= deadline {
+                        drop(file);
+                        let _ = fs::remove_file(&temporary);
+                        return Err(deadline_failure(Some(http_status)));
+                    }
+                    break;
+                }
+                Ok(Err(error)) => {
+                    drop(file);
+                    let _ = fs::remove_file(&temporary);
+                    return Err(FailedFetch {
+                        error: FetchError::Transport(error),
+                        reason: PackageFetchFailure::Transport,
+                        status: Some(http_status),
+                    });
+                }
+                Err(_) => {
+                    drop(file);
+                    let _ = fs::remove_file(&temporary);
+                    return Err(deadline_failure(Some(http_status)));
+                }
+            };
+            if Instant::now() >= deadline {
+                drop(file);
+                let _ = fs::remove_file(&temporary);
+                return Err(deadline_failure(Some(http_status)));
+            }
+            bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+            if bytes > start.max_bytes {
+                drop(file);
+                let _ = fs::remove_file(&temporary);
+                return Err(FailedFetch {
+                    error: FetchError::TooLarge(start.max_bytes),
+                    reason: PackageFetchFailure::TooLarge,
+                    status: Some(http_status),
+                });
+            }
+            if let Err(error) = file.write_all(&chunk) {
+                drop(file);
+                let _ = fs::remove_file(&temporary);
+                return Err(FailedFetch {
+                    error: FetchError::Cache(error),
+                    reason: PackageFetchFailure::Cache,
+                    status: Some(http_status),
+                });
+            }
+            hasher.update(&chunk);
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
+        if let Err(error) = file.sync_all() {
+            drop(file);
             let _ = fs::remove_file(&temporary);
             return Err(FailedFetch {
                 error: FetchError::Cache(error),
@@ -460,34 +456,71 @@ fn perform(
                 status: Some(http_status),
             });
         }
-    }
-    if let Err(error) = publish_cache_file(&temporary, final_path, &start.output_name) {
-        let _ = fs::remove_file(&temporary);
-        return Err(FailedFetch {
-            error,
-            reason: PackageFetchFailure::Cache,
-            status: Some(http_status),
-        });
-    }
+        drop(file);
 
-    Ok((
-        FetchReport {
-            fetch_id: start.fetch_id,
-            profile_id: start.profile_id,
-            profile_name: start.profile_name.clone(),
-            profile_revision: start.profile_revision,
-            url_sha256: start.url_sha256.clone(),
-            output: NativePath::from_path(final_path).map_err(|error| FailedFetch {
-                error: FetchError::Cache(io::Error::other(error.to_string())),
+        // The cache is private to the user; a same-user writer can already
+        // change it. Refuse a name that appeared after the pre-check, and
+        // publish with a hard link so two concurrent fetches cannot replace
+        // each other's file. The link fails atomically when the destination
+        // exists. No power-loss claim is made for this cache.
+        match fs::symlink_metadata(final_path) {
+            Ok(_) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(FailedFetch {
+                    error: FetchError::AlreadyCached(start.output_name.clone()),
+                    reason: PackageFetchFailure::Cache,
+                    status: Some(http_status),
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(FailedFetch {
+                    error: FetchError::Cache(error),
+                    reason: PackageFetchFailure::Cache,
+                    status: Some(http_status),
+                });
+            }
+        }
+        if let Err(error) = publish_cache_file(&temporary, final_path, &start.output_name) {
+            let _ = fs::remove_file(&temporary);
+            return Err(FailedFetch {
+                error,
                 reason: PackageFetchFailure::Cache,
                 status: Some(http_status),
-            })?,
-            bytes,
-            sha256: hex(&hasher.finalize()),
-            status: http_status,
-        },
-        http_status,
-    ))
+            });
+        }
+
+        Ok((
+            FetchReport {
+                fetch_id: start.fetch_id,
+                profile_id: start.profile_id,
+                profile_name: start.profile_name.clone(),
+                profile_revision: start.profile_revision,
+                url_sha256: start.url_sha256.clone(),
+                output: NativePath::from_path(final_path).map_err(|error| FailedFetch {
+                    error: FetchError::Cache(io::Error::other(error.to_string())),
+                    reason: PackageFetchFailure::Cache,
+                    status: Some(http_status),
+                })?,
+                bytes,
+                sha256: hex(&hasher.finalize()),
+                status: http_status,
+            },
+            http_status,
+        ))
+    })
+}
+
+fn deadline_failure(status: Option<u16>) -> FailedFetch {
+    FailedFetch {
+        error: FetchError::Body(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the package fetch deadline passed",
+        )),
+        reason: PackageFetchFailure::Transport,
+        status,
+    }
 }
 
 fn open_cache_file(path: &Path) -> io::Result<std::fs::File> {

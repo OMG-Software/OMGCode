@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Read;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
@@ -496,7 +497,7 @@ fn a_trickled_body_cannot_outlive_the_fetch_deadline() {
     let started = Instant::now();
     let error = fetch(&scene.data, &request).expect_err("the overall deadline must stop the fetch");
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(2),
         "the fetch ran past its deadline: {:?}",
         started.elapsed()
     );

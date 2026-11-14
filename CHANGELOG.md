@@ -347,8 +347,17 @@ Changes are recorded here before a release version is assigned.
     its own cache path wins.
   - Windows package fetch now requires a selected cache root, matching the
     runner's lack of an application-storage fallback.
-  - Package fetch checks its overall deadline before each body read, so a
-    trickled response cannot outlive the requested timeout.
+  - Package fetch checks its overall deadline before each body read, and the
+    send and every chunk read are bounded by the remaining time. A body that
+    completes after the deadline is rejected.
+  - A stale foreign cache-grant record refuses a cache-root selection, and a
+    stale owner grant is revoked fail-closed instead of being treated as
+    unrelated.
+  - A `model_tools` true-to-false change records a durable per-workspace
+    count. A model-origin run stops even if the preference is re-enabled
+    before its watcher reads the setting.
+  - Disk sampling preserves a real measurement error that races with
+    shutdown; only its own cancellation is ignored.
   - Package cache publication uses an atomic no-replace hard link. Two
     concurrent fetches cannot overwrite each other, and a synchronized
     collision test covers the winner.

@@ -360,13 +360,14 @@ pub fn run(
         "trusted runs exist only on Linux and Windows",
     ))?;
     let control_path = ControlStore::journal_path(data_root);
-    let (journal_root, store_id, mut prepared, owner, baseline, revocations) = {
+    let (journal_root, store_id, mut prepared, owner, baseline, revocations, model_revocations) = {
         let control = open_control(data_root)?;
         let (journal_root, store_id) = control.file_audit_context()?;
         let prepared = prepare(&control, request, platform, &journal_root)?;
         // Taken under the control lock, so every later change is seen.
         let baseline = stamp(&control_path)?;
         let revocations = control.grant_revocations(request.workspace_id);
+        let model_revocations = control.model_tool_revocations(request.workspace_id);
         let owner = OwnerLock::acquire(&journal_root, prepared.start.run_id)?;
         let mut journal = RunJournal::open(&journal_root, store_id)?;
         journal.start(prepared.start.clone())?;
@@ -377,6 +378,7 @@ pub fn run(
             owner,
             baseline,
             revocations,
+            model_revocations,
         )
     };
     let run_id = prepared.start.run_id;
@@ -389,6 +391,7 @@ pub fn run(
             control_path: &control_path,
             start: &prepared.start,
             revocations,
+            model_revocations,
             caller: cancel,
             stop: &stop,
             done: &done,
@@ -458,6 +461,8 @@ struct Watch<'a> {
     start: &'a RunStart,
     /// Container revocations of the workspace recorded when the run started.
     revocations: u64,
+    /// `model_tools` true-to-false changes recorded when the run started.
+    model_revocations: u64,
     caller: &'a CancelSignal,
     stop: &'a CancelSignal,
     done: &'a AtomicBool,
@@ -491,12 +496,21 @@ impl Watch<'_> {
         match ControlStore::open_existing(self.data_root) {
             Ok(Some(control)) => {
                 *seen = current;
-                withdrawn(&control, self.start).or_else(|| {
-                    // A grant can be added and revoked between two polls, so
-                    // its state alone can miss a revocation; the count cannot.
-                    (control.grant_revocations(self.start.workspace_id) != self.revocations)
-                        .then_some("a container grant of this workspace was revoked")
-                })
+                withdrawn(&control, self.start)
+                    .or_else(|| {
+                        // A disable followed by a re-enable can happen between
+                        // polls, so the current value alone is not enough. The
+                        // durable count records the withdrawal.
+                        (control.model_tool_revocations(self.start.workspace_id)
+                            != self.model_revocations)
+                            .then_some("the workspace model_tools preference was revoked")
+                    })
+                    .or_else(|| {
+                        // A grant can be added and revoked between two polls, so
+                        // its state alone can miss a revocation; the count cannot.
+                        (control.grant_revocations(self.start.workspace_id) != self.revocations)
+                            .then_some("a container grant of this workspace was revoked")
+                    })
             }
             Ok(None) => Some("the settings were removed"),
             Err(ControlError::Busy) => None,
@@ -1716,6 +1730,7 @@ mod tests {
             Some("the workspace model_tools preference is disabled")
         );
         assert_eq!(withdrawn(&control, &plain), None);
+        let baseline = control.model_tool_revocations(workspace_id);
         drop(control);
         let mut control = ControlStore::open(&data).expect("control store");
         control
@@ -1729,9 +1744,34 @@ mod tests {
                 control.revision(),
             )
             .expect("permissions");
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    execute: true,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("disable model tools");
+        assert!(control.model_tool_revocations(workspace_id) > baseline);
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    execute: true,
+                    model_tools: true,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("re-enable model tools");
         drop(control);
         let control = open_control(&data).expect("control");
+        // The current value allows the run again, but the durable count still
+        // records the withdrawal, so a live watcher stops it.
         assert_eq!(withdrawn(&control, &model), None);
+        assert!(control.model_tool_revocations(workspace_id) > baseline);
     }
 
     /// A configured cache-root change withdraws a run that holds the old

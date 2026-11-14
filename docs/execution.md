@@ -272,8 +272,10 @@ omgcode workspace clear-package-cache <workspace-id> --revision <n>
 must not overlap application storage or the development root, and must not
 overlap another workspace's root. Clearing or replacing a root revokes
 read-execute container grants that covered the old root, and selecting a
-directory another workspace's container can already read is refused. Runs that
-held the old exposure are stopped before the command completes.
+directory another workspace's container can already read is refused. A stale
+foreign grant record refuses the selection because a renamed directory keeps
+its ACL and separation cannot be proved. Runs that held the old exposure are
+stopped before the command completes.
 `clear-package-cache` removes the selection
 and leaves cached files in place. Without a selected root, Linux uses the
 application-storage fallback and Windows has none. A 0.23.0 control journal
@@ -295,8 +297,8 @@ variables are ignored, no credentials are sent, and nothing is retried. TLS
 uses the operating-system trust store through `reqwest`'s `native-tls`
 feature; certificate validation is never disabled. The response must be 2xx
 and its body is streamed, hashed with SHA-256, and stopped if it passes the
-byte limit. The overall deadline is checked before each read, so a server that
-trickles bytes cannot extend the fetch past its requested timeout.
+byte limit. The request send and every body read are bounded by the remaining
+deadline, and a body that completes after it is rejected.
 
 The file is written as a private `.partial-<fetch-id>` entry, synced, and
 published with an atomic no-replace hard link into the selected workspace
@@ -656,7 +658,10 @@ cgroup.
 Version 0.25.0 adds `workspace_run_command` to the core turn runtime. The
 runtime advertises it only when the session workspace's live `model_tools`,
 `execute`, `read`, and `write` preferences are enabled. Each call rechecks
-them, and the trusted run checks them again.
+them, and the trusted run checks them again. A model-origin run records a
+durable per-workspace count of `model_tools` true-to-false changes; disabling
+the preference stops the run even if it is re-enabled before the watcher reads
+the setting.
 
 Arguments are a recorded toolchain `profile`, a `program`, at most 64
 `arguments`, and an optional workspace-relative `cwd`. The tool has no shell
