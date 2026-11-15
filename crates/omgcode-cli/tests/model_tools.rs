@@ -941,10 +941,38 @@ fn tool_mode_turns_use_the_compacted_context_and_withhold_a_tool_summary_without
         "{sent}"
     );
     assert!(!sent.contains("The note was read earlier."), "{sent}");
+
+    // Without live model_tools, text-only chat withholds it as well.
+    fixture.set("--read", true);
+    fixture.set("--model-tools", false);
+    let server = SequenceServer::start(vec![text("fifth reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "fifth request");
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["model_tools"]["mode"], "disabled");
+    assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(
+        sent.contains("Compacted earlier context withheld"),
+        "{sent}"
+    );
+    assert!(!sent.contains("The note was read earlier."), "{sent}");
+}
+
+#[test]
+fn compaction_without_model_tools_withholds_saved_tool_results_from_the_summarizer() {
+    summarizer_withholds_tool_results_after_revoking("--model-tools");
 }
 
 #[test]
 fn compaction_without_read_withholds_saved_tool_results_from_the_summarizer() {
+    summarizer_withholds_tool_results_after_revoking("--read");
+}
+
+/// Record a read, revoke one preference, and compact: the summarizer must see
+/// only the withheld placeholder, and the summary must replay afterwards.
+fn summarizer_withholds_tool_results_after_revoking(flag: &str) {
     let note = std::str::from_utf8(NOTE).expect("UTF-8 note");
     let fixture = Fixture::new(NOTE);
     let journal = fixture.session();
@@ -963,7 +991,7 @@ fn compaction_without_read_withholds_saved_tool_results_from_the_summarizer() {
     assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
     server.finish();
 
-    fixture.set("--model-tools", false);
+    fixture.set(flag, false);
     let server = SequenceServer::start(vec![text("A file was read earlier.")]);
     let output = compact_cli(&fixture, &journal, &server.endpoint);
     let requests = server.finish();
@@ -975,7 +1003,7 @@ fn compaction_without_read_withholds_saved_tool_results_from_the_summarizer() {
         false
     );
 
-    // A summary without tool results replays in text-only chat.
+    // A summary without tool results replays without that authority.
     let server = SequenceServer::start(vec![text("text reply")]);
     let output = fixture.chat(&journal, &server.endpoint, "third request");
     let requests = server.finish();
@@ -1027,4 +1055,61 @@ fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider()
     assert_error_code(&output, "context");
     let events = fs::read_to_string(&journal).expect("journal");
     assert!(!events.contains("context.compacted"), "{events}");
+}
+
+#[test]
+fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // 64 short exchanges fill the 128-message history limit far below the
+    // token trigger; the pending request would be message 129.
+    {
+        let mut session =
+            omgcode_core::session::SessionJournal::open(&journal).expect("open journal");
+        for index in 0..64 {
+            session
+                .record_message(
+                    omgcode_core::session::MessageRole::User,
+                    &format!("request {index}"),
+                )
+                .expect("user message");
+            session
+                .record_message(
+                    omgcode_core::session::MessageRole::Assistant,
+                    &format!("reply {index}"),
+                )
+                .expect("assistant message");
+        }
+    }
+
+    let server = SequenceServer::start(Vec::new());
+    let output = fixture.chat(&journal, &server.endpoint, "next request");
+    server.finish();
+    assert_error_code(&output, "context");
+
+    let server = SequenceServer::start(vec![text("Sixty-four exchanges."), text("next reply")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "next reply");
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 126);
 }

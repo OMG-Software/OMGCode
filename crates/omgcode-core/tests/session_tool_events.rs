@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use omgcode_core::session::{MessageRole, SessionError, SessionJournal, ToolOutcome};
+use omgcode_core::session::{
+    MessageRole, RequestManifest, SessionError, SessionJournal, ToolOutcome,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -526,4 +528,43 @@ fn failed_turns_release_pending_call_ids_for_later_turns() {
             .iter()
             .any(|message| message.role == MessageRole::Tool)
     );
+}
+
+#[test]
+fn a_schema_v2_journal_keeps_recording_and_replaying_tool_manifests() {
+    let (_temporary, path, _session_id) = setup();
+    rewrite_first_event_schema(&path, 2);
+    let manifest = RequestManifest {
+        base_prompt: "base instructions".into(),
+        prompt_version: "1".into(),
+        prompt_sha256: "a".repeat(64),
+        custom_instructions: String::new(),
+        model: "local-model".into(),
+        base_url: "http://127.0.0.1:1234/v1".into(),
+        context_tokens: 32_000,
+        max_output_tokens: 2_000,
+        tool_schema_version: Some("1".into()),
+        tools: Some(vec!["workspace_read_file".into()]),
+    };
+
+    let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");
+    assert_eq!(journal.schema_version(), 2);
+    let request_id = journal.start_turn().expect("start turn");
+    journal
+        .record_message(MessageRole::User, "read notes")
+        .expect("user message");
+    journal
+        .record_manifest(request_id, manifest.clone())
+        .expect("schema v2 accepts a tool manifest");
+    journal.complete_turn(request_id).expect("complete turn");
+    drop(journal);
+
+    let reopened = SessionJournal::open(&path).expect("replay a schema-v2 tool manifest");
+    assert_eq!(reopened.schema_version(), 2);
+    reopened
+        .preflight_request("next", &manifest)
+        .expect("preflight a later tool-enabled turn");
+    drop(reopened);
+    let events = read_events(&path);
+    assert!(events.iter().all(|event| event["schema_version"] == 2));
 }

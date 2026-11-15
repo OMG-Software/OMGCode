@@ -5,11 +5,9 @@
 //! are untrusted model output and are injected as labelled user-level evidence.
 //! They never grant authority, approve work, or replace core-owned state.
 
-use crate::prompt::{ConversationMessage, ConversationRole};
-use crate::provider::{ProviderError, estimate_context_tokens};
-use crate::session::{
-    CompactionRecord, MessageRole, RecordedMessage, SessionError, SessionJournal,
-};
+use crate::prompt::{BASE_PROMPT, ConversationMessage, ConversationRole};
+use crate::provider::ProviderError;
+use crate::session::{CompactionRecord, MessageRole, SessionError, SessionJournal};
 use crate::turn::replay_active;
 use thiserror::Error;
 
@@ -21,6 +19,12 @@ pub const MAX_SUMMARY_CHUNKS: usize = 16;
 pub const MAX_SUMMARY_DEPTH: usize = 4;
 /// A readable summary is bounded below the 16 KiB session message limit.
 pub const MAX_SUMMARY_BYTES: usize = 8 * 1024;
+/// Estimated per-message overhead in bytes, matching the provider's bound.
+const MESSAGE_OVERHEAD: usize = 256;
+/// Allowance for the fixed untrusted-summary label added on replay.
+const SUMMARY_LABEL_ALLOWANCE: usize = 128;
+/// Largest summarizer chunk, independent of a larger configured context.
+const MAX_CHUNK_BYTES: usize = 128 * 1024;
 /// Fixed summarizer instruction. It cannot replace the compiled base prompt.
 pub const COMPACTION_INSTRUCTIONS: &str = "\
 Summarize the earlier coding conversation for future work. Preserve the current \
@@ -44,6 +48,9 @@ pub enum ContextError {
     /// Summarization made no usable reduction.
     #[error("compaction made no useful progress")]
     NoProgress,
+    /// Live read authority was withdrawn while tool-derived input was pending.
+    #[error("workspace read authority was withdrawn during compaction")]
+    AuthorityWithdrawn,
     /// A session journal mutation failed.
     #[error("session journal failed: {0}")]
     Session(#[from] SessionError),
@@ -85,23 +92,26 @@ pub struct CompactionOutcome {
     pub calls: usize,
 }
 
-/// Conservative assembled-input estimate from a conversation history.
+/// Conservative input estimate for an assembled request, in tokens.
 ///
-/// The provider repeats this calculation on the final assembled messages. This
-/// preflight is used before prompt assembly so an oversized history can be
-/// compacted rather than rejected by the prompt or wire limits. It treats one
-/// UTF-8 byte as one token, which is deliberately conservative.
+/// It counts the compiled base prompt, custom instructions and their label,
+/// `fixed_extra_bytes` (such as advertised tool definitions), each history
+/// message, and per-message overhead for the history plus the system and
+/// instruction messages. It excludes the output reserve and template headroom,
+/// which [`ContextBudget::safe_input_budget`] already subtracts, so the two are
+/// directly comparable. It treats one UTF-8 byte as one token, which is
+/// deliberately conservative; it is not a model tokenizer.
 pub fn estimate_history_input_tokens(
     base_prompt_bytes: usize,
     custom_instructions: &str,
     history: &[ConversationMessage],
-    max_output_tokens: u32,
     fixed_extra_bytes: usize,
 ) -> Result<u64, ProviderError> {
     let count = u64::try_from(history.len())
         .map_err(|_| ProviderError::ContextLimit)?
         .checked_add(2)
         .ok_or(ProviderError::ContextLimit)?;
+    let overhead = u64::try_from(MESSAGE_OVERHEAD).map_err(|_| ProviderError::ContextLimit)?;
     let content = history.iter().try_fold(
         u64::try_from(base_prompt_bytes)
             .map_err(|_| ProviderError::ContextLimit)?
@@ -115,9 +125,11 @@ pub fn estimate_history_input_tokens(
         },
     )?;
     content
-        .checked_add(count.checked_mul(256).ok_or(ProviderError::ContextLimit)?)
-        .and_then(|total| total.checked_add(512))
-        .and_then(|total| total.checked_add(u64::from(max_output_tokens)))
+        .checked_add(
+            count
+                .checked_mul(overhead)
+                .ok_or(ProviderError::ContextLimit)?,
+        )
         .ok_or(ProviderError::ContextLimit)
 }
 
@@ -145,16 +157,25 @@ impl ContextBudget {
         self.threshold.min(self.safe_input_budget())
     }
 
-    /// Whether an assembled-input estimate reaches the effective trigger.
+    /// Whether an input-only estimate from [`estimate_history_input_tokens`]
+    /// reaches the effective trigger.
     pub fn should_compact(self, input_estimate: u64) -> bool {
         input_estimate >= self.trigger()
     }
 
-    /// Chunk byte budget for the summarizer, bounded independently of the
-    /// larger configured context.
+    /// Chunk byte budget for a summarizer request under this budget.
+    ///
+    /// Use a budget whose `max_output_tokens` is the summary request's output
+    /// reserve. The fixed part of that request (compiled base prompt, the
+    /// compaction instructions and their label, and system and instruction
+    /// message overhead) is deducted, so a chunk whose messages each count
+    /// their content plus per-message overhead fits the provider bound. The
+    /// result is capped at 128 KiB; zero means no chunk can fit.
     pub fn summarizer_chunk_bytes(self) -> usize {
-        const MAX_CHUNK_BYTES: usize = 128 * 1024;
-        usize::try_from(self.safe_input_budget().saturating_sub(1024))
+        let fixed =
+            estimate_history_input_tokens(BASE_PROMPT.len(), COMPACTION_INSTRUCTIONS, &[], 0)
+                .unwrap_or(u64::MAX);
+        usize::try_from(self.safe_input_budget().saturating_sub(fixed))
             .map_or(MAX_CHUNK_BYTES, |bytes| bytes.min(MAX_CHUNK_BYTES))
     }
 }
@@ -165,20 +186,29 @@ impl ContextBudget {
 /// untrusted summary. The function retains the latest user message and every
 /// later message, so the current request and its tool pairs stay verbatim.
 ///
-/// `tool_results_allowed` must reflect live read authority, as for a turn's
-/// replay. Without it, saved tool results and a prior summary built from them
-/// reach the summarizer only as withheld placeholders. The record states
-/// whether tool results were included, so later replay can apply the same rule.
-pub fn compact<F>(
+/// `tool_authority` reports live read authority, as for a turn's replay. It is
+/// asked once to build the summarizer input: without authority, saved tool
+/// results and a prior summary built from them reach the summarizer only as
+/// withheld placeholders. When the input does carry tool-derived content, it
+/// is asked again before every summarizer request, and a withdrawal stops the
+/// run with [`ContextError::AuthorityWithdrawn`] before that request and before
+/// anything is recorded. The record states whether tool results were
+/// included, so later replay can apply the same rule.
+///
+/// A summary that would not shrink the active context fails with
+/// [`ContextError::NoProgress`] and records nothing.
+pub fn compact<A, F>(
     journal: &mut SessionJournal,
     limits: CompactionLimits,
     model: String,
-    tool_results_allowed: bool,
+    mut tool_authority: A,
     mut summarize: F,
 ) -> Result<CompactionOutcome, ContextError>
 where
+    A: FnMut() -> bool,
     F: FnMut(&[ConversationMessage]) -> Result<SummaryReply, ContextError>,
 {
+    let tool_results_allowed = tool_authority();
     let active = journal.active_messages();
     let prior_record = journal.snapshot().compaction.as_ref();
     let prior = prior_record.map(|record| record.compacted_messages);
@@ -217,6 +247,18 @@ where
             || older
                 .iter()
                 .any(|message| message.role == MessageRole::Tool));
+    let replaced_bytes = history.iter().fold(0_usize, |total, message| {
+        total
+            .saturating_add(message.content.len())
+            .saturating_add(MESSAGE_OVERHEAD)
+    });
+    // Narrowed permissions block the next request that would carry tool data.
+    let mut summarize = |chunk: &[ConversationMessage]| {
+        if includes_tool_results && !tool_authority() {
+            return Err(ContextError::AuthorityWithdrawn);
+        }
+        summarize(chunk)
+    };
 
     let chunks = chunk_history(&history, limits.max_chunk_bytes)?;
     if chunks.len() > MAX_SUMMARY_CHUNKS {
@@ -272,6 +314,14 @@ where
         .unwrap_or(&summary)
         .to_owned();
     let summary = valid_summary(&summary, limits.max_summary_bytes)?;
+    // The labelled summary replaces the older messages; it must be smaller.
+    let summary_bytes = summary
+        .len()
+        .saturating_add(SUMMARY_LABEL_ALLOWANCE)
+        .saturating_add(MESSAGE_OVERHEAD);
+    if summary_bytes >= replaced_bytes {
+        return Err(ContextError::NoProgress);
+    }
     let record = CompactionRecord {
         summary_sha256: crate::session::sha256_hex(summary.as_bytes()),
         summary,
@@ -320,7 +370,7 @@ fn chunk_history(
     let mut current: Vec<ConversationMessage> = Vec::new();
     let mut bytes = 0_usize;
     for message in history {
-        let size = message.content.len().saturating_add(256);
+        let size = message.content.len().saturating_add(MESSAGE_OVERHEAD);
         if size > max_bytes {
             return Err(ContextError::TooLarge);
         }
@@ -335,25 +385,6 @@ fn chunk_history(
         chunks.push(current);
     }
     Ok(chunks)
-}
-
-/// Re-export the provider's final assembled-input estimate for the CLI meter.
-pub fn assembled_input_tokens(
-    messages: &[crate::prompt::ModelMessage],
-    max_output_tokens: u32,
-) -> Result<u64, ProviderError> {
-    estimate_context_tokens(messages, max_output_tokens).map(|total| {
-        total
-            .saturating_sub(u64::from(max_output_tokens))
-            .saturating_sub(512)
-    })
-}
-
-/// Count active messages after compaction.
-pub fn retained_messages(messages: &[RecordedMessage], compacted: u64) -> usize {
-    messages
-        .len()
-        .saturating_sub(usize::try_from(compacted).unwrap_or(usize::MAX))
 }
 
 #[cfg(test)]
@@ -391,7 +422,7 @@ mod tests {
                 max_summary_bytes: MAX_SUMMARY_BYTES,
             },
             "fixture".into(),
-            false,
+            || false,
             |chunk| {
                 assert!(!chunk.is_empty());
                 Ok(SummaryReply {
@@ -428,7 +459,7 @@ mod tests {
                     max_summary_bytes: MAX_SUMMARY_BYTES,
                 },
                 "fixture".into(),
-                false,
+                || false,
                 |_| Ok(SummaryReply {
                     text: "summary".into(),
                     prompt_tokens: None,
@@ -491,19 +522,25 @@ mod tests {
     #[test]
     fn without_read_authority_the_summarizer_sees_no_tool_result() {
         let (_temporary, mut journal) = session_with_a_tool_result();
-        let outcome = compact(&mut journal, limits(), "fixture".into(), false, |chunk| {
-            let text: String = chunk
-                .iter()
-                .map(|message| message.content.as_str())
-                .collect();
-            assert!(!text.contains("private-notes-sentinel"), "{text}");
-            assert!(text.contains(crate::turn::WITHHELD_TOOL_RESULT), "{text}");
-            Ok(SummaryReply {
-                text: "The user asked for notes.".into(),
-                prompt_tokens: None,
-                completion_tokens: None,
-            })
-        })
+        let outcome = compact(
+            &mut journal,
+            limits(),
+            "fixture".into(),
+            || false,
+            |chunk| {
+                let text: String = chunk
+                    .iter()
+                    .map(|message| message.content.as_str())
+                    .collect();
+                assert!(!text.contains("private-notes-sentinel"), "{text}");
+                assert!(text.contains(crate::turn::WITHHELD_TOOL_RESULT), "{text}");
+                Ok(SummaryReply {
+                    text: "The user asked for notes.".into(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                })
+            },
+        )
         .expect("compact");
         assert!(!outcome.record.includes_tool_results);
         let (history, withheld) = replay_active(&journal, false);
@@ -514,18 +551,24 @@ mod tests {
     #[test]
     fn a_summary_built_from_tool_results_follows_live_read_authority() {
         let (_temporary, mut journal) = session_with_a_tool_result();
-        let outcome = compact(&mut journal, limits(), "fixture".into(), true, |chunk| {
-            let text: String = chunk
-                .iter()
-                .map(|message| message.content.as_str())
-                .collect();
-            assert!(text.contains("private-notes-sentinel"), "{text}");
-            Ok(SummaryReply {
-                text: "The notes contain private-notes-sentinel.".into(),
-                prompt_tokens: None,
-                completion_tokens: None,
-            })
-        })
+        let outcome = compact(
+            &mut journal,
+            limits(),
+            "fixture".into(),
+            || true,
+            |chunk| {
+                let text: String = chunk
+                    .iter()
+                    .map(|message| message.content.as_str())
+                    .collect();
+                assert!(text.contains("private-notes-sentinel"), "{text}");
+                Ok(SummaryReply {
+                    text: "The notes contain private-notes-sentinel.".into(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                })
+            },
+        )
         .expect("compact");
         assert!(outcome.record.includes_tool_results);
         assert_eq!(outcome.compacted, 3, "user, tool, and assistant messages");
@@ -582,5 +625,130 @@ mod tests {
             max_output_tokens: 1_000,
         };
         assert_eq!(small.trigger(), 109_488);
+    }
+
+    #[test]
+    fn the_input_estimate_excludes_the_reserve_that_the_safe_budget_subtracts() {
+        let history = [ConversationMessage {
+            role: ConversationRole::User,
+            content: "x".repeat(10),
+        }];
+        // Base, custom instructions, label allowance, content, and overhead
+        // for the history plus the system and instruction messages.
+        assert_eq!(
+            estimate_history_input_tokens(100, "", &history, 0).expect("estimate"),
+            100 + 64 + 10 + 3 * 256
+        );
+        let budget = ContextBudget {
+            threshold: DEFAULT_COMPACT_THRESHOLD,
+            context_tokens: 16_384,
+            max_output_tokens: 4_096,
+        };
+        assert_eq!(budget.safe_input_budget(), 11_776);
+        assert!(!budget.should_compact(9_000), "an input that fits is kept");
+    }
+
+    #[test]
+    fn a_full_summarizer_chunk_fits_the_provider_bound_with_the_fixed_prompt() {
+        let budget = ContextBudget {
+            threshold: u64::MAX,
+            context_tokens: 32_768,
+            max_output_tokens: 2_048,
+        };
+        let chunk_bytes = budget.summarizer_chunk_bytes();
+        // Fill the chunk exactly, counting per-message overhead as chunking does.
+        let mut chunk = Vec::new();
+        let mut used = 0_usize;
+        while used + 256 + 1_024 <= chunk_bytes {
+            chunk.push(ConversationMessage {
+                role: ConversationRole::User,
+                content: "y".repeat(1_024),
+            });
+            used += 1_024 + 256;
+        }
+        let remainder = chunk_bytes - used;
+        if remainder > 256 {
+            chunk.push(ConversationMessage {
+                role: ConversationRole::User,
+                content: "y".repeat(remainder - 256),
+            });
+        }
+        assert_eq!(
+            chunk_history(&chunk, chunk_bytes).expect("one chunk").len(),
+            1
+        );
+        let messages = crate::prompt::assemble(COMPACTION_INSTRUCTIONS, &chunk).expect("assemble");
+        let content: usize = messages.iter().map(|message| message.content.len()).sum();
+        let provider_estimate = content + messages.len() * 256 + 512 + 2_048;
+        assert!(
+            provider_estimate <= 32_768,
+            "{provider_estimate} exceeds the context"
+        );
+    }
+
+    #[test]
+    fn a_summary_that_does_not_shrink_the_context_records_nothing() {
+        let (_temporary, mut journal) = session();
+        for (role, text) in [
+            (MessageRole::User, "u"),
+            (MessageRole::Assistant, "a"),
+            (MessageRole::User, "latest"),
+        ] {
+            journal.record_message(role, text).expect("message");
+        }
+        let result = compact(
+            &mut journal,
+            limits(),
+            "fixture".into(),
+            || false,
+            |_| {
+                Ok(SummaryReply {
+                    text: "x".repeat(8_000),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                })
+            },
+        );
+        assert!(
+            matches!(result, Err(ContextError::NoProgress)),
+            "{result:?}"
+        );
+        assert!(journal.snapshot().compaction.is_none());
+    }
+
+    #[test]
+    fn withdrawing_read_between_summarizer_requests_stops_before_the_next() {
+        let (_temporary, mut journal) = session_with_a_tool_result();
+        // One message per chunk, so tool-derived input needs several requests.
+        let limits = CompactionLimits {
+            max_chunk_bytes: 400,
+            max_summary_bytes: MAX_SUMMARY_BYTES,
+        };
+        let mut checks = 0_usize;
+        let mut requests = 0_usize;
+        let result = compact(
+            &mut journal,
+            limits,
+            "fixture".into(),
+            || {
+                checks += 1;
+                // Allowed while building the input and for the first request.
+                checks <= 2
+            },
+            |_| {
+                requests += 1;
+                Ok(SummaryReply {
+                    text: "partial".into(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                })
+            },
+        );
+        assert!(
+            matches!(result, Err(ContextError::AuthorityWithdrawn)),
+            "{result:?}"
+        );
+        assert_eq!(requests, 1, "no request after the withdrawal");
+        assert!(journal.snapshot().compaction.is_none());
     }
 }

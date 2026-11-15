@@ -361,8 +361,20 @@ test; five more result lines are the tree-limit tests rerunning themselves in
 toolchain acceptance and internet cases. None failed. Three temporary
 mutations were each caught: full-journal replay in tool mode, never
 withholding a tool-derived summary, and always sending tool results to the
-summarizer. These results use a mock LM Studio server. They do not establish
-live summarizer quality, remote CI status, or release readiness.
+summarizer.
+
+The PR #32 CodeRabbit round fixed six more findings: schema-2 journals again
+accept tool manifests; the pre-turn estimate counts input only; the 128-message
+and 256 KiB assembly limits trigger compaction; summary chunks are sized from
+the summary request's reserve and full fixed prompt; non-reducing summaries
+are refused; and live authority is rechecked before each summarizer request
+carrying tool-derived content. Re-verification passed formatting, Clippy,
+all-target tests, and doc tests: Windows 512 tests and Linux ext4 508, each
+with one doc test and eight opt-in tests ignored, none failed. Six temporary
+mutations were each caught; the shared summary reserve has no dedicated
+test. These results use a mock LM Studio
+server. They do not establish live summarizer quality, remote CI status, or
+release readiness.
 
 A mock or compile-only result does not establish native containment, live
 provider compatibility, or release filesystem support.

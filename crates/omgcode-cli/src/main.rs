@@ -16,7 +16,7 @@ use omgcode_core::context::{
 };
 use omgcode_core::control::ControlStore;
 use omgcode_core::prompt::{
-    self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole,
+    self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, PromptError,
 };
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
 use omgcode_core::session::{
@@ -390,9 +390,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         token.clone(),
     )
     .map_err(provider_error)?;
-    let summary_tokens =
-        u32::try_from((args.context_tokens / 4).clamp(1, u64::from(u32::MAX).min(2048)))
-            .unwrap_or(1);
+    let summary_tokens = context_cli::summary_output_tokens(args.context_tokens);
     let summary_client = LocalModelClient::new(
         LocalModelConfig {
             base_url: args.endpoint.clone(),
@@ -439,11 +437,11 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
 /// Apply the context trigger before a turn and return the visible meter.
 fn preflight_context(
     journal: &mut SessionJournal,
+    data_root: &std::path::Path,
     args: &ChatArgs,
     summary_client: &LocalModelClient,
     token: Option<&str>,
     fixed_extra_bytes: usize,
-    tool_results_allowed: bool,
 ) -> Result<ContextMeter, CliError> {
     if args.compact_threshold == 0 {
         return Err(CliError::new(
@@ -456,31 +454,43 @@ fn preflight_context(
         context_tokens: args.context_tokens,
         max_output_tokens: args.max_output_tokens,
     };
-    let mut estimate = estimate_with_user(journal, args, fixed_extra_bytes)?;
+    // Summary chunks are sized from the summary request's own output reserve.
+    let summary_budget = ContextBudget {
+        threshold: u64::MAX,
+        context_tokens: args.context_tokens,
+        max_output_tokens: context_cli::summary_output_tokens(args.context_tokens),
+    };
+    let (mut estimate, mut assembly_blocked) =
+        estimate_with_user(journal, args, fixed_extra_bytes)?;
     let mut summarizer_calls = None;
-    if budget.should_compact(estimate) {
+    if budget.should_compact(estimate) || assembly_blocked {
         if !args.auto_compact {
+            let reason = if assembly_blocked {
+                "Active history exceeds the prompt assembly limits".to_owned()
+            } else {
+                format!(
+                    "The conservative input estimate ({estimate} tokens) reaches the compaction trigger ({})",
+                    budget.trigger()
+                )
+            };
             return Err(CliError::new(
                 "context",
-                format!(
-                    "The conservative input estimate ({estimate} tokens) reaches the compaction trigger ({}). Use session compact or rerun chat with --auto-compact.",
-                    budget.trigger()
-                ),
+                format!("{reason}. Use session compact or rerun chat with --auto-compact."),
             ));
         }
         let outcome = context_cli::compact_journal(
             journal,
+            data_root,
             summary_client,
             token,
-            budget,
-            tool_results_allowed,
+            summary_budget,
         )?;
         summarizer_calls = Some(outcome.calls);
-        estimate = estimate_with_user(journal, args, fixed_extra_bytes)?;
-        if budget.should_compact(estimate) {
+        (estimate, assembly_blocked) = estimate_with_user(journal, args, fixed_extra_bytes)?;
+        if budget.should_compact(estimate) || assembly_blocked {
             return Err(CliError::new(
                 "context",
-                "Compaction did not reduce the context below the trigger",
+                "Compaction did not reduce the context below the trigger and assembly limits",
             ));
         }
     }
@@ -493,25 +503,32 @@ fn preflight_context(
     ))
 }
 
+/// The input-only estimate for the next request, and whether its active
+/// history plus the pending user message exceeds a prompt-assembly limit that
+/// compaction can relieve (message count or total assembled bytes).
 fn estimate_with_user(
     journal: &SessionJournal,
     args: &ChatArgs,
     fixed_extra_bytes: usize,
-) -> Result<u64, CliError> {
+) -> Result<(u64, bool), CliError> {
     // Count the full summary even when replay would withhold it: conservative.
     let (mut history, _) = replay_active(journal, true);
     history.push(ConversationMessage {
         role: ConversationRole::User,
         content: args.message.clone(),
     });
-    estimate_history_input_tokens(
+    let estimate = estimate_history_input_tokens(
         BASE_PROMPT.len(),
         &args.instructions,
         &history,
-        args.max_output_tokens,
         fixed_extra_bytes,
     )
-    .map_err(|error| CliError::new("context", error.to_string()))
+    .map_err(|error| CliError::new("context", error.to_string()))?;
+    let assembly_blocked = matches!(
+        prompt::assemble(&args.instructions, &history),
+        Err(PromptError::TooManyHistoryMessages | PromptError::AssembledPromptTooLarge)
+    );
+    Ok((estimate, assembly_blocked))
 }
 
 fn context_meter(
@@ -573,9 +590,9 @@ fn compact_session(
     let path = resolve_journal(locator.journal, locator.journal_native)?;
     let mut journal = SessionJournal::open(&path).map_err(session_error)?;
     // Live settings decide whether saved tool results may reach the summarizer.
-    let tool_results_allowed = model_tools::tool_replay_allowed(&data_root, &journal)?;
     let outcome = context_cli::compact_journal(
         &mut journal,
+        &data_root,
         &client,
         token.as_deref(),
         ContextBudget {
@@ -583,7 +600,6 @@ fn compact_session(
             context_tokens,
             max_output_tokens: summary_tokens,
         },
-        tool_results_allowed,
     )?;
     let locator = journal_locator(&journal)?;
     print_json(&JournalOutput {
@@ -622,15 +638,7 @@ fn chat_turn(
         model_tools::ToolMode::Enabled { .. } => model_tools::TOOL_SCHEMA_ESTIMATE_BYTES,
         model_tools::ToolMode::Disabled { .. } => 0,
     };
-    let tool_replay = model_tools::tool_replay_allowed(data_root, journal)?;
-    let meter = preflight_context(
-        journal,
-        &args,
-        summary_client,
-        token,
-        tool_extra,
-        tool_replay,
-    )?;
+    let meter = preflight_context(journal, data_root, &args, summary_client, token, tool_extra)?;
     let manifest = RequestManifest {
         base_prompt: BASE_PROMPT.to_owned(),
         prompt_version: BASE_PROMPT_VERSION.to_owned(),

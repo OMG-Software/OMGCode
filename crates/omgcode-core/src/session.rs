@@ -1080,7 +1080,8 @@ fn validate_manifest(manifest: &RequestManifest, schema_version: u32) -> Result<
         ))?;
     match (&manifest.tool_schema_version, &manifest.tools) {
         (None, None) => {}
-        (Some(version), Some(tools)) if schema_version >= SCHEMA_VERSION => {
+        // Tool manifests arrived in schema version 2 and remain valid there.
+        (Some(version), Some(tools)) if schema_version >= SCHEMA_VERSION_V2 => {
             if version.is_empty()
                 || version.len() > MAX_TOOL_SCHEMA_VERSION_BYTES
                 || version.chars().any(char::is_control)

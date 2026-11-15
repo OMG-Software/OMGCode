@@ -19,13 +19,16 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
 - Chat reports `context.estimated_input_tokens`, `context_tokens`,
   `max_output_tokens`, `effective_trigger`, `auto_compaction`, and the active
   compaction boundary in `context.compaction`.
-- The conservative estimate counts the compiled base prompt, custom
-  instructions, active history, message overhead, advertised tool definitions,
-  the output reserve, and template headroom. It treats one UTF-8 byte as one
-  token, so it is deliberately not an exact tokenizer count.
-- The trigger is the smaller of `--compact-threshold` and the safe input budget
-  after the output reserve. Without `--auto-compact`, an oversized request is
-  refused before the provider call with a manual-compaction hint.
+- The conservative estimate counts input only: the compiled base prompt,
+  custom instructions, active history, message overhead, and advertised tool
+  definitions. It treats one UTF-8 byte as one token, so it is deliberately
+  not an exact tokenizer count. The output reserve and template headroom are
+  subtracted once, from the context, to give the safe input budget.
+- The trigger is the smaller of `--compact-threshold` and that safe input
+  budget. Compaction is also due when active history plus the pending request
+  would exceed the prompt-assembly limits (128 history messages or 256 KiB
+  assembled). Without `--auto-compact`, either case is refused before the
+  provider call with a manual-compaction hint.
 - `session compact` requires an idle, unarchived session. It summarizes active
   messages before the latest user message, retains the latest user message and
   all later assistant/tool messages, and records a schema-v3
@@ -38,8 +41,15 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
   It is bounded to 8 KiB, and the summarizer input and output are redacted for
   the configured local token.
 - Summarizer input is split at message boundaries into bounded chunks; multiple
-  summaries are combined with hard chunk and depth limits. Empty, oversized,
-  failed, or non-reducing summaries fail closed.
+  summaries are combined with hard chunk and depth limits. A chunk is sized from
+  the summary request's own output reserve, after deducting the compiled base
+  prompt, the compaction instructions, and their message overhead. Empty,
+  oversized, or failed summaries fail closed, and a summary that would not
+  shrink the active context is refused with nothing recorded.
+- When the summarizer input carries tool-derived content, live `model_tools`
+  and `read` are rechecked before each summarizer request. A withdrawal stops
+  compaction with a `permission` error before the next request, and nothing is
+  recorded.
 
 Not implemented: mid-turn compaction after tool results, persisted workspace
 settings, provider-native opaque compaction, caches, memories, and a UI meter.

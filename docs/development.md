@@ -384,7 +384,10 @@ Output is JSON so untrusted control characters are escaped rather than written
 as terminal instructions.
 
 Each text-only invocation sends one non-streaming request; a tool-enabled turn
-sends at most four. There is a five-second connect timeout and a thirty-second
+sends at most four. When `--auto-compact` compacts before the turn, the
+summarizer requests come first: at most 16 per round, with at most four
+combination rounds after the first. `session compact` sends only summarizer
+requests under the same bound. There is a five-second connect timeout and a thirty-second
 timeout per request, with no automatic retry or provider fallback. A
 tool-enabled turn also stops at a 120-second cooperative deadline. A slow first inference can time out. Its remote outcome can
 be unknown, and a retry is a new explicit user action.

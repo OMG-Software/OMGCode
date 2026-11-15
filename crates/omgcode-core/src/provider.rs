@@ -432,17 +432,6 @@ fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
     Ok(parsed)
 }
 
-/// Conservative assembled-input estimate used by context accounting.
-///
-/// Includes message overhead, prompt headroom, and the reserved output. One
-/// UTF-8 byte is treated as one token; this is not a model tokenizer.
-pub fn estimate_context_tokens(
-    messages: &[ModelMessage],
-    max_output_tokens: u32,
-) -> Result<u64, ProviderError> {
-    estimate_context(messages, max_output_tokens)
-}
-
 /// Bound input with a byte-based estimate and reserve output plus template headroom.
 fn estimate_context(
     messages: &[ModelMessage],

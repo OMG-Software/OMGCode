@@ -26,7 +26,17 @@ Changes are recorded here before a release version is assigned.
     authority. Text-only chat and tool-enabled turns share one replay path for
     the active context.
   - **Validation:** the recorded digest must match the summary, and the first
-    retained message must be a user message.
+    retained message must be a user message. A summary that would not shrink
+    the active context is refused and records nothing.
+  - **Accounting:** the pre-turn estimate counts input only, so the output
+    reserve is not counted twice against the safe input budget. Compaction is
+    also due at the 128-message and 256 KiB prompt-assembly limits. Summary
+    chunks are sized from the summary request's output reserve and its full
+    fixed prompt.
+  - **Revocation:** live `model_tools` and `read` are rechecked before each
+    summarizer request that carries tool-derived content.
+  - **Schema 2:** existing schema-version-2 journals keep accepting tool
+    manifests; the first draft of this change rejected them.
   - **Meter:** chat reports the conservative input estimate, context and
     output budgets, effective trigger, auto-compaction state, and compaction
     boundary and summary digest.
