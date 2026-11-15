@@ -270,7 +270,13 @@ omgcode workspace clear-package-cache <workspace-id> --revision <n>
 
 `set-package-cache` selects one workspace's cache directory. It must exist,
 must not overlap application storage or the development root, and must not
-overlap another workspace's root. `clear-package-cache` removes the selection
+overlap another workspace's root. Clearing or replacing a root revokes
+read-execute container grants that covered the old root, and selecting a
+directory another workspace's container can already read is refused. A stale
+foreign grant record refuses the selection because a renamed directory keeps
+its ACL and separation cannot be proved. Runs that held the old exposure are
+stopped before the command completes.
+`clear-package-cache` removes the selection
 and leaves cached files in place. Without a selected root, Linux uses the
 application-storage fallback and Windows has none. A 0.23.0 control journal
 cannot be read by 0.22.0.
@@ -291,12 +297,16 @@ variables are ignored, no credentials are sent, and nothing is retried. TLS
 uses the operating-system trust store through `reqwest`'s `native-tls`
 feature; certificate validation is never disabled. The response must be 2xx
 and its body is streamed, hashed with SHA-256, and stopped if it passes the
-byte limit.
+byte limit. The request send and every body read are bounded by the remaining
+deadline, and a body that completes after it is rejected.
 
 The file is written as a private `.partial-<fetch-id>` entry, synced, and
-renamed into the selected workspace cache root, or into
-`<data-dir>/package-cache/<workspace-id>/` when no root is selected. Existing
-names are never overwritten. The cache makes no power-loss claim. The control
+published with an atomic no-replace hard link into the selected workspace
+cache root, or into `<data-dir>/package-cache/<workspace-id>/` on Linux when no
+root is selected. A fetch with no selected root is refused on Windows before
+anything is recorded. Existing names are never overwritten; two concurrent
+fetches cannot replace each other, and the loser reports already-cached. The
+cache makes no power-loss claim. The control
 journal records `package_fetch_started` before the request and
 `package_fetch_finished` after it; both preserve the settings revision. They
 record the profile identity and revision, a SHA-256 of the URL (never its
@@ -648,11 +658,17 @@ cgroup.
 Version 0.25.0 adds `workspace_run_command` to the core turn runtime. The
 runtime advertises it only when the session workspace's live `model_tools`,
 `execute`, `read`, and `write` preferences are enabled. Each call rechecks
-them, and the trusted run checks them again.
+them, and the trusted run checks them again. A model-origin run records a
+durable per-workspace count of `model_tools` true-to-false changes; disabling
+the preference stops the run even if it is re-enabled before the watcher reads
+the setting.
 
 Arguments are a recorded toolchain `profile`, a `program`, at most 64
-`arguments`, and an optional workspace-relative `cwd`. There is no shell.
-The tool fixes its limits: a 20-second deadline, 4 KiB retained from each
+`arguments`, and an optional workspace-relative `cwd`. The tool has no shell
+mode: it never composes or re-parses a command line. The model may name any
+program the approved profile exposes, including an interpreter such as `sh` or
+`cmd`; that program's own parsing is part of the exact request the operator
+approves. The tool fixes its limits: a 20-second deadline, 4 KiB retained from each
 output stream, 1 GiB memory, 64 processes, 20 seconds of CPU, and 256 MiB of
 disk growth. It selects no network or host services.
 
