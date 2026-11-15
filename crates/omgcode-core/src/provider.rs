@@ -205,6 +205,11 @@ impl LocalModelClient {
         })
     }
 
+    /// The selected model identifier. This is descriptive, not an entitlement.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Send one bounded, non-streaming Chat Completions request.
     ///
     /// The adapter sends only model, role-tagged messages, `stream=false`, and
@@ -425,6 +430,17 @@ fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
         return Err(ProviderError::InvalidConfiguration);
     }
     Ok(parsed)
+}
+
+/// Conservative assembled-input estimate used by context accounting.
+///
+/// Includes message overhead, prompt headroom, and the reserved output. One
+/// UTF-8 byte is treated as one token; this is not a model tokenizer.
+pub fn estimate_context_tokens(
+    messages: &[ModelMessage],
+    max_output_tokens: u32,
+) -> Result<u64, ProviderError> {
+    estimate_context(messages, max_output_tokens)
 }
 
 /// Bound input with a byte-based estimate and reserve output plus template headroom.

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod approvals_cli;
+mod context_cli;
 mod control_cli;
 mod file_cli;
 mod model_tools;
@@ -10,6 +11,9 @@ mod run_cli;
 
 use clap::{Args, Parser, Subcommand};
 use directories::ProjectDirs;
+use omgcode_core::context::{
+    ContextBudget, DEFAULT_COMPACT_THRESHOLD, estimate_history_input_tokens,
+};
 use omgcode_core::control::ControlStore;
 use omgcode_core::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole,
@@ -18,7 +22,7 @@ use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
 use omgcode_core::session::{
     MessageRole, NativePath, RequestManifest, SessionError, SessionJournal,
 };
-use omgcode_core::turn::replay_history;
+use omgcode_core::turn::replay_active;
 use serde::Serialize;
 use serde_json::json;
 use std::env;
@@ -108,6 +112,19 @@ enum SessionCommand {
         #[command(flatten)]
         locator: JournalArgs,
     },
+    /// Summarize older messages with the selected local model.
+    Compact {
+        #[command(flatten)]
+        locator: JournalArgs,
+        #[arg(long, default_value = "http://127.0.0.1:1234/v1")]
+        endpoint: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        context_tokens: u64,
+        #[arg(long, default_value_t = 2048)]
+        summary_tokens: u32,
+    },
 }
 
 #[derive(Args)]
@@ -143,6 +160,12 @@ struct ChatArgs {
     /// User-level preferences. This cannot replace the compiled base prompt.
     #[arg(long, default_value = "")]
     instructions: String,
+    /// Compact before a turn when the conservative estimate reaches this value.
+    #[arg(long, default_value_t = DEFAULT_COMPACT_THRESHOLD)]
+    compact_threshold: u64,
+    /// Enable compaction at the effective trigger before a turn.
+    #[arg(long)]
+    auto_compact: bool,
     /// Current user request. Quote it as one shell argument.
     message: String,
 }
@@ -169,6 +192,29 @@ struct JournalOutput<T> {
     locator: JournalLocator,
     #[serde(flatten)]
     detail: T,
+}
+
+/// Visible, conservative context accounting for one chat turn.
+#[derive(Clone, Serialize)]
+pub(crate) struct ContextMeter {
+    estimated_input_tokens: u64,
+    context_tokens: u64,
+    max_output_tokens: u32,
+    effective_trigger: u64,
+    auto_compaction: bool,
+    estimate_scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compaction: Option<CompactionMeter>,
+}
+
+/// The active compaction boundary and summary identity.
+#[derive(Clone, Serialize)]
+struct CompactionMeter {
+    compacted_messages: u64,
+    retained_messages: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summarizer_calls: Option<usize>,
+    summary_sha256: String,
 }
 
 impl CliError {
@@ -302,6 +348,20 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 }
                 print_session(&journal)
             }
+            SessionCommand::Compact {
+                locator,
+                endpoint,
+                model,
+                context_tokens,
+                summary_tokens,
+            } => compact_session(
+                cli.data_dir,
+                locator,
+                endpoint,
+                model,
+                context_tokens,
+                summary_tokens,
+            ),
         },
         Command::Workspace { action } => {
             let data_root = data_root(cli.data_dir)?;
@@ -330,6 +390,19 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         token.clone(),
     )
     .map_err(provider_error)?;
+    let summary_tokens =
+        u32::try_from((args.context_tokens / 4).clamp(1, u64::from(u32::MAX).min(2048)))
+            .unwrap_or(1);
+    let summary_client = LocalModelClient::new(
+        LocalModelConfig {
+            base_url: args.endpoint.clone(),
+            model: args.model.clone(),
+            context_tokens: args.context_tokens,
+            max_output_tokens: summary_tokens,
+        },
+        token.clone(),
+    )
+    .map_err(provider_error)?;
     args.title = redact_known_secret(&args.title, token.as_deref());
     args.message = redact_known_secret(&args.message, token.as_deref());
     args.instructions = redact_known_secret(&args.instructions, token.as_deref());
@@ -352,8 +425,175 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         }
     };
     let locator = journal_locator(&journal)?;
-    chat_turn(&mut journal, &data_root, &client, args, token.as_deref())
-        .map_err(|error| error.with_session(locator))
+    chat_turn(
+        &mut journal,
+        &data_root,
+        &client,
+        &summary_client,
+        args,
+        token.as_deref(),
+    )
+    .map_err(|error| error.with_session(locator))
+}
+
+/// Apply the context trigger before a turn and return the visible meter.
+fn preflight_context(
+    journal: &mut SessionJournal,
+    args: &ChatArgs,
+    summary_client: &LocalModelClient,
+    token: Option<&str>,
+    fixed_extra_bytes: usize,
+    tool_results_allowed: bool,
+) -> Result<ContextMeter, CliError> {
+    if args.compact_threshold == 0 {
+        return Err(CliError::new(
+            "configuration",
+            "The compaction threshold must be a positive token count",
+        ));
+    }
+    let budget = ContextBudget {
+        threshold: args.compact_threshold,
+        context_tokens: args.context_tokens,
+        max_output_tokens: args.max_output_tokens,
+    };
+    let mut estimate = estimate_with_user(journal, args, fixed_extra_bytes)?;
+    let mut summarizer_calls = None;
+    if budget.should_compact(estimate) {
+        if !args.auto_compact {
+            return Err(CliError::new(
+                "context",
+                format!(
+                    "The conservative input estimate ({estimate} tokens) reaches the compaction trigger ({}). Use session compact or rerun chat with --auto-compact.",
+                    budget.trigger()
+                ),
+            ));
+        }
+        let outcome = context_cli::compact_journal(
+            journal,
+            summary_client,
+            token,
+            budget,
+            tool_results_allowed,
+        )?;
+        summarizer_calls = Some(outcome.calls);
+        estimate = estimate_with_user(journal, args, fixed_extra_bytes)?;
+        if budget.should_compact(estimate) {
+            return Err(CliError::new(
+                "context",
+                "Compaction did not reduce the context below the trigger",
+            ));
+        }
+    }
+    Ok(context_meter(
+        journal,
+        args,
+        budget,
+        estimate,
+        summarizer_calls,
+    ))
+}
+
+fn estimate_with_user(
+    journal: &SessionJournal,
+    args: &ChatArgs,
+    fixed_extra_bytes: usize,
+) -> Result<u64, CliError> {
+    // Count the full summary even when replay would withhold it: conservative.
+    let (mut history, _) = replay_active(journal, true);
+    history.push(ConversationMessage {
+        role: ConversationRole::User,
+        content: args.message.clone(),
+    });
+    estimate_history_input_tokens(
+        BASE_PROMPT.len(),
+        &args.instructions,
+        &history,
+        args.max_output_tokens,
+        fixed_extra_bytes,
+    )
+    .map_err(|error| CliError::new("context", error.to_string()))
+}
+
+fn context_meter(
+    journal: &SessionJournal,
+    args: &ChatArgs,
+    budget: ContextBudget,
+    estimate: u64,
+    summarizer_calls: Option<usize>,
+) -> ContextMeter {
+    let compaction = journal
+        .snapshot()
+        .compaction
+        .as_ref()
+        .map(|record| CompactionMeter {
+            compacted_messages: record.compacted_messages,
+            retained_messages: u64::try_from(journal.snapshot().messages.len())
+                .unwrap_or(u64::MAX)
+                .saturating_sub(record.compacted_messages),
+            summarizer_calls,
+            summary_sha256: record.summary_sha256.clone(),
+        });
+    ContextMeter {
+        estimated_input_tokens: estimate,
+        context_tokens: budget.context_tokens,
+        max_output_tokens: args.max_output_tokens,
+        effective_trigger: budget.trigger(),
+        auto_compaction: args.auto_compact,
+        estimate_scope: "pre_turn_conservative",
+        compaction,
+    }
+}
+
+fn compact_session(
+    data_dir: Option<PathBuf>,
+    locator: JournalArgs,
+    endpoint: String,
+    model: String,
+    context_tokens: u64,
+    summary_tokens: u32,
+) -> Result<(), CliError> {
+    if summary_tokens == 0 || u64::from(summary_tokens) >= context_tokens {
+        return Err(CliError::new(
+            "configuration",
+            "summary-tokens must be positive and below context-tokens",
+        ));
+    }
+    let token = read_lm_token()?;
+    let client = LocalModelClient::new(
+        LocalModelConfig {
+            base_url: endpoint,
+            model,
+            context_tokens,
+            max_output_tokens: summary_tokens,
+        },
+        token.clone(),
+    )
+    .map_err(provider_error)?;
+    let data_root = data_root(data_dir)?;
+    let path = resolve_journal(locator.journal, locator.journal_native)?;
+    let mut journal = SessionJournal::open(&path).map_err(session_error)?;
+    // Live settings decide whether saved tool results may reach the summarizer.
+    let tool_results_allowed = model_tools::tool_replay_allowed(&data_root, &journal)?;
+    let outcome = context_cli::compact_journal(
+        &mut journal,
+        &client,
+        token.as_deref(),
+        ContextBudget {
+            threshold: u64::MAX,
+            context_tokens,
+            max_output_tokens: summary_tokens,
+        },
+        tool_results_allowed,
+    )?;
+    let locator = journal_locator(&journal)?;
+    print_json(&JournalOutput {
+        locator,
+        detail: json!({
+            "compaction": outcome.record,
+            "retained_messages": outcome.retained,
+            "summarizer_calls": outcome.calls,
+        }),
+    })
 }
 
 /// Preflight deterministic failures before starting; preserve uncertain I/O state.
@@ -361,6 +601,7 @@ fn chat_turn(
     journal: &mut SessionJournal,
     data_root: &std::path::Path,
     client: &LocalModelClient,
+    summary_client: &LocalModelClient,
     args: ChatArgs,
     token: Option<&str>,
 ) -> Result<(), CliError> {
@@ -376,6 +617,20 @@ fn chat_turn(
             "The previous turn is incomplete; inspect it, then use session interrupt to mark it failed without retrying",
         ));
     }
+    let mode = model_tools::select(data_root, journal)?;
+    let tool_extra = match &mode {
+        model_tools::ToolMode::Enabled { .. } => model_tools::TOOL_SCHEMA_ESTIMATE_BYTES,
+        model_tools::ToolMode::Disabled { .. } => 0,
+    };
+    let tool_replay = model_tools::tool_replay_allowed(data_root, journal)?;
+    let meter = preflight_context(
+        journal,
+        &args,
+        summary_client,
+        token,
+        tool_extra,
+        tool_replay,
+    )?;
     let manifest = RequestManifest {
         base_prompt: BASE_PROMPT.to_owned(),
         prompt_version: BASE_PROMPT_VERSION.to_owned(),
@@ -389,9 +644,9 @@ fn chat_turn(
         tools: None,
     };
     // Live settings decide whether this turn offers the workspace tools.
-    let reason = match model_tools::select(data_root, journal)? {
+    let reason = match mode {
         model_tools::ToolMode::Enabled { workspace_id } => {
-            let output = model_tools::run(
+            let mut output = model_tools::run(
                 journal,
                 data_root,
                 workspace_id,
@@ -403,6 +658,7 @@ fn chat_turn(
                     manifest,
                 },
             )?;
+            output.context = Some(meter.clone());
             return print_json(&JournalOutput {
                 locator: journal_locator(journal)?,
                 detail: output,
@@ -410,9 +666,9 @@ fn chat_turn(
         }
         model_tools::ToolMode::Disabled { reason } => reason,
     };
-    // Text-only chat has no model file-read authority, so saved tool results
-    // are withheld rather than sent again.
-    let (mut history, withheld_tool_results) = replay_history(&journal.snapshot().messages, false);
+    // Text-only chat has no model file-read authority, so saved tool results,
+    // and a summary built from them, are withheld rather than sent again.
+    let (mut history, withheld_tool_results) = replay_active(journal, false);
     for message in &mut history {
         message.content = redact_known_secret(&message.content, token);
     }
@@ -481,6 +737,7 @@ fn chat_turn(
                 "reason": reason,
                 "withheld_tool_results": withheld_tool_results,
             },
+            "context": meter,
         }),
     })
 }

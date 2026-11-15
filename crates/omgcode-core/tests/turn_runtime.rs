@@ -561,7 +561,7 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
 
     // The durable transcript keeps the tool messages in order.
     let snapshot = fixture.snapshot();
-    assert_eq!(snapshot.schema_version, 2);
+    assert_eq!(snapshot.schema_version, 3);
     assert_eq!(snapshot.active_turn, None);
     assert_eq!(
         snapshot.messages.first().expect("user message").role,
@@ -608,7 +608,7 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
     // The persisted manifest names the exact tool schema and tool set.
     fixture.close_journal();
     let events = fixture.session_events();
-    assert!(events.iter().all(|event| event["schema_version"] == 2));
+    assert!(events.iter().all(|event| event["schema_version"] == 3));
     let manifest_event = events
         .iter()
         .find(|event| event["type"] == "request.manifest")

@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.25.0 is a developer CLI prototype with workspace permission
+OMGCode 0.26.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
@@ -359,8 +359,15 @@ settings and stays inside the workspace. Results return to the model as
 source-labelled user messages. The configured LM Studio token is removed from
 each result before it is recorded or sent. A tool call that contains the token
 is refused with a `provider` error before it is recorded, because editing its
-arguments could change the requested path. Saved tool results are sent again
-only while the live `model_tools` and `read` preferences both allow it. Chat
+arguments could change the requested path. Add
+`--auto-compact --compact-threshold <tokens>` to compact older active context
+before a turn. `session compact <journal> --endpoint <url> --model <name>
+--context-tokens <n> --summary-tokens <n>` performs the same manual action.
+Compaction records a schema-v3 `context.compacted` event, keeps the original
+messages, and injects a labelled untrusted summary; it never grants authority.
+Chat reports a conservative context meter. Saved tool results are sent again,
+to a turn or to the summarizer, only while the live `model_tools` and `read`
+preferences both allow it; a summary built from them follows the same rule. Chat
 prompts for no approval: a command call first records a pending approval and
 returns `approval_required`; the operator runs `approvals approve <id>` between
 turns, and a second identical call consumes it and calls the trusted runner.

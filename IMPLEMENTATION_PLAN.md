@@ -1,6 +1,6 @@
 # OMGCode implementation plan
 
-Last verified: 2026-11-14.
+Last verified: 2026-11-15.
 
 This guide is part of `main` after PR #9. Read it before selecting the next
 increment. Checkpoint preparation does not mean native replacement exists.
@@ -56,24 +56,21 @@ This is a resume guide, not a replacement for the owning contracts in
   tree-wide memory, process, and CPU-time limits.
 - **PR #29** merged at `4c2a561`: **Phase C6**, version **0.18.0**, with
   outbound network access behind `task_network` and `--network`.
-- `codex/disk-limit` (local commit `0426e42`): **Phase C7**, version
-  **0.19.0**, with a sampled net disk-growth limit for every trusted run.
-- This branch, `codex/package-network-profile`: **Phase C8** at `16d8945`,
-  the contract-only package-network profile and implementation gate
-  (ADR-0034), **Phase C9**, version **0.20.0**, with operator-declared
-  package-network profile records, **Phase C10**, version **0.21.0**, with
-  the trusted allowlisted package fetch and private cache (ADR-0035), and
-  **Phase C11**, version **0.22.0**, with read-only Linux run access to that
-  cache (ADR-0036), **Phase C12**, version **0.23.0**, with per-workspace
-  cache roots and scoped Windows access (ADR-0037), **Phase C13**, version
-  **0.24.0**, with provider-profile records and trusted per-call approvals
-  (ADR-0038, ADR-0039), and **Phase C14**, version **0.25.0**, with the
-  approval-gated model command tool (ADR-0040), qualified by **Phase C15**, a
-  native end-to-end acceptance test of one approved successful command on both
-  hosts. It is stacked on C7 at
-  `0426e42`. No run accepts a profile or has destination-scoped networking;
-  no provider adapter is enabled, and the command tool is the only model tool
-  that can request a process.
+- **PR #30** merged at `dd916fa` on 2026-11-14: **Phase C7** (version
+  **0.19.0**, sampled net disk-growth limit) through **Phase C15**. It carried
+  the package-network profile contract and records (C8, C9; ADR-0034), the
+  trusted allowlisted package fetch (C10; ADR-0035), read-only cache access
+  and per-workspace cache roots (C11, C12; ADR-0036, ADR-0037), provider
+  profiles and trusted per-call approvals (C13; ADR-0038, ADR-0039), the
+  approval-gated model command tool (C14, version **0.25.0**; ADR-0040), and
+  its native end-to-end acceptance test (C15).
+- **PR #31** merged at `28da2cf` on 2026-11-15: PR #30 review fixes, including
+  asynchronous package-fetch file I/O.
+- This branch, `codex/context-compaction`: **Phase C16**, version **0.26.0**,
+  with manual and pre-turn automatic context compaction (ADR-0041). It starts
+  from `97c733e`, the PR #31 head. No run accepts a profile or has
+  destination-scoped networking; no provider adapter is enabled, and the
+  command tool is the only model tool that can request a process.
 
 Implemented today:
 
@@ -85,9 +82,12 @@ Implemented today:
 - Bounded native read, list, exclusive file creation, and single-directory
   creation through trusted CLI commands, with a separate file-operation journal
   and explicit recovery.
-- JSONL sessions with schema version 2: tool requests/results, tool messages,
-  archive/restore/interrupt, and strict replay. Version 1 journals remain
-  readable and writable with their text-only subset.
+- JSONL sessions with schema version 3: tool requests/results, tool messages,
+  archive/restore/interrupt, readable context compaction, and strict replay.
+  Version 1 and 2 journals remain readable and writable with their subsets.
+- Conservative context accounting, manual `session compact`, and pre-turn
+  auto-compaction for the local LM Studio route. Summaries are labelled
+  untrusted evidence and follow the live tool-result replay rule (ADR-0041).
 - Core turn/tool runtime for read/list through a caller-supplied model
   interface. It has strict tool-call parsing, round/call/byte/prompt limits,
   cooperative cancellation, source-labelled messages, and fresh per-operation
@@ -180,7 +180,7 @@ Not implemented:
 - Model write, network, Git, and MCP tools; live provider tool-call
   qualification; and streaming, discovery, and cancellation in a live provider.
 - A run network destination allowlist, runtime skills, memories, desktop/UI
-  panels, compaction, and caches. Nothing calls the unconfined process runner.
+  panels, mid-turn and provider-native compaction, and caches. Nothing calls the unconfined process runner.
 - Provider adapters and subscription/API-key login; the recorded provider
   profiles are configuration only.
 
@@ -346,6 +346,24 @@ restrict device `ioctl` before ABI 5. Re-verification passed formatting,
 Clippy, all-target tests, and doc tests: Windows 362 tests and Linux 365, each
 with one doc test, none failed, ignored, or filtered.
 
+C16 started from `97c733e`, the PR #31 head. Review found that tool-enabled
+turns replayed the full journal and ignored compaction, and that summaries
+could carry saved tool results past a revoked `read`. Both were fixed through
+one `replay_active` path and an `includes_tool_results` record field. Final
+verification ran with Rust 1.99.1 and default test parallelism. It passed
+formatting, Clippy, all-target tests (`--no-fail-fast`), and doc tests. Native
+Windows ran 505 tests and one doc test, with `TEMP` and `TMP` in a
+workspace-local directory granting the current user full control; without
+that grant, 11 platform replacement tests fail with access denied, as recorded
+for A4. Linux ext4 under WSL (kernel 6.6, uid 1000) ran 501 tests and one doc
+test; five more result lines are the tree-limit tests rerunning themselves in
+`systemd-run` scopes. Eight tests were ignored on each host: the opt-in
+toolchain acceptance and internet cases. None failed. Three temporary
+mutations were each caught: full-journal replay in tool mode, never
+withholding a tool-derived summary, and always sending tool results to the
+summarizer. These results use a mock LM Studio server. They do not establish
+live summarizer quality, remote CI status, or release readiness.
+
 A mock or compile-only result does not establish native containment, live
 provider compatibility, or release filesystem support.
 
@@ -382,12 +400,12 @@ at that review boundary:
   - **A3a (merged as PR #17):** Windows NTFS private store with exact per-user
     DACLs, as a separate public type the core did not yet use. See
     [ADR-0023](docs/adr/0023-store-windows-checkpoints-with-verified-acls.md).
-  - **A3b (this branch, `codex/windows-apply`):** Windows capture,
+  - **A3b (merged as PR #18):** Windows capture,
     security-metadata preservation, and retained-handle publication, with the
     store wired to `PrivateDirectory` and the core's refusal lifted. See
     [ADR-0024](docs/adr/0024-publish-one-verified-stage-on-windows-ntfs.md).
     Release qualification and power-loss evidence remain open.
-  - **A4 (this branch, `codex/checkpoint-restore-delete`, stacked on PR #18):**
+  - **A4 (merged as PR #19):**
     explicit trusted restore through the apply path and a new checkpoint, and
     permanent deletion of one resolved checkpoint. Deletion uses intent and
     outcome ledger records and non-recursive single-entry native removal. It
@@ -512,55 +530,67 @@ on Windows, and trusted CLI commands as the first caller. See
 - **C6 (merged as PR #29):** outbound network access behind `task_network` and
   `--network`, with resolver and public certificate paths on Linux. See
   [ADR-0032](docs/adr/0032-allow-outbound-network-for-trusted-runs-through-task-network.md).
-- **C7 (local commit `0426e42` on `codex/disk-limit`):** a sampled net
+- **C7 (merged in PR #30):** a sampled net
   disk-growth limit for every trusted run. The user chose a disk limit as the
   next increment. The supervisor measures the writable roots before the run
   and once a second on a separate thread, fails closed when it cannot measure,
   and records the limit and peak growth. See
   [ADR-0033](docs/adr/0033-bound-run-disk-growth-by-sampling-writable-roots.md).
-- **C8 (this branch, `codex/package-network-profile`):** the package-network
+- **C8 (merged in PR #30):** the package-network
   profile contract and implementation gate. The user chose a package-network
   profile, then chose contract-only after the primitive review. No run accepts
   a profile; an advisory proxy is rejected because the tree can bypass it.
   See [ADR-0034](docs/adr/0034-gate-package-networking-behind-enforceable-destination-control.md).
-- **C9 (this branch, version 0.20.0):** operator-declared package-network
+- **C9 (merged in PR #30, version 0.20.0):** operator-declared package-network
   profile records. Profiles are stored through the control journal, with
   revisions and strict origin validation. They are configuration only; no run
   accepts one and no destination filter exists.
-- **C10 (this branch, version 0.21.0):** the trusted allowlisted package
+- **C10 (merged in PR #30, version 0.21.0):** the trusted allowlisted package
   fetch. The user selected a trusted host-side fetch into a private cache. The
   command contacts only declared origins, refuses redirects and credentials,
   bounds and hashes the body, and audits the intent and outcome. The run
   remains offline and does not read the cache. See
   [ADR-0035](docs/adr/0035-fetch-packages-through-a-trusted-allowlisted-cache.md).
-- **C11 (this branch, version 0.22.0):** read-only Linux run access to the
+- **C11 (merged in PR #30, version 0.22.0):** read-only Linux run access to the
   workspace package cache. Superseded by C12, which moves exposure to a
   per-workspace root and adds Windows access.
-- **C12 (this branch, version 0.23.0):** per-workspace cache roots and a
+- **C12 (merged in PR #30, version 0.23.0):** per-workspace cache roots and a
   scoped Windows grant. The operator selects a root outside application
   storage and the development root; fetch and run use it; Windows needs a
   read-execute grant on that root. See
   [ADR-0037](docs/adr/0037-use-a-per-workspace-cache-root-and-a-scoped-windows-grant.md).
-- **C13 (this branch, version 0.24.0):** provider-profile records and trusted
+- **C13 (merged in PR #30, version 0.24.0):** provider-profile records and trusted
   per-call approval records. Profiles store only a name, kind, and
   authentication mode; no credential, endpoint, adapter, or login exists.
   Approvals are bound, expiring, single-use records; the first consumer is the
   command tool in C14. See
   [ADR-0038](docs/adr/0038-record-provider-profiles-without-credentials.md) and
   [ADR-0039](docs/adr/0039-gate-future-model-tools-with-bound-single-use-approval-records.md).
-- **C14 (this branch, version 0.25.0):** the `workspace_run_command` model
+- **C14 (merged in PR #30, version 0.25.0):** the `workspace_run_command` model
   tool. It is offered only with live model-tools/execute/read/write, records a
   pending approval on the first call, and consumes an approved exact record
   before calling the trusted runner. It uses fixed limits and no network or
   host services. See
   [ADR-0040](docs/adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-- **C15 (this branch, version 0.25.0 qualification):** native end-to-end
+- **C15 (version 0.25.0 qualification):** native end-to-end
   acceptance for the model command tool. The real chat CLI, a mock provider,
   two turns, an operator approval, and the trusted runner run one successful
   confined command on Linux and Windows. Linux needs a delegated cgroup;
   Windows needs a workspace container grant. The case fails, rather than
   skips, when the host cannot provide them. Confinement correctness remains
   the platform suites' responsibility.
+
+- **C16 (version 0.26.0):** context accounting and compaction. `session
+  compact` and `chat --auto-compact --compact-threshold` summarize older
+  active messages with the selected local model. A schema-v3
+  `context.compacted` event stores a labelled untrusted summary, the boundary,
+  digest, model, and optional usage; the original journal is unchanged. Chat
+  reports a conservative context meter. Saved tool results reach the
+  summarizer, and a summary built from them is replayed, only under live
+  `model_tools` and `read`. See
+  [ADR-0041](docs/adr/0041-compact-active-context-with-readable-summaries.md).
+  Mid-turn compaction, persisted settings, provider-native compaction, and
+  caches remain planned.
 
 Next decisions, not yet scheduled:
 
@@ -588,6 +618,12 @@ Follow [docs/skills.md](docs/skills.md), [docs/mcp.md](docs/mcp.md),
 [docs/context-management.md](docs/context-management.md). Imported content is
 untrusted; enablement is a trusted user action; stale derived context must be
 invalidated.
+
+Version 0.26.0 implements the first compaction increment: conservative
+accounting, a visible meter, manual `session compact`, and pre-turn
+auto-compaction for the local LM Studio route. Mid-turn compaction after tool
+results, persisted settings, provider-native compaction, caches, skills, MCP,
+and memories remain open.
 
 ### Phase G: Git, platform qualification, packaging, and release
 

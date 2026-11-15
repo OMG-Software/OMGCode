@@ -60,7 +60,7 @@ fn creation_writes_a_versioned_jsonl_file_under_utc_date_tree() {
     assert_eq!(bytes.last(), Some(&b'\n'));
     let first: serde_json::Value =
         serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("event JSON");
-    assert_eq!(first["schema_version"], 2);
+    assert_eq!(first["schema_version"], 3);
     assert_eq!(first["type"], "session.started");
     assert_eq!(first["seq"], 0);
     assert_eq!(first["payload"]["title"], "Overview");
@@ -262,7 +262,7 @@ fn malformed_schema_events_and_injected_roles_are_rejected_without_repair() {
             "system",
         ),
         valid_message(1, Uuid::new_v4().to_string(), 1, "message.recorded", "user"),
-        valid_message(3, Uuid::new_v4().to_string(), 1, "message.recorded", "user"),
+        valid_message(4, Uuid::new_v4().to_string(), 1, "message.recorded", "user"),
         valid_message(2, Uuid::new_v4().to_string(), 1, "future.event", "user"),
         valid_message(2, initial_event_id, 1, "message.recorded", "user"),
         valid_message(2, Uuid::new_v4().to_string(), 2, "message.recorded", "user"),

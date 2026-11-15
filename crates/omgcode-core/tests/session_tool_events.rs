@@ -101,7 +101,7 @@ fn tool_result(session_id: Uuid, seq: u64, schema: u32) -> Value {
 }
 
 #[test]
-fn v2_tool_events_round_trip_through_replay() {
+fn tool_events_round_trip_through_replay() {
     let temporary = TempDir::new().expect("private temporary directory");
     let data = temporary.path().join("application-data");
     let workspace = temporary.path().join("workspace");
@@ -139,15 +139,15 @@ fn v2_tool_events_round_trip_through_replay() {
 
     let reopened = SessionJournal::open(&path).expect("reopen v2 journal");
 
-    assert_eq!(reopened.schema_version(), 2);
-    assert_eq!(reopened.snapshot().schema_version, 2);
+    assert_eq!(reopened.schema_version(), 3);
+    assert_eq!(reopened.snapshot().schema_version, 3);
     assert_eq!(reopened.snapshot().active_turn, None);
     assert_eq!(reopened.snapshot().messages.len(), 2);
     assert_eq!(reopened.snapshot().messages[0].role, MessageRole::Tool);
     assert_eq!(reopened.snapshot().messages[1].role, MessageRole::Assistant);
     drop(reopened);
     let events = read_events(&path);
-    assert!(events.iter().all(|event| event["schema_version"] == 2));
+    assert!(events.iter().all(|event| event["schema_version"] == 3));
     assert_eq!(
         events
             .iter()
@@ -421,7 +421,8 @@ fn v1_journals_reject_tool_events_and_tool_manifest_fields() {
 #[test]
 fn failed_turns_release_pending_call_ids_for_later_turns() {
     let (_temporary, path, session_id) = setup();
-    let first = first_event(&path);
+    let mut first = first_event(&path);
+    first["schema_version"] = json!(2);
     let first_request = Uuid::new_v4();
     let second_request = Uuid::new_v4();
     let text = "Tool result [call call-1]:\nok";

@@ -710,6 +710,37 @@ pub struct TurnReport {
 /// Text sent in place of a saved tool result whose replay is not authorized.
 pub const WITHHELD_TOOL_RESULT: &str = "Tool result withheld [source omgcode_runtime]: current workspace settings do not allow model file reads, so this earlier workspace data is not sent again.";
 
+/// Text sent in place of a compaction summary built from saved tool results
+/// when live settings do not authorize replaying those results.
+pub const WITHHELD_COMPACTION_SUMMARY: &str = "Compacted earlier context withheld [source omgcode_runtime]: the summary was built from earlier workspace tool results, and current workspace settings do not allow model file reads, so it is not sent again.";
+
+/// Map a journal's active context (summary plus retained messages) to history.
+///
+/// This is the only replay path for a turn. A summary whose input included
+/// saved tool results is workspace data under the same rule as those results:
+/// without live authority it becomes [`WITHHELD_COMPACTION_SUMMARY`] and counts
+/// as withheld. The returned history has one entry per active message.
+#[must_use]
+pub fn replay_active(
+    journal: &SessionJournal,
+    tool_results_allowed: bool,
+) -> (Vec<ConversationMessage>, usize) {
+    let mut active = journal.active_messages();
+    let mut withheld = 0_usize;
+    let summary_withheld = !tool_results_allowed
+        && journal
+            .snapshot()
+            .compaction
+            .as_ref()
+            .is_some_and(|record| record.includes_tool_results);
+    if summary_withheld && let Some(summary) = active.first_mut() {
+        summary.text = WITHHELD_COMPACTION_SUMMARY.to_owned();
+        withheld = 1;
+    }
+    let (history, tool_withheld) = replay_history(&active, tool_results_allowed);
+    (history, withheld.saturating_add(tool_withheld))
+}
+
 /// Map saved session messages to conversation history.
 ///
 /// A saved tool result is workspace data that was disclosed under an earlier
@@ -779,7 +810,7 @@ impl<'a> TurnRuntime<'a> {
         limits: TurnLimits,
     ) -> Result<Self, TurnError> {
         let limits = limits.validate()?;
-        if journal.schema_version() != 2 {
+        if journal.schema_version() < 2 {
             return Err(TurnError::SchemaV2Required);
         }
         if journal.snapshot().workspace_id != *workspace_id.as_uuid() {
@@ -850,11 +881,11 @@ impl<'a> TurnRuntime<'a> {
                 .collect(),
         );
 
-        // Saved tool results are replayed only under live read authority.
-        let (mut history, withheld_tool_results) = replay_history(
-            &self.journal.snapshot().messages,
-            self.tool_replay_allowed(),
-        );
+        // Active context is the compaction summary plus retained messages.
+        // Saved tool results, and summaries built from them, are replayed only
+        // under live read authority.
+        let (mut history, withheld_tool_results) =
+            replay_active(self.journal, self.tool_replay_allowed());
         history.push(ConversationMessage {
             role: ConversationRole::User,
             content: user_text.to_owned(),
@@ -1093,7 +1124,7 @@ impl<'a> TurnRuntime<'a> {
 
     /// Refuse a turn before any mutation when the session cannot accept one.
     fn ensure_runnable(&self) -> Result<(), TurnError> {
-        if self.journal.schema_version() != 2 {
+        if self.journal.schema_version() < 2 {
             return Err(TurnError::SchemaV2Required);
         }
         if self.journal.snapshot().workspace_id != *self.workspace_id.as_uuid() {

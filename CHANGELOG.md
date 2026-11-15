@@ -6,6 +6,36 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.26.0 adds readable context compaction and accounting. See
+  ADR-0041.
+  - **Manual:** `session compact` summarizes older active messages with the
+    selected local model and records a schema-v3 `context.compacted` event.
+    Original journal messages are retained.
+  - **Automatic:** `chat --auto-compact --compact-threshold <tokens>` compacts
+    before a turn when the conservative estimate reaches
+    `min(threshold, safe input budget)`. Without auto-compaction, an oversized
+    request is refused with a manual-compaction hint.
+  - **Active context:** the labelled, untrusted summary replaces messages
+    before the recorded boundary. The latest user message and all later
+    assistant/tool messages stay verbatim, preserving the current turn and its
+    tool pairs.
+  - **Tool-result authority:** saved tool results reach the summarizer only
+    under live `model_tools` and `read`, the same rule that replays them in a
+    turn. The record states whether its summary used tool results; such a
+    summary is withheld, and counted as withheld, when a later turn lacks that
+    authority. Text-only chat and tool-enabled turns share one replay path for
+    the active context.
+  - **Validation:** the recorded digest must match the summary, and the first
+    retained message must be a user message.
+  - **Meter:** chat reports the conservative input estimate, context and
+    output budgets, effective trigger, auto-compaction state, and compaction
+    boundary and summary digest.
+  - **Limits:** summarizer input is split into bounded chunks with hard chunk
+    and depth limits; summaries are at most 8 KiB; a failure, empty result, or
+    no reduction fails closed. The configured local token is redacted from
+    summarizer input and output.
+  - **Not implemented:** mid-turn compaction after tool results, persisted
+    auto-compaction settings, provider-native compaction, and caches.
 - Version 0.25.0 adds an approval-gated model command tool. See ADR-0040.
   - **Offering:** `workspace_run_command` is advertised only when the
     workspace's live `model_tools`, `execute`, `read`, and `write`

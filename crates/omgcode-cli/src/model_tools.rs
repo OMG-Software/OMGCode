@@ -28,6 +28,9 @@ use crate::{CliError, provider_error, redact_known_secret};
 pub(crate) const MODEL_TOOLS_SUPPORTED: bool =
     cfg!(any(target_os = "linux", target_os = "windows"));
 
+/// Conservative byte allowance for the advertised tool definitions.
+pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 4 * 1024;
+
 /// Whether this chat turn offers the model the workspace read/list tools.
 #[derive(Debug)]
 pub(crate) enum ToolMode {
@@ -73,7 +76,7 @@ pub(crate) fn select(data_root: &Path, journal: &SessionJournal) -> Result<ToolM
             reason: "preference_disabled",
         });
     }
-    if journal.schema_version() != 2 {
+    if journal.schema_version() < 2 {
         return Ok(ToolMode::Disabled {
             reason: "session_schema_v1",
         });
@@ -81,11 +84,38 @@ pub(crate) fn select(data_root: &Path, journal: &SessionJournal) -> Result<ToolM
     Ok(ToolMode::Enabled { workspace_id })
 }
 
+/// Whether live settings authorize replaying saved tool results for this
+/// session: the same `model_tools` and `read` rule the turn runtime applies.
+///
+/// Compaction uses it so a summary cannot carry tool results that the next
+/// turn would withhold. Every condition that gives text-only chat gives
+/// `false`; invalid settings fail closed with an error.
+pub(crate) fn tool_replay_allowed(
+    data_root: &Path,
+    journal: &SessionJournal,
+) -> Result<bool, CliError> {
+    if !MODEL_TOOLS_SUPPORTED || journal.schema_version() < 2 {
+        return Ok(false);
+    }
+    let Some(control) = ControlStore::open_existing(data_root)
+        .map_err(|error| CliError::new("control", error.to_string()))?
+    else {
+        return Ok(false);
+    };
+    Ok(control
+        .registered_workspace(journal.snapshot().workspace_id)
+        .is_some_and(|workspace| {
+            let permissions = workspace.permissions();
+            permissions.model_tools && permissions.read
+        }))
+}
+
 /// Summary of one completed tool-enabled turn.
 #[derive(Serialize)]
 pub(crate) struct ToolTurnOutput {
     pub(crate) reply: ToolTurnReply,
     pub(crate) model_tools: ToolTurnSummary,
+    pub(crate) context: Option<crate::ContextMeter>,
 }
 
 /// Assistant text from a tool-enabled turn. It remains untrusted model output.
@@ -162,6 +192,7 @@ pub(crate) fn run(
             tool_bytes: report.tool_bytes,
             withheld_tool_results: report.withheld_tool_results,
         },
+        context: None,
     })
 }
 

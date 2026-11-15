@@ -72,8 +72,8 @@ unknown and malformed calls, duplicate identifiers, per-round, aggregate,
 prompt-capacity, and selected per-message limits, cancellation, deadline expiry,
 archived and active-turn refusal, workspace metadata mismatch, model-addressable
 listing names, interim assistant text retention, source-labelled hostile
-content, non-UTF-8 withholding, and schema-v1/v2 replay including tool
-output-identity checks and failed-turn call-ID reuse. Public integration tests exercise these operations
+content, non-UTF-8 withholding, and schema-v1/v2/v3 replay including
+compaction, tool output-identity checks, and failed-turn call-ID reuse. Public integration tests exercise these operations
 through the broker API; core unit tests inject the uncertain outcome. These
 tests do not qualify release filesystem support or runtime containment.
 
@@ -154,6 +154,7 @@ As the relevant components are implemented, include:
 | Frontend | Untrusted rendering, IPC authorization, no secret disclosure |
 | Sessions | Concurrent edits/worktrees, JSONL naming/schema/durability, index rebuild, archive/restore, safe resume, v1/v2 boundaries |
 | Turn/tool lifecycle | Fresh bindings, strict schemas, unknown/malformed/duplicate calls, round/call/byte limits, cancellation, deadline, source labels, denial at the broker, no replay |
+| Context compaction | Conservative accounting, effective trigger below/at/above, manual and pre-turn auto-compaction, schema-v3 event, summary trust label, latest-turn and tool-pair retention, chunk and depth limits, no-progress refusal, token redaction, and original-journal retention |
 | Process-tree runner | Exit codes, exact environment, argument quoting, bounded output, deadline, cancellation, descendant escape attempts, inherited handles, observed cleanup, cancellable disk sampling, bounded traversal queues, real scan errors preserved during shutdown, invalid specifications |
 | Linux confinement | Read-only and read-write rules, path truncation, denied host files and directories, inheritance by descendants, IP and `io_uring` denial in both Unix-socket modes, Unix-socket and datagram-pair denial in `PairsOnly`, host Unix-socket connection, workspace socket binding, and datagram pairs in `HostServices`, unexecutable programs, missing/link/special confinement paths, ABI selection below and above the minimum |
 | Windows confinement | Granted read-only and read-write paths, denied host files, directories, named pipe, and loopback TCP, a writable container temporary directory, inheritance by descendants, the same probes unconfined, missing, weaker, and foreign grants, a missing profile, `LOCALAPPDATA`, or container name, refused `HostServices`, an ungranted program |

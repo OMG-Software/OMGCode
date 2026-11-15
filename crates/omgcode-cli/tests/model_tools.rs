@@ -753,3 +753,278 @@ fn invalid_settings_stop_chat_before_any_model_request() {
     let events = fs::read_to_string(&journal).expect("journal");
     assert!(!events.contains("turn.started"));
 }
+
+#[test]
+fn manual_compaction_replaces_only_older_context() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+
+    let server = SequenceServer::start(vec![text("first reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "first request");
+    server.finish();
+    assert_success(&output);
+
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "latest request");
+    server.finish();
+    assert_success(&output);
+
+    let server = SequenceServer::start(vec![text("Earlier work is summarized.")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "session",
+            "compact",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--summary-tokens",
+            "256",
+        ],
+    );
+    server.finish();
+    assert_success(&output);
+    let compaction = json_output(&output);
+    assert_eq!(compaction["compaction"]["compacted_messages"], 2);
+    assert_eq!(compaction["retained_messages"], 2);
+    assert_eq!(compaction["summarizer_calls"], 1);
+
+    let server = SequenceServer::start(vec![text("after compaction")]);
+    let output = fixture.chat(&journal, &server.endpoint, "third request");
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 2);
+    assert_eq!(result["context"]["estimate_scope"], "pre_turn_conservative");
+    let texts = user_texts(&requests[0]);
+    let combined = texts.join("\n");
+    assert!(
+        combined.contains("Compacted earlier context")
+            && combined.contains("Earlier work is summarized."),
+        "{combined}"
+    );
+    assert!(combined.contains("latest request"), "{combined}");
+    assert!(!combined.contains("first request"), "{combined}");
+}
+
+#[test]
+fn auto_compaction_runs_before_the_model_turn() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    let large_request = "a".repeat(15_000);
+    let large_reply = "b".repeat(15_000);
+    for (message, reply) in [
+        (large_request.as_str(), large_reply.as_str()),
+        ("latest request", "latest reply"),
+    ] {
+        let server = SequenceServer::start(vec![text(reply)]);
+        assert_success(&fixture.chat(&journal, &server.endpoint, message));
+        server.finish();
+    }
+
+    let server = SequenceServer::start(vec![
+        text("Auto summary of earlier work."),
+        text("auto reply"),
+    ]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "--compact-threshold",
+            "20000",
+            "third request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "auto reply");
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 1);
+    assert_eq!(result["context"]["auto_compaction"], true);
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    let chat = user_texts(&requests[1]).join("\n");
+    assert!(chat.contains("Auto summary of earlier work."), "{chat}");
+    assert!(chat.contains("latest request"), "{chat}");
+    assert!(
+        !chat.contains(&large_request),
+        "the compacted request is not resent"
+    );
+}
+
+fn compact_cli(fixture: &Fixture, journal: &Path, endpoint: &str) -> Output {
+    run_cli(
+        &fixture.data,
+        &[
+            "session",
+            "compact",
+            path_arg(journal),
+            "--endpoint",
+            endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--summary-tokens",
+            "256",
+        ],
+    )
+}
+
+#[test]
+fn tool_mode_turns_use_the_compacted_context_and_withhold_a_tool_summary_without_read() {
+    let note = std::str::from_utf8(NOTE).expect("UTF-8 note");
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    server.finish();
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
+    server.finish();
+
+    // Live model_tools and read let the saved tool result reach the summarizer.
+    let server = SequenceServer::start(vec![text("The note was read earlier.")]);
+    let output = compact_cli(&fixture, &journal, &server.endpoint);
+    let requests = server.finish();
+    assert_success(&output);
+    assert!(requests[0].to_string().contains(note));
+    let compaction = json_output(&output);
+    assert_eq!(compaction["compaction"]["includes_tool_results"], true);
+    assert_eq!(compaction["compaction"]["compacted_messages"], 3);
+
+    // A tool-enabled turn sends the summary, not the compacted messages.
+    let server = SequenceServer::start(vec![text("third reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "third request");
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(json_output(&output)["model_tools"]["mode"], "enabled");
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(sent.contains("The note was read earlier."), "{sent}");
+    assert!(sent.contains("latest request"), "{sent}");
+    assert!(!sent.contains("read note.txt"), "{sent}");
+    assert!(!sent.contains(note), "{sent}");
+
+    // Without live read, the summary built from the tool result is withheld.
+    fixture.set("--read", false);
+    let server = SequenceServer::start(vec![text("fourth reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "fourth request");
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(
+        sent.contains("Compacted earlier context withheld"),
+        "{sent}"
+    );
+    assert!(!sent.contains("The note was read earlier."), "{sent}");
+}
+
+#[test]
+fn compaction_without_read_withholds_saved_tool_results_from_the_summarizer() {
+    let note = std::str::from_utf8(NOTE).expect("UTF-8 note");
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    server.finish();
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
+    server.finish();
+
+    fixture.set("--model-tools", false);
+    let server = SequenceServer::start(vec![text("A file was read earlier.")]);
+    let output = compact_cli(&fixture, &journal, &server.endpoint);
+    let requests = server.finish();
+    assert_success(&output);
+    assert!(!requests[0].to_string().contains(note));
+    assert!(requests[0].to_string().contains("Tool result withheld"));
+    assert_eq!(
+        json_output(&output)["compaction"]["includes_tool_results"],
+        false
+    );
+
+    // A summary without tool results replays in text-only chat.
+    let server = SequenceServer::start(vec![text("text reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "third request");
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(
+        json_output(&output)["model_tools"]["withheld_tool_results"],
+        0
+    );
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(sent.contains("A file was read earlier."), "{sent}");
+}
+
+#[test]
+fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    let large_request = "a".repeat(15_000);
+    let large_reply = "b".repeat(15_000);
+    for (message, reply) in [
+        (large_request.as_str(), large_reply.as_str()),
+        ("latest request", "latest reply"),
+    ] {
+        let server = SequenceServer::start(vec![text(reply)]);
+        assert_success(&fixture.chat(&journal, &server.endpoint, message));
+        server.finish();
+    }
+
+    let server = SequenceServer::start(Vec::new());
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--compact-threshold",
+            "20000",
+            "third request",
+        ],
+    );
+    server.finish();
+    assert_error_code(&output, "context");
+    let events = fs::read_to_string(&journal).expect("journal");
+    assert!(!events.contains("context.compacted"), "{events}");
+}

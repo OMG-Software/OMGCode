@@ -49,12 +49,11 @@ Windows creation and reopening omit delete sharing, so a journal cannot be
 renamed or replaced while its writer holds the file handle. This is separate
 from the exclusive writer lock and the existing link checks.
 
-The current prototype writes schema version 2. Every event also has the common
+The current prototype writes schema version 3. Every event also has the common
 envelope described below, and payload objects reject unknown fields. A journal
 must use one schema version throughout; mixed versions are rejected. New
-sessions use version 2, so a binary that only accepts version 1 cannot open a
-new session. Version 1 journals remain readable and writable with their original
-text-only subset.
+sessions use version 3, so older binaries cannot open them. Version 1 and 2
+journals remain readable and writable with their original subsets.
 
 The version-1 subset is:
 
@@ -82,6 +81,22 @@ The version-2 `request.manifest` payload adds optional `tool_schema_version` and
 `tools` fields. They are present together only when the request advertised
 tools. Version-1 manifests omit both fields.
 
+Version 3 keeps every version-2 event and adds readable context compaction. A
+version-1 or version-2 journal cannot contain these additions.
+
+| Event type | Payload in v3 | State rule |
+| --- | --- | --- |
+| `context.compacted` | `summary`, `compacted_messages`, `includes_tool_results`, `summary_sha256`, `model`, optional `prompt_tokens`, optional `completion_tokens` | Requires an idle, unarchived session. The summary is at most 16 KiB minus a fixed untrusted-source label, and the digest is the lowercase SHA-256 of the summary. The boundary is within the message history, later than any prior compaction, and followed by a user message when any message is retained. The original messages remain. |
+
+The snapshot reports the active compaction record when present. The synthetic
+summary is a labelled user-level message; it is not a recorded journal message
+and never becomes an instruction. A summary whose `includes_tool_results` is
+true carries earlier workspace data: it is replayed only under live
+`model_tools` and `read`, and is otherwise replaced by a withheld notice, like
+a saved tool result. Chat and the turn runtime build active
+history from the summary plus messages after the boundary. See
+[ADR-0041](adr/0041-compact-active-context-with-readable-summaries.md).
+
 `workspace` is a tagged native path: `{"encoding":"unix_bytes","units":[...]}`
 stores Unix path bytes; `{"encoding":"windows_utf16","units":[...]}` stores
 Windows UTF-16 code units. It is descriptive metadata only. It is not a current
@@ -94,7 +109,7 @@ not rewritten. See [workspace settings](workspace-permissions.md).
 The `omgcode-core` `turn` module runs one bounded model/tool turn through a
 caller-supplied model interface. `chat` runs it with the local LM Studio
 adapter when the session's workspace enables `model_tools`; otherwise chat
-advertises no tools and rejects tool calls. A caller must provide an open schema-version-2
+advertises no tools and rejects tool calls. A caller must provide an open schema-version-2-or-later
 journal, the current control-store writer, and the workspace ID from trusted
 settings. The journal's recorded workspace ID is only a coherence check.
 

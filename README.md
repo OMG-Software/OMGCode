@@ -85,8 +85,8 @@ and `omgcode-platform`. The CLI command is `omgcode`. It provides:
   single-directory creation, and read-only diff previews through explicit
   workspace/session CLI selections. These trusted operator commands do not
   provide model tool definitions, and `file diff` never writes to the workspace.
-- `session`: create, inspect, archive, restore, and explicitly interrupt an
-  abandoned turn in a JSONL journal.
+- `session`: create, inspect, archive, restore, compact older active context,
+  and explicitly interrupt an abandoned turn in a JSONL journal.
 - `chat`: send one user turn to an already-running LM Studio server at a literal
   loopback HTTP endpoint. It does not discover, start, or download models, and it
   rejects model tool requests unless the session's workspace enables
@@ -102,14 +102,16 @@ it does not replay recorded actions. An abandoned turn must be inspected and
 marked interrupted before chat can continue.
 
 The core also implements a session-owned turn/tool runtime and JSONL schema
-version 2. That runtime accepts a caller-supplied model interface, validates
+version 3. Schema version 3 adds readable, bounded context compaction; the
+original journal messages are retained, and the summary is labelled untrusted
+user-level evidence. That runtime accepts a caller-supplied model interface, validates
 strict read/list/command tool calls, creates a fresh workspace binding before
 every file operation, and records tool intents, results, and source-labelled
 messages. The command tool additionally requires a consumed approval. `chat`
 runs it with the local LM Studio adapter for a workspace that enables
 `model_tools`. It has no write, Git, MCP, or network tool.
-New sessions use schema version 2; version 1 journals remain readable and
-writable with their original text-only event subset.
+New sessions use schema version 3; version 1 and 2 journals remain readable
+and writable with their original subsets.
 
 The platform crate checks opened journal handles, captures native directory
 identity for workspace registration, and implements handle-relative file
@@ -155,7 +157,10 @@ cargo run --locked -p omgcode-cli -- chat --workspace . --model "YOUR_MODEL_ID" 
 
 The endpoint defaults to `http://127.0.0.1:1234/v1`. The required context value
 must come from the selected model's validated profile. The adapter uses a
-conservative byte-based estimate; it is not the model tokenizer. While the
+conservative byte-based estimate; it is not the model tokenizer. Add
+`--auto-compact --compact-threshold TOKENS` to compact older active context
+before a turn, or run `session compact` explicitly. The original journal is
+retained; the summary is untrusted evidence, never instructions or authority. While the
 workspace's `model_tools` preference is off, which is the default, the example
 sends only the supplied message and saved chat history, not workspace files;
 earlier tool results are replaced by a withheld notice. If `model_tools` is

@@ -54,6 +54,8 @@ Follow the owning [instruction](docs/agent-instructions.md),
 working on those features. Prompts and generated context never grant authority.
 Follow the [MCP](docs/mcp.md) and [session storage](docs/session-storage.md)
 contracts for external tools, journals, archives, and resume behaviour.
+Sessions use schema version 3. Context compaction is readable and bounded,
+retains the original journal, and treats summaries as untrusted evidence.
 Follow the [memory contract](docs/memories.md) for user-selected global/project
 scope, retrieval, and lifecycle. Recalled text cannot grant authority.
 
