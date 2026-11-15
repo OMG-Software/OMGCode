@@ -1113,3 +1113,62 @@ fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() 
     assert_eq!(requests.len(), 2, "one summary and one chat request");
     assert_eq!(result["context"]["compaction"]["compacted_messages"], 126);
 }
+
+#[test]
+fn auto_compaction_sizes_summary_chunks_from_the_summary_reserve_not_the_chat_reserve() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // A 16 KiB context with an 8 KiB chat reserve leaves about 2 KB of chunk
+    // room after the fixed summarizer prompt; the 2048-token summary reserve
+    // leaves about 8 KB. One 3 KB exchange fits only the second allowance.
+    {
+        let mut session =
+            omgcode_core::session::SessionJournal::open(&journal).expect("open journal");
+        for (role, content) in [
+            (omgcode_core::session::MessageRole::User, "c".repeat(3_000)),
+            (
+                omgcode_core::session::MessageRole::Assistant,
+                "d".repeat(3_000),
+            ),
+            (
+                omgcode_core::session::MessageRole::User,
+                "latest request".to_owned(),
+            ),
+            (
+                omgcode_core::session::MessageRole::Assistant,
+                "latest reply".to_owned(),
+            ),
+        ] {
+            session.record_message(role, &content).expect("message");
+        }
+    }
+
+    let server = SequenceServer::start(vec![text("Earlier large exchange."), text("next reply")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "16384",
+            "--max-output-tokens",
+            "8192",
+            "--auto-compact",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "next reply");
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 1);
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 2);
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    assert_eq!(requests[0]["max_tokens"], 2048, "summary reserve");
+    assert_eq!(requests[1]["max_tokens"], 8192, "chat reserve");
+}
