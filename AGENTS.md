@@ -26,7 +26,10 @@ no run uses them. The trusted `packages fetch` command downloads from declared
 origins into a per-workspace cache. A selected root is exposed read-only on
 Linux and Windows; Windows needs a read-execute container grant, and Linux
 falls back to application storage. Provider profiles record connection shapes
-without credentials or adapters; no adapter or login uses them. Trusted
+without credentials or adapters; no adapter or login uses them. Trusted CLI
+commands can store API keys in protected OS storage (DPAPI on Windows, the
+Secret Service on Linux) and bind them to `api_key` profiles; no adapter reads
+them yet. Trusted
 single-use approval records authorize one exact model-tool call: only a later
 identical call may consume an approved record and invoke the trusted runner,
 and `workspace_run_command` is their only consumer. Trusted CLI

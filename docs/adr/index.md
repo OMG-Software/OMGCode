@@ -56,3 +56,4 @@ meaningful alternative does not need an ADR.
 | [0039: Gate future model tools with bound, single-use approval records](0039-gate-future-model-tools-with-bound-single-use-approval-records.md) | Accepted | 2026-11-14 |
 | [0040: Gate the model command tool with approvals and the trusted runner](0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md) | Accepted | 2026-11-14 |
 | [0041: Compact active context with readable summaries](0041-compact-active-context-with-readable-summaries.md) | Accepted | 2026-11-15 |
+| [0042: Store provider credentials in protected OS storage](0042-store-provider-credentials-in-protected-os-storage.md) | Accepted | 2026-11-15 |

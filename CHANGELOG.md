@@ -6,6 +6,40 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.27.0 adds the provider credential service (Phase D1). See
+  ADR-0042. No provider adapter reads a stored credential yet.
+  - **Native stores:** `omgcode-platform` stores each credential under a fresh
+    random identifier and never overwrites one. Windows writes a DPAPI blob
+    (current user, UI forbidden, entropy bound to the store label and
+    identifier) create-only into `credentials-v1` of the verified-ACL private
+    store, and rechecks the file's exact private DACL before decrypting.
+    Linux stores one Secret Service item in the default collection, with
+    `application` and `omgcode_credential` attributes, through an encrypted
+    session. A locked collection is reported, never unlocked. Other platforms,
+    a missing bus or service, or no default collection are unavailable;
+    nothing falls back to plaintext.
+  - **Errors:** edited, truncated, or identifier-swapped Windows blobs, a
+    broadened DACL, and duplicate Linux items are corrupt, never absent.
+  - **Secrets in memory:** an owned buffer, bounded to 16 KiB, zeroed on drop
+    and redacted from `Debug`.
+  - **Journal:** `provider_credential_bound` and `provider_credential_removed`
+    record a profile, an opaque identifier, and the backend under the
+    revision rule. `provider_profile_removed` names a bound credential. Only
+    `api_key` profiles accept one; subscription and `none` profiles are
+    refused. Profile status reports `credential` as none or bound. A control
+    journal written by 0.27.0 cannot be read by 0.26.0.
+  - **CLI:** `workspace provider-credential-set <profile> --revision <n>`
+    reads the secret from piped standard input only, removes one trailing
+    newline, stores, binds, and then deletes a replaced credential.
+    `provider-credential-remove` and `provider-profile-remove` unbind before
+    deleting. An undeletable unbound item is a `credential_orphaned` warning.
+    Credential failures have stable `credential_*` error codes, and
+    `capabilities` reports `credential_store` and `provider_credentials`.
+  - **CI:** the Linux job installs gnome-keyring and unlocks a login
+    collection on the user session bus before the tests.
+  - **Dependencies:** `zeroize` 1.9 (`alloc`), `secret-service` 5.2
+    (Linux, `rt-tokio-crypto-rust`, with zbus 5), and the `windows-sys`
+    `Win32_Security_Cryptography` feature.
 - Version 0.26.0 adds readable context compaction and accounting. See
   ADR-0041.
   - **Manual:** `session compact` summarizes older active messages with the

@@ -2,12 +2,14 @@
 //!
 //! A profile records only a name, a provider kind, and an authentication mode.
 //! It stores no endpoint, account, token, password, or other credential, and
-//! no adapter uses it yet. It is configuration only. See
-//! `docs/provider-authentication.md` and ADR-0038.
+//! no adapter uses it yet. It is configuration only. Its status can name the
+//! opaque identifier of a credential bound through `credential`, never the
+//! secret. See `docs/provider-authentication.md`, ADR-0038, and ADR-0042.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::credential::{self, CredentialBinding, ProviderProfileRemoval};
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_profile_name, valid_uuid};
 
 /// Most recorded provider profiles.
@@ -122,12 +124,15 @@ impl ProviderProfile {
     }
 }
 
-/// A profile and the settings revision that recorded it.
+/// A profile, the settings revision that recorded it, and its credential
+/// binding. The binding holds an opaque identifier, never a secret.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProviderProfileStatus {
     #[serde(flatten)]
     profile: ProviderProfile,
     revision: u64,
+    #[serde(serialize_with = "credential::serialize_state")]
+    pub(super) credential: Option<CredentialBinding>,
 }
 
 impl ProviderProfileStatus {
@@ -139,6 +144,11 @@ impl ProviderProfileStatus {
     /// The settings revision of the event that added it.
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The bound credential, if any.
+    pub const fn credential(&self) -> Option<&CredentialBinding> {
+        self.credential.as_ref()
     }
 }
 
@@ -207,22 +217,32 @@ impl ControlStore {
     }
 
     /// Remove a provider profile by name. This advances the settings revision.
+    ///
+    /// A bound credential's binding is removed by the same recorded event,
+    /// which names its identifier. The caller then deletes the native item
+    /// with [`credential::delete_unbound_credential`].
     pub fn remove_provider_profile(
         &mut self,
         name: &str,
         expected_revision: u64,
-    ) -> Result<Uuid, ControlError> {
+    ) -> Result<ProviderProfileRemoval, ControlError> {
         self.check_revision(expected_revision)?;
-        let profile_id = self
+        let status = self
             .provider_profile(name)
-            .ok_or(ControlError::UnknownProvider)?
-            .profile
-            .id;
+            .ok_or(ControlError::UnknownProvider)?;
+        let profile_id = status.profile.id;
+        let credential = status.credential.clone();
         self.append(
-            Action::ProviderProfileRemoved { profile_id },
+            Action::ProviderProfileRemoved {
+                profile_id,
+                credential_id: credential.as_ref().map(|binding| binding.id().clone()),
+            },
             self.next_revision()?,
         )?;
-        Ok(profile_id)
+        Ok(ProviderProfileRemoval {
+            profile_id,
+            credential,
+        })
     }
 }
 
@@ -249,9 +269,13 @@ pub(super) fn apply(
             state.provider_profiles.push(ProviderProfileStatus {
                 profile: profile.clone(),
                 revision,
+                credential: None,
             });
         }
-        Action::ProviderProfileRemoved { profile_id } => {
+        Action::ProviderProfileRemoved {
+            profile_id,
+            credential_id,
+        } => {
             let index = state
                 .provider_profiles
                 .iter()
@@ -259,6 +283,18 @@ pub(super) fn apply(
                 .ok_or(ControlError::Invalid(
                     "removal of an unknown provider profile",
                 ))?;
+            // A bound credential must be named by the removal itself, so the
+            // journal always shows which native item became unbound.
+            let bound = state
+                .provider_profiles
+                .get(index)
+                .and_then(|status| status.credential.as_ref())
+                .map(CredentialBinding::id);
+            if bound != credential_id.as_ref() {
+                return Err(ControlError::Invalid(
+                    "provider profile removal does not match its credential binding",
+                ));
+            }
             state.provider_profiles.remove(index);
         }
         _ => {}

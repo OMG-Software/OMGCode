@@ -71,6 +71,8 @@ This is a resume guide, not a replacement for the owning contracts in
   from `97c733e`, the PR #31 head. No run accepts a profile or has
   destination-scoped networking; no provider adapter is enabled, and the
   command tool is the only model tool that can request a process.
+- This change: **Phase D1**, version **0.27.0**, the
+  provider credential service (ADR-0042). No adapter reads a stored credential.
 
 Implemented today:
 
@@ -163,6 +165,13 @@ Implemented today:
   session, workspace, operation, request digest, and settings revision, expire,
   and are consumed once (ADR-0039). Provider profiles enable no connection; the
   command tool is the only model tool that consumes an approval record.
+- Provider credentials in protected OS storage (ADR-0042): DPAPI files with
+  verified private DACLs on Windows and Secret Service items in the default
+  collection on Linux, with no plaintext fallback. Trusted
+  `workspace provider-credential-set` reads an API key from standard input and
+  binds a new opaque identifier to an `api_key` profile in the control
+  journal; `provider-credential-remove` and `provider-profile-remove` unbind
+  and then delete the native item. No adapter reads a stored credential.
 - The `workspace_run_command` model tool (ADR-0040) is offered only with live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; an approved exact call consumes the
@@ -182,7 +191,8 @@ Not implemented:
 - A run network destination allowlist, runtime skills, memories, desktop/UI
   panels, mid-turn and provider-native compaction, and caches. Nothing calls the unconfined process runner.
 - Provider adapters and subscription/API-key login; the recorded provider
-  profiles are configuration only.
+  profiles are configuration only, and no adapter reads a stored credential.
+- Subscription token storage and a memory-only session credential.
 
 ## Resume steps
 
@@ -606,7 +616,8 @@ on Windows, and trusted CLI commands as the first caller. See
 
 Next decisions, not yet scheduled:
 
-- a credential service, provider adapters, and subscription/API-key login;
+- provider adapters that read stored credentials, and subscription/API-key
+  login;
 - model write, network, Git, and MCP tools;
 - registry credentials and development-server networking.
 
@@ -616,6 +627,23 @@ Follow [docs/provider-authentication.md](docs/provider-authentication.md).
 Keep subscription and API-key profiles separate. Do not silently fall back to
 paid API usage. Verify current primary documentation before implementing a
 login or entitlement route.
+
+- **D1 (version 0.27.0):** the provider credential service. See
+  [ADR-0042](docs/adr/0042-store-provider-credentials-in-protected-os-storage.md).
+  `omgcode-platform` stores immutable credentials under random identifiers:
+  DPAPI blobs (current user, UI forbidden, entropy bound to the store label
+  and identifier) written create-only into `credentials-v1` of the verified-ACL
+  private store on Windows, and one Secret Service item per credential in the
+  default collection on Linux. A locked collection is reported, never
+  unlocked. Secrets are held in a zeroed, redacted, 16 KiB-bounded buffer.
+  The control journal records `provider_credential_bound` and
+  `provider_credential_removed` with an opaque identifier and backend, and a
+  bound profile's removal names its credential. Trusted CLI
+  `provider-credential-set` reads standard input only and orders native store,
+  journal binding, then old-item deletion, reporting an undeletable item as a
+  `credential_orphaned` warning. Only `api_key` profiles accept a credential.
+  Native tests run on both hosts; Linux needs an unlocked Secret Service, which
+  CI provides with gnome-keyring. No adapter reads a stored credential.
 
 ### Phase E: desktop interface and session tree
 

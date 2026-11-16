@@ -229,6 +229,17 @@ and `provider_profile_removed`; `workspace status` lists them under
 authentication matrix. A control journal written by 0.24.0 cannot be read by
 0.23.0.
 
+Since 0.27.0, `provider-credential-set <name> --revision <n>` and
+`provider-credential-remove <name> --revision <n>` bind and unbind a credential
+stored in protected OS storage for an `api_key` profile. They record
+`provider_credential_bound` and `provider_credential_removed` with the profile
+and an opaque credential identifier, never the secret, and increment the
+revision. A removed profile's `provider_profile_removed` event names any
+credential it unbinds. Each listed profile reports `credential` as
+`{"state":"none"}` or `{"state":"bound","id":...,"backend":...}`. A control
+journal written by 0.27.0 cannot be read by 0.26.0. See the
+[development commands](development.md#provider-credentials).
+
 ## Approval records
 
 `approvals request`, `list`, `show`, `approve`, `deny`, and `consume` manage

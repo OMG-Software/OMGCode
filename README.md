@@ -47,7 +47,9 @@ directory grants.
 > container grant, and Linux falls back to application storage when no root is
 > selected. Provider profiles record connection shapes, and trusted
 > single-use approval records prepare per-call model-tool consent; neither
-> enables an adapter, login, or model tool. Runs have memory, process-count,
+> enables an adapter, login, or model tool. API keys can be stored in protected
+> OS storage (DPAPI on Windows, the Secret Service on Linux) and bound to a
+> profile, but no adapter reads them yet. Runs have memory, process-count,
 > CPU-time, and sampled disk-growth limits; the disk limit is not a filesystem
 > quota. See [command execution](docs/execution.md#tree-limits).
 
@@ -134,9 +136,11 @@ Model-dispatched process execution, Git, MCP, and memories remain planned. See t
 [workspace file-access guide](docs/file-access.md), and the [development
 guide](docs/development.md) for limits and command details.
 
-The current CLI has no operating-system credential service. Its optional local
-server token input remains prototype wiring; it is not a release credential
-boundary. Do not treat the prototype as release-ready or use it to handle
+The CLI stores provider API keys in operating-system protected storage through
+trusted `workspace provider-credential-set` and `provider-credential-remove`
+commands (ADR-0042). No provider adapter reads them yet. The optional local
+server token input for chat remains prototype wiring; it is not a release
+credential boundary. Do not treat the prototype as release-ready or use it to handle
 sensitive credentials.
 
 To build and run the prototype with the pinned Rust toolchain:

@@ -24,6 +24,7 @@ use crate::workspace::DirectoryRecord;
 
 mod approval;
 mod container;
+mod credential;
 mod package;
 mod profile;
 mod provider;
@@ -37,6 +38,12 @@ pub use approval::{
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
     ContainerRevocation, container_name,
+};
+pub use credential::{
+    CredentialBackend, CredentialBinding, CredentialError, CredentialId, CredentialStore,
+    CredentialStoreStatus, MAX_SECRET_BYTES, OrphanedCredential, ProviderCredentialError,
+    ProviderCredentialRemoval, ProviderCredentialSet, ProviderProfileRemoval, Secret,
+    delete_unbound_credential, probe_credential_store,
 };
 /// Whether this platform can record and apply container grants.
 pub use omgcode_platform::container::CONTAINER_GRANTS_SUPPORTED;
@@ -348,6 +355,22 @@ enum Action {
     },
     ProviderProfileRemoved {
         profile_id: Uuid,
+        /// The credential whose binding this removal also ends, if any.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "credential::optional_id_text"
+        )]
+        credential_id: Option<CredentialId>,
+    },
+    ProviderCredentialBound {
+        profile_id: Uuid,
+        binding: CredentialBinding,
+    },
+    ProviderCredentialRemoved {
+        profile_id: Uuid,
+        #[serde(with = "credential::id_text")]
+        credential_id: CredentialId,
     },
     ApprovalRequested {
         request: ApprovalRequest,
@@ -1246,6 +1269,9 @@ impl ControlStore {
             }
             Action::ProviderProfileAdded { .. } | Action::ProviderProfileRemoved { .. } => {
                 provider::apply(state, &entry.action, revision)?;
+            }
+            Action::ProviderCredentialBound { .. } | Action::ProviderCredentialRemoved { .. } => {
+                credential::apply(state, &entry.action)?;
             }
             Action::ApprovalRequested { .. }
             | Action::ApprovalDecided { .. }

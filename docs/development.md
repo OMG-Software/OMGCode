@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.26.0 is a developer CLI prototype with workspace permission
+OMGCode 0.27.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
@@ -162,6 +162,81 @@ See the [workspace contract](workspace-permissions.md) for limits and failures.
 `container-grant` and `container-revoke` work on Windows only. They change ACLs
 for the workspace's AppContainer and record each change; see
 [container grants](execution.md#container-grants).
+
+## Provider credentials
+
+Version 0.27.0 stores provider API keys in protected OS storage and binds each
+one to an `api_key` provider profile ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)).
+No provider adapter reads a stored credential yet; `chat` still uses only the
+prototype `OMGCODE_LM_TOKEN` input. Subscription and `none` profiles refuse a
+credential.
+
+```text
+omgcode --data-dir C:\omgcode-data workspace provider-profile-add work --kind openai --auth api_key --revision 6
+omgcode --data-dir C:\omgcode-data workspace provider-credential-set work --revision 7
+omgcode --data-dir C:\omgcode-data workspace provider-profile-show work
+omgcode --data-dir C:\omgcode-data workspace provider-credential-remove work --revision 8
+```
+
+`provider-credential-set` reads the secret from standard input only. It never
+accepts the secret as an argument or environment variable, and it refuses a
+terminal, which would echo the secret as it is typed. It reads at most 16 KiB
+plus one line ending, removes exactly one trailing `\n` or `\r\n`, and refuses
+empty input. Pipe the secret without placing it on a command line.
+
+In PowerShell:
+
+```powershell
+$key = Read-Host -AsSecureString -Prompt 'API key'
+[System.Net.NetworkCredential]::new('', $key).Password | omgcode --data-dir C:\omgcode-data workspace provider-credential-set work --revision 7
+Remove-Variable key
+```
+
+Windows PowerShell 5.1 sends piped text in its `$OutputEncoding`, which is
+ASCII by default, and appends CRLF; the CLI removes the CRLF. A non-ASCII key
+needs PowerShell 7 or an explicit UTF-8 `$OutputEncoding`. The plaintext is
+briefly held as a .NET string in the shell.
+
+In bash, `read -s` does not echo, and `printf` is a builtin, so the key is not
+in a process argument list or the shell history:
+
+```sh
+IFS= read -rs key && printf '%s' "$key" | omgcode --data-dir ~/omgcode-data workspace provider-credential-set work --revision 7; unset key
+```
+
+Each set stores a new credential under a fresh random identifier, then records
+`provider_credential_bound` with the profile, the identifier, and the backend.
+Setting a credential on a bound profile rotates it: the old native item is
+deleted only after the new binding is recorded. `provider-credential-remove`
+records `provider_credential_removed`, then deletes the native item.
+`provider-profile-remove` names a bound credential in its own
+`provider_profile_removed` event and then deletes the item. Output and
+`workspace status` report the identifier and backend, never the secret. When
+an unbound item cannot be deleted, the command still succeeds and reports a
+`warning` with code `credential_orphaned` and the identifier to remove by hand.
+
+Credential failures use stable error codes: `credential_unavailable`,
+`credential_locked`, `credential_not_found`, `credential_exists`,
+`credential_corrupt`, `credential_input`, `credential_io`, and
+`credential_orphaned` (a binding that was not recorded and whose new item
+could not be deleted). `capabilities` reports `credential_store` with the
+backend and its state. A control journal written by 0.27.0 cannot be read by
+0.26.0.
+
+- **Windows:** each credential is a DPAPI blob for the current user in
+  `<data-dir>\credentials-v1`, written create-only with an owner-only DACL.
+  The data folder must meet the private-root rule used by checkpoint storage;
+  otherwise the store is `credential_unavailable`. An edited, truncated, or
+  copied blob, or a broadened DACL, is `credential_corrupt`.
+- **Linux:** each credential is one item in the Secret Service default
+  collection on the session bus, for example the gnome-keyring login
+  collection. OMGCode never unlocks a collection: unlock it outside OMGCode,
+  or the command fails with `credential_locked` before anything is recorded.
+  No bus, service, or default collection is `credential_unavailable`. Nothing
+  falls back to a plaintext file.
+
+Any process running as the same user can read these credentials. The stores
+protect them at rest and from other users, not from same-user code.
 
 ## Trusted runs
 
@@ -396,8 +471,9 @@ Optional server authentication can be supplied to the trusted CLI process with
 OMGCODE_LM_TOKEN. The CLI retains the token in memory only and sends it as a
 sensitive Authorization header. It does not save it or pass it to a child task.
 Environment-based input is a temporary prototype interface, not protected
-credential storage or a claim of memory erasure. OS-backed credentials and the
-account/settings interface remain required. Use the no-token profile only for
+credential storage or a claim of memory erasure. Protected storage for API
+keys exists (see [provider credentials](#provider-credentials)), but no adapter
+reads it yet; adapter use and the account/settings interface remain required. Use the no-token profile only for
 an explicitly selected service configured for it.
 
 ## Saved sessions
@@ -542,7 +618,9 @@ Direct dependencies have specific purposes:
 | reqwest | Blocking HTTP client; default features disabled, no TLS backend or hosted execution used in this loopback-only increment |
 | clap | CLI parsing and help; derive macro runs during compilation |
 | directories | Platform application-data location selection |
-| windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, I/O handles, processes and jobs, and console control events |
+| windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, DPAPI (`Win32_Security_Cryptography`), I/O handles, processes and jobs, and console control events |
+| zeroize | Zeroes owned secret buffers on drop; `alloc` only, no derive macro |
+| secret-service (Linux only) | Freedesktop Secret Service client over pure-Rust zbus, with the tokio runtime and Rust AES/DH session crypto (`rt-tokio-crypto-rust`); its blocking API runs an internal tokio runtime |
 | tempfile | Private disposable test data; development dependency only |
 
 The selected direct crates declare MIT and/or Apache-2.0 licensing and support
@@ -559,8 +637,13 @@ Run the [Cargo verification baseline](testing-standards.md#cargo-verification-ba
 on both Windows and Linux. The Rust workflow runs formatting, strict Clippy,
 unit/integration tests, and separate documentation tests. On Linux the run and
 tree-limit tests start themselves in `systemd-run --user` scopes, so they need
-a running user service manager; without one they fail. Tests use private data
-and loopback fixtures. They do not call a live model. Live compatibility checks
+a running user service manager; without one they fail. The Linux credential
+tests need an unlocked Secret Service default collection on the session bus
+and fail without one. With gnome-keyring, one empty password line creates and
+unlocks a login collection:
+`printf '\n' | gnome-keyring-daemon --unlock --components=secrets`. Use a
+scratch `XDG_DATA_HOME` to keep test keyrings apart from your own. Tests use
+private data and loopback fixtures. They do not call a live model. Live compatibility checks
 are explicit, bounded checks of a particular server/model/auth profile.
 
 The toolchain acceptance tests are ignored by default. After a change to runs,
@@ -571,8 +654,8 @@ variables listed in `crates/omgcode-cli/tests/toolchain_acceptance.rs`:
 cargo test -p omgcode-cli --test toolchain_acceptance --locked -- --ignored
 ```
 
-Do not infer whole-user/process containment, Git safety, credential storage,
-release filesystem support, or full coding-agent support from these tests. The
+Do not infer whole-user/process containment, Git safety, same-user credential
+isolation, release filesystem support, or full coding-agent support from these tests. The
 broker supports bounded file operations through trusted CLI input and the core
 turn runtime, which chat drives for read/list and an approval-gated command when
 a workspace enables `model_tools`. Live provider tool-call compatibility and

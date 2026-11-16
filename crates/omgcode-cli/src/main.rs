@@ -4,6 +4,7 @@
 mod approvals_cli;
 mod context_cli;
 mod control_cli;
+mod credential_cli;
 mod file_cli;
 mod model_tools;
 mod packages_cli;
@@ -293,6 +294,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "package_fetch": true,
             "provider_profiles": true,
             "provider_adapters": false,
+            "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
+            "credential_store": credential_cli::capability(),
             "approvals": true,
             "process_execution": if RUN_SUPPORTED {
                 serde_json::Value::from("trusted_cli_only")

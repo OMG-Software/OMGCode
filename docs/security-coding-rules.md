@@ -228,8 +228,15 @@ crate.
 - Provider profiles record only a name, kind, and authentication mode. Never
   store a token, password, certificate, endpoint, or account in them. Keep
   subscription and API-key usage separate, and do not implement an adapter or
-  login without a reviewed credential service and the provider's supported
+  login without the reviewed credential service and the provider's supported
   route. A profile is configuration, not authentication. See ADR-0038.
+- Store provider credentials only through `omgcode_platform::credentials`
+  (ADR-0042): DPAPI files with verified private DACLs on Windows and Secret
+  Service items on Linux, never a plaintext fallback. Read secrets only from a
+  trusted input stream, never from arguments or environment, and hold them in
+  `Secret`, which is zeroed on drop and redacted from `Debug`. Journals record
+  only the opaque identifier and backend. Never prompt to unlock a store, and
+  record a binding before deleting the credential it replaces.
 - A future model tool that changes host state must consume a trusted,
   single-use approval bound to the session, workspace, operation, exact
   request digest, and settings revision. Refuse a missing, denied, expired,

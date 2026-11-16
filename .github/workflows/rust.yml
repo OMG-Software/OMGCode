@@ -45,6 +45,23 @@ jobs:
           echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus" >> "$GITHUB_ENV"
           XDG_RUNTIME_DIR="$runtime_dir" systemd-run --user --scope --quiet -p Delegate=yes -- cat /proc/self/cgroup
+      - name: Start an unlocked Secret Service for credential tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnome-keyring
+          # One empty line is an empty password. It creates and unlocks the
+          # login collection, which becomes the default alias; empty input
+          # (no newline) creates no collection.
+          printf '\n' | gnome-keyring-daemon --unlock --components=secrets
+          for _ in $(seq 1 50); do
+            busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+              org.freedesktop.Secret.Service ReadAlias s default 2>/dev/null \
+              | grep -q '/collection/' && break
+            sleep 0.2
+          done
+          busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+            org.freedesktop.Secret.Service ReadAlias s default | grep '/collection/'
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
       - name: Run documentation tests
