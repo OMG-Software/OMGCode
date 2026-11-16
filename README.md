@@ -97,8 +97,9 @@ and `omgcode-platform`. The CLI command is `omgcode`. It provides:
 - `chat`: send one user turn to an already-running LM Studio server at a literal
   loopback HTTP endpoint. It does not discover, start, or download models, and it
   rejects model tool requests unless the session's workspace enables
-  `model_tools`. Then it offers read/list tools and, when `execute`, `read`,
-  and `write` are also enabled, the approval-gated command tool, rechecked
+  `model_tools`. Then it offers read/list tools; when `read` and `write` are
+  also enabled, the approval-gated edit tool; and when `execute`, `read`, and
+  `write` are all enabled, the approval-gated command tool. Each is rechecked
   against live settings before every call.
 
 Prompt assembly sends the compiled base in the system role. Optional user
@@ -176,9 +177,10 @@ retained; the summary is untrusted evidence, never instructions or authority. Wh
 workspace's `model_tools` preference is off, which is the default, the example
 sends only the supplied message and saved chat history, not workspace files;
 earlier tool results are replaced by a withheld notice. If `model_tools` is
-enabled for `.`, the model can call the read and list tools; with `execute`,
-`read`, and `write` also enabled it can request the command tool, which needs
-an operator approval. The file
+enabled for `.`, the model can call the read and list tools. With `read` and
+`write` also enabled, which is the default, it can request an exact file edit;
+with `execute` enabled as well it can request the command tool. Each edit or
+command needs an operator approval. The file
 contents it reads are sent to the local model.
 The loopback connection does not establish how LM Studio handles data upstream;
 check the server's configuration before sending sensitive text.

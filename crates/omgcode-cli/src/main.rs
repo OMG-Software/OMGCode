@@ -445,6 +445,7 @@ fn preflight_context(
     summary_client: &LocalModelClient,
     token: Option<&str>,
     fixed_extra_bytes: usize,
+    tool_results_allowed: bool,
 ) -> Result<ContextMeter, CliError> {
     if args.compact_threshold == 0 {
         return Err(CliError::new(
@@ -464,7 +465,7 @@ fn preflight_context(
         max_output_tokens: context_cli::summary_output_tokens(args.context_tokens),
     };
     let (mut estimate, mut assembly_blocked) =
-        estimate_with_user(journal, args, fixed_extra_bytes)?;
+        estimate_with_user(journal, args, fixed_extra_bytes, tool_results_allowed)?;
     let mut summarizer_calls = None;
     if budget.should_compact(estimate) || assembly_blocked {
         if !args.auto_compact {
@@ -489,7 +490,8 @@ fn preflight_context(
             summary_budget,
         )?;
         summarizer_calls = Some(outcome.calls);
-        (estimate, assembly_blocked) = estimate_with_user(journal, args, fixed_extra_bytes)?;
+        (estimate, assembly_blocked) =
+            estimate_with_user(journal, args, fixed_extra_bytes, tool_results_allowed)?;
         if budget.should_compact(estimate) || assembly_blocked {
             return Err(CliError::new(
                 "context",
@@ -513,9 +515,11 @@ fn estimate_with_user(
     journal: &SessionJournal,
     args: &ChatArgs,
     fixed_extra_bytes: usize,
+    tool_results_allowed: bool,
 ) -> Result<(u64, bool), CliError> {
-    // Count the full summary even when replay would withhold it: conservative.
-    let (mut history, _) = replay_active(journal, true);
+    // Estimate the history this mode will send: saved tool results, and a
+    // summary built from them, are withheld without live tool authority.
+    let (mut history, _) = replay_active(journal, tool_results_allowed);
     history.push(ConversationMessage {
         role: ConversationRole::User,
         content: args.message.clone(),
@@ -641,7 +645,26 @@ fn chat_turn(
         model_tools::ToolMode::Enabled { .. } => model_tools::TOOL_SCHEMA_ESTIMATE_BYTES,
         model_tools::ToolMode::Disabled { .. } => 0,
     };
-    let meter = preflight_context(journal, data_root, &args, summary_client, token, tool_extra)?;
+    // Text-only chat never replays saved tool results; a tool turn replays
+    // them only under live `model_tools` and `read`, as the runtime does.
+    let tool_results_allowed = match &mode {
+        model_tools::ToolMode::Enabled { .. } => model_tools::tool_replay_allowed(
+            data_root,
+            journal.snapshot().workspace_id,
+            journal.schema_version(),
+        )
+        .unwrap_or(false),
+        model_tools::ToolMode::Disabled { .. } => false,
+    };
+    let meter = preflight_context(
+        journal,
+        data_root,
+        &args,
+        summary_client,
+        token,
+        tool_extra,
+        tool_results_allowed,
+    )?;
     let manifest = RequestManifest {
         base_prompt: BASE_PROMPT.to_owned(),
         prompt_version: BASE_PROMPT_VERSION.to_owned(),

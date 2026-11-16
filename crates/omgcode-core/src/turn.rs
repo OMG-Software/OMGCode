@@ -1547,6 +1547,20 @@ impl WorkspaceToolDispatcher<'_> {
             })
         };
         if let Some(approved) = matching(ApprovalState::Approved) {
+            // Check that the success report fits before anything is spent or
+            // written, using the widest size, digest, and identifier it can
+            // carry. Otherwise an applied edit could only be reported as a
+            // failure. The approval stays unconsumed for a later retry.
+            let widest = edit_success_message(
+                call,
+                &normalized,
+                u64::MAX,
+                &"f".repeat(64),
+                Some(Uuid::max()),
+            );
+            if widest.len() > max_result_bytes.min(MAX_MESSAGE_BYTES) {
+                return ToolExecution::recoverable("output_too_large", call);
+            }
             let approval = ApprovalBinding {
                 session_id: self.session_id,
                 workspace_id: self.workspace_id,
@@ -1574,21 +1588,14 @@ impl WorkspaceToolDispatcher<'_> {
             );
             drop(control);
             return match applied {
-                Ok(receipt) if receipt.applied => {
-                    let body = json!({
-                        "tool": call.name.as_str(),
-                        "status": "applied",
-                        "path": normalized,
-                        "bytes": receipt.proposed.bytes,
-                        "sha256": receipt.proposed.sha256,
-                        "operation_id": receipt.operation_id,
-                    });
-                    let message = labelled_result(call, &body.to_string());
-                    if message.len() > max_result_bytes.min(MAX_MESSAGE_BYTES) {
-                        return ToolExecution::recoverable("output_too_large", call);
-                    }
-                    ToolExecution::success(message)
-                }
+                // The widest report was checked above, so this one fits.
+                Ok(receipt) if receipt.applied => ToolExecution::success(edit_success_message(
+                    call,
+                    &normalized,
+                    receipt.proposed.bytes,
+                    &receipt.proposed.sha256,
+                    receipt.operation_id,
+                )),
                 // Different proposed bytes always publish or fail; an
                 // unapplied receipt can only mean the bytes were identical.
                 Ok(_) => ToolExecution::recoverable("edit_unchanged", call),
@@ -1934,6 +1941,25 @@ fn replace_once(text: &str, start: usize, length: usize, replacement: &str) -> O
     proposed.push_str(replacement);
     proposed.push_str(after);
     Some(proposed)
+}
+
+/// The labelled report of an applied edit. It never contains file text.
+fn edit_success_message(
+    call: &ToolCall,
+    path: &str,
+    bytes: u64,
+    sha256: &str,
+    operation_id: Option<Uuid>,
+) -> String {
+    let body = json!({
+        "tool": call.name.as_str(),
+        "status": "applied",
+        "path": path,
+        "bytes": bytes,
+        "sha256": sha256,
+        "operation_id": operation_id,
+    });
+    labelled_result(call, &body.to_string())
 }
 
 /// Describe exact bytes by size and SHA-256.

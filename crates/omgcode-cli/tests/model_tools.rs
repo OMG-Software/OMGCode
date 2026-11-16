@@ -1025,6 +1025,60 @@ fn summarizer_withholds_tool_results_after_revoking(flag: &str) {
 }
 
 #[test]
+fn the_preflight_estimate_counts_a_withheld_tool_result_as_withheld() {
+    let note = "n".repeat(7_000);
+    let fixture = Fixture::new(note.as_bytes());
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    let first = server.finish();
+    assert!(
+        first[1].to_string().contains(&note),
+        "the read result was saved"
+    );
+
+    // Without `read`, chat replaces the saved 7 KB result with a short
+    // notice. Fixed overhead (base prompt, tool schemas, message framing)
+    // is about 10,400 tokens, so only the withheld form fits 15,000.
+    fixture.set("--read", false);
+    let server = SequenceServer::start(vec![text("text reply")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--compact-threshold",
+            "15000",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].to_string().contains(&note));
+    let result = json_output(&output);
+    assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
+    assert!(result["context"]["compaction"].is_null(), "{result}");
+}
+
+#[test]
 fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider() {
     let fixture = Fixture::new(NOTE);
     let journal = fixture.session();

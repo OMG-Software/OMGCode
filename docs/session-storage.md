@@ -113,8 +113,9 @@ advertises no tools and rejects tool calls. A caller must provide an open schema
 journal, the current control-store writer, and the workspace ID from trusted
 settings. The journal's recorded workspace ID is only a coherence check.
 
-The runtime supports exactly `workspace_read_file` and
-`workspace_list_directory`. It parses strict OpenAI-style function calls,
+The runtime supports `workspace_read_file` and `workspace_list_directory`,
+plus two approval-gated tools offered only under their live settings:
+`workspace_edit_file` (ADR-0043) and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function calls,
 rejects unknown tools, malformed or duplicate arguments, absolute or parent
 paths, and duplicate call identifiers before dispatch. For each operation it
 opens the control store, obtains a fresh session binding, releases the settings
@@ -147,8 +148,10 @@ Every tool result is recorded first as `tool.requested`, then
 `tool.completed`, then a `message.recorded` entry with role `tool` and source
 `core_tool`. The tool text starts with a source label and remains user-level,
 untrusted content when the next request is assembled. Model-requested text
-cannot become a system message. Only read and list can execute; writes,
-processes, Git, MCP, and network access remain unavailable. The separate
+cannot become a system message. Read and list run directly. An edit or a
+command runs only after a matching single-use record that the operator
+approved; there are no general file write, create, delete, or rename tools,
+and Git, MCP, and network access remain unavailable. The separate
 [file-operation journal](file-access.md) remains the broker's operation ledger.
 
 The runtime does not redact by itself. The caller must redact user text and

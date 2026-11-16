@@ -2026,6 +2026,51 @@ fn an_edit_approval_does_not_cover_a_changed_file() {
     assert_eq!(fixture.checkpoint_operations(), 0);
 }
 
+/// An applied edit is never reported as failed: when even the widest success
+/// report cannot fit, the retry is refused before the approval is spent.
+#[test]
+fn an_edit_whose_report_cannot_fit_is_refused_before_the_approval_is_spent() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "old").expect("write workspace file");
+    fixture.edit_turn(vec![edit_call("edit-1", "notes.txt", "old", "new")]);
+    let approval = fixture.approve_pending_edit();
+
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![edit_call("edit-2", "notes.txt", "old", "new")]),
+        text_reply("reported"),
+    ]);
+    let limits = TurnLimits {
+        max_result_bytes: 200,
+        ..TurnLimits::default()
+    };
+    fixture
+        .run(&mut model, limits)
+        .expect("a report that cannot fit is a recoverable tool error");
+    assert_eq!(fs::read_to_string(&target).expect("read"), "old");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert!(fixture.last_tool_message().contains("output_too_large"));
+    assert_eq!(fixture.checkpoint_operations(), 0);
+
+    fixture.edit_turn(vec![edit_call("edit-3", "notes.txt", "old", "new")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "new");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert!(
+        fixture
+            .last_tool_message()
+            .contains("\"status\":\"applied\"")
+    );
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            Some("approval_required".to_owned()),
+            Some("output_too_large".to_owned()),
+            None
+        ]
+    );
+}
+
 /// The digest binds the proposed bytes: an approval for one replacement does
 /// not cover another of the same size.
 #[test]

@@ -477,6 +477,12 @@ Changes are recorded here before a release version is assigned.
   - Summarizer chunks are sized by each message's JSON-escaped length, so
     content with quotes, backslashes, or control characters no longer makes
     a chunk exceed the serialized request bound and fail compaction.
+  - An approved `workspace_edit_file` call is refused with `output_too_large`
+    before its approval is consumed when the widest success report cannot
+    fit the result limit, so an apply never runs without a reportable result.
+  - The chat preflight estimate replays saved tool results only under live
+    `model_tools` and `read`, matching the request the turn will send, so a
+    withheld result no longer triggers a needless compaction refusal.
   - `provider-credential-set` reads the secret before it opens the control
     store, so the store's lock is not held while standard input is awaited.
   - A failed credential store that may have left an item, such as a Windows

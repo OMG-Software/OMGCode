@@ -44,7 +44,7 @@ KiB, history to 128 messages, and the assembled UTF-8 text to 256 KiB. The
 adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
 prototype has no settings UI, application/workspace/session preference store,
-preview UI, token-count display, compaction, skills, memories, model create,
+preview UI, token-count display, skills, memories, model create,
 delete, rename, network, Git, or MCP tools, or provider-specific subscription routes.
 Its only model tools are read, list, the approval-gated exact edit, and the
 approval-gated command tool. The current
