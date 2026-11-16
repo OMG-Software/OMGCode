@@ -559,3 +559,126 @@ fn a_send_refused_synchronously_pushes_no_event() {
             .all(|summary| summary.status != SessionStatus::Running)
     );
 }
+
+// ---- Cancelling and shutting down a streamed turn (ADR-0050) ----
+
+/// The slowest acceptable cancellation. The request deadline is 30 seconds.
+const CANCEL_BOUND: Duration = Duration::from_secs(5);
+
+/// The status of one session in the active session tree.
+fn tree_status(service: &DesktopService, session: Uuid) -> SessionStatus {
+    service
+        .session_tree(wire(
+            json!({"view": "active", "sort": "title", "descending": false}),
+        ))
+        .expect("tree")
+        .groups
+        .iter()
+        .flat_map(|group| group.sessions.iter())
+        .find(|summary| summary.session_id == session)
+        .map(|summary| summary.status)
+        .expect("the session is listed")
+}
+
+#[test]
+fn chat_cancel_stops_a_streamed_text_turn_held_mid_stream() {
+    // Given a streamed text-only turn whose server sent one piece and holds
+    // the rest of the body, and a second scripted reply for a later turn.
+    let (release, hold) = gate();
+    let started = started(
+        text_only(),
+        vec![
+            Step::stream_held(sse_text_unfinished(&["first "]), hold, sse_text(&["rest"])),
+            Step::stream(sse_text(&["again"])),
+        ],
+        no_token,
+        true,
+    );
+    let session = new_session(&started);
+    let log = subscribe(&started.service);
+    send(&started, session, "hi");
+    wait_events(&log, |events| delta_text(events) == "first ");
+
+    // When the turn is cancelled.
+    let begun = Instant::now();
+    let after = started
+        .service
+        .chat_cancel(wire(session_request(session)))
+        .expect("cancel");
+
+    // Then the status goes `cancelling`, then `failed` with the code
+    // `cancelled`, and a `finished` event is pushed well inside the deadline.
+    assert_eq!(after.state, ChatState::Cancelling);
+    let seen = wait_events(&log, has_finished);
+    let elapsed = begun.elapsed();
+    assert!(elapsed < CANCEL_BOUND, "cancellation took {elapsed:?}");
+    assert_eq!(delta_text(&seen), "first ");
+    let done = status(&started.service, session);
+    assert_eq!(done.state, ChatState::Failed);
+    assert_eq!(
+        done.error.as_ref().map(|error| error.code()),
+        Some("cancelled")
+    );
+    assert_eq!(
+        done.error.as_ref().map(|error| error.message()),
+        Some("turn was cancelled")
+    );
+    assert!(done.outcome.is_none());
+
+    // And the journal has no open turn, so the next send is accepted. The
+    // server takes its next request once the first reply is released.
+    assert_eq!(tree_status(&started.service, session), SessionStatus::Idle);
+    drop(release);
+    send(&started, session, "once more");
+    wait_events(&log, |events| {
+        events
+            .iter()
+            .filter(|event| matches!(event, ChatEvent::Finished { .. }))
+            .count()
+            == 2
+    });
+    assert_eq!(
+        status(&started.service, session).state,
+        ChatState::Completed
+    );
+    assert_eq!(started.server.finish(), 2);
+}
+
+#[test]
+fn shutdown_ends_a_streamed_turn_held_mid_stream_inside_its_grace() {
+    // Given a streamed text-only turn held mid-stream.
+    let (release, hold) = gate();
+    let started = started(
+        text_only(),
+        vec![Step::stream_held(
+            sse_text_unfinished(&["first "]),
+            hold,
+            sse_text(&["rest"]),
+        )],
+        no_token,
+        true,
+    );
+    let session = new_session(&started);
+    let log = subscribe(&started.service);
+    send(&started, session, "hi");
+    wait_events(&log, |events| delta_text(events) == "first ");
+
+    // When the service shuts down with a long grace period.
+    let begun = Instant::now();
+    let report = started.service.shutdown(Duration::from_secs(20));
+    let elapsed = begun.elapsed();
+
+    // Then the turn finished well inside the grace period, as cancelled, and
+    // left no open turn.
+    assert_eq!((report.finished, report.still_running), (1, 0));
+    assert!(elapsed < CANCEL_BOUND, "shutdown took {elapsed:?}");
+    let done = status(&started.service, session);
+    assert_eq!(done.state, ChatState::Failed);
+    assert_eq!(
+        done.error.as_ref().map(|error| error.code()),
+        Some("cancelled")
+    );
+    assert_eq!(tree_status(&started.service, session), SessionStatus::Idle);
+    drop(release);
+    assert_eq!(started.server.finish(), 1);
+}

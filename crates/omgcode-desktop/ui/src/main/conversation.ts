@@ -1,7 +1,7 @@
 import { append, button, el, replaceChildren } from "../dom";
 import { formatUpdated } from "../format";
 import { api } from "../ipc/client";
-import { toIpcError } from "../ipc/errors";
+import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
 import type {
   ChatSettings,
   ChatStatus,
@@ -430,7 +430,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
       renderComposer();
       return;
     }
-    if (status.state === "failed" && status.error !== null) {
+    if (status.state === "failed" && status.error?.code === CANCELLED_CODE) {
+      setNotice({ text: "Turn cancelled.", error: false });
+    } else if (status.state === "failed" && status.error !== null) {
       setNotice({ text: `${status.error.message} (${status.error.code})`, error: true });
     } else if (status.outcome !== null) {
       setNotice({ text: outcomeLine(status.outcome), error: false });

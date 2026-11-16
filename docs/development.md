@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.29.0 is a developer CLI prototype with workspace permission
+OMGCode 0.33.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new

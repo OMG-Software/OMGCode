@@ -4,6 +4,7 @@
 //! an ephemeral port. No process is spawned on Unix; on Windows the private
 //! data root is prepared with `icacls`, which holds no store handle.
 
+use std::cell::RefCell;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -465,7 +466,10 @@ fn a_text_only_turn_serializes_the_published_object_and_skips_the_cancel_hook() 
     )
     .expect("text-only turn");
     assert_eq!(server.finish(), 1);
-    assert_eq!(calls, 0, "the text-only path has no cancellation point");
+    assert_eq!(
+        calls, 0,
+        "a request that is not streamed cannot be interrupted"
+    );
 
     assert!(!output.tools_enabled());
     assert_eq!(output.disabled_reason(), Some("settings_absent"));
@@ -577,7 +581,7 @@ fn a_cancelled_token_ends_the_tool_turn_with_the_core_cancelled_failure() {
     .expect_err("cancellation stops the turn");
     assert_eq!(server.finish(), 1);
     assert_eq!(calls, 1);
-    assert_eq!(error.code(), "turn");
+    assert_eq!(error.code(), "cancelled");
     assert_eq!(error.message(), "turn was cancelled");
     assert_eq!(journal.snapshot().active_turn, None);
     let events = close_and_read(journal);
@@ -862,4 +866,263 @@ fn a_turn_without_a_stream_hook_sends_stream_false() {
             Some("text/event-stream")
         );
     }
+}
+
+// ---- Cancelling a streamed turn (ADR-0050) ----
+
+/// The slowest acceptable cancellation. The request deadline is 30 seconds.
+const CANCEL_BOUND: Duration = Duration::from_secs(5);
+
+/// What a streamed turn did when its token was cancelled by the first piece.
+struct CancelledTurn {
+    error: omgcode_app::AppError,
+    log: Vec<String>,
+    handed: usize,
+    elapsed: Duration,
+    served: usize,
+    has_active_turn: bool,
+    events: Vec<Value>,
+}
+
+/// Run a streamed turn against a server that sends one piece and holds the
+/// rest of the body on a gate nobody opens until the turn has returned. The
+/// stream hook cancels the turn's token when it sees the first piece.
+fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
+    let fixture = Fixture::new(tools_enabled);
+    let mut journal = fixture.journal();
+    let (release, gate) = common::gate();
+    let server = common::MockServer::start(vec![common::Step::stream_held(
+        common::sse_text_unfinished(&["one "]),
+        gate,
+        common::sse_text(&["second-piece "]),
+    )]);
+    let slot: RefCell<Option<CancelToken>> = RefCell::new(None);
+    let mut handed = 0_usize;
+    let mut log = Vec::new();
+    let mut on_cancel_token = |token: CancelToken| {
+        handed += 1;
+        *slot.borrow_mut() = Some(token);
+    };
+    let mut on_stream = |event: ChatStreamEvent<'_>| match event {
+        ChatStreamEvent::RequestStarted => log.push("request_started".to_owned()),
+        ChatStreamEvent::Text(text) => {
+            log.push(format!("text:{text}"));
+            if let Some(token) = slot.borrow().as_ref() {
+                token.cancel();
+            }
+        }
+    };
+
+    let started = Instant::now();
+    let result = turn(
+        &mut journal,
+        &fixture.data,
+        &settings(&server.endpoint),
+        None,
+        "say something",
+        &mut ChatHooks {
+            on_cancel_token: Some(&mut on_cancel_token),
+            on_stream: Some(&mut on_stream),
+        },
+    );
+    let elapsed = started.elapsed();
+    // Let the server finish; it never saw the rest of its body read.
+    drop(release);
+    let served = server.finish();
+    let has_active_turn = journal.snapshot().active_turn.is_some();
+    CancelledTurn {
+        error: result.expect_err("the cancelled turn fails"),
+        log,
+        handed,
+        elapsed,
+        served,
+        has_active_turn,
+        events: close_and_read(journal),
+    }
+}
+
+/// Whether the journal recorded any assistant message.
+fn has_assistant_message(events: &[Value]) -> bool {
+    events
+        .iter()
+        .any(|event| event["type"] == "message.recorded" && event["payload"]["role"] == "assistant")
+}
+
+#[test]
+fn a_streamed_text_turn_cancelled_mid_stream_is_recorded_as_cancelled() {
+    // Given a streamed text-only turn whose server holds the body after the
+    // first piece, and a stream hook that cancels on that piece.
+    // When the turn runs.
+    let ended = cancel_after_the_first_piece(false);
+
+    // Then it fails as cancelled, promptly, and the one piece stays delivered.
+    assert_eq!(ended.error.code(), "cancelled");
+    assert_eq!(ended.error.message(), "turn was cancelled");
+    assert_eq!(ended.handed, 1);
+    assert_eq!(ended.log, ["request_started", "text:one "]);
+    assert!(
+        ended.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        ended.elapsed
+    );
+
+    // And the journal holds a cancelled failure, no reply, and no open turn.
+    assert_eq!(
+        last_failure_code(&ended.events).as_deref(),
+        Some("cancelled")
+    );
+    assert!(!has_assistant_message(&ended.events));
+    assert!(!ended.has_active_turn);
+    assert!(!format!("{:?}", ended.events).contains("second-piece"));
+}
+
+#[test]
+fn a_streamed_tool_turn_cancelled_in_its_first_request_runs_no_tool() {
+    // Given a streamed tool-enabled turn held after its first piece.
+    // When the stream hook cancels on that piece.
+    let ended = cancel_after_the_first_piece(true);
+
+    // Then the outcome is the same as on the text-only path, and no tool ran.
+    assert_eq!(ended.error.code(), "cancelled");
+    assert_eq!(ended.error.message(), "turn was cancelled");
+    assert_eq!(ended.handed, 1);
+    assert_eq!(ended.log, ["request_started", "text:one "]);
+    assert_eq!(ended.served, 1);
+    assert!(
+        ended.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        ended.elapsed
+    );
+    assert_eq!(
+        last_failure_code(&ended.events).as_deref(),
+        Some("cancelled")
+    );
+    assert!(!has_assistant_message(&ended.events));
+    assert!(!ended.has_active_turn);
+    assert!(
+        ended
+            .events
+            .iter()
+            .all(|event| !event["type"].as_str().unwrap_or("").starts_with("tool.")),
+        "no tool was requested or run"
+    );
+}
+
+#[test]
+fn a_streamed_text_turn_that_is_not_cancelled_hands_over_a_live_token_and_completes() {
+    // Given a streamed text-only turn and a hook that keeps the token.
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let server =
+        common::MockServer::start(vec![common::Step::stream(common::sse_text(&["Hel", "lo"]))]);
+    let slot: RefCell<Option<CancelToken>> = RefCell::new(None);
+    let mut handed = 0_usize;
+    let mut log = Vec::new();
+    let mut on_cancel_token = |token: CancelToken| {
+        handed += 1;
+        *slot.borrow_mut() = Some(token);
+    };
+
+    // When the turn runs.
+    let output = {
+        let mut on_stream = capture(&mut log);
+        turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            None,
+            "greet me",
+            &mut ChatHooks {
+                on_cancel_token: Some(&mut on_cancel_token),
+                on_stream: Some(&mut on_stream),
+            },
+        )
+        .expect("streamed turn")
+    };
+    server.finish();
+
+    // Then one token was handed over, it was never cancelled, and the turn
+    // completed as it does without a hook.
+    assert_eq!(handed, 1);
+    assert!(
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|token| !token.is_cancelled())
+    );
+    assert_eq!(output.reply(), "Hello");
+    assert_eq!(log, ["request_started", "text:Hel", "text:lo"]);
+    assert_eq!(journal.snapshot().active_turn, None);
+}
+
+#[test]
+fn a_cancel_seen_only_after_the_reply_arrived_still_ends_the_turn_as_cancelled() {
+    // Given a streamed text-only turn whose whole reply arrives at once and
+    // whose hook cancels on its piece.
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let server = common::MockServer::start(vec![common::Step::stream(common::sse_text(&["done"]))]);
+    let slot: RefCell<Option<CancelToken>> = RefCell::new(None);
+    let mut on_cancel_token = |token: CancelToken| *slot.borrow_mut() = Some(token);
+    let mut on_stream = |event: ChatStreamEvent<'_>| {
+        if matches!(event, ChatStreamEvent::Text(_))
+            && let Some(token) = slot.borrow().as_ref()
+        {
+            token.cancel();
+        }
+    };
+
+    // When the turn runs.
+    let error = turn(
+        &mut journal,
+        &fixture.data,
+        &settings(&server.endpoint),
+        None,
+        "say it",
+        &mut ChatHooks {
+            on_cancel_token: Some(&mut on_cancel_token),
+            on_stream: Some(&mut on_stream),
+        },
+    )
+    .expect_err("the cancelled turn fails");
+    server.finish();
+
+    // Then the turn is cancelled whether the stream or the checkpoint saw the
+    // token, and no reply was recorded.
+    assert_eq!(error.code(), "cancelled");
+    assert_eq!(journal.snapshot().active_turn, None);
+    let events = close_and_read(journal);
+    assert_eq!(last_failure_code(&events).as_deref(), Some("cancelled"));
+    assert!(!has_assistant_message(&events));
+}
+
+#[test]
+fn a_non_streamed_text_turn_never_calls_the_cancel_hook_and_cannot_be_cancelled() {
+    // Given a non-streamed text-only turn and a hook that would cancel.
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let server = common::MockServer::start(vec![common::Step::reply(common::text("plain"))]);
+    let mut calls = 0_usize;
+    let mut on_cancel_token = |token: CancelToken| {
+        calls += 1;
+        token.cancel();
+    };
+
+    // When the turn runs.
+    let output = turn(
+        &mut journal,
+        &fixture.data,
+        &settings(&server.endpoint),
+        None,
+        "hello",
+        &mut ChatHooks {
+            on_cancel_token: Some(&mut on_cancel_token),
+            on_stream: None,
+        },
+    )
+    .expect("a request that is not streamed is not interrupted");
+    server.finish();
+
+    // Then no token was created and the turn completed.
+    assert_eq!(calls, 0);
+    assert_eq!(output.reply(), "plain");
 }

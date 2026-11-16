@@ -2,10 +2,13 @@ mod stream;
 
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
-use crate::turn::{ModelError, ToolDefinition, ToolModel, ToolModelReply, ToolModelRequest};
+use crate::turn::{
+    CancelToken, ModelError, ToolDefinition, ToolModel, ToolModelReply, ToolModelRequest,
+};
+use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +22,9 @@ const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often a streamed request looks at its cancel token while it waits.
+/// It is also the longest a cancellation waits for the next wake-up.
+const CANCEL_POLL: Duration = Duration::from_millis(25);
 const MESSAGE_OVERHEAD_ESTIMATE: u64 = 256;
 const PROMPT_HEADROOM_ESTIMATE: u64 = 512;
 /// Upper bound on advertised tool definitions in one request.
@@ -121,6 +127,10 @@ pub enum ProviderError {
     /// A streamed response ended before its `[DONE]` marker.
     #[error("local model stream ended before completion")]
     IncompleteStream,
+    /// The caller's cancel token stopped a streamed request. Text already
+    /// delivered stays delivered and no reply exists.
+    #[error("local model request was cancelled")]
+    Cancelled,
 }
 
 #[derive(Serialize)]
@@ -223,7 +233,7 @@ impl LocalModelClient {
     /// action by this adapter.
     pub fn complete(&self, messages: &[ModelMessage]) -> Result<ModelReply, ProviderError> {
         let body = self.text_body(messages, false)?;
-        parse_response(self.send(body, false)?)
+        parse_response(self.send(body)?)
     }
 
     /// Send one bounded streaming request and pass assistant text to `on_text`.
@@ -236,19 +246,28 @@ impl LocalModelClient {
     /// provisional: if the stream fails later, the text already delivered stays
     /// delivered, this method returns the error, and no reply exists.
     ///
+    /// The request runs on an async client inside a single-thread runtime made
+    /// for this one call (ADR-0050). `cancel` is checked before anything is
+    /// sent, while the response head is awaited, and while each piece of the
+    /// body is awaited, at least every 25 ms. When it is set the request is
+    /// dropped, which closes the connection, and the result is `Cancelled`.
+    /// Dropping the request undoes no effect on the server. The method must not
+    /// be called from inside another async runtime.
+    ///
     /// # Errors
     ///
     /// Besides the errors of [`Self::complete`], a stream that ends before
-    /// `[DONE]` is `IncompleteStream`, and a response whose content type is not
-    /// `text/event-stream` is `MalformedResponse`.
+    /// `[DONE]` is `IncompleteStream`, a response whose content type is not
+    /// `text/event-stream` is `MalformedResponse`, a read error or the request
+    /// deadline is `Transport`, and a set `cancel` is `Cancelled`.
     pub fn complete_streaming(
         &self,
         messages: &[ModelMessage],
         on_text: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
     ) -> Result<ModelReply, ProviderError> {
         let body = self.text_body(messages, true)?;
-        let response = streaming_response(self.send(body, true)?)?;
-        let outcome = stream::read_event_stream(response, stream::StreamMode::Text, on_text)?;
+        let outcome = self.stream_request(body, stream::StreamMode::Text, on_text, cancel)?;
         Ok(ModelReply {
             content: outcome.content,
             finish_reason: outcome.finish_reason,
@@ -286,7 +305,7 @@ impl LocalModelClient {
         tools: &[ToolDefinition],
     ) -> Result<ToolModelReply, ProviderError> {
         let body = self.tool_body(messages, tools, false)?;
-        parse_tool_response(self.send(body, false)?)
+        parse_tool_response(self.send(body)?)
     }
 
     /// Send one bounded streaming request that advertises the supplied tools.
@@ -296,16 +315,18 @@ impl LocalModelClient {
     /// assembled by `index`; the returned calls hold only the members that were
     /// received and stay raw and unvalidated, so the caller's validation judges
     /// them exactly as it judges a non-streaming call. Only assistant text is
-    /// passed to `on_text`; call names and arguments never are.
+    /// passed to `on_text`; call names and arguments never are. `cancel` stops
+    /// the request exactly as it does for [`Self::complete_streaming`], and a
+    /// partly received tool call is discarded with it.
     pub fn complete_with_tools_streaming(
         &self,
         messages: &[ModelMessage],
         tools: &[ToolDefinition],
         on_text: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
     ) -> Result<ToolModelReply, ProviderError> {
         let body = self.tool_body(messages, tools, true)?;
-        let response = streaming_response(self.send(body, true)?)?;
-        let outcome = stream::read_event_stream(response, stream::StreamMode::Tools, on_text)?;
+        let outcome = self.stream_request(body, stream::StreamMode::Tools, on_text, cancel)?;
         Ok(ToolModelReply {
             content: outcome.content,
             tool_calls: outcome.tool_calls,
@@ -382,10 +403,9 @@ impl LocalModelClient {
         Ok(())
     }
 
-    /// Post one encoded request body to the validated loopback endpoint.
-    ///
-    /// A streamed request also asks for `text/event-stream`.
-    fn send(&self, body: Vec<u8>, streaming: bool) -> Result<Response, ProviderError> {
+    /// Post one encoded non-streaming request body to the validated loopback
+    /// endpoint with the blocking client.
+    fn send(&self, body: Vec<u8>) -> Result<Response, ProviderError> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(ProviderError::RequestTooLarge);
         }
@@ -395,9 +415,6 @@ impl LocalModelClient {
             .post(self.endpoint.clone())
             .timeout(self.request_timeout)
             .header(reqwest::header::CONTENT_TYPE, "application/json");
-        if streaming {
-            request = request.header(reqwest::header::ACCEPT, "text/event-stream");
-        }
         if let Some(authorization) = &self.authorization {
             request = request.header(AUTHORIZATION, authorization.clone());
         }
@@ -405,6 +422,114 @@ impl LocalModelClient {
             .body(body)
             .send()
             .map_err(|_| ProviderError::Transport)
+    }
+
+    /// Run one streamed request on a single-thread runtime made for this call.
+    ///
+    /// The runtime and the async client are built here and dropped here: a
+    /// pooled connection must not outlive the runtime that drives it, so no
+    /// client is kept. A runtime that cannot be built is `Transport`.
+    fn stream_request(
+        &self,
+        body: Vec<u8>,
+        mode: stream::StreamMode,
+        on_text: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+    ) -> Result<stream::StreamOutcome, ProviderError> {
+        if body.len() > MAX_REQUEST_BYTES {
+            return Err(ProviderError::RequestTooLarge);
+        }
+        // Nothing is created, let alone connected, for a turn already cancelled.
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(|_| ProviderError::Transport)?;
+        runtime.block_on(self.stream_exchange(body, mode, on_text, cancel))
+    }
+
+    /// Send the request and feed the response body to the stream parser.
+    ///
+    /// Every wait goes through [`until_cancelled`], and the token is also
+    /// checked before each piece of the body, so a fast stream cannot starve
+    /// the check. Dropping the response or the pending request on any return
+    /// closes the connection. Text already passed to `on_text` stays delivered.
+    async fn stream_exchange(
+        &self,
+        body: Vec<u8>,
+        mode: stream::StreamMode,
+        on_text: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+    ) -> Result<stream::StreamOutcome, ProviderError> {
+        // The settings equal the blocking client's. The async client's
+        // `timeout` is a total deadline from the start of the request until the
+        // body has finished (reqwest 0.13.5, `async_impl/client.rs`).
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(self.request_timeout)
+            .build()
+            .map_err(|_| ProviderError::Transport)?;
+        let mut request = client
+            .post(self.endpoint.clone())
+            .timeout(self.request_timeout)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        if let Some(authorization) = &self.authorization {
+            request = request.header(AUTHORIZATION, authorization.clone());
+        }
+
+        let mut response = until_cancelled(request.body(body).send(), cancel)
+            .await?
+            .map_err(|_| ProviderError::Transport)?;
+        check_streaming_head(response.status(), response.headers())?;
+
+        let mut parser = stream::StreamParser::new(mode);
+        loop {
+            // A fast stream never lets the poll interval elapse, so look here.
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let chunk = until_cancelled(response.chunk(), cancel)
+                .await?
+                .map_err(|_| ProviderError::Transport)?;
+            let Some(chunk) = chunk else {
+                // The body ended without `[DONE]`.
+                return parser.finish();
+            };
+            if parser.push(&chunk, on_text)? == stream::Flow::Done {
+                // A cancellation after `[DONE]` no longer changes the reply.
+                return parser.finish();
+            }
+        }
+    }
+}
+
+/// Await `future` while watching `cancel` every [`CANCEL_POLL`].
+///
+/// The future is pinned and polled through a timeout on `&mut`, so an elapsed
+/// poll does not drop it and the request is not restarted. When the token is
+/// set the future is dropped and the result is `Cancelled`. Whatever deadline
+/// the future carries itself still applies.
+async fn until_cancelled<F: Future>(
+    future: F,
+    cancel: &CancelToken,
+) -> Result<F::Output, ProviderError> {
+    let mut future = std::pin::pin!(future);
+    loop {
+        match tokio::time::timeout(CANCEL_POLL, future.as_mut()).await {
+            Ok(output) => return Ok(output),
+            Err(_elapsed) => {
+                if cancel.is_cancelled() {
+                    return Err(ProviderError::Cancelled);
+                }
+            }
+        }
     }
 }
 
@@ -455,6 +580,7 @@ impl ToolModel for LocalToolModel<'_> {
                 request.messages,
                 request.tools,
                 &mut **on_text,
+                request.cancel,
             ),
             None => self
                 .client
@@ -474,6 +600,7 @@ const fn model_error(error: ProviderError) -> ModelError {
         ProviderError::Transport
         | ProviderError::HttpStatus(_)
         | ProviderError::IncompleteStream => ModelError::Transport,
+        ProviderError::Cancelled => ModelError::Cancelled,
         ProviderError::InvalidConfiguration
         | ProviderError::InvalidToken
         | ProviderError::ResponseTooLarge
@@ -604,25 +731,23 @@ fn json_string_len(value: &str) -> Result<u64, ProviderError> {
     })
 }
 
-/// Accept only a successful `text/event-stream` response to a streamed request.
+/// Accept only a successful `text/event-stream` head for a streamed request.
 ///
 /// A server that answers with one JSON document is refused rather than parsed:
 /// the caller asked for a stream and nothing is repaired. Content-type
 /// parameters such as `charset` are allowed and the media type is compared
 /// case-insensitively.
-fn streaming_response(response: Response) -> Result<Response, ProviderError> {
-    let status = response.status();
+fn check_streaming_head(status: StatusCode, headers: &HeaderMap) -> Result<(), ProviderError> {
     if !status.is_success() {
         return Err(ProviderError::HttpStatus(status.as_u16()));
     }
-    let is_stream = response
-        .headers()
+    let is_stream = headers
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"));
     if is_stream {
-        Ok(response)
+        Ok(())
     } else {
         Err(ProviderError::MalformedResponse)
     }
@@ -1027,7 +1152,7 @@ mod tests {
             },
         ];
         let result = if streamed {
-            client.complete_streaming(&messages, &mut |_: &str| {})
+            client.complete_streaming(&messages, &mut |_: &str| {}, &CancelToken::new())
         } else {
             client.complete(&messages)
         };

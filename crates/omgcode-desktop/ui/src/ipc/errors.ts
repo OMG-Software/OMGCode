@@ -1,5 +1,8 @@
 import type { IpcError } from "./types";
 
+/** Error code of a chat turn the operator cancelled. The core sets it; the window matches only this code. */
+export const CANCELLED_CODE = "cancelled";
+
 /** Error thrown by every IPC call. `code` and `message` come from the Rust core. */
 export class IpcFailure extends Error {
   readonly code: string;

@@ -63,7 +63,8 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
   while a turn runs, in case an event is lost. If subscribing fails, it polls `chat_status`
   every 750 ms instead. The command name lives in `src/ipc/chat_events.ts`, which only the main
   window imports, so the approvals bundle never contains it. Streamed text is provisional
-  and is rendered as text. Pollers (`src/poll.ts`) never overlap calls and pause while the
+  and is rendered as text. A cancelled turn shows `Turn cancelled.` and is recognised by the
+  `cancelled` error code, never by message text. Pollers (`src/poll.ts`) never overlap calls and pause while the
   page is hidden; the approvals window still polls.
 
 ## Mock backend
@@ -72,6 +73,6 @@ When `import.meta.env.DEV` is true and Tauri is absent, `client.ts` loads `src/m
 literal dynamic `import()`. Production builds drop that branch. The mock holds 12 sessions in
 all five statuses, a 255-entry transcript, hostile strings (markup, `</script>`, a right-to-left
 override, a 5,000-character token, a `javascript:` URL), a chat turn that completes after 2 s
-(model `fail` fails), and three approvals (two exact, one stale). `OMGCODE_MOCK_FIXTURE_MARKER`
+(model `fail` fails; cancelling ends it at once as `cancelled`), and three approvals (two exact, one stale). `OMGCODE_MOCK_FIXTURE_MARKER`
 must never appear in `dist/`; `tests/dist.test.ts` checks that. A production build with no
 Tauri shows "This page must run inside OMGCode."

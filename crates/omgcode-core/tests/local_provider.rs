@@ -2,10 +2,11 @@ use omgcode_core::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use omgcode_core::provider::{
     LocalModelClient, LocalModelConfig, ModelReply, ProviderError, Usage,
 };
-use omgcode_core::turn::{ToolCall, ToolModelReply, tool_definitions};
+use omgcode_core::turn::{CancelToken, ToolCall, ToolModelReply, tool_definitions};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -680,8 +681,11 @@ struct StreamExchange {
 fn stream_exchange(status: &str, body: &str, headers: &str) -> StreamExchange {
     let fixture = Fixture::start(status, body.as_bytes(), headers);
     let mut pieces = Vec::new();
-    let result = client(fixture.address.clone(), None)
-        .complete_streaming(&messages(), &mut |text: &str| pieces.push(text.to_owned()));
+    let result = client(fixture.address.clone(), None).complete_streaming(
+        &messages(),
+        &mut |text: &str| pieces.push(text.to_owned()),
+        &CancelToken::new(),
+    );
     let (head, request) = fixture.finish();
     StreamExchange {
         result,
@@ -698,6 +702,7 @@ fn tool_stream_exchange(body: &str) -> (Result<ToolModelReply, ProviderError>, V
         &messages(),
         &tool_definitions(),
         &mut |text: &str| pieces.push(text.to_owned()),
+        &CancelToken::new(),
     );
     let (_, request) = fixture.finish();
     (
@@ -982,4 +987,362 @@ fn streamed_tool_call_pieces_that_break_the_rules_are_refused() {
             .len(),
         64
     );
+}
+
+// ---- Cancellation of a streamed request (ADR-0050) ----
+
+/// The response head of a streamed reply whose body ends only when the server closes.
+const STREAM_HEAD: &str =
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+
+/// How long the fixtures hold a connection open for a client that never closes it.
+const HOLD: Duration = Duration::from_secs(5);
+
+/// The slowest acceptable cancellation. The request deadline is 30 seconds.
+const CANCEL_BOUND: Duration = Duration::from_secs(2);
+
+/// Accept one connection within a bound.
+fn accept_bounded(listener: &TcpListener) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "fixture accept timed out");
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => panic!("fixture accept failed: {error}"),
+        }
+    }
+}
+
+/// Serve one connection: read the request, write `response` (when any), then
+/// hold the connection open. The task returns whether the client closed it
+/// within [`HOLD`]. `request_read` is signalled once the whole request has been
+/// read, which is the moment the client starts waiting for a response head.
+fn holding_server(
+    response: Option<Vec<u8>>,
+    request_read: mpsc::Sender<()>,
+) -> (String, JoinHandle<bool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    listener
+        .set_nonblocking(true)
+        .expect("make fixture accept bounded");
+    let address = format!("http://{}/v1", listener.local_addr().expect("address"));
+    let task = thread::spawn(move || {
+        let mut stream = accept_bounded(&listener);
+        stream
+            .set_nonblocking(false)
+            .expect("make accepted fixture stream blocking");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set fixture read timeout");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("set fixture write timeout");
+        read_request(&mut stream).expect("read bounded request");
+        // A call that cancels on delivered pieces does not listen for this, so
+        // a failed send carries no information.
+        let _ignored = request_read.send(());
+        if let Some(bytes) = response {
+            stream.write_all(&bytes).expect("write fixture response");
+            stream.flush().expect("flush fixture response");
+        }
+        stream
+            .set_read_timeout(Some(Duration::from_millis(25)))
+            .expect("set fixture poll timeout");
+        let end = Instant::now() + HOLD;
+        let mut buffer = [0_u8; 64];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if Instant::now() >= end {
+                        return false;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    return true;
+                }
+                Err(error) => panic!("fixture read failed: {error}"),
+            }
+        }
+    });
+    (address, task)
+}
+
+/// What one cancelled-or-not streamed call did.
+struct HeldCall<R> {
+    result: Result<R, ProviderError>,
+    pieces: Vec<String>,
+    elapsed: Duration,
+    /// Whether the server saw the client close the connection.
+    closed: bool,
+}
+
+/// Run one streamed call against a server that writes `response` and then
+/// holds the body open. A helper thread cancels the call once
+/// `pieces_before_cancel` pieces were delivered, so the call is waiting for the
+/// next piece of the body when it is cancelled. With `None` the thread cancels
+/// once the server has read the whole request, so the call is waiting for a
+/// response head however slow the host is.
+fn held_call<R>(
+    response: Option<Vec<u8>>,
+    pieces_before_cancel: Option<usize>,
+    run: impl FnOnce(&LocalModelClient, &mut dyn FnMut(&str), &CancelToken) -> Result<R, ProviderError>,
+) -> HeldCall<R> {
+    let (request_read, request_seen) = mpsc::channel::<()>();
+    let (address, server) = holding_server(response, request_read);
+    let cancel = CancelToken::new();
+    let (delivered, seen) = mpsc::channel::<()>();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || match pieces_before_cancel {
+            Some(count) => {
+                for _ in 0..count {
+                    seen.recv_timeout(Duration::from_secs(5))
+                        .expect("the pieces arrive before the bound");
+                }
+                cancel.cancel();
+            }
+            None => {
+                request_seen
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the server reads the request before the bound");
+                cancel.cancel();
+            }
+        })
+    };
+    let mut pieces = Vec::new();
+    let started = Instant::now();
+    let result = run(
+        &client(address, None),
+        &mut |text: &str| {
+            pieces.push(text.to_owned());
+            // The helper drops its receiver once it has cancelled, so a send after
+            // that point fails by design and carries no information.
+            let _ignored = delivered.send(());
+        },
+        &cancel,
+    );
+    let elapsed = started.elapsed();
+    join_bounded(canceller, "canceller completes");
+    let closed = join_bounded(server, "fixture completes");
+    HeldCall {
+        result,
+        pieces,
+        elapsed,
+        closed,
+    }
+}
+
+fn held_body(head_and_events: &str) -> Option<Vec<u8>> {
+    Some(format!("{STREAM_HEAD}{head_and_events}").into_bytes())
+}
+
+#[test]
+fn a_token_cancelled_before_the_call_makes_no_connection() {
+    // Given a listening socket and a token that is already cancelled.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind no-call fixture");
+    listener
+        .set_nonblocking(true)
+        .expect("make no-call fixture nonblocking");
+    let address = format!("http://{}/v1", listener.local_addr().expect("address"));
+    let model = client(address, None);
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let mut pieces = Vec::new();
+
+    // When each streamed method is called.
+    let text = model.complete_streaming(
+        &messages(),
+        &mut |piece: &str| pieces.push(piece.to_owned()),
+        &cancel,
+    );
+    let tools = model.complete_with_tools_streaming(
+        &messages(),
+        &tool_definitions(),
+        &mut |piece: &str| pieces.push(piece.to_owned()),
+        &cancel,
+    );
+
+    // Then both are cancelled, nothing was delivered, and nothing connected.
+    assert_eq!(text, Err(ProviderError::Cancelled));
+    assert_eq!(tools.err(), Some(ProviderError::Cancelled));
+    assert!(pieces.is_empty());
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "no connection was made"
+    );
+}
+
+#[test]
+fn cancelling_while_the_response_head_is_awaited_stops_the_request() {
+    // Given a server that accepts and never sends a response head.
+    // When the token is cancelled once the server has read the request.
+    let call = held_call(None, None, |model, on_text, cancel| {
+        model.complete_streaming(&messages(), on_text, cancel)
+    });
+
+    // Then the call is cancelled far inside the 30-second deadline, and the
+    // server saw the connection close.
+    assert_eq!(call.result, Err(ProviderError::Cancelled));
+    assert!(call.pieces.is_empty());
+    assert!(
+        call.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        call.elapsed
+    );
+    assert!(call.closed, "the connection was closed on cancellation");
+}
+
+#[test]
+fn cancelling_while_a_text_body_is_held_open_keeps_the_delivered_pieces() {
+    // Given a server that sends two pieces and holds the body open.
+    let body = held_body(&format!("{}{}", text_event("one"), text_event("two")));
+
+    // When the token is cancelled after both pieces were delivered.
+    let call = held_call(body, Some(2), |model, on_text, cancel| {
+        model.complete_streaming(&messages(), on_text, cancel)
+    });
+
+    // Then both pieces stay delivered, the call is cancelled promptly, and the
+    // connection was closed.
+    assert_eq!(call.result, Err(ProviderError::Cancelled));
+    assert_eq!(call.pieces, ["one", "two"]);
+    assert!(
+        call.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        call.elapsed
+    );
+    assert!(call.closed, "the connection was closed on cancellation");
+}
+
+#[test]
+fn cancelling_a_streamed_tool_request_discards_a_partly_sent_call() {
+    // Given a server that sends text and the first piece of a tool call, then
+    // holds the body open.
+    let mut events = text_event("Reading.");
+    events.push_str(&call_event(
+        r#"{"index":0,"id":"call_9","type":"function","function":{"name":"workspace_read_file","arguments":"{\"path\":"}}"#,
+    ));
+
+    // When the token is cancelled after the text was delivered.
+    let call = held_call(held_body(&events), Some(1), |model, on_text, cancel| {
+        model.complete_with_tools_streaming(&messages(), &tool_definitions(), on_text, cancel)
+    });
+
+    // Then the call is cancelled, no reply and no call exist, and the text stays delivered.
+    assert_eq!(call.result.err(), Some(ProviderError::Cancelled));
+    assert_eq!(call.pieces, ["Reading."]);
+    assert!(
+        call.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        call.elapsed
+    );
+    assert!(call.closed, "the connection was closed on cancellation");
+}
+
+#[test]
+fn a_cancel_after_done_was_processed_does_not_change_the_reply() {
+    // Given a complete stream, sent in one write, whose server then keeps the
+    // connection open so that the client must not wait for the body to end.
+    let body = held_body(&text_stream(&["one", "two"]));
+
+    // When the token is cancelled while the pieces are delivered.
+    let call = held_call(body, Some(2), |model, on_text, cancel| {
+        model.complete_streaming(&messages(), on_text, cancel)
+    });
+
+    // Then the reply is the validated one, and nothing waited for the server.
+    let reply = call.result.expect("a reply that was complete");
+    assert_eq!(reply.content, "onetwo");
+    assert_eq!(reply.finish_reason, "stop");
+    assert_eq!(call.pieces, ["one", "two"]);
+    assert!(
+        call.elapsed < CANCEL_BOUND,
+        "the call waited {:?}",
+        call.elapsed
+    );
+}
+
+#[test]
+fn a_cancel_after_done_does_not_change_a_streamed_tool_reply() {
+    // Given a complete tool stream with a call, held open after `[DONE]`.
+    let mut events = text_event("Reading.");
+    events.push_str(&call_event(
+        r#"{"index":0,"id":"call_9","type":"function","function":{"name":"workspace_read_file","arguments":"{\"path\":\"notes.txt\"}"}}"#,
+    ));
+    events.push_str(&finish_event("tool_calls"));
+    events.push_str("data: [DONE]\n\n");
+
+    // When the token is cancelled while the text is delivered.
+    let call = held_call(held_body(&events), Some(1), |model, on_text, cancel| {
+        model.complete_with_tools_streaming(&messages(), &tool_definitions(), on_text, cancel)
+    });
+
+    // Then the reply with its call is returned.
+    let reply = call.result.expect("a reply that was complete");
+    assert_eq!(reply.tool_calls.len(), 1);
+    assert_eq!(reply.finish_reason, "tool_calls");
+    assert!(call.elapsed < CANCEL_BOUND);
+}
+
+#[test]
+fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_stream() {
+    // Given a server that sends its pieces more than one poll interval apart.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let address = format!("http://{}/v1", listener.local_addr().expect("address"));
+    let server = thread::spawn(move || {
+        let mut stream = accept_bounded(&listener);
+        stream
+            .set_nonblocking(false)
+            .expect("make accepted fixture stream blocking");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set fixture read timeout");
+        read_request(&mut stream).expect("read bounded request");
+        stream
+            .write_all(STREAM_HEAD.as_bytes())
+            .expect("write head");
+        for event in [text_event("a"), text_event("b"), text_event("c")] {
+            thread::sleep(Duration::from_millis(80));
+            stream.write_all(event.as_bytes()).expect("write piece");
+            stream.flush().expect("flush piece");
+        }
+        thread::sleep(Duration::from_millis(80));
+        stream
+            .write_all(format!("{}data: [DONE]\n\n", finish_event("stop")).as_bytes())
+            .expect("write end");
+    });
+    let mut pieces = Vec::new();
+
+    // When the streamed request runs with a token nobody cancels.
+    let result = client(address, None).complete_streaming(
+        &messages(),
+        &mut |piece: &str| pieces.push(piece.to_owned()),
+        &CancelToken::new(),
+    );
+    join_bounded(server, "fixture completes");
+
+    // Then the polling did not restart or disturb the request.
+    assert_eq!(result.expect("a complete stream").content, "abc");
+    assert_eq!(pieces, ["a", "b", "c"]);
 }

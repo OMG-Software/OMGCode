@@ -525,6 +525,38 @@ describe("chat lifecycle", () => {
     expect(notice.classList.contains("error")).toBe(true);
   });
 
+  it("shows a plain notice for a cancelled turn, decided by the code", async () => {
+    await startChat([
+      {
+        ...running,
+        state: "failed",
+        error: { code: "cancelled", message: "turn was cancelled" },
+      },
+    ]);
+    await settle(750);
+    const notice = root.querySelector(".notice") as HTMLElement;
+    expect(notice.textContent).toBe("Turn cancelled.");
+    expect(notice.classList.contains("error")).toBe(false);
+    expect((root.querySelector(".composer .running") as HTMLElement).hidden).toBe(true);
+    expect(buttonByText(root, "Cancel").hidden).toBe(true);
+  });
+
+  it("keeps the error styling when only the message says cancelled", async () => {
+    await startChat([
+      {
+        ...running,
+        state: "failed",
+        error: { code: "provider", message: "The request was cancelled by the server." },
+      },
+    ]);
+    await settle(750);
+    const notice = root.querySelector(".notice") as HTMLElement;
+    expect(notice.textContent).toContain("The request was cancelled by the server.");
+    expect(notice.textContent).toContain("provider");
+    expect(notice.textContent).not.toBe("Turn cancelled.");
+    expect(notice.classList.contains("error")).toBe(true);
+  });
+
   it("keeps Send disabled until a model and context size are set", async () => {
     await start({
       session_tree: treeOf(s),

@@ -159,10 +159,14 @@ impl DesktopService {
 
     /// Request cooperative cancellation of a running turn.
     ///
-    /// Only the tool-enabled path has a cancellation point, between model
-    /// rounds and tool calls. A text-only turn ignores the request and its
-    /// status stays `running`; `cancelling` is reported only when a cancel
-    /// token exists. A provider request in flight is not interrupted.
+    /// A turn that streams, text-only or tool-enabled, hands its cancel token
+    /// to the slot. The request is then seen at once, the streamed model
+    /// request stops within about 25 ms, and the turn ends as `failed` with the
+    /// error code `cancelled` (ADR-0050). A tool-enabled turn also checks the
+    /// token between model rounds and tool calls. A turn whose request is not
+    /// streamed (`--stream off`) has no cancel token: the request is ignored,
+    /// the status stays `running`, and the request in flight is not
+    /// interrupted. `cancelling` is reported only when a cancel token exists.
     ///
     /// # Errors
     ///
@@ -199,10 +203,12 @@ impl DesktopService {
     /// Request cancellation of every running turn and wait up to `grace` for
     /// the turn threads to finish, polling for completion.
     ///
-    /// Returns without waiting past `grace`. A provider request in flight
-    /// cannot be interrupted, so such a turn is reported in `still_running`; it
-    /// leaves its journal with an open turn, which the operator can close later
-    /// with the interrupt command. After shutdown, `chat_send` is refused.
+    /// Returns without waiting past `grace`. A streamed request stops within
+    /// about 25 ms, so a streamed turn finishes inside the grace period and
+    /// leaves no open turn. A request that is not streamed cannot be
+    /// interrupted: such a turn is reported in `still_running` and leaves its
+    /// journal with an open turn, which the operator can close later with the
+    /// interrupt command. After shutdown, `chat_send` is refused.
     pub fn shutdown(&self, grace: Duration) -> ShutdownReport {
         self.inner.shutdown_turns(grace)
     }

@@ -173,6 +173,9 @@ struct ScriptedModel {
     replies: VecDeque<Result<ToolModelReply, ModelError>>,
     requests: Vec<SeenRequest>,
     cancel_on_reply: Option<CancelToken>,
+    /// Whether `request.cancel` was set when each request was answered, after
+    /// `cancel_on_reply` acted.
+    request_cancel_seen: Vec<bool>,
 }
 
 impl ScriptedModel {
@@ -181,6 +184,7 @@ impl ScriptedModel {
             replies: replies.into(),
             requests: Vec::new(),
             cancel_on_reply: None,
+            request_cancel_seen: Vec::new(),
         }
     }
 }
@@ -198,6 +202,7 @@ impl ToolModel for ScriptedModel {
         if let Some(token) = &self.cancel_on_reply {
             token.cancel();
         }
+        self.request_cancel_seen.push(request.cancel.is_cancelled());
         self.replies
             .pop_front()
             .unwrap_or(Err(ModelError::InvalidResponse))
@@ -1101,6 +1106,111 @@ fn cancellation_before_dispatch_prevents_file_access() {
     assert_eq!(model.requests.len(), 1);
     assert!(!fixture.audit_path().exists());
     assert_eq!(fixture.snapshot().active_turn, None);
+    fixture.close_journal();
+    assert_eq!(fixture.last_failure_code().as_deref(), Some("cancelled"));
+}
+
+/// A model that cancels the turn through the token it was handed.
+struct CancelThroughRequest {
+    requests: usize,
+}
+
+impl ToolModel for CancelThroughRequest {
+    fn complete(&mut self, request: ToolModelRequest<'_>) -> Result<ToolModelReply, ModelError> {
+        self.requests += 1;
+        request.cancel.cancel();
+        text_reply("unused")
+    }
+}
+
+#[test]
+fn a_cancelled_model_request_of_a_cancelled_turn_records_cancelled() {
+    // Given a model that is interrupted after the turn's token was cancelled.
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![Err(ModelError::Cancelled)]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    let mut runtime = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime");
+    model.cancel_on_reply = Some(runtime.cancel_token());
+
+    // When the turn runs.
+    let error = runtime
+        .run(&mut model, "read the file", "", manifest())
+        .expect_err("the interrupted request ends the turn");
+    drop(runtime);
+
+    // Then the turn is cancelled, not a model failure, and the request saw the
+    // token that the test cancelled through the runtime.
+    assert!(matches!(error, TurnError::Cancelled), "{error:?}");
+    assert_eq!(model.requests.len(), 1);
+    assert_eq!(model.request_cancel_seen, [true]);
+    assert_eq!(fixture.snapshot().active_turn, None);
+    fixture.close_journal();
+    assert_eq!(fixture.last_failure_code().as_deref(), Some("cancelled"));
+}
+
+#[test]
+fn a_cancelled_model_error_without_a_cancelled_turn_is_a_model_error() {
+    // Given a model that reports an interrupted request though nobody cancelled.
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![Err(ModelError::Cancelled)]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    let mut runtime = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime");
+
+    // When the turn runs.
+    let error = runtime
+        .run(&mut model, "read the file", "", manifest())
+        .expect_err("a faulty report ends the turn");
+    drop(runtime);
+
+    // Then it is recorded like any other model failure.
+    assert!(
+        matches!(error, TurnError::Model(ModelError::Cancelled)),
+        "{error:?}"
+    );
+    assert_eq!(model.request_cancel_seen, [false]);
+    assert_eq!(fixture.snapshot().active_turn, None);
+    fixture.close_journal();
+    assert_eq!(fixture.last_failure_code().as_deref(), Some("model_error"));
+}
+
+#[test]
+fn the_token_in_the_request_is_the_runtimes_token() {
+    // Given a model that cancels through `request.cancel` and then replies.
+    let mut fixture = Fixture::new();
+    let mut model = CancelThroughRequest { requests: 0 };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    let mut runtime = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime");
+    let token = runtime.cancel_token();
+
+    // When the turn runs.
+    let error = runtime
+        .run(&mut model, "read the file", "", manifest())
+        .expect_err("the checkpoint after the request sees the cancellation");
+    drop(runtime);
+
+    // Then the runtime's own token was set through the request, and the turn
+    // ended as cancelled with no assistant message recorded.
+    assert!(token.is_cancelled());
+    assert!(matches!(error, TurnError::Cancelled), "{error:?}");
+    assert_eq!(model.requests, 1);
     fixture.close_journal();
     assert_eq!(fixture.last_failure_code().as_deref(), Some("cancelled"));
 }

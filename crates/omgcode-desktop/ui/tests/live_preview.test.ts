@@ -174,6 +174,25 @@ describe("live assistant preview", () => {
     expect(note?.textContent).toContain("saved reply");
   });
 
+  it("removes the live entry and shows a plain notice when the turn is cancelled", async () => {
+    await start();
+    await send();
+    await emit(delta("provisional"));
+    expect(liveEntries()).toHaveLength(1);
+    ipc.on("chat_status", () => ({
+      ...running,
+      state: "failed",
+      error: { code: "cancelled", message: "turn was cancelled" },
+    }));
+    await emit({ kind: "finished", session_id: "s-live" });
+    await settle(FRAME_MS);
+    expect(liveEntries()).toHaveLength(0);
+    const notice = root.querySelector(".notice") as HTMLElement;
+    expect(notice.textContent).toBe("Turn cancelled.");
+    expect(notice.classList.contains("error")).toBe(false);
+    expect((root.querySelector(".composer .running") as HTMLElement).hidden).toBe(true);
+  });
+
   it("removes the live entry when the turn settles and shows the recorded messages", async () => {
     await start();
     await send();

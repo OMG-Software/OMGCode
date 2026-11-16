@@ -5,10 +5,11 @@
 //! then runs [`DesktopService::shutdown`] on a separate thread and exits the
 //! application. A request that arrives while shutdown runs does nothing.
 //!
-//! A chat turn still waiting on the model provider when the grace period ends
-//! is abandoned: a provider request in flight cannot be interrupted. Its
-//! journal keeps an open turn, which the operator can close later with the
-//! interrupt command or the trusted CLI.
+//! A streamed model request is interrupted by the cancel request, so its turn
+//! ends inside the grace period (ADR-0050). A turn still waiting when the grace
+//! period ends is abandoned: a request that is not streamed cannot be
+//! interrupted. Its journal keeps an open turn, which the operator can close
+//! later with the interrupt command or the trusted CLI.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};

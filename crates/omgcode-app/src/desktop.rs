@@ -66,16 +66,19 @@
 //! next `chat_send` for that session; at most 64 finished entries are kept and
 //! the oldest is evicted first.
 //!
-//! Cancellation is cooperative. The tool-enabled path hands its `CancelToken`
-//! to the slot; the text-only path has no cancellation point, so a cancel
-//! request on it changes nothing and the status stays `running`.
+//! Cancellation is cooperative. A turn hands its `CancelToken` to the slot when
+//! it streams, or when it is tool-enabled. A streamed model request watches the
+//! token and stops within about 25 ms (ADR-0050). A text-only turn whose
+//! request is not streamed has no token, so a cancel request on it changes
+//! nothing and the status stays `running`.
 //!
 //! # Shutdown
 //!
 //! [`DesktopService::shutdown`] requests cancellation of every running turn
-//! and polls `JoinHandle::is_finished` until the grace period ends. A provider
-//! request in flight cannot be interrupted, so a turn can outlast the grace
-//! period. Shutdown then returns without waiting; the abandoned thread leaves
+//! and polls `JoinHandle::is_finished` until the grace period ends. A streamed
+//! request is interrupted, but a request that is not streamed cannot be, so
+//! such a turn can outlast the grace period. Shutdown then returns without
+//! waiting; the abandoned thread leaves
 //! its journal with an open turn, which the operator can close later with the
 //! interrupt command or the trusted CLI. After shutdown no new turn starts.
 

@@ -96,16 +96,18 @@ pub enum ChatStreamEvent<'a> {
 /// Optional callbacks a front end can supply to a turn.
 ///
 /// One hook delivers the cancellation token. Cancellation is cooperative: the
-/// core checks it between rounds and tool calls, so it cannot interrupt a
-/// provider request already in flight. The text-only path has no cancellation
-/// point at all, so that hook is never called there. The other hook streams
-/// provisional text.
+/// core checks it between rounds and tool calls, and a streamed model request
+/// also watches it and stops within about 25 ms (ADR-0050). A request that is
+/// not streamed cannot be interrupted. The other hook streams provisional
+/// text.
 #[derive(Default)]
 pub struct ChatHooks<'a> {
-    /// Called once on the tool-enabled path, immediately after the turn
-    /// runtime is built and before the first model request. The callback runs
-    /// on the turn's thread and must not block; hand the token to another
-    /// thread and return.
+    /// Called once, before the first model request: on the tool-enabled path
+    /// right after the turn runtime is built, and on a text-only turn only when
+    /// it streams (`on_stream` is set). A text-only turn that does not stream
+    /// never calls it, because a non-streamed request cannot be interrupted.
+    /// The callback runs on the turn's thread and must not block; hand the
+    /// token to another thread and return.
     pub on_cancel_token: Option<&'a mut dyn FnMut(CancelToken)>,
     /// When set, every model request of the turn is streamed and this callback
     /// receives [`ChatStreamEvent::RequestStarted`] before each request and

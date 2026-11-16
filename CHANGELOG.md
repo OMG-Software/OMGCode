@@ -6,6 +6,64 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.33.0 interrupts a streamed model request when a turn is cancelled
+  (Phase D5). See ADR-0050 and
+  [cancellation](docs/provider-authentication.md#cancellation-0330). Until now
+  cancellation was checked only between model rounds and tool calls, a request
+  in flight ran to its end or to the thirty-second deadline, a text-only turn
+  had no cancellation point, and on exit the desktop abandoned a turn still
+  waiting on the model, leaving an open turn. It is a prototype on branch
+  `codex/desktop-interface`; it is not merged. It adds no dependency and no
+  cargo feature.
+  - **Adapter:** `complete_streaming` and `complete_with_tools_streaming` take a
+    `CancelToken`. The streamed request runs on an async HTTP client inside a
+    single-thread runtime created for that one request. The client is built
+    inside that runtime and is not reused. Its settings equal the blocking
+    client's: no proxy, no redirect, no retry, the same connect timeout, and
+    the same thirty-second deadline for the whole response. The token is
+    checked before the request is sent, so an already cancelled turn makes no
+    connection, while waiting for the response head, and while waiting for each
+    piece of the body, every 25 ms, and also before each piece. When it is set
+    the request is dropped, which closes the connection, and the method returns
+    the new error `ProviderError::Cancelled` (`local model request was
+    cancelled`). Text already delivered stays delivered and is still
+    provisional. The event-stream rules of ADR-0049 are unchanged; the reader
+    is now a parser fed bytes in any chunking. The non-streaming methods keep
+    the blocking client and cannot be interrupted.
+  - **Runtime and recorded outcome:** `ToolModelRequest` carries the turn's
+    cancel token and `ModelError` gains `Cancelled`. When a model returns it
+    and the token is set, the turn ends as it does for a cancellation between
+    rounds: failure reason `cancelled`, error `TurnError::Cancelled`. A model
+    that returns it while the token is not set is recorded as a model error. A
+    streamed text-only turn now creates a cancel token and hands it to the
+    front end through the existing `on_cancel_token` hook. A cancelled request,
+    or a cancellation seen after the reply arrived and before it is recorded,
+    ends the turn with the failure reason `cancelled`. A non-streamed text-only
+    turn creates no token and cannot be cancelled. A cancelled turn has a
+    turn-failed record with the reason `cancelled`, no assistant message, and
+    no open turn. The partial text is never recorded.
+  - **Error kind:** the application layer reports a cancelled turn with the new
+    kind `cancelled` and the message `turn was cancelled`. The tool path
+    reported it with the general kind `turn` before.
+  - **Desktop and frontend:** `chat_cancel` now stops a streamed request. The
+    turn ends as `failed` with the error code `cancelled`, `finished` is
+    pushed, and the main window shows the plain notice "Turn cancelled." with
+    no error styling, decided by the error code only. Exit cancels every
+    running turn, so a streamed turn ends within the five-second grace period
+    and leaves no open turn. No command, argument, event, or wire type
+    changes; the shell still has 19 commands. The content security policy, the
+    windows, and the navigation guard are unchanged.
+  - **Compatibility:** no journal record changes shape, and sessions stay at
+    schema version 3.
+  - **Limits:** these are not interrupted: a non-streamed request
+    (`omgcode-desktop --stream off`, or the CLI without `--stream`), the
+    compaction request before a turn, and a tool call in progress. The CLI has
+    no cancel source, so stopping its process still leaves an open turn. A
+    long generation still fails at the thirty-second deadline. No live LM
+    Studio server was used, and no window has been opened on Linux. The
+    Windows shell was driven end to end against a mock that holds a stream
+    open, which does not qualify a live server. The CI workflows have still
+    never run.
 - Version 0.32.0 streams the local model's reply and pushes chat events to the
   desktop window (Phases D4 and E6). See ADR-0049 and
   [streamed replies](docs/provider-authentication.md#streamed-replies-0320).

@@ -1,15 +1,17 @@
 //! The text-only chat turn.
 //!
-//! Text-only chat has no model file-read authority and no cancellation point:
-//! the turn is one provider request that cannot be interrupted once started.
+//! Text-only chat has no model file-read authority. The turn is one provider
+//! request. A streamed request watches a cancel token and can be interrupted; a
+//! request that is not streamed cannot be (ADR-0050).
 
 use omgcode_core::prompt::{self, ConversationMessage, ConversationRole};
-use omgcode_core::provider::LocalModelClient;
+use omgcode_core::provider::{LocalModelClient, ProviderError};
 use omgcode_core::session::{MessageRole, RequestManifest, SessionError, SessionJournal};
-use omgcode_core::turn::replay_active;
+use omgcode_core::turn::{CancelToken, replay_active};
 
 use super::output::TextTurnOutput;
 use super::stream::StreamSink;
+use super::tools::CANCELLED_MESSAGE;
 use super::{ChatHooks, Turn};
 use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
@@ -56,9 +58,21 @@ pub(super) fn run(
     // computed below from the whole reply, exactly as without streaming.
     let result = match hooks.on_stream.as_deref_mut() {
         Some(on_stream) => {
+            // Only a streamed request can be interrupted, so only it gets a
+            // token. The front end receives its clone before the request.
+            let cancel = CancelToken::new();
+            if let Some(hook) = hooks.on_cancel_token.as_deref_mut() {
+                hook(cancel.clone());
+            }
             let mut sink = StreamSink::new(on_stream, token);
             sink.start_request();
-            let result = client.complete_streaming(&messages, &mut |piece: &str| sink.text(piece));
+            let mut result =
+                client.complete_streaming(&messages, &mut |piece: &str| sink.text(piece), &cancel);
+            // As in the runtime, a cancellation seen once the reply has
+            // arrived still ends the turn as cancelled, recording no reply.
+            if result.is_ok() && cancel.is_cancelled() {
+                result = Err(ProviderError::Cancelled);
+            }
             if result.is_ok() {
                 sink.finish_request();
             }
@@ -68,6 +82,15 @@ pub(super) fn run(
     };
     let mut reply = match result {
         Ok(reply) => reply,
+        Err(ProviderError::Cancelled) => {
+            journal.fail_turn(request_id, "cancelled").map_err(|_| {
+                AppError::new(
+                    ErrorKind::Persistence,
+                    "Turn was cancelled and the cancellation could not be recorded",
+                )
+            })?;
+            return Err(AppError::new(ErrorKind::Cancelled, CANCELLED_MESSAGE));
+        }
         Err(error) => {
             journal
                 .fail_turn(request_id, "provider_error")

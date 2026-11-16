@@ -57,6 +57,10 @@ CLI; on by default in the desktop shell, `--stream off` at launch). Streamed
 text is provisional, and the journals record only the validated reply. The
 shell pushes chat events to the main window through one caller-scoped channel
 that needs no `core:` permission ([ADR-0049](docs/adr/0049-stream-local-model-replies-and-push-chat-events.md)).
+A cancel request interrupts a streamed model request and the turn is recorded as
+cancelled; a non-streamed request, the compaction request, and a tool call in
+progress are not interruptible
+([ADR-0050](docs/adr/0050-interrupt-a-streamed-model-request-on-cancellation.md)).
 The desktop shell has no settings interface, development panels, packaging, or
 recovery interface. Most other planned features are not
 implemented.

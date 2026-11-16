@@ -422,7 +422,7 @@ fn cancelling_a_tool_turn_reports_cancelling_then_fails_with_the_core_error() {
     let done = wait_finished(service, session);
     assert_eq!(done.state, ChatState::Failed);
     let error = done.error.expect("an error");
-    assert_eq!(error.code(), "turn");
+    assert_eq!(error.code(), "cancelled");
     assert_eq!(error.message(), "turn was cancelled");
     let page = service
         .session_transcript(wire(

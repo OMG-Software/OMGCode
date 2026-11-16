@@ -114,6 +114,11 @@ pub struct ToolModelRequest<'a> {
     pub messages: &'a [ModelMessage],
     /// The exact tool definitions advertised for this request.
     pub tools: &'a [ToolDefinition],
+    /// The turn's cancel token. A model that can interrupt its request watches
+    /// it and returns [`ModelError::Cancelled`] once it is set; a model that
+    /// cannot interrupt may ignore it, and the runtime still checks it between
+    /// requests.
+    pub cancel: &'a CancelToken,
 }
 
 /// One model response, with tool calls still untrusted and unparsed.
@@ -140,6 +145,10 @@ pub enum ModelError {
     /// The assembled request exceeds a supported bound.
     #[error("model request exceeds the supported limit")]
     RequestTooLarge,
+    /// The request was interrupted because the turn's cancel token was set.
+    /// The runtime ends the turn as cancelled only when the token is set.
+    #[error("model request was cancelled")]
+    Cancelled,
 }
 
 /// One tool definition exposed to a model interface.
@@ -1033,8 +1042,14 @@ impl<'a> TurnRuntime<'a> {
             let reply = match model.complete(ToolModelRequest {
                 messages: &messages,
                 tools: &tools,
+                cancel: &self.cancel,
             }) {
                 Ok(reply) => reply,
+                // Only a set token makes this a cancellation. A model that
+                // reports it otherwise is faulty and is recorded as such.
+                Err(ModelError::Cancelled) if self.cancel.is_cancelled() => {
+                    return Err(self.abort_for(request_id, TurnError::Cancelled));
+                }
                 Err(error) => {
                     return Err(self.abort(request_id, "model_error", error.into()));
                 }

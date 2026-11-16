@@ -31,8 +31,11 @@ pub enum ErrorKind {
     ToolCall,
     /// A bounded turn limit stopped the request.
     ToolLimit,
-    /// Any other controlled turn failure, such as cancellation or timeout.
+    /// Any other controlled turn failure, such as a timeout.
     Turn,
+    /// The operator cancelled the turn. The journal records the failure
+    /// reason `cancelled` and no assistant message (ADR-0050).
+    Cancelled,
     /// A selected provider credential could not be used. The message names a
     /// stable cause code and never contains the secret.
     Credential,
@@ -53,6 +56,7 @@ impl ErrorKind {
             Self::ToolCall => "tool_call",
             Self::ToolLimit => "tool_limit",
             Self::Turn => "turn",
+            Self::Cancelled => "cancelled",
             Self::Credential => "credential",
         }
     }
@@ -134,6 +138,7 @@ mod tests {
             (ErrorKind::ToolCall, "tool_call"),
             (ErrorKind::ToolLimit, "tool_limit"),
             (ErrorKind::Turn, "turn"),
+            (ErrorKind::Cancelled, "cancelled"),
             (ErrorKind::Credential, "credential"),
         ];
         for (kind, code) in codes {

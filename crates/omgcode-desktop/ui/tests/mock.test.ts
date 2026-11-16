@@ -141,6 +141,30 @@ describe("mock backend", () => {
       expect(status.state).toBe("completed");
     });
 
+    it("ends a cancelled turn at once as failed with the cancelled code", async () => {
+      const { invoke } = createMockBackend();
+      const events: ChatEvent[] = [];
+      await invoke("chat_subscribe", { on_event: { onmessage: (e: ChatEvent) => events.push(e) } });
+      await send(invoke);
+      await vi.advanceTimersByTimeAsync(1000);
+      const before = events.filter((e) => e.kind === "delta").length;
+      const status = await invoke("chat_cancel", { session_id: SESSION });
+      const failed = {
+        session_id: SESSION,
+        state: "failed",
+        outcome: null,
+        error: { code: "cancelled", message: "turn was cancelled" },
+      };
+      expect(status).toEqual(failed);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await invoke("chat_status", { session_id: SESSION })).toEqual(failed);
+      expect(events.filter((e) => e.kind === "delta")).toHaveLength(before);
+      expect(events.filter((e) => e.kind === "finished")).toEqual([
+        { kind: "finished", session_id: SESSION },
+      ]);
+      expect(events[events.length - 1]).toEqual({ kind: "finished", session_id: SESSION });
+    });
+
     it("replays the preview of a running turn when subscribing", async () => {
       const { invoke } = createMockBackend();
       await send(invoke);

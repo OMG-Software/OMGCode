@@ -1,4 +1,5 @@
 import type { Invoker } from "../ipc/client";
+import { CANCELLED_CODE } from "../ipc/errors";
 import type {
   ApprovalDetail,
   ApprovalView,
@@ -362,8 +363,15 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       clearTimeout(record.timer);
     }
     clearDeltas(record);
-    record.status = { ...record.status, state: "cancelling" };
-    record.timer = setTimeout(() => settle(id, record, false, true), 300);
+    session(id).summary.status = "idle";
+    record.timer = null;
+    record.status = {
+      session_id: id,
+      state: "failed",
+      outcome: null,
+      error: { code: CANCELLED_CODE, message: "turn was cancelled" },
+    };
+    emit({ kind: "finished", session_id: id });
     return clone(record.status);
   }
 

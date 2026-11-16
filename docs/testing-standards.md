@@ -203,7 +203,13 @@ incomplete stream, duplicate keys, an `error` member, finish reasons, and the
 size and deadline bounds), tool-call assembly by index, redaction of the token
 across piece boundaries, the display-safe stream, the desktop event hub, and
 the frontend runner and live preview. A mock pass is not a live-provider
-result, and no live LM Studio server was used for the stream rules. It requires the
+result, and no live LM Studio server was used for the stream rules. The
+cancellation fixtures (0.33.0) cover a cancel before the request is sent, before
+the response head, and during the body; the stream parser under arbitrary
+chunking; the turn runtime's cancelled arm; the cancellation of streamed
+text-only and tool-enabled turns; the desktop cancel and shutdown cases; and the
+frontend notice, which is decided by the error code. They used the same kind of
+local fixture. The adapter requires the
 compiled base prompt and accepts only a literal loopback HTTP endpoint. The
 adapter is not a permission boundary: the CLI selects tool mode from the live
 `model_tools` preference, and the runtime rechecks that preference before each
@@ -219,8 +225,8 @@ own. It passed on Windows 11 build 26300 and WSL 6.6 (Ubuntu 24.04) on
 use a mock that returns the documented OpenAI-compatible tool-call shape; they
 do not establish live LM Studio tool-call compatibility. A single opt-in spot-check
 with LM Studio 0.4.28 and `google/gemma-4-e4b` on Windows is recorded in the implementation plan. Model discovery, streaming
-against a live server, cancellation of a request in flight, and live model
-compatibility remain future qualification work. The CLI can inspect
+against a live server, cancellation against a live server, interrupting a
+non-streamed or compaction request, and live model compatibility remain future qualification work. The CLI can inspect
 and archive sessions, but it does not execute recorded tool actions or resume
 an incomplete turn.
 
@@ -333,7 +339,8 @@ npm run test:dist
   remote fetch, navigation, `window.open`, and string evaluation were blocked.
   This proves the Windows shell's wiring against a mock server. It does not
   prove a live model, Linux, packaging, or resistance to a hostile page. It did
-  not exercise shutdown with a provider request in flight, or a live call that
+  not exercise shutdown with a provider request in flight (the 0.33.0 service
+  tests cover shutdown during a streamed request), or a live call that
   reaches the Rust `authorize` check past the capability refusal.
 - **Streaming end to end.** On 2026-11-16 the built Windows shell was driven
   the same way against a mock server that paces an event stream. A streamed
@@ -348,6 +355,21 @@ npm run test:dist
   not streamed and no live entry appeared. This proves the Windows wiring
   against a mock. It does not prove a live LM Studio server, Linux, or the
   fallback poll, which only the frontend tests exercise.
+- **Cancellation end to end.** On 2026-11-16 the built Windows shell was driven
+  the same way against a mock server that sends two pieces and then holds the
+  stream open. In a workspace without model tools, so the turn was text-only,
+  the Cancel button ended the turn: the window settled 74 ms after the click
+  with the plain notice `Turn cancelled.`, the server saw the connection close
+  28 ms after the click, `chat_status` reported `failed` with the code
+  `cancelled`, and the next turn in the session was accepted. Then the window
+  was closed while a second stream was held: the process exited with status 0
+  148 ms after the close message was posted, and after a restart the session
+  was idle, showed both turns as `Turn failed: cancelled`, held none of the
+  partial text, and accepted a new turn. The host was at about 100% CPU from
+  an unrelated build during this run. The shutdown time is measured from the
+  posting of the close message, because the helper that posts it takes
+  seconds to start on a loaded host. This proves the Windows wiring against a
+  mock. It does not prove a live LM Studio server or Linux.
 - **ReFS and `TEMP`.** If the repository is on a ReFS volume, point `TEMP` and
   `TMP` at an NTFS directory before the Cargo tests. The private-store,
   credential, container, and replacement tests need NTFS. Report the setting.

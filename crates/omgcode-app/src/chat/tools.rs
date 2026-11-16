@@ -158,6 +158,7 @@ impl ToolModel for RedactingModel<'_, '_> {
         let result = self.inner.complete(ToolModelRequest {
             messages: &messages,
             tools: request.tools,
+            cancel: request.cancel,
         });
         if result.is_ok() {
             self.with_stream(|sink| sink.finish_request());
@@ -226,9 +227,13 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> AppError {
             "Restore the archived session before chatting",
         ),
         TurnError::ActiveTurn => AppError::new(ErrorKind::Session, ACTIVE_TURN_MESSAGE),
+        TurnError::Cancelled => AppError::new(ErrorKind::Cancelled, CANCELLED_MESSAGE),
         other => AppError::new(ErrorKind::Turn, other.to_string()),
     }
 }
+
+/// The message of a cancelled turn, on the text-only and the tool-enabled path.
+pub(super) const CANCELLED_MESSAGE: &str = "turn was cancelled";
 
 /// The message for a session whose previous turn never reached a terminal event.
 pub(super) const ACTIVE_TURN_MESSAGE: &str = "The previous turn is incomplete; inspect it, then use session interrupt to mark it failed without retrying";
@@ -284,7 +289,7 @@ mod tests {
         );
         assert_eq!(
             pair(turn_error(TurnError::Cancelled, None)),
-            ("turn", "turn was cancelled".to_owned())
+            ("cancelled", "turn was cancelled".to_owned())
         );
         assert_eq!(
             pair(turn_error(

@@ -367,8 +367,44 @@ unchanged and remain the default.
 - **Limits.** The stream rules were checked against local fixtures only. No live
   LM Studio server was used. A streamed text reply has no usage counters unless
   the server sends them. A long generation still fails at the thirty-second
-  deadline, and cancellation does not interrupt a request in flight. Preview
-  text can differ from the recorded reply.
+  deadline. Preview text can differ from the recorded reply. Since 0.33.0 a
+  cancelled turn interrupts a streamed request, as described below; a
+  non-streamed request still cannot be interrupted.
+
+### Cancellation (0.33.0)
+
+[ADR-0050](adr/0050-interrupt-a-streamed-model-request-on-cancellation.md)
+makes a streamed request watch a cancel token. The ADR-0049 stream rules above
+are unchanged.
+
+- **Transport.** `complete_streaming` and `complete_with_tools_streaming` take
+  a `CancelToken`. The streamed request runs on an async HTTP client inside a
+  single-thread runtime created for that one request. The client is built
+  inside that runtime and is not reused, so a pooled connection never outlives
+  the runtime that drives it. Its settings equal the blocking client's: no
+  proxy, no redirect, no retry, the same connect timeout, and the same
+  thirty-second deadline, which covers the whole response. The reader is now a
+  parser fed bytes in any chunking, and the same stream rules apply to any
+  chunking.
+- **Cancel rule.** The token is checked before the request is sent, so a turn
+  that is already cancelled makes no connection. It is checked while waiting
+  for the response head and while waiting for each piece of the body, every 25
+  ms, and also before each piece, so a fast stream cannot starve the check.
+  When it is set, the request is dropped, which closes the connection, and the
+  method returns `ProviderError::Cancelled` (`local model request was
+  cancelled`). Text already delivered stays delivered and is still provisional.
+  The journal never records it.
+- **Runtime.** The turn runtime passes the turn's token to the model with each
+  request. A model that returns `Cancelled` while the token is set ends the
+  turn with the failure reason `cancelled`. If the token is not set, the
+  runtime records a model error. A streamed text-only turn creates a token and
+  ends as cancelled in the same way, including when the cancellation is seen
+  after the reply arrived and before it is recorded.
+- **Not interruptible.** The non-streaming methods keep the blocking client. A
+  non-streamed request, the compaction request before a turn, and a tool call
+  in progress are not interrupted. The CLI has no cancel source.
+- **Limits.** The cancel path was checked against local fixtures only. No live
+  LM Studio server was used.
 
 LM Studio documents the request fields in
 [Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions)

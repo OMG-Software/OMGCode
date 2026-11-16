@@ -1,7 +1,7 @@
 //! Strict reader for one streamed (server-sent events) Chat Completions reply.
 //!
-//! The reader is a pure function over [`Read`], so the stream rules can be
-//! tested without a socket. It refuses anything it does not understand and
+//! The parser is fed bytes and does no I/O, so the stream rules can be tested
+//! without a socket and apply to any chunking of the input. It refuses anything it does not understand and
 //! repairs nothing. Text reaches the caller only from a payload that passed
 //! every check, so a later failure can discard text but never deliver text
 //! from a payload that was itself refused (ADR-0049).
@@ -11,6 +11,7 @@ use super::{
 };
 use crate::storage::parse_strict_json;
 use serde_json::{Map, Value};
+#[cfg(test)]
 use std::io::Read;
 
 /// Whether the request advertised tools, which decides how a reply is judged.
@@ -35,56 +36,122 @@ pub(super) struct StreamOutcome {
     pub(super) tool_calls: Vec<Value>,
 }
 
+/// Whether the parser wants more bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Flow {
+    /// The stream is not complete; feed more bytes.
+    Continue,
+    /// `[DONE]` was processed. Nothing after it is interpreted.
+    Done,
+}
+
+/// An incremental parser for one event stream, fed bytes in any chunking.
+///
+/// The parser owns the stream state, the partial line, and the byte total, so
+/// the same rules apply however the transport splits the bytes. It performs no
+/// I/O and never waits. `on_text` receives each non-empty piece of assistant
+/// text, in order, after the payload that carried it passed validation. The
+/// whole stream is bounded by the response byte limit. After an error the
+/// parser must be discarded.
+pub(super) struct StreamParser {
+    state: StreamState,
+    line: Vec<u8>,
+    total: u64,
+    done: bool,
+}
+
+impl StreamParser {
+    /// Start a parser for one reply.
+    pub(super) const fn new(mode: StreamMode) -> Self {
+        Self {
+            state: StreamState::new(mode),
+            line: Vec::new(),
+            total: 0,
+            done: false,
+        }
+    }
+
+    /// Feed the next bytes of the stream.
+    ///
+    /// Returns [`Flow::Done`] once `[DONE]` has been processed; later bytes,
+    /// including the rest of this chunk, are neither counted nor interpreted.
+    ///
+    /// # Errors
+    ///
+    /// A line or payload that breaks the stream rules fails as in ADR-0049,
+    /// and more than the response byte limit is `ResponseTooLarge`.
+    pub(super) fn push(
+        &mut self,
+        bytes: &[u8],
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<Flow, ProviderError> {
+        if self.done {
+            return Ok(Flow::Done);
+        }
+        for &byte in bytes {
+            // Counting per byte stops exactly at the limit and reads no byte
+            // beyond a `[DONE]` that arrived in the same chunk.
+            self.total = self
+                .total
+                .checked_add(1)
+                .filter(|total| *total <= MAX_RESPONSE_BYTES)
+                .ok_or(ProviderError::ResponseTooLarge)?;
+            if byte != b'\n' {
+                self.line.push(byte);
+                continue;
+            }
+            if self.line.last() == Some(&b'\r') {
+                self.line.pop();
+            }
+            let flow = self.state.handle_line(&self.line, on_text)?;
+            self.line.clear();
+            if flow == Flow::Done {
+                self.done = true;
+                return Ok(Flow::Done);
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    /// Finish the stream and return the validated reply.
+    ///
+    /// Call it when [`Self::push`] returned [`Flow::Done`] or when the input
+    /// ended. A stream that ended before `[DONE]` is `IncompleteStream`, and a
+    /// partial last line is discarded: it was never a complete event.
+    pub(super) fn finish(self) -> Result<StreamOutcome, ProviderError> {
+        if self.done {
+            self.state.finish()
+        } else {
+            Err(ProviderError::IncompleteStream)
+        }
+    }
+}
+
 /// Read one event stream to its `[DONE]` marker.
 ///
-/// `on_text` receives each non-empty piece of assistant text, in order, after
-/// the payload that carried it passed validation. The whole stream is bounded
-/// by the response byte limit. A read error or timeout is `Transport`; a stream
-/// that ends before `[DONE]` is `IncompleteStream`.
+/// A read error is `Transport`; a stream that ends before `[DONE]` is
+/// `IncompleteStream`. The production transport feeds [`StreamParser`] from an
+/// async body; tests use this wrapper to exercise the same rules over [`Read`].
+#[cfg(test)]
 pub(super) fn read_event_stream(
     mut reader: impl Read,
     mode: StreamMode,
     on_text: &mut dyn FnMut(&str),
 ) -> Result<StreamOutcome, ProviderError> {
-    let mut state = StreamState::new(mode);
-    let mut line: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
+    let mut parser = StreamParser::new(mode);
     let mut chunk = [0_u8; 8192];
     loop {
         let count = reader
             .read(&mut chunk)
             .map_err(|_| ProviderError::Transport)?;
         if count == 0 {
-            // A partial last line is discarded: it was never a complete event.
-            return Err(ProviderError::IncompleteStream);
+            return parser.finish();
         }
-        for &byte in chunk.iter().take(count) {
-            // Counting per byte stops exactly at the limit and reads no byte
-            // beyond a `[DONE]` that arrived in the same chunk.
-            total = total
-                .checked_add(1)
-                .filter(|total| *total <= MAX_RESPONSE_BYTES)
-                .ok_or(ProviderError::ResponseTooLarge)?;
-            if byte != b'\n' {
-                line.push(byte);
-                continue;
-            }
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            let flow = state.handle_line(&line, on_text)?;
-            line.clear();
-            if flow == Flow::Done {
-                return state.finish();
-            }
+        let bytes = chunk.get(..count).ok_or(ProviderError::Transport)?;
+        if parser.push(bytes, on_text)? == Flow::Done {
+            return parser.finish();
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Flow {
-    Continue,
-    Done,
 }
 
 /// One tool call being assembled. Fields stay unset until a piece carries them.
@@ -847,5 +914,152 @@ mod tests {
         ];
         let outcome = tool_run(&parts, "tool_calls").expect("valid");
         assert_eq!(outcome.content, "Looking.");
+    }
+
+    /// Feed the parser the given chunks and collect the result and the pieces.
+    fn run_chunks<'c>(
+        mode: StreamMode,
+        chunks: impl IntoIterator<Item = &'c [u8]>,
+    ) -> (Result<StreamOutcome, ProviderError>, Vec<String>) {
+        let mut parser = StreamParser::new(mode);
+        let mut pieces = Vec::new();
+        let mut sink = |text: &str| pieces.push(text.to_owned());
+        for chunk in chunks {
+            match parser.push(chunk, &mut sink) {
+                Ok(Flow::Continue) => {}
+                Ok(Flow::Done) => return (parser.finish(), pieces),
+                Err(error) => return (Err(error), pieces),
+            }
+        }
+        (parser.finish(), pieces)
+    }
+
+    /// Streams that end in success, in failure, and before `[DONE]`.
+    fn chunking_cases() -> Vec<(&'static str, StreamMode, Vec<u8>)> {
+        let first = delta("a").trim_end().replace('\n', "\r\n");
+        let crlf = format!(
+            ": keep-alive\r\nevent: message\r\n{first}\r\n\r\ndata:{}\r\ndata: [DONE]\r\n",
+            serde_json::json!({"choices":[{"index":0,"delta":{"content":"b"},"finish_reason":"stop"}]})
+        );
+        let with_call = [
+            delta("Looking."),
+            call_payload(
+                r#"{"index":0,"id":"a","type":"function","function":{"name":"workspace_list_directory","arguments":"{\"path\":"}}"#,
+                None,
+            ),
+            call_payload(r#"{"index":0,"function":{"arguments":"\"\"}"}}"#, None),
+            finish("tool_calls"),
+            DONE.to_owned(),
+        ]
+        .concat();
+        let mut over_limit = delta("start");
+        while over_limit.len() <= 1024 * 1024 {
+            over_limit.push_str(": padding padding padding padding padding\n");
+        }
+        vec![
+            (
+                "valid text",
+                StreamMode::Text,
+                text_stream(&["Hel", "lo ", "there"]).into_bytes(),
+            ),
+            ("valid crlf", StreamMode::Text, crlf.into_bytes()),
+            ("valid tool call", StreamMode::Tools, with_call.into_bytes()),
+            (
+                "unknown field",
+                StreamMode::Text,
+                format!("{}bogus: 1\n\n{DONE}", delta("a")).into_bytes(),
+            ),
+            (
+                "malformed payload after text",
+                StreamMode::Text,
+                format!("{}data: {{broken\n\n{DONE}", delta("a")).into_bytes(),
+            ),
+            (
+                "tool call in a text stream",
+                StreamMode::Text,
+                call_payload(r#"{"index":0,"id":"a"}"#, None).into_bytes(),
+            ),
+            (
+                "ends before done",
+                StreamMode::Text,
+                format!("{}{}", delta("a"), finish("stop")).into_bytes(),
+            ),
+            (
+                "ends inside the final line",
+                StreamMode::Text,
+                format!("{}{}data: [DONE]", delta("a"), finish("stop")).into_bytes(),
+            ),
+            (
+                "text after done is not read",
+                StreamMode::Text,
+                format!(
+                    "{}garbage with no newline\ndata: {{broken\n\n",
+                    text_stream(&["a"])
+                )
+                .into_bytes(),
+            ),
+            (
+                "over the byte limit",
+                StreamMode::Text,
+                over_limit.into_bytes(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn one_byte_at_a_time_gives_the_same_result_and_pieces_as_one_push() {
+        for (name, mode, input) in chunking_cases() {
+            // Given one input, delivered whole and then one byte per push.
+            let whole = run_chunks(mode, [input.as_slice()]);
+
+            // When the parser is fed single bytes.
+            let bytewise = run_chunks(mode, input.chunks(1));
+
+            // Then the result and the delivered pieces are identical.
+            assert_eq!(bytewise, whole, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_split_at_every_position_gives_the_same_result_and_pieces() {
+        // Given a stream with CRLF framing, a comment, usage, and two pieces.
+        let input = format!(
+            ": ping\r\n\r\nevent: message\r\ndata:{}\r\n\r\ndata: {}\r\n\r\ndata: {}\r\n\r\ndata: [DONE]\r\n\r\n",
+            serde_json::json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"h\u{e9}llo"}}]}),
+            serde_json::json!({"choices":[{"index":0,"delta":{"content":" there"},"finish_reason":"stop"}]}),
+            serde_json::json!({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}),
+        )
+        .into_bytes();
+        let whole = run_chunks(StreamMode::Text, [input.as_slice()]);
+        assert_eq!(
+            whole.0.as_ref().map(|outcome| outcome.content.as_str()),
+            Ok("h\u{e9}llo there")
+        );
+
+        // When it is split into two pushes at every byte position, including
+        // inside a multi-byte character and between a CR and its LF.
+        for at in 0..=input.len() {
+            let (head, tail) = input.split_at(at);
+            let split = run_chunks(StreamMode::Text, [head, tail]);
+
+            // Then every split matches the single push.
+            assert_eq!(split, whole, "split at {at}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_counted_or_read_after_done_in_any_chunking() {
+        // Given a complete stream followed by more than the byte limit of text.
+        let mut input = text_stream(&["a"]).into_bytes();
+        let padding = vec![b'x'; 2 * 1024 * 1024];
+        input.extend_from_slice(&padding);
+
+        // When it is pushed whole and in large pieces.
+        let whole = run_chunks(StreamMode::Text, [input.as_slice()]);
+        let pieces = run_chunks(StreamMode::Text, input.chunks(4096));
+
+        // Then the reply is accepted and the trailing bytes never matter.
+        assert_eq!(whole.0.expect("valid stream").content, "a");
+        assert_eq!(pieces.0.expect("valid stream").content, "a");
     }
 }

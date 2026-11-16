@@ -40,9 +40,11 @@ const STOPPED_UNEXPECTEDLY: &str = "The chat turn stopped unexpectedly.";
 pub struct ShutdownReport {
     /// Turn threads that were in flight at the start and have finished.
     pub finished: usize,
-    /// Turn threads still running when the grace period ended. A provider
-    /// request cannot be interrupted, so such a thread may still be waiting on
-    /// the model; its journal is left with an open turn.
+    /// Turn threads still running when the grace period ended. A streamed
+    /// request is interrupted by the cancel request, so this is a turn whose
+    /// request is not streamed, or one in a step that cannot be interrupted
+    /// (a tool call, or compaction). Such a thread may still be waiting; its
+    /// journal is left with an open turn.
     pub still_running: usize,
 }
 
@@ -52,7 +54,8 @@ pub(super) enum SlotState {
     Running {
         /// A cancel was requested (it may have no token to act on yet).
         cancel_requested: bool,
-        /// The tool-enabled path's cancel token, once it exists.
+        /// The turn's cancel token, once it exists. A streamed turn has one; a
+        /// turn whose request is not streamed has none unless it uses tools.
         cancel: Option<CancelToken>,
     },
     /// The turn ended.
@@ -185,7 +188,7 @@ impl TurnTable {
         }
     }
 
-    /// Store the tool path's cancel token, acting on an earlier request.
+    /// Store the turn's cancel token, acting on an earlier request.
     fn store_cancel_token(&mut self, session_id: Uuid, token: CancelToken) {
         if let Some(Slot {
             state:
@@ -291,7 +294,7 @@ impl Inner {
         }
     }
 
-    /// Hand the tool path's cancel token to the slot.
+    /// Hand the turn's cancel token to the slot.
     fn hand_over_cancel_token(&self, session_id: Uuid, token: CancelToken) {
         // A poisoned table is reported to every caller of the service; the
         // turn simply cannot be cancelled and runs to its deadline.

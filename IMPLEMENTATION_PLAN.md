@@ -94,6 +94,11 @@ This is a resume guide, not a replacement for the owning contracts in
 - Same branch, after the Phase D3 commit `19b3747`: **Phase D4 and E6**, version
   **0.32.0**, which streams the local model's reply and pushes chat events to
   the desktop window (ADR-0049). It is **not merged and has no pull request**.
+- Same branch, after the Phase D4 and E6 commit `02221e9`: **Phase D5**, version
+  **0.33.0**, which interrupts a streamed model request when a turn is
+  cancelled (ADR-0050). A cancelled turn is recorded with the failure reason
+  `cancelled`, and the desktop exit no longer abandons a streamed turn. It is
+  **not merged and has no pull request**.
 
 Implemented today:
 
@@ -228,8 +233,10 @@ Not implemented:
   compaction, and standalone CLI checkpoint preparation.
 - Model create, delete, rename, multi-edit, network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
-  qualification; and streaming against a live server, discovery, and cancellation
-  of a request in flight in a live provider.
+  qualification; and streaming against a live server, discovery, and
+  cancellation of a streamed request against a live provider. A non-streamed
+  request, the compaction request, and a tool call in progress cannot be
+  interrupted.
 - A run network destination allowlist, runtime skills, memories, mid-turn and
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
@@ -460,6 +467,71 @@ test parallelism, and `--no-fail-fast`.
 - Not run: any live LM Studio server; the channel or any window on Linux; the
   750 ms fallback poll in the real shell (the frontend tests cover it);
   `chat --stream` by hand in a terminal (the CLI tests run the real binary).
+
+Phase D5 final verification on 2026-11-16 used Rust 1.99.1, default test
+parallelism, and `--no-fail-fast`. An unrelated project was building on the
+host for the whole period, and the host stayed between 82% and 100% CPU on all
+16 logical processors. A watcher waited about 20 minutes for the load to drop.
+It did not, so the runs were made under that load.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, and doc tests each exited zero.
+  The all-target test run exited non-zero: 942 tests passed, **one failed**,
+  and the same eight were ignored, in 41 test binaries. The run took about four
+  and a half minutes, against about two minutes on a quiet host. It was run
+  twice with the same result.
+- **The Windows failure** is
+  `run_workflow::concurrent_runs_complete_and_are_recorded`, which reached its
+  60-second limit. It runs a CPU-bound loop in the confined runner and does not
+  use the provider or chat code. The same test, run alone against a clean
+  checkout of `02221e9` at 90% load, failed the same way. That commit passed it
+  on a quiet host earlier the same day. This change touches nothing in
+  `omgcode-platform` or the run path. The cause is taken to be host load. It
+  is still a failed check in this run, and it was not rerun on a quiet host.
+  No timeout was changed.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `02221e9` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): formatting, Clippy, all-target tests, and doc tests each exited
+  zero on the final run. 935 tests in 41 test binaries and one doc test passed,
+  not counting five nested result lines from the platform suite's
+  `systemd-run` re-runs. None failed. Eight were ignored.
+- **Frontend** (Windows, Node 24): the type check and Biome were clean. 159
+  tests in 11 files passed, and the five bundle tests passed after a rebuild.
+  The frontend commands were not run on Linux.
+- **Failures before the final runs.**
+  - The first Linux run had one failed test,
+    `cancelling_while_the_response_head_is_awaited_stops_the_request`. The test
+    cancelled after a fixed 150 ms sleep. On the loaded host the client had not
+    connected by then, so the adapter returned `Cancelled` without connecting,
+    which is correct, and the mock server timed out waiting for a connection.
+    The test now cancels when the server signals that it has read the request.
+    It then passed three runs on Windows and the full Linux rerun above. The
+    adapter was not changed.
+  - The first end-to-end run reported one failed step. The driver timed the
+    exit from the start of the PowerShell helper that posts the close message,
+    and on the loaded host an idle application took 4.6 seconds by that
+    measure. The helper now prints the moment it posts the message, and the
+    whole run was repeated.
+  - The implementing worker reported the Windows failure above and one Clippy
+    lint in a test it was writing, which it fixed.
+- **Real shell, Windows.** The built shell was driven over the WebView2
+  debugging port against a mock server that holds a stream open, with a
+  scratch data root and a workspace without model tools, so every turn was
+  text-only. All nine steps passed on the repeated run:
+  - the Cancel button ended a held turn: the window settled 74 ms after the
+    click with the notice `Turn cancelled.` and no error styling, the server
+    saw the connection close 28 ms after the click, and `chat_status` reported
+    `failed` with the code `cancelled`;
+  - the next turn in the session was accepted and completed;
+  - closing the window while a second stream was held ended the process with
+    status 0, 148 ms after the close message was posted (101 ms for an idle
+    application in the same run), and the server saw the connection close;
+  - after a restart the session was idle, showed both turns as
+    `Turn failed: cancelled`, held none of the partial text, and accepted a
+    new turn.
+- Not run: any live LM Studio server; any window on Linux; the Windows suite
+  on a quiet host; cancellation of a tool-enabled turn in the real shell (the
+  service tests cover it); `--stream off` in the real shell for this change.
 
 These local results do not establish remote CI status: neither workflow change
 has run. The real shell was driven end to end on Windows only
@@ -948,12 +1020,30 @@ login or entitlement route.
   writes the provisional text to standard error through `DisplaySafeStream`.
   `capabilities` reports `streaming_adapters: ["lm_studio"]`. The stream rules
   were checked against local fixtures only.
+- **D5 (version 0.33.0):** a cancelled streamed request is interrupted. See
+  [ADR-0050](docs/adr/0050-interrupt-a-streamed-model-request-on-cancellation.md).
+  `complete_streaming` and `complete_with_tools_streaming` take a
+  `CancelToken`. The streamed request runs on an async client inside a
+  single-thread runtime created for that request, with the blocking client's
+  settings and the same thirty-second deadline. The token is checked before the
+  request, while waiting for the response head, and while waiting for each
+  piece of the body, every 25 ms. A set token drops the request and returns
+  `ProviderError::Cancelled`. `ToolModelRequest` carries the token and
+  `ModelError::Cancelled` ends the turn with the failure reason `cancelled`
+  when the token is set. A streamed text-only turn now has a cancel token. The
+  application error kind `cancelled` replaces `turn` for a cancelled
+  tool-enabled turn. `chat_cancel` stops a streamed request, the window shows
+  "Turn cancelled.", and exit leaves no open turn for a streamed turn. No
+  journal record changes shape. A non-streamed request, the compaction request,
+  and a tool call in progress are not interrupted, and the CLI has no cancel
+  source. The cancel path was checked against local fixtures only.
 
 Still open in Phase D: cloud provider adapters, subscription and API-key
 login, token refresh, account lifecycle, a memory-only session credential,
 endpoint rules for non-loopback providers, HTTPS, and certificates,
-cancellation that interrupts a stream in flight, qualification of the stream
-rules against a live LM Studio server, and a longer deadline for long
+qualification of the stream rules and of cancellation against a live LM Studio
+server, a cancel source for the CLI, interrupting non-streamed and compaction
+requests, and a longer deadline for long
 generations (the thirty-second deadline covers the whole response). The frontend shows nothing about the credential source beyond the
 endpoint text it already displayed.
 
@@ -1002,6 +1092,9 @@ not merged, and no pull request exists yet.
   five-second reconcile check, falls back to the 750 ms poll if subscribing
   fails, and shows one live entry "Assistant (generating, not saved yet)" with
   the preview. The approvals polls are unchanged.
+- **D5 (ADR-0050):** `chat_cancel` interrupts a streamed turn, the main window
+  shows the notice "Turn cancelled." decided by the error code `cancelled`, and
+  exit cancels every running turn. No command or wire type changes.
 
 Still open for the desktop:
 
