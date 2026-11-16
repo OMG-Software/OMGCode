@@ -6,6 +6,86 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.29.0 adds the desktop interface and session tree (Phase E). See
+  ADR-0044, ADR-0045, and ADR-0046, and the
+  [desktop interface guide](docs/desktop-interface.md). It is a prototype on
+  branch `codex/desktop-interface`; it has no installer and has run only on
+  Windows. No CLI command changed behaviour: every existing CLI test suite
+  passes unmodified, and `model_tools.rs` and `context_cli.rs` moved from
+  `omgcode-cli` into the new `omgcode-app` crate.
+  - **Journal inspection:** `SessionInspection::inspect` reads one journal
+    without any lock call, without following links, and with the writer's
+    validator, so a viewer never makes a writer report `Busy`. On Windows a
+    lock or sharing violation becomes `Busy` with no retry. Bytes after the last
+    line feed are ignored and reported as `incomplete_tail`; the file is never
+    changed, and `SessionJournal::open` still rejects such a file. The result
+    adds `created_at`, `updated_at`, and an ordered list of transcript entries;
+    a request manifest entry carries the model, prompt version, and tool names
+    only. `MessageSource` is now public.
+  - **Discovery:** `session::discover` and `session::locate` walk only the dated
+    `sessions` layout with a strict file-name parser, never open a journal or
+    follow a link or reparse point, and stop with `LimitReached` after 50,000
+    journals or 500,000 directory entries.
+  - **Session index:** `session_index::SessionIndex` keeps a derived SQLite
+    index with FTS5 in `<data_root>/session-index-v1/index.sqlite3`. It is a
+    cache that is deleted and rebuilt when it is foreign or corrupt at open.
+    Refresh is incremental and bounded to 1,000 journals per call; a busy
+    journal keeps its last metadata, and an invalid journal is listed with a
+    code. Search quotes every term and binds the expression as a parameter; it
+    refuses more than 16 terms or 256 characters. Titles and the user,
+    assistant, tool, and summary text are indexed; tool arguments, manifests,
+    and instructions are not. New dependency: `rusqlite` 0.43.0 with the
+    bundled SQLite 3.54.1 (MIT), which compiles C source at build time, so a C
+    compiler is required. The lockfile gains `rusqlite`, `libsqlite3-sys`,
+    `fallible-iterator`, and `fallible-streaming-iterator`.
+  - **Application library:** `omgcode-app` holds the chat turn, compaction,
+    session creation, the data-root resolver, token redaction, and
+    `DesktopService`. The CLI and the desktop shell both call it. It grants no
+    authority. Chat gains a cooperative cancellation hook; the CLI does not use
+    it, and it cannot interrupt a provider request in flight.
+  - **Approval review:** core adds `review_approval` and display-safe text. It
+    recomputes an approval's digest from the recorded tool request with the
+    tool handler's own function and returns `exact`, `stale`, or `not_found`.
+    It decides, consumes, and applies nothing. `ControlStore` gains
+    `workspaces()`, `directory_path()`, and `directory_display()`.
+  - **Desktop shell:** the new `omgcode-desktop` crate is a Tauri 2 shell with
+    two windows, 18 commands, a capability file per window and no `core:`
+    permission, a Rust window check as the first statement of every handler, a
+    content security policy, a navigation guard, and a five second bounded
+    shutdown. It takes `--data-dir` and `--endpoint` and reads no other
+    configuration. The webview receives no host path, journal path, or token.
+    Chat tools follow the workspace settings as in the CLI. New dependencies:
+    `tauri` 2.12.6 (`wry` and `x11` features only) and `tauri-build` 2.7.5,
+    Apache-2.0 OR MIT, with no plugin, tray, updater, asset protocol, or
+    devtools feature. The lockfile grows by about 283 entries. A Linux build
+    needs the WebKitGTK development packages.
+  - **Approvals window:** a separate `approvals` window holds the only decision
+    controls. Approving needs an `exact` review binding and a single-use review
+    token that lives 120 seconds; a file edit also needs the writers-stopped
+    checkbox. The CLI `approvals` commands are unchanged. The window is still
+    web content and is not a trusted computing base.
+  - **Frontend:** `crates/omgcode-desktop/ui` is strict TypeScript with Vite,
+    Vitest (jsdom), and Biome, with one runtime dependency, `@tauri-apps/api`
+    2.12.5. Versions are exact, the lockfile is committed, and `.npmrc` sets
+    `ignore-scripts=true`. The interface builds its document from text nodes
+    only; tests scan for markup injection, inline script, remote resources, and
+    browser storage. It polls for chat status and approvals; there is no push
+    channel.
+  - **Continuous integration:** the Rust workflow installs the Tauri Linux
+    packages, sets up Node 24, builds the frontend before Clippy, and has a 40
+    minute timeout (was 20). A new Frontend workflow runs the type check, Biome,
+    Vitest, and the bundle checks on Ubuntu 24.04 and Windows Server 2025.
+    `.gitattributes` checks the frontend out with LF. The root `.gitignore`
+    gains `node_modules/` and `dist/`.
+  - **Limits:** on Linux the shell builds and the workspace tests pass (WSL
+    6.6, Ubuntu 24.04), but no window has been opened there, so its webview,
+    IPC, and capability enforcement are unverified on Linux. The workflow
+    changes have not run on GitHub, and CodeQL's JavaScript/TypeScript
+    selection is unverified. Two link tests are skipped on a host without
+    symlink privilege; they ran on Linux. The shell has no packaging, streaming, settings
+    interface, development panels, or recovery interface. Corruption inside an
+    index table behind a valid header is not rebuilt automatically, and two
+    versions sharing a data root rebuild each other's index.
 - Version 0.28.0 adds the approval-gated model edit tool (Phase C17). See
   ADR-0043.
   - **Tool:** `workspace_edit_file { path, old_text, new_text }` replaces

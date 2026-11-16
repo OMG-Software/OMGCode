@@ -1,6 +1,6 @@
 # OMGCode implementation plan
 
-Last verified: 2026-11-15.
+Last verified: 2026-11-16.
 
 This guide is part of `main` after PR #9. Read it before selecting the next
 increment. Checkpoint preparation does not mean native replacement exists.
@@ -66,21 +66,28 @@ This is a resume guide, not a replacement for the owning contracts in
   its native end-to-end acceptance test (C15).
 - **PR #31** merged at `28da2cf` on 2026-11-15: PR #30 review fixes, including
   asynchronous package-fetch file I/O.
-- This branch, `codex/context-compaction`: **Phase C16**, version **0.26.0**,
-  with manual and pre-turn automatic context compaction (ADR-0041). It starts
-  from `97c733e`, the PR #31 head. No run accepts a profile or has
-  destination-scoped networking; no provider adapter is enabled, and the
-  command tool is the only model tool that can request a process.
-- Commit `e88df5b` on this branch: **Phase D1**, version **0.27.0**, the
-  provider credential service (ADR-0042). No adapter reads a stored credential.
-- This change: **Phase C17**, version **0.28.0**, the approval-gated model
-  edit tool (ADR-0043). It writes only through the checkpointed apply after an
-  approved, writers-stopped decision.
+- **PR #32** merged at `60430ee` on 2026-11-16, from
+  `codex/context-compaction`. The merge was verified through GitHub. It
+  carried three phases:
+  - **Phase C16**, version **0.26.0**, with manual and pre-turn automatic
+    context compaction (ADR-0041). No run accepts a profile or has
+    destination-scoped networking, and no provider adapter is enabled.
+  - **Phase D1**, version **0.27.0**, the provider credential service
+    (ADR-0042). No adapter reads a stored credential.
+  - **Phase C17**, version **0.28.0**, the approval-gated model edit tool
+    (ADR-0043). It writes only through the checkpointed apply after an
+    approved, writers-stopped decision.
+- Branch `codex/desktop-interface`: **Phase E**, version **0.29.0**, the
+  desktop interface and session tree (ADR-0044, ADR-0045, ADR-0046). Unlike
+  the entries above, it is **not merged and has no pull request yet**. It is a
+  prototype whose windows have run only on Windows; on Linux it builds and its
+  tests pass. See [the desktop interface guide](docs/desktop-interface.md).
 
 Implemented today:
 
-- Pinned Rust 1.99.1 workspace with `omgcode-core`, `omgcode-cli`, and
-  `omgcode-platform`.
+- Pinned Rust 1.99.1 workspace with `omgcode-core`, `omgcode-cli`,
+  `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The last two exist
+  only on the unmerged Phase E branch.
 - Compiled, versioned base prompt `0.1.4` with a visible digest.
 - Workspace settings, native directory identity, process-local bindings, and a
   separate settings/audit journal.
@@ -204,8 +211,13 @@ Not implemented:
 - Model create, delete, rename, multi-edit, network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
   qualification; and streaming, discovery, and cancellation in a live provider.
-- A run network destination allowlist, runtime skills, memories, desktop/UI
-  panels, mid-turn and provider-native compaction, and caches. Nothing calls the unconfined process runner.
+- A run network destination allowlist, runtime skills, memories, mid-turn and
+  provider-native compaction, and caches. Nothing calls the unconfined process
+  runner.
+- Desktop development panels (terminal tabs, task logs, and diffs), a settings
+  interface, streaming, a recovery interface, packaging and installers, and any
+  Linux run of the desktop shell. The prototype shell, session tree, search,
+  chat, and approvals window exist on the Phase E branch only.
 - Provider adapters and subscription/API-key login; the recorded provider
   profiles are configuration only, and no adapter reads a stored credential.
 - Subscription token storage and a memory-only session credential.
@@ -237,6 +249,20 @@ Not implemented:
 
 ## Verification baseline
 
+Build the desktop frontend before any Cargo step that includes
+`omgcode-desktop`. The crate embeds `crates/omgcode-desktop/ui/dist` at compile
+time, and `cargo check`, `clippy`, `build`, and `test` fail without it:
+
+```text
+cd crates/omgcode-desktop/ui
+npm ci
+npm run build
+```
+
+The frontend checks, run from the same directory, are `npm run check`,
+`npm run lint`, `npm test`, and `npm run test:dist`. They need Node 24. The
+Frontend workflow runs them on Linux and Windows.
+
 Run from the repository root with the pinned toolchain:
 
 ```text
@@ -260,6 +286,46 @@ suite on both hosts with default parallelism, as CI does. Use
 `-- --test-threads=1` only as an additional run when host contention affects local
 provider fixtures; record failures before any isolated rerun or full retry. A
 serial run alone cannot detect races between test threads.
+
+On a Windows host whose repository is on ReFS, point `TEMP` and `TMP` at a
+directory on NTFS. The private-store, credential, container, and replacement
+tests need NTFS. Earlier notes here put `TEMP` and `TMP` on the same volume as
+the fixtures; that works only when the repository volume is NTFS. Phase E
+development ran with the repository on a ReFS volume. See
+[testing standards](docs/testing-standards.md#desktop-shell-and-frontend).
+
+Phase E final verification on 2026-11-16 used Rust 1.99.1 and default test
+parallelism, with the Windows and Linux runs one after the other.
+
+- **Windows** (Windows 11 build 26300, repository on ReFS, `TEMP` and `TMP`
+  on NTFS): formatting, Clippy with `--locked`, all-target tests, and doc
+  tests each exited zero. 782 tests in 36 test binaries and one doc test
+  passed. None failed. Eight were ignored, the same eight as before this
+  phase: one in `run_workflow`, six in `toolchain_acceptance`, and one in
+  `omgcode-platform`. The two file-symlink tests printed `SKIPPED link
+  assertions`. The frontend passed `npm run check`, `npm run lint`, and 113
+  Vitest tests, including the four bundle checks.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `60430ee` with
+  the changed files overlaid and the frontend bundle built on Windows):
+  formatting, Clippy with `--locked`, all-target tests with `--no-fail-fast`,
+  and doc tests each exited zero. 776 tests in 36 test binaries and one doc
+  test passed. None failed. Eight were ignored. The platform suite re-runs
+  four tests inside `systemd-run` scopes and prints a nested result line for
+  each; those four are not counted twice here. The frontend commands did not
+  run on Linux, because that host has Node 18.
+- **Failures before the final runs.** The first complete Linux run failed 19
+  tests. Eighteen credential tests failed because the login keyring was
+  locked; they passed after it was unlocked, with no code change. One desktop
+  approval test failed because its fixture created the data root with the
+  default mode; the fixture now creates it with mode 0700. An earlier Linux
+  run stopped at one `omgcode-app` test that assumed the Windows spelling of
+  the data directory; that assertion is now case-insensitive.
+- No test timed out and no provider fixture was retried on either host.
+
+These local results do not establish remote CI status: neither workflow change
+has run. The real shell was driven end to end on Windows only
+([testing standards](docs/testing-standards.md#desktop-shell-and-frontend)).
+No window has been opened on Linux.
 
 A2b local verification on 2026-11-10 passed formatting, Clippy, serial all-target
 tests, and doc tests with Rust 1.99.1. Ubuntu 24.04 under WSL, uid 1000, passed
@@ -689,7 +755,51 @@ login or entitlement route.
 
 The Rust core remains the authority. The UI must not receive raw journal paths,
 credentials, or unrestricted host capabilities. Follow the session, permission,
-context, and security contracts.
+context, and security contracts. Follow the
+[desktop interface guide](docs/desktop-interface.md).
+
+Version 0.29.0 builds a prototype on branch `codex/desktop-interface`. It is
+not merged, and no pull request exists yet.
+
+- **E1 (ADR-0044):** lock-free journal inspection. `SessionInspection::inspect`
+  reads one journal with no lock call, no link following, and the writer's
+  validator. Windows lock and sharing violations become `Busy`. Bytes after the
+  last line feed are reported as `incomplete_tail`. It adds times and a bounded
+  transcript entry list. `session::discover` walks only the dated layout and
+  never opens a journal or follows a link. Limits: 50,000 journals and 500,000
+  directory entries.
+- **E2 (ADR-0044):** a derived SQLite index in
+  `<data_root>/session-index-v1/index.sqlite3` through `rusqlite` 0.43.0 with
+  the bundled SQLite and FTS5. Incremental, bounded refresh; a busy journal
+  keeps its last metadata; an invalid journal is listed with a code. A
+  missing, corrupt, or foreign index is deleted and rebuilt.
+- **E3 (ADR-0045):** the `omgcode-app` library. The chat turn, compaction,
+  session creation, the data-root resolver, and token redaction moved out of
+  the CLI, which is now a thin adapter. `DesktopService` is the
+  front-end-neutral command service, including review tokens. Core adds
+  `review_approval` and display-safe text. No CLI behaviour changed.
+- **E4 (ADR-0045, ADR-0046):** the Tauri shell `omgcode-desktop`: two windows,
+  18 commands, a capability file per window, the Rust window policy, the content
+  policy, the navigation guard, and a bounded shutdown.
+- **E5 (ADR-0045, ADR-0046):** the strict TypeScript frontend with Vite,
+  Vitest, and Biome: the session tree, search, transcript, composer, and the
+  separate approvals bundle.
+
+Still open for the desktop:
+
+- a Linux build and run of the shell, and Linux evidence for the Unix-only
+  inspection and index branches;
+- development panels (terminal tabs, task logs, and diffs), a settings
+  interface, and persisted chat settings;
+- streaming and a push channel instead of polling;
+- a recovery interface for an incomplete tail or a damaged journal, plus
+  `session.archive_requested` stop-and-archive and storage-use display;
+- Git, MCP, skills, and memory interfaces;
+- a native confirmation dialog for approvals, which would remove the webview
+  from the final decision;
+- packaging, signing, and installers (Phase G);
+- automatic repair of a corrupt index behind a valid header, and a protection
+  against two versions sharing one data root and rebuilding each other's index.
 
 ### Phase F: runtime skills, MCP, memories, compaction, and caches
 
@@ -713,6 +823,29 @@ release readiness remain separate gates.
 
 ## Known cautions
 
+- Build `crates/omgcode-desktop/ui/dist` before any Cargo command that includes
+  `omgcode-desktop`. Without it the build fails with `The frontendDist
+  configuration is set to "ui/dist" but this path doesn't exist`.
+- Never run `tauri dev` or the shell without `--data-dir <scratch>`. Without it
+  the shell uses the real per-user data directory.
+- Two tests print `SKIPPED link assertions` and return on a host that cannot
+  create file symbolic links (error 1314): `a_symlinked_journal_is_rejected`
+  and `a_database_file_that_is_a_link_is_refused`. They did not run on the
+  Phase E Windows host; they ran in the Linux run. A privileged Windows run
+  has not executed them.
+- A Linux login keyring can exist and still be locked, which fails every
+  credential suite with "an unlocked Secret Service default collection is
+  required". Check the collection's `Locked` property before a Linux run.
+- A test fixture that creates its own data root must make it mode 0700 on
+  Unix. The checkpoint store refuses the default mode.
+- A data root under the user's Temp directory inherits an ACL that the private
+  store refuses. Reset it before a manual run:
+  `icacls <dir> /inheritance:r /grant:r *<SID>:(OI)(CI)F`.
+- The session index file carries a version. A binary with a different index
+  version deletes and rebuilds the index, so two versions sharing a data root
+  rebuild each other's index. Rebuild also fails on Windows while another
+  process has the database open.
+- `.claude/` is untracked local tooling state. Do not commit it.
 - Linux CLI integration tests raced on inherited `flock` descriptors, producing
   `Busy` and mock-provider timeouts. The spawn gate in
   [testing standards](docs/testing-standards.md#isolation-and-concurrency) covers

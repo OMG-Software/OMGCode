@@ -26,7 +26,7 @@ use crate::control::{
     ControlStore, now_unix, valid_profile_name,
 };
 use crate::files::{FileBroker, FileError, FileListing, FileTarget};
-use crate::policy::{DecisionReason, PermissionSet, WorkspaceId};
+use crate::policy::{DecisionReason, PermissionSet, SessionBinding, WorkspaceId};
 use crate::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, ModelMessage,
     PromptError,
@@ -35,6 +35,13 @@ use crate::replacement::{CheckpointError, RecordedArtifact};
 use crate::session::{
     MAX_MESSAGE_BYTES, MessageRole, NativePath, RecordedMessage, RequestManifest, SessionError,
     SessionJournal, ToolOutcome, sha256_hex,
+};
+
+mod review;
+
+pub use review::{
+    ApprovalReview, ReviewCandidate, ReviewError, ReviewField, ReviewedRequest, StaleReason,
+    display_safe, display_safe_line, review_approval,
 };
 
 /// Revision of the tool schemas advertised by this runtime.
@@ -1496,36 +1503,21 @@ impl WorkspaceToolDispatcher<'_> {
                 );
             }
         };
-        let target = FileTarget {
-            session_id: self.session_id,
-            workspace_id: self.workspace_id,
-            path: PathBuf::from(path),
+        let target = edit_target(self.session_id, self.workspace_id, path);
+        let current = match read_edit_source(&mut control, &binding, &target) {
+            Ok(bytes) => bytes,
+            Err(error) => return classify_edit_error(call, error),
         };
-        let current =
-            match FileBroker::new(&mut control).read(&binding, &target, MAX_EDIT_FILE_BYTES) {
-                Ok(read) => read.bytes,
-                Err(error) => return classify_edit_error(call, error),
-            };
-        let Ok(text) = std::str::from_utf8(&current) else {
-            return ToolExecution::recoverable("non_utf8", call);
+        let prepared = match prepare_edit(path, old_text, new_text, &current) {
+            Ok(prepared) => prepared,
+            Err(code) => return ToolExecution::recoverable(code, call),
         };
-        let start = match unique_match(text, old_text) {
-            TextMatch::None => return ToolExecution::recoverable("edit_no_match", call),
-            TextMatch::Many => return ToolExecution::recoverable("edit_ambiguous", call),
-            TextMatch::Once(start) => start,
-        };
-        if old_text == new_text {
-            return ToolExecution::recoverable("edit_unchanged", call);
-        }
-        let Some(proposed) = replace_once(text, start, old_text.len(), new_text) else {
-            return ToolExecution::recoverable("edit_too_large", call);
-        };
-        let (Some(current_artifact), Some(proposed_artifact)) =
-            (artifact(&current), artifact(proposed.as_bytes()))
-        else {
-            return ToolExecution::recoverable("edit_too_large", call);
-        };
-        let normalized = normalized_path(path);
+        let PreparedEdit {
+            normalized,
+            current_artifact,
+            proposed,
+            proposed_artifact,
+        } = prepared;
         let digest = edit_digest(
             self.session_id,
             self.workspace_id,
@@ -1657,17 +1649,8 @@ impl WorkspaceToolDispatcher<'_> {
         else {
             return ToolExecution::recoverable("invalid_command", call);
         };
-        let request = crate::run::RunRequest {
-            workspace_id: self.workspace_id,
-            profile: profile.clone(),
-            program: PathBuf::from(program),
-            arguments: arguments.iter().map(OsString::from).collect(),
-            working_directory: cwd.as_ref().map(PathBuf::from),
-            host_services: false,
-            network: false,
-            model_tools: true,
-            limits: command_limits(),
-        };
+        let request =
+            command_run_request(self.workspace_id, profile, program, arguments, cwd.as_ref());
         let digest = command_digest(self.session_id, &request);
         let now = now_unix();
         let revision = control.revision();
@@ -1813,6 +1796,32 @@ impl WorkspaceToolDispatcher<'_> {
     }
 }
 
+/// Build the run request for one model command call.
+///
+/// This is the only place that turns parsed command arguments into a
+/// [`crate::run::RunRequest`]. Dispatch runs and digests the result, and
+/// approval review recomputes the same digest from it, so the two cannot
+/// diverge. Network and host services are always off and the limits are fixed.
+fn command_run_request(
+    workspace_id: WorkspaceId,
+    profile: &str,
+    program: &str,
+    arguments: &[String],
+    cwd: Option<&String>,
+) -> crate::run::RunRequest {
+    crate::run::RunRequest {
+        workspace_id,
+        profile: profile.to_owned(),
+        program: PathBuf::from(program),
+        arguments: arguments.iter().map(OsString::from).collect(),
+        working_directory: cwd.map(PathBuf::from),
+        host_services: false,
+        network: false,
+        model_tools: true,
+        limits: command_limits(),
+    }
+}
+
 /// Fixed limits for one model command run.
 fn command_limits() -> crate::run::ProcessLimits {
     crate::run::ProcessLimits {
@@ -1943,6 +1952,75 @@ fn replace_once(text: &str, start: usize, length: usize, replacement: &str) -> O
     Some(proposed)
 }
 
+/// One exact edit prepared against the live bytes of its target file.
+struct PreparedEdit {
+    /// The `/`-joined path used in the digest and the summary.
+    normalized: String,
+    /// Size and SHA-256 of the live current bytes.
+    current_artifact: RecordedArtifact,
+    /// The complete proposed file text.
+    proposed: String,
+    /// Size and SHA-256 of the proposed bytes.
+    proposed_artifact: RecordedArtifact,
+}
+
+/// The broker target for one model edit path.
+fn edit_target(session_id: Uuid, workspace_id: WorkspaceId, path: &str) -> FileTarget {
+    FileTarget {
+        session_id,
+        workspace_id,
+        path: PathBuf::from(path),
+    }
+}
+
+/// Read the live current bytes of an edit target through the audited broker.
+///
+/// This is the only edit read. The broker checks the live `read` permission
+/// and appends its own audit record. Dispatch and approval review both call it.
+fn read_edit_source(
+    control: &mut ControlStore,
+    binding: &SessionBinding,
+    target: &FileTarget,
+) -> Result<Vec<u8>, FileError> {
+    FileBroker::new(control)
+        .read(binding, target, MAX_EDIT_FILE_BYTES)
+        .map(|read| read.bytes)
+}
+
+/// Turn parsed edit arguments and the live current bytes into the exact edit.
+///
+/// This is the only place that applies the unique-match rule, the no-op check,
+/// and the size bounds. An error is the recoverable tool code that dispatch
+/// reports; approval review treats any of them as "not this request".
+fn prepare_edit(
+    path: &str,
+    old_text: &str,
+    new_text: &str,
+    current: &[u8],
+) -> Result<PreparedEdit, &'static str> {
+    let text = std::str::from_utf8(current).map_err(|_| "non_utf8")?;
+    let start = match unique_match(text, old_text) {
+        TextMatch::None => return Err("edit_no_match"),
+        TextMatch::Many => return Err("edit_ambiguous"),
+        TextMatch::Once(start) => start,
+    };
+    if old_text == new_text {
+        return Err("edit_unchanged");
+    }
+    let proposed = replace_once(text, start, old_text.len(), new_text).ok_or("edit_too_large")?;
+    let (Some(current_artifact), Some(proposed_artifact)) =
+        (artifact(current), artifact(proposed.as_bytes()))
+    else {
+        return Err("edit_too_large");
+    };
+    Ok(PreparedEdit {
+        normalized: normalized_path(path),
+        current_artifact,
+        proposed,
+        proposed_artifact,
+    })
+}
+
 /// The labelled report of an applied edit. It never contains file text.
 fn edit_success_message(
     call: &ToolCall,
@@ -2047,14 +2125,38 @@ fn edit_summary(path: &str, current: &RecordedArtifact, proposed: &RecordedArtif
 
 /// Invisible, line-breaking, or bidirectional formatting characters that can
 /// hide or reorder displayed text.
+///
+/// Categories: bidirectional and zero-width marks (U+061C, U+200B to U+200F,
+/// U+2028 to U+202E, U+2060 to U+2069, U+FEFF); characters that render as
+/// nothing or merge into a neighbour (soft hyphen U+00AD, combining grapheme
+/// joiner U+034F, Hangul fillers U+115F, U+1160, U+3164, U+FFA0, Khmer
+/// invisible vowels U+17B4 to U+17B5, Mongolian selectors and separator
+/// U+180B to U+180F); variation selectors (U+FE00 to U+FE0F); interlinear
+/// annotation anchors and the object replacement character (U+FFF9 to
+/// U+FFFC); musical formatting controls (U+1D173 to U+1D17A); and the tag
+/// characters with the variation selectors supplement (U+E0000 to U+E0FFF).
+///
+/// This list does not cover look-alike letters, mixed scripts, or ordinary
+/// spaces.
 const fn is_hidden_format(character: char) -> bool {
     matches!(
         character,
-        '\u{061c}'
+        '\u{00ad}'
+            | '\u{034f}'
+            | '\u{061c}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
             | '\u{200b}'..='\u{200f}'
             | '\u{2028}'..='\u{202e}'
             | '\u{2060}'..='\u{2069}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
             | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffc}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
     )
 }
 

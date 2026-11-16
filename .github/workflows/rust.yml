@@ -22,7 +22,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,6 +31,25 @@ jobs:
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Install the desktop shell's Linux build packages
+        if: runner.os == 'Linux'
+        run: |
+          # The Tauri prerequisites for Debian and Ubuntu. They are needed to
+          # compile the desktop crate; no test here starts a webview.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Build the desktop frontend
+        # The desktop crate embeds ui/dist at compile time, so the frontend
+        # must be built before any workspace-wide Cargo step.
+        working-directory: crates/omgcode-desktop/ui
+        run: |
+          npm ci
+          npm run build
       - name: Check lints and compilation
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Start a user service manager for delegated cgroups

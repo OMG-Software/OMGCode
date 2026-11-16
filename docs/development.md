@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.28.0 is a developer CLI prototype with workspace permission
+OMGCode 0.29.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
@@ -25,6 +25,11 @@ files in that workspace, request an approval-gated exact edit with read/write,
 and request an approval-gated command with execute/read/write. Model create,
 delete, rename, network, Git, and MCP tools are not implemented. Trusted commands record and apply the Windows container
 grants; see [command execution](execution.md).
+
+Version 0.29.0 also adds a prototype Tauri desktop shell,
+`omgcode-desktop`, with a session tree, search, chat, and an approvals window.
+It is unpackaged and has run only on Windows. See [Desktop shell](#desktop-shell)
+below and the [desktop interface guide](desktop-interface.md).
 
 The core's byte-input replacement inspectors remain read-only. Its file broker
 also provides `checkpoint_prepare` on Linux and Windows with fresh read/write
@@ -97,9 +102,37 @@ cargo run --locked -p omgcode-cli -- capabilities
 cargo run --locked -p omgcode-cli -- prompt
 ```
 
-The repository pins Rust 1.99.1, edition 2024, for all three crates. This is also
+`cargo build --workspace` includes the desktop crate, which embeds the built
+frontend. Build the frontend first (see [Desktop shell](#desktop-shell)), or
+build only the crates you need with `-p`. The core crate compiles SQLite's C
+source through the `cc` crate, so a C compiler is required on every host.
+
+The repository pins Rust 1.99.1, edition 2024, for all five crates. This is also
 the declared minimum version; no older compiler is supported. Cargo.lock fixes
 the resolved dependency graph. The executable is named omgcode.
+
+## Desktop shell
+
+The shell needs Node 24 for its frontend, and on Linux the WebKitGTK packages
+listed in [platform support](platform-support.md#desktop-shell). Build the
+frontend before any Cargo command that includes `omgcode-desktop`, including
+`check`, `clippy`, `build`, and `test`. Without `ui/dist` the build fails with
+`The frontendDist configuration is set to "ui/dist" but this path doesn't exist`.
+
+```text
+cd crates/omgcode-desktop/ui
+npm ci
+npm run build
+cd ../../..
+cargo build -p omgcode-desktop --locked
+cargo run -p omgcode-desktop --locked -- --data-dir <scratch-directory>
+```
+
+Always pass a scratch `--data-dir` when developing, so a run does not use the
+real per-user data. The frontend commands, the launch arguments, the Tauri
+development command, and the limits are in the
+[desktop interface guide](desktop-interface.md#development). The shell has not
+run on Linux.
 
 ## Application namespace and existing prototype data
 
@@ -298,8 +331,9 @@ workspace registration. Invalid settings or outside-root selections fail.
 Existing text-only journals remain readable without inferred access grants.
 With no configured root, the earlier text-only behavior remains available and
 sets no implicit root. Registrations store settings and audit history; they do
-not create project folders or grant access. A broader project registry and the
-folder/session tree remain future work.
+not create project folders or grant access. A broader project registry remains
+future work. The desktop shell's session tree groups sessions by the workspace
+path each journal recorded; it is not a project registry.
 
 ## Workspace files
 
@@ -581,8 +615,11 @@ omgcode session interrupt <journal-path>
 Interrupt acquires the exclusive journal lock. It cannot interrupt another
 running writer. It records operator_interrupted for an abandoned turn, without
 retrying a request or claiming remote rollback. Invalid or truncated journals
-are rejected without modification. Automated repair and a recovery UI remain
-planned. See the complete [session contract](session-storage.md).
+are rejected without modification. Automated repair and a recovery interface
+remain planned. The desktop shell reads journals without the writer lock and
+can archive, restore, and interrupt a session; see the
+[desktop interface guide](desktop-interface.md). See the complete
+[session contract](session-storage.md).
 
 ## Implemented limits
 
@@ -629,11 +666,14 @@ usage events, streaming chunks, and large-output artifacts remain planned.
 
 | Crate | Responsibility |
 | --- | --- |
-| omgcode-core | Compiled prompt, bounded model adapter, session/control/file-operation/run journals, workspace policy and toolchain profiles, broker orchestration, trusted runs, bounded turn/tool lifecycle, and non-destructive edit previews |
-| omgcode-cli | Trusted operator input, one-turn chat orchestration with optional read/list and approval-gated command model tools, bounded file and preview commands, trusted `run`, JSON output |
+| omgcode-core | Compiled prompt, bounded model adapter, session/control/file-operation/run journals, lock-free journal inspection and discovery, the derived SQLite session index, approval review, workspace policy and toolchain profiles, broker orchestration, trusted runs, bounded turn/tool lifecycle, and non-destructive edit previews |
+| omgcode-cli | Trusted operator input as a thin adapter over `omgcode-app`, bounded file and preview commands, trusted `run`, approvals, JSON output |
+| omgcode-app | Front-end-neutral chat turn with optional read/list and approval-gated edit and command tools, session creation, compaction, the data-root resolver, token redaction, and `DesktopService`. It grants no authority |
+| omgcode-desktop | The Tauri shell: windows, per-window capability files, the Rust window policy, command handlers, and the navigation guard. The TypeScript frontend is in `ui/` |
 | omgcode-platform | Native journal validation, directory identity, handle-relative workspace file operations, Windows AppContainer grants, interrupt-to-cancel handling, and a process-tree runner with Linux Landlock/seccomp and Windows AppContainer confinement |
 
-Core and CLI forbid unsafe code. The platform crate denies unsafe code except
+Core, CLI, application, and desktop crates forbid unsafe code through the
+workspace lint. Their dependencies, such as Tauri and SQLite, use it. The platform crate denies unsafe code except
 inside its reviewed Windows handle wrappers for directory identity, native file
 operations, process creation and job control, AppContainer profiles and ACL
 grants, and console control handler registration, and its Linux pre-exec
@@ -663,9 +703,10 @@ commands use existing settings to inspect or resolve file-operation recovery;
 they do not use a workspace or session binding. The control journal persists
 workspace registrations, settings, revisions, and policy audit events. File
 operations use a separate journal, so they do not change the `control-v1.jsonl`
-or session JSONL schemas. A broader project registry and the folder/session tree remain
-future work. The CLI's explicit journal path is a trusted operator interface;
-it must not become a raw-path command in the future web interface.
+or session JSONL schemas. A broader project registry remains future work. The
+desktop shell lists sessions from the derived index and addresses them by UUID.
+The CLI's explicit journal path is a trusted operator interface; it must not
+become a raw-path command in the web interface.
 
 ## Dependencies
 
@@ -686,7 +727,18 @@ Direct dependencies have specific purposes:
 | windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, DPAPI (`Win32_Security_Cryptography`), I/O handles, processes and jobs, and console control events |
 | zeroize | Zeroes owned secret buffers on drop; `alloc` only, no derive macro |
 | secret-service (Linux only) | Freedesktop Secret Service client over pure-Rust zbus, with the tokio runtime and Rust AES/DH session crypto (`rt-tokio-crypto-rust`); its blocking API runs an internal tokio runtime |
+| rusqlite | 0.43.0 with `default-features = false` and `bundled`; SQLite 3.54.1 with FTS5 for the derived session index. MIT. Compiles SQLite's C amalgamation through `cc` at build time, so a C compiler is required. Uses `unsafe` internally; core uses only its safe API. Adds `libsqlite3-sys`, `fallible-iterator`, and `fallible-streaming-iterator` |
+| tauri (`omgcode-desktop`) | 2.12.6 with `default-features = false` and features `wry` and `x11`. Apache-2.0 OR MIT. No plugin, tray, updater, asset protocol, or devtools feature. Linux needs the WebKitGTK development packages. The lockfile gained about 283 entries |
+| tauri-build (`omgcode-desktop`, build dependency) | 2.7.5 with `config-json`. Runs in `build.rs` to declare the application commands and generate permission manifests |
 | tempfile | Private disposable test data; development dependency only |
+
+The frontend in `crates/omgcode-desktop/ui` has one runtime dependency,
+`@tauri-apps/api` 2.12.5. Its build and test tools are `@tauri-apps/cli`
+2.12.5, `typescript` 7.0.2, `vite` 8.3.8, `vitest` 5.1.0, `jsdom` 31.0.1, and
+`@biomejs/biome` 2.6.8. Versions are exact, `package-lock.json` is committed,
+and `.npmrc` sets `ignore-scripts=true`. `npm audit` reported no
+vulnerabilities on 2026-11-16. See the
+[desktop interface guide](desktop-interface.md#development).
 
 The selected direct crates declare MIT and/or Apache-2.0 licensing and support
 the build targets. Cargo.lock and each update's metadata need review; this is

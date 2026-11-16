@@ -92,8 +92,11 @@ It checks them before it starts and again after every settings change while
 it runs. A change that withdraws one stops the running tree, which is recorded
 as `revoked`. The `permissions` command reports success only after the runs it
 affects have stopped; see [settings changes during a
-run](execution.md#settings-changes-during-a-run). Per-target grants and
-approval UI remain required before a model can request execution.
+run](execution.md#settings-changes-during-a-run). Per-target grants remain
+required. Single-use approvals now exist for the model edit and command tools:
+the trusted CLI and the desktop approvals window decide them. Workspace
+settings still change only through the trusted CLI; the desktop shell has no
+settings interface.
 
 ## Persistence and audit
 

@@ -18,6 +18,20 @@ use uuid::Uuid;
 
 use crate::storage::{self, StorageError};
 
+mod discovery;
+mod filename;
+mod inspection;
+
+pub use discovery::{DiscoveredJournal, Discovery, discover, locate};
+pub use inspection::{SessionInspection, TranscriptEntry, TranscriptEntryKind};
+
+/// Return the session UUID of a file name that matches the writer's exact
+/// journal name format, or `None`. The session index uses this to revalidate a
+/// stored path before handing it to a writer open.
+pub(crate) fn strict_journal_session_id(name: &str) -> Option<Uuid> {
+    filename::parse_strict(name)
+}
+
 const SCHEMA_VERSION_V1: u32 = 1;
 const SCHEMA_VERSION_V2: u32 = 2;
 const SCHEMA_VERSION: u32 = 3;
@@ -308,14 +322,7 @@ impl SessionJournal {
             .join(format!("{:02}", u8::from(now.month())))
             .join(format!("{:02}", now.day()));
         storage::create_private_directories(&dir).map_err(map_storage_error)?;
-        let filename = format!(
-            "omgcode-{:02}-{:02}-{:02}-{:03}Z-{session_id}.jsonl",
-            now.hour(),
-            now.minute(),
-            now.second(),
-            now.millisecond()
-        );
-        let path = dir.join(filename);
+        let path = dir.join(filename::journal_file_name(now, session_id));
         let mut file = storage::open_locked_file(&path, true).map_err(map_storage_error)?;
 
         let started = SessionStarted {
@@ -375,16 +382,7 @@ impl SessionJournal {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(SessionError::InvalidJournal("filename is not valid UTF-8"))?;
-        let id_text = filename
-            .strip_prefix("omgcode-")
-            .and_then(|name| name.strip_suffix(".jsonl"))
-            .and_then(|name| name.rsplit_once("Z-"))
-            .map(|(_, id)| id)
-            .ok_or(SessionError::InvalidJournal(
-                "filename does not contain a session UUID",
-            ))?;
-        let filename_id = Uuid::parse_str(id_text)
-            .map_err(|_| SessionError::InvalidJournal("filename has an invalid session UUID"))?;
+        let filename_id = filename::lenient_session_id(filename)?;
         let metadata = fs::symlink_metadata(path)?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(SessionError::InvalidJournal(
@@ -393,7 +391,12 @@ impl SessionJournal {
         }
         let mut file = storage::open_locked_file(path, false).map_err(map_storage_error)?;
         let contents = read_bounded(&mut file)?;
-        let (snapshot, tool_state, tool_requests) = replay(&contents, filename_id)?;
+        let Replayed {
+            snapshot,
+            tool_state,
+            tool_requests,
+            ..
+        } = replay(&contents, filename_id, None)?;
         let bytes = u64::try_from(contents.len()).map_err(|_| SessionError::LimitReached)?;
         let next_seq = snapshot.event_count;
         let schema_version = snapshot.schema_version;
@@ -987,11 +990,15 @@ struct MessagePayload {
     call_id: Option<String>,
 }
 
+/// The recorded origin label of a message. A label never grants authority.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum MessageSource {
+pub enum MessageSource {
+    /// Text entered through the trusted CLI.
     UserCli,
+    /// Text returned by the model provider.
     Provider,
+    /// Text rendered by core from a tool result. Schema version 2 and later.
     CoreTool,
 }
 
@@ -1354,11 +1361,43 @@ fn read_bounded(file: &mut File) -> Result<Vec<u8>, SessionError> {
     Ok(contents)
 }
 
+/// The validated result of replaying a complete journal.
+struct Replayed {
+    snapshot: SessionSnapshot,
+    tool_state: ToolState,
+    tool_requests: Vec<RecordedToolRequest>,
+    /// Timestamp of the `session.started` event.
+    created_at: OffsetDateTime,
+    /// Timestamp of the last replayed event.
+    updated_at: OffsetDateTime,
+}
+
+/// Queue one transcript entry when a caller asked for entries. The kind is
+/// built lazily so a writer-side replay clones nothing.
+fn note_entry(
+    entries: &mut Option<&mut Vec<TranscriptEntry>>,
+    seq: u64,
+    timestamp: OffsetDateTime,
+    kind: impl FnOnce() -> TranscriptEntryKind,
+) {
+    if let Some(sink) = entries.as_mut() {
+        sink.push(TranscriptEntry {
+            seq,
+            timestamp,
+            kind: kind(),
+        });
+    }
+}
+
 /// Validate every event and transition without interpreting content as work.
+///
+/// `entries` receives one record per event after `session.started` when the
+/// caller is an observer. Both the writer and the observer share these rules.
 fn replay(
     contents: &[u8],
     filename_id: Uuid,
-) -> Result<(SessionSnapshot, ToolState, Vec<RecordedToolRequest>), SessionError> {
+    mut entries: Option<&mut Vec<TranscriptEntry>>,
+) -> Result<Replayed, SessionError> {
     if contents.is_empty() || contents[0..contents.len().min(3)] == [0xef, 0xbb, 0xbf] {
         return Err(SessionError::InvalidJournal(
             "journal is empty or has a byte-order mark",
@@ -1378,6 +1417,8 @@ fn replay(
     let mut expected_seq = 0_u64;
     let mut total_events = 0_usize;
     let mut consumed_bytes = 0_usize;
+    let mut created_at = None;
+    let mut updated_at = None;
     for raw_line in contents.split_inclusive(|byte| *byte == b'\n') {
         if raw_line.len() > MAX_EVENT_BYTES {
             return Err(SessionError::InvalidJournal("event exceeds 64 KiB"));
@@ -1442,7 +1483,8 @@ fn replay(
         if !event_ids.insert(envelope.event_id) {
             return Err(SessionError::InvalidJournal("duplicate event UUID"));
         }
-        validate_timestamp(&envelope.timestamp)?;
+        let at = validate_timestamp(&envelope.timestamp)?;
+        let seq = envelope.seq;
         match envelope.event_type.as_str() {
             "session.started" => {
                 if snapshot.is_some() || expected_seq != 0 {
@@ -1453,6 +1495,7 @@ fn replay(
                 let started: SessionStarted = decode_payload(envelope.payload)?;
                 validate_title(&started.title)
                     .map_err(|_| SessionError::InvalidJournal("initial title is invalid"))?;
+                created_at = Some(at);
                 snapshot = Some(SessionSnapshot {
                     schema_version: envelope.schema_version,
                     session_id: envelope.session_id,
@@ -1537,6 +1580,12 @@ fn replay(
                         ));
                     }
                 }
+                note_entry(&mut entries, seq, at, || TranscriptEntryKind::Message {
+                    role: message.role,
+                    source: message.source,
+                    text: message.text.clone(),
+                    call_id: message.call_id.clone(),
+                });
                 target.messages.push(RecordedMessage {
                     role: message.role,
                     text: message.text,
@@ -1552,6 +1601,9 @@ fn replay(
                 }
                 let payload: TurnPayload = decode_payload(envelope.payload)?;
                 tool_state.clear();
+                note_entry(&mut entries, seq, at, || TranscriptEntryKind::TurnStarted {
+                    request_id: payload.request_id,
+                });
                 target.active_turn = Some(payload.request_id);
             }
             "tool.requested" => {
@@ -1590,6 +1642,14 @@ fn replay(
                     ));
                 }
                 tool_state.pending.insert(payload.call_id.clone());
+                note_entry(&mut entries, seq, at, || {
+                    TranscriptEntryKind::ToolRequested {
+                        request_id: payload.request_id,
+                        call_id: payload.call_id.clone(),
+                        tool: payload.tool.clone(),
+                        arguments: payload.arguments.clone(),
+                    }
+                });
                 tool_requests.push(RecordedToolRequest {
                     request_id: payload.request_id,
                     call_id: payload.call_id,
@@ -1632,6 +1692,16 @@ fn replay(
                 )?;
                 tool_state.pending.remove(&payload.call_id);
                 tool_state.completed.insert(payload.call_id.clone());
+                note_entry(&mut entries, seq, at, || {
+                    TranscriptEntryKind::ToolCompleted {
+                        request_id: payload.request_id,
+                        call_id: payload.call_id.clone(),
+                        outcome: payload.outcome,
+                        code: payload.code.clone(),
+                        output_bytes: payload.output_bytes,
+                        output_sha256: payload.output_sha256.clone(),
+                    }
+                });
                 tool_state.outputs.insert(
                     payload.call_id,
                     (payload.output_bytes, payload.output_sha256),
@@ -1653,6 +1723,14 @@ fn replay(
                 validate_manifest(&payload.manifest, envelope.schema_version).map_err(|_| {
                     SessionError::InvalidJournal("request manifest exceeds event size limit")
                 })?;
+                note_entry(&mut entries, seq, at, || {
+                    TranscriptEntryKind::RequestManifest {
+                        request_id: payload.request_id,
+                        model: payload.manifest.model.clone(),
+                        prompt_version: payload.manifest.prompt_version.clone(),
+                        tools: payload.manifest.tools.clone().unwrap_or_default(),
+                    }
+                });
             }
             "turn.completed" | "turn.failed" => {
                 let target = snapshot
@@ -1687,6 +1765,18 @@ fn replay(
                         "completed turn has unresolved or unrecorded tool calls",
                     ));
                 }
+                note_entry(&mut entries, seq, at, || {
+                    if envelope.event_type == "turn.failed" {
+                        TranscriptEntryKind::TurnFailed {
+                            request_id: payload.request_id,
+                            code: payload.code.clone().unwrap_or_default(),
+                        }
+                    } else {
+                        TranscriptEntryKind::TurnCompleted {
+                            request_id: payload.request_id,
+                        }
+                    }
+                });
                 target.active_turn = None;
                 tool_state.clear();
             }
@@ -1698,6 +1788,9 @@ fn replay(
                 if target.active_turn.is_some() {
                     return Err(SessionError::InvalidJournal("active session was archived"));
                 }
+                note_entry(&mut entries, seq, at, || {
+                    TranscriptEntryKind::SessionArchived
+                });
                 target.archived = true;
                 tool_state.clear();
             }
@@ -1706,6 +1799,9 @@ fn replay(
                     .as_mut()
                     .ok_or(SessionError::InvalidJournal("event before start"))?;
                 let _: EmptyPayload = decode_payload(envelope.payload)?;
+                note_entry(&mut entries, seq, at, || {
+                    TranscriptEntryKind::SessionRestored
+                });
                 target.archived = false;
             }
             "context.compacted" => {
@@ -1730,6 +1826,11 @@ fn replay(
                     .map(|record| record.compacted_messages);
                 validate_compaction(&record, &target.messages, prior)
                     .map_err(|_| SessionError::InvalidJournal("invalid compaction record"))?;
+                note_entry(&mut entries, seq, at, || {
+                    TranscriptEntryKind::ContextCompacted {
+                        record: record.clone(),
+                    }
+                });
                 target.compaction = Some(record);
             }
             _ => return Err(SessionError::InvalidJournal("unknown event type")),
@@ -1745,6 +1846,7 @@ fn replay(
         expected_seq = expected_seq
             .checked_add(1)
             .ok_or(SessionError::LimitReached)?;
+        updated_at = Some(at);
         if let Some(target) = snapshot.as_mut() {
             target.event_count =
                 u64::try_from(total_events).map_err(|_| SessionError::LimitReached)?;
@@ -1753,7 +1855,18 @@ fn replay(
     let snapshot = snapshot.ok_or(SessionError::InvalidJournal(
         "missing session.started event",
     ))?;
-    Ok((snapshot, tool_state, tool_requests))
+    let (Some(created_at), Some(updated_at)) = (created_at, updated_at) else {
+        return Err(SessionError::InvalidJournal(
+            "missing session.started event",
+        ));
+    };
+    Ok(Replayed {
+        snapshot,
+        tool_state,
+        tool_requests,
+        created_at,
+        updated_at,
+    })
 }
 
 /// Reject transcript changes while replay says the session is archived.
@@ -1768,13 +1881,13 @@ fn ensure_not_archived(snapshot: &SessionSnapshot) -> Result<(), SessionError> {
 }
 
 /// Require parseable UTC metadata without using clocks to reorder events.
-fn validate_timestamp(value: &str) -> Result<(), SessionError> {
+fn validate_timestamp(value: &str) -> Result<OffsetDateTime, SessionError> {
     let timestamp = OffsetDateTime::parse(value, &Rfc3339)
         .map_err(|_| SessionError::InvalidJournal("timestamp is not RFC 3339"))?;
     if timestamp.offset().whole_seconds() != 0 {
         return Err(SessionError::InvalidJournal("timestamp is not UTC"));
     }
-    Ok(())
+    Ok(timestamp)
 }
 
 /// Apply the selected event's typed schema and reject unsupported fields.

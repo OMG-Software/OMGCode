@@ -1,0 +1,43 @@
+[package]
+name = "omgcode-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tauri 2 desktop shell for OMGCode with a capability-gated command surface and two isolated webview windows"
+build = "build.rs"
+
+[lib]
+# A distinct library name keeps the binary and library outputs from colliding on Windows.
+name = "omgcode_desktop_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omgcode-desktop"
+path = "src/main.rs"
+
+[features]
+# Tauri embeds the built frontend (`ui/dist`) only with `tauri/custom-protocol`; without
+# it the shell loads `build.devUrl`, which a release build's navigation guard refuses.
+# Embedding is the default so a plain `cargo build -p omgcode-desktop` yields a working
+# shell. The Tauri CLI's `tauri dev` drops any default feature that enables
+# `tauri/custom-protocol` and passes `--no-default-features`, so it still reaches the
+# dev server. Do not rename this feature or change what it enables.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+omgcode-app = { path = "../omgcode-app" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+# Stable 2.x only (3.0 is alpha). `wry` is the webview runtime. `x11` lets WebKitGTK
+# run under X11 sessions on Linux. No devtools, tray, updater, asset protocol, or plugin.
+tauri = { version = "2.12.6", default-features = false, features = ["wry", "x11"] }
+
+[build-dependencies]
+tauri-build = { version = "2.7.5", default-features = false, features = ["config-json"] }
+
+[lints]
+workspace = true

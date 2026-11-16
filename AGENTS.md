@@ -7,7 +7,11 @@ repository contains a pinned Rust workspace with configuration-only workspace
 preferences, a bounded native file broker exposed through trusted CLI commands,
 and native identity checks. Follow [workspace settings](docs/workspace-permissions.md)
 and [workspace file access](docs/file-access.md) for their contracts. Enabled
-preferences never authorize execution. The prototype is not a desktop app.
+preferences never authorize execution. A prototype Tauri desktop shell adds a
+session tree, full-text search, chat, and an isolated approvals window. It is
+unpackaged, has run only on Windows, and gives the webview no authority: the
+Rust side authorizes every command and the trusted CLI remains. Follow the
+[desktop interface](docs/desktop-interface.md) contract.
 Chat offers the local LM Studio model read and list tools; when the workspace
 also enables `read` and `write`, one exact-edit tool; and, when it also enables
 `execute`, `read`, and `write`, one command tool. The edit and command tools
@@ -35,14 +39,20 @@ commands can store API keys in protected OS storage (DPAPI on Windows, the
 Secret Service on Linux) and bind them to `api_key` profiles; no adapter reads
 them yet. Trusted
 single-use approval records authorize one exact model-tool call: only a later
-identical call may consume an approved record. `workspace_run_command` then
+identical call may consume an approved record. The trusted CLI or the desktop
+approvals window can decide a record; the window shows a request only when core
+reproduces its digest, and approval needs a single-use review token.
+`workspace_run_command` then
 invokes the trusted runner, and `workspace_edit_file` then calls the
 checkpointed apply with the size and digest of a live trusted read
 ([ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md)).
 Neither route detects a concurrent writer. Trusted CLI
 commands record, apply, and revoke Windows container ACL grants. Follow the
 [execution contract](docs/execution.md).
-The bundled web interface and most planned features are not implemented.
+Sessions are indexed in a derived SQLite index that the journals can rebuild.
+The desktop shell has no settings interface, streaming, development panels,
+packaging, or recovery interface. Most other planned features are not
+implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides
 existing-only checkpoint inspection and acknowledgement. Trusted CLI apply can

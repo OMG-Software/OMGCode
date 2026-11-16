@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "approvals-window",
+  "description": "The three approval commands for the approvals window only. No core permissions.",
+  "local": true,
+  "windows": [
+    "approvals"
+  ],
+  "permissions": [
+    "allow-approvals-list",
+    "allow-approval-detail",
+    "allow-approval-decide"
+  ]
+}

@@ -69,6 +69,28 @@ pub(crate) fn open_locked_file(path: &Path, create_new: bool) -> Result<File, St
     Ok(file)
 }
 
+/// Open an existing regular, single-link file read-only without taking any
+/// lock and without following links.
+///
+/// The returned handle never calls `try_lock`, `lock`, or `lock_shared`, so an
+/// observer cannot make a writer in another process report `Busy`. On Windows
+/// a writer's mandatory byte-range lock can still make a later read fail; the
+/// caller classifies that error. Parent directories must be trusted; this
+/// helper does not authorize paths or prevent parent-directory races.
+pub(crate) fn open_read_only_file(path: &Path) -> Result<File, StorageError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_open_options(&mut options);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    validate_open_file(path, &file)?;
+    Ok(file)
+}
+
 /// Sync the containing directory entry on Unix. Rust does not provide a
 /// qualified safe directory-handle sync contract on Windows, so this is a
 /// documented no-op there. The caller chooses the parent directory to sync.

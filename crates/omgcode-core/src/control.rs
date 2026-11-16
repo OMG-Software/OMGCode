@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
@@ -182,6 +182,32 @@ impl WorkspaceRegistration {
     /// Current preferences, not an execution grant.
     pub const fn permissions(&self) -> PermissionSet {
         self.permissions
+    }
+
+    /// The directory recorded at registration, as a native path.
+    ///
+    /// This is a recorded value, not proof that the directory still exists or
+    /// is the one that was registered. A caller must open it through the
+    /// session or file layers, which re-validate the live identity, the
+    /// development root, and the permissions. The path alone grants nothing.
+    /// Returns `None` when the record was written with another operating
+    /// system's path encoding.
+    pub fn directory_path(&self) -> Option<PathBuf> {
+        self.directory.path.to_path_buf().ok()
+    }
+
+    /// The recorded directory as display text.
+    ///
+    /// The text is lossy and has control, invisible, and bidirectional
+    /// formatting characters replaced by visible escapes (see
+    /// [`crate::turn::display_safe_line`]). It is for people to read. Never use
+    /// it as an authorization key or to reopen the directory; use
+    /// [`Self::id`] and [`Self::directory_path`].
+    pub fn directory_display(&self) -> String {
+        self.directory_path().map_or_else(
+            || String::from("(path not representable on this system)"),
+            |path| crate::turn::display_safe_line(&path.to_string_lossy()),
+        )
     }
 }
 
@@ -749,6 +775,15 @@ impl ControlStore {
             .find(|status| status.workspace_id == workspace_id)
             .map(|status| &status.directory)
     }
+    /// Iterate every registered workspace in registration order.
+    ///
+    /// The order is the settings journal's replay order, so it is
+    /// deterministic for one store state. The registrations are descriptive
+    /// settings, not capabilities; listing one grants no access.
+    pub fn workspaces(&self) -> impl Iterator<Item = &WorkspaceRegistration> {
+        self.snapshot.workspaces.iter()
+    }
+
     /// Look up descriptive workspace metadata by its stable identifier.
     pub fn workspace(&self, id: WorkspaceId) -> Option<&WorkspaceRegistration> {
         self.snapshot

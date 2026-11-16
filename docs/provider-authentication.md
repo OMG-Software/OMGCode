@@ -190,7 +190,11 @@ http://localhost:1234/v1 as an editable starting address, not as proof of a runn
 server. Allow a no-token profile only for the explicitly selected local service.
 If authentication is enabled, use its scoped LM Studio token through the
 credential service. A separately selected non-loopback service requires
-authenticated HTTPS; never silently redirect requests or credentials.
+authenticated HTTPS; never silently redirect requests or credentials. The
+prototype desktop shell fixes the endpoint at launch (`--endpoint`, default
+`http://127.0.0.1:1234/v1`) and reads the token from `OMGCODE_LM_TOKEN` for each
+turn. A webview request cannot change either, and the shell has no connection
+test or model discovery.
 
 Qualify Chat Completions and Responses independently for the chosen server
 version and model. Reuse wire-format code only where its contract matches.

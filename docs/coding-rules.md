@@ -205,8 +205,12 @@ that planned security controls or release requirements are complete.
 - Deny ignored must-use results and unsafe operations without explicit blocks.
   Select additional Clippy lints deliberately; do not enable all restriction or
   pedantic lints without reviewing their effects.
-- The future frontend must use strict TypeScript checks, a committed dependency
-  lockfile, and documented formatting/lint rules when it is introduced.
+- The desktop frontend (`crates/omgcode-desktop/ui`) uses strict TypeScript
+  checks, Biome for formatting and linting, and Vitest. It commits
+  `package-lock.json`, pins exact versions, and sets `ignore-scripts=true` in
+  `.npmrc`. A new frontend dependency needs the same justification as a Rust
+  one. The security rules and the
+  [desktop interface guide](desktop-interface.md#development) own the rest.
 - Build, dependency, and CI jobs must not grant untrusted pull requests secrets
   or elevated permissions. Pin external CI actions to immutable revisions.
 
@@ -228,10 +232,15 @@ that planned security controls or release requirements are complete.
 ## Enforcement and verification limits
 
 The [repository-checks guide](repository-checks.md) defines review and analysis.
-The Cargo workspace contains `omgcode-core`, `omgcode-cli`, and
-`omgcode-platform`; `.github/workflows/rust.yml` runs formatting, Clippy,
-tests, and doc tests on Ubuntu 24.04 and Windows Server 2025. The frontend and
-execution sandbox are not implemented. Rustfmt checks formatting; Clippy and
+The Cargo workspace contains `omgcode-core`, `omgcode-cli`,
+`omgcode-platform`, `omgcode-app`, and `omgcode-desktop`.
+`.github/workflows/rust.yml` builds the desktop frontend, then runs formatting,
+Clippy, tests, and doc tests on Ubuntu 24.04 and Windows Server 2025.
+`.github/workflows/frontend.yml` runs the type check, Biome, Vitest, and the
+bundle checks on the same two systems. Neither workflow change has run on
+GitHub yet. The desktop shell is a prototype, and native confinement exists
+only for the trusted `run` command and the approval-gated command tool; it is
+not release-qualified. Rustfmt checks formatting; Clippy and
 the compiler check selected properties; tests check exercised cases. None
 establishes prompt-injection resistance or sandbox correctness by itself. See
 [testing standards](testing-standards.md) and

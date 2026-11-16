@@ -1,0 +1,484 @@
+import type { Invoker } from "../ipc/client";
+import type {
+  ApprovalDetail,
+  ApprovalView,
+  ChatOutcome,
+  ChatSettings,
+  ChatStatus,
+  SearchHit,
+  SessionSummary,
+  SnippetPart,
+  TreeSort,
+  TreeView,
+} from "../ipc/types";
+import {
+  buildFixtures,
+  type FixtureSession,
+  HOSTILE,
+  OMGCODE_MOCK_FIXTURE_MARKER,
+} from "./fixtures";
+
+/** In-memory stand-in for the Rust core. Used only by the development server. */
+export const MOCK_BACKEND_NAME = OMGCODE_MOCK_FIXTURE_MARKER;
+
+const CHAT_DURATION_MS = 2000;
+const TOKEN_LIFETIME_MS = 120_000;
+const MOCK_ENDPOINT = "http://127.0.0.1:1234/v1";
+
+interface Fail {
+  code: string;
+  message: string;
+}
+
+function fail(code: string, message: string): never {
+  const error: Fail = { code, message };
+  throw error;
+}
+
+function str(args: Record<string, unknown>, key: string): string {
+  const value = args[key];
+  return typeof value === "string" ? value : fail("invalid_argument", `Missing ${key}.`);
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function snippet(text: string, query: string): SnippetPart[] | null {
+  const index = text.toLowerCase().indexOf(query.toLowerCase());
+  if (index < 0) {
+    return null;
+  }
+  const start = Math.max(0, index - 40);
+  const end = Math.min(text.length, index + query.length + 40);
+  const parts: SnippetPart[] = [];
+  const before = text.slice(start, index);
+  const after = text.slice(index + query.length, end);
+  if (before !== "") {
+    parts.push({ text: (start > 0 ? "\u2026" : "") + before, matched: false });
+  }
+  parts.push({ text: text.slice(index, index + query.length), matched: true });
+  if (after !== "") {
+    parts.push({ text: after + (end < text.length ? "\u2026" : ""), matched: false });
+  }
+  return parts;
+}
+
+interface ChatRecord {
+  status: ChatStatus;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
+export function createMockBackend(now: () => number = Date.now): { invoke: Invoker } {
+  const { groups, sessions } = buildFixtures(now());
+  const byId = new Map<string, FixtureSession>(sessions.map((s) => [s.summary.session_id, s]));
+  const chats = new Map<string, ChatRecord>();
+  const tokens = new Map<string, { id: string; expires: number }>();
+  const nowUnix = (): number => Math.floor(now() / 1000);
+
+  const approvals: ApprovalView[] = [
+    approval("a1", "command", "cargo test -p omgcode-core", 600, 1, "Fix a flaky CI test"),
+    approval(
+      "a2",
+      "file_write",
+      `Replace 1 occurrence in src/lib.rs ${HOSTILE.script}`,
+      300,
+      1,
+      "Refactor the session index",
+    ),
+    approval(
+      "a3",
+      "file_write",
+      "Replace 1 occurrence in src/main.rs",
+      900,
+      9,
+      `${HOSTILE.rtl} review`,
+    ),
+  ];
+
+  function approval(
+    id: string,
+    operation: ApprovalView["operation"],
+    summaryText: string,
+    ttl: number,
+    n: number,
+    title: string,
+  ): ApprovalView {
+    return {
+      id,
+      session_id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+      session_title: title,
+      folder_display: "C:\\work\\omgcode",
+      operation,
+      summary: summaryText,
+      state: "pending",
+      created_unix: Math.floor(now() / 1000) - 30,
+      expires_unix: Math.floor(now() / 1000) + ttl,
+      request_sha256: id.padEnd(64, "0"),
+      writers_stopped: false,
+    };
+  }
+
+  function session(id: string): FixtureSession {
+    return byId.get(id) ?? fail("not_found", "No such session.");
+  }
+
+  function tree(view: TreeView, sort: TreeSort, descending: boolean): unknown {
+    const key = (s: SessionSummary): string =>
+      sort === "title"
+        ? s.title.toLowerCase()
+        : ((sort === "created" ? s.created_at : s.updated_at) ?? "");
+    const out = groups
+      .map((g) => ({
+        group_id: g.group_id,
+        folder_display: g.folder_display,
+        sessions: g.session_ids
+          .map((id) => session(id).summary)
+          .filter((s) => (view === "archived") === s.archived)
+          .sort((a, b) => key(a).localeCompare(key(b)) * (descending ? -1 : 1)),
+      }))
+      .filter((g) => g.sessions.length > 0);
+    return clone({ groups: out, indexed_sessions: sessions.length, skipped_entries: 1 });
+  }
+
+  function search(query: string, view: TreeView, limit: number): unknown {
+    const hits: SearchHit[] = [];
+    let truncated = false;
+    const q = query.trim();
+    for (const group of groups) {
+      for (const id of group.session_ids) {
+        const item = session(id);
+        if ((view === "archived") !== item.summary.archived) {
+          continue;
+        }
+        const found: Array<Omit<SearchHit, "session" | "folder_display">> = [];
+        const titleHit = snippet(item.summary.title, q);
+        if (titleHit !== null) {
+          found.push({ seq: null, role: "title", snippet: titleHit });
+        }
+        for (const entry of item.entries) {
+          if (entry.kind === "message" || entry.kind === "context_compacted") {
+            const text = entry.kind === "message" ? entry.text : entry.summary;
+            const part = snippet(text, q);
+            if (part !== null) {
+              found.push({
+                seq: entry.seq,
+                role: entry.kind === "message" ? entry.role : "summary",
+                snippet: part,
+              });
+            }
+          }
+        }
+        for (const hit of found.slice(0, 3)) {
+          if (hits.length >= limit) {
+            truncated = true;
+            break;
+          }
+          hits.push({ session: clone(item.summary), folder_display: group.folder_display, ...hit });
+        }
+      }
+    }
+    return { hits, truncated };
+  }
+
+  function transcript(id: string, after: number | null, limit: number): unknown {
+    const item = session(id);
+    if (item.summary.status === "busy") {
+      fail("busy", "Another process holds this journal.");
+    }
+    if (item.summary.status === "invalid") {
+      fail("invalid_journal", "The journal failed validation.");
+    }
+    const rest = item.entries.filter((e) => e.seq > (after ?? 0));
+    const page = rest.slice(0, limit);
+    const last = page[page.length - 1];
+    const group = groups.find((g) => g.session_ids.includes(id));
+    return clone({
+      session: item.summary,
+      folder_display: group?.folder_display ?? "",
+      entries: page,
+      next_after_seq: rest.length > page.length && last !== undefined ? last.seq : null,
+      incomplete_tail: item.incomplete_tail && rest.length <= limit,
+    });
+  }
+
+  function append(item: FixtureSession, role: "user" | "assistant", text: string): void {
+    const last = item.entries[item.entries.length - 1];
+    item.entries.push({
+      seq: (last?.seq ?? 0) + 1,
+      timestamp: new Date(now()).toISOString(),
+      kind: "message",
+      role,
+      source: "chat",
+      text,
+      call_id: null,
+    });
+    item.summary.event_count = item.entries.length;
+    item.summary.updated_at = new Date(now()).toISOString();
+  }
+
+  function settle(id: string, record: ChatRecord, modelFails: boolean, cancelled: boolean): void {
+    const item = session(id);
+    item.summary.status = "idle";
+    record.timer = null;
+    if (modelFails) {
+      record.status = {
+        session_id: id,
+        state: "failed",
+        outcome: null,
+        error: {
+          code: "provider_unreachable",
+          message: "The model endpoint could not be reached.",
+        },
+      };
+      return;
+    }
+    append(item, "assistant", cancelled ? "(cancelled)" : "This is a mock reply.");
+    const outcome: ChatOutcome = {
+      finish_reason: cancelled ? "cancelled" : "stop",
+      tools_mode: "disabled",
+      tools_disabled_reason: "workspace has model tools turned off",
+      rounds: 1,
+      tool_calls: 0,
+      withheld_tool_results: 0,
+      context: {
+        estimated_tokens: 1200,
+        trigger_tokens: 6000,
+        context_tokens: 8192,
+        compacted: false,
+      },
+    };
+    record.status = { session_id: id, state: "completed", outcome, error: null };
+  }
+
+  function chatSend(id: string, message: string, settings: ChatSettings): ChatStatus {
+    const item = session(id);
+    if (item.summary.status !== "idle" || item.summary.archived) {
+      fail("session_not_idle", "The session cannot take a message now.");
+    }
+    if (settings.endpoint !== MOCK_ENDPOINT) {
+      fail("invalid_request", "The endpoint is fixed by the application.");
+    }
+    if (message.trim() === "" || settings.model.trim() === "") {
+      fail("invalid_argument", "A message and a model are required.");
+    }
+    append(item, "user", message);
+    item.summary.status = "running";
+    const record: ChatRecord = {
+      status: { session_id: id, state: "running", outcome: null, error: null },
+      timer: null,
+    };
+    record.timer = setTimeout(
+      () => settle(id, record, settings.model === "fail", false),
+      CHAT_DURATION_MS,
+    );
+    chats.set(id, record);
+    return clone(record.status);
+  }
+
+  function chatCancel(id: string): ChatStatus {
+    const record = chats.get(id);
+    if (record === undefined || record.status.state !== "running") {
+      fail("not_running", "No turn is running.");
+    }
+    if (record.timer !== null) {
+      clearTimeout(record.timer);
+    }
+    record.status = { ...record.status, state: "cancelling" };
+    record.timer = setTimeout(() => settle(id, record, false, true), 300);
+    return clone(record.status);
+  }
+
+  function detail(id: string): ApprovalDetail {
+    const view = approvals.find((a) => a.id === id) ?? fail("not_found", "No such approval.");
+    const stale = view.id === "a3";
+    const pending = view.state === "pending";
+    const issueToken = pending && !stale;
+    const token = issueToken ? `token-${id}-${now()}` : null;
+    if (token !== null) {
+      for (const [key, value] of tokens) {
+        if (value.id === id) {
+          tokens.delete(key);
+        }
+      }
+      tokens.set(token, { id, expires: now() + TOKEN_LIFETIME_MS });
+    }
+    const fields =
+      view.operation === "command"
+        ? [
+            { label: "Program", value: "cargo", multiline: false },
+            {
+              label: "Arguments",
+              value: `test\n-p\nomgcode-core\n${HOSTILE.img}`,
+              multiline: true,
+            },
+            { label: "Working folder", value: view.folder_display ?? "", multiline: false },
+          ]
+        : [
+            { label: "File", value: "src/lib.rs", multiline: false },
+            { label: "Old text", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
+            { label: "New text", value: "fn new() {}", multiline: true },
+          ];
+    return clone({
+      approval: view,
+      binding: stale ? "stale" : "exact",
+      tool: stale
+        ? null
+        : view.operation === "command"
+          ? "workspace_run_command"
+          : "workspace_edit_file",
+      fields: stale ? [] : fields,
+      review_token: token,
+    });
+  }
+
+  function decide(args: Record<string, unknown>): ApprovalView {
+    const view =
+      approvals.find((a) => a.id === str(args, "id")) ?? fail("not_found", "No such approval.");
+    if (view.state !== "pending" || view.expires_unix <= nowUnix()) {
+      fail("approval_not_pending", "The approval is not pending.");
+    }
+    if (args.decision === "deny") {
+      view.state = "denied";
+      return clone(view);
+    }
+    const token = typeof args.review_token === "string" ? tokens.get(args.review_token) : undefined;
+    if (token === undefined || token.id !== view.id) {
+      fail("review_mismatch", "The review token does not match this approval.");
+    }
+    if (token.expires <= now()) {
+      fail("review_expired", "The review token expired.");
+    }
+    if (view.operation === "file_write" && args.writers_stopped !== true) {
+      fail("writers_not_stopped", "Confirm that other writers are stopped.");
+    }
+    tokens.delete(str(args, "review_token"));
+    view.state = "approved";
+    view.writers_stopped = args.writers_stopped === true;
+    return clone(view);
+  }
+
+  const invoke: Invoker = (command, args) => {
+    try {
+      return Promise.resolve(handle(command, args));
+    } catch (reason) {
+      return Promise.reject(reason);
+    }
+  };
+
+  function handle(command: string, args: Record<string, unknown>): unknown {
+    switch (command) {
+      case "app_info":
+        return { version: "0.0.0-mock", platform: "other", model_tools_supported: true };
+      case "session_tree":
+        return tree(args.view as TreeView, args.sort as TreeSort, args.descending === true);
+      case "session_search":
+        return search(str(args, "query"), args.view as TreeView, Number(args.limit));
+      case "session_transcript":
+        return transcript(
+          str(args, "session_id"),
+          (args.after_seq as number | null) ?? null,
+          Number(args.limit),
+        );
+      case "session_archive": {
+        const item = session(str(args, "session_id"));
+        item.summary.archived = true;
+        return clone(item.summary);
+      }
+      case "session_restore": {
+        const item = session(str(args, "session_id"));
+        item.summary.archived = false;
+        return clone(item.summary);
+      }
+      case "session_interrupt": {
+        const item = session(str(args, "session_id"));
+        item.summary.status = "idle";
+        return clone(item.summary);
+      }
+      case "workspace_list":
+        return {
+          development_root_set: true,
+          workspaces: [
+            {
+              workspace_id: "w1",
+              folder_display: "C:\\work\\omgcode",
+              model_tools: true,
+              read: true,
+              write: true,
+              execute: false,
+            },
+            {
+              workspace_id: "w2",
+              folder_display: "~/src/scratch",
+              model_tools: false,
+              read: true,
+              write: false,
+              execute: false,
+            },
+          ],
+        };
+      case "session_create": {
+        const id = `00000000-0000-4000-8000-${String(100 + sessions.length).padStart(12, "0")}`;
+        const created: FixtureSession = {
+          summary: {
+            session_id: id,
+            title: str(args, "title"),
+            created_at: new Date(now()).toISOString(),
+            updated_at: new Date(now()).toISOString(),
+            status: "idle",
+            archived: false,
+            event_count: 0,
+            invalid_code: null,
+          },
+          entries: [],
+          incomplete_tail: false,
+        };
+        sessions.push(created);
+        byId.set(id, created);
+        groups[0]?.session_ids.unshift(id);
+        return clone(created.summary);
+      }
+      case "chat_defaults":
+        return {
+          endpoint: MOCK_ENDPOINT,
+          model: "qwen2.5-coder",
+          context_tokens: 8192,
+          max_output_tokens: 1024,
+          instructions: "",
+          compact_threshold: 6000,
+          auto_compact: true,
+        } satisfies ChatSettings;
+      case "chat_send":
+        return chatSend(
+          str(args, "session_id"),
+          str(args, "message"),
+          args.settings as ChatSettings,
+        );
+      case "chat_status": {
+        const id = str(args, "session_id");
+        return clone(
+          chats.get(id)?.status ?? { session_id: id, state: "idle", outcome: null, error: null },
+        );
+      }
+      case "chat_cancel":
+        return chatCancel(str(args, "session_id"));
+      case "approvals_summary":
+        return { pending: approvals.filter((a) => a.state === "pending").length };
+      case "approvals_show_window":
+        return null;
+      case "approvals_list":
+        return clone({ now_unix: nowUnix(), approvals });
+      case "approval_detail":
+        return detail(str(args, "id"));
+      case "approval_decide":
+        return decide(args);
+      default:
+        return fail("unknown_command", `Unknown command ${command}.`);
+    }
+  }
+
+  return { invoke };
+}
+
+export const mockInvoke: Invoker = createMockBackend().invoke;

@@ -4,8 +4,11 @@ This document separates the current JSONL session prototype from the complete
 release contract. Conversation and session refer to the same saved coding
 interaction. The prototype stores a bounded transcript and archive state. A
 separate journal records metadata for bounded file-broker operations. The
-prototype does not provide a session UI, search index, task execution, or
-recovery UI.
+prototype provides lock-free inspection, discovery, and a derived SQLite
+index that the desktop shell uses for a session tree and search (see
+[ADR-0044](adr/0044-observe-journals-without-the-writer-lock-and-index-them-in-sqlite.md)
+and the [desktop interface guide](desktop-interface.md)). It does not provide
+task execution, a recovery interface, or storage-use display.
 
 The [accepted replacement contract](file-access.md#replacement-contract)
 uses a separate versioned ledger and private checkpoint store. Phase A2b adds
@@ -199,8 +202,10 @@ transitions, sequence gaps, a session ID that conflicts with the filename,
 version-1 tool events, orphan or duplicate tool calls, and a completed turn
 with pending or unmessaged tool calls. It validates
 the complete journal before returning a writable handle. A malformed journal
-or incomplete tail is rejected without mutation. There is no recovery or
-read-only inspection UI yet.
+or incomplete tail is rejected without mutation by the writer open. There is no
+recovery interface. Lock-free inspection (below) reads such a journal without
+modifying it; the desktop shell shows the transcript and an incomplete-tail
+notice, and offers no repair.
 
 The request manifest does not include usage, `finish_reason`, or tool-round
 counts. The CLI returns provider usage and finish reason in its JSON output, but
@@ -219,6 +224,109 @@ Post-open chat errors include this locator under error.session.
 
 These are implemented prototype facts, not a claim that the full release
 contract below is complete.
+
+### Lock-free inspection and discovery (v0.29.0)
+
+`SessionInspection::inspect` reads one journal without calling any lock
+function, so a viewer never makes a writer report `Busy`. It opens the file
+read-only without following links (`O_NOFOLLOW` on Unix;
+`FILE_FLAG_OPEN_REPARSE_POINT` with read and write sharing on Windows), runs the
+platform handle validation, reads within the 8 MiB journal bound plus 1 KiB, and
+validates with the same `replay` function as `SessionJournal::open`.
+
+- **Windows.** The writer lock is mandatory. A lock violation (error 33) or a
+  sharing violation (error 32) becomes `SessionError::Busy`, with no retry.
+- **Unix.** The writer lock is advisory, so inspection beside a live writer
+  succeeds. A Linux test run on WSL 6.6 covers that branch.
+- **Incomplete tail.** Bytes after the last line feed are ignored and reported
+  as `incomplete_tail`. `event_count` counts complete events only. The file is
+  never modified. A file with no line feed at all is `InvalidJournal`.
+  `SessionJournal::open` still rejects an incomplete tail.
+- **Result.** The session and workspace identifiers, the recorded workspace
+  path, title, archive state, active turn, schema version, event count,
+  `created_at` (from `session.started`), `updated_at` (the last complete
+  event), the tail flag, and an ordered entry list. Entry kinds are message,
+  turn started, turn completed, turn failed, tool requested, tool completed,
+  request manifest, context compacted, session archived, and session restored. A
+  manifest entry carries the model, prompt version, and tool names only.
+
+`session::discover` walks only
+`sessions/<4 digits>/<2 digits>/<2 digits>/<file>` under the data root. A file
+name must match the writer's exact pattern, with a strict parser for the
+lowercase hyphenated UUIDv4 and the time fields. It never follows a symbolic
+link or a Windows reparse point, never opens a journal, counts skipped links and
+unrecognized entries, and stops with `LimitReached` after 50,000 journals or
+500,000 directory entries. A missing `sessions` directory is an empty result.
+`session::locate` resolves a UUID by a full walk; two matches are an error.
+`SessionJournal::open` and `inspect` keep the older lenient file-name UUID
+parse, so a journal with an uppercase UUID opens by path but is never listed.
+
+### Session index
+
+`session_index::SessionIndex` is the derived search and tree index. It lives in
+`<data_root>/session-index-v1/index.sqlite3`. The journals remain the source of
+truth, and the index authorizes nothing.
+
+- **Storage.** `rusqlite` 0.43.0 with bundled SQLite 3.54.1. A rollback journal
+  (no WAL), `foreign_keys=ON`, `trusted_schema=OFF`, `secure_delete=ON`,
+  defensive mode, SQL extension loading disabled, and a 2 second busy timeout.
+  `application_id` is `0x4F4D4749` and `user_version` is 1. The file is opened
+  without following links. An index directory or file that is a link or
+  reparse point is refused. That check is a `symlink_metadata` call before the
+  open; a race between the check and the open is not excluded.
+- **Rebuild.** The index deletes and recreates only its own two files
+  (`index.sqlite3` and `index.sqlite3-journal`) when the file is not SQLite or
+  is corrupt at open, when `application_id` differs, when `user_version` is not
+  1, or when the header is valid but the tables are missing.
+- **Content.** One `journal` row per session (path, size, modification time,
+  state `ok`, `busy`, or `invalid`, title, workspace, times, archive state,
+  active turn, event count, schema version, tail flag) and an FTS5 table of
+  searchable text with the `unicode61 remove_diacritics 2` tokenizer. Indexed
+  text is the title, user, assistant, and tool messages, and compaction
+  summaries. Tool-call arguments, request manifests, custom instructions,
+  outcomes, and failure codes are not indexed. The two private-use code points
+  used as snippet markers are replaced before indexing.
+- **Refresh.** An unchanged `ok` row (same size, modification time, and path) is
+  skipped without opening the journal. A call inspects at most 1,000 journals,
+  one at a time, with one transaction each, and removes rows for vanished
+  journals. A `Busy` journal keeps its previous metadata and text and is
+  retried. A journal that fails validation becomes `invalid` with a code and no
+  text, and is not re-inspected until the file changes. `io_error` and
+  `duplicate_session_id` are always re-evaluated. One bad journal never fails a
+  refresh.
+- **Queries.** `sessions` lists an active or archived view sorted by update
+  time, creation time, or title, with a limit of 1 to 5,000. `search` takes at
+  most 256 characters and 16 terms, quotes every term, joins them with AND, and
+  treats the last as a prefix. A longer query is refused, not truncated. The
+  limit is 1 to 200, and hits are ordered by relevance, then update time, then
+  session identifier, then sequence number. Snippets come back as marked parts.
+- **Path resolution.** `journal_path` revalidates the stored relative path
+  against the strict layout and the file name's UUID before it returns a path.
+  It does not check that the file exists. The writer open validates the journal
+  again by replay.
+
+Known limits:
+
+- Corruption inside a table behind a valid header is found at query time, and
+  nothing rebuilds the index automatically.
+- A binary with a different index version deletes and rebuilds the database, so
+  two versions that share a data root rebuild each other's index.
+- Rebuild fails on Windows while another process holds the database open.
+- Each indexed journal costs one synchronous commit, so a first build of many
+  sessions can take seconds.
+- A timestamp outside 1677 to 2262 marks a journal invalid.
+- A just-created journal can be observed empty: `invalid` on Unix and `busy` on
+  Windows, until its first record is written.
+- The index holds transcript text. It is protected like the journals and is not
+  encrypted.
+
+What the desktop shell does with journals. It lists, searches, and pages
+transcripts through the index and inspection. For archive, restore, and
+interrupt it opens the writer, appends one event, and releases the journal, so
+those operations take the ordinary writer lock. The shell refuses archive while
+a turn runs in the same process and while a turn is open. It writes no
+`session.archive_requested` event; Stop and archive is not implemented. See the
+[desktop interface guide](desktop-interface.md#session-tree).
 
 ## File-operation journal
 
@@ -314,8 +422,10 @@ journal with unknown required semantics or schema versions. Invalid sequence
 numbers, duplicate IDs/keys, or conflicting session IDs require a visible
 recovery/read-only state, not silent reinterpretation. The current prototype
 rejects such journals and leaves their bytes unchanged; it has no recovery
-artifact, repair, or read-only view. Unsupported records remain in the original
-file, but the CLI does not expose them through an inspection view.
+artifact or repair. Lock-free inspection gives a read-only view of a journal
+that passes validation, with an incomplete tail reported. A journal that fails
+validation is listed as `invalid` with a code and no transcript. Unsupported
+records remain in the original file.
 
 Store large outputs and binary attachments as bounded artifacts referenced by
 safe session-local identifiers, with content digests and availability status.
@@ -326,9 +436,15 @@ artifacts remain visible as missing. Do not invent their content.
 ## Release durability, recovery, and locking
 
 The JSONL journal is the source of truth for transcript and archive state. A
-search/tree index is derived and rebuildable. Its database format is not selected
-yet. Losing or clearing a cache/index must not delete the journal. Use incremental
-indexing and bounded streaming reads; do not load every transcript into memory.
+search/tree index is derived and rebuildable. The prototype's index is the
+[SQLite index](#session-index) above. Losing or clearing a cache/index must not
+delete the journal. Use incremental indexing and bounded streaming reads; do not
+load every transcript into memory.
+
+Release requirements not yet met by the prototype: the writer is the existing
+exclusive file lock, not a single Rust-owned owner with a bounded queue that
+other windows route through; there is no recovery artifact for an incomplete
+tail; and there is no automatic repair of a corrupt index.
 
 Use one Rust-owned writer per session, with a bounded queue and exclusive
 cross-process ownership. Multiple windows route through that owner or receive a
@@ -351,6 +467,10 @@ result is incomplete, not permission to replay. JSONL alone cannot provide
 exactly-once execution of external side effects.
 
 ## Release archive, restore, and resume
+
+The desktop prototype provides Archive, Restore, and an Archived view in the
+tree with search and transcript inspection. It does not provide Stop and
+archive, a `session.archive_requested` event, or storage-use display.
 
 Provide Archive in the session tree and conversation view. Hide archived sessions
 from the active tree, while keeping an Archived view/filter with folder grouping,

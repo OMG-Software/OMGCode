@@ -14,6 +14,7 @@ pub mod replacement;
 pub mod run;
 pub mod run_journal;
 pub mod session;
+pub mod session_index;
 mod storage;
 pub mod turn;
 mod workspace;

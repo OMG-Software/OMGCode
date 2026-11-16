@@ -5,7 +5,12 @@ has bounded prompt/provider/journal checks. It has trusted workspace settings
 and a bounded native file broker for manual commands. The core has a bounded
 turn/tool runtime for read and list. Chat runs it with the local LM Studio
 adapter only for a workspace whose `model_tools` preference is enabled;
-otherwise chat rejects model-requested tools. It has no execution sandbox or permission UI. Configuration diagnostics always deny execution and do not replace per-target
+otherwise chat rejects model-requested tools. A prototype desktop shell
+(see the [desktop interface guide](desktop-interface.md)) renders session
+content in a webview and decides approvals in a separate window; the rules
+below apply to it. Native confinement exists only for the trusted `run` command
+and the approval-gated command tool, and it is not whole-user containment.
+Configuration diagnostics always deny execution and do not replace per-target
 authorization. See
 [workspace settings](workspace-permissions.md) and [current limits](development.md). Apply these rules with the
 [coding rules](coding-rules.md) and [testing standards](testing-standards.md).
@@ -25,6 +30,22 @@ authorization. See
   revoked access. Observe cleanup before reporting revocation complete.
 - Keep permission-setting controls separate from rendered untrusted content.
   Validate and limit every command exposed to a webview.
+- Declare every webview command to the permission layer, grant it to named
+  windows only, and authorize the calling window in Rust as the first statement
+  of its handler. Keep one list of command names for the build script, the
+  policy, and the tests. Grant no `core:` permission to a webview without an
+  ADR.
+- No command accepts a host path. Address sessions by UUID, workspaces by their
+  registered identifier, and approvals by identifier, and resolve any path in
+  Rust from trusted state. Never return a journal path, the data root, or a
+  token to a webview.
+- Decide an approval only from the window that renders no transcript content,
+  and only with a single-use review token that core issued for an `exact`
+  binding between the approval and a recorded request. Show request fields next
+  to a decision control only when core reproduces the approval's digest. The
+  webview is still web content, not a trusted computing base.
+- Fix the provider endpoint and read the provider token outside the webview. A
+  webview request cannot choose either.
 
 ## Instructions, summaries, caches, and skills
 
@@ -349,6 +370,21 @@ crate.
 
 - Render untrusted content through safe text or sanitized Markdown. Disable
   executable HTML and automatic remote resource loads.
+- Build the desktop interface only from elements and text nodes. Do not use
+  `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`,
+  `new Function`, inline script or style, browser storage, or remote URLs in
+  the frontend. Tests must scan for each. Show bidirectional override
+  characters as visible markers.
+- Escape any untrusted field that appears beside a decision control with core's
+  display-safe functions, so control, bidirectional, zero-width, and other
+  invisible format characters are visible. They do not detect homoglyphs or mixed
+  scripts, and new code must not claim they do.
+- Treat the derived session index as a cache. It is never an authority. Resolve
+  a journal path from it only through a function that revalidates the stored
+  path against the strict layout and the file name's UUID, and then validate the
+  journal again when it is opened. Build a search expression from user text by
+  quoting terms and binding it as a parameter, never by concatenating query
+  syntax. Opening an observer must not take the writer lock.
 - Do not load remote pages or previews into a webview with privileged IPC.
   Restrict navigation, resource loading, clipboard effects, and terminal escape
   features. Terminal output must not change application permissions.

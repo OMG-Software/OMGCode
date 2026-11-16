@@ -61,12 +61,42 @@ No application build is claimed. CodeQL's Rust processing can still execute
 build scripts or procedural macros; the analysis job has no Sonar or provider
 secrets. Keep its permissions restricted.
 
-The repository now contains Rust source in the core, CLI, and platform crates.
+The repository now contains Rust source in the core, CLI, platform, application,
+and desktop crates.
 CodeQL selects Rust when tracked Rust files and a Cargo manifest are present.
 Its no-build scan is separate from the locked Cargo checks in
 `.github/workflows/rust.yml`; it is not a full application build or proof of
-application security. There is no frontend source to scan yet. Add other source
-languages deliberately when the implementation needs them.
+application security. The desktop frontend adds tracked `.ts` files under
+`crates/omgcode-desktop/ui`, so the selection rule above now adds
+JavaScript/TypeScript. That is expected from the rule and is unverified until a
+CodeQL run completes on a pull request. `node_modules` and the generated `dist`
+directory are ignored by Git and the extractor. Add other source languages
+deliberately when the implementation needs them.
+
+## Rust and Frontend workflows
+
+`.github/workflows/rust.yml` runs on Ubuntu 24.04 and Windows Server 2025 with a
+40 minute timeout (it was 20). Before Clippy it installs the Tauri build
+packages on Ubuntu (`libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`,
+`file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and
+`librsvg2-dev`), sets up Node 24 with `actions/setup-node` pinned to a full
+commit (v7.1.0), and runs `npm ci` and `npm run build` in
+`crates/omgcode-desktop/ui`. The desktop crate embeds `ui/dist` at compile time,
+so every workspace-wide Cargo step needs that build first.
+
+`.github/workflows/frontend.yml` is new. It runs on pull requests to main,
+pushes to main, and manual dispatch, on Ubuntu 24.04 and Windows Server 2025. It
+runs `npm ci`, `npm run check`, `npm run lint`, `npm test`, and
+`npm run test:dist`. `.npmrc` sets `ignore-scripts=true`, so no dependency
+install script runs.
+
+`.gitattributes` sets `crates/omgcode-desktop/ui/** text=auto eol=lf` so a CRLF
+checkout on Windows does not fail Biome's format check.
+
+None of these workflow changes has run on GitHub. They run only on a pull
+request, and none exists yet. Treat their behaviour, including the added
+timeout and the Windows legs of the frontend build, as unverified until a run
+completes.
 
 On Ubuntu, the Rust workflow enables lingering for the runner user and waits
 for its user service manager before the tests. The run and tree-limit tests
@@ -128,6 +158,7 @@ passed.
 - Third-party actions use verified full commit pins with release comments.
   Review vendor releases before updating them.
 - Check YAML, the CodeRabbit schema, workflow syntax, and changed documentation.
+  Run the frontend gates locally when `crates/omgcode-desktop/ui` changes.
   Verify CodeQL language selection for absent and newly introduced source.
 - After publishing through a pull request, inspect the actual review and
   completed workflow results. Check the head commit and final exit statuses.

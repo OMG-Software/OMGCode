@@ -5,8 +5,10 @@ Use these standards with the [coding rules](coding-rules.md) and
 
 ## Current state
 
-The pinned Cargo workspace has three crates: `omgcode-core`,
-`omgcode-cli`, and `omgcode-platform`. It includes deterministic core,
+The pinned Cargo workspace has five crates: `omgcode-core`,
+`omgcode-cli`, `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The
+desktop crate has a TypeScript frontend with its own tests (see
+[Desktop shell and frontend](#desktop-shell-and-frontend)). It includes deterministic core,
 CLI, and platform tests. The core includes configuration-only workspace records,
 permission preferences, and a local settings/audit journal. Directory identity
 checks require a native file ID and directory creation time. On Linux, capture
@@ -252,8 +254,93 @@ form unsupported combinations. Explicitly document any excluded combination and
 its reason. Test a claimed minimum Rust version separately when it differs from
 the pinned development toolchain.
 
-The frontend does not exist. Add its actual type, lint, rendering, and link
-checks here when it is introduced. Do not report nonexistent gates as active.
+Build the desktop frontend before any of these Cargo commands. The desktop
+crate embeds `crates/omgcode-desktop/ui/dist`, so the commands fail without it.
+The frontend gates are listed in
+[Desktop shell and frontend](#desktop-shell-and-frontend). Do not report a gate
+that did not run as active.
+
+## Desktop shell and frontend
+
+Frontend commands, run from `crates/omgcode-desktop/ui` with Node 24:
+
+```text
+npm ci
+npm run check
+npm run lint
+npm test
+npm run test:dist
+```
+
+`npm run build` must run before the Cargo commands above. `npm test` runs the
+`dist` checks only when `dist/` exists; otherwise they show as skipped, so use
+`npm run test:dist` to build and run them.
+
+- **Frontend tests (Vitest, jsdom).** They cover the interface models, the
+  main window and transcript rendering, the approvals review flow, polling, and
+  the mock backend. Security scans assert that the source has no
+  `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, or
+  `new Function`; that the HTML entries have no inline script or style and no
+  `http` or `https` URL; that no browser storage is used; that
+  `@tauri-apps/api` is imported only in `src/ipc/client.ts`; that the main
+  bundle contains neither `approval_decide` nor `approval_detail`; and that no
+  mock fixture is in `dist`. jsdom is not a browser. These tests do not
+  establish how WebView2 or WebKitGTK behave.
+- **Desktop crate tests (no webview).** They check that the policy table, the
+  capability files, the build script's command list, and the frontend's command
+  names agree; the configuration and content security policy; the navigation
+  guard; handler registration; that every handler authorizes first with its own
+  command; that handler parameter names match the frontend's argument keys; the
+  launch argument parser; and the shutdown gate. They do not exercise the
+  capability layer, which Tauri enforces and which needs a real webview.
+- **Service tests.** `DesktopService` is tested with a mock provider. They cover
+  chat turns, cancellation, shutdown, review tokens, approvals, and the
+  session index with its refusals and rebuilds. Core tests cover lock-free
+  inspection, discovery, the index, and approval review.
+- **Real-application end to end.** On 2026-11-16 the built Windows shell was
+  driven over the WebView2 remote-debugging port with real mouse and text
+  input, against a mock local model server and a scratch data root. The run
+  created a session in a registered workspace, ran a chat turn that requested
+  `workspace_edit_file`, reviewed the pending approval in the approvals window,
+  approved it with writers-stopped, and ran a second turn that applied the edit
+  (the file on disk changed). It also searched with a marked snippet, archived
+  and restored a session, and closed with exit status 0 in about one second
+  with no leftover processes. From page script, `main` was refused
+  `approval_decide`, `approval_detail`, and `approvals_list`; `approvals` was
+  refused `session_tree` and `chat_send`; a different endpoint returned
+  `invalid_request`; an unregistered workspace returned `unknown_workspace`; and
+  remote fetch, navigation, `window.open`, and string evaluation were blocked.
+  This proves the Windows shell's wiring against a mock server. It does not
+  prove a live model, Linux, packaging, or resistance to a hostile page. It did
+  not exercise shutdown with a provider request in flight, or a live call that
+  reaches the Rust `authorize` check past the capability refusal.
+- **ReFS and `TEMP`.** If the repository is on a ReFS volume, point `TEMP` and
+  `TMP` at an NTFS directory before the Cargo tests. The private-store,
+  credential, container, and replacement tests need NTFS. Report the setting.
+- **Temp-directory ACL.** A data root under the user's Temp directory inherits
+  an ACL that the private store refuses. The fixtures reset it; for a manual
+  run do the same with
+  `icacls <dir> /inheritance:r /grant:r *<SID>:(OI)(CI)F`.
+- **Skipped link tests.** `a_symlinked_journal_is_rejected` and
+  `a_database_file_that_is_a_link_is_refused` print `SKIPPED link assertions` and
+  return when the host cannot create file symbolic links (Windows error 1314).
+  Report them as skipped, not passed, and run them on a host that can. The
+  directory-junction tests ran on the Windows development host, and both link
+  tests ran on Linux.
+- **Linux.** On 2026-11-16 the workspace, including the desktop crate, passed
+  formatting, Clippy, and every test on WSL 6.6 (Ubuntu 24.04, ext4), from a
+  clean LF clone with the frontend bundle built on Windows. That run executed
+  the Unix-only branches of inspection and the index. The Linux binary was
+  started only to check its launch arguments. No window has been opened on
+  Linux, so do not describe the webview, IPC, capability enforcement, or
+  navigation guard as tested there.
+- **Private data root on Unix.** The checkpoint store refuses a data root that
+  is not mode 0700. A fixture that creates the directory itself must set that
+  mode; the default create mode is refused with "private directory ownership
+  or mode is invalid".
+- **Secret Service state.** A login collection can exist and still be locked.
+  Check its `Locked` property, not only that the default alias resolves,
+  before running the credential suites.
 
 ## Evidence and completion
 

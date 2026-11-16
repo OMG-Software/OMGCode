@@ -1,0 +1,196 @@
+//! The front-end-neutral desktop service (ADR-0044, ADR-0045, ADR-0046).
+//!
+//! [`DesktopService`] is what a thin shell adapter calls, one method per
+//! command, from blocking tasks. It grants no authority. Every decision that
+//! matters (workspace preferences, tool approvals, checkpointed edits,
+//! confinement, journal validation) is made by `omgcode-core`; this module
+//! orders calls to core, bounds them, and shapes their results for the
+//! interface.
+//!
+//! # What the service never does
+//!
+//! - It accepts no filesystem path from a caller. Sessions are addressed by
+//!   UUID, workspaces by their registered identifier, approvals by identifier.
+//!   A journal path is resolved only through `SessionIndex::journal_path`.
+//! - It returns no journal path and no absolute path except workspace folder
+//!   display text, which is escaped by core's `display_safe_line`.
+//! - It never returns, stores in a response, or logs the local server token.
+//!   The token is read for one turn, held in a private type with a redacted
+//!   `Debug`, removed from every recorded and returned message, and dropped
+//!   when the turn thread ends.
+//!
+//! # State and locks
+//!
+//! The service state is shared by the service and by each running chat turn's
+//! thread through one `Arc`. It holds:
+//!
+//! | field | guards |
+//! | --- | --- |
+//! | `index` | the one `SessionIndex` connection and its refresh bookkeeping |
+//! | `turns` | the table of chat turns, their cancel tokens and thread handles |
+//! | `reviews` | outstanding single-use approval review tokens |
+//! | `pending_cache` | an atomic copy of the last pending-approval count read |
+//!
+//! **Lock order** when two are ever needed: `turns`, then `index`, then
+//! `reviews`. The code takes one at a time. No service lock and no open
+//! control store is held across provider I/O, a chat turn, a journal
+//! inspection, a thread join, or a sleep. The one deliberate exception is the
+//! `index` lock during a refresh: a refresh needs `&mut SessionIndex`, so it
+//! holds the lock for at most two seconds plus one chunk of 200 journal
+//! inspections. A poisoned lock never panics and is never ignored: the call
+//! returns `DesktopError` code `internal`.
+//!
+//! # Chat turns
+//!
+//! `chat_send` validates everything that can be checked without running the
+//! turn, reserves a slot in the table under the `turns` lock, and starts one
+//! named thread (`omgcode-turn`). The thread owns the journal handle, the
+//! clients, and the token for the whole turn. It opens the journal, runs the
+//! turn, drops the journal (which releases the writer lock), refreshes that
+//! one session in the index, and only then records the outcome in its slot. It
+//! does not hold the `turns` lock while the turn runs. At most two turns run at
+//! once.
+//!
+//! The slot keeps the thread's `JoinHandle`. `chat_status`, `chat_send`, and
+//! the session commands reap finished threads: they take the handle out of the
+//! slot under the lock, join it after releasing the lock, and record a thread
+//! that panicked as `failed` with `internal`. Finished results stay until the
+//! next `chat_send` for that session; at most 64 finished entries are kept and
+//! the oldest is evicted first.
+//!
+//! Cancellation is cooperative. The tool-enabled path hands its `CancelToken`
+//! to the slot; the text-only path has no cancellation point, so a cancel
+//! request on it changes nothing and the status stays `running`.
+//!
+//! # Shutdown
+//!
+//! [`DesktopService::shutdown`] requests cancellation of every running turn
+//! and polls `JoinHandle::is_finished` until the grace period ends. A provider
+//! request in flight cannot be interrupted, so a turn can outlast the grace
+//! period. Shutdown then returns without waiting; the abandoned thread leaves
+//! its journal with an open turn, which the operator can close later with the
+//! interrupt command or the trusted CLI. After shutdown no new turn starts.
+
+mod approvals;
+mod chat;
+mod error;
+mod review_tokens;
+mod sessions;
+mod state;
+mod turns;
+mod wire;
+mod workspaces;
+
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
+
+use omgcode_core::session_index::SessionIndex;
+
+pub use self::error::DesktopError;
+use self::review_tokens::ReviewTokens;
+use self::state::IndexState;
+pub use self::turns::ShutdownReport;
+use self::turns::TurnTable;
+pub use self::wire::{
+    ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
+    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatOutcome,
+    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto, Decision, EntryKind,
+    MessageRoleDto, SearchHit, SearchRequest, SearchResult, SearchRoleDto, SessionCreateRequest,
+    SessionRequest, SessionStatus, SessionSummary, SessionTree, SnippetPart, ToolOutcomeDto,
+    ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
+    WorkspaceChoice, WorkspaceGroup, WorkspaceList,
+};
+use crate::AppError;
+
+/// Fixed settings of one desktop process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DesktopConfig {
+    /// Trusted application storage. It comes from the operator, never from the
+    /// interface.
+    pub data_root: PathBuf,
+    /// The chat endpoint, fixed for the process lifetime. A chat request whose
+    /// endpoint differs byte-for-byte is refused.
+    pub endpoint: String,
+}
+
+/// Supplies the optional local server token for one chat turn.
+///
+/// [`DesktopService::open`] uses [`crate::read_lm_token`]. A different source
+/// exists so an embedder or a test can avoid the process environment.
+pub type TokenSource = fn() -> Result<Option<String>, AppError>;
+
+/// The state shared by the service and its turn threads.
+///
+/// Owners: the [`DesktopService`] and one clone per running turn thread. The
+/// last owner frees it. There is no reference cycle: the thread handles that
+/// the table keeps do not own this `Arc`.
+struct Inner {
+    data_root: PathBuf,
+    endpoint: String,
+    token_source: TokenSource,
+    index: Mutex<IndexState>,
+    turns: Mutex<TurnTable>,
+    reviews: Mutex<ReviewTokens>,
+    /// The last pending-approval count read, served when the settings store is
+    /// busy. Advisory only; it authorizes nothing.
+    pending_cache: AtomicU64,
+}
+
+/// The desktop command service. See the [module documentation](self).
+///
+/// It is `Send + Sync`; a shell may keep one in application state and call it
+/// from blocking tasks.
+pub struct DesktopService {
+    inner: Arc<Inner>,
+}
+
+impl DesktopService {
+    /// Open the service for `config`, creating the session index directory.
+    ///
+    /// The index is not refreshed here. The local server token is read from the
+    /// environment per chat turn.
+    ///
+    /// # Errors
+    ///
+    /// `busy` when another process holds the index database, `internal` when
+    /// the index location is unusable.
+    pub fn open(config: DesktopConfig) -> Result<Self, DesktopError> {
+        Self::open_with_token_source(config, crate::read_lm_token)
+    }
+
+    /// Open the service with an explicit [`TokenSource`].
+    ///
+    /// # Errors
+    ///
+    /// The same as [`open`](Self::open).
+    pub fn open_with_token_source(
+        config: DesktopConfig,
+        token_source: TokenSource,
+    ) -> Result<Self, DesktopError> {
+        let index = SessionIndex::open(&config.data_root)
+            .map_err(|error| DesktopError::from_index(&error))?;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                data_root: config.data_root,
+                endpoint: config.endpoint,
+                token_source,
+                index: Mutex::new(IndexState::new(index)),
+                turns: Mutex::new(TurnTable::default()),
+                reviews: Mutex::new(ReviewTokens::default()),
+                pending_cache: AtomicU64::new(0),
+            }),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_service_can_be_shared_between_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DesktopService>();
+    }
+}

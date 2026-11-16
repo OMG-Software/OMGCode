@@ -2,3 +2,7 @@ prompts/system.md text eol=lf
 
 # Keep bundled skill source digests stable across Windows and Linux checkouts.
 skills/**/SKILL.md text eol=lf
+
+# Check the desktop frontend out with LF on every platform. Biome's formatter
+# check expects LF, and a CRLF checkout on Windows would fail it.
+crates/omgcode-desktop/ui/** text=auto eol=lf
