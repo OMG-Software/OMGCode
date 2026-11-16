@@ -645,6 +645,13 @@ on Windows, and trusted CLI commands as the first caller. See
   [ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
   Concurrent-writer detection, multi-edit, create, delete, and rename remain
   unimplemented.
+- **Run network destination allowlist: deferred (2026-11-16).** No
+  unprivileged mechanism passes the ADR-0034 gate on both hosts. The only
+  candidate is a Linux user and network namespace with a trusted relay, which
+  Windows cannot match and stock Ubuntu 24.04 restricts. The user chose to
+  defer it and continue with Phase D. Package downloads keep using the
+  trusted `packages fetch` cache with offline runs, or the all-or-nothing
+  `task_network` path.
 
 Next decisions, not yet scheduled:
 
