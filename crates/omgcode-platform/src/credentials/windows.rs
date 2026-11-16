@@ -8,7 +8,7 @@
 //! handle before decrypting. Windows gives no power-loss contract for these
 //! files; see ADR-0042.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
@@ -63,19 +63,15 @@ impl DpapiStore {
         })?;
         let written = file.write_all(&blob).and_then(|()| file.sync_all());
         drop(file);
-        if let Err(error) = written {
-            // Remove the partial entry this call created. Either way the
-            // original failure is reported; a remaining entry decrypts as
-            // corrupt, never as a valid credential.
-            return Err(match directory.remove_file(&name) {
-                Ok(()) => CredentialError::Io(error),
-                Err(cleanup) => CredentialError::Io(io::Error::new(
-                    error.kind(),
-                    format!("{error}; the partial credential file could not be removed: {cleanup}"),
-                )),
-            });
+        // After a failed write or file sync, the entry may be partial. After
+        // a failed directory sync it is complete and would load, although
+        // its name may not be durable. Either way remove the entry this call
+        // created and report the original failure.
+        let result = written.and_then(|()| directory.sync());
+        if let Err(error) = result {
+            return Err(remove_created(&directory, &name, error));
         }
-        directory.sync().map_err(CredentialError::Io)
+        Ok(())
     }
 
     pub(super) fn load(&self, id: &CredentialId) -> Result<Secret, CredentialError> {
@@ -139,6 +135,19 @@ impl DpapiStore {
                 .map_err(CredentialError::Io),
             Err(error) => Err(CredentialError::Io(error)),
         }
+    }
+}
+
+/// Remove the entry a failed store created and report the original failure.
+/// A failed removal is added to the report, so the caller knows an entry may
+/// remain and can try `delete` again under the same identifier.
+fn remove_created(directory: &PrivateDirectory, name: &OsStr, error: io::Error) -> CredentialError {
+    match directory.remove_file(name) {
+        Ok(()) => CredentialError::Io(error),
+        Err(cleanup) => CredentialError::Io(io::Error::new(
+            error.kind(),
+            format!("{error}; the created credential file could not be removed: {cleanup}"),
+        )),
     }
 }
 

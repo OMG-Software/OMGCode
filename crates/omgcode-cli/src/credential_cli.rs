@@ -17,15 +17,16 @@ use std::path::Path;
 
 use crate::{CliError, print_json};
 
-/// Read a secret from standard input, store it as a new credential, bind it
-/// to `name`, and delete any credential it replaces.
+/// Store `secret` as a new credential, bind it to `name`, and delete any
+/// credential it replaces. The caller reads the secret with [`read_secret`]
+/// before it opens the control store.
 pub(crate) fn set(
     store: &mut ControlStore,
     data_root: &Path,
     name: &str,
+    secret: Secret,
     revision: u64,
 ) -> Result<(), CliError> {
-    let secret = read_secret()?;
     let credentials = CredentialStore::open(data_root).map_err(credential_error)?;
     let set = store
         .set_provider_credential(&credentials, name, &secret, revision)
@@ -125,8 +126,9 @@ pub(crate) fn capability() -> Value {
 }
 
 /// Read the secret from piped standard input. A terminal is refused so the
-/// secret is not echoed while typed.
-fn read_secret() -> Result<Secret, CliError> {
+/// secret is not echoed while typed. Call it before opening the control
+/// store, so no lock is held while input is awaited.
+pub(crate) fn read_secret() -> Result<Secret, CliError> {
     let stdin = io::stdin();
     if stdin.is_terminal() {
         return Err(CliError::new(
@@ -171,6 +173,7 @@ pub(crate) fn credential_error(error: CredentialError) -> CliError {
         CredentialError::Corrupt(_) => "credential_corrupt",
         CredentialError::TooLarge | CredentialError::Invalid(_) => "credential_input",
         CredentialError::Io(_) => "credential_io",
+        CredentialError::PromptRequired => "credential_prompt_required",
     };
     CliError::new(code, error.to_string())
 }
@@ -179,8 +182,81 @@ fn provider_credential_error(error: ProviderCredentialError) -> CliError {
     match error {
         ProviderCredentialError::Control(error) => crate::control_cli::control_error(error),
         ProviderCredentialError::Credential(error) => credential_error(error),
-        error @ ProviderCredentialError::Unrecorded { .. } => {
+        error @ (ProviderCredentialError::Unrecorded { .. }
+        | ProviderCredentialError::Unstored { .. }) => {
             CliError::new("credential_orphaned", error.to_string())
         }
+        error @ ProviderCredentialError::BindingUncertain { .. } => {
+            let replaced = match &error {
+                ProviderCredentialError::BindingUncertain {
+                    replaced: Some(old),
+                    ..
+                } => format!(
+                    " If the new binding is recorded, the replaced credential {old} is no longer bound and was not deleted; delete it by hand."
+                ),
+                _ => String::new(),
+            };
+            CliError::new(
+                "credential_binding_uncertain",
+                format!("{error}.{replaced}"),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omgcode_core::control::{ControlError, CredentialId};
+
+    const NEW: &str = "0123456789ab4def8123456789abcdef";
+    const OLD: &str = "fedcba9876544321a123456789abcdef";
+
+    fn id(text: &str) -> CredentialId {
+        CredentialId::parse(text).expect("credential id")
+    }
+
+    /// Failures that leave an item behind name its identifier under a stable
+    /// code, and a refused prompt has its own code.
+    #[test]
+    fn credential_failures_have_stable_codes_and_name_the_identifier() {
+        let error = provider_credential_error(ProviderCredentialError::Unstored {
+            error: CredentialError::Io(io::Error::other("directory sync failed")),
+            credential_id: id(NEW),
+            cleanup: CredentialError::Locked,
+        });
+        assert_eq!(error.code, "credential_orphaned");
+        assert!(error.message.contains(NEW), "{}", error.message);
+
+        let error = provider_credential_error(ProviderCredentialError::BindingUncertain {
+            error: ControlError::Io(io::Error::other("sync failed")),
+            credential_id: id(NEW),
+            replaced: Some(id(OLD)),
+        });
+        assert_eq!(error.code, "credential_binding_uncertain");
+        for expected in [
+            NEW,
+            OLD,
+            "provider-profile-show",
+            "provider-credential-remove",
+        ] {
+            assert!(error.message.contains(expected), "{}", error.message);
+        }
+
+        let error = provider_credential_error(ProviderCredentialError::BindingUncertain {
+            error: ControlError::Io(io::Error::other("sync failed")),
+            credential_id: id(NEW),
+            replaced: None,
+        });
+        assert_eq!(error.code, "credential_binding_uncertain");
+        assert!(
+            !error.message.contains("replaced credential"),
+            "{}",
+            error.message
+        );
+
+        let error = credential_error(CredentialError::PromptRequired);
+        assert_eq!(error.code, "credential_prompt_required");
+        assert!(error.message.contains("never prompts"), "{}", error.message);
     }
 }

@@ -30,16 +30,36 @@ Service through the pure-Rust zbus stack on Linux.
    - **Linux:** each credential is one Secret Service item in the default
      collection, with attributes naming the application and the credential
      identifier, through the `secret-service` crate (5.x, zbus with tokio and
-     the Rust crypto session). Secrets cross the bus in an encrypted session.
-     A locked collection is not unlocked by OMGCode; it is reported as locked.
+     the Rust crypto session) and direct zbus calls on the same connection.
+     Secrets cross the bus only in an encrypted session. A locked collection
+     is not unlocked by OMGCode; it is reported as locked. OMGCode never runs
+     a Secret Service prompt: the crate's blocking `create_item` and
+     `Item::delete` run a returned prompt and wait for it without a bound, so
+     `CreateItem` and `Item.Delete` are called directly. A returned prompt is
+     dismissed without being shown and reported as a prompt refusal. An item
+     is created in three steps: a direct `CreateItem` in a short plain session
+     makes a placeholder with an empty value and an `omgcode_state=pending`
+     attribute; the crate's `SetSecret` sends the secret through its
+     encrypted session; and an attribute update removes the marker. Neither
+     later step can return a prompt. A placeholder loads as corrupt, never as
+     its value, and a failed later step deletes it.
    - Any other platform, a missing session bus or service, or a missing
      default collection is reported as unavailable. Nothing falls back to a
      plaintext file.
 2. **Immutable credentials:** a credential is identified by a fresh random
    identifier and is never overwritten. Rotation stores a new credential,
-   binds it, and then deletes the old one, so an interrupted rotation leaves
-   either the old or the new binding valid and an orphan to remove, never a
-   half-written secret.
+   binds it, and then deletes the old one. An interrupted rotation either
+   leaves the old or the new binding valid, with at most one unbound item to
+   remove, or tells the operator which identifier to reconcile. A binding
+   never names an item that OMGCode deleted, and no half-written secret is
+   loaded:
+   - A failed store that may have left an item deletes it. If that fails,
+     the error names the identifier.
+   - A binding append refused before any write deletes the new item.
+   - A binding append whose journal write or sync failed may be recorded.
+     The new item is kept, and the error names it and any replaced
+     identifier, so the operator can check the profile and keep or remove
+     it.
 3. **Binding through the control journal:** trusted CLI commands bind a stored
    credential to one provider profile whose authentication mode is `api_key`.
    The control journal records the profile name and the credential
@@ -77,7 +97,17 @@ Service through the pure-Rust zbus stack on Linux.
 
 - `omgcode-platform` gains `secret-service`, zbus, and their dependencies on
   Linux, and new `windows-sys` features on Windows. `zeroize` is added for
-  owned secret buffers.
+  owned secret buffers. zbus is also a direct Linux dependency, pinned to the
+  exact version `secret-service` resolves (5.19.0) with the features it
+  already enables, so the direct prompt-refusing calls add no crate. Its
+  `p2p` feature is enabled only for tests, which run a mock Secret Service
+  over a socket pair to prove that a returned prompt is never run.
+- The three-step Linux create leaves a placeholder marked pending if it is
+  interrupted. It holds no secret, loads as corrupt, blocks reuse of its
+  identifier, and is removed by the normal delete.
+- A Secret Service configured to confirm item creation or deletion cannot be
+  used: those commands fail with a prompt refusal rather than wait for a
+  user.
 - The crate's blocking API, used here, runs calls on a process-wide tokio
   runtime that zbus builds on first use (and panics if it cannot build).
   Credential calls must therefore not be made from inside an async runtime.

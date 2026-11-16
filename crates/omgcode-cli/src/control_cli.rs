@@ -370,9 +370,13 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             print_json(&output)
         }
         WorkspaceCommand::ProviderCredentialSet { name, revision } => {
+            // Read the secret before the control store is opened, so its
+            // lock is never held while standard input is awaited. Input
+            // refusals still happen before any write.
+            let secret = credential_cli::read_secret()?;
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            credential_cli::set(&mut store, data_root, &name, revision)
+            credential_cli::set(&mut store, data_root, &name, secret, revision)
         }
         WorkspaceCommand::ProviderCredentialRemove { name, revision } => {
             let mut store = open_existing(data_root)?

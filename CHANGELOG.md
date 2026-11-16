@@ -64,8 +64,11 @@ Changes are recorded here before a release version is assigned.
     identifier) create-only into `credentials-v1` of the verified-ACL private
     store, and rechecks the file's exact private DACL before decrypting.
     Linux stores one Secret Service item in the default collection, with
-    `application` and `omgcode_credential` attributes, through an encrypted
-    session. A locked collection is reported, never unlocked. Other platforms,
+    `application` and `omgcode_credential` attributes. It creates an empty
+    placeholder marked `omgcode_state=pending`, sends the secret only through
+    the encrypted session, and then removes the marker; a placeholder loads as
+    corrupt. A locked collection is reported, never unlocked, and a Secret
+    Service prompt is dismissed and refused, never run. Other platforms,
     a missing bus or service, or no default collection are unavailable;
     nothing falls back to plaintext.
   - **Errors:** edited, truncated, or identifier-swapped Windows blobs, a
@@ -83,13 +86,17 @@ Changes are recorded here before a release version is assigned.
     newline, stores, binds, and then deletes a replaced credential.
     `provider-credential-remove` and `provider-profile-remove` unbind before
     deleting. An undeletable unbound item is a `credential_orphaned` warning.
-    Credential failures have stable `credential_*` error codes, and
+    The secret is read before the control store is opened. Credential
+    failures have stable `credential_*` error codes, including
+    `credential_prompt_required` and `credential_binding_uncertain`, and
     `capabilities` reports `credential_store` and `provider_credentials`.
   - **CI:** the Linux job installs gnome-keyring and unlocks a login
     collection on the user session bus before the tests.
   - **Dependencies:** `zeroize` 1.9 (`alloc`), `secret-service` 5.2
-    (Linux, `rt-tokio-crypto-rust`, with zbus 5), and the `windows-sys`
-    `Win32_Security_Cryptography` feature.
+    (Linux, `rt-tokio-crypto-rust`), zbus pinned to 5.19.0 as a direct Linux
+    dependency with the features `secret-service` already enables, and the
+    `windows-sys` `Win32_Security_Cryptography` feature. No crate was added
+    to the lockfile for zbus.
 - Version 0.26.0 adds readable context compaction and accounting. See
   ADR-0041.
   - **Manual:** `session compact` summarizes older active messages with the
@@ -461,6 +468,34 @@ Changes are recorded here before a release version is assigned.
   development guide. Keep the existing Sonar project key to retain its history.
 
 ### Fixed
+
+- PR #32 review follow-up:
+  - Compaction splits summarizer input at the 128-message prompt-assembly
+    limit as well as the byte limit, in history chunks and combination
+    rounds. 130 short older messages used to form one chunk that prompt
+    assembly refused.
+  - Summarizer chunks are sized by each message's JSON-escaped length, so
+    content with quotes, backslashes, or control characters no longer makes
+    a chunk exceed the serialized request bound and fail compaction.
+  - `provider-credential-set` reads the secret before it opens the control
+    store, so the store's lock is not held while standard input is awaited.
+  - A failed credential store that may have left an item, such as a Windows
+    directory sync failure after a complete write, deletes it. The Windows
+    store now removes its file on that failure too. If cleanup fails, the
+    command reports `credential_orphaned` with the identifier.
+  - A binding append refused before any write still deletes the new item. A
+    binding whose journal write or sync failed may be recorded, so the new
+    item is now kept and reported as `credential_binding_uncertain` with its
+    identifier and any replaced identifier. A recorded binding no longer
+    names an item that OMGCode deleted.
+  - Linux no longer lets `secret-service` run a prompt returned by
+    `CreateItem` or `Item.Delete`, which waited without a bound. Those calls
+    go through zbus directly; a returned prompt is dismissed, never run, and
+    reported as `credential_prompt_required`. Mock-service tests prove that
+    `Prompt` is never called.
+  - Credential tests keep their temporary directory until the stores close,
+    and the history-limit CLI tests seed journals inside the spawn gate. The
+    credential command example pipes the key on standard input.
 
 - PR #30 review follow-up:
   - Expired, undecided approvals no longer occupy the 64 pending slots during

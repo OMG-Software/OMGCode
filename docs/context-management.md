@@ -43,7 +43,10 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
 - Summarizer input is split at message boundaries into bounded chunks; multiple
   summaries are combined with hard chunk and depth limits. A chunk is sized from
   the summary request's own output reserve, after deducting the compiled base
-  prompt, the compaction instructions, and their message overhead. Empty,
+  prompt, the compaction instructions, and their message overhead. A chunk,
+  including one in a combination round, also holds at most the 128 history
+  messages that one assembled request accepts, so many short messages are
+  split into several chunks instead of failing prompt assembly. Empty,
   oversized, or failed summaries fail closed, and a summary that would not
   shrink the active context is refused with nothing recorded.
 - When the summarizer input carries tool-derived content, live `model_tools`

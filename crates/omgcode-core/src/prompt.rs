@@ -11,7 +11,9 @@ pub const BASE_PROMPT_VERSION: &str = "0.1.4";
 
 const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 16 * 1024;
 const MAX_HISTORY_MESSAGE_BYTES: usize = 16 * 1024;
-const MAX_HISTORY_MESSAGES: usize = 128;
+/// Most history messages one assembled request accepts. Compaction chunks
+/// use the same limit.
+pub(crate) const MAX_HISTORY_MESSAGES: usize = 128;
 const MAX_ASSEMBLED_BYTES: usize = 256 * 1024;
 const CUSTOM_INSTRUCTIONS_LABEL: &str = "Saved user preferences:\n";
 

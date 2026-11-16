@@ -154,7 +154,13 @@ the Secret Service default collection on Linux. Nothing falls back to plaintext.
 A credential is immutable and has a fresh random identifier. The control
 journal records `provider_credential_bound` with the profile, that opaque
 identifier, and the backend; it never records the secret. Rotation stores a new
-credential, records the binding, and then deletes the old item.
+credential, records the binding, and then deletes the old item. An interrupted
+set either leaves a valid binding or names the identifier to reconcile: when
+the binding's journal write fails after it began, the new item is kept and
+reported as `credential_binding_uncertain`, so a binding never names an item
+OMGCode deleted. On Linux OMGCode never runs a Secret Service prompt; a request
+that needs one is dismissed and refused. The secret reaches the service only
+through the encrypted session, after an empty placeholder item is created.
 `provider-credential-remove` and `provider-profile-remove` record the unbinding
 before deleting the native item. Output, `status`, and `capabilities` report
 only identifiers, backends, and store state. See

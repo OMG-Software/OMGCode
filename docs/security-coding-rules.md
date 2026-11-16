@@ -237,8 +237,10 @@ crate.
   Service items on Linux, never a plaintext fallback. Read secrets only from a
   trusted input stream, never from arguments or environment, and hold them in
   `Secret`, which is zeroed on drop and redacted from `Debug`. Journals record
-  only the opaque identifier and backend. Never prompt to unlock a store, and
-  record a binding before deleting the credential it replaces.
+  only the opaque identifier and backend. Never prompt to unlock a store or
+  run a Secret Service prompt, and record a binding before deleting the
+  credential it replaces. Never delete a new credential whose binding write
+  may have been recorded; report its identifier instead.
 - A future model tool that changes host state must consume a trusted,
   single-use approval bound to the session, workspace, operation, exact
   request digest, and settings revision. Refuse a missing, denied, expired,

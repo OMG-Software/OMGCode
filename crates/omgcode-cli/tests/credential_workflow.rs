@@ -326,6 +326,66 @@ fn refused_credential_input_records_nothing() {
     assert_no_secret_in_files(data);
 }
 
+/// The secret is read before the control store is opened: an uninitialized
+/// data root reports the refused input, not the missing journal, and creates
+/// nothing.
+#[test]
+fn the_secret_is_read_before_the_control_store_is_opened() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let data = temporary.path().join("never-initialized");
+    let path = temporary.path().join("stdin-input");
+    fs::write(&path, b"").expect("stdin fixture");
+    let mut command = cli_command(
+        &data,
+        &[
+            "workspace",
+            "provider-credential-set",
+            "keys",
+            "--revision",
+            "0",
+        ],
+    );
+    command.stdin(Stdio::from(File::open(&path).expect("open stdin fixture")));
+    let result = run_with_deadline(command, CLI_DEADLINE).expect("run CLI");
+    assert!(!result.timed_out, "CLI timed out");
+    assert_error_code(&result.output, "credential_input");
+    assert!(!data.exists(), "nothing was created");
+}
+
+/// While the command waits for standard input, the control store is not
+/// locked, so another command can open it.
+#[test]
+fn waiting_for_the_secret_does_not_hold_the_control_store() {
+    let scene = scene();
+    let current = revision(&scene.data).to_string();
+    let (reader, writer) = std::io::pipe().expect("stdin pipe");
+    let mut command = cli_command(
+        &scene.data,
+        &[
+            "workspace",
+            "provider-credential-set",
+            "keys",
+            "--revision",
+            &current,
+        ],
+    );
+    command.stdin(Stdio::from(reader));
+    let waiting = std::thread::spawn(move || run_with_deadline(command, CLI_DEADLINE));
+
+    // The pending command holds the pipe open without input.
+    let status = run_cli(&scene.data, &["workspace", "status"]);
+    assert_success(&status);
+
+    drop(writer);
+    let result = waiting
+        .join()
+        .expect("waiting thread")
+        .expect("run pending CLI");
+    assert!(!result.timed_out, "CLI timed out");
+    assert_error_code(&result.output, "credential_input");
+    assert_eq!(revision(&scene.data).to_string(), current);
+}
+
 /// Removing a profile ends its binding in the same event and then deletes
 /// the native item.
 #[test]

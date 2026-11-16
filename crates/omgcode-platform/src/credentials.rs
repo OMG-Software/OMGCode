@@ -220,6 +220,9 @@ pub enum CredentialError {
     TooLarge,
     /// An identifier or secret was refused before any storage I/O.
     Invalid(&'static str),
+    /// The Secret Service asked for interactive confirmation. OMGCode never
+    /// runs a prompt; the request was refused without one.
+    PromptRequired,
     /// An operating-system or service failure without a more specific category.
     Io(io::Error),
 }
@@ -240,6 +243,9 @@ impl fmt::Display for CredentialError {
                 "credential secret exceeds {MAX_SECRET_BYTES} bytes"
             ),
             Self::Invalid(reason) => write!(formatter, "credential refused: {reason}"),
+            Self::PromptRequired => formatter.write_str(
+                "the Secret Service asked for interactive confirmation; OMGCode never prompts",
+            ),
             Self::Io(error) => write!(formatter, "credential store I/O failed: {error}"),
         }
     }
@@ -358,8 +364,11 @@ impl CredentialStore {
     ///
     /// Returns [`CredentialError::AlreadyExists`] for an existing identifier,
     /// [`CredentialError::Locked`] for a locked store, or another category.
-    /// A failure after creation may leave a partial entry that `load` reports
-    /// as corrupt; the Windows backend tries to remove it first.
+    /// [`CredentialError::PromptRequired`] when the Linux service asks for
+    /// confirmation. A failure after creation may leave an entry under `id`:
+    /// a partial or complete Windows file, or a Linux placeholder that `load`
+    /// reports as corrupt. Both backends try to remove it first; when that
+    /// fails, the caller should try [`Self::delete`] and keep the identifier.
     pub fn store(&self, id: &CredentialId, secret: &Secret) -> Result<(), CredentialError> {
         #[cfg(any(windows, target_os = "linux"))]
         {

@@ -173,9 +173,13 @@ No provider adapter reads a stored credential yet; `chat` still uses only the
 prototype `OMGCODE_LM_TOKEN` input. Subscription and `none` profiles refuse a
 credential.
 
-```text
+In PowerShell:
+
+```powershell
 omgcode --data-dir C:\omgcode-data workspace provider-profile-add work --kind openai --auth api_key --revision 6
-omgcode --data-dir C:\omgcode-data workspace provider-credential-set work --revision 7
+$key = Read-Host -AsSecureString -Prompt 'API key'
+[System.Net.NetworkCredential]::new('', $key).Password | omgcode --data-dir C:\omgcode-data workspace provider-credential-set work --revision 7
+Remove-Variable key
 omgcode --data-dir C:\omgcode-data workspace provider-profile-show work
 omgcode --data-dir C:\omgcode-data workspace provider-credential-remove work --revision 8
 ```
@@ -184,15 +188,9 @@ omgcode --data-dir C:\omgcode-data workspace provider-credential-remove work --r
 accepts the secret as an argument or environment variable, and it refuses a
 terminal, which would echo the secret as it is typed. It reads at most 16 KiB
 plus one line ending, removes exactly one trailing `\n` or `\r\n`, and refuses
-empty input. Pipe the secret without placing it on a command line.
-
-In PowerShell:
-
-```powershell
-$key = Read-Host -AsSecureString -Prompt 'API key'
-[System.Net.NetworkCredential]::new('', $key).Password | omgcode --data-dir C:\omgcode-data workspace provider-credential-set work --revision 7
-Remove-Variable key
-```
+empty input. Pipe the secret without placing it on a command line, as above.
+The secret is read before the control store is opened, so no settings lock
+is held while the command waits for input.
 
 Windows PowerShell 5.1 sends piped text in its `$OutputEncoding`, which is
 ASCII by default, and appends CRLF; the CLI removes the CRLF. A non-ASCII key
@@ -219,9 +217,17 @@ an unbound item cannot be deleted, the command still succeeds and reports a
 
 Credential failures use stable error codes: `credential_unavailable`,
 `credential_locked`, `credential_not_found`, `credential_exists`,
-`credential_corrupt`, `credential_input`, `credential_io`, and
-`credential_orphaned` (a binding that was not recorded and whose new item
-could not be deleted). `capabilities` reports `credential_store` with the
+`credential_corrupt`, `credential_input`, `credential_io`,
+`credential_prompt_required` (the Secret Service asked for confirmation,
+which OMGCode never shows), `credential_orphaned` (nothing was recorded, and
+an item for the named identifier may remain and could not be deleted), and
+`credential_binding_uncertain`. The last means the binding's journal write
+failed after it began, so it may or may not be recorded. The new item is
+kept and the message names it, and any replaced identifier. Run
+`provider-profile-show`: if it shows the new identifier, keep it or remove it
+with `provider-credential-remove`, and delete the replaced item by hand;
+otherwise delete the new, unbound item by hand. A recorded binding never
+names an item that OMGCode deleted. `capabilities` reports `credential_store` with the
 backend and its state. A control journal written by 0.27.0 cannot be read by
 0.26.0.
 
@@ -234,6 +240,12 @@ backend and its state. A control journal written by 0.27.0 cannot be read by
   collection on the session bus, for example the gnome-keyring login
   collection. OMGCode never unlocks a collection: unlock it outside OMGCode,
   or the command fails with `credential_locked` before anything is recorded.
+  It never runs a Secret Service prompt either: a service that asks to
+  confirm a new item or a deletion gets the prompt dismissed, and the command
+  fails with `credential_prompt_required`. An item is first created as an
+  empty placeholder with an `omgcode_state=pending` attribute; the secret is
+  then sent through the encrypted session and the marker removed. A
+  placeholder left by an interrupted store loads as `credential_corrupt`.
   No bus, service, or default collection is `credential_unavailable`. Nothing
   falls back to a plaintext file.
 

@@ -28,3 +28,9 @@ libc.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix.workspace = true
 secret-service.workspace = true
+zbus.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A peer-to-peer mock Secret Service; neither adds a crate to the lockfile.
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
+zbus = { workspace = true, features = ["p2p"] }

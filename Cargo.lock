@@ -1018,8 +1018,10 @@ dependencies = [
  "rustix",
  "secret-service",
  "tempfile",
+ "tokio",
  "uuid",
  "windows-sys",
+ "zbus",
  "zeroize",
 ]
 

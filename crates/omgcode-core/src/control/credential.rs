@@ -4,8 +4,16 @@
 //! identifier, and the native backend. It never records a secret. Secrets live
 //! only in the platform credential store, and a credential is never
 //! overwritten: rotation stores a new credential, records the binding, and only
-//! then deletes the old item. An interrupted rotation leaves either the old or
-//! the new binding valid and at most one unbound item to remove.
+//! then deletes the old item.
+//!
+//! An interrupted rotation either leaves a valid binding (the old or the new
+//! one) with at most one unbound item to remove, or reports the identifier the
+//! operator must reconcile. A failed store that may have left an item tries to
+//! delete it and otherwise reports its identifier. A binding append refused
+//! before any write deletes the new item. A binding append whose write or sync
+//! failed may still be on disk, so the new item is kept and its identifier is
+//! reported as uncertain. A recorded binding therefore never names an item
+//! that OMGCode deleted.
 //!
 //! Only `api_key` profiles accept a credential for now. No provider adapter
 //! reads a bound credential yet.
@@ -206,6 +214,38 @@ pub enum ProviderCredentialError {
         /// Why it could not be deleted.
         cleanup: CredentialError,
     },
+    /// The native store failed after it may have created an item for the new
+    /// identifier, and that item could not be deleted or confirmed absent.
+    /// Nothing was recorded; any remaining item is an unbound orphan.
+    #[error(
+        "the credential was not stored ({error}), and an item for the new credential {credential_id} may remain and could not be deleted: {cleanup}"
+    )]
+    Unstored {
+        /// Why the store failed.
+        #[source]
+        error: CredentialError,
+        /// The identifier any remaining item has.
+        credential_id: CredentialId,
+        /// Why it could not be deleted.
+        cleanup: CredentialError,
+    },
+    /// The new credential was stored, but the binding's journal write or
+    /// sync failed after it began, so the binding may or may not be
+    /// recorded. The new item is kept, so a recorded binding never names a
+    /// deleted item, and any replaced credential was not deleted.
+    #[error(
+        "the binding of the new credential {credential_id} may or may not be recorded ({error}); the credential was kept. Run provider-profile-show: if it shows this identifier, keep it or remove it with provider-credential-remove; otherwise delete the unbound item by hand"
+    )]
+    BindingUncertain {
+        /// Why the binding write is uncertain.
+        #[source]
+        error: ControlError,
+        /// The kept credential's identifier.
+        credential_id: CredentialId,
+        /// The credential that was bound before, if any. If the new binding
+        /// is recorded, it is no longer bound and was not deleted.
+        replaced: Option<CredentialId>,
+    },
 }
 
 impl ControlStore {
@@ -213,11 +253,18 @@ impl ControlStore {
     /// profile, then delete any credential it replaces.
     ///
     /// The order keeps an interrupted run recoverable: the native store, then
-    /// the journal binding, then the old item's deletion. A refused or failed
-    /// binding deletes the new item; an uncertain journal write can therefore
-    /// leave a recorded binding whose item is absent, which loading reports
-    /// as not found. A failed old-item deletion is returned as an orphan,
-    /// never as an error that hides the new binding.
+    /// the journal binding, then the old item's deletion.
+    ///
+    /// - A failed store that may have created an item tries to delete it. If
+    ///   that fails, [`ProviderCredentialError::Unstored`] names the item.
+    /// - A binding refused before any journal write deletes the new item. If
+    ///   that fails, [`ProviderCredentialError::Unrecorded`] names the item.
+    /// - A binding whose journal write or sync failed may still be recorded,
+    ///   so the new item is kept and
+    ///   [`ProviderCredentialError::BindingUncertain`] names it. A recorded
+    ///   binding therefore never names an item this call deleted.
+    /// - A failed old-item deletion is returned as an orphan, never as an
+    ///   error that hides the new binding.
     ///
     /// # Errors
     ///
@@ -231,25 +278,32 @@ impl ControlStore {
         expected_revision: u64,
     ) -> Result<ProviderCredentialSet, ProviderCredentialError> {
         let profile_id = self.credential_profile(name, expected_revision)?;
+        let replaced = self.bound_credential(profile_id)?;
         let id = CredentialId::parse(&Uuid::new_v4().simple().to_string())?;
-        credentials.store(&id, secret)?;
+        if let Err(error) = credentials.store(&id, secret) {
+            return Err(store_failure(credentials, id, error));
+        }
         let binding = CredentialBinding {
             id: id.clone(),
             backend: credentials.backend(),
         };
-        let replaced = match self.bind_credential(profile_id, binding.clone()) {
-            Ok(replaced) => replaced,
-            Err(error) => {
-                return Err(match credentials.delete(&id) {
-                    Ok(()) => ProviderCredentialError::Control(error),
-                    Err(cleanup) => ProviderCredentialError::Unrecorded {
-                        error,
-                        credential_id: id,
-                        cleanup,
-                    },
+        if let Err(error) = self.bind_credential(profile_id, binding.clone()) {
+            if binding_write_uncertain(&error) {
+                return Err(ProviderCredentialError::BindingUncertain {
+                    error,
+                    credential_id: id,
+                    replaced: replaced.map(|old| old.id),
                 });
             }
-        };
+            return Err(match credentials.delete(&id) {
+                Ok(()) | Err(CredentialError::NotFound) => ProviderCredentialError::Control(error),
+                Err(cleanup) => ProviderCredentialError::Unrecorded {
+                    error,
+                    credential_id: id,
+                    cleanup,
+                },
+            });
+        }
         let orphan = replaced
             .as_ref()
             .and_then(|old| delete_unbound_credential(credentials, old));
@@ -293,6 +347,21 @@ impl ControlStore {
         Ok(status.profile().id())
     }
 
+    /// The binding a profile holds now, which a new binding would replace.
+    fn bound_credential(
+        &self,
+        profile_id: Uuid,
+    ) -> Result<Option<CredentialBinding>, ControlError> {
+        Ok(self
+            .snapshot
+            .provider_profiles
+            .iter()
+            .find(|status| status.profile().id() == profile_id)
+            .ok_or(ControlError::UnknownProvider)?
+            .credential
+            .clone())
+    }
+
     /// Record a binding under the next revision. The caller has already
     /// checked the revision with [`Self::credential_profile`] while holding
     /// this store's lock.
@@ -300,23 +369,14 @@ impl ControlStore {
         &mut self,
         profile_id: Uuid,
         binding: CredentialBinding,
-    ) -> Result<Option<CredentialBinding>, ControlError> {
-        let replaced = self
-            .snapshot
-            .provider_profiles
-            .iter()
-            .find(|status| status.profile().id() == profile_id)
-            .ok_or(ControlError::UnknownProvider)?
-            .credential
-            .clone();
+    ) -> Result<(), ControlError> {
         self.append(
             Action::ProviderCredentialBound {
                 profile_id,
                 binding,
             },
             self.next_revision()?,
-        )?;
-        Ok(replaced)
+        )
     }
 
     /// Record that the named profile's binding is removed.
@@ -370,6 +430,98 @@ pub fn delete_unbound_credential(
             id: binding.id.clone(),
             error,
         }),
+    }
+}
+
+/// Report a failed native store. When the failure may have left an item for
+/// `id`, delete it; an item that cannot be deleted or confirmed absent is
+/// reported with its identifier so it is never lost.
+fn store_failure(
+    credentials: &CredentialStore,
+    id: CredentialId,
+    error: CredentialError,
+) -> ProviderCredentialError {
+    if !store_may_leave_item(&error) {
+        return ProviderCredentialError::Credential(error);
+    }
+    let cleanup = credentials.delete(&id);
+    store_cleanup_outcome(id, error, cleanup)
+}
+
+/// Map a store failure and its cleanup result to the reported error.
+fn store_cleanup_outcome(
+    id: CredentialId,
+    error: CredentialError,
+    cleanup: Result<(), CredentialError>,
+) -> ProviderCredentialError {
+    match cleanup {
+        Ok(()) | Err(CredentialError::NotFound) => ProviderCredentialError::Credential(error),
+        Err(cleanup) => ProviderCredentialError::Unstored {
+            error,
+            credential_id: id,
+            cleanup,
+        },
+    }
+}
+
+/// Whether a failed store may have left an item for the new identifier.
+///
+/// `Invalid` and `TooLarge` are refusals before any native write, and
+/// `AlreadyExists` means an item this call did not create holds the
+/// identifier, so none of them is deleted. Every other category can follow
+/// a created Windows file (for example a failed directory sync) or a created
+/// Secret Service item (a failed `SetSecret` or attribute update), so cleanup
+/// is attempted. Deleting an absent item only returns `NotFound`.
+fn store_may_leave_item(error: &CredentialError) -> bool {
+    match error {
+        CredentialError::Invalid(_)
+        | CredentialError::TooLarge
+        | CredentialError::AlreadyExists => false,
+        CredentialError::Io(_)
+        | CredentialError::Corrupt(_)
+        | CredentialError::Unavailable(_)
+        | CredentialError::Locked
+        | CredentialError::NotFound
+        | CredentialError::PromptRequired => true,
+    }
+}
+
+/// Whether a failed binding append may still have reached the journal.
+///
+/// `ControlStore::append` checks health, capacity, the event's validity, and
+/// its encoding before it writes anything; those refusals return
+/// `Poisoned`, `LimitReached`, or `Invalid` and leave the journal unchanged.
+/// Revision and profile checks fail earlier in the same way. Only the seek,
+/// write, and sync step returns `Io`, and a failed write or sync can leave a
+/// complete event on disk that replay accepts. A failed seek writes nothing,
+/// but it shares that variant, so it is treated as uncertain too. Listing
+/// every variant makes a new one choose its category explicitly.
+fn binding_write_uncertain(error: &ControlError) -> bool {
+    match error {
+        ControlError::Io(_) => true,
+        ControlError::Invalid(_)
+        | ControlError::Busy
+        | ControlError::Conflict { .. }
+        | ControlError::NoRoot
+        | ControlError::UnknownWorkspace
+        | ControlError::DirectoryChanged
+        | ControlError::StorageOverlap
+        | ControlError::WorkspacePath(_)
+        | ControlError::LimitReached
+        | ControlError::Poisoned
+        | ControlError::Container(_)
+        | ControlError::ProfileRemoval(_)
+        | ControlError::UnknownGrant
+        | ControlError::GrantRefused(_)
+        | ControlError::UnknownProfile
+        | ControlError::ProfileRefused(_)
+        | ControlError::UnknownPackageProfile
+        | ControlError::PackageProfileRefused(_)
+        | ControlError::PackageCacheRefused(_)
+        | ControlError::UnknownProvider
+        | ControlError::ProviderRefused(_)
+        | ControlError::UnknownApproval
+        | ControlError::ApprovalRefused(_) => false,
     }
 }
 

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use support::run_scene::{Scene, run_command, shell};
+use support::spawn_gate::without_child_spawns;
 use support::workspace_fixture::Fixture;
 use support::{
     CLI_DEADLINE, HANG_FIXTURE_ENV, assert_error_code, assert_success, json_output, path_arg,
@@ -1064,16 +1065,13 @@ fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider()
     assert!(!events.contains("context.compacted"), "{events}");
 }
 
-#[test]
-fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() {
-    let fixture = Fixture::new(NOTE);
-    let journal = fixture.session();
-    // 64 short exchanges fill the 128-message history limit far below the
-    // token trigger; the pending request would be message 129.
-    {
+/// Record `count` short exchanges directly. The journal lock is held only
+/// inside the spawn gate, so no parallel test's child can inherit it.
+fn seed_short_exchanges(journal: &Path, count: usize) {
+    without_child_spawns(|| {
         let mut session =
-            omgcode_core::session::SessionJournal::open(&journal).expect("open journal");
-        for index in 0..64 {
+            omgcode_core::session::SessionJournal::open(journal).expect("open journal");
+        for index in 0..count {
             session
                 .record_message(
                     omgcode_core::session::MessageRole::User,
@@ -1087,7 +1085,16 @@ fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() 
                 )
                 .expect("assistant message");
         }
-    }
+    });
+}
+
+#[test]
+fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // 64 short exchanges fill the 128-message history limit far below the
+    // token trigger; the pending request would be message 129.
+    seed_short_exchanges(&journal, 64);
 
     let server = SequenceServer::start(Vec::new());
     let output = fixture.chat(&journal, &server.endpoint, "next request");
@@ -1122,13 +1129,58 @@ fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() 
 }
 
 #[test]
+fn more_older_messages_than_one_summary_request_accepts_compact_in_several_chunks() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // 66 short exchanges leave 130 older messages: more than one summary
+    // request's 128-message history, although their bytes fit one chunk.
+    seed_short_exchanges(&journal, 66);
+
+    let server = SequenceServer::start(vec![
+        text("First chunk."),
+        text("Second chunk."),
+        text("Sixty-six exchanges."),
+        text("next reply"),
+    ]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "next reply");
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 130);
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 3);
+    assert_eq!(requests.len(), 4, "two chunks, one combination, one chat");
+    for request in requests.iter().take(3) {
+        let messages = request["messages"].as_array().expect("messages");
+        assert!(messages.len() <= 128 + 2, "{}", messages.len());
+    }
+}
+
+#[test]
 fn auto_compaction_sizes_summary_chunks_from_the_summary_reserve_not_the_chat_reserve() {
     let fixture = Fixture::new(NOTE);
     let journal = fixture.session();
     // A 16 KiB context with an 8 KiB chat reserve leaves about 2 KB of chunk
     // room after the fixed summarizer prompt; the 2048-token summary reserve
     // leaves about 8 KB. One 3 KB exchange fits only the second allowance.
-    {
+    without_child_spawns(|| {
         let mut session =
             omgcode_core::session::SessionJournal::open(&journal).expect("open journal");
         for (role, content) in [
@@ -1148,7 +1200,7 @@ fn auto_compaction_sizes_summary_chunks_from_the_summary_reserve_not_the_chat_re
         ] {
             session.record_message(role, &content).expect("message");
         }
-    }
+    });
 
     let server = SequenceServer::start(vec![text("Earlier large exchange."), text("next reply")]);
     let output = run_cli(

@@ -5,7 +5,7 @@
 //! are untrusted model output and are injected as labelled user-level evidence.
 //! They never grant authority, approve work, or replace core-owned state.
 
-use crate::prompt::{BASE_PROMPT, ConversationMessage, ConversationRole};
+use crate::prompt::{BASE_PROMPT, ConversationMessage, ConversationRole, MAX_HISTORY_MESSAGES};
 use crate::provider::ProviderError;
 use crate::session::{CompactionRecord, MessageRole, SessionError, SessionJournal};
 use crate::turn::replay_active;
@@ -13,7 +13,8 @@ use thiserror::Error;
 
 /// Default auto-compaction trigger, in requested tokens.
 pub const DEFAULT_COMPACT_THRESHOLD: u64 = 200_000;
-/// Most messages summarized in one chunk.
+/// Most summarizer chunks in one round. Each chunk holds at most the prompt's
+/// history-message limit.
 pub const MAX_SUMMARY_CHUNKS: usize = 16;
 /// Most recursive combination rounds.
 pub const MAX_SUMMARY_DEPTH: usize = 4;
@@ -260,7 +261,7 @@ where
         summarize(chunk)
     };
 
-    let chunks = chunk_history(&history, limits.max_chunk_bytes)?;
+    let chunks = chunk_history(&history, limits.max_chunk_bytes, MAX_HISTORY_MESSAGES)?;
     if chunks.len() > MAX_SUMMARY_CHUNKS {
         return Err(ContextError::TooLarge);
     }
@@ -285,7 +286,7 @@ where
             return Err(ContextError::NoProgress);
         }
         depth = depth.saturating_add(1);
-        let combined = chunk_history(&summaries, limits.max_chunk_bytes)?;
+        let combined = chunk_history(&summaries, limits.max_chunk_bytes, MAX_HISTORY_MESSAGES)?;
         if combined.len() > MAX_SUMMARY_CHUNKS {
             return Err(ContextError::TooLarge);
         }
@@ -358,23 +359,45 @@ fn valid_summary(text: &str, limit: usize) -> Result<String, ContextError> {
     Ok(text.to_owned())
 }
 
-/// Split history at message boundaries without exceeding the byte budget.
+/// Bytes that `content` occupies inside a JSON string, without the quotes.
+///
+/// Chunks are sized by this length, because the provider bounds the
+/// serialized request: a quote, a backslash, or a control character expands
+/// when escaped, so a chunk that fits by raw size could still exceed the
+/// request bound. This matches `serde_json`'s escaping.
+fn json_escaped_len(content: &str) -> usize {
+    content.chars().fold(0_usize, |total, character| {
+        let width = match character {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+            control if u32::from(control) < 0x20 => 6,
+            other => other.len_utf8(),
+        };
+        total.saturating_add(width)
+    })
+}
+
+/// Split history at message boundaries without exceeding the byte budget or
+/// `max_messages`. Each chunk becomes the history of one assembled summarizer
+/// request, so callers pass the prompt's history-message limit.
 fn chunk_history(
     history: &[ConversationMessage],
     max_bytes: usize,
+    max_messages: usize,
 ) -> Result<Vec<Vec<ConversationMessage>>, ContextError> {
-    if max_bytes == 0 {
+    if max_bytes == 0 || max_messages == 0 {
         return Err(ContextError::TooLarge);
     }
     let mut chunks = Vec::new();
     let mut current: Vec<ConversationMessage> = Vec::new();
     let mut bytes = 0_usize;
     for message in history {
-        let size = message.content.len().saturating_add(MESSAGE_OVERHEAD);
+        let size = json_escaped_len(&message.content).saturating_add(MESSAGE_OVERHEAD);
         if size > max_bytes {
             return Err(ContextError::TooLarge);
         }
-        if !current.is_empty() && bytes.saturating_add(size) > max_bytes {
+        if !current.is_empty()
+            && (bytes.saturating_add(size) > max_bytes || current.len() >= max_messages)
+        {
             chunks.push(std::mem::take(&mut current));
             bytes = 0;
         }
@@ -390,6 +413,42 @@ fn chunk_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escaped_length_matches_the_serialized_json_string() {
+        for sample in [
+            "plain text",
+            "quote \" and backslash \\",
+            "lines\n\r\ttabs\u{08}\u{0c}",
+            "controls \u{01}\u{1f}\u{7f}",
+            "non-ASCII \u{e9}\u{4e2d}\u{1f600}",
+        ] {
+            let serialized = serde_json::to_string(sample).expect("serialize");
+            assert_eq!(json_escaped_len(sample), serialized.len() - 2, "{sample:?}");
+        }
+    }
+
+    #[test]
+    fn chunks_are_sized_by_their_escaped_length() {
+        let controls = "\u{01}".repeat(1_000);
+        let history = vec![
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: controls.clone(),
+            },
+            ConversationMessage {
+                role: ConversationRole::Assistant,
+                content: controls,
+            },
+        ];
+        // Each message is 1,000 raw bytes but 6,000 escaped bytes.
+        let chunks = chunk_history(&history, 7_000, 128).expect("chunks");
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(
+            chunk_history(&history[..1], 5_000, 128),
+            Err(ContextError::TooLarge)
+        ));
+    }
     use crate::session::SessionJournal;
 
     fn session() -> (tempfile::TempDir, SessionJournal) {
@@ -600,13 +659,63 @@ mod tests {
                 content: "b".repeat(256),
             },
         ];
-        let chunks = chunk_history(&history, 600).expect("chunks");
+        let chunks = chunk_history(&history, 600, MAX_HISTORY_MESSAGES).expect("chunks");
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0][0].content.len(), 256);
         assert!(matches!(
-            chunk_history(&history, 300),
+            chunk_history(&history, 300, MAX_HISTORY_MESSAGES),
             Err(ContextError::TooLarge)
         ));
+        // The message limit splits chunks that the byte budget would allow.
+        let chunks = chunk_history(&history, 64 * 1024, 1).expect("chunks");
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(
+            chunk_history(&history, 64 * 1024, 0),
+            Err(ContextError::TooLarge)
+        ));
+    }
+
+    /// More short messages than one request accepts are summarized in
+    /// several chunks, and every chunk assembles as a summarizer request.
+    #[test]
+    fn more_history_messages_than_one_request_accepts_compact_in_several_chunks() {
+        let (_temporary, mut journal) = session();
+        for index in 0..70 {
+            journal
+                .record_message(MessageRole::User, &format!("request {index}"))
+                .expect("user message");
+            journal
+                .record_message(MessageRole::Assistant, &format!("reply {index}"))
+                .expect("assistant message");
+        }
+        journal
+            .record_message(MessageRole::User, "latest request")
+            .expect("latest message");
+        let mut sizes = Vec::new();
+        let outcome = compact(
+            &mut journal,
+            CompactionLimits {
+                max_chunk_bytes: 128 * 1024,
+                max_summary_bytes: MAX_SUMMARY_BYTES,
+            },
+            "fixture".into(),
+            || false,
+            |chunk| {
+                sizes.push(chunk.len());
+                crate::prompt::assemble(COMPACTION_INSTRUCTIONS, chunk)
+                    .expect("every chunk assembles");
+                Ok(SummaryReply {
+                    text: "Earlier work is summarized.".into(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                })
+            },
+        )
+        .expect("compaction succeeds");
+        assert_eq!(outcome.compacted, 140);
+        // Two history chunks of 128 and 12 messages, then one combination.
+        assert_eq!(sizes, [MAX_HISTORY_MESSAGES, 12, 2]);
+        assert_eq!(outcome.calls, 3);
     }
 
     #[test]
@@ -674,7 +783,9 @@ mod tests {
             });
         }
         assert_eq!(
-            chunk_history(&chunk, chunk_bytes).expect("one chunk").len(),
+            chunk_history(&chunk, chunk_bytes, MAX_HISTORY_MESSAGES)
+                .expect("one chunk")
+                .len(),
             1
         );
         let messages = crate::prompt::assemble(COMPACTION_INSTRUCTIONS, &chunk).expect("assemble");
