@@ -675,3 +675,5 @@ fn recorded_bindings_reject_malformed_identifiers_and_backends() {
         );
     }
 }
+
+mod loading;

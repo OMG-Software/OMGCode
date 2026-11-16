@@ -129,7 +129,9 @@ cargo run -p omgcode-desktop --locked -- --data-dir <scratch-directory>
 ```
 
 Always pass a scratch `--data-dir` when developing, so a run does not use the
-real per-user data. The frontend commands, the launch arguments, the Tauri
+real per-user data. `--provider-profile <name>` makes the shell read its
+server token from a stored credential (see [Use a stored credential for
+chat](#use-a-stored-credential-for-chat)). The frontend commands, the launch arguments, the Tauri
 development command, and the limits are in the
 [desktop interface guide](desktop-interface.md#development). The shell has not
 run on Linux.
@@ -202,9 +204,10 @@ for the workspace's AppContainer and record each change; see
 
 Version 0.27.0 stores provider API keys in protected OS storage and binds each
 one to an `api_key` provider profile ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)).
-No provider adapter reads a stored credential yet; `chat` still uses only the
-prototype `OMGCODE_LM_TOKEN` input. Subscription and `none` profiles refuse a
-credential.
+Subscription and `none` profiles refuse a credential. Only the local LM Studio
+adapter reads a stored credential, and only through `--provider-profile` (see
+[Use a stored credential for chat](#use-a-stored-credential-for-chat)). Without
+that flag `chat` uses the prototype `OMGCODE_LM_TOKEN` input.
 
 In PowerShell:
 
@@ -284,6 +287,30 @@ backend and its state. A control journal written by 0.27.0 cannot be read by
 
 Any process running as the same user can read these credentials. The stores
 protect them at rest and from other users, not from same-user code.
+
+### Use a stored credential for chat
+
+ADR-0047 lets `chat` and `session compact` read the LM Studio server token
+from the credential bound to a recorded `lm_studio` profile. Use a profile with
+`--kind lm_studio --auth api_key` and a bound credential. The profile name
+below is a placeholder:
+
+```text
+omgcode --data-dir C:\omgcode-data chat --provider-profile example-lms --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Reply with READY."
+omgcode --data-dir C:\omgcode-data session compact <journal-path> --provider-profile example-lms --endpoint <url> --model <name> --context-tokens <n> --summary-tokens <n>
+```
+
+With the flag, `OMGCODE_LM_TOKEN` is not read. Core refuses an unknown profile,
+a profile of another provider kind, a `subscription` profile, an unbound
+`api_key` profile, and a binding from another backend. A `none` profile sends
+no token. Any failure ends the command with a `credential` error whose message
+is `<cause code>: <text>`; nothing falls back to no token or to another token.
+The credential is resolved before the endpoint check and before any session or
+journal is created, so the error JSON has no session locator. The causes are
+listed in [provider authentication](provider-authentication.md#stored-credential-use-0300).
+The credential is bound to a provider kind, not to an endpoint: the token goes
+to whichever literal loopback endpoint `--endpoint` names. The desktop shell
+takes the same flag at launch ([desktop shell](desktop-interface.md#development)).
 
 ## Trusted runs
 
@@ -531,8 +558,11 @@ OMGCODE_LM_TOKEN. The CLI retains the token in memory only and sends it as a
 sensitive Authorization header. It does not save it or pass it to a child task.
 Environment-based input is a temporary prototype interface, not protected
 credential storage or a claim of memory erasure. Protected storage for API
-keys exists (see [provider credentials](#provider-credentials)), but no adapter
-reads it yet; adapter use and the account/settings interface remain required. Use the no-token profile only for
+keys exists (see [provider credentials](#provider-credentials)). With
+`--provider-profile <name>` the adapter reads the token from a stored
+credential instead and never reads the variable; the provider clients still
+hold an unzeroed header copy. No cloud adapter and no account/settings
+interface exists. Use the no-token profile only for
 an explicitly selected service configured for it.
 
 ### Model edit workflow

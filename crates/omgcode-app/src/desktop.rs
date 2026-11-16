@@ -15,9 +15,12 @@
 //! - It returns no journal path and no absolute path except workspace folder
 //!   display text, which is escaped by core's `display_safe_line`.
 //! - It never returns, stores in a response, or logs the local server token.
-//!   The token is read for one turn, held in a private type with a redacted
-//!   `Debug`, removed from every recorded and returned message, and dropped
-//!   when the turn thread ends.
+//!   The token is resolved for one turn from the operator-chosen
+//!   [`TokenSource] (the environment, or a provider profile's stored
+//!   credential, ADR-0047), held in a zeroing type with a redacted `Debug`,
+//!   removed from every recorded and returned message, and dropped when the
+//!   turn thread ends. Nothing is cached between turns. The interface cannot
+//!   choose or see the source.
 //!
 //! # State and locks
 //!
@@ -81,7 +84,7 @@ mod turns;
 mod wire;
 mod workspaces;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
@@ -101,7 +104,7 @@ pub use self::wire::{
     ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
     WorkspaceChoice, WorkspaceGroup, WorkspaceList,
 };
-use crate::AppError;
+use crate::{AppError, LmToken, TokenSource, resolve_lm_token};
 
 /// Fixed settings of one desktop process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,13 +115,37 @@ pub struct DesktopConfig {
     /// The chat endpoint, fixed for the process lifetime. A chat request whose
     /// endpoint differs byte-for-byte is refused.
     pub endpoint: String,
+    /// Where each chat turn gets the optional local server token. It is fixed
+    /// for the process lifetime and never comes from the interface.
+    pub token_source: TokenSource,
 }
 
-/// Supplies the optional local server token for one chat turn.
+/// A replacement token supplier for an embedder or a test that must avoid the
+/// process environment and the credential store.
 ///
-/// [`DesktopService::open`] uses [`crate::read_lm_token`]. A different source
-/// exists so an embedder or a test can avoid the process environment.
-pub type TokenSource = fn() -> Result<Option<String>, AppError>;
+/// [`DesktopService::open`] resolves `DesktopConfig::token_source` with
+/// [`resolve_lm_token`]; [`DesktopService::open_with_token_source`] uses this
+/// function instead and ignores the configured source.
+pub type InjectedTokenFn = fn() -> Result<Option<String>, AppError>;
+
+/// How a turn obtains its token.
+#[derive(Clone)]
+enum TokenResolver {
+    /// The production path: [`resolve_lm_token`].
+    Source(TokenSource),
+    /// A test or embedder supplier.
+    Injected(InjectedTokenFn),
+}
+
+impl TokenResolver {
+    /// Resolve the token for one turn. Nothing is retained.
+    fn resolve(&self, data_root: &Path) -> Result<Option<LmToken>, AppError> {
+        match self {
+            Self::Source(source) => resolve_lm_token(data_root, source),
+            Self::Injected(supplier) => Ok(supplier()?.map(LmToken::new)),
+        }
+    }
+}
 
 /// The state shared by the service and its turn threads.
 ///
@@ -128,7 +155,7 @@ pub type TokenSource = fn() -> Result<Option<String>, AppError>;
 struct Inner {
     data_root: PathBuf,
     endpoint: String,
-    token_source: TokenSource,
+    token: TokenResolver,
     index: Mutex<IndexState>,
     turns: Mutex<TurnTable>,
     reviews: Mutex<ReviewTokens>,
@@ -148,33 +175,40 @@ pub struct DesktopService {
 impl DesktopService {
     /// Open the service for `config`, creating the session index directory.
     ///
-    /// The index is not refreshed here. The local server token is read from the
-    /// environment per chat turn.
+    /// The index is not refreshed here. The local server token is resolved from
+    /// `config.token_source` per chat turn; nothing is read or cached now.
     ///
     /// # Errors
     ///
     /// `busy` when another process holds the index database, `internal` when
     /// the index location is unusable.
     pub fn open(config: DesktopConfig) -> Result<Self, DesktopError> {
-        Self::open_with_token_source(config, crate::read_lm_token)
+        let resolver = TokenResolver::Source(config.token_source.clone());
+        Self::open_with(config, resolver)
     }
 
-    /// Open the service with an explicit [`TokenSource`].
+    /// Open the service with an [`InjectedTokenFn`] that replaces
+    /// `config.token_source`, so a test can avoid the process environment and
+    /// the credential store.
     ///
     /// # Errors
     ///
     /// The same as [`open`](Self::open).
     pub fn open_with_token_source(
         config: DesktopConfig,
-        token_source: TokenSource,
+        supplier: InjectedTokenFn,
     ) -> Result<Self, DesktopError> {
+        Self::open_with(config, TokenResolver::Injected(supplier))
+    }
+
+    fn open_with(config: DesktopConfig, token: TokenResolver) -> Result<Self, DesktopError> {
         let index = SessionIndex::open(&config.data_root)
             .map_err(|error| DesktopError::from_index(&error))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 data_root: config.data_root,
                 endpoint: config.endpoint,
-                token_source,
+                token,
                 index: Mutex::new(IndexState::new(index)),
                 turns: Mutex::new(TurnTable::default()),
                 reviews: Mutex::new(ReviewTokens::default()),

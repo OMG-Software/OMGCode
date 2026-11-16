@@ -42,8 +42,8 @@ pub use container::{
 pub use credential::{
     CredentialBackend, CredentialBinding, CredentialError, CredentialId, CredentialStore,
     CredentialStoreStatus, MAX_SECRET_BYTES, OrphanedCredential, ProviderCredentialError,
-    ProviderCredentialRemoval, ProviderCredentialSet, ProviderProfileRemoval, Secret,
-    delete_unbound_credential, probe_credential_store,
+    ProviderCredentialRemoval, ProviderCredentialSet, ProviderCredentialUseError,
+    ProviderProfileRemoval, Secret, delete_unbound_credential, probe_credential_store,
 };
 /// Whether this platform can record and apply container grants.
 pub use omgcode_platform::container::CONTAINER_GRANTS_SUPPORTED;

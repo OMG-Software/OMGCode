@@ -341,6 +341,15 @@ crate.
 - Apply the same protections to subscription access/refresh tokens, login codes,
   and verifier values. Do not import unrelated client login caches or silently
   switch subscription requests to separately billed API usage.
+- An adapter obtains a stored credential only through core's load that checks
+  the profile's provider kind, authentication mode, binding, and backend. Do not
+  read the native store directly, and do not send a credential to a provider
+  other than the one it was recorded for.
+- When a selected credential cannot be read, stop the request. Do not fall back
+  to another credential or to no credential.
+- The operator chooses the credential source outside the webview and the model
+  (a command-line argument or trusted setting). Do not combine two credential
+  sources for one request.
 - Review secret-bearing types for accidental `Debug`, serialization, cloning,
   and long retention. Use reviewed secret-handling libraries where needed;
   do not claim that dropping an ordinary string erases its memory.

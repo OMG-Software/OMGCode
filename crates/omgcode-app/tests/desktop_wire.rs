@@ -291,6 +291,7 @@ fn error_value() -> DesktopError {
         omgcode_app::desktop::DesktopConfig {
             data_root: directory.path().to_owned(),
             endpoint: "http://127.0.0.1:1/v1".to_owned(),
+            token_source: omgcode_app::TokenSource::Environment,
         },
         common::no_token,
     )

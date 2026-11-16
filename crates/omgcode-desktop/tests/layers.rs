@@ -639,6 +639,7 @@ fn command_error_keeps_the_service_code_and_message() {
     let service = DesktopService::open(DesktopConfig {
         data_root: root.clone(),
         endpoint: "http://127.0.0.1:1234/v1".to_owned(),
+        token_source: omgcode_app::TokenSource::Environment,
     })
     .expect("open service");
     let failure = service

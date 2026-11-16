@@ -33,6 +33,9 @@ pub enum ErrorKind {
     ToolLimit,
     /// Any other controlled turn failure, such as cancellation or timeout.
     Turn,
+    /// A selected provider credential could not be used. The message names a
+    /// stable cause code and never contains the secret.
+    Credential,
 }
 
 impl ErrorKind {
@@ -50,6 +53,7 @@ impl ErrorKind {
             Self::ToolCall => "tool_call",
             Self::ToolLimit => "tool_limit",
             Self::Turn => "turn",
+            Self::Credential => "credential",
         }
     }
 }
@@ -130,6 +134,7 @@ mod tests {
             (ErrorKind::ToolCall, "tool_call"),
             (ErrorKind::ToolLimit, "tool_limit"),
             (ErrorKind::Turn, "turn"),
+            (ErrorKind::Credential, "credential"),
         ];
         for (kind, code) in codes {
             assert_eq!(AppError::new(kind, "m").code(), code);

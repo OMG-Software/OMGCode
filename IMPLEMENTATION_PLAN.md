@@ -82,6 +82,10 @@ This is a resume guide, not a replacement for the owning contracts in
   the entries above, it is **not merged and has no pull request yet**. It is a
   prototype whose windows have run only on Windows; on Linux it builds and its
   tests pass. See [the desktop interface guide](docs/desktop-interface.md).
+- Same branch, after the Phase E commit `cbbec85`: **Phase D2**, version
+  **0.30.0**, which lets the local LM Studio adapter read its token from a
+  stored credential through an operator-selected profile (ADR-0047). It is
+  **not merged and has no pull request**.
 
 Implemented today:
 
@@ -184,7 +188,9 @@ Implemented today:
   `workspace provider-credential-set` reads an API key from standard input and
   binds a new opaque identifier to an `api_key` profile in the control
   journal; `provider-credential-remove` and `provider-profile-remove` unbind
-  and then delete the native item. No adapter reads a stored credential.
+  and then delete the native item. Only the local LM Studio adapter reads a
+  stored credential, through a selected `lm_studio` profile (ADR-0047). No
+  cloud adapter exists.
 - The `workspace_run_command` model tool (ADR-0040) is offered only with live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; an approved exact call consumes the
@@ -215,12 +221,14 @@ Not implemented:
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
 - Desktop development panels (terminal tabs, task logs, and diffs), a settings
-  interface, streaming, a recovery interface, packaging and installers, and any
-  Linux run of the desktop shell. The prototype shell, session tree, search,
-  chat, and approvals window exist on the Phase E branch only.
-- Provider adapters and subscription/API-key login; the recorded provider
-  profiles are configuration only, and no adapter reads a stored credential.
-- Subscription token storage and a memory-only session credential.
+  interface, streaming, a recovery interface, packaging and installers, and a
+  Linux run of the desktop shell's windows. The prototype shell, session tree,
+  search, chat, and approvals window exist on the Phase E branch only.
+- Cloud provider adapters and subscription/API-key login. Only the local LM
+  Studio adapter reads a stored credential, and it is bound to a provider kind,
+  not to an endpoint.
+- Subscription token storage, token refresh, account lifecycle, and a
+  memory-only session credential.
 
 ## Resume steps
 
@@ -321,6 +329,40 @@ parallelism, with the Windows and Linux runs one after the other.
   run stopped at one `omgcode-app` test that assumed the Windows spelling of
   the data directory; that assertion is now case-insensitive.
 - No test timed out and no provider fixture was retried on either host.
+
+Phase D2 final verification on 2026-11-16 used Rust 1.99.1, default test
+parallelism, and `--no-fail-fast`, with the Windows and Linux runs one after
+the other.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, all-target tests, and doc tests
+  each exited zero. 815 tests in 39 test binaries and one doc test passed.
+  None failed. The same eight were ignored. The run took under four minutes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `cbbec85` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): the same four commands each exited zero. 807 tests in 39 test
+  binaries and one doc test passed, not counting five nested result lines from
+  the platform suite's `systemd-run` re-runs. None failed. Eight were ignored.
+- **Failures before the final runs.**
+  - Linux Clippy failed once on `drop_non_drop`: `CredentialStore` has drop
+    glue on Windows and none on Linux, so an explicit `drop` of it was a lint
+    error only there. A block scope replaced it.
+  - Three Linux desktop credential tests failed once because the WSL virtual
+    machine had restarted and the login collection was locked again. They
+    passed after it was unlocked, with no code change.
+  - The implementing worker's own Windows run had one `run_workflow` test
+    exceed its 60-second limit while another project was compiling on the
+    host. It passed on a single rerun and in both full runs above. No timeout
+    was changed.
+- The frontend did not change in D2, so its commands were not rerun.
+- A manual run with the real binaries on Windows showed the stored token
+  arriving as the bearer header while a different `OMGCODE_LM_TOKEN` value was
+  ignored, an unknown profile refused with exit 1 by both `omgcode chat` and
+  `omgcode-desktop`, and the shell starting with a valid profile. It was done
+  before the profile checks were moved ahead of the native store open and was
+  not repeated afterwards; the automated tests cover the final order.
+- Not run: a chat turn with a stored credential through the real shell's
+  windows, on either platform.
 
 These local results do not establish remote CI status: neither workflow change
 has run. The real shell was driven end to end on Windows only
@@ -721,8 +763,9 @@ on Windows, and trusted CLI commands as the first caller. See
 
 Next decisions, not yet scheduled:
 
-- provider adapters that read stored credentials, and subscription/API-key
-  login;
+- cloud provider adapters, subscription/API-key login, token refresh, and
+  binding a credential to an endpoint (one adapter, the local LM Studio route,
+  now reads a stored credential);
 - model create, delete, rename, and multi-edit tools, and network, Git, and
   MCP tools;
 - registry credentials and development-server networking.
@@ -750,6 +793,30 @@ login or entitlement route.
   `credential_orphaned` warning. Only `api_key` profiles accept a credential.
   Native tests run on both hosts; Linux needs an unlocked Secret Service, which
   CI provides with gnome-keyring. No adapter reads a stored credential.
+- **D2 (version 0.30.0):** the first stored-credential read. See
+  [ADR-0047](docs/adr/0047-read-the-local-provider-token-from-the-credential-store.md).
+  `omgcode chat --provider-profile <name>`, `session compact
+  --provider-profile <name>`, and `omgcode-desktop --provider-profile <name>`
+  (fixed at launch) make the LM Studio adapter read its token from the
+  profile's stored credential and ignore `OMGCODE_LM_TOKEN`. Core's
+  `provider_credential_binding` takes no credential store and refuses an
+  unknown profile, another provider kind, a `subscription` profile, and an
+  unbound `api_key` profile; a `none` profile gives no token there. The native
+  store is opened only after it returns a binding, and
+  `load_provider_credential` refuses a binding from another backend before it
+  reads a secret. Every failure ends the turn with a `credential` error and a
+  cause code, with no fallback to no token or to another token. The secret is loaded
+  while the settings store is held and the store is released before any
+  request. The desktop resolves it again each turn and checks it once at
+  launch. A read records nothing. The token is held in a zeroing buffer; the
+  provider clients' header copies are not zeroed. `capabilities` reports
+  `stored_credential_adapters: ["lm_studio"]`; `provider_adapters` stays
+  `false`.
+
+Still open in Phase D: cloud provider adapters, subscription and API-key
+login, token refresh, account lifecycle, a memory-only session credential,
+binding a credential to an endpoint, and streaming. The frontend shows nothing
+about the credential source.
 
 ### Phase E: desktop interface and session tree
 
@@ -787,8 +854,9 @@ not merged, and no pull request exists yet.
 
 Still open for the desktop:
 
-- a Linux build and run of the shell, and Linux evidence for the Unix-only
-  inspection and index branches;
+- opening the shell's windows on Linux. It builds and its tests pass there,
+  including the Unix-only inspection and index branches, but its webview, IPC,
+  capability enforcement, and navigation guard have not run on Linux;
 - development panels (terminal tabs, task logs, and diffs), a settings
   interface, and persisted chat settings;
 - streaming and a push channel instead of polling;

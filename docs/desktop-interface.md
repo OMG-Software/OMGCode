@@ -30,6 +30,9 @@ merged to `main` at the time of writing):
 - Approval review and decision in the isolated `approvals` window.
 - Archive, restore, and interrupt for sessions.
 - A derived SQLite index of the sessions.
+- Since version 0.30.0 (Phase D2, ADR-0047), an optional launch argument,
+  `--provider-profile`, makes the service read the local server token from a
+  stored credential instead of `OMGCODE_LM_TOKEN`.
 
 Not implemented:
 
@@ -41,8 +44,9 @@ Not implemented:
 - Development panels: terminal tabs, task logs, diffs, and a file browser.
 - Git, MCP, skills, and memory interfaces.
 - A recovery interface for damaged journals or an incomplete tail.
-- A provider other than the local LM Studio server, and any use of stored API
-  keys.
+- A provider other than the local LM Studio server. Stored API keys are used
+  only for that server's token, through `--provider-profile`. The frontend
+  shows nothing about the credential source.
 - A native operating-system confirmation dialog for approvals.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
@@ -104,24 +108,36 @@ Linux, the Tauri build also needs the WebKitGTK development packages listed in
 Launch:
 
 ```text
-omgcode-desktop [--data-dir <path>] [--endpoint <url>]
+omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>]
 ```
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `--data-dir <path>` | The per-user OMGCode data directory | The application data root, the same one the CLI uses |
 | `--endpoint <url>` | `http://127.0.0.1:1234/v1` | The loopback model endpoint, fixed for the process |
+| `--provider-profile <name>` | None: the token comes from `OMGCODE_LM_TOKEN` | A recorded `lm_studio` provider profile whose stored credential is the server token, fixed for the process |
 
 An unknown argument, a missing value, a repeated flag, an empty value, or a
 value that starts with `--` prints the usage text to stderr and exits with
 status 2. An invalid endpoint, an unusable data root, or a service that cannot
 open prints `omgcode-desktop: <message>` to stderr and exits with status 1.
-Both happen before any window opens. A normal close exits with status 0.
+With `--provider-profile`, the shell also resolves the credential once after
+the endpoint check. An unknown profile, a profile of another provider kind, an
+unbound profile, or an unreadable credential prints
+`omgcode-desktop: credential: <cause>: <text>` and exits with status 1. Both
+kinds of failure happen before any window opens. A normal close exits with status 0.
 
 The command line is the only configuration. The shell reads no environment
 variable and no configuration file for these values. The one exception is the
-local server token. If `OMGCODE_LM_TOKEN` is set, the service reads it for each
-chat turn. The webview never receives it.
+local server token, which has two sources. Without `--provider-profile`, if
+`OMGCODE_LM_TOKEN` is set, the service reads it for each chat turn. With it, the
+service reads the credential bound to that profile from protected OS storage
+for each chat turn and never reads the variable. The flag carries a profile
+name, not a secret. The webview never receives the token, and cannot choose or
+see the profile. The service caches nothing, so a rotated credential is used by
+the next turn. An unreadable credential makes `chat_send` fail at once with a
+`credential` error, and no turn thread starts. See
+[stored credential use](provider-authentication.md#stored-credential-use-0300).
 
 A Windows release build has no console window. Stderr is visible only when the
 process is started with redirection.
@@ -289,9 +305,12 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
 - **Endpoint.** Fixed at launch. A request whose endpoint is not byte for byte
   the launch endpoint is refused with `invalid_request`.
-- **Token.** Read from `OMGCODE_LM_TOKEN` for each turn, held in a type with a
-  redacted `Debug` and no serializer, and removed from any recorded or
-  returned text.
+- **Token.** Resolved for each turn from the launch-time source: the stored
+  credential of `--provider-profile`, or else `OMGCODE_LM_TOKEN`. It is held in
+  a zeroing type with a redacted `Debug` and no serializer, and removed from any
+  recorded or returned text. The provider clients' header copies are not
+  zeroed. With a profile selected, a failure to read the credential ends the
+  turn with a `credential` error before any model request, with no fallback.
 - **Tools.** Offered only as in the CLI: a workspace with `model_tools`
   enabled, plus the permissions each tool needs. Otherwise the turn runs
   text-only and the response says why.
@@ -409,8 +428,8 @@ What the design does:
 - **No host paths.** No command accepts a path. The service returns no journal
   path, no data root, no token, and no tool output digest. Workspace folder
   display text is the only path-like text it returns, and it is display-safe.
-- **Fixed endpoint and token.** The webview cannot choose the provider or read
-  the token.
+- **Fixed endpoint and token.** The webview cannot choose the provider, choose
+  the credential source, or read the token. The profile is fixed at launch.
 - **Content policy.** The content security policy is `default-src 'none'`, with
   `'self'` for scripts, styles, images, and fonts, and IPC as the only
   connection target. Tauri appends three hashes for its own bootstrap scripts.
@@ -545,6 +564,13 @@ private store refuses, see the notes in
 
 ## Known limits
 
+- The credential is bound to a provider kind, not to an endpoint, so a stored
+  LM Studio token goes to whichever loopback endpoint the operator launches
+  with. Any process running as the same user can read the stored credential.
+  The stored-credential tests ran against DPAPI on Windows and the Secret
+  Service on Linux. A chat turn with a stored credential was not driven
+  through the real shell's windows on either platform; the service-level
+  tests cover it.
 - Linux: the shell builds and its tests pass, but no window has been opened
   there. Nothing that needs a webview has run on Linux. The Unix-only
   inspection and index branches (`O_NOFOLLOW` opens, inspection beside a live

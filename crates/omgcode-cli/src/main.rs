@@ -10,9 +10,9 @@ mod run_cli;
 
 use clap::{Args, Parser, Subcommand};
 use omgcode_app::{
-    AppError, ChatClients, ChatHooks, ChatSettings, ChatTurnInput, MODEL_TOOLS_SUPPORTED,
-    compact_journal, create_session, data_root, read_lm_token, redact_known_secret,
-    run_chat_turn_with_clients,
+    AppError, ChatClients, ChatHooks, ChatSettings, ChatTurnInput, LmToken, MODEL_TOOLS_SUPPORTED,
+    TokenSource, compact_journal, create_session, data_root, read_lm_token, redact_known_secret,
+    resolve_lm_token, run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
@@ -21,7 +21,7 @@ use omgcode_core::session::{NativePath, SessionJournal};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Whether trusted runs and toolchain profiles exist on this platform.
@@ -118,6 +118,10 @@ enum SessionCommand {
         context_tokens: u64,
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
+        /// Read the server token from this recorded `lm_studio` provider
+        /// profile's stored credential instead of OMGCODE_LM_TOKEN.
+        #[arg(long, value_parser = non_empty_name)]
+        provider_profile: Option<String>,
     },
 }
 
@@ -160,8 +164,22 @@ struct ChatArgs {
     /// Enable compaction at the effective trigger before a turn.
     #[arg(long)]
     auto_compact: bool,
+    /// Read the server token from this recorded `lm_studio` provider profile's
+    /// stored credential instead of OMGCODE_LM_TOKEN. The variable is then
+    /// not read.
+    #[arg(long, value_parser = non_empty_name)]
+    provider_profile: Option<String>,
     /// Current user request. Quote it as one shell argument.
     message: String,
+}
+
+/// Reject an empty profile name. Core validates it against recorded profiles.
+fn non_empty_name(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Err("the provider profile name must not be empty".to_owned())
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 #[derive(Serialize)]
@@ -270,6 +288,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "package_fetch": true,
             "provider_profiles": true,
             "provider_adapters": false,
+            "stored_credential_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),
             "approvals": true,
@@ -333,6 +352,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 model,
                 context_tokens,
                 summary_tokens,
+                provider_profile,
             } => compact_session(
                 cli.data_dir,
                 locator,
@@ -340,6 +360,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 model,
                 context_tokens,
                 summary_tokens,
+                provider_profile,
             ),
         },
         Command::Workspace { action } => {
@@ -357,7 +378,10 @@ fn run(cli: Cli) -> Result<(), CliError> {
 
 /// Validate the provider before opening storage, then attach recovery information.
 fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
-    let token = read_lm_token()?;
+    // The credential comes first, so an unreadable selected credential stops
+    // the command before the endpoint is checked and before any journal exists.
+    let token = lm_token(data_dir.as_deref(), args.provider_profile.as_deref())?;
+    let token_text = token.as_ref().map(LmToken::expose);
     let settings = ChatSettings {
         endpoint: args.endpoint,
         model: args.model,
@@ -367,8 +391,8 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         compact_threshold: args.compact_threshold,
         auto_compact: args.auto_compact,
     };
-    let clients = ChatClients::new(&settings, token.as_deref())?;
-    let title = redact_known_secret(&args.title, token.as_deref());
+    let clients = ChatClients::new(&settings, token_text)?;
+    let title = redact_known_secret(&args.title, token_text);
     let path = if args.journal.is_some() || args.journal_native.is_some() {
         Some(resolve_journal(
             args.journal.take(),
@@ -391,7 +415,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
     let input = ChatTurnInput {
         message: &args.message,
         settings: &settings,
-        token: token.as_deref(),
+        token: token_text,
     };
     // Every post-open failure, including output failures, carries the locator.
     let result = run_chat_turn_with_clients(
@@ -418,6 +442,7 @@ fn compact_session(
     model: String,
     context_tokens: u64,
     summary_tokens: u32,
+    provider_profile: Option<String>,
 ) -> Result<(), CliError> {
     if summary_tokens == 0 || u64::from(summary_tokens) >= context_tokens {
         return Err(CliError::new(
@@ -425,7 +450,8 @@ fn compact_session(
             "summary-tokens must be positive and below context-tokens",
         ));
     }
-    let token = read_lm_token()?;
+    let token = lm_token(data_dir.as_deref(), provider_profile.as_deref())?;
+    let token_text = token.as_ref().map(LmToken::expose);
     let client = LocalModelClient::new(
         LocalModelConfig {
             base_url: endpoint,
@@ -433,7 +459,7 @@ fn compact_session(
             context_tokens,
             max_output_tokens: summary_tokens,
         },
-        token.clone(),
+        token_text.map(str::to_owned),
     )
     .map_err(provider_error)?;
     let data_root = data_root(data_dir)?;
@@ -444,7 +470,7 @@ fn compact_session(
         &mut journal,
         &data_root,
         &client,
-        token.as_deref(),
+        token_text,
         ContextBudget {
             threshold: u64::MAX,
             context_tokens,
@@ -460,6 +486,27 @@ fn compact_session(
             "summarizer_calls": outcome.calls,
         }),
     })
+}
+
+/// Obtain the server token for `chat` or `session compact`.
+///
+/// Without a profile this is exactly the environment read it always was, and
+/// no data root is computed. With one, the token comes only from that
+/// profile's stored credential and `OMGCODE_LM_TOKEN` is not read.
+fn lm_token(
+    data_dir: Option<&Path>,
+    provider_profile: Option<&str>,
+) -> Result<Option<LmToken>, CliError> {
+    match provider_profile {
+        None => Ok(resolve_lm_token(Path::new(""), &TokenSource::Environment)?),
+        Some(name) => {
+            let root = data_root(data_dir.map(Path::to_path_buf))?;
+            Ok(resolve_lm_token(
+                &root,
+                &TokenSource::Profile(name.to_owned()),
+            )?)
+        }
+    }
 }
 
 fn print_session(journal: &SessionJournal) -> Result<(), CliError> {

@@ -7,10 +7,10 @@ use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
 use super::error::DesktopError;
-use super::turns::{LmToken, MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
+use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, SessionRequest};
 use super::{DesktopService, Inner};
-use crate::{ChatClients, ChatSettings};
+use crate::{ChatClients, ChatSettings, LmToken};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -46,8 +46,8 @@ impl DesktopService {
     /// `invalid_request` (endpoint differs, empty or oversized message),
     /// `not_found`, `invalid_journal`, `busy`, `archived`, `turn_open`,
     /// `turn_running`, `too_many_turns`, `shutting_down`, `internal` (thread
-    /// start failure), and the application layer's `provider` and
-    /// `configuration` codes for unusable settings or token.
+    /// start failure), and the application layer's `provider`, `configuration`,
+    /// and `credential` codes for unusable settings or token.
     pub fn chat_send(&self, request: ChatSendRequest) -> Result<ChatStatus, DesktopError> {
         let inner = &self.inner;
         let session_id = request.session_id;
@@ -94,13 +94,16 @@ impl DesktopService {
             return Err(DesktopError::turn_open());
         }
 
-        // Build the clients now so a bad model, context, endpoint, or token is
-        // a synchronous provider error, not a later failed turn.
-        let token = (inner.token_source)()
-            .map_err(|error| DesktopError::from_app(&error))?
-            .map(LmToken::new);
+        // Resolve the token and build the clients now, so an unreadable
+        // credential, a bad model, context, or endpoint is a synchronous error
+        // and no thread starts. The token is resolved again for every turn, so
+        // a rotated credential applies to the next one.
+        let token = inner
+            .token
+            .resolve(&inner.data_root)
+            .map_err(|error| DesktopError::from_app(&error))?;
         let settings = chat_settings(request.settings);
-        let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::as_str))
+        let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&error))?;
         let job = TurnJob {
             session_id,

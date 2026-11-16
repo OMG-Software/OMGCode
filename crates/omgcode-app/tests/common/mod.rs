@@ -6,6 +6,8 @@
 //! allowed for this one shared module.
 #![allow(dead_code)]
 
+pub mod credential;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -14,8 +16,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use omgcode_app::AppError;
 use omgcode_app::desktop::{ChatState, ChatStatus, DesktopConfig, DesktopService, SessionRequest};
+use omgcode_app::{AppError, TokenSource};
 use omgcode_core::control::{ControlStore, ProfileDeclaration};
 use omgcode_core::policy::PermissionSet;
 use serde::Serialize;
@@ -95,10 +97,30 @@ impl Step {
     }
 }
 
+/// One request the loopback model server received: its header block (request
+/// line and headers, as sent) and its body text.
+#[derive(Clone, Debug)]
+pub struct Recorded {
+    pub head: String,
+    pub body: String,
+}
+
+impl Recorded {
+    /// The value of a header, compared by lowercase name.
+    pub fn header(&self, name: &str) -> Option<String> {
+        let prefix = format!("{}:", name.to_ascii_lowercase());
+        self.head.lines().find_map(|line| {
+            line.to_ascii_lowercase()
+                .starts_with(&prefix)
+                .then(|| line[prefix.len()..].trim().to_owned())
+        })
+    }
+}
+
 /// A loopback model server that answers one scripted reply per connection.
 pub struct MockServer {
     pub endpoint: String,
-    worker: JoinHandle<Result<usize, String>>,
+    worker: JoinHandle<Result<(usize, Vec<Recorded>), String>>,
 }
 
 impl MockServer {
@@ -108,11 +130,16 @@ impl MockServer {
         let address = listener.local_addr().expect("mock address");
         let worker = thread::spawn(move || {
             let mut served = 0;
+            let mut recorded = Vec::new();
             for step in steps {
                 let Ok(mut stream) = accept(&listener) else {
                     break;
                 };
-                read_body(&mut stream)?;
+                let (head, body) = read_request(&mut stream)?;
+                recorded.push(Recorded {
+                    head,
+                    body: String::from_utf8_lossy(&body).into_owned(),
+                });
                 if let Some(arrived) = &step.arrived {
                     // The test may have stopped listening; that is not an error.
                     arrived.send(()).ok();
@@ -133,7 +160,7 @@ impl MockServer {
                     .ok();
                 served += 1;
             }
-            Ok(served)
+            Ok((served, recorded))
         });
         Self {
             endpoint: format!("http://{address}/v1"),
@@ -143,6 +170,12 @@ impl MockServer {
 
     /// Wait for the server thread and return how many requests it answered.
     pub fn finish(self) -> usize {
+        self.finish_recorded().0
+    }
+
+    /// Wait for the server thread and return how many requests it answered and
+    /// each request it received, in order.
+    pub fn finish_recorded(self) -> (usize, Vec<Recorded>) {
         self.worker
             .join()
             .expect("mock server thread")
@@ -174,12 +207,13 @@ fn accept(listener: &TcpListener) -> Result<TcpStream, String> {
     }
 }
 
-fn read_body(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+fn read_request(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
         if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            let head = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+            let head_text = String::from_utf8_lossy(&bytes[..end]).into_owned();
+            let head = head_text.to_ascii_lowercase();
             let length: usize = head
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length:"))
@@ -199,7 +233,7 @@ fn read_body(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
                 }
                 bytes.extend_from_slice(&buffer[..read]);
             }
-            return Ok(bytes[end + 4..end + 4 + length].to_vec());
+            return Ok((head_text, bytes[end + 4..end + 4 + length].to_vec()));
         }
         if bytes.len() > MAX_HTTP_BYTES {
             return Err("headers too large".to_owned());
@@ -353,6 +387,7 @@ impl Fixture {
             DesktopConfig {
                 data_root: self.data.clone(),
                 endpoint: endpoint.to_owned(),
+                token_source: TokenSource::Environment,
             },
             source,
         )

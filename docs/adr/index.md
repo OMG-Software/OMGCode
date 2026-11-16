@@ -61,3 +61,4 @@ meaningful alternative does not need an ADR.
 | [0044: Observe journals without the writer lock and index them in SQLite](0044-observe-journals-without-the-writer-lock-and-index-them-in-sqlite.md) | Accepted | 2026-11-16 |
 | [0045: Build the desktop shell on Tauri with a narrow command surface](0045-build-the-desktop-shell-on-tauri-with-a-narrow-command-surface.md) | Accepted | 2026-11-16 |
 | [0046: Decide model tool approvals in an isolated desktop window](0046-decide-model-tool-approvals-in-an-isolated-desktop-window.md) | Accepted | 2026-11-16 |
+| [0047: Read the local provider token from the credential store](0047-read-the-local-provider-token-from-the-credential-store.md) | Accepted | 2026-11-16 |

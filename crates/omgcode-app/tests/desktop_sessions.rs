@@ -705,6 +705,7 @@ fn a_service_opens_on_a_new_data_root_and_lists_nothing() {
         omgcode_app::desktop::DesktopConfig {
             data_root: fixture.data.join("not-yet-created"),
             endpoint: NO_ENDPOINT.to_owned(),
+            token_source: omgcode_app::TokenSource::Environment,
         },
         no_token,
     )

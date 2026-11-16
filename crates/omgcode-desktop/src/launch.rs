@@ -1,14 +1,17 @@
 //! Launch configuration, read from the process command line only.
 //!
 //! ```text
-//! omgcode-desktop [--data-dir <path>] [--endpoint <url>]
+//! omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>]
 //! ```
 //!
 //! The command line belongs to the operator who starts the process. The
 //! webviews cannot influence it, and neither can workspace content. This module
 //! reads no environment variable and no configuration file. The local server
-//! token is a separate matter: the service reads `OMGCODE_LM_TOKEN` for each
-//! chat turn and this module never touches it.
+//! token is a separate matter and this module never touches it. Without
+//! `--provider-profile` the service reads `OMGCODE_LM_TOKEN` for each chat
+//! turn. With it, the service reads the credential bound to that recorded
+//! provider profile instead and never reads the variable (ADR-0047). The flag
+//! carries only a profile name, not a secret.
 //!
 //! Any unknown argument, a flag without a value, a value that looks like
 //! another flag, an empty value, a non-UTF-8 endpoint, or a repeated flag is a
@@ -21,9 +24,10 @@ use std::path::PathBuf;
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 
 /// The fixed message printed to stderr for a usage error.
-pub const USAGE: &str = "usage: omgcode-desktop [--data-dir <path>] [--endpoint <url>]\n  \
---data-dir <path>   application data root (default: the per-user OMGCode data directory)\n  \
---endpoint <url>    local model endpoint, a loopback http URL (default: http://127.0.0.1:1234/v1)";
+pub const USAGE: &str = "usage: omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>]\n  \
+--data-dir <path>           application data root (default: the per-user OMGCode data directory)\n  \
+--endpoint <url>            local model endpoint, a loopback http URL (default: http://127.0.0.1:1234/v1)\n  \
+--provider-profile <name>   read the server token from this lm_studio provider profile's stored credential\n                              (default: the OMGCODE_LM_TOKEN environment variable)";
 
 /// What the command line asked for.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +36,9 @@ pub struct LaunchArgs {
     pub data_dir: Option<PathBuf>,
     /// The chat endpoint for the whole process.
     pub endpoint: String,
+    /// The recorded provider profile whose stored credential is the server
+    /// token, or `None` to use the `OMGCODE_LM_TOKEN` variable.
+    pub provider_profile: Option<String>,
 }
 
 /// The command line was not understood. It carries no detail on purpose: the
@@ -54,6 +61,7 @@ where
 {
     let mut data_dir: Option<PathBuf> = None;
     let mut endpoint: Option<String> = None;
+    let mut provider_profile: Option<String> = None;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         let value = args.next().ok_or(UsageError)?;
@@ -65,12 +73,16 @@ where
             Some("--endpoint") if endpoint.is_none() => {
                 endpoint = Some(value.into_string().map_err(|_| UsageError)?);
             }
+            Some("--provider-profile") if provider_profile.is_none() => {
+                provider_profile = Some(value.into_string().map_err(|_| UsageError)?);
+            }
             _ => return Err(UsageError),
         }
     }
     Ok(LaunchArgs {
         data_dir,
         endpoint: endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned()),
+        provider_profile,
     })
 }
 
@@ -88,7 +100,8 @@ mod tests {
             parse(&[]),
             Ok(LaunchArgs {
                 data_dir: None,
-                endpoint: DEFAULT_ENDPOINT.to_owned()
+                endpoint: DEFAULT_ENDPOINT.to_owned(),
+                provider_profile: None,
             })
         );
     }
@@ -98,6 +111,7 @@ mod tests {
         let both = LaunchArgs {
             data_dir: Some(PathBuf::from("data")),
             endpoint: "http://127.0.0.1:9/v1".to_owned(),
+            provider_profile: None,
         };
         assert_eq!(
             parse(&["--data-dir", "data", "--endpoint", "http://127.0.0.1:9/v1"]),
@@ -140,14 +154,61 @@ mod tests {
             &["-h"],
             &["--help"],
             &["--data-dir", "a", "extra"],
+            &["--provider-profile"],
+            &["--provider-profile", ""],
+            &["--provider-profile", "--endpoint", "u"],
+            &["--provider-profile", "--data-dir"],
+            &["--provider-profile", "a", "--provider-profile", "b"],
+            &["--provider-profile=a"],
+            &["--endpoint", "u", "--provider-profile"],
         ] {
             assert_eq!(parse(args), Err(UsageError), "{args:?}");
         }
     }
 
     #[test]
-    fn usage_text_names_both_flags_and_the_default() {
+    fn the_provider_profile_flag_takes_one_name_in_any_order() {
+        let expected = LaunchArgs {
+            data_dir: Some(PathBuf::from("data")),
+            endpoint: "http://127.0.0.1:9/v1".to_owned(),
+            provider_profile: Some("lms".to_owned()),
+        };
+        assert_eq!(
+            parse(&[
+                "--provider-profile",
+                "lms",
+                "--data-dir",
+                "data",
+                "--endpoint",
+                "http://127.0.0.1:9/v1"
+            ]),
+            Ok(expected.clone())
+        );
+        assert_eq!(
+            parse(&[
+                "--endpoint",
+                "http://127.0.0.1:9/v1",
+                "--data-dir",
+                "data",
+                "--provider-profile",
+                "lms"
+            ]),
+            Ok(expected)
+        );
+        // The name is kept verbatim; core validates it against recorded profiles.
+        assert_eq!(
+            parse(&["--provider-profile", "My Profile"])
+                .expect("name")
+                .provider_profile,
+            Some("My Profile".to_owned())
+        );
+        assert_eq!(parse(&[]).expect("none").provider_profile, None);
+    }
+
+    #[test]
+    fn usage_text_names_every_flag_and_the_default() {
         assert!(USAGE.contains("--data-dir") && USAGE.contains("--endpoint"));
+        assert!(USAGE.contains("--provider-profile"));
         assert!(USAGE.contains(DEFAULT_ENDPOINT));
     }
 

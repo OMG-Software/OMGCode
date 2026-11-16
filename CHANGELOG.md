@@ -6,6 +6,68 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.30.0 adds stored credential use for the local LM Studio adapter
+  (Phase D2). See ADR-0047 and
+  [stored credential use](docs/provider-authentication.md#stored-credential-use-0300).
+  Until now nothing read a stored credential, and the adapter took its optional
+  server token only from `OMGCODE_LM_TOKEN`. It is a prototype on branch
+  `codex/desktop-interface`; it is not merged. It adds no dependency outside
+  the existing workspace set (`omgcode-app` now uses `zeroize`).
+  - **Selection:** `omgcode chat --provider-profile <name>` and `omgcode
+    session compact --provider-profile <name>` read the token from the
+    credential bound to that recorded `lm_studio` profile. `omgcode-desktop
+    --provider-profile <name>` does the same for the whole process, fixed at
+    launch; the webview cannot choose or see it and the wire contract is
+    unchanged. With a profile selected, `OMGCODE_LM_TOKEN` is not read.
+    Without one, behaviour is unchanged and the variable remains the
+    prototype input, which still does not meet the credential-service
+    requirement.
+  - **Core checks:** `ControlStore::provider_credential_binding(name,
+    adapter_kind)` takes no credential store, so it cannot touch native
+    storage. It refuses an unknown profile, a profile of another provider
+    kind, a `subscription` profile, and an `api_key` profile with no bound
+    credential, and it yields no token for a `none` profile. The native store
+    is opened only when it returns a binding.
+    `ControlStore::load_provider_credential` then refuses a binding stored by
+    another backend before it reads any secret. The adapter passes
+    `lm_studio`, so a key recorded for another provider is never sent to it.
+  - **Failure:** any failure on the profile path ends the turn with a
+    `credential` error before a model request is built. The message is `<cause
+    code>: <text>`, with the codes `unknown_profile`, `wrong_provider`,
+    `subscription_unsupported`, `not_bound`, `other_backend`,
+    `settings_unusable`, `credential_not_found`, `credential_locked`,
+    `credential_unavailable`, `credential_corrupt`,
+    `credential_prompt_required`, `credential_io`, `credential_refused`, and
+    `credential_invalid`. A missing or busy settings store is also a
+    `credential` error, with no cause code, and a busy store is not retried.
+    There is no fallback to no token or to another token. A locked Secret
+    Service is an error; OMGCode still never runs a prompt. In the CLI the
+    credential is resolved before the endpoint check and before any session or
+    journal exists, so the error JSON has no session locator.
+  - **Rotation and lifetime:** the secret is loaded while the settings store is
+    held, so a rotation cannot delete the item between the binding lookup and
+    the load. The store is released before any network request. A read records
+    nothing: no control-journal entry and no revision change, and the session
+    journal does not name the profile or the credential. The token is held in
+    a zeroing buffer with a redacted `Debug` and no serialization for one
+    turn, and the existing redaction of the token from recorded and returned
+    text applies. The provider clients' request-header copies and transport
+    buffers are not zeroed.
+  - **Desktop:** the service resolves the token again for every turn and caches
+    nothing, so a rotated credential applies to the next turn. An unreadable
+    credential is a synchronous `credential` error and no turn thread starts.
+    With a profile selected, the shell also resolves once at launch and exits
+    with status 1 and `omgcode-desktop: credential: <cause>: <text>` before any
+    window opens. The frontend shows nothing about the credential source.
+  - **Capabilities:** `capabilities` adds `"stored_credential_adapters":
+    ["lm_studio"]`. `provider_adapters` stays `false`: no adapter exists for
+    any provider other than the local LM Studio route.
+  - **Limits:** the credential is bound to a provider kind, not to an endpoint,
+    so a stored LM Studio token is sent to whichever literal loopback endpoint
+    the operator selects. Any process running as the same user can still read
+    the stored credential. A memory-only session credential is not
+    implemented, and no cloud adapter, subscription sign-in, token refresh, or
+    account lifecycle exists.
 - Version 0.29.0 adds the desktop interface and session tree (Phase E). See
   ADR-0044, ADR-0045, and ADR-0046, and the
   [desktop interface guide](docs/desktop-interface.md). It is a prototype on

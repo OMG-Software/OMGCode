@@ -7,7 +7,6 @@
 //! thread is joined, or while the index is refreshed.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -21,7 +20,8 @@ use super::Inner;
 use super::error::DesktopError;
 use super::wire::{ChatOutcome, ContextMeterDto, ToolsMode};
 use crate::{
-    ChatClients, ChatHooks, ChatSettings, ChatTurnInput, ChatTurnOutput, run_chat_turn_with_clients,
+    ChatClients, ChatHooks, ChatSettings, ChatTurnInput, ChatTurnOutput, LmToken,
+    run_chat_turn_with_clients,
 };
 
 /// Most chat turns that run at once.
@@ -44,28 +44,6 @@ pub struct ShutdownReport {
     /// request cannot be interrupted, so such a thread may still be waiting on
     /// the model; its journal is left with an open turn.
     pub still_running: usize,
-}
-
-/// The local server token, held only for the life of one turn.
-///
-/// It has no `Serialize` and a redacted `Debug`, so it cannot reach a
-/// response, an error, or a log line by accident.
-pub(super) struct LmToken(String);
-
-impl LmToken {
-    pub(super) const fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    pub(super) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for LmToken {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("LmToken(<redacted>)")
-    }
 }
 
 /// Where one session's turn stands.
@@ -372,7 +350,7 @@ fn run_turn(inner: &Inner, job: TurnJob) {
 
 /// Open the journal, run the turn, and drop the journal before returning.
 fn execute(inner: &Inner, job: &TurnJob) -> Result<ChatOutcome, DesktopError> {
-    let token = job.token.as_ref().map(LmToken::as_str);
+    let token = job.token.as_ref().map(LmToken::expose);
     let mut journal =
         SessionJournal::open(&job.path).map_err(|error| DesktopError::from_session(&error))?;
     let session_id = job.session_id;

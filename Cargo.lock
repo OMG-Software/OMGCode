@@ -2523,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-app"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "directories",
  "omgcode-core",
@@ -2533,11 +2533,12 @@ dependencies = [
  "tempfile",
  "time",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
 name = "omgcode-cli"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "clap",
  "omgcode-app",
@@ -2550,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-core"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "libc",
  "omgcode-platform",
@@ -2568,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-desktop"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "omgcode-app",
  "serde",
@@ -2580,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-platform"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "libc",
  "rustix",

@@ -56,7 +56,12 @@ unlocked Secret Service and fail without one; they must not be skipped or
 mocked. Only the Linux prompt-refusal tests use a mock Secret Service over a
 socket pair, because a real service cannot be made to answer with a prompt on
 demand. CI installs gnome-keyring and unlocks a login collection with one empty
-password line in the existing user session bus. See [workspace permissions](workspace-permissions.md)
+password line in the existing user session bus. The native store belongs to
+the user's account, so a test against it must delete only the items it
+created, including after a failed assertion. Tests of stored-credential use
+(0.30.0, [ADR-0047](adr/0047-read-the-local-provider-token-from-the-credential-store.md))
+assert the `Authorization` header that a mock provider received: the stored
+token is the bearer, and a different `OMGCODE_LM_TOKEN` value is ignored. See [workspace permissions](workspace-permissions.md)
 and the [workspace file-access contract](file-access.md) for their scope and
 current limits. [Repository review and analysis](repository-checks.md) have
 separate workflows.
@@ -154,7 +159,7 @@ As the relevant components are implemented, include:
 | Networking | Disabled egress, host-local access, redirects, provider routing |
 | Package network | Profile storage and the trusted fetch: recording, replay, revision, origin normalization, duplicate and invalid-origin refusal, removal, task-network gating, undeclared-origin and path refusal before a request, redirect refusal, size limits, cache-name validation, existing-cache refusal, remaining-time send and body reads under a trickled response, atomic no-replace publication under a concurrent collision, private cache content, and start/finish audit without the URL text. Cache roots cover per-workspace set/clear/replay, overlap refusals, grant revocation when a root changes or clears, stale foreign-grant refusal, refusal of a root another workspace can already read, the configured fetch location, Linux read/write/parent denial, Windows access with a scoped grant, and Windows refusal without one or without a selected root. No run accepts a profile. A future run-side mechanism must add allowed-origin success, undeclared-origin refusal, redirect and credential refusal, offline fallback, and platform refusal ([ADR-0034](adr/0034-gate-package-networking-behind-enforceable-destination-control.md), [ADR-0035](adr/0035-fetch-packages-through-a-trusted-allowlisted-cache.md), [ADR-0037](adr/0037-use-a-per-workspace-cache-root-and-a-scoped-windows-grant.md)) |
 | Providers | Partial/malformed streams, duplicate calls, interruption, retries |
-| Provider profiles | Kind/authentication pairing, duplicate and invalid names, case-insensitive lookup, revisioned add/remove, replay, no credential or endpoint storage, and capability reporting. No adapter or login is exercised |
+| Provider profiles | Kind/authentication pairing, duplicate and invalid names, case-insensitive lookup, revisioned add/remove, replay, no credential or endpoint storage, and capability reporting. No cloud adapter or login is exercised |
 | Provider credentials | Identifier format refused before I/O; empty, oversized, and line-ending input; `Debug` redaction; native round trip, create-only refusal, not-found, and delete on both hosts; on Windows, edited, truncated, and identifier-swapped blobs as corrupt and broadened or unprotected DACLs refused; on Linux, exact item attributes and label and duplicate items as corrupt; revisioned bind/unbind and replay; refusal for subscription and `none` profiles before any native store; rotation deleting the old item; a binding refused before any journal write deleting the new item; a binding whose journal sync failed keeping and naming the new item, with the binding on disk naming a present item; store-failure cleanup classification, cleanup of a left item, and an identifier kept when cleanup fails; on Windows, an injected directory-sync failure after a complete write removing the file, and with a failed removal as well, both failures reported and the file kept loadable and deletable; the secret read before the control store opens; on Linux, a pending placeholder loading as corrupt, a mock service's create and delete prompts refused without `Prompt` being called, and a create reply carrying both an item and a prompt refused with its placeholder deleted; profile removal naming its credential; and no secret in stdout, stderr, the control journal, or any file under the data root. A locked Linux collection is not exercised, because unlocking it again needs a prompt ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)) |
 | Approvals | Request validation, pending/list/show, approve/deny, single-use consume, expiry, binding mismatch, settings-revision invalidation, replay, unknown IDs, and limits; a `file_write` approval refused without `--writers-stopped`, the flag refused for other operations, the acknowledgement reported and replayed, an earlier journal's unacknowledged `file_write` record replayed but refused at consumption, and a misplaced acknowledgement refused at replay. No operation executes |
 | Authentication | Callback binding, consent, subscription entitlement, refresh, revocation, account/billing isolation |
@@ -340,7 +345,12 @@ npm run test:dist
   or mode is invalid".
 - **Secret Service state.** A login collection can exist and still be locked.
   Check its `Locked` property, not only that the default alias resolves,
-  before running the credential suites.
+  before running the credential suites. A daemon started by bus activation is
+  locked and owns the bus name, so an unlock sent afterwards reaches a second
+  instance and changes nothing. If `Locked` stays true, stop every
+  `gnome-keyring-daemon`, unlock, and poll `Locked` until it is false. Under
+  WSL the virtual machine restarts when idle and the collection comes back
+  locked, so unlock and run the tests in one session.
 
 ## Evidence and completion
 
