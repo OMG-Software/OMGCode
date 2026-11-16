@@ -47,6 +47,7 @@ fn fixture() -> Fixture {
                     name: name.into(),
                     kind: kind.into(),
                     auth: auth.into(),
+                    endpoint: None,
                 },
                 revision,
             )

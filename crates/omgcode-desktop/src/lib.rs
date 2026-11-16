@@ -5,9 +5,9 @@
 //! capability and (2) checked again against the window policy in
 //! [`policy`]. See ADR-0045 and ADR-0046.
 //!
-//! The data root, the model endpoint, and the choice of token source (the
-//! environment, or a provider profile's stored credential) come from the
-//! process command line ([`launch`]) and nowhere else.
+//! The data root, and either the model endpoint with the environment token or a
+//! provider profile (whose recorded endpoint and stored credential are used
+//! instead), come from the process command line ([`launch`]) and nowhere else.
 
 pub mod commands;
 pub mod error;
@@ -20,7 +20,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use omgcode_app::desktop::{DesktopConfig, DesktopService};
-use omgcode_app::{ChatClients, ChatSettings, TokenSource, resolve_lm_token};
+use omgcode_app::{
+    ChatClients, ChatSettings, ConnectionSource, LocalConnection, TokenSource,
+    resolve_local_connection,
+};
 use tauri::{Manager, RunEvent};
 
 use crate::launch::{LaunchArgs, USAGE};
@@ -36,7 +39,8 @@ const PROBE_CONTEXT_TOKENS: u64 = 8192;
 ///
 /// Exit codes: `0` after a normal close, `2` for a command-line usage error,
 /// `1` for any other startup failure (endpoint rejected, data root or index
-/// unusable, a selected provider profile's credential unreadable, runtime could
+/// unusable, a selected provider profile unusable (unknown, no recorded endpoint,
+/// or an unreadable credential), runtime could
 /// not start). Every failure happens before a window
 /// opens and prints a fixed or provider message to stderr. In a release build
 /// on Windows the process has no console, so stderr is visible only when it is
@@ -59,31 +63,50 @@ pub fn run() -> ExitCode {
 
 /// Validates the endpoint and opens the one service for this process.
 fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
-    // Validate the endpoint the way a chat turn would, so a malformed or
-    // non-loopback endpoint fails now, with the provider's message. The clients
-    // are discarded; no request is made and no token is read here.
-    let probe = ChatSettings::new(
-        args.endpoint.clone(),
-        "endpoint-check",
-        PROBE_CONTEXT_TOKENS,
-    );
-    ChatClients::new(&probe, None).map_err(|error| error.to_string())?;
-    let data_root = omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
-    let token_source = args
-        .provider_profile
-        .map_or(TokenSource::Environment, TokenSource::Profile);
-    // A selected profile is checked once now, so an unknown profile, a profile
-    // of another provider, or an unreadable credential stops the launch before
-    // a window opens. The token is dropped at once; each turn resolves it again.
-    if matches!(token_source, TokenSource::Profile(_)) {
-        drop(resolve_lm_token(&data_root, &token_source).map_err(|error| error.to_string())?);
-    }
+    let (data_root, endpoint, token_source) = match args.provider_profile {
+        None => {
+            // Validate the endpoint the way a chat turn would, so a malformed
+            // or non-loopback endpoint fails now, with the provider's message.
+            check_endpoint(&args.endpoint)?;
+            let data_root =
+                omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
+            (data_root, args.endpoint, TokenSource::Environment)
+        }
+        Some(name) => {
+            // A selected profile is the only source of the endpoint, and the
+            // launch default in `args.endpoint` is not used (ADR-0048). The
+            // profile is resolved once now, so an unknown profile, a profile
+            // of another provider, a profile with no recorded endpoint, or an
+            // unreadable credential stops the launch before a window opens.
+            let data_root =
+                omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
+            let connection =
+                resolve_local_connection(&data_root, &ConnectionSource::Profile(name.clone()))
+                    .map_err(|error| error.to_string())?;
+            // The token is dropped at once; each turn resolves it again. The
+            // endpoint is the one the profile recorded, and it is validated
+            // like any other so a hand-edited journal cannot slip past.
+            let LocalConnection { endpoint, token } = connection;
+            drop(token);
+            check_endpoint(&endpoint)?;
+            (data_root, endpoint, TokenSource::Profile(name))
+        }
+    };
     DesktopService::open(DesktopConfig {
         data_root,
-        endpoint: args.endpoint,
+        endpoint,
         token_source,
     })
     .map_err(|error| format!("{}: {}", error.code(), error.message()))
+}
+
+/// Validate an endpoint the way a chat turn would. The clients are discarded;
+/// no request is made and no token is read.
+fn check_endpoint(endpoint: &str) -> Result<(), String> {
+    let probe = ChatSettings::new(endpoint, "endpoint-check", PROBE_CONTEXT_TOKENS);
+    ChatClients::new(&probe, None)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 fn run_app(service: Arc<DesktopService>) -> ExitCode {
@@ -165,17 +188,37 @@ mod tests {
         assert!(!root.exists(), "the launch check created the data root");
     }
 
-    /// The endpoint is validated first, so a bad endpoint is the reported
-    /// failure even when a profile is selected.
+    /// Without a profile the endpoint is validated first, so a bad endpoint is
+    /// the reported failure and no data root is touched.
     #[test]
-    fn the_endpoint_is_checked_before_the_credential() {
+    fn a_bad_endpoint_without_a_profile_is_refused() {
         let failure = open_service(LaunchArgs {
             data_dir: Some(std::env::temp_dir().join("omgcode-desktop-never-created")),
             endpoint: "http://example.com:1234/v1".to_owned(),
-            provider_profile: Some("lms".to_owned()),
+            provider_profile: None,
         })
         .err()
         .expect("a non-loopback endpoint is refused");
         assert!(failure.starts_with("provider:"), "{failure}");
+    }
+
+    /// With a profile the launch endpoint is not used at all (ADR-0048): a bad
+    /// value there is ignored and the profile decides, here by having no
+    /// settings store.
+    #[test]
+    fn a_selected_profile_ignores_the_launch_endpoint() {
+        let root = std::env::temp_dir().join("omgcode-desktop-never-created-2");
+        let failure = open_service(LaunchArgs {
+            data_dir: Some(root.clone()),
+            endpoint: "http://example.com:1234/v1".to_owned(),
+            provider_profile: Some("lms".to_owned()),
+        })
+        .err()
+        .expect("no settings store exists");
+        assert!(
+            failure.starts_with("credential: no settings store exists"),
+            "{failure}"
+        );
+        assert!(!root.exists());
     }
 }

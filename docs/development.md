@@ -129,9 +129,10 @@ cargo run -p omgcode-desktop --locked -- --data-dir <scratch-directory>
 ```
 
 Always pass a scratch `--data-dir` when developing, so a run does not use the
-real per-user data. `--provider-profile <name>` makes the shell read its
-server token from a stored credential (see [Use a stored credential for
-chat](#use-a-stored-credential-for-chat)). The frontend commands, the launch arguments, the Tauri
+real per-user data. `--provider-profile <name>` makes the shell take its
+endpoint and its server token from a profile and its stored credential (see
+[Use a stored credential for chat](#use-a-stored-credential-for-chat)); it
+cannot be combined with `--endpoint`. The frontend commands, the launch arguments, the Tauri
 development command, and the limits are in the
 [desktop interface guide](desktop-interface.md#development). The shell has not
 run on Linux.
@@ -208,6 +209,20 @@ Subscription and `none` profiles refuse a credential. Only the local LM Studio
 adapter reads a stored credential, and only through `--provider-profile` (see
 [Use a stored credential for chat](#use-a-stored-credential-for-chat)). Without
 that flag `chat` uses the prototype `OMGCODE_LM_TOKEN` input.
+
+A profile can record one endpoint (ADR-0048). `provider-profile-add` takes an
+optional `--endpoint <url>`. Only an `lm_studio` profile accepts one, in the
+form `http://<literal loopback IP>:<non-zero port>/v1`, at most 256 bytes, with
+no user information, query, or fragment. The endpoint is not a secret, and no
+command changes it. To use another endpoint, remove the profile and add a new
+one. For example:
+
+```powershell
+omgcode --data-dir C:\omgcode-data workspace provider-profile-add example-lms --kind lm_studio --auth api_key --endpoint http://127.0.0.1:1234/v1 --revision 6
+```
+
+`provider-profile-show` and `status` print an `endpoint` field only when the
+profile records one.
 
 In PowerShell:
 
@@ -291,26 +306,33 @@ protect them at rest and from other users, not from same-user code.
 ### Use a stored credential for chat
 
 ADR-0047 lets `chat` and `session compact` read the LM Studio server token
-from the credential bound to a recorded `lm_studio` profile. Use a profile with
-`--kind lm_studio --auth api_key` and a bound credential. The profile name
-below is a placeholder:
+from the credential bound to a recorded `lm_studio` profile. ADR-0048 makes the
+profile supply the endpoint too. Use a profile added with `--kind lm_studio
+--auth api_key --endpoint <url>` and a bound credential. The profile name below
+is a placeholder:
 
 ```text
 omgcode --data-dir C:\omgcode-data chat --provider-profile example-lms --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Reply with READY."
-omgcode --data-dir C:\omgcode-data session compact <journal-path> --provider-profile example-lms --endpoint <url> --model <name> --context-tokens <n> --summary-tokens <n>
+omgcode --data-dir C:\omgcode-data session compact <journal-path> --provider-profile example-lms --model <name> --context-tokens <n> --summary-tokens <n>
 ```
 
-With the flag, `OMGCODE_LM_TOKEN` is not read. Core refuses an unknown profile,
-a profile of another provider kind, a `subscription` profile, an unbound
-`api_key` profile, and a binding from another backend. A `none` profile sends
+With the flag, `OMGCODE_LM_TOKEN` is not read, and the endpoint is the one
+recorded with the profile. `--endpoint` and `--provider-profile` together are a
+usage error (exit status 2). Core refuses an unknown profile, a profile of
+another provider kind, a profile with no recorded endpoint, a `subscription`
+profile, an unbound `api_key` profile, and a binding from another backend. A `none` profile sends
 no token. Any failure ends the command with a `credential` error whose message
 is `<cause code>: <text>`; nothing falls back to no token or to another token.
 The credential is resolved before the endpoint check and before any session or
 journal is created, so the error JSON has no session locator. The causes are
 listed in [provider authentication](provider-authentication.md#stored-credential-use-0300).
-The credential is bound to a provider kind, not to an endpoint: the token goes
-to whichever literal loopback endpoint `--endpoint` names. The desktop shell
-takes the same flag at launch ([desktop shell](desktop-interface.md#development)).
+A profile recorded before 0.31.0 has no endpoint and cannot be selected. A
+selected profile with no endpoint fails with `endpoint_not_recorded` before any
+native store access or request. Remove the profile, add it again with
+`--endpoint`, and store the credential again. The stored token goes only to the
+endpoint recorded with its profile. The desktop shell takes the same flag at
+launch and then uses the profile's endpoint
+([desktop shell](desktop-interface.md#development)).
 
 ## Trusted runs
 
@@ -494,7 +516,9 @@ cargo run --locked -p omgcode-cli -- chat --workspace . --model google/gemma-4-e
 ```
 
 The default endpoint is http://127.0.0.1:1234/v1. Override it with --endpoint
-only for an explicitly selected local service. This prototype accepts HTTP,
+only for an explicitly selected local service. A selected `--provider-profile`
+supplies its own recorded endpoint, and giving `--endpoint` as well is a usage
+error. This prototype accepts HTTP,
 literal loopback IP addresses, an explicit nonzero port, and the /v1 path.
 Hostnames, remote addresses, redirects, and proxy discovery are disabled. A
 loopback connection does not establish how the selected server handles data
@@ -521,7 +545,8 @@ is refused with a `provider` error before it is recorded, because editing its
 arguments could change the requested path. Add
 `--auto-compact --compact-threshold <tokens>` to compact older active context
 before a turn. `session compact <journal> --endpoint <url> --model <name>
---context-tokens <n> --summary-tokens <n>` performs the same manual action.
+--context-tokens <n> --summary-tokens <n>` (or `--provider-profile <name>` in
+place of `--endpoint`) performs the same manual action.
 Compaction records a schema-v3 `context.compacted` event, keeps the original
 messages, and injects a labelled untrusted summary; it never grants authority.
 Chat reports a conservative context meter. Saved tool results are sent again,
@@ -560,7 +585,8 @@ Environment-based input is a temporary prototype interface, not protected
 credential storage or a claim of memory erasure. Protected storage for API
 keys exists (see [provider credentials](#provider-credentials)). With
 `--provider-profile <name>` the adapter reads the token from a stored
-credential instead and never reads the variable; the provider clients still
+credential, and the endpoint from the same profile, and never reads the
+variable; the provider clients still
 hold an unzeroed header copy. No cloud adapter and no account/settings
 interface exists. Use the no-token profile only for
 an explicitly selected service configured for it.

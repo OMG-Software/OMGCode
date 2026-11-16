@@ -3,8 +3,17 @@
 
 use super::*;
 
-/// Add an `lm_studio` profile with the given authentication mode.
+const ENDPOINT: &str = "http://127.0.0.1:4242/v1";
+
+/// Add an `lm_studio` profile with the given authentication mode and the
+/// endpoint every selected profile needs (ADR-0048).
 fn add_lm_studio(store: &mut ControlStore, name: &str, auth: &str) {
+    add_lm_studio_with(store, name, auth, Some(ENDPOINT));
+}
+
+/// Add an `lm_studio` profile that may record no endpoint, as one recorded
+/// before endpoints existed.
+fn add_lm_studio_with(store: &mut ControlStore, name: &str, auth: &str, endpoint: Option<&str>) {
     let revision = store.revision();
     store
         .add_provider_profile(
@@ -12,10 +21,24 @@ fn add_lm_studio(store: &mut ControlStore, name: &str, auth: &str) {
                 name: name.into(),
                 kind: "lm_studio".into(),
                 auth: auth.into(),
+                endpoint: endpoint.map(str::to_owned),
             },
             revision,
         )
         .expect("lm_studio profile");
+}
+
+/// Give a recorded profile an endpoint without the add path, to reach the
+/// checks that follow the endpoint check for a kind that cannot record one.
+fn force_endpoint(store: &mut ControlStore, name: &str) {
+    store
+        .snapshot
+        .provider_profiles
+        .iter_mut()
+        .find(|status| status.profile().name() == name)
+        .expect("profile")
+        .profile
+        .endpoint = Some(ProviderEndpoint(ENDPOINT.to_owned()));
 }
 
 fn lm_studio(
@@ -23,7 +46,9 @@ fn lm_studio(
     credentials: &CredentialStore,
     name: &str,
 ) -> Result<Option<Secret>, ProviderCredentialUseError> {
-    store.load_provider_credential(credentials, name, ProviderKind::LmStudio)
+    store
+        .load_provider_credential(credentials, name, ProviderKind::LmStudio)
+        .map(|connection| connection.into_parts().1)
 }
 
 /// A use of a stored credential returns exactly the stored bytes, records
@@ -133,7 +158,14 @@ fn refusals_are_typed_and_precede_any_native_load() {
     );
 
     // No LM Studio profile can be a subscription, so ask as the provider
-    // whose recorded profile is one.
+    // whose recorded profile is one. That kind cannot record an endpoint, so
+    // the endpoint check (which precedes the authentication check) refuses it
+    // first; `force_endpoint` then reaches the subscription refusal.
+    let error = store
+        .load_provider_credential(credentials, "plan", ProviderKind::Anthropic)
+        .expect_err("no endpoint");
+    assert_eq!(error.code(), "endpoint_not_recorded");
+    force_endpoint(&mut store, "plan");
     let error = store
         .load_provider_credential(credentials, "plan", ProviderKind::Anthropic)
         .expect_err("subscription");
@@ -248,17 +280,23 @@ fn use_error_codes_are_stable() {
 }
 
 /// The binding check decides every early outcome with no native store open:
-/// nothing here constructs a `CredentialStore`.
+/// nothing here constructs a `CredentialStore`. Each case that would hit two
+/// refusals proves the order: unknown profile, kind, endpoint, then the
+/// authentication checks.
 #[test]
 fn the_binding_check_decides_without_any_native_store() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let data = directory.path().join("data");
     private_data_root(&data);
     let mut store = ControlStore::open(&data).expect("control store");
+    add_lm_studio(&mut store, "lms-key", "api_key");
+    add_lm_studio(&mut store, "lms-none", "none");
+    add_lm_studio(&mut store, "lms-unbound", "api_key");
+    // Recorded without an endpoint, as before endpoints existed. The
+    // api_key one is also unbound, so it would hit two refusals.
+    add_lm_studio_with(&mut store, "old-none", "none", None);
+    add_lm_studio_with(&mut store, "old-key", "api_key", None);
     for (name, kind, auth) in [
-        ("lms-key", "lm_studio", "api_key"),
-        ("lms-none", "lm_studio", "none"),
-        ("lms-unbound", "lm_studio", "api_key"),
         ("keys", "openai", "api_key"),
         ("plan", "anthropic", "subscription"),
     ] {
@@ -269,6 +307,7 @@ fn the_binding_check_decides_without_any_native_store() {
                     name: name.into(),
                     kind: kind.into(),
                     auth: auth.into(),
+                    endpoint: None,
                 },
                 revision,
             )
@@ -294,21 +333,47 @@ fn the_binding_check_decides_without_any_native_store() {
         assert_eq!(code("missing", ProviderKind::LmStudio), "unknown_profile");
         assert_eq!(code("keys", ProviderKind::LmStudio), "wrong_provider");
         assert_eq!(code("lms-none", ProviderKind::OpenAi), "wrong_provider");
+        // The kind check precedes the endpoint check: these profiles have no
+        // endpoint and are also for another kind.
+        assert_eq!(code("old-none", ProviderKind::OpenAi), "wrong_provider");
+        assert_eq!(code("old-key", ProviderKind::OpenAi), "wrong_provider");
+        // The endpoint check precedes every authentication check: `none`,
+        // `api_key` that is unbound, and `subscription` all report it.
+        assert_eq!(
+            code("old-none", ProviderKind::LmStudio),
+            "endpoint_not_recorded"
+        );
+        assert_eq!(
+            code("old-key", ProviderKind::LmStudio),
+            "endpoint_not_recorded"
+        );
         assert_eq!(
             code("plan", ProviderKind::Anthropic),
-            "subscription_unsupported"
+            "endpoint_not_recorded"
         );
+        let error = check("OLD-KEY", ProviderKind::LmStudio).expect_err("refused");
+        let text = error.to_string();
+        assert!(text.contains("old-key"), "{text}");
+        assert!(text.contains("no recorded endpoint"), "{text}");
+        assert!(text.contains("add it again with an endpoint"), "{text}");
         assert_eq!(code("lms-unbound", ProviderKind::LmStudio), "not_bound");
-        assert!(
-            check("LMS-NONE", ProviderKind::LmStudio)
-                .expect("none")
-                .is_none()
-        );
-        assert_eq!(
-            check("lms-key", ProviderKind::LmStudio).expect("bound"),
-            Some(&binding)
-        );
+
+        let none = check("LMS-NONE", ProviderKind::LmStudio).expect("none");
+        assert_eq!(none.endpoint().as_str(), ENDPOINT);
+        assert!(none.binding().is_none());
+        let bound = check("lms-key", ProviderKind::LmStudio).expect("bound");
+        assert_eq!(bound.endpoint().as_str(), ENDPOINT);
+        assert_eq!(bound.binding(), Some(&binding));
     }
+    // The authentication checks follow once an endpoint exists.
+    force_endpoint(&mut store, "plan");
+    assert_eq!(
+        store
+            .provider_credential_binding("plan", ProviderKind::Anthropic)
+            .expect_err("subscription")
+            .code(),
+        "subscription_unsupported"
+    );
     assert_eq!(store.revision(), revision);
     assert_eq!(store.entries.len(), entries, "a check records nothing");
 
@@ -320,4 +385,55 @@ fn the_binding_check_decides_without_any_native_store() {
             .code(),
         "settings_unusable"
     );
+}
+
+/// The loaded connection carries the endpoint the decision returned, exactly
+/// as recorded, for both a keyless and a keyed profile, and a recorded
+/// endpoint is not a secret while the secret never prints.
+#[test]
+fn a_load_returns_the_recorded_endpoint_with_the_secret() {
+    let fixture = fixture();
+    let credentials = &fixture.credentials;
+    let mut store = fixture.store();
+    add_lm_studio(&mut store, "lms-none", "none");
+    add_lm_studio_with(&mut store, "lms", "api_key", Some("http://[::1]:4343/v1/"));
+    add_lm_studio_with(&mut store, "old", "api_key", None);
+    let revision = store.revision();
+    let _ = store
+        .set_provider_credential(credentials, "lms", &secret(SENTINEL), revision)
+        .expect("set");
+    let before = store.revision();
+
+    let connection = store
+        .load_provider_credential(credentials, "LMS", ProviderKind::LmStudio)
+        .expect("load");
+    assert_eq!(connection.endpoint(), "http://[::1]:4343/v1/");
+    assert_eq!(connection.secret().expect("secret").expose(), SENTINEL);
+    let printed = format!("{connection:?}");
+    assert!(printed.contains("http://[::1]:4343/v1/"), "{printed}");
+    assert!(printed.contains("<redacted>"), "{printed}");
+    assert!(!printed.contains("omgcode-core-sentinel"), "{printed}");
+    let (endpoint, secret_value) = connection.into_parts();
+    assert_eq!(endpoint, "http://[::1]:4343/v1/");
+    assert_eq!(secret_value.expect("secret").expose(), SENTINEL);
+
+    let none = store
+        .load_provider_credential(credentials, "lms-none", ProviderKind::LmStudio)
+        .expect("none");
+    assert_eq!(none.endpoint(), ENDPOINT);
+    assert!(none.secret().is_none());
+
+    // No endpoint: refused before the native store is read, even though a
+    // keyed profile would otherwise report that nothing is bound.
+    let error = store
+        .load_provider_credential(credentials, "old", ProviderKind::LmStudio)
+        .expect_err("no endpoint");
+    assert_eq!(error.code(), "endpoint_not_recorded");
+    assert_eq!(store.revision(), before);
+
+    let revision = store.revision();
+    let removal = store
+        .remove_provider_credential(credentials, "lms", revision)
+        .expect("cleanup");
+    assert!(removal.orphan.is_none());
 }

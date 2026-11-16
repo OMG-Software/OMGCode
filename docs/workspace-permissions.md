@@ -224,13 +224,22 @@ and grant rules.
 `workspace provider-profile-add <name> --kind <kind> --auth <auth>
 --revision <n>`, `provider-profile-show <name>`, and
 `provider-profile-remove <name> --revision <n>` record provider connection
-shapes. They store no credential, endpoint, or account. Adding and removing
+shapes. They store no credential or account. Adding and removing
 use the expected revision and increment it through `provider_profile_added`
 and `provider_profile_removed`; `workspace status` lists them under
 `provider_profiles` and omits the field until one exists. The
 [provider authentication guide](provider-authentication.md) owns the kind and
 authentication matrix. A control journal written by 0.24.0 cannot be read by
 0.23.0.
+
+Since 0.31.0, `provider-profile-add` accepts `--endpoint <url>` for an
+`lm_studio` profile and refuses it for every other kind. The endpoint is
+validated when recorded and again on replay, and it cannot be changed without
+removing the profile. `provider_profile_added` carries an `endpoint` field
+only when one is recorded, so a journal without one is unchanged; a control
+journal that records an endpoint cannot be read by 0.30.0. The
+[provider authentication guide](provider-authentication.md#endpoint-binding-0310)
+owns the rules.
 
 Since 0.27.0, `provider-credential-set <name> --revision <n>` and
 `provider-credential-remove <name> --revision <n>` bind and unbind a credential

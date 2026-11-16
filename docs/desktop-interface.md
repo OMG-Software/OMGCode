@@ -33,6 +33,8 @@ merged to `main` at the time of writing):
 - Since version 0.30.0 (Phase D2, ADR-0047), an optional launch argument,
   `--provider-profile`, makes the service read the local server token from a
   stored credential instead of `OMGCODE_LM_TOKEN`.
+- Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
+  the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
 
 Not implemented:
 
@@ -46,7 +48,8 @@ Not implemented:
 - A recovery interface for damaged journals or an incomplete tail.
 - A provider other than the local LM Studio server. Stored API keys are used
   only for that server's token, through `--provider-profile`. The frontend
-  shows nothing about the credential source.
+  shows nothing about the credential source beyond the endpoint text it
+  already displayed.
 - A native operating-system confirmation dialog for approvals.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
@@ -108,24 +111,28 @@ Linux, the Tauri build also needs the WebKitGTK development packages listed in
 Launch:
 
 ```text
-omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>]
+omgcode-desktop [--data-dir <path>] [--endpoint <url> | --provider-profile <name>]
 ```
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `--data-dir <path>` | The per-user OMGCode data directory | The application data root, the same one the CLI uses |
-| `--endpoint <url>` | `http://127.0.0.1:1234/v1` | The loopback model endpoint, fixed for the process |
-| `--provider-profile <name>` | None: the token comes from `OMGCODE_LM_TOKEN` | A recorded `lm_studio` provider profile whose stored credential is the server token, fixed for the process |
+| `--endpoint <url>` | `http://127.0.0.1:1234/v1` | The loopback model endpoint, fixed for the process. Not allowed with `--provider-profile` |
+| `--provider-profile <name>` | None: the endpoint is `--endpoint` or its default, and the token comes from `OMGCODE_LM_TOKEN` | A recorded `lm_studio` provider profile that supplies both the endpoint and the stored credential used as the server token, fixed for the process. Not allowed with `--endpoint` |
 
-An unknown argument, a missing value, a repeated flag, an empty value, or a
-value that starts with `--` prints the usage text to stderr and exits with
-status 2. An invalid endpoint, an unusable data root, or a service that cannot
-open prints `omgcode-desktop: <message>` to stderr and exits with status 1.
-With `--provider-profile`, the shell also resolves the credential once after
-the endpoint check. An unknown profile, a profile of another provider kind, an
-unbound profile, or an unreadable credential prints
-`omgcode-desktop: credential: <cause>: <text>` and exits with status 1. Both
-kinds of failure happen before any window opens. A normal close exits with status 0.
+An unknown argument, a missing value, a repeated flag, an empty value, a value
+that starts with `--`, or both `--endpoint` and `--provider-profile` prints the
+usage text to stderr and exits with status 2. The default value of
+`--endpoint` does not count as giving it. An invalid endpoint, an unusable data
+root, or a service that cannot open prints `omgcode-desktop: <message>` to
+stderr and exits with status 1.
+With `--provider-profile`, the shell resolves the profile once at launch. The
+profile's recorded endpoint becomes the endpoint of the process, and the shell
+also resolves the credential once. An unknown profile, a profile of another
+provider kind, a profile with no recorded endpoint, an unbound profile, or an
+unreadable credential prints `omgcode-desktop: credential: <cause>: <text>` and
+exits with status 1. Both kinds of failure happen before any window opens. A
+normal close exits with status 0.
 
 The command line is the only configuration. The shell reads no environment
 variable and no configuration file for these values. The one exception is the
@@ -133,11 +140,13 @@ local server token, which has two sources. Without `--provider-profile`, if
 `OMGCODE_LM_TOKEN` is set, the service reads it for each chat turn. With it, the
 service reads the credential bound to that profile from protected OS storage
 for each chat turn and never reads the variable. The flag carries a profile
-name, not a secret. The webview never receives the token, and cannot choose or
+name, not a secret. The endpoint has the same two sources: `--endpoint` or its
+default without a profile, and the profile's recorded endpoint with one. The webview never receives the token, and cannot choose or
 see the profile. The service caches nothing, so a rotated credential is used by
 the next turn. An unreadable credential makes `chat_send` fail at once with a
 `credential` error, and no turn thread starts. See
-[stored credential use](provider-authentication.md#stored-credential-use-0300).
+[stored credential use](provider-authentication.md#stored-credential-use-0300)
+and [endpoint binding](provider-authentication.md#endpoint-binding-0310).
 
 A Windows release build has no console window. Stderr is visible only when the
 process is started with redirection.
@@ -303,8 +312,15 @@ server, and the context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
-- **Endpoint.** Fixed at launch. A request whose endpoint is not byte for byte
-  the launch endpoint is refused with `invalid_request`.
+- **Endpoint.** Fixed at launch. With a profile, the launch value is the
+  profile's recorded endpoint. A request whose endpoint is not byte for byte
+  the launch endpoint is refused with `invalid_request`. Each turn also
+  resolves the profile again. If its recorded endpoint no longer equals the
+  launch value, because the profile was removed and added again, `chat_send`
+  fails at once with a `credential` error that starts `endpoint_changed:` and
+  tells the operator to restart the application. No turn starts. A profile
+  replaced with the same endpoint and a new credential is accepted, and the
+  turn uses the new credential.
 - **Token.** Resolved for each turn from the launch-time source: the stored
   credential of `--provider-profile`, or else `OMGCODE_LM_TOKEN`. It is held in
   a zeroing type with a redacted `Debug` and no serializer, and removed from any
@@ -429,7 +445,9 @@ What the design does:
   path, no data root, no token, and no tool output digest. Workspace folder
   display text is the only path-like text it returns, and it is display-safe.
 - **Fixed endpoint and token.** The webview cannot choose the provider, choose
-  the credential source, or read the token. The profile is fixed at launch.
+  the credential source, or read the token. The profile and its endpoint are
+  fixed at launch. A stored credential goes only to the endpoint recorded with
+  its profile (ADR-0048). The wire contract is unchanged.
 - **Content policy.** The content security policy is `default-src 'none'`, with
   `'self'` for scripts, styles, images, and fonts, and IPC as the only
   connection target. Tauri appends three hashes for its own bootstrap scripts.
@@ -564,11 +582,14 @@ private store refuses, see the notes in
 
 ## Known limits
 
-- The credential is bound to a provider kind, not to an endpoint, so a stored
-  LM Studio token goes to whichever loopback endpoint the operator launches
-  with. Any process running as the same user can read the stored credential.
-  The stored-credential tests ran against DPAPI on Windows and the Secret
-  Service on Linux. A chat turn with a stored credential was not driven
+- Only `lm_studio` profiles can record an endpoint, and the only rule is for
+  a literal loopback address over plain HTTP. No rule exists for a
+  non-loopback provider, HTTPS, or certificates, and no cloud adapter exists.
+  A profile recorded before 0.31.0 has no endpoint and cannot be selected until
+  it is removed and added again with `--endpoint`. Any process running as the
+  same user can read the stored credential. The Phase D2 and D3
+  stored-credential tests ran against DPAPI on Windows and the Secret Service
+  on Linux under WSL. A chat turn with a stored credential was not driven
   through the real shell's windows on either platform; the service-level
   tests cover it.
 - Linux: the shell builds and its tests pass, but no window has been opened

@@ -6,6 +6,69 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.31.0 binds a stored credential to its profile's endpoint (Phase
+  D3). See ADR-0048 and
+  [endpoint binding](docs/provider-authentication.md#endpoint-binding-0310).
+  In 0.30.0 a stored token went to whichever literal loopback endpoint the
+  operator named with `--endpoint`. It is a prototype on branch
+  `codex/desktop-interface`; it is not merged. It tightens the 0.30.0
+  behaviour, which was never merged or released, and adds no dependency.
+  - **Profile endpoint:** `workspace provider-profile-add <name> ... --endpoint
+    <url>` records one endpoint on a profile. `provider-profile-show` and
+    `status` print `"endpoint"` only when one is recorded; a profile without
+    one prints as before. An endpoint is not a secret. It is fixed for the
+    profile's life: no command changes it. To use another endpoint, remove the
+    profile and add a new one. Removing a profile already records the unbinding
+    and deletes its credential, so a stored credential cannot be moved to
+    another endpoint.
+  - **Validation:** only an `lm_studio` profile accepts an endpoint. It must be
+    `http://<literal loopback IP>:<non-zero port>/v1` (or `/v1/`), with no user
+    information, query, or fragment, and at most 256 bytes. This is the rule
+    the local adapter enforces on every request. Core has one implementation
+    (`validate_base_url`), used by the provider client and the profile record,
+    and journal replay applies it again. Every other provider kind refuses an
+    endpoint for now. The text is stored exactly as given. The refusals are
+    `provider profile refused: an lm_studio endpoint must be
+    http://<loopback IP>:<port>/v1 with no user information, query, or
+    fragment`, `... the provider endpoint is longer than 256 bytes`, and `...
+    this provider kind does not accept an endpoint yet`.
+  - **Selection:** a selected profile supplies the endpoint and the token.
+    `ControlStore::provider_credential_binding` returns the recorded endpoint
+    with the credential decision, so the two cannot come from different
+    places. It still takes no credential store. It checks the settings store,
+    the profile, the provider kind, the endpoint, and then the authentication
+    mode. A selected profile with no recorded endpoint is refused in every
+    authentication mode with a `credential` error that starts
+    `endpoint_not_recorded:`, before any native store access or request.
+    `--endpoint` and `--provider-profile` together are a usage error with exit
+    status 2 in `omgcode chat`, `omgcode session compact`, and
+    `omgcode-desktop`. The default value of `--endpoint` does not trigger it.
+    Without a profile, `--endpoint`, its default, and `OMGCODE_LM_TOKEN` behave
+    as before.
+  - **Desktop:** with a profile, the shell resolves the endpoint once at
+    launch, and a failure exits with status 1 before any window opens. That
+    value is the process's fixed endpoint: the webview is shown it and each chat
+    request is compared with it. Each turn resolves the profile again. If the
+    recorded endpoint no longer equals the launch value, because the profile
+    was removed and added again, `chat_send` fails at once with a `credential`
+    error that starts `endpoint_changed:` and no turn starts. A replaced
+    profile with the same endpoint and a new credential is accepted. The wire
+    contract is unchanged.
+  - **Compatibility:** the profile record's `endpoint` field is written only
+    when present, so a control journal without endpoints replays and serializes
+    with its exact bytes. A journal that contains an endpoint cannot be read by
+    0.30.0 or earlier, which reject the unknown field. Replay rejects an
+    invalid endpoint, an endpoint on a kind that does not accept one, and any
+    unknown field. A profile recorded before 0.31.0 has no endpoint and cannot
+    be selected until it is removed and added again with `--endpoint`; the
+    credential must then be stored again.
+  - **Capabilities:** `capabilities` adds `"provider_profile_endpoints": true`.
+  - **Limits:** only `lm_studio` profiles accept an endpoint. No endpoint rule
+    exists for a non-loopback provider, HTTPS, or certificates, and no cloud
+    adapter exists. Any process running as the same user can still read a stored
+    credential. A hand-edited control journal is checked only by replay
+    validation and is not tamper-evident. The frontend shows nothing about the
+    credential source beyond the endpoint text it already displayed.
 - Version 0.30.0 adds stored credential use for the local LM Studio adapter
   (Phase D2). See ADR-0047 and
   [stored credential use](docs/provider-authentication.md#stored-credential-use-0300).

@@ -10,7 +10,7 @@ use super::error::DesktopError;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, SessionRequest};
 use super::{DesktopService, Inner};
-use crate::{ChatClients, ChatSettings, LmToken};
+use crate::{ChatClients, ChatSettings, LmToken, LocalConnection};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -94,15 +94,18 @@ impl DesktopService {
             return Err(DesktopError::turn_open());
         }
 
-        // Resolve the token and build the clients now, so an unreadable
-        // credential, a bad model, context, or endpoint is a synchronous error
-        // and no thread starts. The token is resolved again for every turn, so
-        // a rotated credential applies to the next one.
-        let token = inner
+        // Resolve the connection and build the clients now, so an unreadable
+        // credential, a profile whose endpoint changed since launch, a bad
+        // model, context, or endpoint is a synchronous error and no thread
+        // starts. The connection is resolved again for every turn, so a
+        // rotated credential applies to the next one. The resolved endpoint is
+        // the only endpoint the turn uses; it equals the launch endpoint,
+        // which was compared with the request above.
+        let LocalConnection { endpoint, token } = inner
             .token
-            .resolve(&inner.data_root)
+            .resolve(&inner.data_root, &inner.endpoint)
             .map_err(|error| DesktopError::from_app(&error))?;
-        let settings = chat_settings(request.settings);
+        let settings = chat_settings(request.settings, endpoint);
         let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&error))?;
         let job = TurnJob {
@@ -204,9 +207,9 @@ fn check_slot(inner: &Inner, session_id: Uuid) -> Result<(), DesktopError> {
     Ok(())
 }
 
-fn chat_settings(settings: ChatSettingsDto) -> ChatSettings {
+fn chat_settings(settings: ChatSettingsDto, endpoint: String) -> ChatSettings {
     ChatSettings {
-        endpoint: settings.endpoint,
+        endpoint,
         model: settings.model,
         context_tokens: settings.context_tokens,
         max_output_tokens: settings.max_output_tokens,

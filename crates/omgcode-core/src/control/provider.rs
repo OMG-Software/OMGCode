@@ -1,19 +1,48 @@
 //! Operator-declared provider connection profiles.
 //!
-//! A profile records only a name, a provider kind, and an authentication mode.
-//! It stores no endpoint, account, token, password, or other credential, and
-//! no adapter uses it yet. It is configuration only. Its status can name the
-//! opaque identifier of a credential bound through `credential`, never the
-//! secret. See `docs/provider-authentication.md`, ADR-0038, and ADR-0042.
+//! A profile records a name, a provider kind, an authentication mode, and
+//! optionally an endpoint. It stores no account, token, password, or other
+//! credential. Its status can name the opaque identifier of a credential bound
+//! through `credential`, never the secret.
+//!
+//! An `lm_studio` profile may record the endpoint its adapter uses. The text
+//! must pass the same rule the local adapter applies to every request
+//! (`provider::validate_base_url`), is stored exactly as validated, and is
+//! fixed for the life of the profile: no operation changes it, so a bound
+//! credential cannot be moved to another destination. Every other kind refuses
+//! an endpoint until an adapter defines its rule. Replay applies the same
+//! validation. The local adapter reads a selected profile only through
+//! `ControlStore::provider_credential_binding` (ADR-0047, ADR-0048). See
+//! `docs/provider-authentication.md`, ADR-0038, and ADR-0042.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::credential::{self, CredentialBinding, ProviderProfileRemoval};
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_profile_name, valid_uuid};
+use crate::provider::validate_base_url;
 
 /// Most recorded provider profiles.
 pub const MAX_PROVIDER_PROFILES: usize = 32;
+
+/// Most bytes of a recorded provider endpoint, checked before it is parsed.
+pub const MAX_PROVIDER_ENDPOINT_BYTES: usize = 256;
+
+/// The endpoint a profile records, exactly as it was validated.
+///
+/// Only [`ProviderProfile`] holds one. A value read from a journal is checked
+/// by replay before the profile is used, and the store never returns an
+/// unchecked profile. It is not a secret.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ProviderEndpoint(pub(super) String);
+
+impl ProviderEndpoint {
+    /// The validated text, unchanged.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// A provider that a profile may name.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -100,9 +129,18 @@ pub struct ProviderProfile {
     name: String,
     kind: ProviderKind,
     auth: ProviderAuth,
+    /// Written only when present, so a profile without one keeps the bytes it
+    /// had before endpoints existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) endpoint: Option<ProviderEndpoint>,
 }
 
 impl ProviderProfile {
+    /// The recorded endpoint, if any. It never changes for this profile.
+    pub const fn endpoint(&self) -> Option<&ProviderEndpoint> {
+        self.endpoint.as_ref()
+    }
+
     /// Stable profile identifier.
     pub const fn id(&self) -> Uuid {
         self.id
@@ -129,7 +167,7 @@ impl ProviderProfile {
 #[derive(Clone, Debug, Serialize)]
 pub struct ProviderProfileStatus {
     #[serde(flatten)]
-    profile: ProviderProfile,
+    pub(super) profile: ProviderProfile,
     revision: u64,
     #[serde(serialize_with = "credential::serialize_state")]
     pub(super) credential: Option<CredentialBinding>,
@@ -161,6 +199,9 @@ pub struct ProviderProfileDeclaration {
     pub kind: String,
     /// `subscription`, `api_key`, or `none`.
     pub auth: String,
+    /// The endpoint to record. Only `lm_studio` accepts one for now, and it
+    /// must pass the local adapter's rule. It is stored exactly as given.
+    pub endpoint: Option<String>,
 }
 
 impl ControlStore {
@@ -205,6 +246,7 @@ impl ControlStore {
             name: declaration.name.clone(),
             kind,
             auth,
+            endpoint: declaration.endpoint.clone().map(ProviderEndpoint),
         };
         validate_profile(&profile)?;
         self.append(
@@ -314,7 +356,36 @@ fn validate_profile(profile: &ProviderProfile) -> Result<(), ControlError> {
             "this provider does not support the selected authentication mode",
         ));
     }
+    if let Some(endpoint) = &profile.endpoint {
+        validate_endpoint(profile.kind, endpoint.as_str())?;
+    }
     Ok(())
+}
+
+/// Check an endpoint for its provider kind. The length bound comes first, so
+/// no parser sees an unbounded string.
+fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError> {
+    match kind {
+        ProviderKind::LmStudio => {
+            if text.len() > MAX_PROVIDER_ENDPOINT_BYTES {
+                return Err(ControlError::ProviderRefused(
+                    "the provider endpoint is longer than 256 bytes",
+                ));
+            }
+            validate_base_url(text).map(|_| ()).map_err(|_| {
+                ControlError::ProviderRefused(
+                    "an lm_studio endpoint must be http://<loopback IP>:<port>/v1 with no user information, query, or fragment",
+                )
+            })
+        }
+        ProviderKind::OpenAi
+        | ProviderKind::Anthropic
+        | ProviderKind::OllamaLocal
+        | ProviderKind::OllamaCloud
+        | ProviderKind::OpenRouter => Err(ControlError::ProviderRefused(
+            "this provider kind does not accept an endpoint yet",
+        )),
+    }
 }
 
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {

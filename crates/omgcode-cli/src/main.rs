@@ -10,9 +10,9 @@ mod run_cli;
 
 use clap::{Args, Parser, Subcommand};
 use omgcode_app::{
-    AppError, ChatClients, ChatHooks, ChatSettings, ChatTurnInput, LmToken, MODEL_TOOLS_SUPPORTED,
-    TokenSource, compact_journal, create_session, data_root, read_lm_token, redact_known_secret,
-    resolve_lm_token, run_chat_turn_with_clients,
+    AppError, ChatClients, ChatHooks, ChatSettings, ChatTurnInput, ConnectionSource, LmToken,
+    LocalConnection, MODEL_TOOLS_SUPPORTED, compact_journal, create_session, data_root,
+    read_lm_token, redact_known_secret, resolve_local_connection, run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
@@ -110,7 +110,13 @@ enum SessionCommand {
     Compact {
         #[command(flatten)]
         locator: JournalArgs,
-        #[arg(long, default_value = "http://127.0.0.1:1234/v1")]
+        /// The loopback endpoint. Not allowed with --provider-profile, whose
+        /// recorded endpoint is the only one a profile uses.
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:1234/v1",
+            conflicts_with = "provider_profile"
+        )]
         endpoint: String,
         #[arg(long)]
         model: String,
@@ -119,7 +125,8 @@ enum SessionCommand {
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
         /// Read the server token from this recorded `lm_studio` provider
-        /// profile's stored credential instead of OMGCODE_LM_TOKEN.
+        /// profile's stored credential instead of OMGCODE_LM_TOKEN. The endpoint
+        /// then comes from the profile too.
         #[arg(long, value_parser = non_empty_name)]
         provider_profile: Option<String>,
     },
@@ -146,7 +153,13 @@ struct ChatArgs {
     journal_native: Option<String>,
     #[arg(long, default_value = "Local model chat")]
     title: String,
-    #[arg(long, default_value = "http://127.0.0.1:1234/v1")]
+    /// The loopback endpoint. Not allowed with --provider-profile, whose
+    /// recorded endpoint is the only one a profile uses.
+    #[arg(
+        long,
+        default_value = "http://127.0.0.1:1234/v1",
+        conflicts_with = "provider_profile"
+    )]
     endpoint: String,
     #[arg(long)]
     model: String,
@@ -166,7 +179,7 @@ struct ChatArgs {
     auto_compact: bool,
     /// Read the server token from this recorded `lm_studio` provider profile's
     /// stored credential instead of OMGCODE_LM_TOKEN. The variable is then
-    /// not read.
+    /// not read, and the endpoint is the one recorded with the profile.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
     /// Current user request. Quote it as one shell argument.
@@ -287,6 +300,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "package_network_enforcement": false,
             "package_fetch": true,
             "provider_profiles": true,
+            "provider_profile_endpoints": true,
             "provider_adapters": false,
             "stored_credential_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
@@ -378,12 +392,18 @@ fn run(cli: Cli) -> Result<(), CliError> {
 
 /// Validate the provider before opening storage, then attach recovery information.
 fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
-    // The credential comes first, so an unreadable selected credential stops
-    // the command before the endpoint is checked and before any journal exists.
-    let token = lm_token(data_dir.as_deref(), args.provider_profile.as_deref())?;
+    // The connection comes first, so an unreadable selected credential or a
+    // profile with no endpoint stops the command before the endpoint is
+    // checked and before any journal exists. With a profile, its recorded
+    // endpoint is the only endpoint used.
+    let LocalConnection { endpoint, token } = local_connection(
+        data_dir.as_deref(),
+        args.endpoint,
+        args.provider_profile.as_deref(),
+    )?;
     let token_text = token.as_ref().map(LmToken::expose);
     let settings = ChatSettings {
-        endpoint: args.endpoint,
+        endpoint,
         model: args.model,
         context_tokens: args.context_tokens,
         max_output_tokens: args.max_output_tokens,
@@ -450,7 +470,8 @@ fn compact_session(
             "summary-tokens must be positive and below context-tokens",
         ));
     }
-    let token = lm_token(data_dir.as_deref(), provider_profile.as_deref())?;
+    let LocalConnection { endpoint, token } =
+        local_connection(data_dir.as_deref(), endpoint, provider_profile.as_deref())?;
     let token_text = token.as_ref().map(LmToken::expose);
     let client = LocalModelClient::new(
         LocalModelConfig {
@@ -488,22 +509,28 @@ fn compact_session(
     })
 }
 
-/// Obtain the server token for `chat` or `session compact`.
+/// Obtain the endpoint and server token for `chat` or `session compact`.
 ///
-/// Without a profile this is exactly the environment read it always was, and
-/// no data root is computed. With one, the token comes only from that
-/// profile's stored credential and `OMGCODE_LM_TOKEN` is not read.
-fn lm_token(
+/// Without a profile this is exactly what it always was: the command-line
+/// endpoint and the environment token, with no data root computed. With one,
+/// the endpoint and the token come only from that profile (the clap
+/// definitions refuse `--endpoint` beside it) and `OMGCODE_LM_TOKEN` is not
+/// read.
+fn local_connection(
     data_dir: Option<&Path>,
+    endpoint: String,
     provider_profile: Option<&str>,
-) -> Result<Option<LmToken>, CliError> {
+) -> Result<LocalConnection, CliError> {
     match provider_profile {
-        None => Ok(resolve_lm_token(Path::new(""), &TokenSource::Environment)?),
+        None => Ok(resolve_local_connection(
+            Path::new(""),
+            &ConnectionSource::Environment { endpoint },
+        )?),
         Some(name) => {
             let root = data_root(data_dir.map(Path::to_path_buf))?;
-            Ok(resolve_lm_token(
+            Ok(resolve_local_connection(
                 &root,
-                &TokenSource::Profile(name.to_owned()),
+                &ConnectionSource::Profile(name.to_owned()),
             )?)
         }
     }

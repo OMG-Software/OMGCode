@@ -1,6 +1,6 @@
-//! The local adapter's token from a stored provider credential (ADR-0047),
-//! against the real settings store, the real native credential store, and the
-//! scripted loopback model server.
+//! The local adapter's endpoint and token from a stored provider profile
+//! (ADR-0047, ADR-0048), against the real settings store, the real native
+//! credential store, and the scripted loopback model server.
 //!
 //! On Linux these need an unlocked Secret Service default collection and fail
 //! without one. Every item a test stores is deleted when its `Vault` drops. Test
@@ -9,27 +9,42 @@
 use std::fs;
 
 use omgcode_app::{
-    ChatHooks, ChatSettings, ChatTurnInput, ErrorKind, LmToken, TokenSource, create_session,
-    read_lm_token, redact_known_secret, resolve_lm_token, run_chat_turn,
+    AppError, ChatHooks, ChatSettings, ChatTurnInput, ConnectionSource, ErrorKind, LmToken,
+    create_session, read_lm_token, redact_known_secret, resolve_local_connection, run_chat_turn,
 };
 use omgcode_core::control::ControlStore;
 use serde_json::json;
 
 mod common;
 use common::credential::Vault;
-use common::{Fixture, MockServer, Step, text, text_only};
+use common::{Fixture, MockServer, NoCallServer, Step, text, text_only};
 
 const STORED: &str = "fake-stored-token-4c19e7a2";
 const ROTATED: &str = "fake-rotated-token-90b3d1f6";
+/// An endpoint for a profile whose test sends no request.
+const RECORDED: &str = "http://127.0.0.1:1/v1";
 
-fn profile(name: &str) -> TokenSource {
-    TokenSource::Profile(name.to_owned())
+fn profile(name: &str) -> ConnectionSource {
+    ConnectionSource::Profile(name.to_owned())
+}
+
+/// The token of a resolution, so each test can keep asserting on it alone.
+fn resolve_token(
+    data: &std::path::Path,
+    source: &ConnectionSource,
+) -> Result<Option<LmToken>, AppError> {
+    resolve_local_connection(data, source).map(|connection| connection.token)
 }
 
 /// The failure of a resolution, which must never expose `STORED`.
-fn refusal(fixture: &Fixture, source: &TokenSource) -> (String, String) {
-    let error = resolve_lm_token(&fixture.data, source)
-        .map(|token| token.map(|token| token.expose().to_owned()))
+fn refusal(fixture: &Fixture, source: &ConnectionSource) -> (String, String) {
+    let error = resolve_local_connection(&fixture.data, source)
+        .map(|connection| {
+            (
+                connection.endpoint,
+                connection.token.map(|token| token.expose().to_owned()),
+            )
+        })
         .expect_err("the source is refused");
     assert_eq!(error.kind(), ErrorKind::Credential);
     assert_eq!(error.code(), "credential");
@@ -43,31 +58,36 @@ fn refusal(fixture: &Fixture, source: &TokenSource) -> (String, String) {
 fn the_environment_source_is_the_existing_environment_read() {
     // No settings store exists, and none is needed or touched.
     let fixture = Fixture::bare();
-    let resolved = resolve_lm_token(&fixture.data, &TokenSource::Environment)
-        .map(|token| token.map(|token| token.expose().to_owned()));
-    assert_eq!(resolved, read_lm_token());
+    let source = ConnectionSource::Environment {
+        endpoint: "http://127.0.0.1:4321/v1".to_owned(),
+    };
+    let connection = resolve_local_connection(&fixture.data, &source).expect("environment");
+    assert_eq!(connection.endpoint, "http://127.0.0.1:4321/v1");
+    assert_eq!(
+        connection.token.map(|token| token.expose().to_owned()),
+        read_lm_token().expect("environment token")
+    );
+    assert!(!fixture.data.join("control-v1.jsonl").exists());
 }
 
 #[test]
-fn a_profile_source_returns_the_stored_token_and_none_for_a_keyless_profile() {
+fn a_profile_source_returns_its_endpoint_and_the_stored_token_and_none_for_a_keyless_profile() {
     let fixture = Fixture::new();
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
-    vault.add_profile("open", "lm_studio", "none");
+    vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
+    vault.add_profile_at("open", "lm_studio", "none", "http://[::1]:2/v1/");
     vault.bind("lms", STORED.as_bytes());
 
-    let token = resolve_lm_token(&fixture.data, &profile("LMS"))
-        .expect("stored token")
-        .expect("a token");
+    let connection = resolve_local_connection(&fixture.data, &profile("LMS")).expect("stored");
+    assert_eq!(connection.endpoint, RECORDED, "exactly the recorded text");
+    let token = connection.token.expect("a token");
     assert_eq!(token.expose(), STORED);
     assert_eq!(format!("{token:?}"), "LmToken(<redacted>)");
 
-    // A `none` profile selects no token at all.
-    assert!(
-        resolve_lm_token(&fixture.data, &profile("open"))
-            .expect("none profile")
-            .is_none()
-    );
+    // A `none` profile selects no token at all, and still has its endpoint.
+    let open = resolve_local_connection(&fixture.data, &profile("open")).expect("none profile");
+    assert_eq!(open.endpoint, "http://[::1]:2/v1/");
+    assert!(open.token.is_none());
 }
 
 #[test]
@@ -83,8 +103,8 @@ fn every_refusal_is_a_credential_error_with_its_cause_code() {
 
     let fixture = Fixture::new();
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
-    vault.add_profile("unbound", "lm_studio", "api_key");
+    vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
+    vault.add_profile_at("unbound", "lm_studio", "api_key", RECORDED);
     vault.add_profile("openai-key", "openai", "api_key");
     vault.add_profile("plan", "anthropic", "subscription");
     vault.bind("openai-key", STORED.as_bytes());
@@ -107,11 +127,33 @@ fn every_refusal_is_a_credential_error_with_its_cause_code() {
     assert!(message.contains(lost.as_str()), "{message}");
 }
 
+/// A profile recorded without an endpoint is refused whatever its
+/// authentication mode, before any native store access: the bound credential's
+/// native item is gone, so a load would have reported that instead.
+#[test]
+fn a_profile_without_an_endpoint_is_refused_with_endpoint_not_recorded() {
+    let fixture = Fixture::new();
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile("old-none", "lm_studio", "none");
+    vault.add_profile("old-key", "lm_studio", "api_key");
+    vault.add_profile("old-unbound", "lm_studio", "api_key");
+    let id = vault.bind("old-key", STORED.as_bytes());
+    vault.delete_native(&id);
+    for name in ["old-none", "old-key", "old-unbound", "OLD-KEY"] {
+        let (_, message) = refusal(&fixture, &profile(name));
+        assert!(
+            message.starts_with("endpoint_not_recorded:"),
+            "{name}: {message}"
+        );
+        assert!(message.contains("no recorded endpoint"), "{message}");
+    }
+}
+
 #[test]
 fn a_busy_settings_store_is_refused_without_a_retry() {
     let fixture = Fixture::new();
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
+    vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
     vault.bind("lms", STORED.as_bytes());
 
     let holder = ControlStore::open(&fixture.data).expect("another holder");
@@ -121,7 +163,7 @@ fn a_busy_settings_store_is_refused_without_a_retry() {
 
     // Released, the same resolution succeeds.
     assert!(
-        resolve_lm_token(&fixture.data, &profile("lms"))
+        resolve_token(&fixture.data, &profile("lms"))
             .expect("resolves")
             .is_some()
     );
@@ -131,7 +173,7 @@ fn a_busy_settings_store_is_refused_without_a_retry() {
 fn a_stored_secret_that_is_not_utf8_text_is_refused() {
     let fixture = Fixture::new();
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
+    vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
     vault.bind("lms", &[0xff, 0xfe, 0x41]);
     let (_, message) = refusal(&fixture, &profile("lms"));
     assert!(message.starts_with("credential_invalid:"), "{message}");
@@ -142,14 +184,14 @@ fn the_stored_token_is_sent_as_the_bearer_and_recorded_nowhere() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
-    vault.bind("lms", STORED.as_bytes());
     let server = MockServer::start(vec![Step::reply(text(&format!(
         "I will not repeat {STORED}"
     )))]);
-    let settings = ChatSettings::new(server.endpoint.clone(), "fixture", 131_072);
-    let token: Option<LmToken> =
-        resolve_lm_token(&fixture.data, &profile("lms")).expect("stored token");
+    vault.add_profile_at("lms", "lm_studio", "api_key", &server.endpoint);
+    vault.bind("lms", STORED.as_bytes());
+    let connection = resolve_local_connection(&fixture.data, &profile("lms")).expect("connection");
+    let settings = ChatSettings::new(connection.endpoint, "fixture", 131_072);
+    let token = connection.token;
     // The CLI removes the token from a title before it creates the session.
     let title = redact_known_secret(
         &format!("title {STORED}"),
@@ -202,18 +244,57 @@ fn the_stored_token_is_sent_as_the_bearer_and_recorded_nowhere() {
     );
 }
 
+/// A turn that uses the resolved connection reaches the profile's endpoint
+/// with the stored bearer, and no other listener sees a request.
+#[test]
+fn a_turn_with_a_profile_sends_to_the_profile_endpoint_and_nowhere_else() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let mut vault = Vault::new(&fixture.data);
+    let profile_server = MockServer::start(vec![Step::reply(text("from the profile endpoint"))]);
+    let other = NoCallServer::start();
+    assert_ne!(profile_server.endpoint, other.endpoint);
+    vault.add_profile_at("lms", "lm_studio", "api_key", &profile_server.endpoint);
+    vault.bind("lms", STORED.as_bytes());
+
+    let connection = resolve_local_connection(&fixture.data, &profile("lms")).expect("connection");
+    assert_eq!(connection.endpoint, profile_server.endpoint);
+    let settings = ChatSettings::new(connection.endpoint, "fixture", 131_072);
+    let mut journal = create_session(&fixture.data, &workspace.path, "endpoint").expect("session");
+    run_chat_turn(
+        &mut journal,
+        &fixture.data,
+        &ChatTurnInput {
+            message: "hello",
+            settings: &settings,
+            token: connection.token.as_ref().map(LmToken::expose),
+        },
+        &mut ChatHooks::default(),
+    )
+    .expect("turn");
+    drop(journal);
+
+    let (served, requests) = profile_server.finish_recorded();
+    assert_eq!(served, 1);
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {STORED}"))
+    );
+    other.assert_untouched();
+}
+
 #[test]
 fn a_rotated_credential_is_used_by_the_next_resolution() {
     let fixture = Fixture::new();
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
+    vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
     vault.bind("lms", STORED.as_bytes());
-    let first = resolve_lm_token(&fixture.data, &profile("lms"))
+    let first = resolve_token(&fixture.data, &profile("lms"))
         .expect("first")
         .expect("token");
     assert_eq!(first.expose(), STORED);
     vault.bind("lms", ROTATED.as_bytes());
-    let second = resolve_lm_token(&fixture.data, &profile("lms"))
+    let second = resolve_token(&fixture.data, &profile("lms"))
         .expect("second")
         .expect("token");
     assert_eq!(second.expose(), ROTATED);
@@ -230,8 +311,9 @@ fn early_outcomes_need_no_native_store() {
     let data = temporary.path().join("application-data");
     fs::create_dir(&data).expect("data root with its inherited ACL");
     let vault = Vault::new(&data);
-    vault.add_profile("open", "lm_studio", "none");
-    vault.add_profile("unbound", "lm_studio", "api_key");
+    vault.add_profile_at("open", "lm_studio", "none", RECORDED);
+    vault.add_profile_at("unbound", "lm_studio", "api_key", RECORDED);
+    vault.add_profile("old-key", "lm_studio", "api_key");
     vault.add_profile("openai-key", "openai", "api_key");
 
     // Prove the premise: the native store cannot open under this root.
@@ -241,17 +323,16 @@ fn early_outcomes_need_no_native_store() {
         "the native store must refuse this data root"
     );
 
-    assert!(
-        resolve_lm_token(&data, &profile("open"))
-            .expect("none profile")
-            .is_none()
-    );
+    let open = resolve_local_connection(&data, &profile("open")).expect("none profile");
+    assert_eq!(open.endpoint, RECORDED);
+    assert!(open.token.is_none());
     for (name, expected) in [
         ("missing", "unknown_profile:"),
         ("openai-key", "wrong_provider:"),
+        ("old-key", "endpoint_not_recorded:"),
         ("unbound", "not_bound:"),
     ] {
-        let error = resolve_lm_token(&data, &profile(name)).expect_err("refused");
+        let error = resolve_token(&data, &profile(name)).expect_err("refused");
         assert_eq!(error.code(), "credential");
         assert!(error.message().starts_with(expected), "{}", error.message());
     }
@@ -262,20 +343,18 @@ fn early_outcomes_need_no_native_store() {
 /// to build the settings fixture, so this runs at the service level.
 #[test]
 fn a_keyless_profile_passes_the_launch_check_and_opens_the_service() {
+    use omgcode_app::TokenSource;
     use omgcode_app::desktop::{DesktopConfig, DesktopService};
     let fixture = Fixture::new();
     let vault = Vault::new(&fixture.data);
-    vault.add_profile("open", "lm_studio", "none");
-    let source = profile("open");
-    assert!(
-        resolve_lm_token(&fixture.data, &source)
-            .expect("the launch check")
-            .is_none()
-    );
+    vault.add_profile_at("open", "lm_studio", "none", "http://127.0.0.1:1/v1");
+    let launch =
+        resolve_local_connection(&fixture.data, &profile("open")).expect("the launch check");
+    assert!(launch.token.is_none());
     DesktopService::open(DesktopConfig {
         data_root: fixture.data.clone(),
-        endpoint: "http://127.0.0.1:1/v1".to_owned(),
-        token_source: source,
+        endpoint: launch.endpoint,
+        token_source: TokenSource::Profile("open".to_owned()),
     })
     .expect("the service opens");
 }
@@ -289,15 +368,16 @@ fn a_tool_call_containing_the_stored_token_is_refused() {
     let workspace = fixture.workspace("project", read_tools());
     fs::write(workspace.path.join("note.txt"), "note\n").expect("note");
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
-    vault.bind("lms", STORED.as_bytes());
     let server = MockServer::start(vec![Step::reply(tool_call(
         "call-1",
         "workspace_read_file",
         &json!({"path": "note.txt", "note": STORED}),
     ))]);
-    let settings = ChatSettings::new(server.endpoint.clone(), "fixture", 131_072);
-    let token = resolve_lm_token(&fixture.data, &profile("lms")).expect("token");
+    vault.add_profile_at("lms", "lm_studio", "api_key", &server.endpoint);
+    vault.bind("lms", STORED.as_bytes());
+    let connection = resolve_local_connection(&fixture.data, &profile("lms")).expect("connection");
+    let settings = ChatSettings::new(connection.endpoint, "fixture", 131_072);
+    let token = connection.token;
     let mut journal = create_session(&fixture.data, &workspace.path, "tool call").expect("session");
     let path = journal.path().to_owned();
     let result = run_chat_turn(

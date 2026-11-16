@@ -1,24 +1,31 @@
-//! The one place the local adapter's server token is obtained (ADR-0047).
+//! The one place the local adapter's endpoint and server token are obtained
+//! (ADR-0047, ADR-0048).
 //!
-//! The operator chooses a [`TokenSource`] once, outside any model or webview
-//! influence. [`resolve_lm_token`] then reads the token for one turn:
+//! The operator chooses a [`ConnectionSource`] once, outside any model or
+//! webview influence. [`resolve_local_connection`] then returns the endpoint
+//! and the optional token for one turn from that one source, so a stored token
+//! can never be paired with an endpoint from somewhere else:
 //!
-//! - [`TokenSource::Environment`] keeps the prototype behaviour: the
-//!   `OMGCODE_LM_TOKEN` variable, through [`read_lm_token`].
-//! - [`TokenSource::Profile`] reads the credential bound to a recorded
-//!   `lm_studio` provider profile from protected OS storage. The environment
-//!   variable is not read at all, and every failure ends the turn with a
-//!   `credential` error. There is no fallback to no token or to another token.
+//! - [`ConnectionSource::Environment`] keeps the prototype behaviour: the
+//!   endpoint is the one given (the command line or its default) and the token
+//!   is the `OMGCODE_LM_TOKEN` variable, through [`read_lm_token`].
+//! - [`ConnectionSource::Profile`] reads the endpoint recorded with a
+//!   recorded `lm_studio` provider profile and the credential bound to it from
+//!   protected OS storage. The environment variable is not read at all, and
+//!   every failure ends the turn with a `credential` error. There is no
+//!   fallback to no token, to another token, or to another endpoint. A profile
+//!   that records no endpoint is refused with `endpoint_not_recorded`.
 //!
 //! Order of operations for a profile, with the settings store open throughout so
 //! a rotation cannot delete the item between the binding lookup and the load:
 //!
 //! 1. open the existing settings store;
 //! 2. `provider_credential_binding`, which refuses an unknown profile, a profile
-//!    of another provider, a `subscription` profile and an unbound `api_key`
-//!    profile, and which touches no native storage;
-//! 3. a `none` profile ends here with no token, so it works on a host whose
-//!    protected store is unavailable;
+//!    of another provider, a profile with no recorded endpoint, a
+//!    `subscription` profile and an unbound `api_key` profile, and which
+//!    touches no native storage;
+//! 3. a `none` profile ends here with its endpoint and no token, so it works on
+//!    a host whose protected store is unavailable;
 //! 4. only for a bound `api_key` profile, open the native credential store and
 //!    call `load_provider_credential`;
 //! 5. close both stores before returning, so none is held while a model request
@@ -28,14 +35,16 @@ use std::fmt;
 use std::path::Path;
 
 use omgcode_core::control::{
-    ControlError, ControlStore, CredentialStore, ProviderCredentialUseError, ProviderKind, Secret,
+    ControlError, ControlStore, CredentialStore, LoadedProviderConnection,
+    ProviderCredentialUseError, ProviderKind, Secret,
 };
 use zeroize::Zeroizing;
 
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::read_lm_token;
 
-/// Where a front end gets the optional local server token.
+/// Where a desktop process gets the optional local server token. The endpoint
+/// of a desktop process is fixed at launch and held beside this value.
 ///
 /// A profile name is an operator-chosen label, not a secret, so this type has
 /// ordinary `Debug` output.
@@ -43,7 +52,39 @@ use crate::secrets::read_lm_token;
 pub enum TokenSource {
     /// The `OMGCODE_LM_TOKEN` process environment variable.
     Environment,
-    /// The credential bound to the named recorded provider profile.
+    /// The credential bound to the named recorded provider profile, whose own
+    /// recorded endpoint is the only endpoint it can use.
+    Profile(String),
+}
+
+impl TokenSource {
+    /// The connection source for one turn, given the endpoint this process was
+    /// started with. A profile source ignores `launch_endpoint`: the profile's
+    /// recorded endpoint is the only one it can use.
+    pub fn connection(&self, launch_endpoint: &str) -> ConnectionSource {
+        match self {
+            Self::Environment => ConnectionSource::Environment {
+                endpoint: launch_endpoint.to_owned(),
+            },
+            Self::Profile(name) => ConnectionSource::Profile(name.clone()),
+        }
+    }
+}
+
+/// Where a front end gets the local adapter's endpoint and optional token.
+///
+/// A profile name and an endpoint are not secrets, so this type has ordinary
+/// `Debug` output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConnectionSource {
+    /// The given endpoint (the command line or its default), with the token
+    /// from the `OMGCODE_LM_TOKEN` process environment variable.
+    Environment {
+        /// The endpoint. It is validated when the clients are built.
+        endpoint: String,
+    },
+    /// The endpoint and the credential recorded for the named provider
+    /// profile. Nothing else supplies either.
     Profile(String),
 }
 
@@ -73,34 +114,58 @@ impl fmt::Debug for LmToken {
     }
 }
 
-/// Obtain the token for one turn from `source`.
+/// The endpoint and the optional token for one turn, from one source.
+///
+/// `Debug` prints the endpoint, which is not secret, and the token's fixed
+/// redaction. The type has no `Serialize`.
+#[derive(Debug)]
+pub struct LocalConnection {
+    /// The endpoint every request of this turn uses.
+    pub endpoint: String,
+    /// The optional server token, zeroed on drop.
+    pub token: Option<LmToken>,
+}
+
+/// Obtain the endpoint and token for one turn from `source`.
 ///
 /// `data_root` locates the settings store and the credential store; it is not
-/// read for [`TokenSource::Environment`]. A `none` profile gives `Ok(None)`.
+/// read for [`ConnectionSource::Environment`]. A `none` profile gives its
+/// endpoint and no token.
 ///
 /// # Errors
 ///
-/// [`TokenSource::Environment`] fails exactly as [`read_lm_token`] does.
-/// [`TokenSource::Profile`] fails with a `credential` error when no settings
-/// store exists, when another process holds it (no retry here), when core
-/// refuses the profile, when the native store fails, or when the stored secret
-/// is not non-empty UTF-8 text. The message begins with a stable cause code.
-pub fn resolve_lm_token(
+/// [`ConnectionSource::Environment`] fails exactly as [`read_lm_token`] does.
+/// [`ConnectionSource::Profile`] fails with a `credential` error when no
+/// settings store exists, when another process holds it (no retry here), when
+/// core refuses the profile (including `endpoint_not_recorded`), when the
+/// native store fails, or when the stored secret is not non-empty UTF-8 text.
+/// The message begins with a stable cause code.
+pub fn resolve_local_connection(
     data_root: &Path,
-    source: &TokenSource,
-) -> Result<Option<LmToken>, AppError> {
+    source: &ConnectionSource,
+) -> Result<LocalConnection, AppError> {
     match source {
-        TokenSource::Environment => Ok(read_lm_token()?.map(LmToken::new)),
-        TokenSource::Profile(name) => match load_profile_secret(data_root, name)? {
-            Some(secret) => token_from_secret(&secret).map(Some),
-            None => Ok(None),
-        },
+        ConnectionSource::Environment { endpoint } => Ok(LocalConnection {
+            endpoint: endpoint.clone(),
+            token: read_lm_token()?.map(LmToken::new),
+        }),
+        ConnectionSource::Profile(name) => {
+            let (endpoint, secret) = load_profile_connection(data_root, name)?;
+            let token = match secret {
+                Some(secret) => Some(token_from_secret(&secret)?),
+                None => None,
+            };
+            Ok(LocalConnection { endpoint, token })
+        }
     }
 }
 
-/// Load the profile's secret while the settings store is open, then close both
-/// stores.
-fn load_profile_secret(data_root: &Path, name: &str) -> Result<Option<Secret>, AppError> {
+/// Load the profile's endpoint and secret while the settings store is open,
+/// then close both stores.
+fn load_profile_connection(
+    data_root: &Path,
+    name: &str,
+) -> Result<(String, Option<Secret>), AppError> {
     let control = match ControlStore::open_existing(data_root) {
         Ok(Some(control)) => control,
         Ok(None) => {
@@ -121,10 +186,15 @@ fn load_profile_secret(data_root: &Path, name: &str) -> Result<Option<Secret>, A
     };
     // Every refusal and the `none` profile are decided here, with no native
     // store access, so they report their own cause on any host.
-    match control.provider_credential_binding(name, ProviderKind::LmStudio) {
-        Ok(None) => return Ok(None),
-        Ok(Some(_)) => {}
+    let keyless_endpoint = match control.provider_credential_binding(name, ProviderKind::LmStudio) {
+        Ok(connection) if connection.binding().is_none() => {
+            Some(connection.endpoint().as_str().to_owned())
+        }
+        Ok(_) => None,
         Err(error) => return Err(credential_error(format!("{}: {error}", error.code()))),
+    };
+    if let Some(endpoint) = keyless_endpoint {
+        return Ok((endpoint, None));
     }
     // The settings store stays open across the load, so a rotation cannot
     // delete the item between the binding lookup and the read. The native
@@ -139,7 +209,9 @@ fn load_profile_secret(data_root: &Path, name: &str) -> Result<Option<Secret>, A
         control.load_provider_credential(&credentials, name, ProviderKind::LmStudio)
     };
     drop(control);
-    loaded.map_err(|error| credential_error(format!("{}: {error}", error.code())))
+    loaded
+        .map(LoadedProviderConnection::into_parts)
+        .map_err(|error| credential_error(format!("{}: {error}", error.code())))
 }
 
 /// Convert a stored secret without an intermediate un-zeroed copy.
@@ -173,6 +245,13 @@ mod tests {
         assert_eq!(token.expose(), "fake-token-value");
         assert_eq!(format!("{token:?}"), "LmToken(<redacted>)");
         assert_eq!(format!("{token:#?}"), "LmToken(<redacted>)");
+        let connection = LocalConnection {
+            endpoint: "http://127.0.0.1:1234/v1".to_owned(),
+            token: Some(token),
+        };
+        let printed = format!("{connection:?}");
+        assert!(!printed.contains("fake-token-value"), "{printed}");
+        assert!(printed.contains("http://127.0.0.1:1234/v1"), "{printed}");
     }
 
     #[test]
@@ -192,5 +271,23 @@ mod tests {
     fn a_profile_source_has_plain_debug_output() {
         let source = TokenSource::Profile("lms".to_owned());
         assert_eq!(format!("{source:?}"), "Profile(\"lms\")");
+        let source = ConnectionSource::Profile("lms".to_owned());
+        assert_eq!(format!("{source:?}"), "Profile(\"lms\")");
+    }
+
+    /// A profile source never takes the launch endpoint, so no endpoint from
+    /// elsewhere can sit beside a selected profile.
+    #[test]
+    fn a_profile_token_source_ignores_the_launch_endpoint() {
+        assert_eq!(
+            TokenSource::Environment.connection("http://127.0.0.1:1/v1"),
+            ConnectionSource::Environment {
+                endpoint: "http://127.0.0.1:1/v1".to_owned()
+            }
+        );
+        assert_eq!(
+            TokenSource::Profile("lms".to_owned()).connection("http://127.0.0.1:1/v1"),
+            ConnectionSource::Profile("lms".to_owned())
+        );
     }
 }

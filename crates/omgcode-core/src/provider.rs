@@ -375,7 +375,11 @@ const fn model_error(error: ProviderError) -> ModelError {
 }
 
 /// Reject destinations which could redirect prompts or credentials off loopback.
-fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
+///
+/// This is the one implementation of the local endpoint rule. The client
+/// applies it to every request configuration, and a provider profile applies
+/// it before it records an endpoint (ADR-0048), so the two cannot disagree.
+pub(crate) fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
     if base_url.chars().any(char::is_control) || !base_url.starts_with("http://") {
         return Err(ProviderError::InvalidConfiguration);
     }
@@ -660,10 +664,53 @@ fn parse_usage(value: &Value) -> Result<Usage, ProviderError> {
     })
 }
 
+/// Destinations the endpoint rule refuses. The provider profile tests use the
+/// same list, so the rule is proved to be shared.
+#[cfg(test)]
+pub(crate) const REFUSED_ENDPOINTS: &[&str] = &[
+    "http://localhost:1234/v1",
+    "http://192.0.2.1:1234/v1",
+    "https://127.0.0.1:1234/v1",
+    "http://127.0.0.1/v1",
+    "http://127.0.0.1:0/v1",
+    "http://127.0.0.1:1234/v1/other",
+    "http://user@127.0.0.1:1234/v1",
+    "http://127.0.0.1:1234/v1?query=1",
+    "http://127.0.0.1:1234/v1#fragment",
+    "http://127.0.0.1:1234/v1\u{7}",
+    "",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// The client refuses every listed destination; the profile record tests
+    /// run the same list through `validate_base_url`'s other caller.
+    #[test]
+    fn the_client_refuses_every_listed_endpoint() {
+        for base_url in REFUSED_ENDPOINTS {
+            let result = LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: (*base_url).to_owned(),
+                    model: "m".to_owned(),
+                    context_tokens: 4096,
+                    max_output_tokens: 64,
+                },
+                None,
+            );
+            assert_eq!(
+                result.err(),
+                Some(ProviderError::InvalidConfiguration),
+                "{base_url:?}"
+            );
+            assert!(validate_base_url(base_url).is_err(), "{base_url:?}");
+        }
+        assert!(validate_base_url("http://127.0.0.1:1234/v1").is_ok());
+        assert!(validate_base_url("http://[::1]:1234/v1/").is_ok());
+    }
+
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;

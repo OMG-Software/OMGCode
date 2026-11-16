@@ -28,7 +28,10 @@ pub use omgcode_platform::credentials::{
     MAX_SECRET_BYTES, Secret, probe as probe_credential_store,
 };
 
-use super::{Action, ControlError, ControlSnapshot, ControlStore, ProviderAuth, ProviderKind};
+use super::{
+    Action, ControlError, ControlSnapshot, ControlStore, ProviderAuth, ProviderEndpoint,
+    ProviderKind,
+};
 
 /// One recorded credential binding: an opaque identifier and its backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,6 +194,62 @@ pub struct ProviderProfileRemoval {
     pub credential: Option<CredentialBinding>,
 }
 
+/// The decision for one selected provider profile: the endpoint it must use
+/// and the binding it would read, if any. It borrows the control store, so it
+/// cannot outlive the store that decided it. It holds no secret.
+#[derive(Clone, Copy, Debug)]
+pub struct ProviderConnection<'a> {
+    endpoint: &'a ProviderEndpoint,
+    binding: Option<&'a CredentialBinding>,
+}
+
+impl<'a> ProviderConnection<'a> {
+    /// The profile's recorded endpoint. Nothing else may supply one.
+    pub const fn endpoint(&self) -> &'a ProviderEndpoint {
+        self.endpoint
+    }
+
+    /// The bound credential, or `None` for an authentication mode that uses
+    /// none (`none`).
+    pub const fn binding(&self) -> Option<&'a CredentialBinding> {
+        self.binding
+    }
+}
+
+/// A selected profile's endpoint and, for `api_key`, its secret, read from
+/// one decision. The secret zeroes itself on drop and `Debug` redacts it.
+pub struct LoadedProviderConnection {
+    endpoint: String,
+    secret: Option<Secret>,
+}
+
+impl LoadedProviderConnection {
+    /// The profile's recorded endpoint, exactly as validated.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// The loaded secret, if the profile uses one.
+    pub const fn secret(&self) -> Option<&Secret> {
+        self.secret.as_ref()
+    }
+
+    /// Take the endpoint and secret apart.
+    pub fn into_parts(self) -> (String, Option<Secret>) {
+        (self.endpoint, self.secret)
+    }
+}
+
+impl std::fmt::Debug for LoadedProviderConnection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoadedProviderConnection")
+            .field("endpoint", &self.endpoint)
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 /// A refusal or failure to read a bound provider credential for use.
 ///
 /// Every variant has a stable machine code ([`Self::code`]). No message
@@ -222,6 +281,16 @@ pub enum ProviderCredentialUseError {
         expected: ProviderKind,
         /// The provider kind the profile records.
         actual: ProviderKind,
+    },
+    /// The profile records no endpoint, so a selected profile has nowhere to
+    /// send a request. This applies to every authentication mode, and the
+    /// profile's endpoint cannot be set later (ADR-0048).
+    #[error(
+        "provider profile {profile} has no recorded endpoint; remove it and add it again with an endpoint"
+    )]
+    EndpointNotRecorded {
+        /// The profile name as recorded.
+        profile: String,
     },
     /// The profile authenticates by subscription, which no adapter supports.
     #[error("provider profile {profile} uses subscription authentication, which is not supported")]
@@ -275,6 +344,7 @@ impl ProviderCredentialUseError {
             Self::Settings(_) => "settings_unusable",
             Self::UnknownProfile { .. } => "unknown_profile",
             Self::WrongProvider { .. } => "wrong_provider",
+            Self::EndpointNotRecorded { .. } => "endpoint_not_recorded",
             Self::SubscriptionUnsupported { .. } => "subscription_unsupported",
             Self::NotBound { .. } => "not_bound",
             Self::OtherBackend { .. } => "other_backend",
@@ -447,22 +517,26 @@ impl ControlStore {
         })
     }
 
-    /// Decide whether the named profile may supply a credential to one
-    /// provider adapter, and which binding it would use. This takes no
-    /// [`CredentialStore`], so it cannot touch native storage.
+    /// Decide whether the named profile may be used by one provider adapter,
+    /// and return the endpoint it must use with the binding it would read.
+    /// This takes no [`CredentialStore`], so it cannot touch native storage.
     ///
     /// The checks run in this order:
     ///
     /// 1. the store is healthy and the profile exists;
     /// 2. the profile's kind equals `adapter`, so a key recorded for another
     ///    provider is never read for this one;
-    /// 3. the authentication mode: `none` returns `Ok(None)` (no credential by
+    /// 3. the profile records an endpoint, whatever its authentication mode
+    ///    ([`ProviderCredentialUseError::EndpointNotRecorded`]);
+    /// 4. the authentication mode: `none` yields no binding (no credential by
     ///    design), `subscription` is refused, and `api_key` continues;
-    /// 4. a credential is bound (an `api_key` profile without one is an error,
-    ///    never `Ok(None)`).
+    /// 5. a credential is bound (an `api_key` profile without one is an error,
+    ///    never a connection without a binding).
     ///
-    /// A caller that gets `Ok(None)` needs no native store at all. It records
-    /// nothing and does not change the revision.
+    /// The endpoint and the binding come from the same profile in one call, so
+    /// a caller cannot pair a credential with a destination from elsewhere. A
+    /// caller whose connection has no binding needs no native store at all. It
+    /// records nothing and does not change the revision.
     ///
     /// # Errors
     ///
@@ -471,7 +545,7 @@ impl ControlStore {
         &self,
         name: &str,
         adapter: ProviderKind,
-    ) -> Result<Option<&CredentialBinding>, ProviderCredentialUseError> {
+    ) -> Result<ProviderConnection<'_>, ProviderCredentialUseError> {
         self.ensure_healthy()
             .map_err(ProviderCredentialUseError::Settings)?;
         let status = self.provider_profile(name).ok_or_else(|| {
@@ -487,8 +561,19 @@ impl ControlStore {
                 actual: profile.kind(),
             });
         }
+        let endpoint =
+            profile
+                .endpoint()
+                .ok_or_else(|| ProviderCredentialUseError::EndpointNotRecorded {
+                    profile: profile.name().to_owned(),
+                })?;
         match profile.auth() {
-            ProviderAuth::None => return Ok(None),
+            ProviderAuth::None => {
+                return Ok(ProviderConnection {
+                    endpoint,
+                    binding: None,
+                });
+            }
             ProviderAuth::Subscription => {
                 return Err(ProviderCredentialUseError::SubscriptionUnsupported {
                     profile: profile.name().to_owned(),
@@ -496,22 +581,27 @@ impl ControlStore {
             }
             ProviderAuth::ApiKey => {}
         }
-        status
+        let binding = status
             .credential()
-            .map(Some)
             .ok_or_else(|| ProviderCredentialUseError::NotBound {
                 profile: profile.name().to_owned(),
-            })
+            })?;
+        Ok(ProviderConnection {
+            endpoint,
+            binding: Some(binding),
+        })
     }
 
-    /// Read the credential of the named profile for one provider adapter.
+    /// Read the connection of the named profile for one provider adapter: its
+    /// recorded endpoint and, for an `api_key` profile, its credential.
     ///
-    /// It runs [`Self::provider_credential_binding`] (checks 1 to 4), then:
+    /// It runs [`Self::provider_credential_binding`] (checks 1 to 5), then:
     ///
-    /// 5. the binding's backend is the one `credentials` opened.
+    /// 6. the binding's backend is the one `credentials` opened.
     ///
     /// Only then does it call [`CredentialStore::load`]. Every refusal comes
-    /// before any native store access; a `none` profile returns `Ok(None)`.
+    /// before any native store access; a `none` profile returns its endpoint
+    /// and no secret, and its caller needs no native store.
     ///
     /// A read records nothing: it appends no journal event and does not change
     /// the revision. The caller must keep this `ControlStore` open across the
@@ -527,9 +617,14 @@ impl ControlStore {
         credentials: &CredentialStore,
         name: &str,
         adapter: ProviderKind,
-    ) -> Result<Option<Secret>, ProviderCredentialUseError> {
-        let Some(binding) = self.provider_credential_binding(name, adapter)? else {
-            return Ok(None);
+    ) -> Result<LoadedProviderConnection, ProviderCredentialUseError> {
+        let connection = self.provider_credential_binding(name, adapter)?;
+        let endpoint = connection.endpoint.as_str().to_owned();
+        let Some(binding) = connection.binding else {
+            return Ok(LoadedProviderConnection {
+                endpoint,
+                secret: None,
+            });
         };
         // The binding exists, so the profile does; its recorded spelling names it.
         let profile = self.provider_profile(name).map_or_else(
@@ -544,12 +639,17 @@ impl ControlStore {
                 current: credentials.backend(),
             });
         }
-        credentials.load(binding.id()).map(Some).map_err(|error| {
-            ProviderCredentialUseError::Store {
-                profile,
-                credential_id: binding.id().clone(),
-                error,
-            }
+        let secret =
+            credentials
+                .load(binding.id())
+                .map_err(|error| ProviderCredentialUseError::Store {
+                    profile,
+                    credential_id: binding.id().clone(),
+                    error,
+                })?;
+        Ok(LoadedProviderConnection {
+            endpoint,
+            secret: Some(secret),
         })
     }
 

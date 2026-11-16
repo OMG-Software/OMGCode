@@ -27,8 +27,19 @@ impl Vault {
         }
     }
 
-    /// Record a provider profile.
+    /// Record a provider profile with no endpoint, as one recorded before
+    /// endpoints existed. A selected profile needs an endpoint, so most tests
+    /// use [`Vault::add_profile_at`].
     pub fn add_profile(&self, name: &str, kind: &str, auth: &str) {
+        self.add(name, kind, auth, None);
+    }
+
+    /// Record a provider profile that names its endpoint.
+    pub fn add_profile_at(&self, name: &str, kind: &str, auth: &str, endpoint: &str) {
+        self.add(name, kind, auth, Some(endpoint));
+    }
+
+    fn add(&self, name: &str, kind: &str, auth: &str, endpoint: Option<&str>) {
         let mut control = ControlStore::open(&self.data).expect("settings store");
         let revision = control.revision();
         control
@@ -37,6 +48,7 @@ impl Vault {
                     name: name.into(),
                     kind: kind.into(),
                     auth: auth.into(),
+                    endpoint: endpoint.map(str::to_owned),
                 },
                 revision,
             )
@@ -59,6 +71,21 @@ impl Vault {
         let id = set.binding.id().clone();
         self.created.push(id.clone());
         id
+    }
+
+    /// Remove a profile and its credential, as `provider-profile-remove` does.
+    pub fn remove_profile(&self, name: &str) {
+        let mut control = ControlStore::open(&self.data).expect("settings store");
+        let revision = control.revision();
+        let removal = control
+            .remove_provider_profile(name, revision)
+            .expect("remove profile");
+        if let Some(binding) = removal.credential {
+            let credentials = CredentialStore::open(&self.data).expect("native credential store");
+            credentials
+                .delete(binding.id())
+                .expect("delete the item this test created");
+        }
     }
 
     /// Delete a native item while its binding stays recorded.

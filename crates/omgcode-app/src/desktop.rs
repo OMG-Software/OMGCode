@@ -16,7 +16,7 @@
 //!   display text, which is escaped by core's `display_safe_line`.
 //! - It never returns, stores in a response, or logs the local server token.
 //!   The token is resolved for one turn from the operator-chosen
-//!   [`TokenSource] (the environment, or a provider profile's stored
+//!   [`TokenSource`] (the environment, or a provider profile's stored
 //!   credential, ADR-0047), held in a zeroing type with a redacted `Debug`,
 //!   removed from every recorded and returned message, and dropped when the
 //!   turn thread ends. Nothing is cached between turns. The interface cannot
@@ -104,7 +104,7 @@ pub use self::wire::{
     ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
     WorkspaceChoice, WorkspaceGroup, WorkspaceList,
 };
-use crate::{AppError, LmToken, TokenSource, resolve_lm_token};
+use crate::{AppError, ErrorKind, LmToken, LocalConnection, TokenSource, resolve_local_connection};
 
 /// Fixed settings of one desktop process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,9 +113,13 @@ pub struct DesktopConfig {
     /// interface.
     pub data_root: PathBuf,
     /// The chat endpoint, fixed for the process lifetime. A chat request whose
-    /// endpoint differs byte-for-byte is refused.
+    /// endpoint differs byte-for-byte is refused. With a profile token source
+    /// it is the profile's recorded endpoint, resolved once at launch; each
+    /// turn resolves the profile again and refuses the turn with
+    /// `endpoint_changed` when the profile's endpoint no longer equals it.
     pub endpoint: String,
-    /// Where each chat turn gets the optional local server token. It is fixed
+    /// Where each chat turn gets the optional local server token (and, for a
+    /// profile, the endpoint it must still equal). It is fixed
     /// for the process lifetime and never comes from the interface.
     pub token_source: TokenSource,
 }
@@ -124,25 +128,49 @@ pub struct DesktopConfig {
 /// process environment and the credential store.
 ///
 /// [`DesktopService::open`] resolves `DesktopConfig::token_source` with
-/// [`resolve_lm_token`]; [`DesktopService::open_with_token_source`] uses this
+/// [`resolve_local_connection`]; [`DesktopService::open_with_token_source`] uses this
 /// function instead and ignores the configured source.
 pub type InjectedTokenFn = fn() -> Result<Option<String>, AppError>;
 
 /// How a turn obtains its token.
 #[derive(Clone)]
 enum TokenResolver {
-    /// The production path: [`resolve_lm_token`].
+    /// The production path: [`resolve_local_connection`].
     Source(TokenSource),
     /// A test or embedder supplier.
     Injected(InjectedTokenFn),
 }
 
 impl TokenResolver {
-    /// Resolve the token for one turn. Nothing is retained.
-    fn resolve(&self, data_root: &Path) -> Result<Option<LmToken>, AppError> {
+    /// Resolve the endpoint and token for one turn. Nothing is retained.
+    ///
+    /// `launch_endpoint` is the endpoint this process was started with. An
+    /// environment or injected source uses it. A profile source takes the
+    /// profile's recorded endpoint instead, which must still equal the launch
+    /// endpoint: a profile removed and added again with another endpoint while
+    /// the process ran is refused with `endpoint_changed` (ADR-0048), because
+    /// the webview and the window show the launch value.
+    fn resolve(
+        &self,
+        data_root: &Path,
+        launch_endpoint: &str,
+    ) -> Result<LocalConnection, AppError> {
         match self {
-            Self::Source(source) => resolve_lm_token(data_root, source),
-            Self::Injected(supplier) => Ok(supplier()?.map(LmToken::new)),
+            Self::Source(source) => {
+                let connection =
+                    resolve_local_connection(data_root, &source.connection(launch_endpoint))?;
+                if connection.endpoint != launch_endpoint {
+                    return Err(AppError::new(
+                        ErrorKind::Credential,
+                        "endpoint_changed: the provider profile's endpoint changed since launch; restart the application",
+                    ));
+                }
+                Ok(connection)
+            }
+            Self::Injected(supplier) => Ok(LocalConnection {
+                endpoint: launch_endpoint.to_owned(),
+                token: supplier()?.map(LmToken::new),
+            }),
         }
     }
 }

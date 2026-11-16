@@ -1,7 +1,12 @@
 # 0047: Read the local provider token from the credential store
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0048](0048-bind-a-stored-credential-to-its-profile-endpoint.md)
 - Date: 2026-11-16
+
+ADR-0048 requires a selected profile to record an endpoint and makes that
+endpoint the only one the adapter uses. The statements below that describe an
+endpoint chosen on the command line beside a profile no longer hold.
 
 ## Context
 

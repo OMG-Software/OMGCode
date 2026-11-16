@@ -350,6 +350,15 @@ crate.
 - The operator chooses the credential source outside the webview and the model
   (a command-line argument or trusted setting). Do not combine two credential
   sources for one request.
+- Send a stored credential only to the endpoint recorded with its profile. Do
+  not edit a recorded endpoint in place; replacing it means removing the
+  profile, which removes the credential.
+- Validate an endpoint with one core rule, both when it is recorded and when
+  it is used, so a journal cannot introduce an endpoint the command would
+  refuse. A provider kind with no adapter accepts no endpoint.
+- An adapter takes its endpoint and its credential decision from one core
+  result. Do not take the endpoint from one place and the credential from
+  another, and do not accept an endpoint argument beside a selected profile.
 - Review secret-bearing types for accidental `Debug`, serialization, cloning,
   and long retention. Use reviewed secret-handling libraries where needed;
   do not claim that dropping an ordinary string erases its memory.

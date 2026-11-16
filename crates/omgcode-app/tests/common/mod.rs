@@ -278,6 +278,34 @@ pub fn tool_call(id: &str, name: &str, arguments: &Value) -> Value {
     })
 }
 
+/// A loopback listener that must never be contacted. A connection attempt
+/// waits in the listen backlog, so [`NoCallServer::assert_untouched`] sees it
+/// even when it arrived earlier.
+pub struct NoCallServer {
+    pub endpoint: String,
+    listener: TcpListener,
+}
+
+impl NoCallServer {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind no-call server");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let address = listener.local_addr().expect("no-call address");
+        Self {
+            endpoint: format!("http://{address}/v1"),
+            listener,
+        }
+    }
+
+    /// Fail unless nothing connected.
+    pub fn assert_untouched(self) {
+        match self.listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("the no-call server was contacted: {other:?}"),
+        }
+    }
+}
+
 /// An endpoint nothing listens on.
 pub fn unused_endpoint() -> String {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");

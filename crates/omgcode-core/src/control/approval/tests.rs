@@ -193,6 +193,7 @@ fn binding_and_settings_changes_refuse_consumption() {
                 name: "work".into(),
                 kind: "openai".into(),
                 auth: "api_key".into(),
+                endpoint: None,
             },
             store.revision(),
         )

@@ -11,8 +11,8 @@ use uuid::Uuid;
 mod common;
 use common::credential::Vault;
 use common::{
-    Fixture, MockServer, Step, session_request, settings_json, text, text_of, text_only,
-    unused_endpoint, wait_finished, wire,
+    Fixture, MockServer, NoCallServer, Step, session_request, settings_json, text, text_of,
+    text_only, unused_endpoint, wait_finished, wire,
 };
 
 const STORED: &str = "fake-desktop-token-27ad90e1";
@@ -54,12 +54,12 @@ fn each_turn_reads_the_stored_credential_so_a_rotation_applies_to_the_next_turn(
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
-    vault.bind("lms", STORED.as_bytes());
     let server = MockServer::start(vec![
         Step::reply(text("first")),
         Step::reply(text("second")),
     ]);
+    vault.add_profile_at("lms", "lm_studio", "api_key", &server.endpoint);
+    vault.bind("lms", STORED.as_bytes());
     let service = service(&fixture, &server.endpoint, "lms");
     let session = new_session(&service, workspace.id);
 
@@ -104,10 +104,10 @@ fn an_unreadable_credential_is_a_synchronous_credential_error_and_no_turn_starts
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let mut vault = Vault::new(&fixture.data);
-    vault.add_profile("lms", "lm_studio", "api_key");
-    let id = vault.bind("lms", STORED.as_bytes());
     // Nothing listens: a request would fail as `provider`, not `credential`.
     let endpoint = unused_endpoint();
+    vault.add_profile_at("lms", "lm_studio", "api_key", &endpoint);
+    let id = vault.bind("lms", STORED.as_bytes());
     let service = service(&fixture, &endpoint, "lms");
     let session = new_session(&service, workspace.id);
 
@@ -140,9 +140,9 @@ fn an_unknown_wrong_provider_or_unbound_profile_is_refused_before_a_turn() {
     let workspace = fixture.workspace("project", text_only());
     let mut vault = Vault::new(&fixture.data);
     vault.add_profile("openai-key", "openai", "api_key");
-    vault.add_profile("unbound", "lm_studio", "api_key");
-    vault.bind("openai-key", STORED.as_bytes());
     let endpoint = unused_endpoint();
+    vault.add_profile_at("unbound", "lm_studio", "api_key", &endpoint);
+    vault.bind("openai-key", STORED.as_bytes());
     for (name, expected) in [
         ("missing", "unknown_profile:"),
         ("openai-key", "wrong_provider:"),
@@ -162,8 +162,8 @@ fn a_keyless_profile_sends_no_authorization_header() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let vault = Vault::new(&fixture.data);
-    vault.add_profile("open", "lm_studio", "none");
     let server = MockServer::start(vec![Step::reply(text("ok"))]);
+    vault.add_profile_at("open", "lm_studio", "none", &server.endpoint);
     let service = service(&fixture, &server.endpoint, "open");
     let session = new_session(&service, workspace.id);
     send(&service, session, "hello", &server.endpoint).expect("turn");
@@ -171,4 +171,87 @@ fn a_keyless_profile_sends_no_authorization_header() {
     assert!(matches!(done.state, ChatState::Completed), "{done:?}");
     let (_, requests) = server.finish_recorded();
     assert_eq!(requests[0].header("authorization"), None);
+}
+
+#[test]
+fn a_profile_without_an_endpoint_is_refused_before_a_turn() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile("old-none", "lm_studio", "none");
+    vault.add_profile("old-key", "lm_studio", "api_key");
+    vault.bind("old-key", STORED.as_bytes());
+    let endpoint = unused_endpoint();
+    for name in ["old-none", "old-key"] {
+        let service = service(&fixture, &endpoint, name);
+        let session = new_session(&service, workspace.id);
+        let error = send(&service, session, "hello", &endpoint).expect_err("refused");
+        assert_eq!(error.code(), "credential", "{name}");
+        assert!(
+            error.message().starts_with("endpoint_not_recorded:"),
+            "{}",
+            error.message()
+        );
+        assert!(!text_of(&error).contains(STORED));
+    }
+}
+
+/// The service's fixed endpoint is the profile's, and a profile removed and
+/// added again with another endpoint while the service runs ends the next turn
+/// synchronously: no thread starts and neither listener is contacted.
+#[test]
+fn a_profile_replaced_with_another_endpoint_refuses_the_next_turn() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let mut vault = Vault::new(&fixture.data);
+    let server = MockServer::start(vec![Step::reply(text("first"))]);
+    let replacement = NoCallServer::start();
+    vault.add_profile_at("lms", "lm_studio", "api_key", &server.endpoint);
+    vault.bind("lms", STORED.as_bytes());
+    // What the shell would resolve once at launch and fix for the process.
+    let launch = omgcode_app::resolve_local_connection(
+        &fixture.data,
+        &omgcode_app::ConnectionSource::Profile("lms".to_owned()),
+    )
+    .expect("the launch check");
+    assert_eq!(launch.endpoint, server.endpoint);
+    let service = service(&fixture, &launch.endpoint, "lms");
+    assert_eq!(service.chat_defaults().endpoint, server.endpoint);
+    let session = new_session(&service, workspace.id);
+
+    send(&service, session, "hello", &launch.endpoint).expect("first turn");
+    let done = wait_finished(&service, session);
+    assert!(matches!(done.state, ChatState::Completed), "{done:?}");
+
+    // Replace the profile through the settings API: same name, new endpoint.
+    vault.remove_profile("lms");
+    vault.add_profile_at("lms", "lm_studio", "api_key", &replacement.endpoint);
+    vault.bind("lms", ROTATED.as_bytes());
+
+    let error = send(&service, session, "again", &launch.endpoint).expect_err("refused");
+    assert_eq!(error.code(), "credential");
+    assert!(
+        error.message().starts_with("endpoint_changed:"),
+        "{}",
+        error.message()
+    );
+    assert!(error.message().contains("restart"), "{}", error.message());
+    let rendered = text_of(&error);
+    assert!(!rendered.contains(STORED) && !rendered.contains(ROTATED));
+
+    // No thread started: the finished slot of the first turn is untouched, and
+    // the interface still shows the launch endpoint.
+    let status = service
+        .chat_status(wire(session_request(session)))
+        .expect("status");
+    assert!(matches!(status.state, ChatState::Completed), "{status:?}");
+    assert_eq!(service.chat_defaults().endpoint, server.endpoint);
+
+    let (served, requests) = server.finish_recorded();
+    assert_eq!(served, 1, "only the first turn reached the launch endpoint");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {STORED}"))
+    );
+    replacement.assert_untouched();
 }

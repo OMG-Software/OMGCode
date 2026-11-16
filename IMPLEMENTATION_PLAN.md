@@ -86,6 +86,11 @@ This is a resume guide, not a replacement for the owning contracts in
   **0.30.0**, which lets the local LM Studio adapter read its token from a
   stored credential through an operator-selected profile (ADR-0047). It is
   **not merged and has no pull request**.
+- Same branch, after the Phase D2 commit `b9f7d11`: **Phase D3**, version
+  **0.31.0**, which binds a stored credential to its profile's endpoint
+  (ADR-0048). A profile can record a loopback endpoint, and a selected profile
+  supplies both the endpoint and the token. It is **not merged and has no pull
+  request**.
 
 Implemented today:
 
@@ -189,7 +194,9 @@ Implemented today:
   binds a new opaque identifier to an `api_key` profile in the control
   journal; `provider-credential-remove` and `provider-profile-remove` unbind
   and then delete the native item. Only the local LM Studio adapter reads a
-  stored credential, through a selected `lm_studio` profile (ADR-0047). No
+  stored credential, through a selected `lm_studio` profile (ADR-0047). An
+  `lm_studio` profile can record one endpoint, fixed for its life, and a
+  selected profile supplies both the endpoint and the token (ADR-0048). No
   cloud adapter exists.
 - The `workspace_run_command` model tool (ADR-0040) is offered only with live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
@@ -225,8 +232,9 @@ Not implemented:
   Linux run of the desktop shell's windows. The prototype shell, session tree,
   search, chat, and approvals window exist on the Phase E branch only.
 - Cloud provider adapters and subscription/API-key login. Only the local LM
-  Studio adapter reads a stored credential, and it is bound to a provider kind,
-  not to an endpoint.
+  Studio adapter reads a stored credential, and only at the loopback endpoint
+  recorded with its profile. No endpoint rule exists for a non-loopback
+  provider, HTTPS, or certificates.
 - Subscription token storage, token refresh, account lifecycle, and a
   memory-only session credential.
 
@@ -361,6 +369,35 @@ the other.
   `omgcode-desktop`, and the shell starting with a valid profile. It was done
   before the profile checks were moved ahead of the native store open and was
   not repeated afterwards; the automated tests cover the final order.
+- Not run: a chat turn with a stored credential through the real shell's
+  windows, on either platform.
+
+Phase D3 final verification on 2026-11-16 used Rust 1.99.1, default test
+parallelism, and `--no-fail-fast`, with the Windows and Linux runs one after
+the other.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, all-target tests, and doc tests
+  each exited zero. 839 tests in 40 test binaries and one doc test passed.
+  None failed. The same eight were ignored. The run took about two minutes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `b9f7d11` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): the same four commands each exited zero. 831 tests in 40 test
+  binaries and one doc test passed, not counting five nested result lines from
+  the platform suite's `systemd-run` re-runs. None failed. Eight were ignored.
+  The new `launch_flags` suite ran the real desktop binary there: both flags
+  together exited 2, and a profile with no settings store exited 1 and
+  created nothing, each before any window.
+- No command failed or timed out in these two final runs.
+- The frontend did not change in D3, so its commands were not rerun.
+- A manual run with the real binaries on Windows used two mock local servers.
+  The stored token arrived only at the endpoint the profile records while a
+  different `OMGCODE_LM_TOKEN` value was set. `--endpoint` beside
+  `--provider-profile` was a usage error with exit 2 and no request, for both
+  `omgcode chat` and `omgcode-desktop`. The shell started with a valid profile
+  and reported the profile's endpoint. The first attempt at the shell check
+  attached to another application that already held the WebView2 debugging
+  port; it was repeated on a free port.
 - Not run: a chat turn with a stored credential through the real shell's
   windows, on either platform.
 
@@ -707,7 +744,8 @@ on Windows, and trusted CLI commands as the first caller. See
   [ADR-0037](docs/adr/0037-use-a-per-workspace-cache-root-and-a-scoped-windows-grant.md).
 - **C13 (merged in PR #30, version 0.24.0):** provider-profile records and trusted
   per-call approval records. Profiles store only a name, kind, and
-  authentication mode; no credential, endpoint, adapter, or login exists.
+  authentication mode; no credential, endpoint, adapter, or login exists at
+  this version (0.31.0 later lets an `lm_studio` profile record an endpoint).
   Approvals are bound, expiring, single-use records; the first consumer is the
   command tool in C14. See
   [ADR-0038](docs/adr/0038-record-provider-profiles-without-credentials.md) and
@@ -764,8 +802,9 @@ on Windows, and trusted CLI commands as the first caller. See
 Next decisions, not yet scheduled:
 
 - cloud provider adapters, subscription/API-key login, token refresh, and
-  binding a credential to an endpoint (one adapter, the local LM Studio route,
-  now reads a stored credential);
+  endpoint rules for non-loopback providers, HTTPS, and certificates (one
+  adapter, the local LM Studio route, now reads a stored credential, only at
+  its profile's loopback endpoint);
 - model create, delete, rename, and multi-edit tools, and network, Git, and
   MCP tools;
 - registry credentials and development-server networking.
@@ -812,11 +851,33 @@ login or entitlement route.
   provider clients' header copies are not zeroed. `capabilities` reports
   `stored_credential_adapters: ["lm_studio"]`; `provider_adapters` stays
   `false`.
+- **D3 (version 0.31.0):** the stored credential is bound to its profile's
+  endpoint. See
+  [ADR-0048](docs/adr/0048-bind-a-stored-credential-to-its-profile-endpoint.md).
+  `provider-profile-add --endpoint <url>` records one endpoint on an
+  `lm_studio` profile. It must pass the rule the adapter enforces on every
+  request (plain `http`, a literal loopback IP, a non-zero port, `/v1`, no
+  user information, query, or fragment, at most 256 bytes), through one core
+  implementation that the record and replay also use. Every other kind refuses
+  an endpoint. The endpoint is fixed for the profile's life: to change it,
+  remove the profile (which deletes its credential) and add a new one.
+  `provider_credential_binding` returns the recorded endpoint with the
+  credential decision, and a selected profile with no endpoint fails with
+  `endpoint_not_recorded` before any native store access. `--endpoint` and
+  `--provider-profile` are mutually exclusive in `chat`, `session compact`, and
+  `omgcode-desktop`. The desktop fixes the profile's endpoint at launch and
+  refuses a turn with `endpoint_changed` if a re-added profile records another.
+  The profile record's `endpoint` field is written only when present, so a
+  journal without endpoints keeps its bytes; a journal with one is not
+  readable by 0.30.0 or earlier. A profile recorded before 0.31.0 must be
+  removed and added again. `capabilities` reports
+  `provider_profile_endpoints: true`.
 
 Still open in Phase D: cloud provider adapters, subscription and API-key
 login, token refresh, account lifecycle, a memory-only session credential,
-binding a credential to an endpoint, and streaming. The frontend shows nothing
-about the credential source.
+endpoint rules for non-loopback providers, HTTPS, and certificates, and
+streaming. The frontend shows nothing about the credential source beyond the
+endpoint text it already displayed.
 
 ### Phase E: desktop interface and session tree
 

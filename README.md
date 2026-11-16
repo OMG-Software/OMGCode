@@ -59,7 +59,8 @@ directory grants.
 > them. API keys can be stored in protected OS storage (DPAPI on Windows, the
 > Secret Service on Linux) and bound to a profile. Only the local LM Studio
 > adapter reads one, through an operator-selected `lm_studio` profile
-> (`--provider-profile`); no other adapter reads them. Runs have memory,
+> (`--provider-profile`) that also supplies the endpoint; no other adapter
+> reads them. Runs have memory,
 > process-count, CPU-time, and sampled disk-growth limits; the disk limit is
 > not a filesystem quota. See [command execution](docs/execution.md#tree-limits).
 
@@ -168,9 +169,14 @@ commands (ADR-0042). Only the local LM Studio adapter reads one: with
 `--provider-profile <name>`, `chat` and `session compact` (and the desktop
 shell, at launch) take the server token from the stored credential of that
 `lm_studio` profile and do not read `OMGCODE_LM_TOKEN` (ADR-0047). A
-credential that cannot be read stops the turn. The credential is bound to a
-provider kind, not to an endpoint. Without the flag, the optional local server
-token comes from `OMGCODE_LM_TOKEN`, which remains prototype wiring; it is not
+credential that cannot be read stops the turn. An `lm_studio` profile can
+record one loopback endpoint with `provider-profile-add --endpoint`, and a
+selected profile supplies both its endpoint and its token, so the stored token
+goes only to that endpoint (ADR-0048). `--endpoint` and `--provider-profile`
+cannot be combined. A profile recorded before 0.31.0 has no endpoint and must be
+removed and added again before it can be selected. Without the flag, `--endpoint`
+and its default apply, and the optional local server token comes from
+`OMGCODE_LM_TOKEN`, which remains prototype wiring; it is not
 a release credential boundary. Do not treat the prototype as release-ready or use it to handle
 sensitive credentials.
 
@@ -268,7 +274,7 @@ check the server's configuration before sending sensitive text.
 | Ollama Local | Planned: local Ollama API |
 | Ollama Cloud | Planned: authenticated cloud API |
 | OpenRouter | Planned: explicit upstream routing controls |
-| LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; the optional server token comes from a stored credential of a selected profile or from `OMGCODE_LM_TOKEN`; model discovery, streaming, and release authentication remain unqualified |
+| LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; a selected profile supplies the endpoint and the optional server token from its stored credential, otherwise `--endpoint` and `OMGCODE_LM_TOKEN` apply; model discovery, streaming, and release authentication remain unqualified |
 
 API-key and subscription connections are distinct authentication and billing
 profiles. Subscription-backed usage for both ChatGPT and Claude is required for

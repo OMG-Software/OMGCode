@@ -61,7 +61,12 @@ the user's account, so a test against it must delete only the items it
 created, including after a failed assertion. Tests of stored-credential use
 (0.30.0, [ADR-0047](adr/0047-read-the-local-provider-token-from-the-credential-store.md))
 assert the `Authorization` header that a mock provider received: the stored
-token is the bearer, and a different `OMGCODE_LM_TOKEN` value is ignored. See [workspace permissions](workspace-permissions.md)
+token is the bearer, and a different `OMGCODE_LM_TOKEN` value is ignored. The
+endpoint tests (0.31.0, [ADR-0048](adr/0048-bind-a-stored-credential-to-its-profile-endpoint.md))
+use two mock providers: the token must reach the profile's endpoint, and the
+test asserts that the second provider received nothing. They also assert that a
+control journal with a profile that has no endpoint replays and serializes
+with its exact bytes. See [workspace permissions](workspace-permissions.md)
 and the [workspace file-access contract](file-access.md) for their scope and
 current limits. [Repository review and analysis](repository-checks.md) have
 separate workflows.

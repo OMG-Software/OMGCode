@@ -36,9 +36,10 @@ Linux and Windows; Windows needs a read-execute container grant, and Linux
 falls back to application storage. Provider profiles record connection shapes
 without credentials. Trusted CLI commands can store API keys in protected OS
 storage (DPAPI on Windows, the Secret Service on Linux) and bind them to
-`api_key` profiles. Only the local LM Studio adapter reads one, through an
-operator-selected `lm_studio` profile (ADR-0047); no cloud adapter or login
-exists. Trusted
+`api_key` profiles. An `lm_studio` profile can record a loopback endpoint.
+Only the local LM Studio adapter reads a credential, through an
+operator-selected profile that supplies both the endpoint and the token
+(ADR-0047, ADR-0048); no cloud adapter or login exists. Trusted
 single-use approval records authorize one exact model-tool call: only a later
 identical call may consume an approved record. The trusted CLI or the desktop
 approvals window can decide a record; the window shows a request only when core

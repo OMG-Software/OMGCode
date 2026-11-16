@@ -21,7 +21,7 @@ billing or defer it.
 | Ollama Local | Local service configuration; authentication where configured | Planned; not implemented |
 | Ollama Cloud | Provider cloud credentials | Planned; not implemented |
 | OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
-| LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0); full platform/auth qualification pending |
+| LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
 
 The provider, authentication method, account/workspace, billing mode, and model
 capabilities form one connection profile. Do not infer all of these from a
@@ -49,7 +49,7 @@ The CLI accepts an optional `OMGCODE_LM_TOKEN` in its own process
 environment. The core keeps the resulting authorization header in memory and
 does not add the token to a request manifest. With `--provider-profile` the
 adapter reads the stored credential described below instead, and the variable
-is not read. There is no token settings UI. The variable is a prototype-only
+is not read. The profile also supplies the endpoint (0.31.0). There is no token settings UI. The variable is a prototype-only
 developer input. Task execution
 and task environments do not exist in the prototype; this does not qualify the
 future task-environment credential boundary.
@@ -138,16 +138,44 @@ and an authentication mode. Kinds are `openai`, `anthropic`, `ollama_local`,
 API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio.
 Ollama Local accepts only `none`.
 
-A profile stores no endpoint, account, token, password, certificate, or other
-credential. Since 0.27.0 its status can name a bound credential's opaque
+A profile stores no account, token, password, certificate, or other
+credential. Since 0.31.0 it can record one endpoint (below). An endpoint is not
+a secret. Since 0.27.0 its status can name a bound credential's opaque
 identifier and backend (below). It is configuration only: no login,
 entitlement check, billing mode, or model context uses it. Since 0.30.0 the
 local LM Studio adapter can read a bound credential of an `lm_studio` profile
 that the operator selects (below). `capabilities` reports
 `provider_profiles: true`, `provider_adapters: false`, and
-`stored_credential_adapters: ["lm_studio"]`. Cloud adapters and the
+`stored_credential_adapters: ["lm_studio"]`, and, since 0.31.0,
+`provider_profile_endpoints: true`. Cloud adapters and the
 provider-specific login approvals remain prerequisites for any real
 connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
+
+Since 0.31.0 `provider-profile-add` accepts `--endpoint <url>` (ADR-0048). Only
+an `lm_studio` profile accepts one. It must pass the rule the local adapter
+applies to every request: plain `http`, a literal loopback IP, an explicit
+non-zero port, the path `/v1` or `/v1/`, no user information, query, or
+fragment, and at most 256 bytes. Core has one implementation of that rule, and
+both the provider client and the profile record use it. Replay of the control
+journal applies it again. Every other provider kind refuses an endpoint for
+now, because no adapter defines its rule. The text is stored exactly as given,
+without normalisation. The refusals are `provider profile refused: an
+lm_studio endpoint must be http://<loopback IP>:<port>/v1 with no user
+information, query, or fragment`, `provider profile refused: the provider
+endpoint is longer than 256 bytes`, and `provider profile refused: this
+provider kind does not accept an endpoint yet`.
+
+`provider-profile-show` and `status` print an `endpoint` field only when the
+profile records one. A profile without one prints as before. The endpoint is
+fixed for the profile's life, and no command changes it. To use another
+endpoint, remove the profile and add a new one.
+
+The record's `endpoint` field is written only when present, so a control journal
+without endpoints replays and serializes with its exact bytes. A journal that
+contains an endpoint cannot be read by 0.30.0 or earlier, which reject the
+unknown field. Replay rejects an invalid endpoint, an endpoint on a kind that
+does not accept one, and any unknown field. A hand-edited control journal is
+checked only by this replay validation. It is not tamper-evident.
 
 ## Stored provider credentials (0.27.0)
 
@@ -188,14 +216,17 @@ credential. It is the only adapter that reads one.
   --provider-profile <name>` or `omgcode session compact --provider-profile
   <name>`. `omgcode-desktop --provider-profile <name>` selects it for the whole
   process at launch. The webview cannot choose or see it. With a profile
-  selected, `OMGCODE_LM_TOKEN` is not read. Without one, behaviour is
-  unchanged and the variable remains the prototype input. Two sources are never
-  combined for one request.
+  selected, `OMGCODE_LM_TOKEN` is not read and the endpoint comes from the
+  profile, not from `--endpoint` (see
+  [endpoint binding](#endpoint-binding-0310)). Without one, behaviour is
+  unchanged: `--endpoint` and its default, and the variable as the prototype
+  input. Two sources are never combined for one request.
 - **Core checks.** `ControlStore::provider_credential_binding` takes no
   credential store, so it cannot touch native storage. It refuses an unknown
-  profile, a profile of another provider kind, a `subscription` profile, and
-  an `api_key` profile with no bound credential. A `none` profile yields no
-  token there, so it needs no native store. Only when it returns a binding is
+  profile, a profile of another provider kind, a profile with no recorded
+  endpoint, a `subscription` profile, and an `api_key` profile with no bound
+  credential. A `none` profile yields no token there, so it needs no native
+  store. Only when it returns a binding is
   the native store opened. `ControlStore::load_provider_credential` then
   refuses a binding stored by another backend before it reads any secret. The
   LM Studio adapter passes `lm_studio`, so an OpenAI or Anthropic profile's key
@@ -206,11 +237,12 @@ credential. It is the only adapter that reads one.
   locked Secret Service is an error; OMGCode still never runs a prompt. A
   missing or busy settings store is also a `credential` error, without a cause
   code, and a busy store is refused without a retry. The cause codes are
-  `unknown_profile`, `wrong_provider`, `subscription_unsupported`,
-  `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
+  `unknown_profile`, `wrong_provider`, `endpoint_not_recorded`,
+  `subscription_unsupported`, `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
   `credential_locked`, `credential_unavailable`, `credential_corrupt`,
   `credential_prompt_required`, `credential_io`, `credential_refused`, and
-  `credential_invalid`.
+  `credential_invalid`. The desktop adds `endpoint_changed` (see the next
+  section).
 - **Rotation and lifetime.** The secret is loaded while the settings store is
   held, so a rotation cannot delete the item between the binding lookup and the
   load. The store is released before any network request. The desktop resolves
@@ -224,12 +256,62 @@ credential. It is the only adapter that reads one.
   no serialization for one turn, and the existing redaction of the token from
   recorded and returned text applies to it. The provider clients' request-header
   copies and transport buffers are not zeroed.
-- **Limits.** The credential is bound to a provider kind, not to an endpoint,
-  so a stored LM Studio token is sent to whichever literal loopback endpoint
-  the operator selects. Any process running as the same user can still read the
-  stored credential. A memory-only session credential, a cloud adapter,
-  subscription sign-in, token refresh, and account lifecycle are not
-  implemented. The frontend shows nothing about the credential source.
+- **Limits.** Any process running as the same user can still read the stored
+  credential. A memory-only session credential, a cloud adapter, subscription
+  sign-in, token refresh, and account lifecycle are not implemented. The
+  frontend shows nothing about the credential source beyond the endpoint text
+  it already displayed. Version 0.30.0 bound the credential to a provider kind
+  only; 0.31.0 amends that (next section).
+
+## Endpoint binding (0.31.0)
+
+[ADR-0048](adr/0048-bind-a-stored-credential-to-its-profile-endpoint.md) sends a
+stored credential only to the endpoint recorded with its profile. It amends
+ADR-0047, whose statement that a credential is bound to a provider kind and not
+to an endpoint no longer holds for a usable profile.
+
+- **One source.** A selected profile supplies the endpoint and the token.
+  `ControlStore::provider_credential_binding(name, adapter_kind)` returns the
+  recorded endpoint together with the credential decision, so the two cannot
+  come from different places. It still takes no credential store. It checks, in
+  order: the settings store is usable, the profile exists, its kind matches the
+  adapter, an endpoint is recorded, and then the authentication mode (`none`
+  yields no token, `subscription` is refused, `api_key` must be bound).
+- **No endpoint recorded.** A selected profile with no recorded endpoint is
+  refused in every authentication mode with a `credential` error that starts
+  `endpoint_not_recorded:` and reads `provider profile <name> has no recorded
+  endpoint; remove it and add it again with an endpoint`. The refusal comes
+  before any native store access and before any request.
+- **Exclusive flags.** `--endpoint` and `--provider-profile` together are a
+  usage error with exit status 2 in `omgcode chat`, `omgcode session compact`,
+  and `omgcode-desktop`. The default value of `--endpoint` does not trigger it.
+  There is no case where both are allowed because they are equal.
+- **Immutable endpoint.** No command edits a recorded endpoint. Removing a
+  profile records the unbinding and deletes its credential, so a stored
+  credential cannot be moved to another endpoint.
+- **Desktop.** With a profile, the shell resolves the endpoint once at launch.
+  A failure exits with status 1 and `omgcode-desktop: <message>` before any
+  window opens. That value is the endpoint of the process: the webview is shown
+  it, and each chat request is compared with it. Each turn resolves the profile
+  again. If the recorded endpoint no longer equals the launch value, because
+  the profile was removed and added again, the turn is refused with a
+  `credential` error that starts `endpoint_changed:` (the provider profile's
+  endpoint changed since launch; restart the application) and no turn starts. A
+  replaced profile with the same endpoint and a new credential is accepted and
+  uses the new credential. The wire contract is unchanged.
+- **Migration.** A profile recorded before 0.31.0 has no endpoint and cannot be
+  selected. Remove it, add it again with `--endpoint`, and store the credential
+  again. The 0.30.0 behaviour, which took the endpoint from `--endpoint`, was
+  never merged or released.
+- **Limits.** Only `lm_studio` profiles accept an endpoint. No endpoint rule
+  exists for a non-loopback provider, HTTPS, or certificates, and no cloud
+  adapter exists. Any process running as the same user can still read a stored
+  credential. A hand-edited control journal is checked only by replay
+  validation and is not tamper-evident. The frontend shows nothing about the
+  credential source beyond the endpoint text it already displayed. The tests
+  for this change ran against DPAPI on Windows and the Secret Service on Linux
+  under WSL. A chat turn with a stored credential was not driven through the
+  desktop shell's windows on either platform.
 
 ## Settings and account lifecycle
 
@@ -249,11 +331,12 @@ server. Allow a no-token profile only for the explicitly selected local service.
 If authentication is enabled, use its scoped LM Studio token through the
 credential service. A separately selected non-loopback service requires
 authenticated HTTPS; never silently redirect requests or credentials. The
-prototype desktop shell fixes the endpoint at launch (`--endpoint`, default
-`http://127.0.0.1:1234/v1`) and the token source: the stored credential of
-`--provider-profile` when given, otherwise `OMGCODE_LM_TOKEN`, read for each
-turn. A webview request cannot change either, and the shell has no connection
-test or model discovery.
+prototype desktop shell fixes the endpoint and the token source at launch. With
+`--provider-profile`, both come from the profile: its recorded endpoint and its
+stored credential. Without it, the endpoint is `--endpoint` (default
+`http://127.0.0.1:1234/v1`) and the token is `OMGCODE_LM_TOKEN`, read for each
+turn. The two flags are mutually exclusive. A webview request cannot change
+either, and the shell has no connection test or model discovery.
 
 Qualify Chat Completions and Responses independently for the chosen server
 version and model. Reuse wire-format code only where its contract matches.
@@ -313,7 +396,8 @@ verifier values in the trusted authentication service. Store durable credentials
 in protected OS storage. Do not silently fall back to plaintext when that store
 is unavailable; offer an explicit memory-only session if appropriate. Version
 0.27.0 implements that protected store for API keys (ADR-0042); since 0.30.0
-only the local LM Studio adapter reads it (ADR-0047). The prototype's
+only the local LM Studio adapter reads it (ADR-0047), and since 0.31.0 only
+at the endpoint recorded with its profile (ADR-0048). The prototype's
 `OMGCODE_LM_TOKEN` process-environment input does
 not meet this credential-service requirement and must not be treated as its
 replacement.

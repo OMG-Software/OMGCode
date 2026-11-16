@@ -6,10 +6,11 @@
 //! preferences, tool approvals, checkpointed edits, confinement) stays in
 //! `omgcode-core`. It does no argument parsing, printing, or process exit, and
 //! it reads the process environment only in [`read_lm_token`] (also reached
-//! through [`resolve_lm_token`] with [`TokenSource::Environment`]), which the caller
+//! through [`resolve_local_connection`] with [`ConnectionSource::Environment`]), which the caller
 //! invokes.
 //!
-//! The optional local server token is a credential, read from the environment or
+//! The local endpoint and the optional server token come from one source: the command line and
+//! the environment, or a selected provider profile (ADR-0048). The token is a credential, read from the environment or
 //! from a selected provider profile in protected storage (ADR-0047). It is borrowed per call,
 //! used to build a request header and to remove the same text from everything
 //! recorded or sent, and never appears in an [`AppError`], a `Debug` string, or
@@ -31,7 +32,9 @@ pub use chat::{
     run_chat_turn_with_clients,
 };
 pub use context::{CompactionMeter, ContextMeter, compact_journal, summary_output_tokens};
-pub use credential_source::{LmToken, TokenSource, resolve_lm_token};
+pub use credential_source::{
+    ConnectionSource, LmToken, LocalConnection, TokenSource, resolve_local_connection,
+};
 pub use error::{AppError, ErrorKind};
 pub use paths::data_root;
 pub use secrets::{read_lm_token, redact_known_secret};

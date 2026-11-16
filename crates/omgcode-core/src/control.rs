@@ -41,9 +41,10 @@ pub use container::{
 };
 pub use credential::{
     CredentialBackend, CredentialBinding, CredentialError, CredentialId, CredentialStore,
-    CredentialStoreStatus, MAX_SECRET_BYTES, OrphanedCredential, ProviderCredentialError,
-    ProviderCredentialRemoval, ProviderCredentialSet, ProviderCredentialUseError,
-    ProviderProfileRemoval, Secret, delete_unbound_credential, probe_credential_store,
+    CredentialStoreStatus, LoadedProviderConnection, MAX_SECRET_BYTES, OrphanedCredential,
+    ProviderConnection, ProviderCredentialError, ProviderCredentialRemoval, ProviderCredentialSet,
+    ProviderCredentialUseError, ProviderProfileRemoval, Secret, delete_unbound_credential,
+    probe_credential_store,
 };
 /// Whether this platform can record and apply container grants.
 pub use omgcode_platform::container::CONTAINER_GRANTS_SUPPORTED;
@@ -60,8 +61,8 @@ pub use profile::{
     is_reserved_variable, valid_profile_name,
 };
 pub use provider::{
-    MAX_PROVIDER_PROFILES, ProviderAuth, ProviderKind, ProviderProfile, ProviderProfileDeclaration,
-    ProviderProfileStatus,
+    MAX_PROVIDER_ENDPOINT_BYTES, MAX_PROVIDER_PROFILES, ProviderAuth, ProviderEndpoint,
+    ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
 };
 
 const FILE_NAME: &str = "control-v1.jsonl";
