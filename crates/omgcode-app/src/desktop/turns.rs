@@ -20,7 +20,7 @@ use super::Inner;
 use super::error::DesktopError;
 use super::wire::{ChatOutcome, ContextMeterDto, ToolsMode};
 use crate::{
-    ChatClients, ChatHooks, ChatSettings, ChatTurnInput, ChatTurnOutput, LmToken,
+    ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput, LmToken,
     run_chat_turn_with_clients,
 };
 
@@ -332,9 +332,57 @@ pub(super) fn spawn_turn(inner: &Arc<Inner>, job: TurnJob) -> Result<JoinHandle<
         .map_err(|_| DesktopError::internal("The chat turn could not be started."))
 }
 
+/// Ends a turn exactly once: records its result, then pushes `finished`.
+///
+/// Created at the top of the thread body. [`complete`](Self::complete) records
+/// the result in the turn table and only then tells the event hub, so a caller
+/// that reads `chat_status` after a `finished` event never sees `running`. If
+/// the guard is dropped without completing, the thread is unwinding from a
+/// panic: `Drop` records `internal` as the result first and then sends
+/// `finished`, so the event is not lost. `Drop` takes locks only with
+/// `if let Ok(..)`, so it cannot panic; a poisoned lock leaves the step undone.
+///
+/// The `turns` lock is released before the `events` lock is taken.
+struct FinishGuard<'a> {
+    inner: &'a Inner,
+    session_id: Uuid,
+    completed: bool,
+}
+
+impl<'a> FinishGuard<'a> {
+    const fn new(inner: &'a Inner, session_id: Uuid) -> Self {
+        Self {
+            inner,
+            session_id,
+            completed: false,
+        }
+    }
+
+    /// Record `result`, then push `finished`.
+    fn complete(mut self, result: Result<ChatOutcome, DesktopError>) {
+        self.completed = true;
+        self.inner.record_finish(self.session_id, result);
+        self.inner.events_finish(self.session_id);
+    }
+}
+
+impl Drop for FinishGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.inner.record_finish(
+                self.session_id,
+                Err(DesktopError::internal(STOPPED_UNEXPECTEDLY)),
+            );
+            self.inner.events_finish(self.session_id);
+        }
+    }
+}
+
 /// The body of a turn thread.
 fn run_turn(inner: &Inner, job: TurnJob) {
     let session_id = job.session_id;
+    let guard = FinishGuard::new(inner, session_id);
+    inner.events_begin(session_id);
     let result = execute(inner, &job);
     // The journal handle is gone, so the index can read the finished journal.
     // A failed refresh leaves the cache stale until the next listing refresh;
@@ -345,7 +393,7 @@ fn run_turn(inner: &Inner, job: TurnJob) {
             .refresh_session(session_id)
             .map_err(|error| DesktopError::from_index(&error))
     }));
-    inner.record_finish(session_id, result);
+    guard.complete(result);
 }
 
 /// Open the journal, run the turn, and drop the journal before returning.
@@ -355,8 +403,14 @@ fn execute(inner: &Inner, job: &TurnJob) -> Result<ChatOutcome, DesktopError> {
         SessionJournal::open(&job.path).map_err(|error| DesktopError::from_session(&error))?;
     let session_id = job.session_id;
     let mut hand_over = |cancel: CancelToken| inner.hand_over_cancel_token(session_id, cancel);
+    let mut forward = |event: ChatStreamEvent<'_>| inner.events_stream(session_id, event);
     let mut hooks = ChatHooks {
         on_cancel_token: Some(&mut hand_over),
+        on_stream: if inner.stream {
+            Some(&mut forward)
+        } else {
+            None
+        },
     };
     let result = run_chat_turn_with_clients(
         &mut journal,
@@ -402,5 +456,125 @@ fn outcome_of(output: &ChatTurnOutput) -> ChatOutcome {
             context_tokens: context.context_tokens(),
             compacted: context.compaction().is_some(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::super::wire::ChatEvent;
+    use super::super::{ChatEventSink, DesktopConfig, DesktopService};
+    use super::*;
+    use crate::TokenSource;
+
+    /// What the sink saw at each `finished` event: whether the table still
+    /// held the slot as running, and a record of every event.
+    struct Seen {
+        events: Vec<ChatEvent>,
+        running_at_finished: Vec<bool>,
+    }
+
+    fn service_with_slot(session_id: Uuid) -> (tempfile::TempDir, DesktopService) {
+        let directory = tempfile::tempdir().expect("data root");
+        let service = DesktopService::open(DesktopConfig {
+            data_root: directory.path().to_path_buf(),
+            endpoint: "http://127.0.0.1:1/v1".to_owned(),
+            token_source: TokenSource::Environment,
+            stream: true,
+        })
+        .expect("open service");
+        let handle = thread::spawn(|| ());
+        service
+            .inner
+            .lock_turns()
+            .expect("turns")
+            .insert_running(session_id, handle);
+        (directory, service)
+    }
+
+    /// Subscribe a sink that notes the table state when `finished` arrives.
+    ///
+    /// The sink takes the `turns` lock while the hub lock is held. Production
+    /// code never does; the test relies on the guard having released `turns`
+    /// before it sends `finished`.
+    fn watch(service: &DesktopService) -> Arc<Mutex<Seen>> {
+        let seen = Arc::new(Mutex::new(Seen {
+            events: Vec::new(),
+            running_at_finished: Vec::new(),
+        }));
+        let writer = Arc::clone(&seen);
+        let inner = Arc::clone(&service.inner);
+        let sink: ChatEventSink = Box::new(move |event| {
+            let mut log = writer.lock().expect("log");
+            if let ChatEvent::Finished { session_id } = event {
+                let running = inner
+                    .lock_turns()
+                    .map(|turns| turns.is_running(*session_id))
+                    .expect("turns");
+                log.running_at_finished.push(running);
+            }
+            log.events.push(event.clone());
+            true
+        });
+        service.chat_subscribe(sink).expect("subscribe");
+        seen
+    }
+
+    #[test]
+    fn completing_records_the_result_and_then_sends_finished() {
+        // Given a running slot and a subscriber.
+        let session_id = Uuid::from_u128(7);
+        let (_directory, service) = service_with_slot(session_id);
+        let seen = watch(&service);
+        service.inner.events_begin(session_id);
+
+        // When the guard completes with an error result.
+        FinishGuard::new(&service.inner, session_id)
+            .complete(Err(DesktopError::internal("recorded result")));
+
+        // Then the slot holds that result, and it was no longer running when
+        // `finished` was sent.
+        let table = service.inner.lock_turns().expect("turns");
+        match table.slot(session_id).map(|slot| &slot.state) {
+            Some(SlotState::Finished(result)) => {
+                let error = result.as_ref().as_ref().expect_err("the given error");
+                assert_eq!(error.message(), "recorded result");
+            }
+            _ => panic!("the slot is not finished"),
+        }
+        drop(table);
+        let log = seen.lock().expect("log");
+        assert_eq!(log.events, [ChatEvent::Finished { session_id }]);
+        assert_eq!(log.running_at_finished, [false]);
+    }
+
+    #[test]
+    fn dropping_an_uncompleted_guard_records_internal_and_then_sends_finished() {
+        // Given a running slot and a subscriber.
+        let session_id = Uuid::from_u128(8);
+        let (_directory, service) = service_with_slot(session_id);
+        let seen = watch(&service);
+        service.inner.events_begin(session_id);
+
+        // When the guard is dropped without completing, as in an unwind.
+        {
+            let _guard = FinishGuard::new(&service.inner, session_id);
+        }
+
+        // Then the slot holds `internal` and `finished` followed it.
+        let table = service.inner.lock_turns().expect("turns");
+        match table.slot(session_id).map(|slot| &slot.state) {
+            Some(SlotState::Finished(result)) => {
+                let error = result.as_ref().as_ref().expect_err("a failure");
+                assert_eq!(error.code(), "internal");
+                assert_eq!(error.message(), STOPPED_UNEXPECTEDLY);
+            }
+            _ => panic!("the slot is not finished"),
+        }
+        drop(table);
+        let log = seen.lock().expect("log");
+        assert_eq!(log.events, [ChatEvent::Finished { session_id }]);
+        assert_eq!(log.running_at_finished, [false]);
     }
 }

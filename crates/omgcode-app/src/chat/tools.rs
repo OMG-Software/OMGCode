@@ -5,6 +5,7 @@
 //! workspace. The edit and command tools also need a trusted single-use
 //! approval, which the core checks; nothing here grants or widens it.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use omgcode_core::policy::WorkspaceId;
@@ -18,6 +19,7 @@ use omgcode_core::turn::{
 use serde_json::Value;
 
 use super::output::{ToolTurnOutput, ToolTurnReply, ToolTurnSummary};
+use super::stream::StreamSink;
 use super::{ChatHooks, Turn};
 use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
@@ -51,9 +53,31 @@ pub(super) fn run(
     hooks: &mut ChatHooks<'_>,
 ) -> Result<ToolTurnOutput, AppError> {
     let token = turn.token;
+    // Streaming is on only when the front end asked for provisional text. One
+    // sink serves every request of the turn; each request restarts it.
+    let sink = hooks
+        .on_stream
+        .as_deref_mut()
+        .map(|on_stream| RefCell::new(StreamSink::new(on_stream, token)));
+    let mut forward = |piece: &str| {
+        if let Some(sink) = &sink {
+            // The sink is borrowed only for the span of one call and its
+            // callback cannot reach this cell, so a failed borrow cannot
+            // happen. If it did, dropping a provisional piece is harmless.
+            if let Ok(mut sink) = sink.try_borrow_mut() {
+                sink.text(piece);
+            }
+        }
+    };
+    let inner = if sink.is_some() {
+        LocalToolModel::streaming(client, &mut forward)
+    } else {
+        LocalToolModel::new(client)
+    };
     let mut model = RedactingModel {
-        inner: LocalToolModel::new(client),
+        inner,
         token,
+        stream: sink.as_ref(),
         secret_in_tool_call: false,
     };
     // Tool results are recorded before the next model request, so they need
@@ -102,13 +126,25 @@ pub(super) fn run(
 /// A tool call that contains the token is refused rather than redacted, because
 /// editing its arguments could change the requested path. The runtime records
 /// calls before any result filter runs, so the refusal happens here.
-struct RedactingModel<'a> {
+struct RedactingModel<'a, 's> {
     inner: LocalToolModel<'a>,
     token: Option<&'a str>,
+    /// The turn's stream sink, shared with `inner`'s text callback.
+    stream: Option<&'a RefCell<StreamSink<'s>>>,
     secret_in_tool_call: bool,
 }
 
-impl ToolModel for RedactingModel<'_> {
+impl RedactingModel<'_, '_> {
+    /// Run `step` on the stream sink, when the turn streams.
+    fn with_stream(&self, step: impl for<'x> FnOnce(&mut StreamSink<'x>)) {
+        // Borrowed only for this call, which no callback can re-enter.
+        if let Some(Ok(mut sink)) = self.stream.map(RefCell::try_borrow_mut) {
+            step(&mut sink);
+        }
+    }
+}
+
+impl ToolModel for RedactingModel<'_, '_> {
     fn complete(&mut self, request: ToolModelRequest<'_>) -> Result<ToolModelReply, ModelError> {
         let messages: Vec<ModelMessage> = request
             .messages
@@ -118,10 +154,15 @@ impl ToolModel for RedactingModel<'_> {
                 content: redact_known_secret(&message.content, self.token),
             })
             .collect();
-        let mut reply = self.inner.complete(ToolModelRequest {
+        self.with_stream(|sink| sink.start_request());
+        let result = self.inner.complete(ToolModelRequest {
             messages: &messages,
             tools: request.tools,
-        })?;
+        });
+        if result.is_ok() {
+            self.with_stream(|sink| sink.finish_request());
+        }
+        let mut reply = result?;
         if let Some(token) = self.token.filter(|token| !token.is_empty())
             && reply
                 .tool_calls

@@ -32,10 +32,15 @@
 //! | `index` | the one `SessionIndex` connection and its refresh bookkeeping |
 //! | `turns` | the table of chat turns, their cancel tokens and thread handles |
 //! | `reviews` | outstanding single-use approval review tokens |
+//! | `events` | the one chat event subscriber and the running turns' previews |
 //! | `pending_cache` | an atomic copy of the last pending-approval count read |
 //!
 //! **Lock order** when two are ever needed: `turns`, then `index`, then
-//! `reviews`. The code takes one at a time. No service lock and no open
+//! `reviews`. The code takes one at a time. The `events` lock is never held
+//! together with the `turns` lock (where both are needed, `turns` is taken and
+//! released first) and never while `index` or `reviews` is taken. It is held
+//! while a subscriber sink runs, so a sink must not block or call the service
+//! (see [`ChatEventSink`]). No service lock and no open
 //! control store is held across provider I/O, a chat turn, a journal
 //! inspection, a thread join, or a sleep. The one deliberate exception is the
 //! `index` lock during a refresh: a refresh needs `&mut SessionIndex`, so it
@@ -50,8 +55,8 @@
 //! named thread (`omgcode-turn`). The thread owns the journal handle, the
 //! clients, and the token for the whole turn. It opens the journal, runs the
 //! turn, drops the journal (which releases the writer lock), refreshes that
-//! one session in the index, and only then records the outcome in its slot. It
-//! does not hold the `turns` lock while the turn runs. At most two turns run at
+//! one session in the index, and only then records the outcome in its slot and
+//! pushes `finished` to the event subscriber. It does not hold the `turns` lock while the turn runs. At most two turns run at
 //! once.
 //!
 //! The slot keeps the thread's `JoinHandle`. `chat_status`, `chat_send`, and
@@ -77,6 +82,7 @@
 mod approvals;
 mod chat;
 mod error;
+mod events;
 mod review_tokens;
 mod sessions;
 mod state;
@@ -91,18 +97,20 @@ use std::sync::{Arc, Mutex};
 use omgcode_core::session_index::SessionIndex;
 
 pub use self::error::DesktopError;
+pub use self::events::ChatEventSink;
+use self::events::EventHub;
 use self::review_tokens::ReviewTokens;
 use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
 pub use self::wire::{
     ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
-    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatOutcome,
-    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto, Decision, EntryKind,
-    MessageRoleDto, SearchHit, SearchRequest, SearchResult, SearchRoleDto, SessionCreateRequest,
-    SessionRequest, SessionStatus, SessionSummary, SessionTree, SnippetPart, ToolOutcomeDto,
-    ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
-    WorkspaceChoice, WorkspaceGroup, WorkspaceList,
+    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatEvent,
+    ChatOutcome, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto,
+    Decision, EntryKind, MessageRoleDto, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
+    SessionCreateRequest, SessionRequest, SessionStatus, SessionSummary, SessionTree, SnippetPart,
+    ToolOutcomeDto, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest,
+    TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceList,
 };
 use crate::{AppError, ErrorKind, LmToken, LocalConnection, TokenSource, resolve_local_connection};
 
@@ -122,6 +130,10 @@ pub struct DesktopConfig {
     /// profile, the endpoint it must still equal). It is fixed
     /// for the process lifetime and never comes from the interface.
     pub token_source: TokenSource,
+    /// Whether chat turns send streamed model requests and push their
+    /// provisional text to the subscriber (ADR-0049). When `false`, turns send
+    /// non-streaming requests and only `finished` events are pushed.
+    pub stream: bool,
 }
 
 /// A replacement token supplier for an embedder or a test that must avoid the
@@ -184,9 +196,13 @@ struct Inner {
     data_root: PathBuf,
     endpoint: String,
     token: TokenResolver,
+    /// Whether turns send streamed requests ([`DesktopConfig::stream`]).
+    stream: bool,
     index: Mutex<IndexState>,
     turns: Mutex<TurnTable>,
     reviews: Mutex<ReviewTokens>,
+    /// The one chat event subscriber and the running turns' previews.
+    events: Mutex<EventHub>,
     /// The last pending-approval count read, served when the settings store is
     /// busy. Advisory only; it authorizes nothing.
     pending_cache: AtomicU64,
@@ -237,9 +253,11 @@ impl DesktopService {
                 data_root: config.data_root,
                 endpoint: config.endpoint,
                 token,
+                stream: config.stream,
                 index: Mutex::new(IndexState::new(index)),
                 turns: Mutex::new(TurnTable::default()),
                 reviews: Mutex::new(ReviewTokens::default()),
+                events: Mutex::new(EventHub::default()),
                 pending_cache: AtomicU64::new(0),
             }),
         })

@@ -8,6 +8,7 @@
 
 mod output;
 mod preflight;
+mod stream;
 mod text;
 mod tools;
 
@@ -76,12 +77,29 @@ pub struct ChatTurnInput<'a> {
     pub token: Option<&'a str>,
 }
 
+/// One provisional event of a streamed model request (ADR-0049).
+///
+/// Streamed text is provisional and untrusted. The journal, not this text, is
+/// the record: a request that fails later leaves text that was never a reply.
+/// The turn has already removed the known server token from `Text`, but the
+/// text is otherwise as the model sent it, so a front end must render it as
+/// text, never as markup or terminal control data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChatStreamEvent<'a> {
+    /// A model request of the turn is about to start. Text of earlier requests
+    /// of the same turn is superseded.
+    RequestStarted,
+    /// A non-empty piece of assistant text of the current request.
+    Text(&'a str),
+}
+
 /// Optional callbacks a front end can supply to a turn.
 ///
-/// Today the only hook delivers the cancellation token. Cancellation is
-/// cooperative: the core checks it between rounds and tool calls, so it cannot
-/// interrupt a provider request already in flight. The text-only path has no
-/// cancellation point at all, so the hook is never called there.
+/// One hook delivers the cancellation token. Cancellation is cooperative: the
+/// core checks it between rounds and tool calls, so it cannot interrupt a
+/// provider request already in flight. The text-only path has no cancellation
+/// point at all, so that hook is never called there. The other hook streams
+/// provisional text.
 #[derive(Default)]
 pub struct ChatHooks<'a> {
     /// Called once on the tool-enabled path, immediately after the turn
@@ -89,6 +107,14 @@ pub struct ChatHooks<'a> {
     /// on the turn's thread and must not block; hand the token to another
     /// thread and return.
     pub on_cancel_token: Option<&'a mut dyn FnMut(CancelToken)>,
+    /// When set, every model request of the turn is streamed and this callback
+    /// receives [`ChatStreamEvent::RequestStarted`] before each request and
+    /// [`ChatStreamEvent::Text`] for each piece. It runs on the turn's thread
+    /// while the response is being read, so it must not block and must not
+    /// hold a lock that the turn's caller needs. When `None`, every request is
+    /// non-streaming. Compaction requests are never streamed, and tool-call
+    /// names and arguments are never passed to it.
+    pub on_stream: Option<&'a mut dyn FnMut(ChatStreamEvent<'_>)>,
 }
 
 /// The two validated model clients a turn uses.
@@ -229,9 +255,15 @@ pub fn run_chat_turn_with_clients(
             hooks,
         )
         .map(ChatTurnOutput::tools),
-        ToolMode::Disabled { reason } => {
-            text::run(journal, &clients.chat, &turn, reason, manifest, meter)
-                .map(ChatTurnOutput::text)
-        }
+        ToolMode::Disabled { reason } => text::run(
+            journal,
+            &clients.chat,
+            &turn,
+            reason,
+            manifest,
+            meter,
+            hooks,
+        )
+        .map(ChatTurnOutput::text),
     }
 }

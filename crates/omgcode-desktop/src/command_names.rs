@@ -17,6 +17,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "chat_send",
     "chat_status",
     "chat_cancel",
+    "chat_subscribe",
     "approvals_summary",
     "approvals_show_window",
     "approvals_list",

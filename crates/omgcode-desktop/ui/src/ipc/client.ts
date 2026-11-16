@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { IpcFailure, toIpcError } from "./errors";
 import type {
   AppInfo,
@@ -56,6 +56,24 @@ export async function invokeCommand<T>(command: string, args: Record<string, unk
   } catch (reason) {
     throw new IpcFailure(toIpcError(reason));
   }
+}
+
+/**
+ * Calls a command whose only argument, `on_event`, is a push channel. Inside Tauri it is a real
+ * `Channel`; an injected invoker or the development mock receives a plain `{ onmessage }`
+ * object instead. `onMessage` receives raw, untrusted values and must validate them.
+ */
+export async function invokeWithChannel(
+  command: string,
+  onMessage: (value: unknown) => void,
+): Promise<void> {
+  if (injected === null && tauriPresent()) {
+    const channel = new Channel<unknown>();
+    channel.onmessage = onMessage;
+    await invokeCommand<null>(command, { on_event: channel });
+    return;
+  }
+  await invokeCommand<null>(command, { on_event: { onmessage: onMessage } });
 }
 
 export const api = {

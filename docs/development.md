@@ -132,7 +132,10 @@ Always pass a scratch `--data-dir` when developing, so a run does not use the
 real per-user data. `--provider-profile <name>` makes the shell take its
 endpoint and its server token from a profile and its stored credential (see
 [Use a stored credential for chat](#use-a-stored-credential-for-chat)); it
-cannot be combined with `--endpoint`. The frontend commands, the launch arguments, the Tauri
+cannot be combined with `--endpoint`. `--stream <on|off>` (default `on`) chooses
+whether chat turns send streamed model requests and show the reply as it is
+generated; `off` sends non-streaming requests. Any other value is a usage error
+(exit status 2). The frontend commands, the launch arguments, the Tauri
 development command, and the limits are in the
 [desktop interface guide](desktop-interface.md#development). The shell has not
 run on Linux.
@@ -569,8 +572,22 @@ omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/
 Output is JSON so untrusted control characters are escaped rather than written
 as terminal instructions.
 
-Each text-only invocation sends one non-streaming request; a tool-enabled turn
-sends at most four. When `--auto-compact` compacts before the turn, the
+`chat --stream` sends streamed model requests and writes the provisional reply
+text to standard error as it arrives, one line per model request that produced
+text. The text is escaped like the JSON output, so model output cannot send
+control sequences to the terminal. Standard output still carries the one JSON
+result. The streamed text is provisional: a later failure fails the turn and the
+journal records only the validated reply. A failed write to standard error stops
+further writes and does not fail the turn. `session compact` has no `--stream`
+flag, and compaction requests are never streamed. See
+[streamed replies](provider-authentication.md#streamed-replies-0320).
+
+```text
+omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Summarise README.md."
+```
+
+Each text-only invocation sends one request, which is not streamed unless
+`--stream` is given; a tool-enabled turn sends at most four. When `--auto-compact` compacts before the turn, the
 summarizer requests come first: at most 16 per round, with at most four
 combination rounds after the first. `session compact` sends only summarizer
 requests under the same bound. There is a five-second connect timeout and a thirty-second
@@ -716,7 +733,8 @@ heuristic, not a tokenizer or a guarantee for every chat template. The operator
 must supply a validated loaded-model capacity. Compaction and automatic history
 selection are not implemented: requests over a limit fail before inference.
 Provider-reported usage and finish reason appear in the reply JSON. Durable
-usage events, streaming chunks, and large-output artifacts remain planned.
+usage events and large-output artifacts remain planned. Streamed chunks are
+not stored.
 
 ## Code boundaries
 

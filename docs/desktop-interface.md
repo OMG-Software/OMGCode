@@ -8,8 +8,9 @@ release-ready, and it is not packaged.
 The decisions behind it are recorded in
 [ADR-0044](adr/0044-observe-journals-without-the-writer-lock-and-index-them-in-sqlite.md),
 [ADR-0045](adr/0045-build-the-desktop-shell-on-tauri-with-a-narrow-command-surface.md),
+[ADR-0046](adr/0046-decide-model-tool-approvals-in-an-isolated-desktop-window.md),
 and
-[ADR-0046](adr/0046-decide-model-tool-approvals-in-an-isolated-desktop-window.md).
+[ADR-0049](adr/0049-stream-local-model-replies-and-push-chat-events.md).
 The trusted CLI and the contracts it enforces are unchanged. Other guides own
 the rules this shell relies on: [session storage](session-storage.md),
 [approval records](agent-instructions.md#approval-records),
@@ -35,11 +36,17 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
+- Since version 0.32.0 (Phase D4 and E6, ADR-0049), a chat turn streams the
+  local model's reply and the shell pushes chat events to the `main` window
+  through one caller-scoped channel. The window shows the provisional text
+  while the turn runs, and no longer polls for the end of a turn. The launch
+  argument `--stream off` restores non-streaming requests.
 
 Not implemented:
 
 - Installers, signing, and any other packaging. `bundle.active` is `false`.
-- Streaming output. A turn returns when it finishes; the frontend polls.
+- Mid-stream cancellation. Cancelling a turn does not interrupt a model
+  request in flight.
 - A settings interface. Workspace settings change only through the trusted
   CLI ([workspace settings](workspace-permissions.md)). Chat settings are not
   saved between runs.
@@ -112,6 +119,7 @@ Launch:
 
 ```text
 omgcode-desktop [--data-dir <path>] [--endpoint <url> | --provider-profile <name>]
+                [--stream <on|off>]
 ```
 
 | Argument | Default | Meaning |
@@ -119,10 +127,11 @@ omgcode-desktop [--data-dir <path>] [--endpoint <url> | --provider-profile <name
 | `--data-dir <path>` | The per-user OMGCode data directory | The application data root, the same one the CLI uses |
 | `--endpoint <url>` | `http://127.0.0.1:1234/v1` | The loopback model endpoint, fixed for the process. Not allowed with `--provider-profile` |
 | `--provider-profile <name>` | None: the endpoint is `--endpoint` or its default, and the token comes from `OMGCODE_LM_TOKEN` | A recorded `lm_studio` provider profile that supplies both the endpoint and the stored credential used as the server token, fixed for the process. Not allowed with `--endpoint` |
+| `--stream <on\|off>` | `on` | Whether chat turns send streamed model requests and push their text to the window. `off` sends non-streaming requests. The `finished` event is still pushed |
 
 An unknown argument, a missing value, a repeated flag, an empty value, a value
-that starts with `--`, or both `--endpoint` and `--provider-profile` prints the
-usage text to stderr and exits with status 2. The default value of
+that starts with `--`, a `--stream` value other than `on` or `off`, or both
+`--endpoint` and `--provider-profile` prints the usage text to stderr and exits with status 2. The default value of
 `--endpoint` does not count as giving it. An invalid endpoint, an unusable data
 root, or a service that cannot open prints `omgcode-desktop: <message>` to
 stderr and exits with status 1.
@@ -162,7 +171,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has two webview windows and 18 commands. No other command exists.
+The shell has two webview windows and 19 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -181,6 +190,7 @@ their registered identifier, and approvals by identifier.
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
+| `chat_subscribe` | main | Subscribe a caller-created channel to chat events |
 | `approvals_summary` | main | Return the advisory count of pending approvals |
 | `approvals_show_window` | main | Show the existing approvals window |
 | `approvals_list` | approvals | List pending approvals and recent decisions |
@@ -337,10 +347,32 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   clients before it starts the thread, so a bad setting fails at once. The
   message and instructions are first bounded at 64 KiB each; core then applies
   its own limits.
-- **Status.** The frontend polls `chat_status` every 750 ms while a turn it
-  started runs. The result reports the finish reason, whether tools were
+- **Status.** `chat_status` reports the state and outcome of a turn. The
+  frontend reads it once when the `finished` event arrives, and keeps a
+  five-second reconcile check while a turn runs in case an event is lost. If
+  subscribing fails, it polls every 750 ms instead. The result reports the finish reason, whether tools were
   offered, rounds, tool calls, and the context meter line: estimated tokens,
   context size, and the compaction trigger.
+- **Live preview.** With streaming on (the default), `chat_subscribe` gives the
+  `main` window one channel for chat events. They are `request_started`,
+  `delta`, `preview_truncated`, and `finished`, tagged by `kind`, each with a
+  session identifier. A `delta` carries at most 1,024 bytes of text. The
+  service keeps the preview of each running turn for the current request only,
+  at most 16 KiB; at the bound it sends `preview_truncated` and no more deltas
+  for that request. A new subscription replaces the old one and first replays
+  the preview of every running turn. The open session shows one live entry
+  labelled "Assistant (generating, not saved yet)", updated at most once per
+  animation frame. The frontend removes it when the turn settles and shows the
+  recorded transcript, and shows a note when the preview was cut off. It keeps
+  previews for up to 4 sessions it is not tracking, each bounded at 64 KiB of
+  UTF-16 code units. The preview is provisional: a later failure discards it,
+  and a reply over the 16 KiB session message limit is shown in part and then
+  fails as before. The journal never holds preview text. `finished` is sent by
+  a guard after the result is recorded, and a panicked turn is recorded as
+  failed first, so `chat_status` read after `finished` never reports
+  `running`. With `--stream off` no preview exists, and `finished` is still
+  pushed. See
+  [streamed replies](provider-authentication.md#streamed-replies-0320).
 - **Cancellation.** Cooperative. It is checked between model rounds and tool
   calls. It cannot interrupt a provider request in flight, which has a 30
   second request timeout. A text-only turn has no cancellation point, so
@@ -448,6 +480,12 @@ What the design does:
   the credential source, or read the token. The profile and its endpoint are
   fixed at launch. A stored credential goes only to the endpoint recorded with
   its profile (ADR-0048). The wire contract is unchanged.
+- **Channel, no `core:` permission.** `chat_subscribe` takes a Tauri IPC
+  channel that the `main` webview creates. It needs no capability beyond the
+  command's own permission. Tauri events would need a `core:event` permission,
+  and both windows still have none. Events are sent while the hub lock is
+  held, so replay and live events stay in order, and the sink must not block.
+  The `turns` lock and the `events` lock are never held together.
 - **Content policy.** The content security policy is `default-src 'none'`, with
   `'self'` for scripts, styles, images, and fonts, and IPC as the only
   connection target. Tauri appends three hashes for its own bootstrap scripts.
@@ -462,7 +500,9 @@ What the design does:
   script or style, remote resources, and browser storage.
 - **Decisions only from `approvals`.** The approvals window loads a separate,
   smaller bundle. The main bundle contains neither `approval_decide` nor
-  `approval_detail`.
+  `approval_detail`. The command name `chat_subscribe` lives in
+  `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
+  test checks that no approvals asset contains it.
 - **The index is a cache.** It authorizes nothing. A journal path from the
   index is revalidated against the strict layout, and the writer open
   validates the journal again by replay.
@@ -471,7 +511,9 @@ What it does not do:
 
 - A compromised `main` webview can use every `main` command. It can read
   transcripts, search, create sessions in registered workspaces, send chat
-  turns, archive, restore, and interrupt. It cannot name a host path, choose
+  turns, archive, restore, and interrupt. It can subscribe to chat events and
+  read the provisional text of running turns, which it could already read from
+  transcripts once recorded. It cannot name a host path, choose
   the endpoint, read the token, or decide an approval. It can cause approval
   requests; it cannot decide them.
 - The approvals webview is still web content. The design reduces what reaches
@@ -483,7 +525,9 @@ What it does not do:
 - The default WebView2 context menu stays enabled. Developer tools are enabled
   in debug builds only.
 - Transcript text is shown as recorded. Only text rendering and the content
-  security policy stand between it and the page.
+  security policy stand between it and the page. Preview text is returned as
+  received after token redaction, like transcript text. The frontend renders
+  it as text and marks bidirectional overrides.
 - Core's approval checks, the trusted runner, and checkpointed apply apply
   unchanged. They do not detect a concurrent writer and are not process or
   workspace isolation.
@@ -497,13 +541,17 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 18 |
+| Commands | 19 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
 | Transcript entries per page | 200 |
 | Transcript text per page | 1 MiB (at least one entry) |
 | Running chat turns | 2 |
+| Chat preview per request | 16 KiB |
+| Chat delta text | 1,024 bytes |
+| Previews kept for untracked sessions | 4 |
+| Client preview bound | 64 KiB of UTF-16 code units |
 | Finished chat results kept | 64 |
 | Message and instructions prefilter | 64 KiB each |
 | Review token lifetime | 120 seconds, single use |
@@ -517,7 +565,7 @@ What it does not do:
 | Index busy timeout | 2 seconds |
 | Shutdown grace | 5 seconds |
 | Approve button delay | 1 second |
-| Poll intervals | chat 750 ms, approvals 3 seconds |
+| Poll and check intervals | chat reconcile 5 seconds, chat fallback poll 750 ms, approvals 3 seconds |
 
 ## Development
 
@@ -564,8 +612,11 @@ private store refuses, see the notes in
 - **Frontend (Vitest, jsdom).** Model, transcript, composer, approvals, polling,
   mock, and security scans. The scans assert the rules in the content policy
   list above, that `@tauri-apps/api` is imported only in `src/ipc/client.ts`,
-  that the main bundle has no decision command, and that no mock fixture is in
-  `dist`.
+  that the main bundle has no decision command, that no approvals asset
+  contains `chat_subscribe`, and that no mock fixture is in `dist`. The suites
+  `ui/tests/chat_runner.test.ts` (subscription, reconcile, and fallback poll),
+  `ui/tests/live_preview.test.ts` (the live entry and its bounds), and
+  `ui/tests/client.test.ts` (the channel wrapper) cover the streaming frontend.
 - **Shell (no webview).** The policy table; the capability files against the
   policy; the build script's command list against the policy; the frontend's
   command names against the policy; the configuration and the content security
@@ -574,11 +625,14 @@ private store refuses, see the notes in
   the frontend's argument keys; the launch argument parser; and the shutdown
   gate.
 - **Service.** Tests with a mock provider cover chat, approvals, review
-  tokens, shutdown, and the index.
+  tokens, shutdown, and the index. `crates/omgcode-app/tests/desktop_events.rs`
+  covers the event hub.
 - **End to end.** The real Windows shell was driven over the WebView2 remote
   debugging port with real mouse and text input against a mock local model
-  server, on 2026-11-16. See [testing standards](testing-standards.md#desktop-shell-and-frontend)
-  for the procedure and what it proves.
+  server, on 2026-11-16. A second run on the same day drove streaming and the
+  pushed events against a paced event-stream mock. See
+  [testing standards](testing-standards.md#desktop-shell-and-frontend) for the
+  procedure and what each run proves.
 
 ## Known limits
 
@@ -602,7 +656,16 @@ private store refuses, see the notes in
 - Not exercised: shutdown while a provider request is in flight; a live call
   that reaches the Rust `authorize` check.
 - The CI workflow changes for the shell have not run.
-- Polling adds a small constant IPC load while a window is visible.
+- The approvals polls (3 seconds) add a small constant IPC load while a window
+  is visible, and the session tree does not update by push.
+- Streaming: the stream rules were checked against local fixtures only, and no
+  live LM Studio server was used. No window has been opened on Linux, so the
+  channel is unverified there. A streamed text reply has no usage counters
+  unless the server sends them. Cancellation does not interrupt a request in
+  flight, and the thirty-second request deadline covers the whole response, so
+  a long generation fails as before. While a turn runs, the transcript is not
+  reloaded, so the message just sent is not shown above the live entry until
+  the turn settles.
 - Opening a very large first index can take seconds, because each journal
   commits once.
 - No packaging, auto-update, or crash reporting exists.

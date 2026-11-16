@@ -58,8 +58,13 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
   validates everything.
 - The model endpoint is fixed when the desktop process starts. The composer shows the value
   from `chat_defaults` as read-only text and sends back exactly that value.
-- There is no push channel. Pollers (`src/poll.ts`) never overlap calls and pause while the
-  page is hidden.
+- The main window subscribes once with `chat_subscribe`, a Tauri channel. It reads
+  `chat_status` once when a `finished` event arrives and keeps a five-second reconcile check
+  while a turn runs, in case an event is lost. If subscribing fails, it polls `chat_status`
+  every 750 ms instead. The command name lives in `src/ipc/chat_events.ts`, which only the main
+  window imports, so the approvals bundle never contains it. Streamed text is provisional
+  and is rendered as text. Pollers (`src/poll.ts`) never overlap calls and pause while the
+  page is hidden; the approvals window still polls.
 
 ## Mock backend
 

@@ -45,6 +45,7 @@ pub enum Command {
     ChatSend,
     ChatStatus,
     ChatCancel,
+    ChatSubscribe,
     ApprovalsSummary,
     ApprovalsShowWindow,
     ApprovalsList,
@@ -54,7 +55,7 @@ pub enum Command {
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -68,6 +69,7 @@ impl Command {
         Self::ChatSend,
         Self::ChatStatus,
         Self::ChatCancel,
+        Self::ChatSubscribe,
         Self::ApprovalsSummary,
         Self::ApprovalsShowWindow,
         Self::ApprovalsList,
@@ -92,6 +94,7 @@ impl Command {
             Self::ChatSend => "chat_send",
             Self::ChatStatus => "chat_status",
             Self::ChatCancel => "chat_cancel",
+            Self::ChatSubscribe => "chat_subscribe",
             Self::ApprovalsSummary => "approvals_summary",
             Self::ApprovalsShowWindow => "approvals_show_window",
             Self::ApprovalsList => "approvals_list",
@@ -120,6 +123,7 @@ impl Command {
             | Self::ChatSend
             | Self::ChatStatus
             | Self::ChatCancel
+            | Self::ChatSubscribe
             | Self::ApprovalsSummary
             | Self::ApprovalsShowWindow => WindowLabel::Main,
         }
@@ -159,8 +163,8 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 18);
-        assert_eq!(with_window(WindowLabel::Main).len(), 15);
+        assert_eq!(Command::ALL.len(), 19);
+        assert_eq!(with_window(WindowLabel::Main).len(), 16);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
     }
 
@@ -215,10 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_eighteen_unique_names_matching_the_enum() {
+    fn shared_name_list_has_nineteen_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 18);
-        assert_eq!(shared.len(), 18);
+        assert_eq!(COMMAND_NAMES.len(), 19);
+        assert_eq!(shared.len(), 19);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

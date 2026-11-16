@@ -144,15 +144,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 18 unique policy names.
+    // And the shared list holds the 19 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 18);
-    assert_eq!(unique.len(), 18);
+    assert_eq!(listed.len(), 19);
+    assert_eq!(unique.len(), 19);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -176,20 +176,77 @@ fn invoked_commands(source: &str) -> BTreeSet<String> {
     found
 }
 
+/// Command names passed to `invokeWithChannel("name", ...)`, the push-channel
+/// form of an invocation (`ui/src/ipc/chat_events.ts`).
+fn channel_commands(source: &str) -> BTreeSet<String> {
+    const CALL: &str = "invokeWithChannel(\"";
+    let mut found = BTreeSet::new();
+    let mut rest = source;
+    while let Some(at) = rest.find(CALL) {
+        rest = &rest[at + CALL.len()..];
+        if let Some(len) = rest.find('"') {
+            found.insert(rest[..len].to_owned());
+        }
+    }
+    found
+}
+
+/// The argument keys `invokeWithChannel` in `client.ts` passes to the command it
+/// runs, once per transport form (the real `Channel` and the plain object).
+fn channel_argument_keys(client: &str) -> Vec<BTreeSet<String>> {
+    const CALL: &str = "invokeCommand<null>(command, ";
+    let start = client
+        .find("export async function invokeWithChannel(")
+        .expect("invokeWithChannel is defined");
+    let body = &client[start..];
+    // The function ends at the first closing brace in column zero.
+    let end = body.find("\n}").expect("end of invokeWithChannel");
+    let body = &body[..end];
+    let mut found = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(CALL) {
+        rest = &rest[at + CALL.len()..];
+        assert!(rest.starts_with('{'), "an argument object follows the name");
+        let close = matching(rest, 0);
+        found.push(
+            split_top_level(&rest[1..close])
+                .into_iter()
+                .map(|entry| {
+                    entry
+                        .split_once(':')
+                        .map_or(entry.as_str(), |(key, _)| key)
+                        .trim()
+                        .to_owned()
+                })
+                .collect(),
+        );
+    }
+    found
+}
+
 #[test]
 fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
     // Given the two IPC client modules.
     let ui = crate_dir().join("ui/src/ipc");
     let main_calls = invoked_commands(&read(&ui.join("client.ts")));
     let approval_calls = invoked_commands(&read(&ui.join("approvals_client.ts")));
+    // The one push-channel command is invoked from `chat_events.ts`.
+    let channel_calls = channel_commands(&read(&ui.join("chat_events.ts")));
+    assert_eq!(
+        channel_calls,
+        BTreeSet::from(["chat_subscribe".to_owned()]),
+        "the push channel opens exactly one command"
+    );
+    let main_calls: BTreeSet<String> = main_calls.union(&channel_calls).cloned().collect();
 
-    // Then the main client uses a subset of the main commands (all 15 today)...
+    // Then the main side uses a subset of the main commands (all 16 today)...
     let main_commands: BTreeSet<String> = commands_for(WindowLabel::Main)
         .into_iter()
         .map(str::to_owned)
         .collect();
     assert!(main_calls.is_subset(&main_commands), "{main_calls:?}");
-    assert_eq!(main_calls.len(), 15);
+    assert_eq!(main_calls.len(), 16);
+    assert_eq!(main_calls, main_commands);
 
     // ...the approvals client uses exactly the three approval commands...
     let approval_commands: BTreeSet<String> = commands_for(WindowLabel::Approvals)
@@ -198,7 +255,7 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(approval_calls, approval_commands);
 
-    // ...and together they cover all 18 policy commands.
+    // ...and together they cover all 19 policy commands.
     let union: BTreeSet<String> = main_calls.union(&approval_calls).cloned().collect();
     let all: BTreeSet<String> = Command::ALL
         .into_iter()
@@ -435,7 +492,7 @@ fn injected(param: &(String, String)) -> bool {
 }
 
 #[test]
-fn generate_handler_registers_exactly_the_eighteen_policy_commands() {
+fn generate_handler_registers_exactly_the_nineteen_policy_commands() {
     // Given the invoke handler in lib.rs.
     let lib = read(&crate_dir().join("src/lib.rs"));
     let start =
@@ -450,10 +507,10 @@ fn generate_handler_registers_exactly_the_eighteen_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 18 shared names, once each.
+    // Then they are the 19 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 18);
-    assert_eq!(unique.len(), 18);
+    assert_eq!(registered.len(), 19);
+    assert_eq!(unique.len(), 19);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -470,7 +527,7 @@ fn generate_handler_registers_exactly_the_eighteen_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 18);
+    assert_eq!(handlers.len(), 19);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -586,9 +643,24 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     let ui = crate_dir().join("ui/src/ipc");
     let mut expected = frontend_arguments(&read(&ui.join("client.ts")));
     expected.extend(frontend_arguments(&read(&ui.join("approvals_client.ts"))));
+    // The push-channel command passes one argument, `on_event`, in both of the
+    // transport forms of `invokeWithChannel`.
+    let channel_keys = channel_argument_keys(&read(&ui.join("client.ts")));
+    assert_eq!(channel_keys.len(), 2, "one call per transport form");
+    for keys in &channel_keys {
+        assert_eq!(keys, &BTreeSet::from(["on_event".to_owned()]));
+    }
+    for name in channel_commands(&read(&ui.join("chat_events.ts"))) {
+        assert!(
+            expected
+                .insert(name.clone(), channel_keys[0].clone())
+                .is_none(),
+            "{name} is also a plain invocation"
+        );
+    }
     assert_eq!(
         expected.len(),
-        18,
+        19,
         "all commands are called by the frontend"
     );
 
@@ -640,6 +712,7 @@ fn command_error_keeps_the_service_code_and_message() {
         data_root: root.clone(),
         endpoint: "http://127.0.0.1:1234/v1".to_owned(),
         token_source: omgcode_app::TokenSource::Environment,
+        stream: true,
     })
     .expect("open service");
     let failure = service

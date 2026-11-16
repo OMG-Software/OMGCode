@@ -645,3 +645,341 @@ fn tool_responses_with_duplicate_keys_or_unsupported_shapes_are_refused() {
         );
     }
 }
+
+const EVENT_STREAM: &str = "Content-Type: text/event-stream\r\n";
+
+fn text_event(content: &str) -> String {
+    format!(
+        "data: {}\n\n",
+        serde_json::json!({"choices":[{"index":0,"delta":{"content":content},"finish_reason":null}]})
+    )
+}
+
+fn finish_event(reason: &str) -> String {
+    format!(
+        "data: {}\n\n",
+        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}]})
+    )
+}
+
+fn text_stream(pieces: &[&str]) -> String {
+    let mut stream: String = pieces.iter().map(|piece| text_event(piece)).collect();
+    stream.push_str(&finish_event("stop"));
+    stream.push_str("data: [DONE]\n\n");
+    stream
+}
+
+/// The outcome of one streamed text exchange.
+struct StreamExchange {
+    result: Result<ModelReply, ProviderError>,
+    pieces: Vec<String>,
+    request: Value,
+    head: String,
+}
+
+fn stream_exchange(status: &str, body: &str, headers: &str) -> StreamExchange {
+    let fixture = Fixture::start(status, body.as_bytes(), headers);
+    let mut pieces = Vec::new();
+    let result = client(fixture.address.clone(), None)
+        .complete_streaming(&messages(), &mut |text: &str| pieces.push(text.to_owned()));
+    let (head, request) = fixture.finish();
+    StreamExchange {
+        result,
+        pieces,
+        request: serde_json::from_slice(&request).expect("request JSON"),
+        head,
+    }
+}
+
+fn tool_stream_exchange(body: &str) -> (Result<ToolModelReply, ProviderError>, Vec<String>, Value) {
+    let fixture = Fixture::start("200 OK", body.as_bytes(), EVENT_STREAM);
+    let mut pieces = Vec::new();
+    let result = client(fixture.address.clone(), None).complete_with_tools_streaming(
+        &messages(),
+        &tool_definitions(),
+        &mut |text: &str| pieces.push(text.to_owned()),
+    );
+    let (_, request) = fixture.finish();
+    (
+        result,
+        pieces,
+        serde_json::from_slice(&request).expect("request JSON"),
+    )
+}
+
+fn call_event(entry: &str) -> String {
+    format!(
+        "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{entry}]}},\"finish_reason\":null}}]}}\n\n"
+    )
+}
+
+#[test]
+fn a_streamed_text_request_sends_stream_true_and_delivers_pieces_in_order() {
+    // Given a server that streams three pieces.
+    let body = text_stream(&["Hel", "lo ", "there"]);
+
+    // When a streamed text request runs.
+    let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);
+
+    // Then the reply is the concatenation, the pieces arrived in order, and
+    // the wire request asked for a stream without `stream_options`.
+    let reply = exchange.result.expect("valid stream");
+    assert_eq!(reply.content, "Hello there");
+    assert_eq!(reply.finish_reason, "stop");
+    assert_eq!(reply.usage, None);
+    assert_eq!(exchange.pieces, ["Hel", "lo ", "there"]);
+    assert_eq!(exchange.request["stream"], true);
+    assert!(exchange.request.get("stream_options").is_none());
+    assert!(exchange.request.get("tools").is_none());
+    assert!(
+        exchange
+            .head
+            .to_ascii_lowercase()
+            .contains("accept: text/event-stream\r\n")
+    );
+}
+
+#[test]
+fn non_streaming_requests_still_send_stream_false_and_no_accept_header() {
+    // Given the non-streaming text and tool methods.
+    let fixture = Fixture::start("200 OK", SUCCESS.as_bytes(), "");
+    client(fixture.address.clone(), None)
+        .complete(&messages())
+        .expect("reply");
+
+    // When their requests are captured.
+    let (head, body) = fixture.finish();
+    let request: Value = serde_json::from_slice(&body).expect("request JSON");
+    let (_, tool_request) = tool_exchange(
+        r#"{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}"#,
+    );
+
+    // Then both send `stream: false`, no `stream_options`, and no event-stream Accept.
+    assert_eq!(request["stream"], false);
+    assert!(request.get("stream_options").is_none());
+    assert!(!head.to_ascii_lowercase().contains("text/event-stream"));
+    assert_eq!(tool_request["stream"], false);
+    assert!(tool_request.get("stream_options").is_none());
+}
+
+#[test]
+fn a_streamed_tool_request_sends_stream_true_with_the_tools() {
+    let (result, _, request) = tool_stream_exchange(&text_stream(&["ok"]));
+    assert_eq!(result.expect("valid stream").content, "ok");
+    assert_eq!(request["stream"], true);
+    assert_eq!(request["tool_choice"], "auto");
+    assert!(
+        request["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+    );
+    assert!(request.get("stream_options").is_none());
+}
+
+#[test]
+fn a_content_type_with_parameters_in_any_case_is_accepted() {
+    let exchange = stream_exchange(
+        "200 OK",
+        &text_stream(&["a"]),
+        "Content-Type: Text/Event-Stream; charset=utf-8\r\n",
+    );
+    assert_eq!(exchange.result.expect("valid stream").content, "a");
+    assert_eq!(exchange.pieces, ["a"]);
+}
+
+#[test]
+fn a_json_reply_to_a_streamed_request_is_refused() {
+    let exchange = stream_exchange("200 OK", SUCCESS, "Content-Type: application/json\r\n");
+    assert_eq!(exchange.result, Err(ProviderError::MalformedResponse));
+    assert!(exchange.pieces.is_empty());
+
+    let missing = stream_exchange("200 OK", &text_stream(&["a"]), "");
+    assert_eq!(missing.result, Err(ProviderError::MalformedResponse));
+}
+
+#[test]
+fn a_non_success_status_to_a_streamed_request_is_an_http_status_error() {
+    let exchange = stream_exchange(
+        "503 Service Unavailable",
+        &text_stream(&["a"]),
+        EVENT_STREAM,
+    );
+    assert_eq!(exchange.result, Err(ProviderError::HttpStatus(503)));
+    assert!(exchange.pieces.is_empty());
+}
+
+#[test]
+fn a_streamed_reply_without_done_is_incomplete_and_keeps_delivered_text() {
+    let body = format!("{}{}", text_event("one"), text_event("two"));
+    let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);
+    assert_eq!(exchange.result, Err(ProviderError::IncompleteStream));
+    assert_eq!(exchange.pieces, ["one", "two"]);
+}
+
+#[test]
+fn text_before_a_malformed_payload_stays_delivered_and_the_call_fails() {
+    let body = format!(
+        "{}{}data: {{broken\n\n",
+        text_event("one"),
+        text_event("two")
+    );
+    let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);
+    assert_eq!(exchange.result, Err(ProviderError::MalformedResponse));
+    assert_eq!(exchange.pieces, ["one", "two"]);
+}
+
+#[test]
+fn a_streamed_reply_over_one_mebibyte_is_refused() {
+    let mut body = text_event("start");
+    while body.len() <= 1024 * 1024 {
+        body.push_str(": padding padding padding padding padding padding\n");
+    }
+    let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);
+    assert_eq!(exchange.result, Err(ProviderError::ResponseTooLarge));
+    assert_eq!(exchange.pieces, ["start"]);
+}
+
+#[test]
+fn streamed_usage_and_crlf_framing_are_accepted() {
+    let body = format!(
+        ": ping\r\n\r\nevent: message\r\ndata:{}\r\n\r\ndata: {}\r\n\r\ndata: {}\r\n\r\ndata: [DONE]\r\n\r\n",
+        serde_json::json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}),
+        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
+        serde_json::json!({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}),
+    );
+    let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);
+    assert_eq!(
+        exchange.result,
+        Ok(ModelReply {
+            content: "hi".to_owned(),
+            finish_reason: "length".to_owned(),
+            usage: Some(Usage {
+                prompt_tokens: Some(5),
+                completion_tokens: Some(2),
+                total_tokens: Some(7),
+            }),
+        })
+    );
+    assert_eq!(exchange.pieces, ["hi"]);
+}
+
+#[test]
+fn the_streamed_text_method_refuses_tool_calls_and_tool_finish_reasons() {
+    let with_call = call_event(
+        r#"{"index":0,"id":"a","type":"function","function":{"name":"workspace_read_file","arguments":"{}"}}"#,
+    );
+    let exchange = stream_exchange("200 OK", &with_call, EVENT_STREAM);
+    assert_eq!(exchange.result, Err(ProviderError::UnsupportedToolCall));
+
+    let finish = format!("{}data: [DONE]\n\n", finish_event("tool_calls"));
+    let exchange = stream_exchange("200 OK", &finish, EVENT_STREAM);
+    assert_eq!(exchange.result, Err(ProviderError::UnsupportedToolCall));
+}
+
+#[test]
+fn documented_streamed_tool_call_pieces_assemble_into_a_valid_call() {
+    // Given the first piece with id, type, name, and empty arguments, then fragments.
+    let mut body = text_event("Reading.");
+    body.push_str(&call_event(
+        r#"{"index":0,"id":"call_9","type":"function","function":{"name":"workspace_read_file","arguments":""}}"#,
+    ));
+    body.push_str(&call_event(
+        r#"{"index":0,"function":{"arguments":"{\"path\":"}}"#,
+    ));
+    body.push_str(&call_event(
+        r#"{"index":0,"function":{"arguments":"\"notes.txt\"}"}}"#,
+    ));
+    body.push_str(&finish_event("tool_calls"));
+    body.push_str("data: [DONE]\n\n");
+
+    // When the streamed tool request runs.
+    let (result, pieces, _) = tool_stream_exchange(&body);
+
+    // Then one raw call parses with the real validator and the text was delivered.
+    let reply = result.expect("valid tool stream");
+    assert_eq!(reply.content, "Reading.");
+    assert_eq!(reply.finish_reason, "tool_calls");
+    assert_eq!(pieces, ["Reading."]);
+    let [raw_call] = reply.tool_calls.as_slice() else {
+        panic!("exactly one call: {:?}", reply.tool_calls);
+    };
+    assert!(ToolCall::parse(raw_call).is_ok());
+}
+
+/// Stream the given call pieces and a finish reason through the tool method.
+fn assembled(entries: &[&str], reason: &str) -> Result<ToolModelReply, ProviderError> {
+    let mut body: String = entries.iter().map(|entry| call_event(entry)).collect();
+    body.push_str(&finish_event(reason));
+    body.push_str("data: [DONE]\n\n");
+    tool_stream_exchange(&body).0
+}
+
+#[test]
+fn streamed_tool_call_pieces_follow_the_assembly_rules() {
+    // A name sent in pieces, a repeated equal id, and finish `stop` with calls.
+    let reply = assembled(
+        &[
+            r#"{"index":0,"id":"a","function":{"name":"workspace_list_"}}"#,
+            r#"{"index":0,"id":"a","type":"function","function":{"name":"directory","arguments":"{\"path\":\"\"}"}}"#,
+        ],
+        "stop",
+    )
+    .expect("assembled");
+    let [raw_call] = reply.tool_calls.as_slice() else {
+        panic!("exactly one call: {:?}", reply.tool_calls);
+    };
+    assert!(ToolCall::parse(raw_call).is_ok());
+
+    // A call that never received an id has no `id` member and fails validation.
+    let reply = assembled(
+        &[r#"{"index":0,"type":"function","function":{"name":"x","arguments":"{}"}}"#],
+        "tool_calls",
+    )
+    .expect("assembled");
+    let [raw_call] = reply.tool_calls.as_slice() else {
+        panic!("exactly one call: {:?}", reply.tool_calls);
+    };
+    assert!(raw_call.get("id").is_none());
+    assert!(ToolCall::parse(raw_call).is_err());
+}
+
+#[test]
+fn streamed_tool_call_pieces_that_break_the_rules_are_refused() {
+    let refused: [&[&str]; 5] = [
+        &[r#"{"index":0,"id":"a"}"#, r#"{"index":0,"id":"b"}"#],
+        &[r#"{"index":2,"id":"a"}"#],
+        &[r#"{"index":0,"surprise":true}"#],
+        &[r#"{"index":0,"type":"custom"}"#],
+        &[r#"{"index":0,"function":{"extra":"x"}}"#],
+    ];
+    for entries in refused {
+        assert_eq!(
+            assembled(entries, "tool_calls").expect_err("refused"),
+            ProviderError::MalformedResponse,
+            "{entries:?}"
+        );
+    }
+
+    // A reply cut short by the token limit cannot carry tool calls.
+    assert_eq!(
+        assembled(&[r#"{"index":0,"id":"a"}"#], "length").expect_err("refused"),
+        ProviderError::MalformedResponse
+    );
+
+    // Sixty-four calls are accepted; index 64 is refused.
+    let many: Vec<String> = (0..65)
+        .map(|index| format!(r#"{{"index":{index},"id":"c{index}"}}"#))
+        .collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    assert_eq!(
+        assembled(&many, "tool_calls").expect_err("refused"),
+        ProviderError::MalformedResponse
+    );
+    assert_eq!(
+        assembled(many.get(..64).expect("sixty-four"), "tool_calls")
+            .expect("sixty-four calls")
+            .tool_calls
+            .len(),
+        64
+    );
+}

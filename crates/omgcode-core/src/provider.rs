@@ -1,3 +1,5 @@
+mod stream;
+
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
 use crate::turn::{ModelError, ToolDefinition, ToolModel, ToolModelReply, ToolModelRequest};
@@ -116,6 +118,9 @@ pub enum ProviderError {
     /// The server requested a tool or function call, which this adapter does not support.
     #[error("local model tool calls are not supported")]
     UnsupportedToolCall,
+    /// A streamed response ended before its `[DONE]` marker.
+    #[error("local model stream ended before completion")]
+    IncompleteStream,
 }
 
 #[derive(Serialize)]
@@ -217,15 +222,54 @@ impl LocalModelClient {
     /// Model output remains untrusted plain text and is never interpreted as an
     /// action by this adapter.
     pub fn complete(&self, messages: &[ModelMessage]) -> Result<ModelReply, ProviderError> {
+        let body = self.text_body(messages, false)?;
+        parse_response(self.send(body, false)?)
+    }
+
+    /// Send one bounded streaming request and pass assistant text to `on_text`.
+    ///
+    /// The request is the same as [`Self::complete`] with `stream` set to `true`
+    /// and an `Accept: text/event-stream` header; `stream_options` is never
+    /// sent. The response is read as server-sent events under the strict rules
+    /// of ADR-0049. `on_text` receives each non-empty piece, in order, only
+    /// after the payload that carried it passed validation. That text is
+    /// provisional: if the stream fails later, the text already delivered stays
+    /// delivered, this method returns the error, and no reply exists.
+    ///
+    /// # Errors
+    ///
+    /// Besides the errors of [`Self::complete`], a stream that ends before
+    /// `[DONE]` is `IncompleteStream`, and a response whose content type is not
+    /// `text/event-stream` is `MalformedResponse`.
+    pub fn complete_streaming(
+        &self,
+        messages: &[ModelMessage],
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ModelReply, ProviderError> {
+        let body = self.text_body(messages, true)?;
+        let response = streaming_response(self.send(body, true)?)?;
+        let outcome = stream::read_event_stream(response, stream::StreamMode::Text, on_text)?;
+        Ok(ModelReply {
+            content: outcome.content,
+            finish_reason: outcome.finish_reason,
+            usage: outcome.usage,
+        })
+    }
+
+    /// Encode the text request with the chosen `stream` setting.
+    fn text_body(
+        &self,
+        messages: &[ModelMessage],
+        streaming: bool,
+    ) -> Result<Vec<u8>, ProviderError> {
         self.check_messages(messages, 0)?;
-        let body = serde_json::to_vec(&ChatRequest {
+        serde_json::to_vec(&ChatRequest {
             model: &self.model,
             messages,
-            stream: false,
+            stream: streaming,
             max_tokens: self.max_output_tokens,
         })
-        .map_err(|_| ProviderError::MalformedResponse)?;
-        parse_response(self.send(body)?)
+        .map_err(|_| ProviderError::MalformedResponse)
     }
 
     /// Send one bounded request that advertises the supplied function tools.
@@ -241,6 +285,41 @@ impl LocalModelClient {
         messages: &[ModelMessage],
         tools: &[ToolDefinition],
     ) -> Result<ToolModelReply, ProviderError> {
+        let body = self.tool_body(messages, tools, false)?;
+        parse_tool_response(self.send(body, false)?)
+    }
+
+    /// Send one bounded streaming request that advertises the supplied tools.
+    ///
+    /// This is [`Self::complete_with_tools`] with the stream rules of
+    /// [`Self::complete_streaming`]. Tool calls arrive in pieces and are
+    /// assembled by `index`; the returned calls hold only the members that were
+    /// received and stay raw and unvalidated, so the caller's validation judges
+    /// them exactly as it judges a non-streaming call. Only assistant text is
+    /// passed to `on_text`; call names and arguments never are.
+    pub fn complete_with_tools_streaming(
+        &self,
+        messages: &[ModelMessage],
+        tools: &[ToolDefinition],
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<ToolModelReply, ProviderError> {
+        let body = self.tool_body(messages, tools, true)?;
+        let response = streaming_response(self.send(body, true)?)?;
+        let outcome = stream::read_event_stream(response, stream::StreamMode::Tools, on_text)?;
+        Ok(ToolModelReply {
+            content: outcome.content,
+            tool_calls: outcome.tool_calls,
+            finish_reason: outcome.finish_reason,
+        })
+    }
+
+    /// Encode the tool request with the chosen `stream` setting.
+    fn tool_body(
+        &self,
+        messages: &[ModelMessage],
+        tools: &[ToolDefinition],
+        streaming: bool,
+    ) -> Result<Vec<u8>, ProviderError> {
         if tools.is_empty() || tools.len() > MAX_TOOL_DEFINITIONS {
             return Err(ProviderError::InvalidConfiguration);
         }
@@ -256,16 +335,15 @@ impl LocalModelClient {
             messages,
             u64::try_from(tool_bytes.len()).map_err(|_| ProviderError::RequestTooLarge)?,
         )?;
-        let body = serde_json::to_vec(&ToolChatRequest {
+        serde_json::to_vec(&ToolChatRequest {
             model: &self.model,
             messages,
-            stream: false,
+            stream: streaming,
             max_tokens: self.max_output_tokens,
             tools: &tools,
             tool_choice: "auto",
         })
-        .map_err(|_| ProviderError::MalformedResponse)?;
-        parse_tool_response(self.send(body)?)
+        .map_err(|_| ProviderError::MalformedResponse)
     }
 
     /// Require the compiled base prompt as the only system message and bound the request.
@@ -305,7 +383,9 @@ impl LocalModelClient {
     }
 
     /// Post one encoded request body to the validated loopback endpoint.
-    fn send(&self, body: Vec<u8>) -> Result<Response, ProviderError> {
+    ///
+    /// A streamed request also asks for `text/event-stream`.
+    fn send(&self, body: Vec<u8>, streaming: bool) -> Result<Response, ProviderError> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(ProviderError::RequestTooLarge);
         }
@@ -315,6 +395,9 @@ impl LocalModelClient {
             .post(self.endpoint.clone())
             .timeout(self.request_timeout)
             .header(reqwest::header::CONTENT_TYPE, "application/json");
+        if streaming {
+            request = request.header(reqwest::header::ACCEPT, "text/event-stream");
+        }
         if let Some(authorization) = &self.authorization {
             request = request.header(AUTHORIZATION, authorization.clone());
         }
@@ -331,6 +414,7 @@ impl LocalModelClient {
 /// it precisely; the runtime records only the coarse [`ModelError`].
 pub struct LocalToolModel<'a> {
     client: &'a LocalModelClient,
+    on_text: Option<&'a mut dyn FnMut(&str)>,
     last_error: Option<ProviderError>,
 }
 
@@ -339,6 +423,20 @@ impl<'a> LocalToolModel<'a> {
     pub const fn new(client: &'a LocalModelClient) -> Self {
         Self {
             client,
+            on_text: None,
+            last_error: None,
+        }
+    }
+
+    /// Wrap a validated client so each request is streamed.
+    ///
+    /// `on_text` receives the provisional assistant text of every request of
+    /// the turn, as described for
+    /// [`LocalModelClient::complete_with_tools_streaming`].
+    pub const fn streaming(client: &'a LocalModelClient, on_text: &'a mut dyn FnMut(&str)) -> Self {
+        Self {
+            client,
+            on_text: Some(on_text),
             last_error: None,
         }
     }
@@ -352,12 +450,20 @@ impl<'a> LocalToolModel<'a> {
 impl ToolModel for LocalToolModel<'_> {
     /// Send one request and remember the precise failure for reporting.
     fn complete(&mut self, request: ToolModelRequest<'_>) -> Result<ToolModelReply, ModelError> {
-        self.client
-            .complete_with_tools(request.messages, request.tools)
-            .map_err(|error| {
-                self.last_error = Some(error);
-                model_error(error)
-            })
+        let result = match self.on_text.as_mut() {
+            Some(on_text) => self.client.complete_with_tools_streaming(
+                request.messages,
+                request.tools,
+                &mut **on_text,
+            ),
+            None => self
+                .client
+                .complete_with_tools(request.messages, request.tools),
+        };
+        result.map_err(|error| {
+            self.last_error = Some(error);
+            model_error(error)
+        })
     }
 }
 
@@ -365,7 +471,9 @@ impl ToolModel for LocalToolModel<'_> {
 const fn model_error(error: ProviderError) -> ModelError {
     match error {
         ProviderError::RequestTooLarge | ProviderError::ContextLimit => ModelError::RequestTooLarge,
-        ProviderError::Transport | ProviderError::HttpStatus(_) => ModelError::Transport,
+        ProviderError::Transport
+        | ProviderError::HttpStatus(_)
+        | ProviderError::IncompleteStream => ModelError::Transport,
         ProviderError::InvalidConfiguration
         | ProviderError::InvalidToken
         | ProviderError::ResponseTooLarge
@@ -494,6 +602,30 @@ fn json_string_len(value: &str) -> Result<u64, ProviderError> {
             .checked_add(encoded_len)
             .ok_or(ProviderError::RequestTooLarge)
     })
+}
+
+/// Accept only a successful `text/event-stream` response to a streamed request.
+///
+/// A server that answers with one JSON document is refused rather than parsed:
+/// the caller asked for a stream and nothing is repaired. Content-type
+/// parameters such as `charset` are allowed and the media type is compared
+/// case-insensitively.
+fn streaming_response(response: Response) -> Result<Response, ProviderError> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ProviderError::HttpStatus(status.as_u16()));
+    }
+    let is_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"));
+    if is_stream {
+        Ok(response)
+    } else {
+        Err(ProviderError::MalformedResponse)
+    }
 }
 
 /// Read a successful response body within the byte limit.
@@ -775,6 +907,7 @@ mod tests {
     /// Give the server its own deadline and cancellation path, independent of HTTP timeouts.
     fn slow_response(
         drip_body: bool,
+        streamed: bool,
     ) -> (LocalModelClient, mpsc::Sender<()>, thread::JoinHandle<bool>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("private fixture");
         listener.set_nonblocking(true).expect("bounded accept");
@@ -829,9 +962,18 @@ mod tests {
                 bytes.extend_from_slice(&buffer[..count]);
             }
             if drip_body {
-                let body = br#"{"choices":[{"message":{"role":"assistant","content":"completed slowly"},"finish_reason":"stop"}]}"#;
+                let body: &[u8] = if streamed {
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"completed slowly\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                } else {
+                    br#"{"choices":[{"message":{"role":"assistant","content":"completed slowly"},"finish_reason":"stop"}]}"#
+                };
+                let content_type = if streamed {
+                    "Content-Type: text/event-stream\r\n"
+                } else {
+                    ""
+                };
                 let headers = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 if stream.write_all(headers.as_bytes()).is_err() {
@@ -871,10 +1013,10 @@ mod tests {
     }
 
     /// Observe fixture cleanup even when the timeout assertion is expected to fail.
-    fn assert_bounded_transport_failure(drip_body: bool) {
-        let (client, cancel, task) = slow_response(drip_body);
+    fn assert_bounded_transport_failure(drip_body: bool, streamed: bool) {
+        let (client, cancel, task) = slow_response(drip_body, streamed);
         let started = Instant::now();
-        let result = client.complete(&[
+        let messages = [
             ModelMessage {
                 role: ModelRole::System,
                 content: BASE_PROMPT.to_owned(),
@@ -883,7 +1025,12 @@ mod tests {
                 role: ModelRole::User,
                 content: "request".to_owned(),
             },
-        ]);
+        ];
+        let result = if streamed {
+            client.complete_streaming(&messages, &mut |_: &str| {})
+        } else {
+            client.complete(&messages)
+        };
         let elapsed = started.elapsed();
         // Receiver disconnection also requests cleanup; either outcome is safe.
         // A disconnected receiver means the fixture is already exiting. The
@@ -907,11 +1054,21 @@ mod tests {
 
     #[test]
     fn request_deadline_bounds_stalled_response_headers() {
-        assert_bounded_transport_failure(false);
+        assert_bounded_transport_failure(false, false);
+    }
+
+    #[test]
+    fn request_deadline_bounds_stalled_streamed_response_headers() {
+        assert_bounded_transport_failure(false, true);
     }
 
     #[test]
     fn request_deadline_bounds_a_dripping_response_body() {
-        assert_bounded_transport_failure(true);
+        assert_bounded_transport_failure(true, false);
+    }
+
+    #[test]
+    fn request_deadline_bounds_a_dripping_streamed_body() {
+        assert_bounded_transport_failure(true, true);
     }
 }

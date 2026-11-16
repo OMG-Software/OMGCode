@@ -1,6 +1,7 @@
-import { append, el } from "../dom";
+import { append, el, neutralise, text } from "../dom";
 import { formatAbsolute } from "../format";
 import type { TranscriptEntry } from "../ipc/types";
+import type { ChatPreview } from "./chat_runner";
 
 const ROLE_LABELS = { user: "You", assistant: "Assistant", tool: "Tool" } as const;
 
@@ -22,6 +23,45 @@ function note(entry: TranscriptEntry, className: string, message: string): HTMLE
   const node = entryShell(entry, className);
   append(node, el("span", { class: "note-text", text: message }));
   return node;
+}
+
+export interface LiveEntry {
+  element: HTMLElement;
+  /** Updates the text node in place; nothing is rebuilt. */
+  update(preview: ChatPreview): void;
+}
+
+/**
+ * Builds the provisional entry shown while a model reply is generated. The text is untrusted and
+ * lives in one text node. It is not the recorded reply and goes away when the turn settles.
+ */
+export function createLiveEntry(): LiveEntry {
+  const body = text("");
+  const cutOff = el("p", {
+    class: "muted live-note",
+    text: "The preview is cut off. The saved reply will appear when the turn ends.",
+  });
+  cutOff.hidden = true;
+  const textBox = el("div", { class: "bubble-text", attrs: { "aria-live": "polite" } });
+  textBox.appendChild(body);
+  const element = el(
+    "article",
+    { class: "entry bubble bubble-assistant bubble-live" },
+    el(
+      "div",
+      { class: "entry-head" },
+      el("span", { class: "entry-label", text: "Assistant (generating, not saved yet)" }),
+    ),
+    textBox,
+    cutOff,
+  );
+  return {
+    element,
+    update(preview) {
+      body.data = neutralise(preview.text);
+      cutOff.hidden = !preview.truncated;
+    },
+  };
 }
 
 /** Renders one transcript entry. Every string is shown as text. */

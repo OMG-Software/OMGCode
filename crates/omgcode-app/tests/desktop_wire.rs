@@ -7,12 +7,13 @@ use std::fs;
 
 use omgcode_app::desktop::{
     ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
-    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatOutcome,
-    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto, Decision,
-    DesktopError, EntryKind, MessageRoleDto, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
-    SessionCreateRequest, SessionRequest, SessionStatus, SessionSummary, SessionTree, SnippetPart,
-    ToolOutcomeDto, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest,
-    TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceList,
+    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatEvent,
+    ChatOutcome, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto,
+    Decision, DesktopError, EntryKind, MessageRoleDto, SearchHit, SearchRequest, SearchResult,
+    SearchRoleDto, SessionCreateRequest, SessionRequest, SessionStatus, SessionSummary,
+    SessionTree, SnippetPart, ToolOutcomeDto, ToolsMode, TranscriptEntry, TranscriptPage,
+    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
+    WorkspaceList,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -229,6 +230,47 @@ fn the_tree_search_and_transcript_responses_have_exactly_the_declared_keys() {
 }
 
 #[test]
+fn chat_events_have_exactly_the_declared_shapes() {
+    // Given one of each pushed chat event.
+    let session = id();
+    let events = [
+        (
+            ChatEvent::RequestStarted {
+                session_id: session,
+                request: 1,
+            },
+            json!({"kind": "request_started", "session_id": session, "request": 1}),
+        ),
+        (
+            ChatEvent::Delta {
+                session_id: session,
+                request: 2,
+                text: "hi \u{e9}".to_owned(),
+            },
+            json!({"kind": "delta", "session_id": session, "request": 2, "text": "hi \u{e9}"}),
+        ),
+        (
+            ChatEvent::PreviewTruncated {
+                session_id: session,
+                request: 3,
+            },
+            json!({"kind": "preview_truncated", "session_id": session, "request": 3}),
+        ),
+        (
+            ChatEvent::Finished {
+                session_id: session,
+            },
+            json!({"kind": "finished", "session_id": session}),
+        ),
+    ];
+
+    // When each is serialized, then it is exactly the pinned JSON.
+    for (event, expected) in events {
+        assert_eq!(json_of(&event), expected);
+    }
+}
+
+#[test]
 fn chat_responses_have_exactly_the_declared_keys() {
     let completed = json_of(&ChatStatus {
         session_id: id(),
@@ -292,6 +334,7 @@ fn error_value() -> DesktopError {
             data_root: directory.path().to_owned(),
             endpoint: "http://127.0.0.1:1/v1".to_owned(),
             token_source: omgcode_app::TokenSource::Environment,
+            stream: true,
         },
         common::no_token,
     )

@@ -20,6 +20,7 @@
     "allow-chat-send",
     "allow-chat-status",
     "allow-chat-cancel",
+    "allow-chat-subscribe",
     "allow-approvals-summary",
     "allow-approvals-show-window"
   ]

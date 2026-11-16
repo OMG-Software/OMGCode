@@ -52,8 +52,13 @@ Neither route detects a concurrent writer. Trusted CLI
 commands record, apply, and revoke Windows container ACL grants. Follow the
 [execution contract](docs/execution.md).
 Sessions are indexed in a derived SQLite index that the journals can rebuild.
-The desktop shell has no settings interface, streaming, development panels,
-packaging, or recovery interface. Most other planned features are not
+Chat can stream the local model's reply (`chat --stream` on the
+CLI; on by default in the desktop shell, `--stream off` at launch). Streamed
+text is provisional, and the journals record only the validated reply. The
+shell pushes chat events to the main window through one caller-scoped channel
+that needs no `core:` permission ([ADR-0049](docs/adr/0049-stream-local-model-replies-and-push-chat-events.md)).
+The desktop shell has no settings interface, development panels, packaging, or
+recovery interface. Most other planned features are not
 implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides

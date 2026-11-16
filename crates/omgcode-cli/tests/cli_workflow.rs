@@ -26,6 +26,14 @@ struct MockServer {
 impl MockServer {
     /// Accept exactly one local request with independent bounds and observed cleanup.
     fn start(response: Value) -> Self {
+        Self::start_raw(
+            "application/json",
+            serde_json::to_vec(&response).expect("serialize mock response"),
+        )
+    }
+
+    /// Like [`MockServer::start`], but answers with the given body and content type.
+    fn start_raw(content_type: &'static str, response: Vec<u8>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind private mock server");
         listener
             .set_nonblocking(true)
@@ -51,7 +59,7 @@ impl MockServer {
                 sender
                     .send(Ok(request_json))
                     .map_err(|error| error.to_string())?;
-                write_http_response(&mut stream, &response)
+                write_http_response(&mut stream, content_type, &response)
             })();
             if let Err(error) = &result {
                 let _ = sender.send(Err(error.clone()));
@@ -154,17 +162,36 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-/// Send deterministic JSON without depending on a real provider or live account.
-fn write_http_response(stream: &mut TcpStream, body: &Value) -> Result<(), String> {
-    let body = serde_json::to_vec(body).map_err(|error| error.to_string())?;
+/// Send a deterministic body without depending on a real provider or live account.
+fn write_http_response(
+    stream: &mut TcpStream,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), String> {
     let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
         .write_all(headers.as_bytes())
-        .and_then(|()| stream.write_all(&body))
+        .and_then(|()| stream.write_all(body))
         .map_err(|error| error.to_string())
+}
+
+/// A complete streamed text reply, one event per piece.
+fn event_stream(pieces: &[&str]) -> Vec<u8> {
+    let mut body = String::new();
+    for piece in pieces {
+        body.push_str(&format!(
+            "data: {}\n\n",
+            json!({"choices": [{"index": 0, "delta": {"role": "assistant", "content": piece}, "finish_reason": null}]})
+        ));
+    }
+    body.push_str(&format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+    ));
+    body.into_bytes()
 }
 
 fn completion_response(content: &str) -> Value {
@@ -992,5 +1019,101 @@ fn native_locator_reopens_a_journal_path_with_an_unpaired_surrogate() {
     assert_eq!(
         output_json(&inspected)["session"]["session_id"],
         result["session"]["session_id"]
+    );
+}
+
+/// Run `chat` with optional extra flags before the message.
+fn run_chat_with(data_dir: &Path, workspace: &Path, endpoint: &str, extra: &[&str]) -> Output {
+    let data_dir = data_dir.to_str().expect("temporary path is Unicode");
+    let workspace = workspace.to_str().expect("temporary path is Unicode");
+    gated_output(
+        cli()
+            .args([
+                "--data-dir",
+                data_dir,
+                "chat",
+                "--workspace",
+                workspace,
+                "--endpoint",
+                endpoint,
+                "--model",
+                "fixture",
+                "--context-tokens",
+                "131072",
+                "--max-output-tokens",
+                "32",
+            ])
+            .args(extra)
+            .arg("say something"),
+    )
+    .expect("run OMGCode chat command")
+}
+
+#[test]
+fn chat_stream_writes_escaped_text_to_stderr_and_one_json_document_to_stdout() {
+    // Given a server that streams text holding a control sequence and a bidi override.
+    let temporary = TempDir::new().expect("create private test directory");
+    let data_dir = temporary.path().join("application-data");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create private workspace");
+    let server = MockServer::start_raw(
+        "text/event-stream",
+        event_stream(&["Hel", "lo \u{1b}[31mred", " \u{202e}flip \\", "u{41}"]),
+    );
+
+    // When chat runs with --stream.
+    let output = run_chat_with(&data_dir, &workspace, &server.endpoint, &["--stream"]);
+    let request = server.finish();
+
+    // Then the request asked for a stream, standard error shows the escaped
+    // text on one line, and standard output is one JSON document with the
+    // same reply.
+    assert_success(&output);
+    assert_eq!(request["stream"], true);
+    let stderr = String::from_utf8(output.stderr.clone()).expect("escaped stderr is UTF-8");
+    assert_eq!(
+        stderr,
+        "Hello \\u{001b}[31mred \\u{202e}flip \\u{5c}u{41}\n"
+    );
+    assert!(!stderr.contains('\u{1b}'));
+    assert!(!stderr.contains('\u{202e}'));
+    let result = output_json(&output);
+    assert_eq!(
+        result["reply"]["content"],
+        "Hello \u{1b}[31mred \u{202e}flip \\u{41}"
+    );
+    let stdout = String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8");
+    assert_eq!(stdout.trim_end().lines().count(), 1, "one JSON document");
+}
+
+#[test]
+fn chat_without_stream_sends_stream_false_and_leaves_stderr_empty() {
+    let temporary = TempDir::new().expect("create private test directory");
+    let data_dir = temporary.path().join("application-data");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create private workspace");
+    let server = MockServer::start(completion_response("plain answer"));
+
+    let output = run_chat_with(&data_dir, &workspace, &server.endpoint, &[]);
+    let request = server.finish();
+
+    assert_success(&output);
+    assert_eq!(request["stream"], false);
+    assert!(request.get("stream_options").is_none());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output_json(&output)["reply"]["content"], "plain answer");
+}
+
+#[test]
+fn capabilities_report_the_streaming_adapters() {
+    let output = run_cli(&["capabilities"]);
+    assert_success(&output);
+    assert_eq!(
+        output_json(&output)["streaming_adapters"],
+        json!(["lm_studio"])
     );
 }

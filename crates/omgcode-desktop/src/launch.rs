@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>]
+//!                 [--stream <on|off>]
 //! ```
 //!
 //! The command line belongs to the operator who starts the process. The
@@ -16,6 +17,10 @@
 //! [`UsageError`], and with a profile [`LaunchArgs::endpoint`] holds only the
 //! default and is not used (ADR-0048).
 //!
+//! `--stream` chooses whether chat turns send streamed model requests and push
+//! their text to the window (`on`, the default) or send non-streaming requests
+//! (`off`). Only the exact values `on` and `off` are accepted (ADR-0049).
+//!
 //! Any unknown argument, a flag without a value, a value that looks like
 //! another flag, an empty value, a non-UTF-8 endpoint, a repeated flag, or
 //! both `--endpoint` and `--provider-profile` is a [`UsageError`]. The caller
@@ -28,10 +33,11 @@ use std::path::PathBuf;
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 
 /// The fixed message printed to stderr for a usage error.
-pub const USAGE: &str = "usage: omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>]\n  \
+pub const USAGE: &str = "usage: omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>] [--stream <on|off>]\n  \
 --data-dir <path>           application data root (default: the per-user OMGCode data directory)\n  \
 --endpoint <url>            local model endpoint, a loopback http URL (default: http://127.0.0.1:1234/v1)\n  \
---provider-profile <name>   use this lm_studio provider profile's recorded endpoint and stored credential\n                              (default: --endpoint and the OMGCODE_LM_TOKEN environment variable)\n                              cannot be combined with --endpoint";
+--provider-profile <name>   use this lm_studio provider profile's recorded endpoint and stored credential\n                              (default: --endpoint and the OMGCODE_LM_TOKEN environment variable)\n                              cannot be combined with --endpoint\n  \
+--stream <on|off>           stream model replies into the window as they arrive (default: on); off sends non-streaming requests";
 
 /// What the command line asked for.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +50,9 @@ pub struct LaunchArgs {
     /// The recorded provider profile whose stored credential is the server
     /// token, or `None` to use the `OMGCODE_LM_TOKEN` variable.
     pub provider_profile: Option<String>,
+    /// Whether chat turns send streamed requests and push their text to the
+    /// window. `--stream off` sets it to `false` (ADR-0049).
+    pub stream: bool,
 }
 
 /// The command line was not understood. It carries no detail on purpose: the
@@ -67,6 +76,7 @@ where
     let mut data_dir: Option<PathBuf> = None;
     let mut endpoint: Option<String> = None;
     let mut provider_profile: Option<String> = None;
+    let mut stream: Option<bool> = None;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         let value = args.next().ok_or(UsageError)?;
@@ -81,6 +91,13 @@ where
             Some("--provider-profile") if provider_profile.is_none() => {
                 provider_profile = Some(value.into_string().map_err(|_| UsageError)?);
             }
+            Some("--stream") if stream.is_none() => {
+                stream = Some(match value.to_str() {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => return Err(UsageError),
+                });
+            }
             _ => return Err(UsageError),
         }
     }
@@ -93,6 +110,7 @@ where
         data_dir,
         endpoint: endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned()),
         provider_profile,
+        stream: stream.unwrap_or(true),
     })
 }
 
@@ -112,6 +130,7 @@ mod tests {
                 data_dir: None,
                 endpoint: DEFAULT_ENDPOINT.to_owned(),
                 provider_profile: None,
+                stream: true,
             })
         );
     }
@@ -122,6 +141,7 @@ mod tests {
             data_dir: Some(PathBuf::from("data")),
             endpoint: "http://127.0.0.1:9/v1".to_owned(),
             provider_profile: None,
+            stream: true,
         };
         assert_eq!(
             parse(&["--data-dir", "data", "--endpoint", "http://127.0.0.1:9/v1"]),
@@ -204,6 +224,7 @@ mod tests {
             data_dir: Some(PathBuf::from("data")),
             endpoint: DEFAULT_ENDPOINT.to_owned(),
             provider_profile: Some("lms".to_owned()),
+            stream: true,
         };
         assert_eq!(
             parse(&["--provider-profile", "lms", "--data-dir", "data"]),
@@ -224,7 +245,43 @@ mod tests {
     }
 
     #[test]
+    fn streaming_is_on_by_default_and_the_flag_takes_on_or_off() {
+        // Given no flag, then streaming is on.
+        assert!(parse(&[]).expect("defaults").stream);
+
+        // When the flag says `on` or `off`, then that is the value, in any order.
+        assert!(parse(&["--stream", "on"]).expect("on").stream);
+        assert!(!parse(&["--stream", "off"]).expect("off").stream);
+        let both = parse(&["--stream", "off", "--data-dir", "data"]).expect("both");
+        assert!(!both.stream);
+        assert_eq!(both.data_dir, Some(PathBuf::from("data")));
+        let profile = parse(&["--provider-profile", "lms", "--stream", "off"]).expect("profile");
+        assert!(!profile.stream);
+        assert_eq!(profile.provider_profile.as_deref(), Some("lms"));
+    }
+
+    #[test]
+    fn a_bad_missing_or_repeated_stream_value_is_refused() {
+        for args in [
+            &["--stream", "maybe"][..],
+            &["--stream", "ON"],
+            &["--stream", "true"],
+            &["--stream", "1"],
+            &["--stream", " on"],
+            &["--stream", ""],
+            &["--stream"],
+            &["--stream", "--data-dir", "a"],
+            &["--stream", "on", "--stream", "on"],
+            &["--stream", "on", "--stream", "off"],
+            &["--stream=on"],
+        ] {
+            assert_eq!(parse(args), Err(UsageError), "{args:?}");
+        }
+    }
+
+    #[test]
     fn usage_text_names_every_flag_and_the_default() {
+        assert!(USAGE.contains("--stream <on|off>"));
         assert!(USAGE.contains("--data-dir") && USAGE.contains("--endpoint"));
         assert!(USAGE.contains("--provider-profile"));
         assert!(USAGE.contains(DEFAULT_ENDPOINT));

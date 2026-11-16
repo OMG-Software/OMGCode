@@ -2,6 +2,7 @@ import type { Invoker } from "../ipc/client";
 import type {
   ApprovalDetail,
   ApprovalView,
+  ChatEvent,
   ChatOutcome,
   ChatSettings,
   ChatStatus,
@@ -22,6 +23,7 @@ import {
 export const MOCK_BACKEND_NAME = OMGCODE_MOCK_FIXTURE_MARKER;
 
 const CHAT_DURATION_MS = 2000;
+const MOCK_REPLY_PIECES = ["This ", "is a ", "mock ", "reply."];
 const TOKEN_LIFETIME_MS = 120_000;
 const MOCK_ENDPOINT = "http://127.0.0.1:1234/v1";
 
@@ -67,6 +69,21 @@ function snippet(text: string, query: string): SnippetPart[] | null {
 interface ChatRecord {
   status: ChatStatus;
   timer: ReturnType<typeof setTimeout> | null;
+  deltaTimers: Array<ReturnType<typeof setTimeout>>;
+  preview: string;
+}
+
+/** The object a caller passes as `on_event`: a plain stand-in for a Tauri channel. */
+interface Subscriber {
+  onmessage: (value: unknown) => void;
+}
+
+function isSubscriber(value: unknown): value is Subscriber {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { onmessage?: unknown }).onmessage === "function"
+  );
 }
 
 /** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
@@ -75,6 +92,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   const byId = new Map<string, FixtureSession>(sessions.map((s) => [s.summary.session_id, s]));
   const chats = new Map<string, ChatRecord>();
   const tokens = new Map<string, { id: string; expires: number }>();
+  let subscriber: Subscriber | null = null;
   const nowUnix = (): number => Math.floor(now() / 1000);
 
   const approvals: ApprovalView[] = [
@@ -118,6 +136,41 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       request_sha256: id.padEnd(64, "0"),
       writers_stopped: false,
     };
+  }
+
+  function emit(event: ChatEvent): void {
+    try {
+      subscriber?.onmessage(event);
+    } catch {
+      // A failing subscriber must not break the mock turn.
+    }
+  }
+
+  function clearDeltas(record: ChatRecord): void {
+    for (const timer of record.deltaTimers) {
+      clearTimeout(timer);
+    }
+    record.deltaTimers = [];
+  }
+
+  function subscribe(value: unknown): null {
+    if (!isSubscriber(value)) {
+      fail("invalid_argument", "Missing on_event.");
+    }
+    subscriber = value;
+    // Like the core, push after the command has resolved: replay every running turn.
+    void Promise.resolve().then(() => {
+      for (const [id, record] of chats) {
+        if (record.status.state !== "running" && record.status.state !== "cancelling") {
+          continue;
+        }
+        emit({ kind: "request_started", session_id: id, request: 1 });
+        if (record.preview !== "") {
+          emit({ kind: "delta", session_id: id, request: 1, text: record.preview });
+        }
+      }
+    });
+    return null;
   }
 
   function session(id: string): FixtureSession {
@@ -219,9 +272,20 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   }
 
   function settle(id: string, record: ChatRecord, modelFails: boolean, cancelled: boolean): void {
+    finishTurn(id, record, modelFails, cancelled);
+    emit({ kind: "finished", session_id: id });
+  }
+
+  function finishTurn(
+    id: string,
+    record: ChatRecord,
+    modelFails: boolean,
+    cancelled: boolean,
+  ): void {
     const item = session(id);
     item.summary.status = "idle";
     record.timer = null;
+    clearDeltas(record);
     if (modelFails) {
       record.status = {
         session_id: id,
@@ -268,12 +332,24 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     const record: ChatRecord = {
       status: { session_id: id, state: "running", outcome: null, error: null },
       timer: null,
+      deltaTimers: [],
+      preview: "",
     };
     record.timer = setTimeout(
       () => settle(id, record, settings.model === "fail", false),
       CHAT_DURATION_MS,
     );
     chats.set(id, record);
+    emit({ kind: "request_started", session_id: id, request: 1 });
+    MOCK_REPLY_PIECES.forEach((piece, index) => {
+      const at = (CHAT_DURATION_MS * (index + 1)) / (MOCK_REPLY_PIECES.length + 1);
+      record.deltaTimers.push(
+        setTimeout(() => {
+          record.preview += piece;
+          emit({ kind: "delta", session_id: id, request: 1, text: piece });
+        }, at),
+      );
+    });
     return clone(record.status);
   }
 
@@ -285,6 +361,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     if (record.timer !== null) {
       clearTimeout(record.timer);
     }
+    clearDeltas(record);
     record.status = { ...record.status, state: "cancelling" };
     record.timer = setTimeout(() => settle(id, record, false, true), 300);
     return clone(record.status);
@@ -461,6 +538,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           chats.get(id)?.status ?? { session_id: id, state: "idle", outcome: null, error: null },
         );
       }
+      case "chat_subscribe":
+        return subscribe(args.on_event);
       case "chat_cancel":
         return chatCancel(str(args, "session_id"));
       case "approvals_summary":

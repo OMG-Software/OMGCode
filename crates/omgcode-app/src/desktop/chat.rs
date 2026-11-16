@@ -6,6 +6,7 @@ use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
 use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
+use super::ChatEventSink;
 use super::error::DesktopError;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, SessionRequest};
@@ -170,6 +171,29 @@ impl DesktopService {
         self.inner.lock_turns()?.request_cancel(request.session_id);
         self.inner.reap()?;
         self.read_status(request.session_id)
+    }
+
+    /// Register the one chat event subscriber, replacing any earlier one, and
+    /// replay the preview of every running turn (ADR-0049).
+    ///
+    /// The earlier subscriber receives nothing more. The replay holds, for each
+    /// running turn that has started a model request, `request_started`, the
+    /// text so far as `delta` events, and `preview_truncated` when the bound was
+    /// reached, in ascending session order. Later events follow in order.
+    ///
+    /// Events are sent while the service's event lock is held, so the sink must
+    /// return quickly, must not block, and must not call back into the service.
+    /// A sink that returns `false` is dropped; no event is sent until the next
+    /// subscription. No event or preview text is logged.
+    ///
+    /// # Errors
+    ///
+    /// `internal` when the event state is unavailable (a poisoned lock). Turn
+    /// threads meet the same condition by dropping events; their turns are not
+    /// affected.
+    pub fn chat_subscribe(&self, sink: ChatEventSink) -> Result<(), DesktopError> {
+        self.inner.lock_events()?.subscribe(sink);
+        Ok(())
     }
 
     /// Request cancellation of every running turn and wait up to `grace` for

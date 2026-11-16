@@ -56,6 +56,14 @@ suite(
       expect(joined).toContain("approval_detail");
     });
 
+    it("main window bundle calls chat_subscribe and the approvals bundle never mentions it", () => {
+      const main = Array.from(reachableScripts("index.html").values()).join("\n");
+      expect(main).toContain("chat_subscribe");
+      for (const [path, text] of reachableScripts("approvals.html")) {
+        expect(text, path).not.toContain("chat_subscribe");
+      }
+    });
+
     it("contains no mock fixture marker in any asset", () => {
       for (const [path, text] of byPath) {
         expect(text, path).not.toContain(MARKER);

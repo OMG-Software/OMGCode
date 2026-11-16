@@ -192,3 +192,39 @@ export interface ApprovalDetail {
   fields: ApprovalField[];
   review_token: string | null;
 }
+
+/**
+ * Event pushed through the chat subscription channel. The text is untrusted model output and is
+ * provisional: it is not the recorded reply and may be discarded.
+ */
+export type ChatEvent =
+  | { kind: "request_started"; session_id: string; request: number }
+  | { kind: "delta"; session_id: string; request: number; text: string }
+  | { kind: "preview_truncated"; session_id: string; request: number }
+  | { kind: "finished"; session_id: string };
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Checks the shape of a pushed value. Callers ignore anything that fails. */
+export function isChatEvent(value: unknown): value is ChatEvent {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.session_id !== "string") {
+    return false;
+  }
+  switch (record.kind) {
+    case "finished":
+      return true;
+    case "request_started":
+    case "preview_truncated":
+      return isCount(record.request);
+    case "delta":
+      return isCount(record.request) && typeof record.text === "string";
+    default:
+      return false;
+  }
+}

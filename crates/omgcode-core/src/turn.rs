@@ -40,8 +40,8 @@ use crate::session::{
 mod review;
 
 pub use review::{
-    ApprovalReview, ReviewCandidate, ReviewError, ReviewField, ReviewedRequest, StaleReason,
-    display_safe, display_safe_line, review_approval,
+    ApprovalReview, DisplaySafeStream, ReviewCandidate, ReviewError, ReviewField, ReviewedRequest,
+    StaleReason, display_safe, display_safe_line, review_approval,
 };
 
 /// Revision of the tool schemas advertised by this runtime.

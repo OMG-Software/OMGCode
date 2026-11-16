@@ -6,6 +6,101 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.32.0 streams the local model's reply and pushes chat events to the
+  desktop window (Phases D4 and E6). See ADR-0049 and
+  [streamed replies](docs/provider-authentication.md#streamed-replies-0320).
+  Until now the adapter sent one non-streaming request, and the desktop
+  learned that a turn had ended by calling `chat_status` every 750 ms. It is a
+  prototype on branch `codex/desktop-interface`; it is not merged. It adds no
+  dependency.
+  - **Adapter:** `LocalModelClient::complete_streaming` and
+    `complete_with_tools_streaming` send the same body as the non-streaming
+    methods with `stream: true` and `Accept: text/event-stream`.
+    `stream_options` is never sent. The non-streaming methods are unchanged
+    and remain the default. The response is read as server-sent events under
+    strict rules: a success status and the `text/event-stream` content type;
+    the 1 MiB response limit and the thirty-second request deadline cover the
+    whole stream; LF or CRLF lines; empty lines, comment lines, and the
+    `event`, `id`, and `retry` fields are ignored and any other non-`data`
+    line is refused; `[DONE]` ends the stream; end of input without `[DONE]`
+    is the new error `IncompleteStream` (`local model stream ended before
+    completion`); every payload goes through the parser that refuses duplicate
+    keys; a non-null `error` member is refused and never reported; zero or one
+    choice and one finish reason, with the same accepted finish reasons as
+    before. The text method refuses any tool call. Tool calls are assembled by
+    `index` (in order from 0, below 64, only `index`, `id`, `type`, and
+    `function` with `name` and `arguments`, `id` set once, pieces
+    concatenated, a null member treated as absent). The assembled value holds
+    only the members received, so the existing tool-call validation applies
+    unchanged. Usage counters are present only when the server sends them.
+  - **Provisional text and redaction:** text goes to the caller as each payload
+    passes validation. It is provisional: a later failure fails the request and
+    the delivered text is not a reply. `ChatHooks::on_stream` receives
+    `ChatStreamEvent::RequestStarted` before each model request of a turn and
+    `ChatStreamEvent::Text` for each piece. A turn sends streamed requests only
+    when the hook is set, and compaction requests are never streamed.
+    `StreamRedactor` removes the known server token across piece boundaries by
+    withholding any tail that could be the start of the token. If its output
+    would itself contain the token, it emits nothing further for that request.
+    The final reply is still redacted as a whole before it is recorded.
+    Streaming changes no journal record, and the journal does not say whether a
+    reply was streamed. Sessions stay at schema version 3.
+  - **CLI:** `omgcode chat --stream` writes the provisional text to standard
+    error as it arrives, escaped by `DisplaySafeStream`, the streaming form of
+    core's display-safe escaping, so model output cannot send control sequences
+    to a terminal. It writes one line per model request that produced text.
+    Standard output still carries the one JSON result. A failed write to
+    standard error stops further writes and does not fail the turn. Without the
+    flag the request is not streamed. `session compact` has no such flag.
+    `capabilities` reports `"streaming_adapters": ["lm_studio"]`.
+  - **Desktop:** a new command, `chat_subscribe`, is allowed for `main` only,
+    so the shell has 19 commands (16 for `main`, 3 for `approvals`). Its
+    argument `on_event` is a Tauri IPC channel created by the caller. The
+    service keeps at most one subscriber; a new subscription replaces the old
+    one and first replays the preview of every running turn. Events are tagged
+    by `kind`: `request_started`, `delta` (text of at most 1,024 bytes),
+    `preview_truncated` (the 16 KiB preview bound for one request was reached),
+    and `finished` (the turn left `running`; the caller reads `chat_status`).
+    The service keeps each running turn's preview for the current request
+    only. Preview text is returned as received after token redaction, like
+    transcript text. A guard sends `finished` after the result is recorded and
+    records a panicked turn as failed first, so `chat_status` read after
+    `finished` never reports `running`. Events are sent while the hub lock is
+    held, and the `turns` and `events` locks are never held together. A channel
+    needs no capability beyond the command's own permission; Tauri events would
+    need a `core:event` permission, and both windows still have no `core:`
+    permission. The launch argument `omgcode-desktop --stream <on|off>`
+    defaults to `on`; `off` sends non-streaming requests, and `finished` is
+    still pushed. Any other value is a usage error with exit status 2. It
+    exists because the stream rules have not met a live LM Studio server.
+  - **Frontend:** the main window subscribes once, on the first send or watch.
+    It no longer polls `chat_status` every 750 ms. It reads `chat_status` once
+    on `finished`, keeps a five-second reconcile check while a turn runs in
+    case an event is lost, and falls back to the 750 ms poll if subscribing
+    fails. While a turn generates, the open session shows one live entry
+    labelled "Assistant (generating, not saved yet)", updated at most once per
+    animation frame and replaced by the recorded transcript when the turn
+    settles. A note appears when the preview is cut off. The frontend keeps
+    previews for up to 4 sessions it is not tracking and bounds each at 64 KiB
+    of UTF-16 code units. It renders preview text as text and marks
+    bidirectional overrides. The command name lives in `src/ipc/chat_events.ts`,
+    which only the main bundle imports, and a bundle test checks that no
+    approvals asset contains `chat_subscribe`. The approvals polls (3 seconds)
+    are unchanged.
+  - **Compatibility:** the non-streaming adapter methods, the journal records,
+    schema version 3, the content security policy, the windows, and the
+    navigation guard are unchanged. Cancellation is still cooperative, between
+    rounds and tool calls; a request in flight is not interrupted.
+  - **Limits:** the stream rules were checked against local fixtures only, and
+    no live LM Studio server was used. The Windows shell was driven end to end
+    against a paced event-stream mock, which does not qualify a live server.
+    No window has been opened on Linux, so the channel is unverified there. A streamed text reply has no usage
+    counters unless the server sends them. Preview text can differ from the
+    recorded reply: a later failure discards it, and a reply over the 16 KiB
+    session message limit is shown in part and then fails as before. The
+    request deadline is still thirty seconds for the whole response, so a long
+    generation fails as before. The approvals polls and the session tree still
+    do not use push. The CI workflows have still never run.
 - Version 0.31.0 binds a stored credential to its profile's endpoint (Phase
   D3). See ADR-0048 and
   [endpoint binding](docs/provider-authentication.md#endpoint-binding-0310).

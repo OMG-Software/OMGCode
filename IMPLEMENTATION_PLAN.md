@@ -91,6 +91,9 @@ This is a resume guide, not a replacement for the owning contracts in
   (ADR-0048). A profile can record a loopback endpoint, and a selected profile
   supplies both the endpoint and the token. It is **not merged and has no pull
   request**.
+- Same branch, after the Phase D3 commit `19b3747`: **Phase D4 and E6**, version
+  **0.32.0**, which streams the local model's reply and pushes chat events to
+  the desktop window (ADR-0049). It is **not merged and has no pull request**.
 
 Implemented today:
 
@@ -117,7 +120,9 @@ Implemented today:
 - Read-only `file diff`: trusted CLI preview of a broker-read file against
   complete proposed UTF-8 content. Exact digests, bounded one-hunk diff, no
   workspace mutation, no checkpoint, no replacement.
-- LM Studio Chat Completions chat with non-streaming requests. It is text-only
+- LM Studio Chat Completions chat. Requests are non-streaming by default, and
+  `chat --stream` and the desktop shell stream the reply as provisional text
+  (ADR-0049). It is text-only
   unless the session's workspace enables `model_tools`; then it offers the read
   and list tools, the approval-gated edit tool when `read` and `write` also
   allow it, and the approval-gated command tool when `execute`, `read`, and
@@ -223,12 +228,13 @@ Not implemented:
   compaction, and standalone CLI checkpoint preparation.
 - Model create, delete, rename, multi-edit, network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
-  qualification; and streaming, discovery, and cancellation in a live provider.
+  qualification; and streaming against a live server, discovery, and cancellation
+  of a request in flight in a live provider.
 - A run network destination allowlist, runtime skills, memories, mid-turn and
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
 - Desktop development panels (terminal tabs, task logs, and diffs), a settings
-  interface, streaming, a recovery interface, packaging and installers, and a
+  interface, a recovery interface, packaging and installers, and a
   Linux run of the desktop shell's windows. The prototype shell, session tree,
   search, chat, and approvals window exist on the Phase E branch only.
 - Cloud provider adapters and subscription/API-key login. Only the local LM
@@ -400,6 +406,60 @@ the other.
   port; it was repeated on a free port.
 - Not run: a chat turn with a stored credential through the real shell's
   windows, on either platform.
+
+Phase D4 and E6 final verification on 2026-11-16 used Rust 1.99.1, default
+test parallelism, and `--no-fail-fast`.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, all-target tests, and doc tests
+  each exited zero. 923 tests in 41 test binaries and one doc test passed.
+  None failed. The same eight were ignored. The test run took about two
+  minutes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `19b3747` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): the same four commands each exited zero. 915 tests in 41 test
+  binaries and one doc test passed, not counting five nested result lines from
+  the platform suite's `systemd-run` re-runs. None failed. Eight were ignored.
+  The desktop binary exited 2 for `--stream maybe`.
+- **Frontend** (Windows, Node 24): the type check and Biome were clean. 155
+  tests in 11 files passed, and the five bundle tests passed after a rebuild.
+  The frontend commands were not run on Linux, whose Node is too old.
+- **Failures before the final runs.**
+  - The first Linux run did not run at all: `cargo` was not on the path of
+    the non-login shell, and every step exited 127. The script now loads the
+    Cargo environment and stops if `cargo` is missing. The rerun is the result
+    above.
+  - The first end-to-end run reported one failed step. The driver fetched the
+    approvals bundle from page script, and the content security policy
+    blocked the fetch. The check was removed, because the bundle test already
+    covers it, and the whole run was repeated.
+  - Workers' own test failures were in tests they were writing. No existing
+    assertion was weakened and no timeout was changed.
+- **Real shell, Windows.** The built shell was driven over the WebView2
+  debugging port against a paced event-stream mock server and a scratch data
+  root. All eleven steps passed on the repeated run:
+  - a streamed tool-enabled turn showed the live entry for the first request,
+    reset it for the second, and showed seven distinct preview states;
+  - markup in the stream stayed literal text, no element was created, no
+    script ran, and a bidirectional override was shown as `[U+202E]`;
+  - both requests carried `"stream":true` and `Accept: text/event-stream`, and
+    none carried `stream_options`;
+  - the recorded reply appeared 49 ms after the mock ended the stream, which
+    is the pushed `finished` event, not the five-second check;
+  - a stream that ended without `[DONE]` showed its partial text, then failed
+    with `local model stream ended before completion`, and the partial text
+    was not in the transcript;
+  - a second subscription made from page script received `request_started`,
+    three `delta` events, and `finished` in order, and the page, whose own
+    subscription it had replaced, settled about four seconds later through
+    the reconcile check;
+  - `approvals` was refused `chat_subscribe` by its capability;
+  - with `--stream off` the request carried `"stream":false`, no live entry
+    appeared, and the reply appeared 79 ms after the response;
+  - both launches closed with exit status 0 and left no process.
+- Not run: any live LM Studio server; the channel or any window on Linux; the
+  750 ms fallback poll in the real shell (the frontend tests cover it);
+  `chat --stream` by hand in a terminal (the CLI tests run the real binary).
 
 These local results do not establish remote CI status: neither workflow change
 has run. The real shell was driven end to end on Windows only
@@ -872,11 +932,29 @@ login or entitlement route.
   readable by 0.30.0 or earlier. A profile recorded before 0.31.0 must be
   removed and added again. `capabilities` reports
   `provider_profile_endpoints: true`.
+- **D4 (version 0.32.0):** the local adapter can stream. See
+  [ADR-0049](docs/adr/0049-stream-local-model-replies-and-push-chat-events.md).
+  `LocalModelClient::complete_streaming` and `complete_with_tools_streaming`
+  send the same body as the non-streaming methods with `stream: true` and read
+  server-sent events under strict rules (success status and content type, the
+  existing 1 MiB and thirty-second bounds over the whole stream, no repair,
+  `[DONE]` required or `IncompleteStream`, duplicate-key refusal, a non-null
+  `error` refused, tool calls assembled by `index`). `stream_options` is never
+  sent. The non-streaming methods stay the default. `ChatHooks::on_stream`
+  makes a turn stream and receives `RequestStarted` and `Text` events;
+  compaction requests never stream. `StreamRedactor` removes the known token
+  across piece boundaries, and the final reply is still redacted as a whole.
+  The journals record only the validated reply. `omgcode chat --stream`
+  writes the provisional text to standard error through `DisplaySafeStream`.
+  `capabilities` reports `streaming_adapters: ["lm_studio"]`. The stream rules
+  were checked against local fixtures only.
 
 Still open in Phase D: cloud provider adapters, subscription and API-key
 login, token refresh, account lifecycle, a memory-only session credential,
-endpoint rules for non-loopback providers, HTTPS, and certificates, and
-streaming. The frontend shows nothing about the credential source beyond the
+endpoint rules for non-loopback providers, HTTPS, and certificates,
+cancellation that interrupts a stream in flight, qualification of the stream
+rules against a live LM Studio server, and a longer deadline for long
+generations (the thirty-second deadline covers the whole response). The frontend shows nothing about the credential source beyond the
 endpoint text it already displayed.
 
 ### Phase E: desktop interface and session tree
@@ -907,11 +985,23 @@ not merged, and no pull request exists yet.
   front-end-neutral command service, including review tokens. Core adds
   `review_approval` and display-safe text. No CLI behaviour changed.
 - **E4 (ADR-0045, ADR-0046):** the Tauri shell `omgcode-desktop`: two windows,
-  18 commands, a capability file per window, the Rust window policy, the content
+  18 commands (19 since E6), a capability file per window, the Rust window
+  policy, the content
   policy, the navigation guard, and a bounded shutdown.
 - **E5 (ADR-0045, ADR-0046):** the strict TypeScript frontend with Vite,
   Vitest, and Biome: the session tree, search, transcript, composer, and the
   separate approvals bundle.
+- **E6 (ADR-0049):** the command `chat_subscribe` (`main` only; 19 commands)
+  takes a caller-created Tauri IPC channel and needs no `core:` permission.
+  The service keeps one subscriber, replays the preview of every running turn
+  to a new one, and pushes `request_started`, `delta` (at most 1,024 bytes),
+  `preview_truncated` (16 KiB preview per request), and `finished`. A guard
+  sends `finished` after the result is recorded and records a panicked turn as
+  failed first. `omgcode-desktop --stream <on|off>` defaults to `on`. The
+  frontend subscribes once, reads `chat_status` on `finished`, keeps a
+  five-second reconcile check, falls back to the 750 ms poll if subscribing
+  fails, and shows one live entry "Assistant (generating, not saved yet)" with
+  the preview. The approvals polls are unchanged.
 
 Still open for the desktop:
 
@@ -920,7 +1010,9 @@ Still open for the desktop:
   capability enforcement, and navigation guard have not run on Linux;
 - development panels (terminal tabs, task logs, and diffs), a settings
   interface, and persisted chat settings;
-- streaming and a push channel instead of polling;
+- push for approvals and the session tree, which still poll or refresh on
+  request, and a run of the event channel on Linux, where no window has been
+  opened;
 - a recovery interface for an incomplete tail or a damaged journal, plus
   `session.archive_requested` stop-and-archive and storage-use display;
 - Git, MCP, skills, and memory interfaces;

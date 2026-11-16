@@ -211,7 +211,10 @@ The request manifest does not include usage, `finish_reason`, or tool-round
 counts. The CLI returns provider usage and finish reason in its JSON output, but
 does not append them to the journal. Schema version 2 records the exact tool
 schema version and tool names advertised by the core turn runtime. The prototype
-has no streaming, artifact, index, compaction, migration, or memory events. The CLI redacts the currently configured LM Studio token from
+has no streaming, artifact, index, compaction, migration, or memory events.
+Streamed model text (ADR-0049) is provisional and is never written to the
+journal: the recorded reply is the validated whole reply, redacted as a whole,
+and the journal does not say whether a reply was streamed. The CLI redacts the currently configured LM Studio token from
 new conversation text, preferences, titles, and replies before retention and
 output. It redacts that same token from historical context before inference.
 There is no general secret detector or automatic cleanup of older stored text.

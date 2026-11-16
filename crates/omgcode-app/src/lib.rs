@@ -28,8 +28,8 @@ mod sessions;
 mod tool_mode;
 
 pub use chat::{
-    ChatClients, ChatHooks, ChatSettings, ChatTurnInput, ChatTurnOutput, run_chat_turn,
-    run_chat_turn_with_clients,
+    ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput,
+    run_chat_turn, run_chat_turn_with_clients,
 };
 pub use context::{CompactionMeter, ContextMeter, compact_journal, summary_output_tokens};
 pub use credential_source::{
@@ -37,6 +37,6 @@ pub use credential_source::{
 };
 pub use error::{AppError, ErrorKind};
 pub use paths::data_root;
-pub use secrets::{read_lm_token, redact_known_secret};
+pub use secrets::{StreamRedactor, read_lm_token, redact_known_secret};
 pub use sessions::create_session;
 pub use tool_mode::{MODEL_TOOLS_SUPPORTED, ToolMode, select, tool_replay_allowed};

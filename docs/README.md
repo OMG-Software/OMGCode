@@ -106,7 +106,8 @@ Provider profiles record connection shapes without credentials, and an
 `lm_studio` profile can record a loopback endpoint. Only the local LM Studio
 adapter reads a stored credential, through an operator-selected profile that
 supplies both the endpoint and the token (ADR-0047, ADR-0048); no cloud adapter
-or login exists. Approval records authorize one exact
+or login exists. That adapter can stream a reply (ADR-0049): the text is
+provisional, and the journals record only the validated reply. Approval records authorize one exact
 model-tool call, and the edit and command tools are their only consumers. Chat
 dispatches the read/list tools and, with the required live permissions, the
 approval-gated edit and command tools, only for a workspace that enables

@@ -96,6 +96,7 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
         data_root,
         endpoint,
         token_source,
+        stream: args.stream,
     })
     .map_err(|error| format!("{}: {}", error.code(), error.message()))
 }
@@ -131,6 +132,7 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::chat::chat_send,
             commands::chat::chat_status,
             commands::chat::chat_cancel,
+            commands::chat::chat_subscribe,
             commands::approvals::approvals_summary,
             commands::approvals_show_window,
             commands::approvals::approvals_list,
@@ -178,6 +180,7 @@ mod tests {
             data_dir: Some(root.clone()),
             endpoint: launch::DEFAULT_ENDPOINT.to_owned(),
             provider_profile: Some("lms".to_owned()),
+            stream: true,
         })
         .err()
         .expect("no settings store exists");
@@ -196,6 +199,7 @@ mod tests {
             data_dir: Some(std::env::temp_dir().join("omgcode-desktop-never-created")),
             endpoint: "http://example.com:1234/v1".to_owned(),
             provider_profile: None,
+            stream: true,
         })
         .err()
         .expect("a non-loopback endpoint is refused");
@@ -212,6 +216,7 @@ mod tests {
             data_dir: Some(root.clone()),
             endpoint: "http://example.com:1234/v1".to_owned(),
             provider_profile: Some("lms".to_owned()),
+            stream: true,
         })
         .err()
         .expect("no settings store exists");

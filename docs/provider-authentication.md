@@ -29,7 +29,9 @@ provider name.
 
 ## Implemented prototype (v0.1.0)
 
-The current CLI has one non-streaming LM Studio Chat Completions adapter. The
+The current CLI has one LM Studio Chat Completions adapter. It sends
+non-streaming requests by default and streamed requests on request
+([streamed replies](#streamed-replies-0320)). The
 caller supplies an already available model name, a maximum output budget, and a
 context budget with `--context-tokens`. For example, the CLI test fixture passes
 131072 as its configured context budget. This value is caller input; the
@@ -313,6 +315,69 @@ to an endpoint no longer holds for a usable profile.
   under WSL. A chat turn with a stored credential was not driven through the
   desktop shell's windows on either platform.
 
+## Streamed replies (0.32.0)
+
+[ADR-0049](adr/0049-stream-local-model-replies-and-push-chat-events.md) adds an
+opt-in streamed request to the LM Studio adapter. The non-streaming methods are
+unchanged and remain the default.
+
+- **Request.** `LocalModelClient::complete_streaming` and
+  `complete_with_tools_streaming` send the same body as the non-streaming
+  methods with `stream` set to `true` and an `Accept: text/event-stream`
+  header. `stream_options` is never sent, because LM Studio's documentation
+  does not list it. They call a caller-supplied function with each piece of
+  assistant text and return the same reply type as the non-streaming methods.
+  Usage counters are present only when the server sends them.
+- **Stream rules.** The response is read as server-sent events. Any breach fails
+  the request, and nothing is repaired. The status must be a success and the
+  content type `text/event-stream`. The existing 1 MiB response limit and the
+  thirty-second request deadline cover the whole stream. Lines end with LF or
+  CRLF. Empty lines, comment lines, and the `event`, `id`, and `retry` fields
+  are ignored, and any other line that is not a `data` field is refused.
+  `[DONE]` ends the stream, and nothing after it is read. A stream that ends
+  without `[DONE]` fails with the error `IncompleteStream` (`local model stream
+  ended before completion`). Every other payload goes through the parser that
+  refuses duplicate keys and must be an object. A non-null `error` member is
+  refused, and its body is never reported. A payload holds zero or one choice
+  and one finish reason, and the accepted finish reasons are those of the
+  non-streaming methods.
+- **Tool calls.** The text method refuses any tool call. The tool method
+  assembles calls by `index`: indexes start at 0, appear in order, and stay
+  below 64. A call object holds only `index`, `id`, `type`, and `function`, and
+  `function` only `name` and `arguments`. `id` is set once, name and argument
+  pieces are concatenated, and a null member counts as absent. The assembled
+  value holds only the members received, so the existing tool-call validation
+  applies to it unchanged.
+- **Provisional text.** Text goes to the caller as each payload passes
+  validation. It is provisional: if the stream fails later, the request fails
+  and the delivered text is not a reply. The journal records only the validated
+  whole reply, and does not say whether it was streamed. Sessions stay at schema
+  version 3.
+- **Redaction.** A turn streams only when `ChatHooks::on_stream` is set, and
+  compaction requests are never streamed. `StreamRedactor` removes the known
+  server token across piece boundaries by withholding any tail that could be
+  the start of the token. If its output would itself contain the token, it
+  emits nothing further for that request. The final reply is still redacted as
+  a whole before it is recorded. This is known-token redaction, not general
+  secret detection.
+- **Use.** `omgcode chat --stream` writes the escaped provisional text to
+  standard error. The desktop shell streams by default and `--stream off`
+  turns it off. See [development](development.md) and the
+  [desktop interface](desktop-interface.md).
+- **Limits.** The stream rules were checked against local fixtures only. No live
+  LM Studio server was used. A streamed text reply has no usage counters unless
+  the server sends them. A long generation still fails at the thirty-second
+  deadline, and cancellation does not interrupt a request in flight. Preview
+  text can differ from the recorded reply.
+
+LM Studio documents the request fields in
+[Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions)
+and tool calls arriving in pieces in
+[tool use](https://lmstudio.ai/docs/developer/openai-compat/tools). The line
+rules follow the
+[HTML Standard on server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html),
+more strictly.
+
 ## Settings and account lifecycle
 
 ### LM Studio release connection requirements
@@ -362,9 +427,11 @@ resource limits. This grants no general model-management authority.
 Test model discovery, absent/unloaded models, token and no-token modes,
 authentication failure, streaming/cancellation, validated tool calls, changed
 context limits, and absence of unexpected cloud fallback on both supported
-platforms. The current prototype does not implement model discovery, streaming,
-or tool calls. The Windows Gemma smoke check above covers one live profile;
-full platform and authentication qualification remains pending.
+platforms. The current prototype does not implement model discovery. Its
+streamed requests ([streamed replies](#streamed-replies-0320)) have been checked
+against local fixtures only. The Windows Gemma smoke check above covers one live
+profile, and it sent no streamed request; full platform and authentication
+qualification remains pending.
 
 ### Shared settings and lifecycle
 

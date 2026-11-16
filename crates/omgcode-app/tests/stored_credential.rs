@@ -355,6 +355,7 @@ fn a_keyless_profile_passes_the_launch_check_and_opens_the_service() {
         data_root: fixture.data.clone(),
         endpoint: launch.endpoint,
         token_source: TokenSource::Profile("open".to_owned()),
+        stream: true,
     })
     .expect("the service opens");
 }

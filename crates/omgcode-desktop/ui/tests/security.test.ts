@@ -67,6 +67,13 @@ describe("source scan", () => {
     }
   });
 
+  it("keeps chat_subscribe out of the approvals window and inside chat_events", () => {
+    const users = Object.entries(sources)
+      .filter(([, text]) => text.includes("chat_subscribe"))
+      .map(([key]) => relative(key));
+    expect(users.sort()).toEqual(["src/ipc/chat_events.ts", "src/mock/backend.ts"]);
+  });
+
   it("keeps the approvals window free of main-window code", () => {
     const approvals = Object.entries(sources).filter(
       ([key]) => key.startsWith("../src/approvals/") || key === "../src/approvals.ts",

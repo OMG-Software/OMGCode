@@ -7,12 +7,14 @@ mod credential_cli;
 mod file_cli;
 mod packages_cli;
 mod run_cli;
+mod stream_cli;
 
 use clap::{Args, Parser, Subcommand};
 use omgcode_app::{
-    AppError, ChatClients, ChatHooks, ChatSettings, ChatTurnInput, ConnectionSource, LmToken,
-    LocalConnection, MODEL_TOOLS_SUPPORTED, compact_journal, create_session, data_root,
-    read_lm_token, redact_known_secret, resolve_local_connection, run_chat_turn_with_clients,
+    AppError, ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput,
+    ConnectionSource, LmToken, LocalConnection, MODEL_TOOLS_SUPPORTED, compact_journal,
+    create_session, data_root, read_lm_token, redact_known_secret, resolve_local_connection,
+    run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
@@ -182,6 +184,11 @@ struct ChatArgs {
     /// not read, and the endpoint is the one recorded with the profile.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
+    /// Stream the model's text to standard error as it arrives. The text is
+    /// provisional and escaped for display; standard output still carries the
+    /// one JSON result, and the journal records only the validated reply.
+    #[arg(long)]
+    stream: bool,
     /// Current user request. Quote it as one shell argument.
     message: String,
 }
@@ -303,6 +310,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "provider_profile_endpoints": true,
             "provider_adapters": false,
             "stored_credential_adapters": ["lm_studio"],
+            "streaming_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),
             "approvals": true,
@@ -437,16 +445,21 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         settings: &settings,
         token: token_text,
     };
+    // Provisional text goes to standard error through one printer, which locks
+    // standard error only for each write, never across a model request.
+    let mut printer = stream_cli::StreamPrinter::new(std::io::stderr());
+    let turn = {
+        let mut on_stream = |event: ChatStreamEvent<'_>| printer.handle(event);
+        let mut hooks = ChatHooks::default();
+        if args.stream {
+            hooks.on_stream = Some(&mut on_stream);
+        }
+        run_chat_turn_with_clients(&mut journal, &data_root, &input, &clients, &mut hooks)
+    };
+    // End the last streamed line, also after a failed turn.
+    printer.finish();
     // Every post-open failure, including output failures, carries the locator.
-    let result = run_chat_turn_with_clients(
-        &mut journal,
-        &data_root,
-        &input,
-        &clients,
-        &mut ChatHooks::default(),
-    )
-    .map_err(CliError::from)
-    .and_then(|output| {
+    let result = turn.map_err(CliError::from).and_then(|output| {
         print_json(&JournalOutput {
             locator: journal_locator(&journal)?,
             detail: output,

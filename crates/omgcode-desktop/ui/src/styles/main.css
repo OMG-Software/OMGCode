@@ -338,6 +338,16 @@ mark {
   border-style: dashed;
 }
 
+.bubble-live {
+  border-style: dashed;
+}
+
+.live-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .tool-args {
   background: var(--surface-2);
   padding: 6px 8px;

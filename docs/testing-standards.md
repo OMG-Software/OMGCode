@@ -195,8 +195,15 @@ be explicit opt-in, use disposable data and a budget, and report which endpoint
 and model were tested. A mock pass is not a live-provider compatibility result.
 
 The current LM Studio adapter tests use a local HTTP fixture. They do not call a
-live model. The adapter's text method sends one non-streaming Chat
-Completions request and rejects any tool call in the reply. It requires the
+live model. The adapter's text method sends one Chat Completions request,
+non-streaming by default, and rejects any tool call in the reply. Its streamed
+methods (0.32.0) are tested against the same kind of fixture. The fixtures
+cover the strict stream rules (content type, line forms, `[DONE]`, an
+incomplete stream, duplicate keys, an `error` member, finish reasons, and the
+size and deadline bounds), tool-call assembly by index, redaction of the token
+across piece boundaries, the display-safe stream, the desktop event hub, and
+the frontend runner and live preview. A mock pass is not a live-provider
+result, and no live LM Studio server was used for the stream rules. It requires the
 compiled base prompt and accepts only a literal loopback HTTP endpoint. The
 adapter is not a permission boundary: the CLI selects tool mode from the live
 `model_tools` preference, and the runtime rechecks that preference before each
@@ -211,8 +218,9 @@ own. It passed on Windows 11 build 26300 and WSL 6.6 (Ubuntu 24.04) on
 2026-11-14. The turn-runtime tests use a scripted model interface. The tool-enabled chat tests
 use a mock that returns the documented OpenAI-compatible tool-call shape; they
 do not establish live LM Studio tool-call compatibility. A single opt-in spot-check
-with LM Studio 0.4.28 and `google/gemma-4-e4b` on Windows is recorded in the implementation plan. Model discovery, streaming, cancellation, and
-live model compatibility remain future qualification work. The CLI can inspect
+with LM Studio 0.4.28 and `google/gemma-4-e4b` on Windows is recorded in the implementation plan. Model discovery, streaming
+against a live server, cancellation of a request in flight, and live model
+compatibility remain future qualification work. The CLI can inspect
 and archive sessions, but it does not execute recorded tool actions or resume
 an incomplete turn.
 
@@ -287,14 +295,16 @@ npm run test:dist
 `npm run test:dist` to build and run them.
 
 - **Frontend tests (Vitest, jsdom).** They cover the interface models, the
-  main window and transcript rendering, the approvals review flow, polling, and
-  the mock backend. Security scans assert that the source has no
+  main window and transcript rendering, the approvals review flow, polling, the
+  chat runner (subscription, reconcile check, and fallback poll), the live
+  preview and its bounds, the channel wrapper, and the mock backend. Security scans assert that the source has no
   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, or
   `new Function`; that the HTML entries have no inline script or style and no
   `http` or `https` URL; that no browser storage is used; that
   `@tauri-apps/api` is imported only in `src/ipc/client.ts`; that the main
-  bundle contains neither `approval_decide` nor `approval_detail`; and that no
-  mock fixture is in `dist`. jsdom is not a browser. These tests do not
+  bundle contains neither `approval_decide` nor `approval_detail`; that no
+  approvals asset contains `chat_subscribe`; and that no mock fixture is in
+  `dist`. jsdom is not a browser. These tests do not
   establish how WebView2 or WebKitGTK behave.
 - **Desktop crate tests (no webview).** They check that the policy table, the
   capability files, the build script's command list, and the frontend's command
@@ -304,7 +314,8 @@ npm run test:dist
   launch argument parser; and the shutdown gate. They do not exercise the
   capability layer, which Tauri enforces and which needs a real webview.
 - **Service tests.** `DesktopService` is tested with a mock provider. They cover
-  chat turns, cancellation, shutdown, review tokens, approvals, and the
+  chat turns, cancellation, shutdown, review tokens, approvals, the chat event
+  hub (preview bounds, replay, event order, and the `finished` guard), and the
   session index with its refusals and rebuilds. Core tests cover lock-free
   inspection, discovery, the index, and approval review.
 - **Real-application end to end.** On 2026-11-16 the built Windows shell was
@@ -324,6 +335,19 @@ npm run test:dist
   prove a live model, Linux, packaging, or resistance to a hostile page. It did
   not exercise shutdown with a provider request in flight, or a live call that
   reaches the Rust `authorize` check past the capability refusal.
+- **Streaming end to end.** On 2026-11-16 the built Windows shell was driven
+  the same way against a mock server that paces an event stream. A streamed
+  tool-enabled turn showed the live entry, reset it for the second model
+  request, kept markup as literal text, and marked a bidirectional override.
+  The recorded reply appeared within 100 ms of the end of the stream, which
+  shows the pushed `finished` event. A stream without `[DONE]` showed its
+  partial text and then failed, and the partial text was not recorded. A
+  subscription made from page script replaced the page's own and received the
+  events in order; the page then settled through its five-second check.
+  `approvals` was refused `chat_subscribe`. With `--stream off` the request was
+  not streamed and no live entry appeared. This proves the Windows wiring
+  against a mock. It does not prove a live LM Studio server, Linux, or the
+  fallback poll, which only the frontend tests exercise.
 - **ReFS and `TEMP`.** If the repository is on a ReFS volume, point `TEMP` and
   `TMP` at an NTFS directory before the Cargo tests. The private-store,
   credential, container, and replacement tests need NTFS. Report the setting.

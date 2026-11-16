@@ -23,6 +23,8 @@ fn service(fixture: &Fixture, endpoint: &str, profile: &str) -> DesktopService {
         data_root: fixture.data.clone(),
         endpoint: endpoint.to_owned(),
         token_source: TokenSource::Profile(profile.to_owned()),
+        // The scripted model server answers with plain JSON.
+        stream: false,
     })
     .expect("open desktop service")
 }

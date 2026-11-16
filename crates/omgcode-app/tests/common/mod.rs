@@ -67,6 +67,11 @@ pub fn session_request(id: Uuid) -> Value {
 /// One scripted reply of the loopback model server.
 pub struct Step {
     reply: Value,
+    /// A raw `text/event-stream` body, sent instead of `reply` when set.
+    event_stream: Option<String>,
+    /// For a held stream: the gate to wait on, and the rest of the body that
+    /// follows it. The `event_stream` text is sent first.
+    held: Option<(Receiver<()>, String)>,
     gate: Option<Receiver<()>>,
     arrived: Option<Sender<()>>,
 }
@@ -76,6 +81,32 @@ impl Step {
     pub fn reply(reply: Value) -> Self {
         Self {
             reply,
+            event_stream: None,
+            held: None,
+            gate: None,
+            arrived: None,
+        }
+    }
+
+    /// Answer with a `text/event-stream` body, as a streamed request expects.
+    pub fn stream(body: String) -> Self {
+        Self {
+            reply: Value::Null,
+            event_stream: Some(body),
+            held: None,
+            gate: None,
+            arrived: None,
+        }
+    }
+
+    /// Answer with a `text/event-stream` body in two parts: `first` is sent at
+    /// once, and `rest` only after the gate is released (or its sender dropped).
+    /// The response length covers both parts, so the client keeps reading.
+    pub fn stream_held(first: String, gate: Receiver<()>, rest: String) -> Self {
+        Self {
+            reply: Value::Null,
+            event_stream: Some(first),
+            held: Some((gate, rest)),
             gate: None,
             arrived: None,
         }
@@ -85,6 +116,8 @@ impl Step {
     pub fn gated(reply: Value, gate: Receiver<()>) -> Self {
         Self {
             reply,
+            event_stream: None,
+            held: None,
             gate: Some(gate),
             arrived: None,
         }
@@ -148,16 +181,34 @@ impl MockServer {
                     // A release and a dropped sender both let the reply go.
                     gate.recv_timeout(SERVER_TIMEOUT).ok();
                 }
-                let bytes = serde_json::to_vec(&step.reply).map_err(|error| error.to_string())?;
+                let (content_type, bytes) = match &step.event_stream {
+                    Some(body) => ("text/event-stream", body.clone().into_bytes()),
+                    None => (
+                        "application/json",
+                        serde_json::to_vec(&step.reply).map_err(|error| error.to_string())?,
+                    ),
+                };
+                let rest = step
+                    .held
+                    .as_ref()
+                    .map(|(_, rest)| rest.clone().into_bytes())
+                    .unwrap_or_default();
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len()
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len() + rest.len()
                 );
                 // The client may have given up (a cancelled turn); that is not an error.
+                stream.set_nodelay(true).ok();
                 stream
                     .write_all(head.as_bytes())
                     .and_then(|()| stream.write_all(&bytes))
+                    .and_then(|()| stream.flush())
                     .ok();
+                if let Some((hold, _)) = &step.held {
+                    // A release and a dropped sender both let the rest go.
+                    hold.recv_timeout(SERVER_TIMEOUT).ok();
+                    stream.write_all(&rest).and_then(|()| stream.flush()).ok();
+                }
                 served += 1;
             }
             Ok((served, recorded))
@@ -276,6 +327,58 @@ pub fn tool_call(id: &str, name: &str, arguments: &Value) -> Value {
             "finish_reason": "tool_calls"
         }]
     })
+}
+
+/// One server-sent event holding a JSON payload.
+fn event(payload: &Value) -> String {
+    format!("data: {payload}\n\n")
+}
+
+/// A complete streamed text reply: one event per piece, a finish reason, and `[DONE]`.
+pub fn sse_text(pieces: &[&str]) -> String {
+    let mut body = sse_text_unfinished(pieces);
+    body.push_str(&event(
+        &json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+    ));
+    body.push_str("data: [DONE]\n\n");
+    body
+}
+
+/// Streamed text pieces only: a stream that stops before its finish reason.
+pub fn sse_text_unfinished(pieces: &[&str]) -> String {
+    pieces
+        .iter()
+        .map(|piece| {
+            event(&json!({"choices": [{"index": 0, "delta": {"role": "assistant", "content": piece}, "finish_reason": null}]}))
+        })
+        .collect()
+}
+
+/// A complete streamed reply that requests one tool call, split into pieces
+/// the way LM Studio documents: the first carries the id, type and name.
+pub fn sse_tool_call(id: &str, name: &str, arguments: &Value) -> String {
+    let arguments = arguments.to_string();
+    let middle = arguments
+        .char_indices()
+        .nth(arguments.chars().count() / 2)
+        .map_or(arguments.len(), |(index, _)| index);
+    let (first, second) = arguments.split_at(middle);
+    let mut body = event(&json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+        "index": 0, "id": id, "type": "function",
+        "function": {"name": name, "arguments": ""}
+    }]}, "finish_reason": null}]}));
+    for fragment in [first, second] {
+        body.push_str(&event(
+            &json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "function": {"arguments": fragment}
+        }]}, "finish_reason": null}]}),
+        ));
+    }
+    body.push_str(&event(
+        &json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+    ));
+    body.push_str("data: [DONE]\n\n");
+    body
 }
 
 /// A loopback listener that must never be contacted. A connection attempt
@@ -406,16 +509,30 @@ impl Fixture {
         self.service_with(endpoint, no_token)
     }
 
+    /// A service whose turns send non-streaming requests, for a scripted server
+    /// that answers with plain JSON.
     pub fn service_with(
         &self,
         endpoint: &str,
         source: fn() -> Result<Option<String>, AppError>,
+    ) -> DesktopService {
+        self.service_streaming(endpoint, source, false)
+    }
+
+    /// A service with `stream` set: when true, turns send streamed requests and
+    /// the scripted server must answer with an event stream.
+    pub fn service_streaming(
+        &self,
+        endpoint: &str,
+        source: fn() -> Result<Option<String>, AppError>,
+        stream: bool,
     ) -> DesktopService {
         DesktopService::open_with_token_source(
             DesktopConfig {
                 data_root: self.data.clone(),
                 endpoint: endpoint.to_owned(),
                 token_source: TokenSource::Environment,
+                stream,
             },
             source,
         )

@@ -12,8 +12,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+mod common;
+
 use omgcode_app::{
-    ChatHooks, ChatSettings, ChatTurnInput, ChatTurnOutput, create_session, run_chat_turn,
+    ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput, create_session,
+    run_chat_turn,
 };
 use omgcode_core::control::ControlStore;
 use omgcode_core::policy::PermissionSet;
@@ -457,6 +460,7 @@ fn a_text_only_turn_serializes_the_published_object_and_skips_the_cancel_hook() 
         &format!("ping {SECRET}"),
         &mut ChatHooks {
             on_cancel_token: Some(&mut on_cancel_token),
+            on_stream: None,
         },
     )
     .expect("text-only turn");
@@ -511,6 +515,7 @@ fn a_tool_turn_calls_the_cancel_hook_once_and_serializes_the_published_object() 
         "hello",
         &mut ChatHooks {
             on_cancel_token: Some(&mut on_cancel_token),
+            on_stream: None,
         },
     )
     .expect("tool turn");
@@ -566,6 +571,7 @@ fn a_cancelled_token_ends_the_tool_turn_with_the_core_cancelled_failure() {
         "list the files",
         &mut ChatHooks {
             on_cancel_token: Some(&mut on_cancel_token),
+            on_stream: None,
         },
     )
     .expect_err("cancellation stops the turn");
@@ -576,4 +582,284 @@ fn a_cancelled_token_ends_the_tool_turn_with_the_core_cancelled_failure() {
     assert_eq!(journal.snapshot().active_turn, None);
     let events = close_and_read(journal);
     assert_eq!(last_failure_code(&events).as_deref(), Some("cancelled"));
+}
+
+/// Record stream events as text: `request_started` and `text:<piece>`.
+fn capture(log: &mut Vec<String>) -> impl FnMut(ChatStreamEvent<'_>) + '_ {
+    move |event| {
+        log.push(match event {
+            ChatStreamEvent::RequestStarted => "request_started".to_owned(),
+            ChatStreamEvent::Text(text) => format!("text:{text}"),
+        });
+    }
+}
+
+/// The event kinds of a journal, with role and text for each recorded message.
+/// Identifiers, times, and the endpoint in the manifest are left out.
+fn journal_shape(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| {
+            let kind = event["type"].as_str().unwrap_or("?");
+            if kind == "message.recorded" {
+                format!(
+                    "{kind}|{}|{}",
+                    event["payload"]["role"], event["payload"]["text"]
+                )
+            } else {
+                kind.to_owned()
+            }
+        })
+        .collect()
+}
+
+fn request_body(recorded: &common::Recorded) -> Value {
+    serde_json::from_str(&recorded.body).expect("request JSON")
+}
+
+#[test]
+fn a_streamed_text_turn_delivers_pieces_and_journals_like_a_non_streaming_turn() {
+    // Given the same reply served once as one JSON document and once as a stream.
+    let plain_fixture = Fixture::new(false);
+    let mut plain_journal = plain_fixture.journal();
+    let plain_server = SequenceServer::start(vec![text("Hello streamed world")], None);
+    let plain = turn(
+        &mut plain_journal,
+        &plain_fixture.data,
+        &settings(&plain_server.endpoint),
+        None,
+        "greet me",
+        &mut ChatHooks::default(),
+    )
+    .expect("non-streaming turn");
+    assert_eq!(plain_server.finish(), 1);
+
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let server = common::MockServer::start(vec![common::Step::stream(common::sse_text(&[
+        "Hello ",
+        "streamed ",
+        "world",
+    ]))]);
+    let mut log = Vec::new();
+
+    // When the streaming turn runs with a stream hook.
+    let output = {
+        let mut on_stream = capture(&mut log);
+        turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            None,
+            "greet me",
+            &mut ChatHooks {
+                on_stream: Some(&mut on_stream),
+                ..ChatHooks::default()
+            },
+        )
+        .expect("streamed turn")
+    };
+    let (served, recorded) = server.finish_recorded();
+
+    // Then the request started once, the pieces arrived in order, and the
+    // reply and journal match the non-streaming turn.
+    assert_eq!(
+        log,
+        [
+            "request_started",
+            "text:Hello ",
+            "text:streamed ",
+            "text:world"
+        ]
+    );
+    assert_eq!(served, 1);
+    let request = request_body(&recorded[0]);
+    assert_eq!(request["stream"], true);
+    assert!(request.get("stream_options").is_none());
+    assert_eq!(
+        recorded[0].header("accept").as_deref(),
+        Some("text/event-stream")
+    );
+    assert_eq!(output.reply(), plain.reply());
+    assert_eq!(output.finish_reason(), plain.finish_reason());
+    assert_eq!(
+        journal_shape(&close_and_read(journal)),
+        journal_shape(&close_and_read(plain_journal))
+    );
+}
+
+#[test]
+fn a_token_split_across_pieces_never_reaches_events_or_the_journal() {
+    // Given a token split across two pieces and used again whole.
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let server = common::MockServer::start(vec![common::Step::stream(common::sse_text(&[
+        "key is fixture-tok",
+        "en-7f3a91 and again ",
+        SECRET,
+        " end",
+    ]))]);
+    let mut log = Vec::new();
+
+    // When the streamed turn runs with the token configured.
+    let output = {
+        let mut on_stream = capture(&mut log);
+        turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            Some(SECRET),
+            "what is the key",
+            &mut ChatHooks {
+                on_stream: Some(&mut on_stream),
+                ..ChatHooks::default()
+            },
+        )
+        .expect("streamed turn")
+    };
+    server.finish();
+
+    // Then neither the events nor the journal hold it, and the reply is redacted.
+    let shown: String = log
+        .iter()
+        .filter_map(|event| event.strip_prefix("text:"))
+        .collect();
+    assert_eq!(shown, "key is [REDACTED] and again [REDACTED] end");
+    assert!(!log.join("\n").contains(SECRET));
+    assert!(!log.join("\n").contains("fixture-tok"));
+    assert_eq!(output.reply(), "key is [REDACTED] and again [REDACTED] end");
+    let events = close_and_read(journal);
+    assert!(!format!("{events:?}").contains(SECRET));
+    assert!(format!("{events:?}").contains("[REDACTED]"));
+}
+
+#[test]
+fn a_streamed_tool_turn_starts_two_requests_and_runs_the_tool() {
+    // Given a streamed tool call followed by a streamed text reply.
+    let fixture = Fixture::new(true);
+    let mut journal = fixture.journal();
+    let server = common::MockServer::start(vec![
+        common::Step::stream(common::sse_tool_call(
+            "call-1",
+            "workspace_list_directory",
+            &json!({"path": ""}),
+        )),
+        common::Step::stream(common::sse_text(&["all ", "done"])),
+    ]);
+    let mut log = Vec::new();
+
+    // When the tool-enabled streamed turn runs.
+    let output = {
+        let mut on_stream = capture(&mut log);
+        turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            None,
+            "list the files",
+            &mut ChatHooks {
+                on_stream: Some(&mut on_stream),
+                ..ChatHooks::default()
+            },
+        )
+        .expect("streamed tool turn")
+    };
+    let (served, recorded) = server.finish_recorded();
+
+    // Then each request announced itself, tool-call pieces were never shown,
+    // and the tool ran as in the non-streaming test.
+    assert_eq!(
+        log,
+        [
+            "request_started",
+            "request_started",
+            "text:all ",
+            "text:done"
+        ]
+    );
+    assert_eq!(served, 2);
+    for request in &recorded {
+        assert_eq!(request_body(request)["stream"], true);
+    }
+    assert_eq!(output.reply(), "all done");
+    assert_eq!(output.rounds(), Some(2));
+    assert_eq!(output.tool_calls(), Some(1));
+}
+
+#[test]
+fn a_stream_that_fails_after_two_pieces_keeps_them_and_records_a_provider_failure() {
+    // Given a stream that ends after two pieces without `[DONE]`.
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let server =
+        common::MockServer::start(vec![common::Step::stream(common::sse_text_unfinished(&[
+            "first-piece ",
+            "second-piece",
+        ]))]);
+    let mut log = Vec::new();
+
+    // When the streamed turn runs.
+    let error = {
+        let mut on_stream = capture(&mut log);
+        turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            None,
+            "say something",
+            &mut ChatHooks {
+                on_stream: Some(&mut on_stream),
+                ..ChatHooks::default()
+            },
+        )
+        .expect_err("incomplete stream fails the turn")
+    };
+    server.finish();
+
+    // Then the two pieces were delivered, nothing followed, and the failure
+    // is the provider error recorded as `provider_error`.
+    assert_eq!(
+        log,
+        ["request_started", "text:first-piece ", "text:second-piece"]
+    );
+    assert_eq!(error.code(), "provider");
+    assert_eq!(
+        error.message(),
+        "local model stream ended before completion"
+    );
+    assert_eq!(journal.snapshot().active_turn, None);
+    let events = close_and_read(journal);
+    assert_eq!(
+        last_failure_code(&events).as_deref(),
+        Some("provider_error")
+    );
+    assert!(!format!("{events:?}").contains("second-piece"));
+}
+
+#[test]
+fn a_turn_without_a_stream_hook_sends_stream_false() {
+    for tools_enabled in [false, true] {
+        let fixture = Fixture::new(tools_enabled);
+        let mut journal = fixture.journal();
+        let server = common::MockServer::start(vec![common::Step::reply(common::text("plain"))]);
+        let output = turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            None,
+            "hello",
+            &mut ChatHooks::default(),
+        )
+        .expect("plain turn");
+        let (served, recorded) = server.finish_recorded();
+        assert_eq!(served, 1);
+        assert_eq!(output.reply(), "plain");
+        let request = request_body(&recorded[0]);
+        assert_eq!(request["stream"], false, "tools_enabled={tools_enabled}");
+        assert!(request.get("stream_options").is_none());
+        assert_ne!(
+            recorded[0].header("accept").as_deref(),
+            Some("text/event-stream")
+        );
+    }
 }

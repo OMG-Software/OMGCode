@@ -501,6 +501,46 @@ pub struct ChatStatus {
     pub error: Option<DesktopError>,
 }
 
+/// One pushed chat event (ADR-0049).
+///
+/// Events carry provisional text only. The journal and `chat_status` hold the
+/// record; `Delta` text is already token-redacted but is otherwise as the model
+/// sent it, so a front end must render it as text. The `kind` member names the
+/// variant.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatEvent {
+    /// A model request of the turn began. Earlier preview text is superseded.
+    RequestStarted {
+        /// The session.
+        session_id: Uuid,
+        /// The request number within the turn, counted from 1.
+        request: u32,
+    },
+    /// Provisional assistant text of the current request, at most 1,024 bytes.
+    Delta {
+        /// The session.
+        session_id: Uuid,
+        /// The request number within the turn.
+        request: u32,
+        /// The text.
+        text: String,
+    },
+    /// The 16 KiB preview bound was reached for this request; later text of the
+    /// request is not sent.
+    PreviewTruncated {
+        /// The session.
+        session_id: Uuid,
+        /// The request number within the turn.
+        request: u32,
+    },
+    /// The turn left `running`. The caller reads `chat_status`.
+    Finished {
+        /// The session.
+        session_id: Uuid,
+    },
+}
+
 /// A workspace the operator registered, with its saved preferences.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct WorkspaceChoice {

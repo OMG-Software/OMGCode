@@ -8,8 +8,9 @@ use omgcode_core::provider::LocalModelClient;
 use omgcode_core::session::{MessageRole, RequestManifest, SessionError, SessionJournal};
 use omgcode_core::turn::replay_active;
 
-use super::Turn;
 use super::output::TextTurnOutput;
+use super::stream::StreamSink;
+use super::{ChatHooks, Turn};
 use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
@@ -26,6 +27,7 @@ pub(super) fn run(
     reason: &'static str,
     manifest: RequestManifest,
     context: ContextMeter,
+    hooks: &mut ChatHooks<'_>,
 ) -> Result<TextTurnOutput, AppError> {
     let token = turn.token;
     // Text-only chat has no model file-read authority, so saved tool results,
@@ -50,7 +52,21 @@ pub(super) fn run(
     journal
         .record_manifest(request_id, manifest)
         .map_err(AppError::session)?;
-    let mut reply = match client.complete(&messages) {
+    // A streamed request shows provisional redacted text. The journal is
+    // computed below from the whole reply, exactly as without streaming.
+    let result = match hooks.on_stream.as_deref_mut() {
+        Some(on_stream) => {
+            let mut sink = StreamSink::new(on_stream, token);
+            sink.start_request();
+            let result = client.complete_streaming(&messages, &mut |piece: &str| sink.text(piece));
+            if result.is_ok() {
+                sink.finish_request();
+            }
+            result
+        }
+        None => client.complete(&messages),
+    };
+    let mut reply = match result {
         Ok(reply) => reply,
         Err(error) => {
             journal

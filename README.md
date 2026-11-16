@@ -23,8 +23,9 @@ directory grants.
 > compiled prompt, report implemented capabilities, manage JSONL sessions and
 > workspace permission preferences, perform bounded workspace reads/listings,
 > create new files/directories through the trusted CLI, preview bounded diffs
-> against trusted proposed content, and send one non-streaming chat request to
-> an explicitly selected local LM Studio model.
+> against trusted proposed content, and send a chat request to
+> an explicitly selected local LM Studio model. `omgcode chat --stream` streams
+> that model's reply to standard error as provisional text.
 > When a workspace enables the `model_tools` preference, chat lets the local
 > model read and list files inside that workspace through a bounded runtime.
 > When `execute`, `read`, and `write` are also enabled, it offers a confined
@@ -137,8 +138,12 @@ chat that runs the same turn as `omgcode chat`, and an approvals window that
 shows an exact reviewed request before it lets the operator decide. The webview
 gets no authority: the Rust side authorizes every command, and no command
 accepts a host path. The webview is still not a trusted computing base. It has
-no packaging, streaming, settings interface, development panels, or recovery
-interface, and it has not been run on Linux. See the
+no packaging, settings interface, development panels, or recovery
+interface, and it has not been run on Linux. Chat streams the local model's
+reply into the window by default (`--stream off` at launch disables it). The
+text is provisional, and the journal records only the validated reply. The
+shell pushes chat events to the main window through one caller-scoped channel
+that needs no Tauri `core:` permission (ADR-0049). See the
 [desktop interface guide](docs/desktop-interface.md).
 
 The platform crate checks opened journal handles, captures native directory
@@ -274,7 +279,7 @@ check the server's configuration before sending sensitive text.
 | Ollama Local | Planned: local Ollama API |
 | Ollama Cloud | Planned: authenticated cloud API |
 | OpenRouter | Planned: explicit upstream routing controls |
-| LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; a selected profile supplies the endpoint and the optional server token from its stored credential, otherwise `--endpoint` and `OMGCODE_LM_TOKEN` apply; model discovery, streaming, and release authentication remain unqualified |
+| LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; a selected profile supplies the endpoint and the optional server token from its stored credential, otherwise `--endpoint` and `OMGCODE_LM_TOKEN` apply; model discovery and release authentication remain unqualified, and streamed replies have met local fixtures only |
 
 API-key and subscription connections are distinct authentication and billing
 profiles. Subscription-backed usage for both ChatGPT and Claude is required for
@@ -303,7 +308,7 @@ explicit rather than being assumed to work identically across providers.
 - **Credential handling:** Operating-system credential storage, accessed through
   narrow services in the Rust core.
 
-The desktop prototype uses a limited command interface to the Rust core: 18
+The desktop prototype uses a limited command interface to the Rust core: 19
 commands, no host paths, and per-window permissions checked in Rust. Provider
 keys will stay out of frontend state, repository files, and task environments.
 
@@ -368,8 +373,9 @@ cannot grant permissions. See [context management](docs/context-management.md) a
 4. Extend the Rust core and build the desktop interface, session tree, and
    remaining persistence and recovery workflows. The first desktop prototype
    (session tree, search, chat, and approvals) is implemented; recovery,
-   settings, streaming, development panels, and packaging remain.
-5. Expand provider adapters and add streaming and core-authorized tool workflows.
+   settings, development panels, and packaging remain. Streaming of the local
+   model's reply is implemented for that adapter only (ADR-0049).
+5. Expand provider adapters and add core-authorized tool workflows.
 6. Add visible instructions, token accounting, compaction, safe caching, skills,
    and project/global memories with boundary tests and efficiency measurements.
 7. Add model-scoped file tools, sandboxed terminals, background tasks, and MCP clients.

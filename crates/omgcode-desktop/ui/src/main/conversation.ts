@@ -9,7 +9,7 @@ import type {
   TranscriptEntry,
   TranscriptPage,
 } from "../ipc/types";
-import { createChatRunner } from "./chat_runner";
+import { type ChatPreview, createChatRunner } from "./chat_runner";
 import { createComposer } from "./composer";
 import {
   composerState,
@@ -19,9 +19,10 @@ import {
   statusLabel,
   TRANSCRIPT_PAGE_SIZE,
 } from "./model";
-import { renderEntry } from "./transcript";
+import { createLiveEntry, type LiveEntry, renderEntry } from "./transcript";
 
 const MAX_PAGES_PER_LOAD = 50;
+const SCROLL_END_SLACK_PX = 8;
 
 export interface ConversationDeps {
   /** Called when the session list should be reloaded (status, title or archive changes). */
@@ -54,8 +55,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
   let chatState: ChatStatus["state"] = "idle";
   let loadToken = 0;
   let highlightSeq: number | null = null;
+  let live: LiveEntry | null = null;
+  let frame: number | null = null;
 
-  const runner = createChatRunner({ onStatus: handleChatStatus });
+  const runner = createChatRunner({ onStatus: handleChatStatus, onPreview: handlePreview });
   const composer = createComposer({
     onSend: (message, settings) => void send(message, settings),
     onCancel: () => void cancelChat(),
@@ -213,10 +216,60 @@ export function createConversation(deps: ConversationDeps): Conversation {
       }
     }
     replaceChildren(transcript, ...nodes);
+    live = null;
+    syncLive();
     renderComposer();
     if (highlightSeq !== null) {
       scrollToSeq(highlightSeq);
       highlightSeq = null;
+    }
+  }
+
+  function atEnd(): boolean {
+    return (
+      transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <=
+      SCROLL_END_SLACK_PX
+    );
+  }
+
+  /** Shows, updates, or removes the live entry so it matches the runner's preview. */
+  function syncLive(): void {
+    const preview =
+      session === null || failure !== null || content.hidden
+        ? null
+        : runner.preview(session.session_id);
+    if (preview === null) {
+      live?.element.remove();
+      live = null;
+      return;
+    }
+    const follow = atEnd();
+    if (live === null) {
+      live = createLiveEntry();
+    }
+    live.update(preview);
+    if (live.element.parentNode !== transcript) {
+      transcript.appendChild(live.element);
+    }
+    if (follow) {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+  }
+
+  /** Coalesces preview updates to one per animation frame. */
+  function handlePreview(id: string, _preview: ChatPreview | null): void {
+    if (session === null || id !== session.session_id) {
+      return;
+    }
+    if (typeof requestAnimationFrame !== "function") {
+      syncLive();
+      return;
+    }
+    if (frame === null) {
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        syncLive();
+      });
     }
   }
 
@@ -414,6 +467,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
     element,
     open,
     currentId: () => session?.session_id ?? null,
-    dispose: () => runner.dispose(),
+    dispose: () => {
+      if (frame !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(frame);
+      }
+      frame = null;
+      runner.dispose();
+    },
   };
 }

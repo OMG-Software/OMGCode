@@ -489,6 +489,51 @@ pub fn display_safe_line(text: &str) -> String {
     escape_text(text, false)
 }
 
+/// A streaming form of [`display_safe`] for text that arrives in pieces.
+///
+/// For any split of a string into pieces, the concatenation of every
+/// [`push`](Self::push) result followed by [`finish`](Self::finish) equals
+/// `display_safe` of the whole string. A backslash is judged by the characters
+/// after it, so `push` holds back a trailing run of backslashes, and a trailing
+/// run followed by one `u`, until more text arrives; `finish` escapes that tail
+/// as the end of the text. The held tail is only backslashes and one `u`, so a
+/// caller that never finishes loses at most that tail.
+#[derive(Debug, Default)]
+pub struct DisplaySafeStream {
+    held: String,
+}
+
+impl DisplaySafeStream {
+    /// Start an empty stream.
+    pub const fn new() -> Self {
+        Self {
+            held: String::new(),
+        }
+    }
+
+    /// Accept one piece and return the display-safe text that is now decided.
+    pub fn push(&mut self, text: &str) -> String {
+        self.held.push_str(text);
+        // Backslashes then `u` at the end could still become `\u{`; backslashes
+        // alone could still precede a character that is escaped. Everything
+        // before them depends on no later text.
+        let without_u = match self.held.strip_suffix('u') {
+            Some(rest) if rest.ends_with('\\') => rest,
+            _ => self.held.as_str(),
+        };
+        let decided = without_u.trim_end_matches('\\').len();
+        let tail = self.held.split_off(decided);
+        let output = escape_text(&self.held, true);
+        self.held = tail;
+        output
+    }
+
+    /// End the text and return the escaped held tail.
+    pub fn finish(self) -> String {
+        escape_text(&self.held, true)
+    }
+}
+
 fn escape_text(text: &str, keep_newline: bool) -> String {
     let characters: Vec<char> = text.chars().collect();
     let mut escaped = vec![false; characters.len()];
@@ -519,7 +564,7 @@ fn escape_text(text: &str, keep_newline: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_safe, display_safe_line};
+    use super::{DisplaySafeStream, display_safe, display_safe_line};
 
     /// Output must hold no control or hidden character except `\n`.
     fn assert_clean(output: &str) {
@@ -713,6 +758,83 @@ mod tests {
             "only real line feeds remain"
         );
         assert!(output.starts_with("ok\\u{202e}evil\\u{200b}\\u{000d}\n"));
+    }
+
+    /// Push every piece through one stream and join the results with `finish`.
+    fn streamed(pieces: &[&str]) -> String {
+        let mut stream = DisplaySafeStream::new();
+        let mut output = String::new();
+        for piece in pieces {
+            output.push_str(&stream.push(piece));
+        }
+        output.push_str(&stream.finish());
+        output
+    }
+
+    /// Adversarial inputs: forged escapes, backslash runs, hidden characters.
+    const STREAM_CASES: &[&str] = &[
+        "",
+        "plain text",
+        "fn main() {\n    \u{e9} \u{65e5}\u{672c} \u{1f600}\n}",
+        "\\u{41}",
+        "a\\\\u{202e}b",
+        "\\\\\\u{",
+        "\\\u{7}x",
+        "x\\\n",
+        "tail\\\\\\",
+        "tail\\u",
+        "tail\\\\u",
+        "\\u\\u{",
+        "\\u1234 \\n",
+        "ok\u{202e}evil\u{200b}\r\n\ttab\0nul\u{2028}\u{feff}",
+        "\\\u{202e}\\\\\u{200b}\\",
+        "\u{2764}\u{fe0f}\\u",
+        "u\\u{u{",
+    ];
+
+    #[test]
+    fn streamed_display_safe_equals_the_whole_text_for_every_two_piece_split() {
+        for whole in STREAM_CASES {
+            let expected = display_safe(whole);
+            for (cut, _) in whole.char_indices().chain([(whole.len(), ' ')]) {
+                let (first, second) = whole.split_at(cut);
+                assert_eq!(streamed(&[first, second]), expected, "{whole:?} at {cut}");
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_display_safe_equals_the_whole_text_for_every_three_piece_split() {
+        for whole in STREAM_CASES {
+            let expected = display_safe(whole);
+            let boundaries: Vec<usize> = whole
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain([whole.len()])
+                .collect();
+            for &first_cut in &boundaries {
+                for &second_cut in boundaries.iter().filter(|cut| **cut >= first_cut) {
+                    let (head, rest) = whole.split_at(first_cut);
+                    let (middle, tail) = rest.split_at(second_cut - first_cut);
+                    assert_eq!(
+                        streamed(&[head, middle, tail]),
+                        expected,
+                        "{whole:?} at {first_cut} and {second_cut}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_display_safe_holds_back_only_a_backslash_tail() {
+        let mut stream = DisplaySafeStream::new();
+        assert_eq!(stream.push("ab\\\\"), "ab");
+        assert_eq!(stream.push("u"), "");
+        assert_eq!(stream.push("{"), "\\u{5c}\\u{5c}u{");
+        assert_eq!(stream.push("tail\\"), "tail");
+        assert_eq!(stream.finish(), "\\");
+        assert_eq!(DisplaySafeStream::default().finish(), "");
     }
 
     #[test]
