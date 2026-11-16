@@ -3,8 +3,12 @@
 //! An approval binds a future model-tool call to a session, workspace,
 //! operation, exact request digest, and the settings revision in force when it
 //! was requested. It stores no argument text. It is single-use and expires.
-//! No model tool consumes one yet; the core consume method is the gate a later
-//! tool must call. See `docs/agent-instructions.md` and ADR-0039.
+//! The `workspace_run_command` and `workspace_edit_file` model tools consume
+//! records through [`ControlStore::consume_approval`], which every
+//! host-changing model tool must call before its operation. A `file_write`
+//! approval also records the operator's acknowledgement that other writers are
+//! stopped, and consumption refuses one without it. See
+//! `docs/agent-instructions.md`, ADR-0039, ADR-0040, and ADR-0043.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -102,6 +106,9 @@ pub struct ApprovalRequest {
 pub(super) struct ApprovalRecord {
     request: ApprovalRequest,
     decision: Option<ApprovalDecision>,
+    /// Whether the approving decision acknowledged that writers are stopped.
+    #[serde(default)]
+    writers_stopped: bool,
     consumed: bool,
 }
 
@@ -118,6 +125,9 @@ pub struct ApprovalStatus {
     pub created_unix: u64,
     pub expires_unix: u64,
     pub state: ApprovalState,
+    /// Whether the approval acknowledged that other writers are stopped. Only
+    /// a `file_write` approval can carry it, and only it requires it.
+    pub writers_stopped: bool,
 }
 
 /// An operator's approval request, before validation.
@@ -221,6 +231,7 @@ impl ControlStore {
             &ApprovalRecord {
                 request,
                 decision: None,
+                writers_stopped: false,
                 consumed: false,
             },
             now_unix,
@@ -229,12 +240,69 @@ impl ControlStore {
 
     /// Approve or deny one pending approval. This preserves the settings
     /// revision.
+    ///
+    /// Approving a `file_write` record is refused here: it needs the
+    /// operator's writers-stopped acknowledgement through
+    /// [`Self::approve_with_writers_stopped`]. Denial needs no acknowledgement.
     pub fn decide_approval(
         &mut self,
         approval_id: Uuid,
         approved: bool,
         now_unix: u64,
     ) -> Result<(), ControlError> {
+        let record = self.decidable_record(approval_id, now_unix)?;
+        if approved && record.request.operation == ApprovalOperation::FileWrite {
+            return Err(ControlError::ApprovalRefused(
+                "approving a file_write request requires the writers-stopped acknowledgement",
+            ));
+        }
+        self.append(
+            Action::ApprovalDecided {
+                approval_id,
+                decision: if approved {
+                    ApprovalDecision::Approved
+                } else {
+                    ApprovalDecision::Denied
+                },
+                writers_stopped: false,
+            },
+            self.revision(),
+        )
+    }
+
+    /// Approve one pending `file_write` record and record the operator's
+    /// acknowledgement that every other writer to the target is stopped.
+    ///
+    /// The acknowledgement is an operating assumption, not enforced isolation:
+    /// the checkpointed apply cannot detect a concurrent writer. Other
+    /// operations refuse it. This preserves the settings revision.
+    pub fn approve_with_writers_stopped(
+        &mut self,
+        approval_id: Uuid,
+        now_unix: u64,
+    ) -> Result<(), ControlError> {
+        let record = self.decidable_record(approval_id, now_unix)?;
+        if record.request.operation != ApprovalOperation::FileWrite {
+            return Err(ControlError::ApprovalRefused(
+                "the writers-stopped acknowledgement applies only to file_write requests",
+            ));
+        }
+        self.append(
+            Action::ApprovalDecided {
+                approval_id,
+                decision: ApprovalDecision::Approved,
+                writers_stopped: true,
+            },
+            self.revision(),
+        )
+    }
+
+    /// The undecided, unexpired record a decision may target.
+    fn decidable_record(
+        &self,
+        approval_id: Uuid,
+        now_unix: u64,
+    ) -> Result<&ApprovalRecord, ControlError> {
         let record = self
             .approval_record(approval_id)
             .ok_or(ControlError::UnknownApproval)?;
@@ -246,22 +314,15 @@ impl ControlStore {
         if record.request.expires_unix <= now_unix {
             return Err(ControlError::ApprovalRefused("this approval has expired"));
         }
-        self.append(
-            Action::ApprovalDecided {
-                approval_id,
-                decision: if approved {
-                    ApprovalDecision::Approved
-                } else {
-                    ApprovalDecision::Denied
-                },
-            },
-            self.revision(),
-        )
+        Ok(record)
     }
 
     /// Consume an approved request once, after checking its exact binding and
-    /// that the settings revision has not changed. A future model tool must
-    /// call this before the operation. This preserves the settings revision.
+    /// that the settings revision has not changed. A host-changing model tool
+    /// must call this before the operation. A `file_write` record also needs
+    /// the writers-stopped acknowledgement; an earlier journal's approval
+    /// without one replays but cannot be consumed. This preserves the settings
+    /// revision.
     pub fn consume_approval(
         &mut self,
         approval_id: Uuid,
@@ -279,6 +340,11 @@ impl ControlStore {
         if record.consumed {
             return Err(ControlError::ApprovalRefused(
                 "the approval was already consumed",
+            ));
+        }
+        if record.request.operation == ApprovalOperation::FileWrite && !record.writers_stopped {
+            return Err(ControlError::ApprovalRefused(
+                "the file_write approval lacks the writers-stopped acknowledgement",
             ));
         }
         if record.request.expires_unix <= now_unix {
@@ -364,12 +430,14 @@ pub(super) fn apply(
             state.approvals.push(ApprovalRecord {
                 request: request.clone(),
                 decision: None,
+                writers_stopped: false,
                 consumed: false,
             });
         }
         Action::ApprovalDecided {
             approval_id,
             decision,
+            writers_stopped,
         } => {
             let record = state
                 .approvals
@@ -379,7 +447,19 @@ pub(super) fn apply(
             if record.decision.is_some() {
                 return Err(ControlError::Invalid("duplicate approval decision"));
             }
+            // Only an approved file_write decision can carry the
+            // acknowledgement. Its absence still replays: earlier journals
+            // never recorded it, and consumption refuses such a record.
+            if *writers_stopped
+                && (*decision != ApprovalDecision::Approved
+                    || record.request.operation != ApprovalOperation::FileWrite)
+            {
+                return Err(ControlError::Invalid(
+                    "a writers-stopped acknowledgement needs an approved file_write record",
+                ));
+            }
             record.decision = Some(*decision);
+            record.writers_stopped = *writers_stopped;
         }
         Action::ApprovalConsumed { approval_id } => {
             let record = state
@@ -424,6 +504,7 @@ fn status_for(record: &ApprovalRecord, now_unix: u64) -> ApprovalStatus {
         created_unix: record.request.created_unix,
         expires_unix: record.request.expires_unix,
         state,
+        writers_stopped: record.writers_stopped,
     }
 }
 

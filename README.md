@@ -6,10 +6,10 @@ OMGCode aims to connect language models to controlled development tools.
 The current code is an early Rust core and command-line prototype. A bounded
 native workspace file broker is available through trusted CLI commands. A core
 turn/tool runtime and schema-v2 session format let chat offer the local LM Studio
-model read, list, and approval-gated command tools, only for a workspace that
-enables `model_tools` and the command tool's own preferences.
-Model write tools, a desktop interface, and Git workflows remain
-planned. The trusted CLI `run` command starts one program for a workspace whose
+model read, list, approval-gated exact-edit, and approval-gated command tools,
+only for a workspace that enables `model_tools` and each tool's own
+preferences. Model file creation, deletion, and renaming, a desktop interface,
+and Git workflows remain planned. The trusted CLI `run` command starts one program for a workspace whose
 `execute` preference is enabled. It uses an operator-declared toolchain
 profile, records each run in a run journal, and confines the process tree with
 Landlock and a seccomp socket filter on Linux or a per-workspace AppContainer
@@ -26,7 +26,12 @@ directory grants.
 > model read and list files inside that workspace through a bounded runtime.
 > When `execute`, `read`, and `write` are also enabled, it offers a confined
 > command tool that records a pending approval and runs only after the operator
-> approves that exact call. It has no model write, network, Git, or MCP tools.
+> approves that exact call. When `read` and `write` are enabled, it offers an
+> edit tool that replaces one exact text occurrence in an existing file. Each
+> edit records a pending approval and is applied through a checkpoint only
+> after the operator approves that exact call and acknowledges that other
+> writers are stopped. It has no model create, delete, rename, network, Git, or
+> MCP tools.
 > The trusted
 > CLI can replace or restore one existing file through a checkpoint on qualified
 > Linux ext4 or Windows NTFS, and can permanently delete one resolved checkpoint.
@@ -47,7 +52,9 @@ directory grants.
 > container grant, and Linux falls back to application storage when no root is
 > selected. Provider profiles record connection shapes, and trusted
 > single-use approval records prepare per-call model-tool consent; neither
-> enables an adapter, login, or model tool. Runs have memory, process-count,
+> enables an adapter, login, or model tool. API keys can be stored in protected
+> OS storage (DPAPI on Windows, the Secret Service on Linux) and bound to a
+> profile, but no adapter reads them yet. Runs have memory, process-count,
 > CPU-time, and sampled disk-growth limits; the disk limit is not a filesystem
 > quota. See [command execution](docs/execution.md#tree-limits).
 
@@ -85,13 +92,14 @@ and `omgcode-platform`. The CLI command is `omgcode`. It provides:
   single-directory creation, and read-only diff previews through explicit
   workspace/session CLI selections. These trusted operator commands do not
   provide model tool definitions, and `file diff` never writes to the workspace.
-- `session`: create, inspect, archive, restore, and explicitly interrupt an
-  abandoned turn in a JSONL journal.
+- `session`: create, inspect, archive, restore, compact older active context,
+  and explicitly interrupt an abandoned turn in a JSONL journal.
 - `chat`: send one user turn to an already-running LM Studio server at a literal
   loopback HTTP endpoint. It does not discover, start, or download models, and it
   rejects model tool requests unless the session's workspace enables
-  `model_tools`. Then it offers read/list tools and, when `execute`, `read`,
-  and `write` are also enabled, the approval-gated command tool, rechecked
+  `model_tools`. Then it offers read/list tools; when `read` and `write` are
+  also enabled, the approval-gated edit tool; and when `execute`, `read`, and
+  `write` are all enabled, the approval-gated command tool. Each is rechecked
   against live settings before every call.
 
 Prompt assembly sends the compiled base in the system role. Optional user
@@ -102,14 +110,18 @@ it does not replay recorded actions. An abandoned turn must be inspected and
 marked interrupted before chat can continue.
 
 The core also implements a session-owned turn/tool runtime and JSONL schema
-version 2. That runtime accepts a caller-supplied model interface, validates
-strict read/list/command tool calls, creates a fresh workspace binding before
-every file operation, and records tool intents, results, and source-labelled
-messages. The command tool additionally requires a consumed approval. `chat`
-runs it with the local LM Studio adapter for a workspace that enables
-`model_tools`. It has no write, Git, MCP, or network tool.
-New sessions use schema version 2; version 1 journals remain readable and
-writable with their original text-only event subset.
+version 3. Schema version 3 adds readable, bounded context compaction; the
+original journal messages are retained, and the summary is labelled untrusted
+user-level evidence. That runtime accepts a caller-supplied model interface, validates
+strict read/list/edit/command tool calls, creates a fresh workspace binding
+before every file operation, and records tool intents, results, and
+source-labelled messages. The edit and command tools additionally require a
+consumed approval; an edit also needs the operator's writers-stopped
+acknowledgement and writes only through checkpointed apply. `chat` runs it
+with the local LM Studio adapter for a workspace that enables `model_tools`.
+It has no create, delete, rename, Git, MCP, or network tool.
+New sessions use schema version 3; version 1 and 2 journals remain readable
+and writable with their original subsets.
 
 The platform crate checks opened journal handles, captures native directory
 identity for workspace registration, and implements handle-relative file
@@ -125,16 +137,19 @@ guarantee no lost updates. Windows makes no power-loss claim. Trusted
 `file restore` writes a retained original back through a new checkpoint after
 an explicit current-content check. Trusted `file delete-checkpoint --permanent`
 removes one resolved checkpoint's files and keeps its ledger history. Neither
-command is power-loss qualified. Model-dispatched write tools
-remain unavailable.
+command is power-loss qualified. The model edit tool uses the same
+checkpointed apply after an approved, writers-stopped decision; it cannot
+create, delete, or rename files and does not detect a concurrent writer.
 Model-dispatched process execution, Git, MCP, and memories remain planned. See the
 [workspace settings contract](docs/workspace-permissions.md), the
 [workspace file-access guide](docs/file-access.md), and the [development
 guide](docs/development.md) for limits and command details.
 
-The current CLI has no operating-system credential service. Its optional local
-server token input remains prototype wiring; it is not a release credential
-boundary. Do not treat the prototype as release-ready or use it to handle
+The CLI stores provider API keys in operating-system protected storage through
+trusted `workspace provider-credential-set` and `provider-credential-remove`
+commands (ADR-0042). No provider adapter reads them yet. The optional local
+server token input for chat remains prototype wiring; it is not a release
+credential boundary. Do not treat the prototype as release-ready or use it to handle
 sensitive credentials.
 
 To build and run the prototype with the pinned Rust toolchain:
@@ -155,13 +170,17 @@ cargo run --locked -p omgcode-cli -- chat --workspace . --model "YOUR_MODEL_ID" 
 
 The endpoint defaults to `http://127.0.0.1:1234/v1`. The required context value
 must come from the selected model's validated profile. The adapter uses a
-conservative byte-based estimate; it is not the model tokenizer. While the
+conservative byte-based estimate; it is not the model tokenizer. Add
+`--auto-compact --compact-threshold TOKENS` to compact older active context
+before a turn, or run `session compact` explicitly. The original journal is
+retained; the summary is untrusted evidence, never instructions or authority. While the
 workspace's `model_tools` preference is off, which is the default, the example
 sends only the supplied message and saved chat history, not workspace files;
 earlier tool results are replaced by a withheld notice. If `model_tools` is
-enabled for `.`, the model can call the read and list tools; with `execute`,
-`read`, and `write` also enabled it can request the command tool, which needs
-an operator approval. The file
+enabled for `.`, the model can call the read and list tools. With `read` and
+`write` also enabled, which is the default, it can request an exact file edit;
+with `execute` enabled as well it can request the command tool. Each edit or
+command needs an operator approval. The file
 contents it reads are sent to the local model.
 The loopback connection does not establish how LM Studio handles data upstream;
 check the server's configuration before sending sensitive text.

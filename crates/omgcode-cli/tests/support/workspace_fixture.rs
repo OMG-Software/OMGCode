@@ -71,7 +71,7 @@ impl Fixture {
 ///
 /// Temporary directories inherit grants that the store correctly refuses.
 #[cfg(windows)]
-fn restrict_to_current_user(data: &std::path::Path) {
+pub(crate) fn restrict_to_current_user(data: &std::path::Path) {
     use std::process::Command;
 
     use super::{CLI_DEADLINE, run_with_deadline};

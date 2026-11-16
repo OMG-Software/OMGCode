@@ -21,7 +21,7 @@ billing or defer it.
 | Ollama Local | Local service configuration; authentication where configured | Planned; not implemented |
 | Ollama Cloud | Provider cloud credentials | Planned; not implemented |
 | OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
-| LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; credential service and full platform/auth qualification pending |
+| LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, but the adapter does not read it; full platform/auth qualification pending |
 
 The provider, authentication method, account/workspace, billing mode, and model
 capabilities form one connection profile. Do not infer all of these from a
@@ -47,8 +47,9 @@ configure that service.
 
 The CLI accepts an optional `OMGCODE_LM_TOKEN` in its own process
 environment. The core keeps the resulting authorization header in memory and
-does not add the token to a request manifest. There is no OS credential service
-or token settings UI. This is a prototype-only developer input. Task execution
+does not add the token to a request manifest. The adapter does not read the
+stored credentials described below, and there is no token settings UI. This is
+a prototype-only developer input. Task execution
 and task environments do not exist in the prototype; this does not qualify the
 future task-environment credential boundary.
 
@@ -137,11 +138,40 @@ API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio.
 Ollama Local accepts only `none`.
 
 A profile stores no endpoint, account, token, password, certificate, or other
-credential. It is configuration only: no adapter, login, entitlement check,
-billing mode, or model context uses it. `capabilities` reports
-`provider_profiles: true` and `provider_adapters: false`. A credential service
-and the provider-specific login approvals remain prerequisites for any real
-connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
+credential. Since 0.27.0 its status can name a bound credential's opaque
+identifier and backend (below). It is configuration only: no adapter, login,
+entitlement check, billing mode, or model context uses it. `capabilities`
+reports `provider_profiles: true` and `provider_adapters: false`. Adapters that
+read stored credentials and the provider-specific login approvals remain
+prerequisites for any real connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
+
+## Stored provider credentials (0.27.0)
+
+Trusted `workspace provider-credential-set <name> --revision <n>` reads an API
+key from standard input and stores it in protected OS storage: a DPAPI blob for
+the current user in a verified-ACL private directory on Windows, or one item in
+the Secret Service default collection on Linux. Nothing falls back to plaintext.
+A credential is immutable and has a fresh random identifier. The control
+journal records `provider_credential_bound` with the profile, that opaque
+identifier, and the backend; it never records the secret. Rotation stores a new
+credential, records the binding, and then deletes the old item. An interrupted
+set either leaves a valid binding or names the identifier to reconcile: when
+the binding's journal write fails after it began, the new item is kept and
+reported as `credential_binding_uncertain`, so a binding never names an item
+OMGCode deleted. On Linux OMGCode never runs a Secret Service prompt; a request
+that needs one is dismissed and refused. The secret reaches the service only
+through the encrypted session, after an empty placeholder item is created.
+`provider-credential-remove` and `provider-profile-remove` record the unbinding
+before deleting the native item. Output, `status`, and `capabilities` report
+only identifiers, backends, and store state. See
+[ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md) and
+[development commands](development.md#provider-credentials).
+
+Only `api_key` profiles accept a credential. Subscription tokens, login codes,
+and refresh tokens are not stored, and subscription sign-in remains blocked as
+described above. **No provider adapter reads a stored credential yet**, so no
+connection uses one. A memory-only session credential belongs to the adapter
+increment. Any process running as the same user can read these credentials.
 
 ## Settings and account lifecycle
 
@@ -218,9 +248,11 @@ full platform and authentication qualification remains pending.
 For release, keep access tokens, refresh tokens, API keys, login codes, and
 verifier values in the trusted authentication service. Store durable credentials
 in protected OS storage. Do not silently fall back to plaintext when that store
-is unavailable; offer an explicit memory-only session if appropriate. The
-prototype's `OMGCODE_LM_TOKEN` process-environment input does not meet this
-credential-service requirement and must not be treated as its replacement.
+is unavailable; offer an explicit memory-only session if appropriate. Version
+0.27.0 implements that protected store for API keys (ADR-0042); no adapter
+reads it yet. The prototype's `OMGCODE_LM_TOKEN` process-environment input does
+not meet this credential-service requirement and must not be treated as its
+replacement.
 
 Expose opaque connection identifiers and safe account labels to the UI. For
 release, never put credentials in model context, workspace files, task or

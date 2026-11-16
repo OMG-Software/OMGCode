@@ -205,6 +205,11 @@ impl LocalModelClient {
         })
     }
 
+    /// The selected model identifier. This is descriptive, not an entitlement.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Send one bounded, non-streaming Chat Completions request.
     ///
     /// The adapter sends only model, role-tagged messages, `stream=false`, and

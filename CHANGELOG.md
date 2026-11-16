@@ -6,6 +6,137 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.28.0 adds the approval-gated model edit tool (Phase C17). See
+  ADR-0043.
+  - **Tool:** `workspace_edit_file { path, old_text, new_text }` replaces
+    exactly one occurrence of a non-empty `old_text` in an existing UTF-8
+    regular file. The current and proposed bytes must each fit 1 MiB, and the
+    arguments stay within the existing 4 KiB limit. Unknown fields, missing
+    fields, an empty `old_text`, and absolute, rooted, or parent paths are
+    refused before dispatch. The tool cannot create, delete, or rename files,
+    and it has no multi-edit form.
+  - **Offer and dispatch:** chat offers the tool, and the runtime dispatches
+    it, only while the workspace's live `model_tools`, `read`, and `write` are
+    all enabled. Because `read` and `write` default to enabled, enabling
+    `model_tools` now offers the edit tool; disable `write` to remove it. A
+    call without live `read` or `write` is denied with `edit_disabled`. The
+    tool schema version is 0.3.0; sessions that recorded 0.2.0 still replay.
+  - **Approval:** each call reads the live file through the audited broker and
+    binds a `file_write` approval to a digest under the domain tag
+    `omgcode-file-edit-v1`. The digest covers length-prefixed fields for the
+    session, workspace, normalized path, and the size and SHA-256 of both the
+    current and the proposed bytes, so the expected value comes from the live
+    read and a changed file needs a new approval. The summary holds the path,
+    sizes, and 12-character digest prefixes, never file text, with control
+    and hidden formatting characters replaced. The first call returns
+    `approval_required` and writes nothing; a pending record returns
+    `approval_required` and a denied one `approval_denied`.
+  - **Writers-stopped acknowledgement:** `approvals approve <id>
+    --writers-stopped` is required for a `file_write` record and refused for
+    every other operation. The decision records `writers_stopped`, which
+    `approvals show` and `list` report. Core `consume_approval` refuses a
+    `file_write` record without it; such a record from an earlier journal
+    still replays. A control journal holding the acknowledgement cannot be
+    read by 0.27.0; journals without it keep their exact bytes.
+  - **Apply:** an approved identical call consumes the record and then calls
+    the existing `apply_replacement` with the captured size and SHA-256 as
+    the expected value. `edit_no_match`, `edit_ambiguous`, `edit_unchanged`,
+    `edit_too_large`, `non_utf8`, and the checkpoint admission and conflict
+    codes, such as `checkpoint_conflict`, `checkpoint_pending`,
+    `checkpoint_busy`, and `checkpoint_unsupported`, are recoverable results
+    that let the turn continue. Corrupt or uncertain checkpoint evidence,
+    storage I/O failures, and denials end the turn. A consumed approval stays
+    spent when the apply fails. A success returns the path, new size and
+    SHA-256, and the checkpoint operation ID, never file contents. Neither
+    apply route detects a concurrent writer.
+  - **Review:** `session inspect` now lists every recorded tool request as
+    `tool_requests`, with its turn, call ID, tool, and exact arguments, so the
+    operator can review `old_text` and `new_text` before approving.
+  - **Capabilities:** `model_write_tools` is `approval_required`, and
+    `tool_policy` is
+    `read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval`
+    on Linux and Windows. `workspace_file_tools` stays `false`.
+- Version 0.27.0 adds the provider credential service (Phase D1). See
+  ADR-0042. No provider adapter reads a stored credential yet.
+  - **Native stores:** `omgcode-platform` stores each credential under a fresh
+    random identifier and never overwrites one. Windows writes a DPAPI blob
+    (current user, UI forbidden, entropy bound to the store label and
+    identifier) create-only into `credentials-v1` of the verified-ACL private
+    store, and rechecks the file's exact private DACL before decrypting.
+    Linux stores one Secret Service item in the default collection, with
+    `application` and `omgcode_credential` attributes. It creates an empty
+    placeholder marked `omgcode_state=pending`, sends the secret only through
+    the encrypted session, and then removes the marker; a placeholder loads as
+    corrupt. A locked collection is reported, never unlocked, and a Secret
+    Service prompt is dismissed and refused, never run. Other platforms,
+    a missing bus or service, or no default collection are unavailable;
+    nothing falls back to plaintext.
+  - **Errors:** edited, truncated, or identifier-swapped Windows blobs, a
+    broadened DACL, and duplicate Linux items are corrupt, never absent.
+  - **Secrets in memory:** an owned buffer, bounded to 16 KiB, zeroed on drop
+    and redacted from `Debug`.
+  - **Journal:** `provider_credential_bound` and `provider_credential_removed`
+    record a profile, an opaque identifier, and the backend under the
+    revision rule. `provider_profile_removed` names a bound credential. Only
+    `api_key` profiles accept one; subscription and `none` profiles are
+    refused. Profile status reports `credential` as none or bound. A control
+    journal written by 0.27.0 cannot be read by 0.26.0.
+  - **CLI:** `workspace provider-credential-set <profile> --revision <n>`
+    reads the secret from piped standard input only, removes one trailing
+    newline, stores, binds, and then deletes a replaced credential.
+    `provider-credential-remove` and `provider-profile-remove` unbind before
+    deleting. An undeletable unbound item is a `credential_orphaned` warning.
+    The secret is read before the control store is opened. Credential
+    failures have stable `credential_*` error codes, including
+    `credential_prompt_required` and `credential_binding_uncertain`, and
+    `capabilities` reports `credential_store` and `provider_credentials`.
+  - **CI:** the Linux job installs gnome-keyring and unlocks a login
+    collection on the user session bus before the tests.
+  - **Dependencies:** `zeroize` 1.9 (`alloc`), `secret-service` 5.2
+    (Linux, `rt-tokio-crypto-rust`), zbus pinned to 5.19.0 as a direct Linux
+    dependency with the features `secret-service` already enables, and the
+    `windows-sys` `Win32_Security_Cryptography` feature. No crate was added
+    to the lockfile for zbus.
+- Version 0.26.0 adds readable context compaction and accounting. See
+  ADR-0041.
+  - **Manual:** `session compact` summarizes older active messages with the
+    selected local model and records a schema-v3 `context.compacted` event.
+    Original journal messages are retained.
+  - **Automatic:** `chat --auto-compact --compact-threshold <tokens>` compacts
+    before a turn when the conservative estimate reaches
+    `min(threshold, safe input budget)`. Without auto-compaction, an oversized
+    request is refused with a manual-compaction hint.
+  - **Active context:** the labelled, untrusted summary replaces messages
+    before the recorded boundary. The latest user message and all later
+    assistant/tool messages stay verbatim, preserving the current turn and its
+    tool pairs.
+  - **Tool-result authority:** saved tool results reach the summarizer only
+    under live `model_tools` and `read`, the same rule that replays them in a
+    turn. The record states whether its summary used tool results; such a
+    summary is withheld, and counted as withheld, when a later turn lacks that
+    authority. Text-only chat and tool-enabled turns share one replay path for
+    the active context.
+  - **Validation:** the recorded digest must match the summary, and the first
+    retained message must be a user message. A summary that would not shrink
+    the active context is refused and records nothing.
+  - **Accounting:** the pre-turn estimate counts input only, so the output
+    reserve is not counted twice against the safe input budget. Compaction is
+    also due at the 128-message and 256 KiB prompt-assembly limits. Summary
+    chunks are sized from the summary request's output reserve and its full
+    fixed prompt.
+  - **Revocation:** live `model_tools` and `read` are rechecked before each
+    summarizer request that carries tool-derived content.
+  - **Schema 2:** existing schema-version-2 journals keep accepting tool
+    manifests; the first draft of this change rejected them.
+  - **Meter:** chat reports the conservative input estimate, context and
+    output budgets, effective trigger, auto-compaction state, and compaction
+    boundary and summary digest.
+  - **Limits:** summarizer input is split into bounded chunks with hard chunk
+    and depth limits; summaries are at most 8 KiB; a failure, empty result, or
+    no reduction fails closed. The configured local token is redacted from
+    summarizer input and output.
+  - **Not implemented:** mid-turn compaction after tool results, persisted
+    auto-compaction settings, provider-native compaction, and caches.
 - Version 0.25.0 adds an approval-gated model command tool. See ADR-0040.
   - **Offering:** `workspace_run_command` is advertised only when the
     workspace's live `model_tools`, `execute`, `read`, and `write`
@@ -337,6 +468,47 @@ Changes are recorded here before a release version is assigned.
   development guide. Keep the existing Sonar project key to retain its history.
 
 ### Fixed
+
+- PR #32 review follow-up:
+  - Compaction splits summarizer input at the 128-message prompt-assembly
+    limit as well as the byte limit, in history chunks and combination
+    rounds. 130 short older messages used to form one chunk that prompt
+    assembly refused.
+  - Summarizer chunks are sized by each message's JSON-escaped length, so
+    content with quotes, backslashes, or control characters no longer makes
+    a chunk exceed the serialized request bound and fail compaction.
+  - An approved `workspace_edit_file` call is refused with `output_too_large`
+    before its approval is consumed when the widest success report cannot
+    fit the result limit, so an apply never runs without a reportable result.
+  - The chat preflight estimate replays saved tool results only under live
+    `model_tools` and `read`, matching the request the turn will send, so a
+    withheld result no longer triggers a needless compaction refusal. The
+    authority is read again after auto-compaction, so a `read` revoked during
+    the summarizer request is reflected in the post-compaction estimate.
+  - A Secret Service `CreateItem` reply that carries both an item and a prompt
+    is refused with `credential_prompt_required` like a prompt alone; the
+    prompt is never run and the placeholder is deleted.
+  - Windows credential tests inject a directory-sync failure after the file
+    is written, with a successful and with a failed cleanup.
+  - `provider-credential-set` reads the secret before it opens the control
+    store, so the store's lock is not held while standard input is awaited.
+  - A failed credential store that may have left an item, such as a Windows
+    directory sync failure after a complete write, deletes it. The Windows
+    store now removes its file on that failure too. If cleanup fails, the
+    command reports `credential_orphaned` with the identifier.
+  - A binding append refused before any write still deletes the new item. A
+    binding whose journal write or sync failed may be recorded, so the new
+    item is now kept and reported as `credential_binding_uncertain` with its
+    identifier and any replaced identifier. A recorded binding no longer
+    names an item that OMGCode deleted.
+  - Linux no longer lets `secret-service` run a prompt returned by
+    `CreateItem` or `Item.Delete`, which waited without a bound. Those calls
+    go through zbus directly; a returned prompt is dismissed, never run, and
+    reported as `credential_prompt_required`. Mock-service tests prove that
+    `Prompt` is never called.
+  - Credential tests keep their temporary directory until the stores close,
+    and the history-limit CLI tests seed journals inside the spawn gate. The
+    credential command example pipes the key on standard input.
 
 - PR #30 review follow-up:
   - Expired, undecided approvals no longer occupy the 64 pending slots during

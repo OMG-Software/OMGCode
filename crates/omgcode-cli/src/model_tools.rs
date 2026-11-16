@@ -1,8 +1,9 @@
-//! Chat with the persisted model read/list tool preference.
+//! Chat with the persisted model-tool preference.
 //!
 //! The session journal only selects which registered workspace to consult.
 //! Authority comes from the live settings preference, rechecked by the core
 //! runtime before every tool call, and each call stays inside that workspace.
+//! The edit and command tools also need a trusted single-use approval.
 
 use std::path::Path;
 use std::time::Duration;
@@ -18,6 +19,7 @@ use omgcode_core::turn::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{CliError, provider_error, redact_known_secret};
 
@@ -27,6 +29,12 @@ use crate::{CliError, provider_error, redact_known_secret};
 /// offers tools the platform cannot run.
 pub(crate) const MODEL_TOOLS_SUPPORTED: bool =
     cfg!(any(target_os = "linux", target_os = "windows"));
+
+/// Conservative byte allowance for the advertised tool definitions.
+///
+/// The largest set (read, list, edit, and command) serializes to 2,763 bytes
+/// in the adapter's wire shape; a unit test keeps this allowance above it.
+pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 4 * 1024;
 
 /// Whether this chat turn offers the model the workspace read/list tools.
 #[derive(Debug)]
@@ -73,7 +81,7 @@ pub(crate) fn select(data_root: &Path, journal: &SessionJournal) -> Result<ToolM
             reason: "preference_disabled",
         });
     }
-    if journal.schema_version() != 2 {
+    if journal.schema_version() < 2 {
         return Ok(ToolMode::Disabled {
             reason: "session_schema_v1",
         });
@@ -81,11 +89,40 @@ pub(crate) fn select(data_root: &Path, journal: &SessionJournal) -> Result<ToolM
     Ok(ToolMode::Enabled { workspace_id })
 }
 
+/// Whether live settings authorize replaying saved tool results for a session:
+/// the same `model_tools` and `read` rule the turn runtime applies.
+///
+/// The session is named by its recorded workspace UUID and schema version, so
+/// compaction can recheck while it holds the journal. Each call reads current
+/// settings. Every condition that gives text-only chat gives `false`; invalid
+/// settings return an error.
+pub(crate) fn tool_replay_allowed(
+    data_root: &Path,
+    workspace: Uuid,
+    schema_version: u32,
+) -> Result<bool, CliError> {
+    if !MODEL_TOOLS_SUPPORTED || schema_version < 2 {
+        return Ok(false);
+    }
+    let Some(control) = ControlStore::open_existing(data_root)
+        .map_err(|error| CliError::new("control", error.to_string()))?
+    else {
+        return Ok(false);
+    };
+    Ok(control
+        .registered_workspace(workspace)
+        .is_some_and(|workspace| {
+            let permissions = workspace.permissions();
+            permissions.model_tools && permissions.read
+        }))
+}
+
 /// Summary of one completed tool-enabled turn.
 #[derive(Serialize)]
 pub(crate) struct ToolTurnOutput {
     pub(crate) reply: ToolTurnReply,
     pub(crate) model_tools: ToolTurnSummary,
+    pub(crate) context: Option<crate::ContextMeter>,
 }
 
 /// Assistant text from a tool-enabled turn. It remains untrusted model output.
@@ -162,6 +199,7 @@ pub(crate) fn run(
             tool_bytes: report.tool_bytes,
             withheld_tool_results: report.withheld_tool_results,
         },
+        context: None,
     })
 }
 
@@ -269,5 +307,33 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> CliError {
             "The previous turn is incomplete; inspect it, then use session interrupt to mark it failed without retrying",
         ),
         other => CliError::new("turn", other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use omgcode_core::turn::{command_tool_definition, edit_tool_definition, tool_definitions};
+    use serde_json::{Value, json};
+
+    use super::TOOL_SCHEMA_ESTIMATE_BYTES;
+
+    /// The estimate must cover the largest advertised tool set in the exact
+    /// OpenAI-compatible wire shape the adapter sends.
+    #[test]
+    fn the_schema_estimate_covers_every_advertised_tool_definition() {
+        let mut definitions = tool_definitions();
+        definitions.push(edit_tool_definition());
+        definitions.push(command_tool_definition());
+        let wire: Vec<Value> = definitions
+            .iter()
+            .map(|definition| json!({"type": "function", "function": definition}))
+            .collect();
+        let bytes = serde_json::to_vec(&wire).expect("serialize tool definitions");
+        println!("advertised tool definitions: {} bytes", bytes.len());
+        assert!(
+            bytes.len() <= TOOL_SCHEMA_ESTIMATE_BYTES,
+            "{} bytes exceed the {TOOL_SCHEMA_ESTIMATE_BYTES}-byte estimate",
+            bytes.len()
+        );
     }
 }

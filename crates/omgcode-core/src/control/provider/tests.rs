@@ -44,7 +44,10 @@ fn provider_profiles_are_recorded_replayed_and_removed() {
         Err(ControlError::ProviderRefused(_))
     ));
     assert_eq!(
-        store.remove_provider_profile("work", 1).expect("remove"),
+        store
+            .remove_provider_profile("work", 1)
+            .expect("remove")
+            .profile_id,
         profile.id()
     );
     assert_eq!(store.revision(), 2);

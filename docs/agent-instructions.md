@@ -32,10 +32,11 @@ skill/tool/memory selections, or an account profile.
 
 The core turn/tool runtime records the exact tool schema version and tool names
 in a schema-version-2 request manifest. Its read/list results are appended as
-source-labelled user-level tool messages and are never system messages. A
-command result follows the same rule and remains untrusted. Chat runs this
-runtime when the workspace enables `model_tools`; the command tool also needs
-`execute`, `read`, and `write`, and it runs only after a trusted approval.
+source-labelled user-level tool messages and are never system messages. Edit
+and command results follow the same rule and remain untrusted. Chat runs this
+runtime when the workspace enables `model_tools`; the edit tool also needs
+`read` and `write`, the command tool also needs `execute`, `read`, and `write`,
+and each runs only after a trusted approval.
 Otherwise chat sends no tool definitions and rejects any provider tool call.
 
 Prompt assembly limits custom instruction text and each history message to 16
@@ -43,9 +44,10 @@ KiB, history to 128 messages, and the assembled UTF-8 text to 256 KiB. The
 adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
 prototype has no settings UI, application/workspace/session preference store,
-preview UI, token-count display, compaction, skills, memories, model write,
-network, Git, or MCP tools, or provider-specific subscription routes. Its only
-model tools are read, list, and the approval-gated command tool. The current
+preview UI, token-count display, skills, memories, model create,
+delete, rename, network, Git, or MCP tools, or provider-specific subscription routes.
+Its only model tools are read, list, the approval-gated exact edit, and the
+approval-gated command tool. The current
 `--instructions` value is
 per invocation, not a saved preference with scope or revision history.
 
@@ -170,15 +172,21 @@ at request time. It stores no argument text. The summary is at most 256 bytes,
 must contain no secrets or control characters, and is for the operator.
 
 The `workspace_run_command` tool creates the request and consumes an approved
-record immediately before calling the trusted runner. Its first call returns
-`approval_required`; the operator approves between turns, and the model retries
-the same call. An approval lives 60 to 3600 seconds and is consumed at most
+record immediately before calling the trusted runner. The `workspace_edit_file`
+tool creates a `file_write` request bound to the live file and consumes an
+approved record immediately before the checkpointed apply. Each first call
+returns `approval_required`; the operator approves between turns, and the model
+retries the same call. Approving a `file_write` record needs
+`approvals approve <id> --writers-stopped`; the decision records that
+acknowledgement, other operations refuse the flag, and consumption refuses a
+`file_write` record without it. An approval lives 60 to 3600 seconds and is consumed at most
 once. Consumption checks the binding and refuses if the settings revision
 changed. The CLI consume command executes nothing. The tool must fail closed
 when the record is missing, denied, expired, consumed, or bound differently.
 Approval events preserve the settings revision. See
 [ADR-0039](adr/0039-gate-future-model-tools-with-bound-single-use-approval-records.md)
-and [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
+[ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md),
+and [ADR-0043](adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
 
 ## Release request records
 

@@ -3,6 +3,7 @@
 
 pub mod broker;
 pub mod container;
+pub mod credentials;
 pub mod interrupt;
 pub mod journal;
 pub mod private_store;

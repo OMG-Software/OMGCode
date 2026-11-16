@@ -1,14 +1,15 @@
 # Build and run the core prototype
 
-OMGCode 0.25.0 is a developer CLI prototype with workspace permission
+OMGCode 0.28.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
 files/directories, and preview a bounded diff against trusted proposed content
 in a registered workspace. When a workspace enables `model_tools`, chat runs
 the core's bounded turn/tool runtime so the model can read and list files in
-that workspace; with `execute`, `read`, and `write` enabled it can request an
-approval-gated command. Trusted CLI apply can
+that workspace; with `read` and `write` enabled it can request an
+approval-gated exact edit of an existing file, and with `execute`, `read`, and
+`write` enabled it can request an approval-gated command. Trusted CLI apply can
 replace an existing file on Linux ext4 or Windows NTFS. Trusted restore puts a
 retained checkpoint's original bytes back through apply, and trusted checkpoint
 deletion removes one resolved private entry. The trusted `run` command starts
@@ -20,9 +21,9 @@ time. A program started by `run` can create, change, and
 delete workspace files without a checkpoint. The CLI's `file` commands cannot
 delete workspace files, and the CLI cannot use Git or connect to MCP servers.
 When a workspace enables `model_tools`, chat lets the local model read and list
-files in that workspace and, with execute/read/write, request an approval-gated
-command. Model write, network, Git, and MCP tools are
-not implemented. Trusted commands record and apply the Windows container
+files in that workspace, request an approval-gated exact edit with read/write,
+and request an approval-gated command with execute/read/write. Model create,
+delete, rename, network, Git, and MCP tools are not implemented. Trusted commands record and apply the Windows container
 grants; see [command execution](execution.md).
 
 The core's byte-input replacement inspectors remain read-only. Its file broker
@@ -155,13 +156,101 @@ default to enabled; execute, task-network, host-services, and model-tools
 default to disabled. All decisions still report `execution_allowed: false`;
 only the trusted `run` command starts a process, and the model command tool
 reaches it only after consuming an approval. Settings commands do not dispatch
-tools. `--model-tools true` lets chat offer the model read/list tools and, with
-execute/read/write, the approval-gated command tool; see
+tools. `--model-tools true` lets chat offer the model read/list tools, with
+read/write the approval-gated edit tool, and with execute/read/write the
+approval-gated command tool; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 See the [workspace contract](workspace-permissions.md) for limits and failures.
 `container-grant` and `container-revoke` work on Windows only. They change ACLs
 for the workspace's AppContainer and record each change; see
 [container grants](execution.md#container-grants).
+
+## Provider credentials
+
+Version 0.27.0 stores provider API keys in protected OS storage and binds each
+one to an `api_key` provider profile ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)).
+No provider adapter reads a stored credential yet; `chat` still uses only the
+prototype `OMGCODE_LM_TOKEN` input. Subscription and `none` profiles refuse a
+credential.
+
+In PowerShell:
+
+```powershell
+omgcode --data-dir C:\omgcode-data workspace provider-profile-add work --kind openai --auth api_key --revision 6
+$key = Read-Host -AsSecureString -Prompt 'API key'
+[System.Net.NetworkCredential]::new('', $key).Password | omgcode --data-dir C:\omgcode-data workspace provider-credential-set work --revision 7
+Remove-Variable key
+omgcode --data-dir C:\omgcode-data workspace provider-profile-show work
+omgcode --data-dir C:\omgcode-data workspace provider-credential-remove work --revision 8
+```
+
+`provider-credential-set` reads the secret from standard input only. It never
+accepts the secret as an argument or environment variable, and it refuses a
+terminal, which would echo the secret as it is typed. It reads at most 16 KiB
+plus one line ending, removes exactly one trailing `\n` or `\r\n`, and refuses
+empty input. Pipe the secret without placing it on a command line, as above.
+The secret is read before the control store is opened, so no settings lock
+is held while the command waits for input.
+
+Windows PowerShell 5.1 sends piped text in its `$OutputEncoding`, which is
+ASCII by default, and appends CRLF; the CLI removes the CRLF. A non-ASCII key
+needs PowerShell 7 or an explicit UTF-8 `$OutputEncoding`. The plaintext is
+briefly held as a .NET string in the shell.
+
+In bash, `read -s` does not echo, and `printf` is a builtin, so the key is not
+in a process argument list or the shell history:
+
+```sh
+IFS= read -rs key && printf '%s' "$key" | omgcode --data-dir ~/omgcode-data workspace provider-credential-set work --revision 7; unset key
+```
+
+Each set stores a new credential under a fresh random identifier, then records
+`provider_credential_bound` with the profile, the identifier, and the backend.
+Setting a credential on a bound profile rotates it: the old native item is
+deleted only after the new binding is recorded. `provider-credential-remove`
+records `provider_credential_removed`, then deletes the native item.
+`provider-profile-remove` names a bound credential in its own
+`provider_profile_removed` event and then deletes the item. Output and
+`workspace status` report the identifier and backend, never the secret. When
+an unbound item cannot be deleted, the command still succeeds and reports a
+`warning` with code `credential_orphaned` and the identifier to remove by hand.
+
+Credential failures use stable error codes: `credential_unavailable`,
+`credential_locked`, `credential_not_found`, `credential_exists`,
+`credential_corrupt`, `credential_input`, `credential_io`,
+`credential_prompt_required` (the Secret Service asked for confirmation,
+which OMGCode never shows), `credential_orphaned` (nothing was recorded, and
+an item for the named identifier may remain and could not be deleted), and
+`credential_binding_uncertain`. The last means the binding's journal write
+failed after it began, so it may or may not be recorded. The new item is
+kept and the message names it, and any replaced identifier. Run
+`provider-profile-show`: if it shows the new identifier, keep it or remove it
+with `provider-credential-remove`, and delete the replaced item by hand;
+otherwise delete the new, unbound item by hand. A recorded binding never
+names an item that OMGCode deleted. `capabilities` reports `credential_store` with the
+backend and its state. A control journal written by 0.27.0 cannot be read by
+0.26.0.
+
+- **Windows:** each credential is a DPAPI blob for the current user in
+  `<data-dir>\credentials-v1`, written create-only with an owner-only DACL.
+  The data folder must meet the private-root rule used by checkpoint storage;
+  otherwise the store is `credential_unavailable`. An edited, truncated, or
+  copied blob, or a broadened DACL, is `credential_corrupt`.
+- **Linux:** each credential is one item in the Secret Service default
+  collection on the session bus, for example the gnome-keyring login
+  collection. OMGCode never unlocks a collection: unlock it outside OMGCode,
+  or the command fails with `credential_locked` before anything is recorded.
+  It never runs a Secret Service prompt either: a service that asks to
+  confirm a new item or a deletion gets the prompt dismissed, and the command
+  fails with `credential_prompt_required`. An item is first created as an
+  empty placeholder with an `omgcode_state=pending` attribute; the secret is
+  then sent through the encrypted session and the marker removed. A
+  placeholder left by an interrupted store loads as `credential_corrupt`.
+  No bus, service, or default collection is `credential_unavailable`. Nothing
+  falls back to a plaintext file.
+
+Any process running as the same user can read these credentials. The stores
+protect them at rest and from other users, not from same-user code.
 
 ## Trusted runs
 
@@ -226,8 +315,8 @@ native mount. Execute remains disabled. The `audit`, `acknowledge`,
 existing workspace settings.
 They do not require a configured root, workspace registration, or session
 selection. Chat advertises the read/list tools when the session's workspace
-enables `model_tools`, and the command tool when `execute`, `read`, and `write`
-are also enabled; see
+enables `model_tools`, the edit tool when `read` and `write` are also enabled,
+and the command tool when `execute`, `read`, and `write` are also enabled; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 
 Capability JSON separates implementation from availability. On Linux and
@@ -242,9 +331,11 @@ implementation, and `false` elsewhere. The CLI does not probe the mount, metadat
 or permissions for that flag. `checkpoint_restore` and `checkpoint_deletion`
 follow the same rule for `file restore` and `file delete-checkpoint`.
 `model_read_list_tools` is `true` on Linux and Windows, and `tool_policy` is
-`read_list_only_when_workspace_model_tools_enabled` there. Neither reports
-whether any workspace enables the preference. `workspace_file_tools`, which
-covers model write or general file tools, remains `false`.
+`read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval`
+there. `model_write_tools` and `model_command_tool` are `approval_required`.
+None of them reports whether any workspace enables the preference.
+`workspace_file_tools`, which covers general model file tools such as create,
+delete, or rename, remains `false`.
 
 ```text
 omgcode --data-dir C:\omgcode-data file read WORKSPACE_ID --session SESSION_UUID src\main.rs --max-bytes 65536
@@ -293,8 +384,9 @@ model/tool turn. `chat` runs it when the session's workspace enables
 `model_tools`. A caller supplies a model implementation, an open schema-version-2 session, the
 trusted application-data directory, and the workspace ID. The runtime:
 
-- parses strict OpenAI-style function calls for `workspace_read_file` and
-  `workspace_list_directory`;
+- parses strict OpenAI-style function calls for `workspace_read_file`,
+  `workspace_list_directory`, `workspace_edit_file`, and
+  `workspace_run_command`;
 - rejects unknown tools, malformed or duplicate arguments, absolute or parent
   paths, and duplicate call identifiers before dispatch;
 - opens the control store for each broker call, obtains a fresh session binding,
@@ -313,9 +405,14 @@ trusted application-data directory, and the workspace ID. The runtime:
 - sends saved tool results from earlier turns again only while the live
   `model_tools` and `read` preferences both allow it, and otherwise replaces
   each with a fixed withheld notice;
+- offers `workspace_edit_file` only under live `model_tools`, `read`, and
+  `write`, and `workspace_run_command` only when `execute` is also enabled;
+  every edit or command first needs a trusted single-use approval;
 - reports the final reply's provider `finish_reason`.
 
-The runtime supports no writes, process execution, Git, MCP, or network access.
+The runtime has no create, delete, rename, Git, MCP, or network tool. Its only
+write is the approved exact edit through checkpointed apply, and its only
+process execution is the approved command through the trusted runner.
 `LocalToolModel` adapts the LM Studio client to its model interface. The adapter
 sends the tool definitions in the OpenAI-compatible `tools` field, parses the
 response with the strict duplicate-key-rejecting parser, and returns each call
@@ -352,18 +449,28 @@ reason and a `withheld_tool_results` count. Text which resembles a command
 remains text.
 
 When the workspace enables `model_tools`, chat offers `workspace_read_file` and
-`workspace_list_directory`. When `execute`, `read`, and `write` also allow it,
-it offers the approval-gated `workspace_run_command`. The model may make up to
+`workspace_list_directory`. When `read` and `write` also allow it, it offers
+the approval-gated `workspace_edit_file`. When `execute`, `read`, and `write`
+also allow it, it offers the approval-gated `workspace_run_command`. The model may make up to
 four requests in one turn. Each read/list call is rechecked against live
 settings and stays inside the workspace. Results return to the model as
 source-labelled user messages. The configured LM Studio token is removed from
 each result before it is recorded or sent. A tool call that contains the token
 is refused with a `provider` error before it is recorded, because editing its
-arguments could change the requested path. Saved tool results are sent again
-only while the live `model_tools` and `read` preferences both allow it. Chat
-prompts for no approval: a command call first records a pending approval and
-returns `approval_required`; the operator runs `approvals approve <id>` between
-turns, and a second identical call consumes it and calls the trusted runner.
+arguments could change the requested path. Add
+`--auto-compact --compact-threshold <tokens>` to compact older active context
+before a turn. `session compact <journal> --endpoint <url> --model <name>
+--context-tokens <n> --summary-tokens <n>` performs the same manual action.
+Compaction records a schema-v3 `context.compacted` event, keeps the original
+messages, and injects a labelled untrusted summary; it never grants authority.
+Chat reports a conservative context meter. Saved tool results are sent again,
+to a turn or to the summarizer, only while the live `model_tools` and `read`
+preferences both allow it; a summary built from them follows the same rule. Chat
+prompts for no approval: a command or edit call first records a pending
+approval and returns `approval_required`; the operator decides it between
+turns, and a later identical call consumes it. A command then calls the trusted
+runner; an edit calls the checkpointed apply, as the
+[model edit workflow](#model-edit-workflow) shows.
 The output reports `model_tools.mode` as `enabled`, with the workspace ID,
 rounds, call count, tool bytes, and withheld count. `reply.finish_reason` is `length` when the token
 limit cut the final reply short; the turn is still recorded as complete. A refused or invalid call ends the turn with a `permission`,
@@ -377,7 +484,10 @@ Output is JSON so untrusted control characters are escaped rather than written
 as terminal instructions.
 
 Each text-only invocation sends one non-streaming request; a tool-enabled turn
-sends at most four. There is a five-second connect timeout and a thirty-second
+sends at most four. When `--auto-compact` compacts before the turn, the
+summarizer requests come first: at most 16 per round, with at most four
+combination rounds after the first. `session compact` sends only summarizer
+requests under the same bound. There is a five-second connect timeout and a thirty-second
 timeout per request, with no automatic retry or provider fallback. A
 tool-enabled turn also stops at a 120-second cooperative deadline. A slow first inference can time out. Its remote outcome can
 be unknown, and a retry is a new explicit user action.
@@ -386,9 +496,49 @@ Optional server authentication can be supplied to the trusted CLI process with
 OMGCODE_LM_TOKEN. The CLI retains the token in memory only and sends it as a
 sensitive Authorization header. It does not save it or pass it to a child task.
 Environment-based input is a temporary prototype interface, not protected
-credential storage or a claim of memory erasure. OS-backed credentials and the
-account/settings interface remain required. Use the no-token profile only for
+credential storage or a claim of memory erasure. Protected storage for API
+keys exists (see [provider credentials](#provider-credentials)), but no adapter
+reads it yet; adapter use and the account/settings interface remain required. Use the no-token profile only for
 an explicitly selected service configured for it.
+
+### Model edit workflow
+
+`workspace_edit_file` takes a workspace-relative `path`, a non-empty
+`old_text` that must occur exactly once, and a `new_text`, all within the 4 KiB
+argument limit. It edits only an existing UTF-8 regular file of at most 1 MiB,
+before and after the edit. A missing, repeated, or unchanged `old_text`
+returns the recoverable `edit_no_match`, `edit_ambiguous`, or `edit_unchanged`
+result. Each call reads the live file through the audited broker. Its approval
+digest covers the session, workspace, normalized path, and the size and SHA-256
+of the current and proposed bytes, so a file that changed after the request
+needs a new approval ([ADR-0043](adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md)).
+
+```text
+omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Rename the helper in src\lib.rs."
+omgcode --data-dir C:\omgcode-data session inspect <journal-path>
+omgcode --data-dir C:\omgcode-data approvals list
+omgcode --data-dir C:\omgcode-data approvals approve APPROVAL_UUID --writers-stopped
+omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "The edit is approved; retry it."
+```
+
+1. The first chat turn returns the tool result `approval_required` with an
+   approval ID. Nothing is written.
+2. `session inspect` lists the recorded `tool_requests`. Review the exact
+   `old_text` and `new_text` in the `workspace_edit_file` request's arguments.
+   The approval summary shows only the path, sizes, and short digests, never
+   file text.
+3. Stop every other writer to the file, then approve with `--writers-stopped`.
+   Without the flag, approval of a `file_write` request is refused; the flag is
+   refused for other operations. Use `approvals deny <id>` to refuse the edit.
+4. In a later turn, the model repeats the identical call. It consumes the
+   approval and applies the edit through a checkpoint. The result reports the
+   path, new size, SHA-256, and checkpoint operation ID, never file contents.
+
+The approval is consumed before the apply, so a failed apply spends it. A
+conflict, pending or busy checkpoint store, or unsupported filesystem returns a
+recoverable result with its checkpoint code. The apply cannot detect a
+concurrent writer; the acknowledgement records the operating assumption only.
+Restore and checkpoint management stay trusted `file` commands.
 
 ## Saved sessions
 
@@ -446,6 +596,7 @@ planned. See the complete [session contract](session-storage.md).
 | Encoded journal event, including LF | 64 KiB |
 | Journal | 8 MiB and 10,000 events |
 | Tool call arguments in a session event | 4 KiB |
+| Model edit file size, before and after | 1 MiB |
 | Read file size per call | 15 KiB maximum, 8 KiB default |
 | Edit preview content | 1 MiB per side |
 | Edit preview lines | 65,536 per side when changed |
@@ -532,7 +683,9 @@ Direct dependencies have specific purposes:
 | reqwest | Blocking HTTP client; default features disabled, no TLS backend or hosted execution used in this loopback-only increment |
 | clap | CLI parsing and help; derive macro runs during compilation |
 | directories | Platform application-data location selection |
-| windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, I/O handles, processes and jobs, and console control events |
+| windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, DPAPI (`Win32_Security_Cryptography`), I/O handles, processes and jobs, and console control events |
+| zeroize | Zeroes owned secret buffers on drop; `alloc` only, no derive macro |
+| secret-service (Linux only) | Freedesktop Secret Service client over pure-Rust zbus, with the tokio runtime and Rust AES/DH session crypto (`rt-tokio-crypto-rust`); its blocking API runs an internal tokio runtime |
 | tempfile | Private disposable test data; development dependency only |
 
 The selected direct crates declare MIT and/or Apache-2.0 licensing and support
@@ -549,8 +702,13 @@ Run the [Cargo verification baseline](testing-standards.md#cargo-verification-ba
 on both Windows and Linux. The Rust workflow runs formatting, strict Clippy,
 unit/integration tests, and separate documentation tests. On Linux the run and
 tree-limit tests start themselves in `systemd-run --user` scopes, so they need
-a running user service manager; without one they fail. Tests use private data
-and loopback fixtures. They do not call a live model. Live compatibility checks
+a running user service manager; without one they fail. The Linux credential
+tests need an unlocked Secret Service default collection on the session bus
+and fail without one. With gnome-keyring, one empty password line creates and
+unlocks a login collection:
+`printf '\n' | gnome-keyring-daemon --unlock --components=secrets`. Use a
+scratch `XDG_DATA_HOME` to keep test keyrings apart from your own. Tests use
+private data and loopback fixtures. They do not call a live model. Live compatibility checks
 are explicit, bounded checks of a particular server/model/auth profile.
 
 The toolchain acceptance tests are ignored by default. After a change to runs,
@@ -561,8 +719,8 @@ variables listed in `crates/omgcode-cli/tests/toolchain_acceptance.rs`:
 cargo test -p omgcode-cli --test toolchain_acceptance --locked -- --ignored
 ```
 
-Do not infer whole-user/process containment, Git safety, credential storage,
-release filesystem support, or full coding-agent support from these tests. The
+Do not infer whole-user/process containment, Git safety, same-user credential
+isolation, release filesystem support, or full coding-agent support from these tests. The
 broker supports bounded file operations through trusted CLI input and the core
 turn runtime, which chat drives for read/list and an approval-gated command when
 a workspace enables `model_tools`. Live provider tool-call compatibility and

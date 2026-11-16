@@ -26,7 +26,14 @@ pub(crate) enum ApprovalsCommand {
     /// Show one approval.
     Show { approval: Uuid },
     /// Approve a pending, unexpired request.
-    Approve { approval: Uuid },
+    Approve {
+        approval: Uuid,
+        /// Acknowledge that every other writer to the target is stopped.
+        /// Required to approve a file_write request and refused for any other
+        /// operation. The apply cannot detect a concurrent writer.
+        #[arg(long)]
+        writers_stopped: bool,
+    },
     /// Deny a pending, unexpired request.
     Deny { approval: Uuid },
     /// Consume an approved request once. This executes nothing.
@@ -94,8 +101,11 @@ pub(crate) fn run(action: ApprovalsCommand, data_root: &Path) -> Result<(), CliE
                 .ok_or_else(|| approval_error(ControlError::UnknownApproval))?;
             print_json(&json!({ "approval": status }))
         }
-        ApprovalsCommand::Approve { approval } => decide(approval, true, data_root),
-        ApprovalsCommand::Deny { approval } => decide(approval, false, data_root),
+        ApprovalsCommand::Approve {
+            approval,
+            writers_stopped,
+        } => decide(approval, Decision::Approve { writers_stopped }, data_root),
+        ApprovalsCommand::Deny { approval } => decide(approval, Decision::Deny, data_root),
         ApprovalsCommand::Consume(args) => consume(args, data_root),
     }
 }
@@ -125,17 +135,35 @@ fn request(args: RequestArgs, data_root: &Path) -> Result<(), CliError> {
     print_json(&json!({ "approval": status }))
 }
 
-fn decide(approval: Uuid, approved: bool, data_root: &Path) -> Result<(), CliError> {
+/// The operator's decision. The core refuses a file_write approval without the
+/// writers-stopped acknowledgement and refuses the acknowledgement elsewhere.
+#[derive(Clone, Copy)]
+enum Decision {
+    Approve { writers_stopped: bool },
+    Deny,
+}
+
+fn decide(approval: Uuid, decision: Decision, data_root: &Path) -> Result<(), CliError> {
     let mut store = open(data_root)?;
     let now = now_unix();
-    store
-        .decide_approval(approval, approved, now)
-        .map_err(approval_error)?;
+    match decision {
+        Decision::Approve {
+            writers_stopped: true,
+        } => store.approve_with_writers_stopped(approval, now),
+        Decision::Approve {
+            writers_stopped: false,
+        } => store.decide_approval(approval, true, now),
+        Decision::Deny => store.decide_approval(approval, false, now),
+    }
+    .map_err(approval_error)?;
     let status = store
         .approval_status(approval, now)
         .ok_or_else(|| approval_error(ControlError::UnknownApproval))?;
     print_json(&json!({
-        "decision": if approved { "approved" } else { "denied" },
+        "decision": match decision {
+            Decision::Approve { .. } => "approved",
+            Decision::Deny => "denied",
+        },
         "approval": status,
     }))
 }

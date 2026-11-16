@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use support::run_scene::{Scene, run_command, shell};
+use support::spawn_gate::without_child_spawns;
 use support::workspace_fixture::Fixture;
 use support::{
     CLI_DEADLINE, HANG_FIXTURE_ENV, assert_error_code, assert_success, json_output, path_arg,
@@ -33,8 +34,16 @@ struct SequenceServer {
     worker: JoinHandle<Result<usize, String>>,
 }
 
+/// Work run after one numbered request arrives and before its reply is sent.
+type BeforeReply = (usize, Box<dyn FnOnce() + Send>);
+
 impl SequenceServer {
     fn start(responses: Vec<Value>) -> Self {
+        Self::start_with(responses, None)
+    }
+
+    fn start_with(responses: Vec<Value>, before_reply: Option<BeforeReply>) -> Self {
+        let mut before_reply = before_reply;
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind private mock server");
         listener.set_nonblocking(true).expect("bounded accept mode");
         let address = listener.local_addr().expect("mock server address");
@@ -50,6 +59,13 @@ impl SequenceServer {
                 let request: Value = serde_json::from_slice(&body)
                     .map_err(|error| format!("request JSON: {error}"))?;
                 sender.send(request).map_err(|error| error.to_string())?;
+                if before_reply
+                    .as_ref()
+                    .is_some_and(|(index, _)| *index == served)
+                    && let Some((_, work)) = before_reply.take()
+                {
+                    work();
+                }
                 let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -175,6 +191,26 @@ fn tool_call(id: &str, name: &str, arguments: &Value) -> Value {
     })
 }
 
+/// Change one workspace preference through the CLI at the current revision.
+fn set_permission(data: &Path, workspace_id: &str, flag: &str, value: bool) {
+    let status = run_cli(data, &["workspace", "status"]);
+    assert_success(&status);
+    let revision = json_output(&status)["revision"].to_string();
+    let output = run_cli(
+        data,
+        &[
+            "workspace",
+            "permissions",
+            workspace_id,
+            "--revision",
+            &revision,
+            flag,
+            if value { "true" } else { "false" },
+        ],
+    );
+    assert_success(&output);
+}
+
 impl Fixture {
     /// Create a session for the registered workspace through the CLI.
     fn session(&self) -> PathBuf {
@@ -186,27 +222,8 @@ impl Fixture {
         PathBuf::from(json_output(&output)["journal"].as_str().expect("journal"))
     }
 
-    fn revision(&self) -> String {
-        let output = run_cli(&self.data, &["workspace", "status"]);
-        assert_success(&output);
-        json_output(&output)["revision"].to_string()
-    }
-
     fn set(&self, flag: &str, value: bool) {
-        let revision = self.revision();
-        let output = run_cli(
-            &self.data,
-            &[
-                "workspace",
-                "permissions",
-                &self.workspace_id.to_string(),
-                "--revision",
-                &revision,
-                flag,
-                if value { "true" } else { "false" },
-            ],
-        );
-        assert_success(&output);
+        set_permission(&self.data, &self.workspace_id.to_string(), flag, value);
     }
 
     fn chat(&self, journal: &Path, endpoint: &str, message: &str) -> Output {
@@ -314,7 +331,14 @@ fn an_enabled_preference_lets_the_model_read_the_workspace_through_the_runtime()
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("name"))
             .collect();
-        assert_eq!(names, ["workspace_read_file", "workspace_list_directory"]);
+        assert_eq!(
+            names,
+            [
+                "workspace_read_file",
+                "workspace_list_directory",
+                "workspace_edit_file"
+            ]
+        );
         // The compiled base prompt remains the only system message.
         let systems = request["messages"]
             .as_array()
@@ -752,4 +776,758 @@ fn invalid_settings_stop_chat_before_any_model_request() {
     support::assert_control_error(&output);
     let events = fs::read_to_string(&journal).expect("journal");
     assert!(!events.contains("turn.started"));
+}
+
+#[test]
+fn manual_compaction_replaces_only_older_context() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+
+    let server = SequenceServer::start(vec![text("first reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "first request");
+    server.finish();
+    assert_success(&output);
+
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "latest request");
+    server.finish();
+    assert_success(&output);
+
+    let server = SequenceServer::start(vec![text("Earlier work is summarized.")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "session",
+            "compact",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--summary-tokens",
+            "256",
+        ],
+    );
+    server.finish();
+    assert_success(&output);
+    let compaction = json_output(&output);
+    assert_eq!(compaction["compaction"]["compacted_messages"], 2);
+    assert_eq!(compaction["retained_messages"], 2);
+    assert_eq!(compaction["summarizer_calls"], 1);
+
+    let server = SequenceServer::start(vec![text("after compaction")]);
+    let output = fixture.chat(&journal, &server.endpoint, "third request");
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 2);
+    assert_eq!(result["context"]["estimate_scope"], "pre_turn_conservative");
+    let texts = user_texts(&requests[0]);
+    let combined = texts.join("\n");
+    assert!(
+        combined.contains("Compacted earlier context")
+            && combined.contains("Earlier work is summarized."),
+        "{combined}"
+    );
+    assert!(combined.contains("latest request"), "{combined}");
+    assert!(!combined.contains("first request"), "{combined}");
+}
+
+#[test]
+fn auto_compaction_runs_before_the_model_turn() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    let large_request = "a".repeat(15_000);
+    let large_reply = "b".repeat(15_000);
+    for (message, reply) in [
+        (large_request.as_str(), large_reply.as_str()),
+        ("latest request", "latest reply"),
+    ] {
+        let server = SequenceServer::start(vec![text(reply)]);
+        assert_success(&fixture.chat(&journal, &server.endpoint, message));
+        server.finish();
+    }
+
+    let server = SequenceServer::start(vec![
+        text("Auto summary of earlier work."),
+        text("auto reply"),
+    ]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "--compact-threshold",
+            "20000",
+            "third request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "auto reply");
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 1);
+    assert_eq!(result["context"]["auto_compaction"], true);
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    let chat = user_texts(&requests[1]).join("\n");
+    assert!(chat.contains("Auto summary of earlier work."), "{chat}");
+    assert!(chat.contains("latest request"), "{chat}");
+    assert!(
+        !chat.contains(&large_request),
+        "the compacted request is not resent"
+    );
+}
+
+fn compact_cli(fixture: &Fixture, journal: &Path, endpoint: &str) -> Output {
+    run_cli(
+        &fixture.data,
+        &[
+            "session",
+            "compact",
+            path_arg(journal),
+            "--endpoint",
+            endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--summary-tokens",
+            "256",
+        ],
+    )
+}
+
+#[test]
+fn tool_mode_turns_use_the_compacted_context_and_withhold_a_tool_summary_without_read() {
+    let note = std::str::from_utf8(NOTE).expect("UTF-8 note");
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    server.finish();
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
+    server.finish();
+
+    // Live model_tools and read let the saved tool result reach the summarizer.
+    let server = SequenceServer::start(vec![text("The note was read earlier.")]);
+    let output = compact_cli(&fixture, &journal, &server.endpoint);
+    let requests = server.finish();
+    assert_success(&output);
+    assert!(requests[0].to_string().contains(note));
+    let compaction = json_output(&output);
+    assert_eq!(compaction["compaction"]["includes_tool_results"], true);
+    assert_eq!(compaction["compaction"]["compacted_messages"], 3);
+
+    // A tool-enabled turn sends the summary, not the compacted messages.
+    let server = SequenceServer::start(vec![text("third reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "third request");
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(json_output(&output)["model_tools"]["mode"], "enabled");
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(sent.contains("The note was read earlier."), "{sent}");
+    assert!(sent.contains("latest request"), "{sent}");
+    assert!(!sent.contains("read note.txt"), "{sent}");
+    assert!(!sent.contains(note), "{sent}");
+
+    // Without live read, the summary built from the tool result is withheld.
+    fixture.set("--read", false);
+    let server = SequenceServer::start(vec![text("fourth reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "fourth request");
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(
+        sent.contains("Compacted earlier context withheld"),
+        "{sent}"
+    );
+    assert!(!sent.contains("The note was read earlier."), "{sent}");
+
+    // Without live model_tools, text-only chat withholds it as well.
+    fixture.set("--read", true);
+    fixture.set("--model-tools", false);
+    let server = SequenceServer::start(vec![text("fifth reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "fifth request");
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["model_tools"]["mode"], "disabled");
+    assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(
+        sent.contains("Compacted earlier context withheld"),
+        "{sent}"
+    );
+    assert!(!sent.contains("The note was read earlier."), "{sent}");
+}
+
+#[test]
+fn compaction_without_model_tools_withholds_saved_tool_results_from_the_summarizer() {
+    summarizer_withholds_tool_results_after_revoking("--model-tools");
+}
+
+#[test]
+fn compaction_without_read_withholds_saved_tool_results_from_the_summarizer() {
+    summarizer_withholds_tool_results_after_revoking("--read");
+}
+
+/// Record a read, revoke one preference, and compact: the summarizer must see
+/// only the withheld placeholder, and the summary must replay afterwards.
+fn summarizer_withholds_tool_results_after_revoking(flag: &str) {
+    let note = std::str::from_utf8(NOTE).expect("UTF-8 note");
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    server.finish();
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
+    server.finish();
+
+    fixture.set(flag, false);
+    let server = SequenceServer::start(vec![text("A file was read earlier.")]);
+    let output = compact_cli(&fixture, &journal, &server.endpoint);
+    let requests = server.finish();
+    assert_success(&output);
+    assert!(!requests[0].to_string().contains(note));
+    assert!(requests[0].to_string().contains("Tool result withheld"));
+    assert_eq!(
+        json_output(&output)["compaction"]["includes_tool_results"],
+        false
+    );
+
+    // A summary without tool results replays without that authority.
+    let server = SequenceServer::start(vec![text("text reply")]);
+    let output = fixture.chat(&journal, &server.endpoint, "third request");
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(
+        json_output(&output)["model_tools"]["withheld_tool_results"],
+        0
+    );
+    let sent = user_texts(&requests[0]).join("\n");
+    assert!(sent.contains("A file was read earlier."), "{sent}");
+}
+
+#[test]
+fn the_preflight_estimate_counts_a_withheld_tool_result_as_withheld() {
+    let note = "n".repeat(7_000);
+    let fixture = Fixture::new(note.as_bytes());
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    let first = server.finish();
+    assert!(
+        first[1].to_string().contains(&note),
+        "the read result was saved"
+    );
+
+    // Without `read`, chat replaces the saved 7 KB result with a short
+    // notice. Fixed overhead (base prompt, tool schemas, message framing)
+    // is about 10,400 tokens, so only the withheld form fits 15,000.
+    fixture.set("--read", false);
+    let server = SequenceServer::start(vec![text("text reply")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--compact-threshold",
+            "15000",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].to_string().contains(&note));
+    let result = json_output(&output);
+    assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
+    assert!(result["context"]["compaction"].is_null(), "{result}");
+}
+
+#[test]
+fn the_post_compaction_estimate_rereads_replay_authority() {
+    let note = "n".repeat(7_000);
+    let summary = "s".repeat(6_000);
+    let fixture = Fixture::new(note.as_bytes());
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    let first = server.finish();
+    assert!(
+        first[1].to_string().contains(&note),
+        "the read result was saved"
+    );
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
+    server.finish();
+
+    // The saved note triggers auto-compaction at 15,000. `read` is revoked
+    // while the summarizer request is in flight, so the compaction keeps the
+    // tool-derived summary but the turn must send the short withheld notice.
+    // Fixed overhead is about 10,200 tokens: only the withheld form fits.
+    let data = fixture.data.clone();
+    let workspace_id = fixture.workspace_id.to_string();
+    let server = SequenceServer::start_with(
+        vec![text(&summary), text("auto reply")],
+        Some((
+            0,
+            Box::new(move || set_permission(&data, &workspace_id, "--read", false)),
+        )),
+    );
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "--compact-threshold",
+            "15000",
+            "third request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    assert!(
+        requests[0].to_string().contains(&note),
+        "the summarizer saw the note"
+    );
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "auto reply");
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 1);
+    let sent = requests[1].to_string();
+    assert!(!sent.contains(&summary), "the summary is withheld");
+    assert!(!sent.contains(&note), "the note is withheld");
+}
+
+#[test]
+fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    let large_request = "a".repeat(15_000);
+    let large_reply = "b".repeat(15_000);
+    for (message, reply) in [
+        (large_request.as_str(), large_reply.as_str()),
+        ("latest request", "latest reply"),
+    ] {
+        let server = SequenceServer::start(vec![text(reply)]);
+        assert_success(&fixture.chat(&journal, &server.endpoint, message));
+        server.finish();
+    }
+
+    let server = SequenceServer::start(Vec::new());
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--compact-threshold",
+            "20000",
+            "third request",
+        ],
+    );
+    server.finish();
+    assert_error_code(&output, "context");
+    let events = fs::read_to_string(&journal).expect("journal");
+    assert!(!events.contains("context.compacted"), "{events}");
+}
+
+/// Record `count` short exchanges directly. The journal lock is held only
+/// inside the spawn gate, so no parallel test's child can inherit it.
+fn seed_short_exchanges(journal: &Path, count: usize) {
+    without_child_spawns(|| {
+        let mut session =
+            omgcode_core::session::SessionJournal::open(journal).expect("open journal");
+        for index in 0..count {
+            session
+                .record_message(
+                    omgcode_core::session::MessageRole::User,
+                    &format!("request {index}"),
+                )
+                .expect("user message");
+            session
+                .record_message(
+                    omgcode_core::session::MessageRole::Assistant,
+                    &format!("reply {index}"),
+                )
+                .expect("assistant message");
+        }
+    });
+}
+
+#[test]
+fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // 64 short exchanges fill the 128-message history limit far below the
+    // token trigger; the pending request would be message 129.
+    seed_short_exchanges(&journal, 64);
+
+    let server = SequenceServer::start(Vec::new());
+    let output = fixture.chat(&journal, &server.endpoint, "next request");
+    server.finish();
+    assert_error_code(&output, "context");
+
+    let server = SequenceServer::start(vec![text("Sixty-four exchanges."), text("next reply")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "next reply");
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 126);
+}
+
+#[test]
+fn more_older_messages_than_one_summary_request_accepts_compact_in_several_chunks() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // 66 short exchanges leave 130 older messages: more than one summary
+    // request's 128-message history, although their bytes fit one chunk.
+    seed_short_exchanges(&journal, 66);
+
+    let server = SequenceServer::start(vec![
+        text("First chunk."),
+        text("Second chunk."),
+        text("Sixty-six exchanges."),
+        text("next reply"),
+    ]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "next reply");
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 130);
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 3);
+    assert_eq!(requests.len(), 4, "two chunks, one combination, one chat");
+    for request in requests.iter().take(3) {
+        let messages = request["messages"].as_array().expect("messages");
+        assert!(messages.len() <= 128 + 2, "{}", messages.len());
+    }
+}
+
+#[test]
+fn auto_compaction_sizes_summary_chunks_from_the_summary_reserve_not_the_chat_reserve() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    // A 16 KiB context with an 8 KiB chat reserve leaves about 2 KB of chunk
+    // room after the fixed summarizer prompt; the 2048-token summary reserve
+    // leaves about 8 KB. One 3 KB exchange fits only the second allowance.
+    without_child_spawns(|| {
+        let mut session =
+            omgcode_core::session::SessionJournal::open(&journal).expect("open journal");
+        for (role, content) in [
+            (omgcode_core::session::MessageRole::User, "c".repeat(3_000)),
+            (
+                omgcode_core::session::MessageRole::Assistant,
+                "d".repeat(3_000),
+            ),
+            (
+                omgcode_core::session::MessageRole::User,
+                "latest request".to_owned(),
+            ),
+            (
+                omgcode_core::session::MessageRole::Assistant,
+                "latest reply".to_owned(),
+            ),
+        ] {
+            session.record_message(role, &content).expect("message");
+        }
+    });
+
+    let server = SequenceServer::start(vec![text("Earlier large exchange."), text("next reply")]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "16384",
+            "--max-output-tokens",
+            "8192",
+            "--auto-compact",
+            "next request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "next reply");
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 1);
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 2);
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    assert_eq!(requests[0]["max_tokens"], 2048, "summary reserve");
+    assert_eq!(requests[1]["max_tokens"], 8192, "chat reserve");
+}
+
+/// The operator flow for a model edit: chat records a pending approval and
+/// writes nothing, `session inspect` shows the exact request, approval needs
+/// the writers-stopped acknowledgement, and the identical retry applies once
+/// through a checkpoint.
+#[test]
+fn an_approved_model_edit_applies_through_the_operator_flow() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let edit = json!({"path": "note.txt", "old_text": "notes", "new_text": "facts"});
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-1", "workspace_edit_file", &edit),
+        text("Waiting for operator approval."),
+    ]);
+    let first = fixture.chat(&journal, &server.endpoint, "edit the note");
+    let requests = server.finish();
+    assert_success(&first);
+    assert_eq!(requests.len(), 2);
+    let offered = requests[0]["tools"].to_string();
+    assert!(
+        offered.contains("workspace_edit_file"),
+        "the edit tool must be offered: {offered}"
+    );
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-1"))
+        .expect("approval result sent to the model");
+    assert!(
+        result.contains("\"status\":\"approval_required\""),
+        "{result}"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+
+    // The operator reviews the exact recorded request before deciding.
+    let inspected = run_cli(&fixture.data, &["session", "inspect", path_arg(&journal)]);
+    assert_success(&inspected);
+    let inspected = json_output(&inspected);
+    let recorded = inspected["tool_requests"]
+        .as_array()
+        .expect("tool requests")
+        .iter()
+        .find(|request| request["tool"] == "workspace_edit_file")
+        .expect("the recorded edit request");
+    assert_eq!(recorded["call_id"], "call-1");
+    let arguments: Value =
+        serde_json::from_str(recorded["arguments"].as_str().expect("arguments")).expect("JSON");
+    assert_eq!(arguments, edit);
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"]
+        .as_array()
+        .expect("approvals")
+        .to_vec();
+    assert_eq!(approvals.len(), 1, "one pending request: {approvals:?}");
+    assert_eq!(approvals[0]["operation"], "file_write");
+    assert_eq!(approvals[0]["state"], "pending");
+    assert_eq!(approvals[0]["writers_stopped"], false);
+    let summary = approvals[0]["summary"].as_str().expect("summary");
+    assert!(
+        summary.starts_with("edit note.txt: 29 -> 29 bytes, sha256 "),
+        "{summary}"
+    );
+    assert!(!summary.contains("workspace notes"), "{summary}");
+    let approval = approvals[0]["id"].as_str().expect("approval id").to_owned();
+
+    assert_error_code(
+        &run_cli(&fixture.data, &["approvals", "approve", &approval]),
+        "approval",
+    );
+    let approved = run_cli(
+        &fixture.data,
+        &["approvals", "approve", &approval, "--writers-stopped"],
+    );
+    assert_success(&approved);
+    let approved = json_output(&approved);
+    assert_eq!(approved["approval"]["state"], "approved");
+    assert_eq!(approved["approval"]["writers_stopped"], true);
+    let shown = run_cli(&fixture.data, &["approvals", "show", &approval]);
+    assert_success(&shown);
+    assert_eq!(json_output(&shown)["approval"]["writers_stopped"], true);
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-2", "workspace_edit_file", &edit),
+        text("The note is edited."),
+    ]);
+    let second = fixture.chat(&journal, &server.endpoint, "edit the note");
+    let requests = server.finish();
+    assert_success(&second);
+    assert_eq!(requests.len(), 2);
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-2"))
+        .expect("applied result sent to the model");
+    assert!(result.contains("\"status\":\"applied\""), "{result}");
+    assert!(
+        !result.contains("notes") && !result.contains("facts"),
+        "no file text: {result}"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        b"workspace facts for the model"
+    );
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    assert_eq!(json_output(&listed)["approvals"][0]["state"], "consumed");
+    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&checkpoints);
+    let operations = json_output(&checkpoints)["operations"].clone();
+    assert_eq!(operations.as_array().expect("operations").len(), 1);
+    assert_eq!(
+        operations[0]["session_id"],
+        inspected["session"]["session_id"]
+    );
+}
+
+/// Without live `write`, chat does not offer the edit tool, and a call made
+/// anyway is denied before any approval or file change.
+#[test]
+fn chat_does_not_offer_or_run_the_edit_tool_without_write() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    fixture.set("--write", false);
+    let edit = json!({"path": "note.txt", "old_text": "notes", "new_text": "facts"});
+
+    let server = SequenceServer::start(vec![tool_call("call-1", "workspace_edit_file", &edit)]);
+    let output = fixture.chat(&journal, &server.endpoint, "edit the note");
+    let requests = server.finish();
+
+    assert_error_code(&output, "permission");
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !requests[0]["tools"]
+            .to_string()
+            .contains("workspace_edit_file")
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    assert_eq!(json_output(&listed)["approvals"], json!([]));
+    let events = fs::read_to_string(&journal).expect("journal");
+    assert!(events.contains("edit_disabled"));
 }

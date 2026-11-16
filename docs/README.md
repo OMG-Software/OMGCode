@@ -3,7 +3,9 @@
 OMGCode has a Rust CLI prototype for local chat, JSONL sessions, and a
 bounded native workspace file broker. The broker is available only through
 trusted operator commands and, when a workspace enables `model_tools`, to the
-local model's read, list, and approval-gated command tools. Model write,
+local model's read, list, approval-gated exact-edit, and approval-gated command
+tools. The edit tool changes one existing file only through checkpointed apply
+after an approved, writers-stopped decision. Model create, delete, rename,
 network, Git, and MCP tools are not implemented. The
 trusted CLI `run` command runs one program under Linux Landlock or Windows
 AppContainer confinement with an operator-declared toolchain profile. A model
@@ -95,9 +97,11 @@ cache. A selected root is exposed read-only on Linux and Windows; Windows
 needs a read-execute grant, and Linux falls back to application storage.
 Provider profiles record connection shapes without credentials or adapters;
 no adapter or login uses them. Approval records authorize one exact
-model-tool call, and the command tool is their only consumer. Chat dispatches
-the read/list tools and, with the required live permissions, the
-approval-gated command tool, only for a workspace that enables `model_tools`.
+model-tool call, and the edit and command tools are their only consumers. Chat
+dispatches the read/list tools and, with the required live permissions, the
+approval-gated edit and command tools, only for a workspace that enables
+`model_tools`. The edit tool writes only through checkpointed apply after an
+approved, writers-stopped decision and does not detect concurrent writers.
 A read-only CLI preview compares a workspace file with trusted proposed
 content without writing to the workspace or creating a checkpoint.
 Dependency security audits, native containment qualification, and release checks

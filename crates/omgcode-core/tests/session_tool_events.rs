@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use omgcode_core::session::{MessageRole, SessionError, SessionJournal, ToolOutcome};
+use omgcode_core::session::{
+    MessageRole, RequestManifest, SessionError, SessionJournal, ToolOutcome,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -101,7 +103,7 @@ fn tool_result(session_id: Uuid, seq: u64, schema: u32) -> Value {
 }
 
 #[test]
-fn v2_tool_events_round_trip_through_replay() {
+fn tool_events_round_trip_through_replay() {
     let temporary = TempDir::new().expect("private temporary directory");
     let data = temporary.path().join("application-data");
     let workspace = temporary.path().join("workspace");
@@ -139,15 +141,15 @@ fn v2_tool_events_round_trip_through_replay() {
 
     let reopened = SessionJournal::open(&path).expect("reopen v2 journal");
 
-    assert_eq!(reopened.schema_version(), 2);
-    assert_eq!(reopened.snapshot().schema_version, 2);
+    assert_eq!(reopened.schema_version(), 3);
+    assert_eq!(reopened.snapshot().schema_version, 3);
     assert_eq!(reopened.snapshot().active_turn, None);
     assert_eq!(reopened.snapshot().messages.len(), 2);
     assert_eq!(reopened.snapshot().messages[0].role, MessageRole::Tool);
     assert_eq!(reopened.snapshot().messages[1].role, MessageRole::Assistant);
     drop(reopened);
     let events = read_events(&path);
-    assert!(events.iter().all(|event| event["schema_version"] == 2));
+    assert!(events.iter().all(|event| event["schema_version"] == 3));
     assert_eq!(
         events
             .iter()
@@ -421,7 +423,8 @@ fn v1_journals_reject_tool_events_and_tool_manifest_fields() {
 #[test]
 fn failed_turns_release_pending_call_ids_for_later_turns() {
     let (_temporary, path, session_id) = setup();
-    let first = first_event(&path);
+    let mut first = first_event(&path);
+    first["schema_version"] = json!(2);
     let first_request = Uuid::new_v4();
     let second_request = Uuid::new_v4();
     let text = "Tool result [call call-1]:\nok";
@@ -525,4 +528,43 @@ fn failed_turns_release_pending_call_ids_for_later_turns() {
             .iter()
             .any(|message| message.role == MessageRole::Tool)
     );
+}
+
+#[test]
+fn a_schema_v2_journal_keeps_recording_and_replaying_tool_manifests() {
+    let (_temporary, path, _session_id) = setup();
+    rewrite_first_event_schema(&path, 2);
+    let manifest = RequestManifest {
+        base_prompt: "base instructions".into(),
+        prompt_version: "1".into(),
+        prompt_sha256: "a".repeat(64),
+        custom_instructions: String::new(),
+        model: "local-model".into(),
+        base_url: "http://127.0.0.1:1234/v1".into(),
+        context_tokens: 32_000,
+        max_output_tokens: 2_000,
+        tool_schema_version: Some("1".into()),
+        tools: Some(vec!["workspace_read_file".into()]),
+    };
+
+    let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");
+    assert_eq!(journal.schema_version(), 2);
+    let request_id = journal.start_turn().expect("start turn");
+    journal
+        .record_message(MessageRole::User, "read notes")
+        .expect("user message");
+    journal
+        .record_manifest(request_id, manifest.clone())
+        .expect("schema v2 accepts a tool manifest");
+    journal.complete_turn(request_id).expect("complete turn");
+    drop(journal);
+
+    let reopened = SessionJournal::open(&path).expect("replay a schema-v2 tool manifest");
+    assert_eq!(reopened.schema_version(), 2);
+    reopened
+        .preflight_request("next", &manifest)
+        .expect("preflight a later tool-enabled turn");
+    drop(reopened);
+    let events = read_events(&path);
+    assert!(events.iter().all(|event| event["schema_version"] == 2));
 }

@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-use crate::{CliError, print_json};
+use crate::{CliError, credential_cli, print_json};
 
 #[derive(Subcommand)]
 pub(crate) enum WorkspaceCommand {
@@ -92,8 +92,25 @@ pub(crate) enum WorkspaceCommand {
     ProviderProfileAdd(ProviderProfileAddArgs),
     /// Show one recorded provider profile.
     ProviderProfileShow { name: String },
-    /// Remove a provider profile.
+    /// Remove a provider profile. A bound credential is unbound by the same
+    /// recorded event and then deleted from the native store.
     ProviderProfileRemove {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Store a new credential for an `api_key` provider profile and bind it.
+    ///
+    /// The secret is read from standard input only, up to 16 KiB; one
+    /// trailing newline is removed. A previously bound credential is deleted
+    /// after the new binding is recorded. No adapter uses the credential yet.
+    ProviderCredentialSet {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Unbind a provider profile's credential, then delete it natively.
+    ProviderCredentialRemove {
         name: String,
         #[arg(long)]
         revision: u64,
@@ -347,16 +364,24 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::ProviderProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            let profile_id = store
-                .remove_provider_profile(&name, revision)
-                .map_err(control_error)?;
-            let output = json!({
-                "removed_provider_profile_id": profile_id,
-                "snapshot": store.snapshot(),
-            });
+            let output = credential_cli::remove_profile(&mut store, data_root, &name, revision)?;
             drop(store);
             stop_withdrawn_runs(data_root, &[])?;
             print_json(&output)
+        }
+        WorkspaceCommand::ProviderCredentialSet { name, revision } => {
+            // Read the secret before the control store is opened, so its
+            // lock is never held while standard input is awaited. Input
+            // refusals still happen before any write.
+            let secret = credential_cli::read_secret()?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            credential_cli::set(&mut store, data_root, &name, secret, revision)
+        }
+        WorkspaceCommand::ProviderCredentialRemove { name, revision } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            credential_cli::remove(&mut store, data_root, &name, revision)
         }
         WorkspaceCommand::ContainerRevoke { grant } => {
             let mut store = open_existing(data_root)?
@@ -598,6 +623,6 @@ fn parse_workspace_id(value: &str) -> Result<WorkspaceId, CliError> {
         .map_err(|_| CliError::new("configuration", "Invalid workspace identifier"))
 }
 
-fn control_error(error: ControlError) -> CliError {
+pub(crate) fn control_error(error: ControlError) -> CliError {
     CliError::new("control", error.to_string())
 }

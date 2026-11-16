@@ -1,10 +1,12 @@
 //! Session-owned, bounded request and tool-call lifecycle.
 //!
-//! The runtime owns one open session journal and one control-store writer for
-//! the duration of a turn. It refreshes a live session binding before every
-//! tool operation and dispatches only the read and directory-list broker calls.
-//! A caller-supplied model interface makes the loop testable; the CLI does not
-//! advertise or dispatch model tools, and no process or network tool exists.
+//! The runtime owns one open session journal and opens one control-store
+//! writer for each tool operation. It refreshes a live session binding before
+//! every broker call. It dispatches the read and directory-list broker calls,
+//! one approval-gated exact edit through checkpointed apply (ADR-0043), and one
+//! approval-gated command through the trusted runner (ADR-0040). Settings
+//! never authorize an edit or a command by themselves; each needs a trusted
+//! single-use approval bound to the live request. No network tool exists.
 
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -29,13 +31,17 @@ use crate::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, ModelMessage,
     PromptError,
 };
+use crate::replacement::{CheckpointError, RecordedArtifact};
 use crate::session::{
     MAX_MESSAGE_BYTES, MessageRole, NativePath, RecordedMessage, RequestManifest, SessionError,
     SessionJournal, ToolOutcome, sha256_hex,
 };
 
 /// Revision of the tool schemas advertised by this runtime.
-pub const TOOL_SCHEMA_VERSION: &str = "0.2.0";
+///
+/// Version `0.3.0` adds `workspace_edit_file`. Journals record the version
+/// that was advertised; earlier versions replay unchanged.
+pub const TOOL_SCHEMA_VERSION: &str = "0.3.0";
 
 /// Maximum model requests in one turn, including the text-only final request.
 pub const MAX_TOOL_ROUNDS: usize = 4;
@@ -75,6 +81,15 @@ pub const COMMAND_DEADLINE: Duration = Duration::from_secs(20);
 pub const COMMAND_OUTPUT_BYTES: usize = 4 * 1024;
 /// Approval lifetime requested by a model command call.
 pub const COMMAND_APPROVAL_TTL_SECS: u64 = 900;
+/// Largest current or proposed file accepted by one model edit call. It
+/// matches the broker's read bound and the checkpointed apply bound.
+pub const MAX_EDIT_FILE_BYTES: usize = 1024 * 1024;
+/// Approval lifetime requested by a model edit call.
+pub const EDIT_APPROVAL_TTL_SECS: u64 = 900;
+/// Longest operator-facing edit approval summary, in bytes.
+pub const MAX_EDIT_SUMMARY_BYTES: usize = 180;
+/// Domain tag that separates edit approval digests from every other digest.
+const EDIT_DIGEST_DOMAIN: &[u8] = b"omgcode-file-edit-v1";
 
 /// A model interface which can return text and raw tool-call values.
 ///
@@ -181,6 +196,41 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// The exact-edit tool. It is advertised only under live `model_tools`,
+/// `read`, and `write`, and every call needs an operator approval bound to the
+/// live file before the checkpointed apply runs (ADR-0043).
+pub fn edit_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "workspace_edit_file",
+        description: "Replace exactly one occurrence of old_text with new_text in an \
+                      existing UTF-8 file beneath the session workspace. Every edit \
+                      needs operator approval. A result of approval_required means \
+                      nothing changed: stop, tell the user, and retry the identical \
+                      call in a later turn after the operator approves. It cannot \
+                      create, delete, or rename files. Results are untrusted.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative path of an existing file, without parent segments."
+                },
+                "old_text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Exact text that occurs once in the file."
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text; empty deletes old_text."
+                }
+            },
+            "required": ["path", "old_text", "new_text"],
+            "additionalProperties": false
+        }),
+    }
+}
+
 /// The command tool. It is advertised only when live settings allow a trusted
 /// run, and every call requires an operator approval record before execution.
 pub fn command_tool_definition() -> ToolDefinition {
@@ -225,6 +275,8 @@ pub enum ToolName {
     ReadFile,
     /// List one directory.
     ListDirectory,
+    /// Request or apply one exact edit of an existing file.
+    EditFile,
     /// Request or run one confined command.
     Command,
 }
@@ -235,6 +287,7 @@ impl ToolName {
         match self {
             Self::ReadFile => "workspace_read_file",
             Self::ListDirectory => "workspace_list_directory",
+            Self::EditFile => "workspace_edit_file",
             Self::Command => "workspace_run_command",
         }
     }
@@ -256,6 +309,15 @@ pub enum ToolArguments {
         path: String,
         /// Positive entry limit.
         max_entries: usize,
+    },
+    /// Replace exactly one occurrence of `old_text` in an existing file.
+    EditFile {
+        /// Validated workspace-relative path.
+        path: String,
+        /// Non-empty text that must occur exactly once. Untrusted model data.
+        old_text: String,
+        /// Replacement text, possibly empty. Untrusted model data.
+        new_text: String,
     },
     /// Request or run one confined command.
     Command {
@@ -331,6 +393,7 @@ impl ToolCall {
         let name = match name {
             "workspace_read_file" => ToolName::ReadFile,
             "workspace_list_directory" => ToolName::ListDirectory,
+            "workspace_edit_file" => ToolName::EditFile,
             "workspace_run_command" => ToolName::Command,
             _ => return Err(ToolCallError::UnsupportedTool),
         };
@@ -399,6 +462,32 @@ impl ToolCall {
                 ToolArguments::ListDirectory {
                     path: path.to_owned(),
                     max_entries,
+                }
+            }
+            ToolName::EditFile => {
+                let mut path = None;
+                let mut old_text = None;
+                let mut new_text = None;
+                for (key, value) in arguments_object {
+                    let text = value.as_str().ok_or(ToolCallError::InvalidArguments)?;
+                    match key.as_str() {
+                        "path" => path = Some(text),
+                        "old_text" => old_text = Some(text),
+                        "new_text" => new_text = Some(text),
+                        _ => return Err(ToolCallError::InvalidArguments),
+                    }
+                }
+                let path = path.ok_or(ToolCallError::InvalidArguments)?;
+                let old_text = old_text.ok_or(ToolCallError::InvalidArguments)?;
+                let new_text = new_text.ok_or(ToolCallError::InvalidArguments)?;
+                if old_text.is_empty() {
+                    return Err(ToolCallError::InvalidArguments);
+                }
+                validate_relative_path(path, false)?;
+                ToolArguments::EditFile {
+                    path: path.to_owned(),
+                    old_text: old_text.to_owned(),
+                    new_text: new_text.to_owned(),
                 }
             }
             ToolName::Command => {
@@ -481,9 +570,9 @@ impl ToolCall {
     /// dispatcher uses its typed arguments.
     pub fn path(&self) -> &str {
         match &self.arguments {
-            ToolArguments::ReadFile { path, .. } | ToolArguments::ListDirectory { path, .. } => {
-                path
-            }
+            ToolArguments::ReadFile { path, .. }
+            | ToolArguments::ListDirectory { path, .. }
+            | ToolArguments::EditFile { path, .. } => path,
             ToolArguments::Command { .. } => "",
         }
     }
@@ -710,6 +799,37 @@ pub struct TurnReport {
 /// Text sent in place of a saved tool result whose replay is not authorized.
 pub const WITHHELD_TOOL_RESULT: &str = "Tool result withheld [source omgcode_runtime]: current workspace settings do not allow model file reads, so this earlier workspace data is not sent again.";
 
+/// Text sent in place of a compaction summary built from saved tool results
+/// when live settings do not authorize replaying those results.
+pub const WITHHELD_COMPACTION_SUMMARY: &str = "Compacted earlier context withheld [source omgcode_runtime]: the summary was built from earlier workspace tool results, and current workspace settings do not allow model file reads, so it is not sent again.";
+
+/// Map a journal's active context (summary plus retained messages) to history.
+///
+/// This is the only replay path for a turn. A summary whose input included
+/// saved tool results is workspace data under the same rule as those results:
+/// without live authority it becomes [`WITHHELD_COMPACTION_SUMMARY`] and counts
+/// as withheld. The returned history has one entry per active message.
+#[must_use]
+pub fn replay_active(
+    journal: &SessionJournal,
+    tool_results_allowed: bool,
+) -> (Vec<ConversationMessage>, usize) {
+    let mut active = journal.active_messages();
+    let mut withheld = 0_usize;
+    let summary_withheld = !tool_results_allowed
+        && journal
+            .snapshot()
+            .compaction
+            .as_ref()
+            .is_some_and(|record| record.includes_tool_results);
+    if summary_withheld && let Some(summary) = active.first_mut() {
+        summary.text = WITHHELD_COMPACTION_SUMMARY.to_owned();
+        withheld = 1;
+    }
+    let (history, tool_withheld) = replay_history(&active, tool_results_allowed);
+    (history, withheld.saturating_add(tool_withheld))
+}
+
 /// Map saved session messages to conversation history.
 ///
 /// A saved tool result is workspace data that was disclosed under an earlier
@@ -779,7 +899,7 @@ impl<'a> TurnRuntime<'a> {
         limits: TurnLimits,
     ) -> Result<Self, TurnError> {
         let limits = limits.validate()?;
-        if journal.schema_version() != 2 {
+        if journal.schema_version() < 2 {
             return Err(TurnError::SchemaV2Required);
         }
         if journal.snapshot().workspace_id != *workspace_id.as_uuid() {
@@ -836,8 +956,14 @@ impl<'a> TurnRuntime<'a> {
             .ok_or(TurnError::Timeout)?;
         self.check_checkpoints(deadline)?;
 
+        // One settings snapshot selects the advertised tools; every call
+        // rechecks the live preferences before dispatch.
+        let permissions = self.workspace_permissions();
         let mut tools = tool_definitions();
-        if self.command_tool_allowed() {
+        if permissions.is_some_and(edit_tool_allowed) {
+            tools.push(edit_tool_definition());
+        }
+        if permissions.is_some_and(command_tool_allowed) {
             tools.push(command_tool_definition());
         }
         // The runtime owns the exact instruction and tool metadata it sends.
@@ -850,11 +976,11 @@ impl<'a> TurnRuntime<'a> {
                 .collect(),
         );
 
-        // Saved tool results are replayed only under live read authority.
-        let (mut history, withheld_tool_results) = replay_history(
-            &self.journal.snapshot().messages,
-            self.tool_replay_allowed(),
-        );
+        // Active context is the compaction summary plus retained messages.
+        // Saved tool results, and summaries built from them, are replayed only
+        // under live read authority.
+        let (mut history, withheld_tool_results) =
+            replay_active(self.journal, self.tool_replay_allowed());
         history.push(ConversationMessage {
             role: ConversationRole::User,
             content: user_text.to_owned(),
@@ -1093,7 +1219,7 @@ impl<'a> TurnRuntime<'a> {
 
     /// Refuse a turn before any mutation when the session cannot accept one.
     fn ensure_runnable(&self) -> Result<(), TurnError> {
-        if self.journal.schema_version() != 2 {
+        if self.journal.schema_version() < 2 {
             return Err(TurnError::SchemaV2Required);
         }
         if self.journal.snapshot().workspace_id != *self.workspace_id.as_uuid() {
@@ -1116,14 +1242,6 @@ impl<'a> TurnRuntime<'a> {
     fn tool_replay_allowed(&self) -> bool {
         self.workspace_permissions()
             .is_some_and(|permissions| permissions.model_tools && permissions.read)
-    }
-
-    /// Report whether the command tool may be advertised. It needs live
-    /// `model_tools`, `execute`, `read`, and `write`; each call rechecks them.
-    fn command_tool_allowed(&self) -> bool {
-        self.workspace_permissions().is_some_and(|permissions| {
-            permissions.model_tools && permissions.execute && permissions.read && permissions.write
-        })
     }
 
     /// Read the workspace's current preferences, releasing the settings lock.
@@ -1174,6 +1292,18 @@ impl<'a> TurnRuntime<'a> {
         };
         self.abort(request_id, code, error)
     }
+}
+
+/// Report whether the edit tool may be offered: live `model_tools`, `read`,
+/// and `write`. Each call rechecks them, and every edit still needs approval.
+const fn edit_tool_allowed(permissions: PermissionSet) -> bool {
+    permissions.model_tools && permissions.read && permissions.write
+}
+
+/// Report whether the command tool may be offered: live `model_tools`,
+/// `execute`, `read`, and `write`. Each call rechecks them.
+const fn command_tool_allowed(permissions: PermissionSet) -> bool {
+    permissions.model_tools && permissions.execute && permissions.read && permissions.write
 }
 
 /// A terminal tool failure retained until its audit records are durable.
@@ -1286,6 +1416,16 @@ impl WorkspaceToolDispatcher<'_> {
             }
             return self.dispatch_command(control, call, max_result_bytes);
         }
+        if matches!(call.arguments, ToolArguments::EditFile { .. }) {
+            if !edit_tool_allowed(permissions) {
+                return ToolExecution::denied(
+                    "edit_disabled",
+                    call,
+                    FileError::Denied(DecisionReason::PermissionDisabled),
+                );
+            }
+            return self.dispatch_edit(control, call, max_result_bytes);
+        }
         let binding = match control.bind_session(self.session_id, self.workspace_id) {
             Ok(binding) => binding,
             Err(error) => {
@@ -1319,8 +1459,185 @@ impl WorkspaceToolDispatcher<'_> {
                     Err(error) => classify_file_error(call, error),
                 }
             }
+            ToolArguments::EditFile { .. } => ToolExecution::recoverable("invalid_request", call),
             ToolArguments::Command { .. } => ToolExecution::recoverable("invalid_command", call),
         }
+    }
+
+    /// Request or apply one exact edit under one control-store writer.
+    ///
+    /// The writer is held for the whole bounded call, and the broker read, the
+    /// approval append, and the checkpointed apply each open at most one
+    /// subordinate journal at a time, keeping the documented lock order. The
+    /// expected current value comes from this live audited read, never from the
+    /// model or the conversation. An approval is consumed before the apply, so
+    /// a failed apply spends it.
+    fn dispatch_edit(
+        &self,
+        mut control: ControlStore,
+        call: &ToolCall,
+        max_result_bytes: usize,
+    ) -> ToolExecution {
+        let ToolArguments::EditFile {
+            path,
+            old_text,
+            new_text,
+        } = &call.arguments
+        else {
+            return ToolExecution::recoverable("invalid_request", call);
+        };
+        let binding = match control.bind_session(self.session_id, self.workspace_id) {
+            Ok(binding) => binding,
+            Err(error) => {
+                return ToolExecution::denied(
+                    "policy_unavailable",
+                    call,
+                    FileError::Control(error),
+                );
+            }
+        };
+        let target = FileTarget {
+            session_id: self.session_id,
+            workspace_id: self.workspace_id,
+            path: PathBuf::from(path),
+        };
+        let current =
+            match FileBroker::new(&mut control).read(&binding, &target, MAX_EDIT_FILE_BYTES) {
+                Ok(read) => read.bytes,
+                Err(error) => return classify_edit_error(call, error),
+            };
+        let Ok(text) = std::str::from_utf8(&current) else {
+            return ToolExecution::recoverable("non_utf8", call);
+        };
+        let start = match unique_match(text, old_text) {
+            TextMatch::None => return ToolExecution::recoverable("edit_no_match", call),
+            TextMatch::Many => return ToolExecution::recoverable("edit_ambiguous", call),
+            TextMatch::Once(start) => start,
+        };
+        if old_text == new_text {
+            return ToolExecution::recoverable("edit_unchanged", call);
+        }
+        let Some(proposed) = replace_once(text, start, old_text.len(), new_text) else {
+            return ToolExecution::recoverable("edit_too_large", call);
+        };
+        let (Some(current_artifact), Some(proposed_artifact)) =
+            (artifact(&current), artifact(proposed.as_bytes()))
+        else {
+            return ToolExecution::recoverable("edit_too_large", call);
+        };
+        let normalized = normalized_path(path);
+        let digest = edit_digest(
+            self.session_id,
+            self.workspace_id,
+            &normalized,
+            &current_artifact,
+            &proposed_artifact,
+        );
+        let now = now_unix();
+        let revision = control.revision();
+        let statuses = control.approval_statuses(now);
+        let matching = |state| {
+            statuses.iter().find(|status| {
+                status.session_id == self.session_id
+                    && status.workspace_id == self.workspace_id
+                    && status.operation == ApprovalOperation::FileWrite
+                    && status.request_sha256 == digest
+                    && status.settings_revision == revision
+                    && status.state == state
+            })
+        };
+        if let Some(approved) = matching(ApprovalState::Approved) {
+            // Check that the success report fits before anything is spent or
+            // written, using the widest size, digest, and identifier it can
+            // carry. Otherwise an applied edit could only be reported as a
+            // failure. The approval stays unconsumed for a later retry.
+            let widest = edit_success_message(
+                call,
+                &normalized,
+                u64::MAX,
+                &"f".repeat(64),
+                Some(Uuid::max()),
+            );
+            if widest.len() > max_result_bytes.min(MAX_MESSAGE_BYTES) {
+                return ToolExecution::recoverable("output_too_large", call);
+            }
+            let approval = ApprovalBinding {
+                session_id: self.session_id,
+                workspace_id: self.workspace_id,
+                operation: ApprovalOperation::FileWrite,
+                request_sha256: digest.clone(),
+            };
+            if let Err(error) = control.consume_approval(approved.id, &approval, now) {
+                return status_result(
+                    call,
+                    ToolOutcome::Failed,
+                    "approval_failed",
+                    json!({"error": error.to_string()}),
+                    max_result_bytes,
+                );
+            }
+            // The record is spent before the write, so no crash or retry can
+            // reuse it. The apply rechecks live read/write, the binding, the
+            // qualified filesystem, and that the target still has the exact
+            // captured size and digest.
+            let applied = FileBroker::new(&mut control).apply_replacement(
+                &binding,
+                &target,
+                &current_artifact,
+                proposed.as_bytes(),
+            );
+            drop(control);
+            return match applied {
+                // The widest report was checked above, so this one fits.
+                Ok(receipt) if receipt.applied => ToolExecution::success(edit_success_message(
+                    call,
+                    &normalized,
+                    receipt.proposed.bytes,
+                    &receipt.proposed.sha256,
+                    receipt.operation_id,
+                )),
+                // Different proposed bytes always publish or fail; an
+                // unapplied receipt can only mean the bytes were identical.
+                Ok(_) => ToolExecution::recoverable("edit_unchanged", call),
+                Err(error) => classify_edit_error(call, error),
+            };
+        }
+        if let Some(pending) = matching(ApprovalState::Pending) {
+            return edit_approval_required(call, pending.id, max_result_bytes);
+        }
+        if matching(ApprovalState::Denied).is_some() {
+            return status_result(
+                call,
+                ToolOutcome::Denied,
+                "approval_denied",
+                json!({"message": "The operator denied this edit. Do not retry it."}),
+                max_result_bytes,
+            );
+        }
+        let status = match control.request_approval(
+            &ApprovalDeclaration {
+                session_id: self.session_id,
+                workspace_id: self.workspace_id,
+                operation: ApprovalOperation::FileWrite,
+                request_sha256: digest,
+                summary: edit_summary(&normalized, &current_artifact, &proposed_artifact),
+                ttl_secs: EDIT_APPROVAL_TTL_SECS,
+            },
+            now,
+        ) {
+            Ok(status) => status,
+            Err(error) => {
+                return status_result(
+                    call,
+                    ToolOutcome::Failed,
+                    "approval_failed",
+                    json!({"error": error.to_string()}),
+                    max_result_bytes,
+                );
+            }
+        };
+        drop(control);
+        edit_approval_required(call, status.id, max_result_bytes)
     }
 
     /// Request or execute one command. The control store is dropped before the
@@ -1373,7 +1690,7 @@ impl WorkspaceToolDispatcher<'_> {
                 request_sha256: digest,
             };
             if let Err(error) = control.consume_approval(approved.id, &binding, now) {
-                return command_result(
+                return status_result(
                     call,
                     ToolOutcome::Failed,
                     "approval_failed",
@@ -1385,7 +1702,7 @@ impl WorkspaceToolDispatcher<'_> {
             return self.execute_command(call, &request, max_result_bytes);
         }
         if let Some(pending) = matching(ApprovalState::Pending) {
-            return command_result(
+            return status_result(
                 call,
                 ToolOutcome::Failed,
                 "approval_required",
@@ -1397,7 +1714,7 @@ impl WorkspaceToolDispatcher<'_> {
             );
         }
         if matching(ApprovalState::Denied).is_some() {
-            return command_result(
+            return status_result(
                 call,
                 ToolOutcome::Denied,
                 "approval_denied",
@@ -1419,7 +1736,7 @@ impl WorkspaceToolDispatcher<'_> {
         ) {
             Ok(status) => status,
             Err(error) => {
-                return command_result(
+                return status_result(
                     call,
                     ToolOutcome::Failed,
                     "approval_failed",
@@ -1429,7 +1746,7 @@ impl WorkspaceToolDispatcher<'_> {
             }
         };
         drop(control);
-        command_result(
+        status_result(
             call,
             ToolOutcome::Failed,
             "approval_required",
@@ -1485,7 +1802,7 @@ impl WorkspaceToolDispatcher<'_> {
                 }
                 ToolExecution::success(message)
             }
-            Err(error) => command_result(
+            Err(error) => status_result(
                 call,
                 ToolOutcome::Failed,
                 "command_failed",
@@ -1577,8 +1894,238 @@ fn command_summary(profile: &str, program: &str, arguments: usize) -> String {
     summary
 }
 
-/// Render a command status as a bounded, source-labelled tool result.
-fn command_result(
+/// Where `old_text` occurs in a file's text.
+enum TextMatch {
+    /// It does not occur.
+    None,
+    /// It starts at this byte offset and nowhere else.
+    Once(usize),
+    /// It occurs at two or more offsets, counting overlapping occurrences.
+    Many,
+}
+
+/// Find the only occurrence of a non-empty `needle`, counting overlaps.
+///
+/// Overlapping starts count as separate occurrences, so `aa` in `aaa` is
+/// ambiguous. Each search resumes one character after the previous start,
+/// which keeps every slice on a character boundary.
+fn unique_match(haystack: &str, needle: &str) -> TextMatch {
+    let Some(first) = haystack.find(needle) else {
+        return TextMatch::None;
+    };
+    let step = needle.chars().next().map_or(1, char::len_utf8);
+    let resume = first.saturating_add(step);
+    match haystack.get(resume..) {
+        Some(rest) if rest.contains(needle) => TextMatch::Many,
+        _ => TextMatch::Once(first),
+    }
+}
+
+/// Replace `length` bytes at `start` with `replacement`, within the edit bound.
+///
+/// Returns `None` when the result would exceed [`MAX_EDIT_FILE_BYTES`] or the
+/// range is not on character boundaries.
+fn replace_once(text: &str, start: usize, length: usize, replacement: &str) -> Option<String> {
+    let end = start.checked_add(length)?;
+    let before = text.get(..start)?;
+    let after = text.get(end..)?;
+    let size = before
+        .len()
+        .checked_add(replacement.len())?
+        .checked_add(after.len())?;
+    if size > MAX_EDIT_FILE_BYTES {
+        return None;
+    }
+    let mut proposed = String::with_capacity(size);
+    proposed.push_str(before);
+    proposed.push_str(replacement);
+    proposed.push_str(after);
+    Some(proposed)
+}
+
+/// The labelled report of an applied edit. It never contains file text.
+fn edit_success_message(
+    call: &ToolCall,
+    path: &str,
+    bytes: u64,
+    sha256: &str,
+    operation_id: Option<Uuid>,
+) -> String {
+    let body = json!({
+        "tool": call.name.as_str(),
+        "status": "applied",
+        "path": path,
+        "bytes": bytes,
+        "sha256": sha256,
+        "operation_id": operation_id,
+    });
+    labelled_result(call, &body.to_string())
+}
+
+/// Describe exact bytes by size and SHA-256.
+fn artifact(bytes: &[u8]) -> Option<RecordedArtifact> {
+    Some(RecordedArtifact {
+        bytes: u64::try_from(bytes.len()).ok()?,
+        sha256: sha256_hex(bytes),
+    })
+}
+
+/// Join a validated relative path's components with `/`.
+///
+/// Separators that name the same native path, such as a doubled `/` or a
+/// Windows `\`, give the same digest input and summary.
+fn normalized_path(path: &str) -> String {
+    Path::new(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Bind one model edit to the session, workspace, path, and the exact size and
+/// SHA-256 of both the live current bytes and the proposed bytes.
+///
+/// Each field is length-prefixed under a domain tag, so no field boundary is
+/// ambiguous and no other approval digest can collide with this one.
+fn edit_digest(
+    session_id: Uuid,
+    workspace_id: WorkspaceId,
+    path: &str,
+    current: &RecordedArtifact,
+    proposed: &RecordedArtifact,
+) -> String {
+    let mut bytes = Vec::new();
+    push_field(&mut bytes, EDIT_DIGEST_DOMAIN);
+    push_field(&mut bytes, session_id.as_bytes());
+    push_field(&mut bytes, workspace_id.as_uuid().as_bytes());
+    push_field(&mut bytes, path.as_bytes());
+    push_field(&mut bytes, &current.bytes.to_le_bytes());
+    push_field(&mut bytes, current.sha256.as_bytes());
+    push_field(&mut bytes, &proposed.bytes.to_le_bytes());
+    push_field(&mut bytes, proposed.sha256.as_bytes());
+    sha256_hex(&bytes)
+}
+
+/// A bounded operator-facing edit label with sizes and short digests only.
+///
+/// It never contains file text. Control, invisible, and bidirectional
+/// formatting characters in the path become `?`, and a long path is shortened on a
+/// character boundary so the summary fits [`MAX_EDIT_SUMMARY_BYTES`].
+fn edit_summary(path: &str, current: &RecordedArtifact, proposed: &RecordedArtifact) -> String {
+    let short = |digest: &str| digest.get(..12).unwrap_or(digest).to_owned();
+    let suffix = format!(
+        ": {} -> {} bytes, sha256 {} -> {}",
+        current.bytes,
+        proposed.bytes,
+        short(&current.sha256),
+        short(&proposed.sha256)
+    );
+    let prefix = "edit ";
+    let budget = MAX_EDIT_SUMMARY_BYTES
+        .saturating_sub(prefix.len())
+        .saturating_sub(suffix.len());
+    let mut label: String = path
+        .chars()
+        .map(|character| {
+            if character.is_control() || is_hidden_format(character) {
+                '?'
+            } else {
+                character
+            }
+        })
+        .collect();
+    if label.len() > budget {
+        let mut end = budget.saturating_sub(3);
+        while !label.is_char_boundary(end) {
+            end -= 1;
+        }
+        label.truncate(end);
+        label.push_str("...");
+    }
+    format!("{prefix}{label}{suffix}")
+}
+
+/// Invisible, line-breaking, or bidirectional formatting characters that can
+/// hide or reorder displayed text.
+const fn is_hidden_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{feff}'
+    )
+}
+
+/// Tell the model that an operator must approve the edit before a retry.
+fn edit_approval_required(
+    call: &ToolCall,
+    approval_id: Uuid,
+    max_result_bytes: usize,
+) -> ToolExecution {
+    status_result(
+        call,
+        ToolOutcome::Failed,
+        "approval_required",
+        json!({
+            "approval_id": approval_id,
+            "message": "Nothing changed. The operator must approve this edit. Stop now and retry the identical call in a later turn after approval.",
+        }),
+        max_result_bytes,
+    )
+}
+
+/// Classify a failed edit read or apply.
+///
+/// Admission, conflict, capacity, and unsupported-filesystem outcomes are
+/// recoverable: the target is unchanged, so the model can report them and
+/// the operator can resolve them. A permission denial stays terminal, as it is
+/// for every tool.
+fn classify_edit_error(call: &ToolCall, error: FileError) -> ToolExecution {
+    let checkpoint = match error {
+        FileError::Checkpoint(checkpoint) => checkpoint,
+        // An unresolved file operation blocks broker work until a trusted
+        // acknowledgement; nothing was written by this call.
+        FileError::Pending { .. } => return ToolExecution::recoverable("operation_pending", call),
+        other => return classify_file_error(call, other),
+    };
+    let code = checkpoint.code();
+    match checkpoint {
+        CheckpointError::Conflict
+        | CheckpointError::Unchanged
+        | CheckpointError::Limit
+        | CheckpointError::Busy
+        | CheckpointError::Pending(_)
+        | CheckpointError::WrongOperation
+        | CheckpointError::DeletionPending(_)
+        | CheckpointError::Unavailable
+        | CheckpointError::TargetMismatch => ToolExecution::recoverable(code, call),
+        CheckpointError::Io(ref source) if source.kind() == io::ErrorKind::Unsupported => {
+            ToolExecution::recoverable(code, call)
+        }
+        CheckpointError::Denied(_) => {
+            ToolExecution::denied(code, call, FileError::Checkpoint(checkpoint))
+        }
+        // Terminal: settings that cannot be validated, a storage I/O or sync
+        // failure, invalid private records, a poisoned writer, or an uncertain
+        // outcome can leave evidence or a changed target that only the operator
+        // can inspect and acknowledge. Further broker work is blocked anyway,
+        // so continuing the turn cannot help.
+        CheckpointError::Control(_)
+        | CheckpointError::Io(_)
+        | CheckpointError::Records(_)
+        | CheckpointError::Json(_)
+        | CheckpointError::Invalid(_)
+        | CheckpointError::Poisoned
+        | CheckpointError::Uncertain { .. } => {
+            ToolExecution::failed(code, call, FileError::Checkpoint(checkpoint))
+        }
+    }
+}
+
+/// Render a tool status as a bounded, source-labelled tool result.
+fn status_result(
     call: &ToolCall,
     outcome: ToolOutcome,
     code: &'static str,
@@ -1746,7 +2293,46 @@ fn validate_relative_path(path: &str, allow_empty: bool) -> Result<(), ToolCallE
 
 #[cfg(test)]
 mod summary_tests {
-    use super::command_summary;
+    use super::{
+        MAX_EDIT_SUMMARY_BYTES, TextMatch, artifact, command_summary, edit_summary,
+        normalized_path, replace_once, unique_match,
+    };
+
+    #[test]
+    fn an_edit_summary_is_bounded_and_holds_no_text_or_control_characters() {
+        let current = artifact(b"secret current text").expect("current");
+        let proposed = artifact(b"secret proposed text").expect("proposed");
+        let summary = edit_summary("src/main.rs", &current, &proposed);
+        assert_eq!(
+            summary,
+            format!(
+                "edit src/main.rs: 19 -> 20 bytes, sha256 {} -> {}",
+                &current.sha256[..12],
+                &proposed.sha256[..12]
+            )
+        );
+        assert!(!summary.contains("secret"));
+
+        let hostile = format!("{}\u{202e}\u{7}\u{2028}{}", "d/".repeat(40), "é".repeat(80));
+        let summary = edit_summary(&hostile, &current, &proposed);
+        assert!(summary.len() <= MAX_EDIT_SUMMARY_BYTES, "{}", summary.len());
+        assert!(summary.is_char_boundary(summary.len()));
+        assert!(!summary.chars().any(char::is_control));
+        assert!(!summary.contains('\u{202e}') && !summary.contains('\u{2028}'));
+        assert!(summary.contains("...: 19 -> 20 bytes, sha256 "));
+    }
+
+    #[test]
+    fn overlapping_occurrences_are_ambiguous_and_a_single_one_is_found() {
+        assert!(matches!(unique_match("aaa", "aa"), TextMatch::Many));
+        assert!(matches!(unique_match("a b a", "a"), TextMatch::Many));
+        assert!(matches!(unique_match("éaé", "é"), TextMatch::Many));
+        assert!(matches!(unique_match("abc", "x"), TextMatch::None));
+        assert!(matches!(unique_match("xéy", "éy"), TextMatch::Once(1)));
+        assert_eq!(replace_once("xéy", 1, 3, "-").as_deref(), Some("x-"));
+        assert_eq!(replace_once("xéy", 2, 1, "-"), None, "not a char boundary");
+        assert_eq!(normalized_path("a//b/c"), "a/b/c");
+    }
 
     #[test]
     fn a_command_summary_truncates_on_a_utf8_boundary() {
