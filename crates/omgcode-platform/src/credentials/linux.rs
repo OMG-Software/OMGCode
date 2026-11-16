@@ -362,10 +362,17 @@ fn create_item(
             "the Secret Service created no item and returned no prompt",
         )));
     }
-    // An item path together with a prompt is not a documented reply. The
-    // item exists, so keep it; the prompt is still never run.
+    // An item path together with a prompt is not a documented reply. It is
+    // refused like any other prompt, which is never run, and the empty
+    // placeholder is deleted; a remaining one keeps its identifier.
     if prompt.as_str() != NO_OBJECT {
         dismiss_prompt(connection, destination, &prompt);
+        return Err(remove_placeholder(
+            connection,
+            destination,
+            &item,
+            CredentialError::PromptRequired,
+        ));
     }
     Ok(item)
 }

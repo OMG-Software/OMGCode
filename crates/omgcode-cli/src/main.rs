@@ -445,7 +445,7 @@ fn preflight_context(
     summary_client: &LocalModelClient,
     token: Option<&str>,
     fixed_extra_bytes: usize,
-    tool_results_allowed: bool,
+    tools_enabled: bool,
 ) -> Result<ContextMeter, CliError> {
     if args.compact_threshold == 0 {
         return Err(CliError::new(
@@ -464,8 +464,12 @@ fn preflight_context(
         context_tokens: args.context_tokens,
         max_output_tokens: context_cli::summary_output_tokens(args.context_tokens),
     };
-    let (mut estimate, mut assembly_blocked) =
-        estimate_with_user(journal, args, fixed_extra_bytes, tool_results_allowed)?;
+    let (mut estimate, mut assembly_blocked) = estimate_with_user(
+        journal,
+        args,
+        fixed_extra_bytes,
+        replay_allowed_now(journal, data_root, tools_enabled),
+    )?;
     let mut summarizer_calls = None;
     if budget.should_compact(estimate) || assembly_blocked {
         if !args.auto_compact {
@@ -490,8 +494,14 @@ fn preflight_context(
             summary_budget,
         )?;
         summarizer_calls = Some(outcome.calls);
-        (estimate, assembly_blocked) =
-            estimate_with_user(journal, args, fixed_extra_bytes, tool_results_allowed)?;
+        // Settings can change during the summarizer requests, so read the
+        // replay authority again for the compacted history.
+        (estimate, assembly_blocked) = estimate_with_user(
+            journal,
+            args,
+            fixed_extra_bytes,
+            replay_allowed_now(journal, data_root, tools_enabled),
+        )?;
         if budget.should_compact(estimate) || assembly_blocked {
             return Err(CliError::new(
                 "context",
@@ -506,6 +516,24 @@ fn preflight_context(
         estimate,
         summarizer_calls,
     ))
+}
+
+/// Whether the next request may replay saved tool results, read from live
+/// settings at each call. Text-only chat never replays them; a tool turn
+/// replays them only under live `model_tools` and `read`, as the runtime
+/// does. Unreadable settings fail closed to the withheld form.
+fn replay_allowed_now(
+    journal: &SessionJournal,
+    data_root: &std::path::Path,
+    tools_enabled: bool,
+) -> bool {
+    tools_enabled
+        && model_tools::tool_replay_allowed(
+            data_root,
+            journal.snapshot().workspace_id,
+            journal.schema_version(),
+        )
+        .unwrap_or(false)
 }
 
 /// The input-only estimate for the next request, and whether its active
@@ -645,17 +673,7 @@ fn chat_turn(
         model_tools::ToolMode::Enabled { .. } => model_tools::TOOL_SCHEMA_ESTIMATE_BYTES,
         model_tools::ToolMode::Disabled { .. } => 0,
     };
-    // Text-only chat never replays saved tool results; a tool turn replays
-    // them only under live `model_tools` and `read`, as the runtime does.
-    let tool_results_allowed = match &mode {
-        model_tools::ToolMode::Enabled { .. } => model_tools::tool_replay_allowed(
-            data_root,
-            journal.snapshot().workspace_id,
-            journal.schema_version(),
-        )
-        .unwrap_or(false),
-        model_tools::ToolMode::Disabled { .. } => false,
-    };
+    let tools_enabled = matches!(mode, model_tools::ToolMode::Enabled { .. });
     let meter = preflight_context(
         journal,
         data_root,
@@ -663,7 +681,7 @@ fn chat_turn(
         summary_client,
         token,
         tool_extra,
-        tool_results_allowed,
+        tools_enabled,
     )?;
     let manifest = RequestManifest {
         base_prompt: BASE_PROMPT.to_owned(),

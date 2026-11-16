@@ -482,7 +482,14 @@ Changes are recorded here before a release version is assigned.
     fit the result limit, so an apply never runs without a reportable result.
   - The chat preflight estimate replays saved tool results only under live
     `model_tools` and `read`, matching the request the turn will send, so a
-    withheld result no longer triggers a needless compaction refusal.
+    withheld result no longer triggers a needless compaction refusal. The
+    authority is read again after auto-compaction, so a `read` revoked during
+    the summarizer request is reflected in the post-compaction estimate.
+  - A Secret Service `CreateItem` reply that carries both an item and a prompt
+    is refused with `credential_prompt_required` like a prompt alone; the
+    prompt is never run and the placeholder is deleted.
+  - Windows credential tests inject a directory-sync failure after the file
+    is written, with a successful and with a failed cleanup.
   - `provider-credential-set` reads the secret before it opens the control
     store, so the store's lock is not held while standard input is awaited.
   - A failed credential store that may have left an item, such as a Windows

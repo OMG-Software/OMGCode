@@ -48,6 +48,16 @@ impl DpapiStore {
     }
 
     pub(super) fn store(&self, id: &CredentialId, secret: &Secret) -> Result<(), CredentialError> {
+        self.store_with(id, secret, NATIVE_STEPS)
+    }
+
+    /// Store with the given directory steps after the file is written.
+    fn store_with(
+        &self,
+        id: &CredentialId,
+        secret: &Secret,
+        steps: AfterWrite,
+    ) -> Result<(), CredentialError> {
         let blob = protect(secret.expose(), &entropy(id))?;
         if blob.len() > MAX_BLOB_BYTES {
             return Err(CredentialError::TooLarge);
@@ -67,9 +77,9 @@ impl DpapiStore {
         // a failed directory sync it is complete and would load, although
         // its name may not be durable. Either way remove the entry this call
         // created and report the original failure.
-        let result = written.and_then(|()| directory.sync());
+        let result = written.and_then(|()| (steps.sync)(&directory));
         if let Err(error) = result {
-            return Err(remove_created(&directory, &name, error));
+            return Err(remove_created(&directory, &name, error, steps.remove));
         }
         Ok(())
     }
@@ -138,11 +148,29 @@ impl DpapiStore {
     }
 }
 
+/// The directory steps that follow a credential file's write and sync. Real
+/// storage cannot fail them on demand, so tests substitute failing steps.
+#[derive(Clone, Copy)]
+struct AfterWrite {
+    sync: fn(&PrivateDirectory) -> io::Result<()>,
+    remove: fn(&PrivateDirectory, &OsStr) -> io::Result<()>,
+}
+
+const NATIVE_STEPS: AfterWrite = AfterWrite {
+    sync: PrivateDirectory::sync,
+    remove: PrivateDirectory::remove_file,
+};
+
 /// Remove the entry a failed store created and report the original failure.
 /// A failed removal is added to the report, so the caller knows an entry may
 /// remain and can try `delete` again under the same identifier.
-fn remove_created(directory: &PrivateDirectory, name: &OsStr, error: io::Error) -> CredentialError {
-    match directory.remove_file(name) {
+fn remove_created(
+    directory: &PrivateDirectory,
+    name: &OsStr,
+    error: io::Error,
+    remove: fn(&PrivateDirectory, &OsStr) -> io::Result<()>,
+) -> CredentialError {
+    match remove(directory, name) {
         Ok(()) => CredentialError::Io(error),
         Err(cleanup) => CredentialError::Io(io::Error::new(
             error.kind(),

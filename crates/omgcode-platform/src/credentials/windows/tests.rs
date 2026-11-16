@@ -175,3 +175,63 @@ fn an_unprotected_credential_file_is_refused() {
     );
     assert!(matches!(store.load(&id), Err(CredentialError::Corrupt(_))));
 }
+
+fn failed_directory_sync(_: &PrivateDirectory) -> io::Result<()> {
+    Err(io::Error::other("injected directory sync failure"))
+}
+
+fn failed_removal(_: &PrivateDirectory, _: &OsStr) -> io::Result<()> {
+    Err(io::Error::other("injected removal failure"))
+}
+
+/// A directory sync that fails after the file is written and synced removes
+/// the complete file and reports the sync failure alone.
+#[test]
+fn a_failed_directory_sync_removes_the_written_file() {
+    let root = root();
+    let store = DpapiStore::open(&root.path).expect("DPAPI store");
+    let id = fresh_id();
+    let steps = AfterWrite {
+        sync: failed_directory_sync,
+        ..NATIVE_STEPS
+    };
+    let result = store.store_with(&id, &sentinel_secret(), steps);
+    let Err(CredentialError::Io(error)) = result else {
+        panic!("expected an I/O failure: {result:?}");
+    };
+    let text = error.to_string();
+    assert!(text.contains("injected directory sync failure"), "{text}");
+    assert!(!text.contains("could not be removed"), "{text}");
+    assert!(!credential_path(&root, &id).exists());
+    assert!(matches!(store.load(&id), Err(CredentialError::NotFound)));
+}
+
+/// When the cleanup also fails, the report names both failures and the
+/// complete file stays under its identifier, so `delete` can remove it.
+#[test]
+fn a_failed_cleanup_reports_the_remaining_file() {
+    let root = root();
+    let store = DpapiStore::open(&root.path).expect("DPAPI store");
+    let id = fresh_id();
+    let steps = AfterWrite {
+        sync: failed_directory_sync,
+        remove: failed_removal,
+    };
+    let result = store.store_with(&id, &sentinel_secret(), steps);
+    let Err(CredentialError::Io(error)) = result else {
+        panic!("expected an I/O failure: {result:?}");
+    };
+    let text = error.to_string();
+    assert!(text.contains("injected directory sync failure"), "{text}");
+    assert!(
+        text.contains("could not be removed: injected removal failure"),
+        "{text}"
+    );
+    assert!(credential_path(&root, &id).exists());
+    assert_eq!(
+        store.load(&id).expect("the complete file loads").expose(),
+        sentinel_secret().expose()
+    );
+    store.delete(&id).expect("delete the remaining file");
+    assert!(matches!(store.load(&id), Err(CredentialError::NotFound)));
+}

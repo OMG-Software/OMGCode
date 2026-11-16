@@ -34,8 +34,16 @@ struct SequenceServer {
     worker: JoinHandle<Result<usize, String>>,
 }
 
+/// Work run after one numbered request arrives and before its reply is sent.
+type BeforeReply = (usize, Box<dyn FnOnce() + Send>);
+
 impl SequenceServer {
     fn start(responses: Vec<Value>) -> Self {
+        Self::start_with(responses, None)
+    }
+
+    fn start_with(responses: Vec<Value>, before_reply: Option<BeforeReply>) -> Self {
+        let mut before_reply = before_reply;
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind private mock server");
         listener.set_nonblocking(true).expect("bounded accept mode");
         let address = listener.local_addr().expect("mock server address");
@@ -51,6 +59,13 @@ impl SequenceServer {
                 let request: Value = serde_json::from_slice(&body)
                     .map_err(|error| format!("request JSON: {error}"))?;
                 sender.send(request).map_err(|error| error.to_string())?;
+                if before_reply
+                    .as_ref()
+                    .is_some_and(|(index, _)| *index == served)
+                    && let Some((_, work)) = before_reply.take()
+                {
+                    work();
+                }
                 let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -176,6 +191,26 @@ fn tool_call(id: &str, name: &str, arguments: &Value) -> Value {
     })
 }
 
+/// Change one workspace preference through the CLI at the current revision.
+fn set_permission(data: &Path, workspace_id: &str, flag: &str, value: bool) {
+    let status = run_cli(data, &["workspace", "status"]);
+    assert_success(&status);
+    let revision = json_output(&status)["revision"].to_string();
+    let output = run_cli(
+        data,
+        &[
+            "workspace",
+            "permissions",
+            workspace_id,
+            "--revision",
+            &revision,
+            flag,
+            if value { "true" } else { "false" },
+        ],
+    );
+    assert_success(&output);
+}
+
 impl Fixture {
     /// Create a session for the registered workspace through the CLI.
     fn session(&self) -> PathBuf {
@@ -187,27 +222,8 @@ impl Fixture {
         PathBuf::from(json_output(&output)["journal"].as_str().expect("journal"))
     }
 
-    fn revision(&self) -> String {
-        let output = run_cli(&self.data, &["workspace", "status"]);
-        assert_success(&output);
-        json_output(&output)["revision"].to_string()
-    }
-
     fn set(&self, flag: &str, value: bool) {
-        let revision = self.revision();
-        let output = run_cli(
-            &self.data,
-            &[
-                "workspace",
-                "permissions",
-                &self.workspace_id.to_string(),
-                "--revision",
-                &revision,
-                flag,
-                if value { "true" } else { "false" },
-            ],
-        );
-        assert_success(&output);
+        set_permission(&self.data, &self.workspace_id.to_string(), flag, value);
     }
 
     fn chat(&self, journal: &Path, endpoint: &str, message: &str) -> Output {
@@ -1076,6 +1092,79 @@ fn the_preflight_estimate_counts_a_withheld_tool_result_as_withheld() {
     let result = json_output(&output);
     assert_eq!(result["model_tools"]["withheld_tool_results"], 1);
     assert!(result["context"]["compaction"].is_null(), "{result}");
+}
+
+#[test]
+fn the_post_compaction_estimate_rereads_replay_authority() {
+    let note = "n".repeat(7_000);
+    let summary = "s".repeat(6_000);
+    let fixture = Fixture::new(note.as_bytes());
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let server = SequenceServer::start(vec![
+        tool_call(
+            "call-1",
+            "workspace_read_file",
+            &json!({"path": "note.txt"}),
+        ),
+        text("Read it."),
+    ]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "read note.txt"));
+    let first = server.finish();
+    assert!(
+        first[1].to_string().contains(&note),
+        "the read result was saved"
+    );
+    let server = SequenceServer::start(vec![text("latest reply")]);
+    assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
+    server.finish();
+
+    // The saved note triggers auto-compaction at 15,000. `read` is revoked
+    // while the summarizer request is in flight, so the compaction keeps the
+    // tool-derived summary but the turn must send the short withheld notice.
+    // Fixed overhead is about 10,200 tokens: only the withheld form fits.
+    let data = fixture.data.clone();
+    let workspace_id = fixture.workspace_id.to_string();
+    let server = SequenceServer::start_with(
+        vec![text(&summary), text("auto reply")],
+        Some((
+            0,
+            Box::new(move || set_permission(&data, &workspace_id, "--read", false)),
+        )),
+    );
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "chat",
+            "--journal",
+            path_arg(&journal),
+            "--endpoint",
+            &server.endpoint,
+            "--model",
+            "fixture",
+            "--context-tokens",
+            "131072",
+            "--max-output-tokens",
+            "64",
+            "--auto-compact",
+            "--compact-threshold",
+            "15000",
+            "third request",
+        ],
+    );
+    let requests = server.finish();
+    assert_success(&output);
+    assert_eq!(requests.len(), 2, "one summary and one chat request");
+    assert!(
+        requests[0].to_string().contains(&note),
+        "the summarizer saw the note"
+    );
+    let result = json_output(&output);
+    assert_eq!(result["reply"]["content"], "auto reply");
+    assert_eq!(result["context"]["compaction"]["summarizer_calls"], 1);
+    let sent = requests[1].to_string();
+    assert!(!sent.contains(&summary), "the summary is withheld");
+    assert!(!sent.contains(&note), "the note is withheld");
 }
 
 #[test]

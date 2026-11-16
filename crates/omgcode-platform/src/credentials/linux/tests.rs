@@ -204,6 +204,9 @@ struct Record {
     prompted: AtomicBool,
     empty_placeholder: AtomicBool,
     session_closed: AtomicBool,
+    /// Set by a test: `CreateItem` answers with an item and a prompt.
+    item_with_prompt: AtomicBool,
+    deleted: AtomicBool,
 }
 
 const MOCK_COLLECTION: &str = "/org/freedesktop/secrets/collection/mock";
@@ -256,16 +259,21 @@ impl MockCollection {
             session.as_str() == MOCK_SESSION && value.is_empty(),
             Ordering::SeqCst,
         );
-        (path("/"), path("/prompt/1"))
+        if self.0.item_with_prompt.load(Ordering::SeqCst) {
+            (path(MOCK_ITEM), path("/prompt/1"))
+        } else {
+            (path("/"), path("/prompt/1"))
+        }
     }
 }
 
 /// Every deletion needs confirmation.
-struct MockItem;
+struct MockItem(Arc<Record>);
 
 #[zbus::interface(name = "org.freedesktop.Secret.Item")]
 impl MockItem {
     fn delete(&self) -> OwnedObjectPath {
+        self.0.deleted.store(true, Ordering::SeqCst);
         path("/prompt/2")
     }
 }
@@ -309,7 +317,7 @@ fn mock() -> Mock {
             .expect("session")
             .serve_at(MOCK_COLLECTION, MockCollection(Arc::clone(&record)))
             .expect("collection")
-            .serve_at(MOCK_ITEM, MockItem)
+            .serve_at(MOCK_ITEM, MockItem(Arc::clone(&record)))
             .expect("item")
             .serve_at("/prompt/1", MockPrompt(Arc::clone(&record)))
             .expect("create prompt")
@@ -351,6 +359,28 @@ fn a_create_prompt_is_refused_without_being_run() {
         "Prompt was called"
     );
     assert!(mock.record.empty_placeholder.load(Ordering::SeqCst));
+    assert!(mock.record.session_closed.load(Ordering::SeqCst));
+}
+
+/// A `CreateItem` that answers with both an item and a prompt is refused like
+/// a prompt alone: the prompt is never run and the placeholder is deleted.
+#[test]
+fn a_create_reply_with_an_item_and_a_prompt_is_refused() {
+    let mock = mock();
+    mock.record.item_with_prompt.store(true, Ordering::SeqCst);
+    let result = create_pending_item(&mock.client, None, &path(MOCK_COLLECTION), &fresh_id());
+    assert!(
+        matches!(result, Err(CredentialError::PromptRequired)),
+        "{result:?}"
+    );
+    assert!(
+        !mock.record.prompted.load(Ordering::SeqCst),
+        "Prompt was called"
+    );
+    assert!(
+        mock.record.deleted.load(Ordering::SeqCst),
+        "the placeholder deletion was attempted"
+    );
     assert!(mock.record.session_closed.load(Ordering::SeqCst));
 }
 
