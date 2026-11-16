@@ -6,10 +6,10 @@ OMGCode aims to connect language models to controlled development tools.
 The current code is an early Rust core and command-line prototype. A bounded
 native workspace file broker is available through trusted CLI commands. A core
 turn/tool runtime and schema-v2 session format let chat offer the local LM Studio
-model read, list, and approval-gated command tools, only for a workspace that
-enables `model_tools` and the command tool's own preferences.
-Model write tools, a desktop interface, and Git workflows remain
-planned. The trusted CLI `run` command starts one program for a workspace whose
+model read, list, approval-gated exact-edit, and approval-gated command tools,
+only for a workspace that enables `model_tools` and each tool's own
+preferences. Model file creation, deletion, and renaming, a desktop interface,
+and Git workflows remain planned. The trusted CLI `run` command starts one program for a workspace whose
 `execute` preference is enabled. It uses an operator-declared toolchain
 profile, records each run in a run journal, and confines the process tree with
 Landlock and a seccomp socket filter on Linux or a per-workspace AppContainer
@@ -26,7 +26,12 @@ directory grants.
 > model read and list files inside that workspace through a bounded runtime.
 > When `execute`, `read`, and `write` are also enabled, it offers a confined
 > command tool that records a pending approval and runs only after the operator
-> approves that exact call. It has no model write, network, Git, or MCP tools.
+> approves that exact call. When `read` and `write` are enabled, it offers an
+> edit tool that replaces one exact text occurrence in an existing file. Each
+> edit records a pending approval and is applied through a checkpoint only
+> after the operator approves that exact call and acknowledges that other
+> writers are stopped. It has no model create, delete, rename, network, Git, or
+> MCP tools.
 > The trusted
 > CLI can replace or restore one existing file through a checkpoint on qualified
 > Linux ext4 or Windows NTFS, and can permanently delete one resolved checkpoint.
@@ -107,11 +112,13 @@ The core also implements a session-owned turn/tool runtime and JSONL schema
 version 3. Schema version 3 adds readable, bounded context compaction; the
 original journal messages are retained, and the summary is labelled untrusted
 user-level evidence. That runtime accepts a caller-supplied model interface, validates
-strict read/list/command tool calls, creates a fresh workspace binding before
-every file operation, and records tool intents, results, and source-labelled
-messages. The command tool additionally requires a consumed approval. `chat`
-runs it with the local LM Studio adapter for a workspace that enables
-`model_tools`. It has no write, Git, MCP, or network tool.
+strict read/list/edit/command tool calls, creates a fresh workspace binding
+before every file operation, and records tool intents, results, and
+source-labelled messages. The edit and command tools additionally require a
+consumed approval; an edit also needs the operator's writers-stopped
+acknowledgement and writes only through checkpointed apply. `chat` runs it
+with the local LM Studio adapter for a workspace that enables `model_tools`.
+It has no create, delete, rename, Git, MCP, or network tool.
 New sessions use schema version 3; version 1 and 2 journals remain readable
 and writable with their original subsets.
 
@@ -129,8 +136,9 @@ guarantee no lost updates. Windows makes no power-loss claim. Trusted
 `file restore` writes a retained original back through a new checkpoint after
 an explicit current-content check. Trusted `file delete-checkpoint --permanent`
 removes one resolved checkpoint's files and keeps its ledger history. Neither
-command is power-loss qualified. Model-dispatched write tools
-remain unavailable.
+command is power-loss qualified. The model edit tool uses the same
+checkpointed apply after an approved, writers-stopped decision; it cannot
+create, delete, or rename files and does not detect a concurrent writer.
 Model-dispatched process execution, Git, MCP, and memories remain planned. See the
 [workspace settings contract](docs/workspace-permissions.md), the
 [workspace file-access guide](docs/file-access.md), and the [development

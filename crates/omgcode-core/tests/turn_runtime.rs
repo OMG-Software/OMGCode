@@ -8,9 +8,9 @@ use omgcode_core::policy::{PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole};
 use omgcode_core::session::{MessageRole, RequestManifest, SessionJournal};
 use omgcode_core::turn::{
-    CancelToken, ModelError, TOOL_SCHEMA_VERSION, ToolArguments, ToolCall, ToolCallError,
-    ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimit, TurnLimits, TurnReport,
-    TurnRuntime, WITHHELD_TOOL_RESULT,
+    CancelToken, MAX_EDIT_FILE_BYTES, ModelError, TOOL_SCHEMA_VERSION, ToolArguments, ToolCall,
+    ToolCallError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimit, TurnLimits,
+    TurnReport, TurnRuntime, WITHHELD_TOOL_RESULT,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -36,6 +36,9 @@ impl Fixture {
         let workspace = root.join("workspace");
         fs::create_dir(&root).expect("create development root");
         fs::create_dir(&workspace).expect("create workspace");
+        // Checkpointed edits need a private data root on Windows.
+        #[cfg(windows)]
+        make_private_root(&data);
 
         let mut control = ControlStore::open(&data).expect("open control store");
         control
@@ -133,6 +136,32 @@ impl Fixture {
             .find(|event| event["type"] == "turn.failed")
             .and_then(|event| event["payload"]["code"].as_str().map(str::to_owned))
     }
+}
+
+/// Gives the data root a protected DACL for the current user only, as the
+/// Windows checkpoint store requires of its private root.
+#[cfg(windows)]
+fn make_private_root(data: &Path) {
+    let whoami = std::process::Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .expect("whoami");
+    assert!(whoami.status.success(), "whoami fixture failed");
+    let identity = String::from_utf8_lossy(&whoami.stdout).into_owned();
+    let sid = identity
+        .trim()
+        .rsplit(',')
+        .next()
+        .expect("SID column")
+        .trim_matches('"')
+        .to_owned();
+    fs::create_dir(data).expect("application data");
+    let granted = std::process::Command::new("icacls")
+        .arg(data)
+        .args(["/inheritance:r", "/grant:r", &format!("*{sid}:(OI)(CI)F")])
+        .output()
+        .expect("icacls");
+    assert!(granted.status.success(), "icacls fixture failed");
 }
 
 struct SeenRequest {
@@ -514,7 +543,8 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
         report.manifest.tools,
         Some(vec![
             "workspace_read_file".to_owned(),
-            "workspace_list_directory".to_owned()
+            "workspace_list_directory".to_owned(),
+            "workspace_edit_file".to_owned()
         ])
     );
 
@@ -556,7 +586,11 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
     }));
     assert_eq!(
         second.tools,
-        vec!["workspace_read_file", "workspace_list_directory"]
+        vec![
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_edit_file"
+        ]
     );
 
     // The durable transcript keeps the tool messages in order.
@@ -619,7 +653,11 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
     );
     assert_eq!(
         manifest_event["payload"]["manifest"]["tools"],
-        json!(["workspace_read_file", "workspace_list_directory"])
+        json!([
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_edit_file"
+        ])
     );
 }
 
@@ -1325,7 +1363,8 @@ fn runtime_owns_custom_instruction_and_tool_manifest_fields() {
         report.manifest.tools,
         Some(vec![
             "workspace_read_file".to_owned(),
-            "workspace_list_directory".to_owned()
+            "workspace_list_directory".to_owned(),
+            "workspace_edit_file".to_owned()
         ])
     );
     fixture.close_journal();
@@ -1704,4 +1743,543 @@ fn a_length_limited_final_reply_reports_its_finish_reason() {
         .run(&mut model, TurnLimits::default())
         .expect("complete reply");
     assert_eq!(report.finish_reason, "stop");
+}
+
+fn edit_call(id: &str, path: &str, old_text: &str, new_text: &str) -> Value {
+    call(
+        id,
+        "workspace_edit_file",
+        json!({"path": path, "old_text": old_text, "new_text": new_text}),
+    )
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+impl Fixture {
+    /// Run one turn in which the model makes `calls` and then replies with text.
+    fn edit_turn(&mut self, calls: Vec<Value>) -> (TurnReport, ScriptedModel) {
+        let mut model = ScriptedModel::new(vec![tool_reply(calls), text_reply("reported")]);
+        let report = self
+            .run(&mut model, TurnLimits::default())
+            .expect("edit turn completes");
+        (report, model)
+    }
+
+    fn file_write_approvals(&self) -> Vec<omgcode_core::control::ApprovalStatus> {
+        ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store")
+            .approval_statuses(now_unix())
+            .into_iter()
+            .filter(|status| status.operation == ApprovalOperation::FileWrite)
+            .collect()
+    }
+
+    /// Approve the only pending edit with the writers-stopped acknowledgement.
+    fn approve_pending_edit(&self) -> uuid::Uuid {
+        let pending: Vec<_> = self
+            .file_write_approvals()
+            .into_iter()
+            .filter(|status| status.state == ApprovalState::Pending)
+            .collect();
+        assert_eq!(pending.len(), 1, "one pending edit approval: {pending:?}");
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store");
+        control
+            .approve_with_writers_stopped(pending[0].id, now_unix())
+            .expect("approve the edit");
+        pending[0].id
+    }
+
+    fn approval_state(&self, id: uuid::Uuid) -> ApprovalState {
+        ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store")
+            .approval_status(id, now_unix())
+            .expect("approval status")
+            .state
+    }
+
+    /// Return the codes of every recorded tool result, in order.
+    fn tool_codes(&self) -> Vec<Option<String>> {
+        read_events(&self.journal_path)
+            .iter()
+            .filter(|event| event["type"] == "tool.completed")
+            .map(|event| event["payload"]["code"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    fn last_tool_message(&self) -> String {
+        self.snapshot()
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("a tool message")
+            .text
+            .clone()
+    }
+
+    fn checkpoint_operations(&self) -> usize {
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store");
+        omgcode_core::files::FileBroker::new(&mut control)
+            .checkpoint_inspect()
+            .expect("inspect checkpoints")
+            .operations
+            .len()
+    }
+}
+
+#[test]
+fn edit_tool_arguments_are_strictly_validated() {
+    let parsed = ToolCall::parse(&edit_call("edit-1", "src/lib.rs", "old", ""))
+        .expect("an empty new_text deletes old_text");
+    assert_eq!(
+        parsed.arguments,
+        ToolArguments::EditFile {
+            path: "src/lib.rs".into(),
+            old_text: "old".into(),
+            new_text: String::new(),
+        }
+    );
+    assert_eq!(parsed.path(), "src/lib.rs");
+
+    for arguments in [
+        json!({"path": "a.txt", "old_text": "", "new_text": "x"}),
+        json!({"path": "a.txt", "old_text": "x"}),
+        json!({"path": "a.txt", "new_text": "x"}),
+        json!({"old_text": "x", "new_text": "y"}),
+        json!({"path": "a.txt", "old_text": "x", "new_text": "y", "mode": "append"}),
+        json!({"path": "a.txt", "old_text": 1, "new_text": "y"}),
+    ] {
+        assert!(
+            matches!(
+                ToolCall::parse(&call("edit-1", "workspace_edit_file", arguments)),
+                Err(ToolCallError::InvalidArguments)
+            ),
+            "arguments were accepted"
+        );
+    }
+    let absolute = if cfg!(windows) {
+        r"C:\Windows\win.ini"
+    } else {
+        "/etc/passwd"
+    };
+    for path in [
+        "",
+        "../outside.txt",
+        "sub/../../outside.txt",
+        absolute,
+        "./a.txt",
+    ] {
+        assert!(
+            matches!(
+                ToolCall::parse(&edit_call("edit-1", path, "x", "y")),
+                Err(ToolCallError::InvalidPath)
+            ),
+            "{path:?} was accepted"
+        );
+    }
+    // A duplicate key is refused before any typed parsing.
+    assert!(matches!(
+        ToolCall::parse(&raw_call(
+            "edit-1",
+            "workspace_edit_file",
+            r#"{"path":"a.txt","old_text":"x","new_text":"y","new_text":"z"}"#
+        )),
+        Err(ToolCallError::InvalidArguments)
+    ));
+}
+
+/// The full gate: the first call records an approval and writes nothing, the
+/// identical retry after approval applies once through a checkpoint, and a
+/// further identical retry sees new content and needs a new approval.
+#[test]
+fn an_approved_edit_applies_once_through_a_checkpoint() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha bcc\n").expect("write workspace file");
+    let session_id = fixture.snapshot().session_id;
+
+    let (report, model) = fixture.edit_turn(vec![edit_call("edit-1", "notes.txt", "bc", "b")]);
+    assert_eq!(report.tool_calls, 1);
+    assert!(
+        model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_edit_file"),
+        "the edit tool was not advertised"
+    );
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha bcc\n");
+    // The operator can review the exact request, live and after replay.
+    let recorded = fixture
+        .journal
+        .as_ref()
+        .expect("journal is open")
+        .tool_requests()
+        .to_vec();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].tool, "workspace_edit_file");
+    assert_eq!(recorded[0].call_id, "edit-1");
+    assert_eq!(
+        serde_json::from_str::<Value>(&recorded[0].arguments).expect("arguments"),
+        json!({"path": "notes.txt", "old_text": "bc", "new_text": "b"})
+    );
+    fixture.close_journal();
+    fixture.journal = Some(SessionJournal::open(&fixture.journal_path).expect("replay"));
+    assert_eq!(
+        fixture
+            .journal
+            .as_ref()
+            .expect("journal is open")
+            .tool_requests(),
+        recorded.as_slice()
+    );
+    let message = fixture.last_tool_message();
+    assert!(
+        message.contains("\"status\":\"approval_required\""),
+        "{message}"
+    );
+    assert!(!message.contains("alpha"), "{message}");
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 1);
+    let first = &approvals[0];
+    assert_eq!(first.state, ApprovalState::Pending);
+    assert_eq!(first.session_id, session_id);
+    assert_eq!(first.workspace_id, fixture.workspace_id);
+    assert!(message.contains(&first.id.to_string()), "{message}");
+    assert_eq!(
+        first.summary,
+        format!(
+            "edit notes.txt: 10 -> 9 bytes, sha256 {} -> {}",
+            &sha256(b"alpha bcc\n")[..12],
+            &sha256(b"alpha bc\n")[..12]
+        ),
+        "the summary carries sizes and short digests only"
+    );
+    assert_eq!(fixture.checkpoint_operations(), 0);
+
+    // A repeated request while the approval is pending records nothing new.
+    fixture.edit_turn(vec![edit_call("edit-2", "notes.txt", "bc", "b")]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![edit_call("edit-3", "notes.txt", "bc", "b")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha bc\n");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 1);
+    let message = fixture.last_tool_message();
+    assert!(message.contains("\"status\":\"applied\""), "{message}");
+    assert!(message.contains(&sha256(b"alpha bc\n")), "{message}");
+    assert!(message.contains("\"bytes\":9"), "{message}");
+    assert!(message.contains("\"operation_id\":\""), "{message}");
+    assert!(!message.contains("alpha"), "the result holds no file text");
+
+    // The identical call now reads different current bytes, so its digest
+    // differs: the consumed record cannot apply it, and a new approval is due.
+    fixture.edit_turn(vec![edit_call("edit-4", "notes.txt", "bc", "b")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha bc\n");
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(approvals[0].state, ApprovalState::Consumed);
+    assert_eq!(approvals[1].state, ApprovalState::Pending);
+    assert_ne!(approvals[0].request_sha256, approvals[1].request_sha256);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            Some("approval_required"),
+            Some("approval_required"),
+            None,
+            Some("approval_required")
+        ]
+        .map(|code| code.map(str::to_owned))
+    );
+}
+
+/// The digest binds the live current bytes: a same-size change that yields
+/// the same proposed bytes still needs a new approval.
+#[test]
+fn an_edit_approval_does_not_cover_a_changed_file() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "xa").expect("write workspace file");
+    fixture.edit_turn(vec![edit_call("edit-1", "notes.txt", "x", "")]);
+    let approval = fixture.approve_pending_edit();
+
+    fs::write(&target, "ax").expect("change the file after the request");
+    fixture.edit_turn(vec![edit_call("edit-2", "notes.txt", "x", "")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "ax");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(approvals[1].state, ApprovalState::Pending);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+}
+
+/// The digest binds the proposed bytes: an approval for one replacement does
+/// not cover another of the same size.
+#[test]
+fn an_edit_approval_does_not_cover_a_different_replacement() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "xa").expect("write workspace file");
+    fixture.edit_turn(vec![edit_call("edit-1", "notes.txt", "x", "y")]);
+    let approval = fixture.approve_pending_edit();
+
+    fixture.edit_turn(vec![edit_call("edit-2", "notes.txt", "x", "z")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "xa");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+
+    fixture.edit_turn(vec![edit_call("edit-3", "notes.txt", "x", "y")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "ya");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+}
+
+#[test]
+fn a_denied_edit_writes_nothing_and_the_turn_continues() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha beta\n").expect("write workspace file");
+    fixture.edit_turn(vec![edit_call("edit-1", "notes.txt", "beta", "gamma")]);
+    let pending = fixture.file_write_approvals()[0].id;
+    ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store")
+        .decide_approval(pending, false, now_unix())
+        .expect("deny");
+
+    let (report, _) = fixture.edit_turn(vec![edit_call("edit-2", "notes.txt", "beta", "gamma")]);
+    assert_eq!(report.reply, "reported");
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha beta\n");
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("approval_denied"));
+    let completed: Vec<Value> = fixture
+        .session_events()
+        .into_iter()
+        .filter(|event| event["type"] == "tool.completed")
+        .collect();
+    assert_eq!(
+        completed.last().expect("result")["payload"]["outcome"],
+        "denied"
+    );
+}
+
+/// Mismatched, unchanged, non-UTF-8, oversized, and too-large edits are
+/// recoverable: each reports a stable code, writes nothing, and the model's
+/// turn continues to its reply.
+#[test]
+fn edit_refusals_are_recoverable_and_write_nothing() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "one two two\n").expect("notes");
+    fs::write(fixture.workspace.join("binary.dat"), [0xff_u8, 0xfe, b'x']).expect("binary");
+    fs::write(
+        fixture.workspace.join("large.txt"),
+        "a".repeat(MAX_EDIT_FILE_BYTES + 1),
+    )
+    .expect("oversized");
+    let mut near_limit = "a".repeat(MAX_EDIT_FILE_BYTES - 4);
+    near_limit.push_str("MARK");
+    fs::write(fixture.workspace.join("full.txt"), &near_limit).expect("near limit");
+
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            edit_call("e-1", "notes.txt", "three", "four"),
+            edit_call("e-2", "notes.txt", "two", "three"),
+            edit_call("e-3", "notes.txt", "one", "one"),
+        ]),
+        tool_reply(vec![
+            edit_call("e-4", "binary.dat", "x", "y"),
+            edit_call("e-5", "large.txt", "a", "b"),
+            edit_call("e-6", "full.txt", "MARK", "MARKS"),
+        ]),
+        text_reply("all refused"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("recoverable refusals keep the turn going");
+    assert_eq!(report.reply, "all refused");
+    assert_eq!(report.tool_calls, 6);
+    assert!(fixture.file_write_approvals().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("notes.txt")).expect("read"),
+        "one two two\n"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("full.txt")).expect("read"),
+        near_limit.as_bytes()
+    );
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            "edit_no_match",
+            "edit_ambiguous",
+            "edit_unchanged",
+            "non_utf8",
+            "invalid_request",
+            "edit_too_large",
+        ]
+        .map(|code| Some(code.to_owned()))
+    );
+    let outcomes: Vec<Value> = fixture
+        .session_events()
+        .into_iter()
+        .filter(|event| event["type"] == "tool.completed")
+        .map(|event| event["payload"]["outcome"].clone())
+        .collect();
+    assert!(
+        outcomes.iter().all(|outcome| outcome == "failed"),
+        "{outcomes:?}"
+    );
+}
+
+/// Without live `write` or `read`, the edit tool is not offered, and a call
+/// made anyway is denied before any file access or approval.
+#[test]
+fn the_edit_tool_requires_live_read_and_write() {
+    for (read, write) in [(true, false), (false, true)] {
+        let mut fixture = Fixture::new();
+        let target = fixture.workspace.join("notes.txt");
+        fs::write(&target, "alpha beta\n").expect("write workspace file");
+        let workspace_id = fixture.workspace_id;
+        let control = fixture.control_mut();
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    model_tools: true,
+                    read,
+                    write,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("change preferences");
+        let mut model = ScriptedModel::new(vec![tool_reply(vec![edit_call(
+            "edit-1",
+            "notes.txt",
+            "beta",
+            "gamma",
+        )])]);
+        let error = fixture
+            .run(&mut model, TurnLimits::default())
+            .expect_err("the call is denied");
+        assert!(matches!(error, TurnError::ToolDenied(_)), "{error:?}");
+        assert!(
+            !model.requests[0]
+                .tools
+                .iter()
+                .any(|name| name == "workspace_edit_file"),
+            "the edit tool was offered with read={read} write={write}"
+        );
+        assert_eq!(fs::read_to_string(&target).expect("read"), "alpha beta\n");
+        assert!(fixture.file_write_approvals().is_empty());
+        assert!(fixture.audit_events().is_empty(), "no broker operation ran");
+        fixture.close_journal();
+        assert_eq!(fixture.last_tool_code().as_deref(), Some("edit_disabled"));
+        assert_eq!(fixture.last_failure_code().as_deref(), Some("tool_denied"));
+    }
+}
+
+/// An unresolved checkpoint operation blocks broker work. The edit reports it
+/// as a recoverable result, and nothing is requested or written.
+#[test]
+fn a_pending_checkpoint_operation_is_a_recoverable_edit_result() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha beta\n").expect("write workspace file");
+    fs::write(fixture.workspace.join("other.txt"), "original").expect("other file");
+    let session_id = fixture.snapshot().session_id;
+    let workspace_id = fixture.workspace_id;
+    let control = fixture.control_mut();
+    let binding = control
+        .bind_session(session_id, workspace_id)
+        .expect("binding");
+    let prepared = omgcode_core::files::FileBroker::new(control)
+        .checkpoint_prepare(
+            &binding,
+            &omgcode_core::files::FileTarget {
+                session_id,
+                workspace_id,
+                path: PathBuf::from("other.txt"),
+            },
+            &omgcode_core::replacement::RecordedArtifact {
+                bytes: 8,
+                sha256: sha256(b"original"),
+            },
+            b"proposal",
+        )
+        .expect("an unresolved prepared checkpoint");
+    assert!(!prepared.applied);
+
+    let (report, _) = fixture.edit_turn(vec![edit_call("edit-1", "notes.txt", "beta", "gamma")]);
+    assert_eq!(report.reply, "reported");
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha beta\n");
+    assert!(fixture.file_write_approvals().is_empty());
+    fixture.close_journal();
+    assert_eq!(
+        fixture.last_tool_code().as_deref(),
+        Some("checkpoint_pending")
+    );
+}
+
+/// A session whose earlier turn advertised tool schema 0.2.0 still replays and
+/// accepts a new turn, which records the current schema version.
+#[test]
+fn a_tool_schema_0_2_0_session_replays_and_accepts_a_new_turn() {
+    let mut fixture = Fixture::new();
+    {
+        let journal = fixture.journal.as_mut().expect("journal is open");
+        let request_id = journal.start_turn().expect("start turn");
+        journal
+            .record_message(MessageRole::User, "earlier request")
+            .expect("user message");
+        journal
+            .record_manifest(
+                request_id,
+                RequestManifest {
+                    tool_schema_version: Some("0.2.0".into()),
+                    tools: Some(vec![
+                        "workspace_read_file".into(),
+                        "workspace_list_directory".into(),
+                        "workspace_run_command".into(),
+                    ]),
+                    ..manifest()
+                },
+            )
+            .expect("schema 0.2.0 manifest");
+        journal
+            .record_message(MessageRole::Assistant, "earlier reply")
+            .expect("assistant message");
+        journal.complete_turn(request_id).expect("complete turn");
+    }
+    fixture.close_journal();
+    fixture.journal = Some(SessionJournal::open(&fixture.journal_path).expect("replay"));
+
+    let mut model = ScriptedModel::new(vec![text_reply("current reply")]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("a new turn after a 0.2.0 turn");
+    assert!(request_contains(&model.requests[0], "earlier reply"));
+    fixture.close_journal();
+    let versions: Vec<Value> = fixture
+        .session_events()
+        .into_iter()
+        .filter(|event| event["type"] == "request.manifest")
+        .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
+        .collect();
+    assert_eq!(versions, [json!("0.2.0"), json!(TOOL_SCHEMA_VERSION)]);
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.3.0");
 }

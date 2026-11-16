@@ -314,7 +314,14 @@ fn an_enabled_preference_lets_the_model_read_the_workspace_through_the_runtime()
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("name"))
             .collect();
-        assert_eq!(names, ["workspace_read_file", "workspace_list_directory"]);
+        assert_eq!(
+            names,
+            [
+                "workspace_read_file",
+                "workspace_list_directory",
+                "workspace_edit_file"
+            ]
+        );
         // The compiled base prompt remains the only system message.
         let systems = request["messages"]
             .as_array()
@@ -1171,4 +1178,161 @@ fn auto_compaction_sizes_summary_chunks_from_the_summary_reserve_not_the_chat_re
     assert_eq!(requests.len(), 2, "one summary and one chat request");
     assert_eq!(requests[0]["max_tokens"], 2048, "summary reserve");
     assert_eq!(requests[1]["max_tokens"], 8192, "chat reserve");
+}
+
+/// The operator flow for a model edit: chat records a pending approval and
+/// writes nothing, `session inspect` shows the exact request, approval needs
+/// the writers-stopped acknowledgement, and the identical retry applies once
+/// through a checkpoint.
+#[test]
+fn an_approved_model_edit_applies_through_the_operator_flow() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let edit = json!({"path": "note.txt", "old_text": "notes", "new_text": "facts"});
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-1", "workspace_edit_file", &edit),
+        text("Waiting for operator approval."),
+    ]);
+    let first = fixture.chat(&journal, &server.endpoint, "edit the note");
+    let requests = server.finish();
+    assert_success(&first);
+    assert_eq!(requests.len(), 2);
+    let offered = requests[0]["tools"].to_string();
+    assert!(
+        offered.contains("workspace_edit_file"),
+        "the edit tool must be offered: {offered}"
+    );
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-1"))
+        .expect("approval result sent to the model");
+    assert!(
+        result.contains("\"status\":\"approval_required\""),
+        "{result}"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+
+    // The operator reviews the exact recorded request before deciding.
+    let inspected = run_cli(&fixture.data, &["session", "inspect", path_arg(&journal)]);
+    assert_success(&inspected);
+    let inspected = json_output(&inspected);
+    let recorded = inspected["tool_requests"]
+        .as_array()
+        .expect("tool requests")
+        .iter()
+        .find(|request| request["tool"] == "workspace_edit_file")
+        .expect("the recorded edit request");
+    assert_eq!(recorded["call_id"], "call-1");
+    let arguments: Value =
+        serde_json::from_str(recorded["arguments"].as_str().expect("arguments")).expect("JSON");
+    assert_eq!(arguments, edit);
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"]
+        .as_array()
+        .expect("approvals")
+        .to_vec();
+    assert_eq!(approvals.len(), 1, "one pending request: {approvals:?}");
+    assert_eq!(approvals[0]["operation"], "file_write");
+    assert_eq!(approvals[0]["state"], "pending");
+    assert_eq!(approvals[0]["writers_stopped"], false);
+    let summary = approvals[0]["summary"].as_str().expect("summary");
+    assert!(
+        summary.starts_with("edit note.txt: 29 -> 29 bytes, sha256 "),
+        "{summary}"
+    );
+    assert!(!summary.contains("workspace notes"), "{summary}");
+    let approval = approvals[0]["id"].as_str().expect("approval id").to_owned();
+
+    assert_error_code(
+        &run_cli(&fixture.data, &["approvals", "approve", &approval]),
+        "approval",
+    );
+    let approved = run_cli(
+        &fixture.data,
+        &["approvals", "approve", &approval, "--writers-stopped"],
+    );
+    assert_success(&approved);
+    let approved = json_output(&approved);
+    assert_eq!(approved["approval"]["state"], "approved");
+    assert_eq!(approved["approval"]["writers_stopped"], true);
+    let shown = run_cli(&fixture.data, &["approvals", "show", &approval]);
+    assert_success(&shown);
+    assert_eq!(json_output(&shown)["approval"]["writers_stopped"], true);
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-2", "workspace_edit_file", &edit),
+        text("The note is edited."),
+    ]);
+    let second = fixture.chat(&journal, &server.endpoint, "edit the note");
+    let requests = server.finish();
+    assert_success(&second);
+    assert_eq!(requests.len(), 2);
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-2"))
+        .expect("applied result sent to the model");
+    assert!(result.contains("\"status\":\"applied\""), "{result}");
+    assert!(
+        !result.contains("notes") && !result.contains("facts"),
+        "no file text: {result}"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        b"workspace facts for the model"
+    );
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    assert_eq!(json_output(&listed)["approvals"][0]["state"], "consumed");
+    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&checkpoints);
+    let operations = json_output(&checkpoints)["operations"].clone();
+    assert_eq!(operations.as_array().expect("operations").len(), 1);
+    assert_eq!(
+        operations[0]["session_id"],
+        inspected["session"]["session_id"]
+    );
+}
+
+/// Without live `write`, chat does not offer the edit tool, and a call made
+/// anyway is denied before any approval or file change.
+#[test]
+fn chat_does_not_offer_or_run_the_edit_tool_without_write() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    fixture.set("--write", false);
+    let edit = json!({"path": "note.txt", "old_text": "notes", "new_text": "facts"});
+
+    let server = SequenceServer::start(vec![tool_call("call-1", "workspace_edit_file", &edit)]);
+    let output = fixture.chat(&journal, &server.endpoint, "edit the note");
+    let requests = server.finish();
+
+    assert_error_code(&output, "permission");
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !requests[0]["tools"]
+            .to_string()
+            .contains("workspace_edit_file")
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    assert_eq!(json_output(&listed)["approvals"], json!([]));
+    let events = fs::read_to_string(&journal).expect("journal");
+    assert!(events.contains("edit_disabled"));
 }

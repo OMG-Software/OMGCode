@@ -170,7 +170,9 @@ Phase A2a implements read-only validation of caller-supplied record bytes.
 Phase A2b adds Linux private checkpoint storage and existing-only recovery.
 Phase A2c adds trusted native apply on Linux ext4. Phase A3b adds Windows NTFS
 storage and apply. Phase A4 adds explicit restore and checkpoint deletion on both.
-Model write tools remain unavailable.
+Since 0.28.0 the approval-gated model edit tool reaches the same apply; see
+[Model edit route](#model-edit-route-adr-0043). No model tool creates, deletes,
+renames, restores, or manages checkpoints.
 
 ### Implemented record inspection (Phase A2a)
 
@@ -386,7 +388,11 @@ matrix. See [ADR-0022](adr/0022-publish-one-verified-stage-on-linux-ext4.md).
 
 ### Admission and conflict checks
 
-The first apply interface must be trusted CLI input only. It must accept a
+The first apply interface was trusted CLI input only. Since 0.28.0 the second
+is the approval-gated model edit tool described under
+[Model edit route](#model-edit-route-adr-0043). Its expected values come from
+a live trusted broker read, never from the model or a saved conversation. The
+trusted CLI interface must accept a
 lossless workspace-relative target, complete proposed UTF-8 content, and the
 expected current SHA-256 and byte count. Both current and proposed payloads
 must be valid UTF-8 and fit the existing 1 MiB file bound. Open an
@@ -432,6 +438,45 @@ explain this limit and require the operator to stop other writers before
 applying. That requirement is an operating assumption, not enforced isolation.
 If a caller requires a no-lost-update guarantee against independent writers,
 the operation must refuse that requirement. Do not label this mode conflict-free.
+
+### Model edit route (ADR-0043)
+
+`workspace_edit_file` replaces exactly one occurrence of a non-empty
+`old_text` with `new_text` in an existing UTF-8 regular file. The chat runtime
+advertises and dispatches it only while the workspace's live `model_tools`,
+`read`, and `write` preferences are all enabled. The settings never authorize
+the write by themselves.
+
+For each call the trusted handler holds one control-store writer, obtains a
+fresh binding, and reads the current file through the audited broker read,
+bounded to 1 MiB. Missing, repeated (counting overlaps), or unchanged
+`old_text` returns a recoverable `edit_no_match`, `edit_ambiguous`, or
+`edit_unchanged` result; a non-UTF-8 file returns `non_utf8`, and a result over
+1 MiB returns `edit_too_large`. The handler then computes the proposed bytes
+and an approval digest under the domain tag `omgcode-file-edit-v1`. The digest
+covers length-prefixed fields for the session, the workspace, the normalized
+path, and the size and SHA-256 of both the current and the proposed bytes.
+
+Without a matching record the handler requests a `file_write` approval whose
+summary has the path, both sizes, and 12-character digest prefixes, never file
+text, and returns `approval_required`. A pending record returns
+`approval_required`, and a denied one returns `approval_denied`. An approved
+record must carry the operator's `--writers-stopped` acknowledgement; core
+consumption refuses one without it. The handler consumes the record and then
+calls `apply_replacement` with the captured size and SHA-256 as the expected
+value, so every apply gate above still applies. A file that changed after the
+request has a different digest and needs a new approval. A conflict, pending,
+busy, or unsupported checkpoint store, and the other admission outcomes, return
+recoverable results with the checkpoint's stable code; the approval stays
+consumed. Corrupt or uncertain private evidence, storage I/O failures, and a
+permission denial end the turn. A success returns the normalized path, the new
+size and SHA-256, and the checkpoint operation ID, never file contents.
+
+The operator reviews the exact `old_text` and `new_text` in the recorded tool
+request with `session inspect` before approving. This route does not detect a
+concurrent writer any more than the CLI route does; the acknowledgement records
+the operating assumption only. Restore and checkpoint management stay trusted
+CLI commands.
 
 ### Private checkpoints, quota, and retention
 

@@ -1,14 +1,15 @@
 # Build and run the core prototype
 
-OMGCode 0.27.0 is a developer CLI prototype with workspace permission
+OMGCode 0.28.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
 files/directories, and preview a bounded diff against trusted proposed content
 in a registered workspace. When a workspace enables `model_tools`, chat runs
 the core's bounded turn/tool runtime so the model can read and list files in
-that workspace; with `execute`, `read`, and `write` enabled it can request an
-approval-gated command. Trusted CLI apply can
+that workspace; with `read` and `write` enabled it can request an
+approval-gated exact edit of an existing file, and with `execute`, `read`, and
+`write` enabled it can request an approval-gated command. Trusted CLI apply can
 replace an existing file on Linux ext4 or Windows NTFS. Trusted restore puts a
 retained checkpoint's original bytes back through apply, and trusted checkpoint
 deletion removes one resolved private entry. The trusted `run` command starts
@@ -20,9 +21,9 @@ time. A program started by `run` can create, change, and
 delete workspace files without a checkpoint. The CLI's `file` commands cannot
 delete workspace files, and the CLI cannot use Git or connect to MCP servers.
 When a workspace enables `model_tools`, chat lets the local model read and list
-files in that workspace and, with execute/read/write, request an approval-gated
-command. Model write, network, Git, and MCP tools are
-not implemented. Trusted commands record and apply the Windows container
+files in that workspace, request an approval-gated exact edit with read/write,
+and request an approval-gated command with execute/read/write. Model create,
+delete, rename, network, Git, and MCP tools are not implemented. Trusted commands record and apply the Windows container
 grants; see [command execution](execution.md).
 
 The core's byte-input replacement inspectors remain read-only. Its file broker
@@ -155,8 +156,9 @@ default to enabled; execute, task-network, host-services, and model-tools
 default to disabled. All decisions still report `execution_allowed: false`;
 only the trusted `run` command starts a process, and the model command tool
 reaches it only after consuming an approval. Settings commands do not dispatch
-tools. `--model-tools true` lets chat offer the model read/list tools and, with
-execute/read/write, the approval-gated command tool; see
+tools. `--model-tools true` lets chat offer the model read/list tools, with
+read/write the approval-gated edit tool, and with execute/read/write the
+approval-gated command tool; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 See the [workspace contract](workspace-permissions.md) for limits and failures.
 `container-grant` and `container-revoke` work on Windows only. They change ACLs
@@ -301,8 +303,8 @@ native mount. Execute remains disabled. The `audit`, `acknowledge`,
 existing workspace settings.
 They do not require a configured root, workspace registration, or session
 selection. Chat advertises the read/list tools when the session's workspace
-enables `model_tools`, and the command tool when `execute`, `read`, and `write`
-are also enabled; see
+enables `model_tools`, the edit tool when `read` and `write` are also enabled,
+and the command tool when `execute`, `read`, and `write` are also enabled; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 
 Capability JSON separates implementation from availability. On Linux and
@@ -317,9 +319,11 @@ implementation, and `false` elsewhere. The CLI does not probe the mount, metadat
 or permissions for that flag. `checkpoint_restore` and `checkpoint_deletion`
 follow the same rule for `file restore` and `file delete-checkpoint`.
 `model_read_list_tools` is `true` on Linux and Windows, and `tool_policy` is
-`read_list_only_when_workspace_model_tools_enabled` there. Neither reports
-whether any workspace enables the preference. `workspace_file_tools`, which
-covers model write or general file tools, remains `false`.
+`read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval`
+there. `model_write_tools` and `model_command_tool` are `approval_required`.
+None of them reports whether any workspace enables the preference.
+`workspace_file_tools`, which covers general model file tools such as create,
+delete, or rename, remains `false`.
 
 ```text
 omgcode --data-dir C:\omgcode-data file read WORKSPACE_ID --session SESSION_UUID src\main.rs --max-bytes 65536
@@ -368,8 +372,9 @@ model/tool turn. `chat` runs it when the session's workspace enables
 `model_tools`. A caller supplies a model implementation, an open schema-version-2 session, the
 trusted application-data directory, and the workspace ID. The runtime:
 
-- parses strict OpenAI-style function calls for `workspace_read_file` and
-  `workspace_list_directory`;
+- parses strict OpenAI-style function calls for `workspace_read_file`,
+  `workspace_list_directory`, `workspace_edit_file`, and
+  `workspace_run_command`;
 - rejects unknown tools, malformed or duplicate arguments, absolute or parent
   paths, and duplicate call identifiers before dispatch;
 - opens the control store for each broker call, obtains a fresh session binding,
@@ -388,9 +393,14 @@ trusted application-data directory, and the workspace ID. The runtime:
 - sends saved tool results from earlier turns again only while the live
   `model_tools` and `read` preferences both allow it, and otherwise replaces
   each with a fixed withheld notice;
+- offers `workspace_edit_file` only under live `model_tools`, `read`, and
+  `write`, and `workspace_run_command` only when `execute` is also enabled;
+  every edit or command first needs a trusted single-use approval;
 - reports the final reply's provider `finish_reason`.
 
-The runtime supports no writes, process execution, Git, MCP, or network access.
+The runtime has no create, delete, rename, Git, MCP, or network tool. Its only
+write is the approved exact edit through checkpointed apply, and its only
+process execution is the approved command through the trusted runner.
 `LocalToolModel` adapts the LM Studio client to its model interface. The adapter
 sends the tool definitions in the OpenAI-compatible `tools` field, parses the
 response with the strict duplicate-key-rejecting parser, and returns each call
@@ -427,8 +437,9 @@ reason and a `withheld_tool_results` count. Text which resembles a command
 remains text.
 
 When the workspace enables `model_tools`, chat offers `workspace_read_file` and
-`workspace_list_directory`. When `execute`, `read`, and `write` also allow it,
-it offers the approval-gated `workspace_run_command`. The model may make up to
+`workspace_list_directory`. When `read` and `write` also allow it, it offers
+the approval-gated `workspace_edit_file`. When `execute`, `read`, and `write`
+also allow it, it offers the approval-gated `workspace_run_command`. The model may make up to
 four requests in one turn. Each read/list call is rechecked against live
 settings and stays inside the workspace. Results return to the model as
 source-labelled user messages. The configured LM Studio token is removed from
@@ -443,9 +454,11 @@ messages, and injects a labelled untrusted summary; it never grants authority.
 Chat reports a conservative context meter. Saved tool results are sent again,
 to a turn or to the summarizer, only while the live `model_tools` and `read`
 preferences both allow it; a summary built from them follows the same rule. Chat
-prompts for no approval: a command call first records a pending approval and
-returns `approval_required`; the operator runs `approvals approve <id>` between
-turns, and a second identical call consumes it and calls the trusted runner.
+prompts for no approval: a command or edit call first records a pending
+approval and returns `approval_required`; the operator decides it between
+turns, and a later identical call consumes it. A command then calls the trusted
+runner; an edit calls the checkpointed apply, as the
+[model edit workflow](#model-edit-workflow) shows.
 The output reports `model_tools.mode` as `enabled`, with the workspace ID,
 rounds, call count, tool bytes, and withheld count. `reply.finish_reason` is `length` when the token
 limit cut the final reply short; the turn is still recorded as complete. A refused or invalid call ends the turn with a `permission`,
@@ -475,6 +488,45 @@ credential storage or a claim of memory erasure. Protected storage for API
 keys exists (see [provider credentials](#provider-credentials)), but no adapter
 reads it yet; adapter use and the account/settings interface remain required. Use the no-token profile only for
 an explicitly selected service configured for it.
+
+### Model edit workflow
+
+`workspace_edit_file` takes a workspace-relative `path`, a non-empty
+`old_text` that must occur exactly once, and a `new_text`, all within the 4 KiB
+argument limit. It edits only an existing UTF-8 regular file of at most 1 MiB,
+before and after the edit. A missing, repeated, or unchanged `old_text`
+returns the recoverable `edit_no_match`, `edit_ambiguous`, or `edit_unchanged`
+result. Each call reads the live file through the audited broker. Its approval
+digest covers the session, workspace, normalized path, and the size and SHA-256
+of the current and proposed bytes, so a file that changed after the request
+needs a new approval ([ADR-0043](adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md)).
+
+```text
+omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Rename the helper in src\lib.rs."
+omgcode --data-dir C:\omgcode-data session inspect <journal-path>
+omgcode --data-dir C:\omgcode-data approvals list
+omgcode --data-dir C:\omgcode-data approvals approve APPROVAL_UUID --writers-stopped
+omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "The edit is approved; retry it."
+```
+
+1. The first chat turn returns the tool result `approval_required` with an
+   approval ID. Nothing is written.
+2. `session inspect` lists the recorded `tool_requests`. Review the exact
+   `old_text` and `new_text` in the `workspace_edit_file` request's arguments.
+   The approval summary shows only the path, sizes, and short digests, never
+   file text.
+3. Stop every other writer to the file, then approve with `--writers-stopped`.
+   Without the flag, approval of a `file_write` request is refused; the flag is
+   refused for other operations. Use `approvals deny <id>` to refuse the edit.
+4. In a later turn, the model repeats the identical call. It consumes the
+   approval and applies the edit through a checkpoint. The result reports the
+   path, new size, SHA-256, and checkpoint operation ID, never file contents.
+
+The approval is consumed before the apply, so a failed apply spends it. A
+conflict, pending or busy checkpoint store, or unsupported filesystem returns a
+recoverable result with its checkpoint code. The apply cannot detect a
+concurrent writer; the acknowledgement records the operating assumption only.
+Restore and checkpoint management stay trusted `file` commands.
 
 ## Saved sessions
 
@@ -532,6 +584,7 @@ planned. See the complete [session contract](session-storage.md).
 | Encoded journal event, including LF | 64 KiB |
 | Journal | 8 MiB and 10,000 events |
 | Tool call arguments in a session event | 4 KiB |
+| Model edit file size, before and after | 1 MiB |
 | Read file size per call | 15 KiB maximum, 8 KiB default |
 | Edit preview content | 1 MiB per side |
 | Edit preview lines | 65,536 per side when changed |

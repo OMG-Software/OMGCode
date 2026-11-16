@@ -291,6 +291,18 @@ other flags. It needs the expected revision, appends `permissions_changed`, and
 increments the revision. It is not an operation class, so `workspace check` and
 policy audit records do not mention it.
 
+When `model_tools`, `read`, and `write` are all enabled, the runtime also
+offers `workspace_edit_file`. Because `read` and `write` default to enabled,
+enabling `model_tools` offers it unless `write` is disabled. It replaces one
+exact text occurrence in an existing file, and every call needs an approval:
+the first call records a pending `file_write` approval bound to the live
+file's size and SHA-256 and writes nothing. After `approvals approve <id>
+--writers-stopped`, a later identical call consumes the approval and applies
+the edit through a checkpoint. A call made while `read` or `write` is disabled
+is denied with `edit_disabled` and ends the turn. Disable `write` to remove
+the tool. See [model edit route](file-access.md#model-edit-route-adr-0043) and
+[ADR-0043](adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
+
 When `model_tools`, `execute`, `read`, and `write` are all enabled, the runtime
 also offers `workspace_run_command`. Its first call records a pending approval
 and does not run; after `approvals approve <id>`, a second identical call
@@ -298,7 +310,9 @@ consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.2.0.
+The tool schema version is 0.3.0, which added `workspace_edit_file`. Each
+request manifest records the version it advertised, and sessions that recorded
+0.2.0 still replay and accept new turns.
 
 `workspace status` always reports `model_tools`. Persisted settings omit the
 field while it is `false`, so settings that never enable it keep their exact
@@ -322,7 +336,8 @@ registration. The workspace ID and preference used come from current settings.
 Before every call, the core runtime opens the settings again and creates a
 fresh binding. It denies the call with `model_tools_disabled` unless the
 preference is still enabled. The broker then requires the live `read`
-preference and denies the call with `permission_denied` otherwise. A denial
+preference and denies the call with `permission_denied` otherwise. An edit
+call also needs live `write` before any read. A denial
 ends the turn. A change made during model I/O applies to the next call.
 
 Earlier tool results stay in the journal. A turn sends them to the model again

@@ -8,12 +8,16 @@ preferences, a bounded native file broker exposed through trusted CLI commands,
 and native identity checks. Follow [workspace settings](docs/workspace-permissions.md)
 and [workspace file access](docs/file-access.md) for their contracts. Enabled
 preferences never authorize execution. The prototype is not a desktop app.
-Chat offers the local LM Studio model read and list tools, and, when the
-workspace also enables `execute`, `read`, and `write`, one command tool that
-requires a trusted single-use approval. No model write, network, Git, or MCP
-tool exists. Chat offers tools only for a
-workspace whose `model_tools` preference is enabled. There are no model write
-tools, other provider adapters, or unreviewed model-callable process execution. The
+Chat offers the local LM Studio model read and list tools; when the workspace
+also enables `read` and `write`, one exact-edit tool; and, when it also enables
+`execute`, `read`, and `write`, one command tool. The edit and command tools
+each require a trusted single-use approval. The edit tool replaces one exact
+text occurrence in an existing file through checkpointed apply and needs the
+operator's writers-stopped acknowledgement. No model create, delete, rename,
+network, Git, or MCP tool exists. Chat offers tools only for a
+workspace whose `model_tools` preference is enabled. There are no unapproved
+model writes, other provider adapters, or unreviewed model-callable process
+execution. The
 trusted CLI `run` command starts one program for a workspace whose `execute`
 preference is enabled. It uses an operator-declared toolchain profile, records
 intent and outcome in a run journal, and applies Landlock and a seccomp socket
@@ -31,8 +35,11 @@ commands can store API keys in protected OS storage (DPAPI on Windows, the
 Secret Service on Linux) and bind them to `api_key` profiles; no adapter reads
 them yet. Trusted
 single-use approval records authorize one exact model-tool call: only a later
-identical call may consume an approved record and invoke the trusted runner,
-and `workspace_run_command` is their only consumer. Trusted CLI
+identical call may consume an approved record. `workspace_run_command` then
+invokes the trusted runner, and `workspace_edit_file` then calls the
+checkpointed apply with the size and digest of a live trusted read
+([ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md)).
+Neither route detects a concurrent writer. Trusted CLI
 commands record, apply, and revoke Windows container ACL grants. Follow the
 [execution contract](docs/execution.md).
 The bundled web interface and most planned features are not implemented.

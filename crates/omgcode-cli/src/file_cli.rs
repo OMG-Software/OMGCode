@@ -1,4 +1,5 @@
-//! Trusted operator interface for the native file broker. Never a model tool route.
+//! Trusted operator interface for the native file broker. Never a model tool
+//! route: the approval-gated model edit tool runs in the core turn runtime.
 
 use std::path::{Path, PathBuf};
 

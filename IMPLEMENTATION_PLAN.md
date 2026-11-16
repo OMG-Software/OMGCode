@@ -71,8 +71,11 @@ This is a resume guide, not a replacement for the owning contracts in
   from `97c733e`, the PR #31 head. No run accepts a profile or has
   destination-scoped networking; no provider adapter is enabled, and the
   command tool is the only model tool that can request a process.
-- This change: **Phase D1**, version **0.27.0**, the
+- Commit `e88df5b` on this branch: **Phase D1**, version **0.27.0**, the
   provider credential service (ADR-0042). No adapter reads a stored credential.
+- This change: **Phase C17**, version **0.28.0**, the approval-gated model
+  edit tool (ADR-0043). It writes only through the checkpointed apply after an
+  approved, writers-stopped decision.
 
 Implemented today:
 
@@ -90,8 +93,8 @@ Implemented today:
 - Conservative context accounting, manual `session compact`, and pre-turn
   auto-compaction for the local LM Studio route. Summaries are labelled
   untrusted evidence and follow the live tool-result replay rule (ADR-0041).
-- Core turn/tool runtime for read/list through a caller-supplied model
-  interface. It has strict tool-call parsing, round/call/byte/prompt limits,
+- Core turn/tool runtime for read/list, the approval-gated exact edit, and the
+  approval-gated command through a caller-supplied model interface. It has strict tool-call parsing, round/call/byte/prompt limits,
   cooperative cancellation, source-labelled messages, and fresh per-operation
   policy bindings. Chat dispatches it through the LM Studio adapter for a
   workspace that enables `model_tools`.
@@ -100,10 +103,12 @@ Implemented today:
   workspace mutation, no checkpoint, no replacement.
 - LM Studio Chat Completions chat with non-streaming requests. It is text-only
   unless the session's workspace enables `model_tools`; then it offers the read
-  and list tools and, when `execute`, `read`, and `write` also allow it, the
-  approval-gated command tool. See
-  [ADR-0026](docs/adr/0026-offer-read-list-tools-through-a-workspace-preference.md)
-  and [ADR-0040](docs/adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
+  and list tools, the approval-gated edit tool when `read` and `write` also
+  allow it, and the approval-gated command tool when `execute`, `read`, and
+  `write` also allow it. See
+  [ADR-0026](docs/adr/0026-offer-read-list-tools-through-a-workspace-preference.md),
+  [ADR-0040](docs/adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md),
+  and [ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
 - Read-only core initialization/ledger record inspectors with bounded strict
   JSON, lifecycle validation, manifest references, and unresolved-state retention.
   The pure inspectors open no files and execute no recorded work.
@@ -164,7 +169,8 @@ Implemented today:
   (ADR-0038). Trusted approval records bind a future model-tool call to a
   session, workspace, operation, request digest, and settings revision, expire,
   and are consumed once (ADR-0039). Provider profiles enable no connection; the
-  command tool is the only model tool that consumes an approval record.
+  command and edit tools are the only model tools that consume an approval
+  record.
 - Provider credentials in protected OS storage (ADR-0042): DPAPI files with
   verified private DACLs on Windows and Secret Service items in the default
   collection on Linux, with no plaintext fallback. Trusted
@@ -175,8 +181,17 @@ Implemented today:
 - The `workspace_run_command` model tool (ADR-0040) is offered only with live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; an approved exact call consumes the
-  approval and uses the trusted runner with fixed limits. No write, network,
-  Git, or MCP model tool exists.
+  approval and uses the trusted runner with fixed limits.
+- The `workspace_edit_file` model tool (ADR-0043) is offered only with live
+  `model_tools`, `read`, and `write`. It replaces one exact text occurrence in
+  an existing UTF-8 file of at most 1 MiB. Each call reads the live file
+  through the audited broker; its approval digest binds the session,
+  workspace, normalized path, and both current and proposed size and SHA-256.
+  The first call records a pending `file_write` approval with no file text;
+  approval needs `--writers-stopped`, and an identical later call consumes it
+  and calls the checkpointed apply with the live-read expected value.
+  `session inspect` lists recorded tool requests for review. No model create,
+  delete, rename, network, Git, or MCP tool exists.
 - Trusted `file restore` through a new checkpoint and
   `file delete-checkpoint --permanent` for one resolved checkpoint, on the same
   filesystems as apply. Neither is power-loss qualified. See
@@ -186,7 +201,8 @@ Not implemented:
 
 - Apply or restore on other filesystems, workspace file deletion, ledger
   compaction, and standalone CLI checkpoint preparation.
-- Model write, network, Git, and MCP tools; live provider tool-call
+- Model create, delete, rename, multi-edit, network, Git, and MCP tools;
+  concurrent-writer detection for any apply route; live provider tool-call
   qualification; and streaming, discovery, and cancellation in a live provider.
 - A run network destination allowlist, runtime skills, memories, desktop/UI
   panels, mid-turn and provider-native compaction, and caches. Nothing calls the unconfined process runner.
@@ -613,12 +629,29 @@ on Windows, and trusted CLI commands as the first caller. See
   [ADR-0041](docs/adr/0041-compact-active-context-with-readable-summaries.md).
   Mid-turn compaction, persisted settings, provider-native compaction, and
   caches remain planned.
+- **C17 (version 0.28.0):** the `workspace_edit_file` model tool. It is
+  offered and dispatched only under live `model_tools`, `read`, and `write`,
+  and replaces exactly one occurrence of `old_text` within the 4 KiB argument
+  limit and the 1 MiB file bound. Missing, repeated, or unchanged text is a
+  recoverable result. The handler reads the live file through the audited
+  broker and binds a `file_write` approval to a domain-tagged digest of the
+  session, workspace, normalized path, and both current and proposed size and
+  SHA-256. The approval decision records the operator's `--writers-stopped`
+  acknowledgement, and core refuses to consume a `file_write` record without
+  it. An approved identical call consumes the record and calls
+  `apply_replacement`; checkpoint conflicts, pending or busy stores, and
+  unsupported filesystems are recoverable results. Tool schema 0.3.0;
+  0.2.0 sessions still replay. See
+  [ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
+  Concurrent-writer detection, multi-edit, create, delete, and rename remain
+  unimplemented.
 
 Next decisions, not yet scheduled:
 
 - provider adapters that read stored credentials, and subscription/API-key
   login;
-- model write, network, Git, and MCP tools;
+- model create, delete, rename, and multi-edit tools, and network, Git, and
+  MCP tools;
 - registry credentials and development-server networking.
 
 ### Phase D: additional providers, streaming, and account lifecycle

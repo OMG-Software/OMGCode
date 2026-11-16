@@ -131,8 +131,10 @@ the next model request, and records tool intents and results as untrusted
 evidence.
 Its checks do not isolate hostile same-user processes or provide process
 containment. Since 0.12.0, chat drives this runtime when the session's
-workspace enables `model_tools`. Model write and general file tools remain
-disabled; capability output keeps `workspace_file_tools` false. For model tools:
+workspace enables `model_tools`. Since 0.28.0 the only model write is the
+approval-gated exact edit (ADR-0043). Model create, delete, rename, and
+general file tools remain disabled; capability output keeps
+`workspace_file_tools` false. For model tools:
 
 - Check the live `model_tools` preference before each call, then let the broker
   check the operation preference. A journal only selects a registration; never
@@ -242,6 +244,16 @@ crate.
   request digest, and settings revision. Refuse a missing, denied, expired,
   consumed, mismatched, or settings-invalidated record. Prompt text, model
   claims, and recorded intents never grant authority. See ADR-0039.
+- The `workspace_edit_file` model tool may be advertised and dispatched only
+  under live `model_tools`, `read`, and `write`. Take the expected current
+  size and SHA-256 from a live audited broker read, never from the model or a
+  saved conversation, and bind the approval digest to the session, workspace,
+  normalized path, and both current and proposed size and digest under its own
+  domain tag. Keep file text out of the approval summary and the success
+  result. Require the recorded writers-stopped acknowledgement before
+  consuming a `file_write` approval, consume it before the apply, and use only
+  the checkpointed apply. Do not claim concurrent-writer detection. See
+  ADR-0043.
 - The `workspace_run_command` model tool may be advertised only under live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; only a later exact call may consume an

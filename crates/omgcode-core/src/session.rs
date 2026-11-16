@@ -137,6 +137,23 @@ impl NativePath {
     }
 }
 
+/// One model-requested tool call as recorded before dispatch, kept so a
+/// trusted operator can review its exact arguments, such as an edit's
+/// `old_text` and `new_text`, before deciding an approval.
+///
+/// Every field is untrusted model data. Viewing a request never dispatches it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RecordedToolRequest {
+    /// The turn that recorded the call.
+    pub request_id: Uuid,
+    /// Provider call identifier, unique within its turn only.
+    pub call_id: String,
+    /// Requested tool name.
+    pub tool: String,
+    /// The exact strict-JSON arguments string, at most 4 KiB.
+    pub arguments: String,
+}
+
 /// One user or assistant message stored in the transcript snapshot.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +249,8 @@ pub struct SessionJournal {
     snapshot: SessionSnapshot,
     schema_version: u32,
     tool_state: ToolState,
+    /// Recorded tool requests in append order, bounded by the journal size.
+    tool_requests: Vec<RecordedToolRequest>,
     bytes: u64,
     next_seq: u64,
     poisoned: bool,
@@ -337,6 +356,7 @@ impl SessionJournal {
             },
             schema_version: SCHEMA_VERSION,
             tool_state: ToolState::default(),
+            tool_requests: Vec::new(),
             bytes: u64::try_from(bytes.len()).map_err(|_| SessionError::LimitReached)?,
             next_seq: 1,
             poisoned: false,
@@ -373,7 +393,7 @@ impl SessionJournal {
         }
         let mut file = storage::open_locked_file(path, false).map_err(map_storage_error)?;
         let contents = read_bounded(&mut file)?;
-        let (snapshot, tool_state) = replay(&contents, filename_id)?;
+        let (snapshot, tool_state, tool_requests) = replay(&contents, filename_id)?;
         let bytes = u64::try_from(contents.len()).map_err(|_| SessionError::LimitReached)?;
         let next_seq = snapshot.event_count;
         let schema_version = snapshot.schema_version;
@@ -383,6 +403,7 @@ impl SessionJournal {
             snapshot,
             schema_version,
             tool_state,
+            tool_requests,
             bytes,
             next_seq,
             poisoned: false,
@@ -404,6 +425,13 @@ impl SessionJournal {
     /// Return the last fully validated durable snapshot.
     pub fn snapshot(&self) -> &SessionSnapshot {
         &self.snapshot
+    }
+
+    /// Return every recorded tool request in append order, for operator review.
+    ///
+    /// The arguments are untrusted model data, and nothing here dispatches.
+    pub fn tool_requests(&self) -> &[RecordedToolRequest] {
+        &self.tool_requests
     }
 
     /// The active conversation after compaction: a labelled summary followed by
@@ -585,6 +613,12 @@ impl SessionJournal {
         };
         let bytes = self.append("tool.requested", &payload)?;
         self.tool_state.pending.insert(call_id.to_owned());
+        self.tool_requests.push(RecordedToolRequest {
+            request_id,
+            call_id: payload.call_id,
+            tool: payload.tool,
+            arguments: payload.arguments,
+        });
         self.commit_accounting(bytes)
     }
 
@@ -1324,7 +1358,7 @@ fn read_bounded(file: &mut File) -> Result<Vec<u8>, SessionError> {
 fn replay(
     contents: &[u8],
     filename_id: Uuid,
-) -> Result<(SessionSnapshot, ToolState), SessionError> {
+) -> Result<(SessionSnapshot, ToolState, Vec<RecordedToolRequest>), SessionError> {
     if contents.is_empty() || contents[0..contents.len().min(3)] == [0xef, 0xbb, 0xbf] {
         return Err(SessionError::InvalidJournal(
             "journal is empty or has a byte-order mark",
@@ -1340,6 +1374,7 @@ fn replay(
     let mut event_ids = HashSet::new();
     let mut snapshot: Option<SessionSnapshot> = None;
     let mut tool_state = ToolState::default();
+    let mut tool_requests = Vec::new();
     let mut expected_seq = 0_u64;
     let mut total_events = 0_usize;
     let mut consumed_bytes = 0_usize;
@@ -1554,7 +1589,13 @@ fn replay(
                         "duplicate tool call identifier",
                     ));
                 }
-                tool_state.pending.insert(payload.call_id);
+                tool_state.pending.insert(payload.call_id.clone());
+                tool_requests.push(RecordedToolRequest {
+                    request_id: payload.request_id,
+                    call_id: payload.call_id,
+                    tool: payload.tool,
+                    arguments: payload.arguments,
+                });
             }
             "tool.completed" => {
                 if envelope.schema_version < SCHEMA_VERSION_V2 {
@@ -1712,7 +1753,7 @@ fn replay(
     let snapshot = snapshot.ok_or(SessionError::InvalidJournal(
         "missing session.started event",
     ))?;
-    Ok((snapshot, tool_state))
+    Ok((snapshot, tool_state, tool_requests))
 }
 
 /// Reject transcript changes while replay says the session is archived.

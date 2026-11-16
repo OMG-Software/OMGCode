@@ -691,6 +691,13 @@ trusted runner on both Linux and Windows, and asserts a successful exit, the
 bounded output, and the consumed approval. On Linux the chat process starts in
 a delegated cgroup; on Windows the test scene grants the workspace.
 
+The approval-gated `workspace_edit_file` tool (0.28.0, ADR-0043) uses the same
+approval records with the `file_write` operation, but never starts a process:
+it writes only through the checkpointed apply in the
+[file-access contract](file-access.md#model-edit-route-adr-0043). Approving its
+record requires `approvals approve <id> --writers-stopped`, which the command
+operation refuses.
+
 ### Toolchain profiles
 
 Profiles are declared by the operator. Nothing is discovered automatically.
@@ -1069,10 +1076,11 @@ These remain true after C6:
 | C12 (0.23.0) | Per-workspace package cache root and scoped Windows grant | Done: see [trusted package fetch](#trusted-package-fetch) and ADR-0037. Windows needs a read-execute grant on the workspace root. |
 | C13 (0.24.0) | Provider profiles and trusted approval records | Done: see the [provider authentication guide](provider-authentication.md#recorded-provider-profiles-0240) and [approval records](agent-instructions.md#approval-records). No adapter or model tool executed. |
 | C14 (0.25.0) | Approval-gated model command tool | Done: see [model command tool](#model-command-tool) and ADR-0040. A CLI acceptance test qualifies one successful approved command on both hosts; confinement correctness remains the platform suites' responsibility. |
+| C17 (0.28.0) | Approval-gated model edit tool | Done: see the [model edit route](file-access.md#model-edit-route-adr-0043) and ADR-0043. It starts no process; it writes one exact edit through the checkpointed apply after a writers-stopped approval. |
 
 Later work needs its own decisions:
 
 - registry credentials and development-server networking;
-- model write, network, Git, and MCP tools;
+- model create, delete, rename, network, Git, and MCP tools;
 
 Live qualification on each supported OS remains a separate gate.

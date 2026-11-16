@@ -161,7 +161,11 @@ names are otherwise recorded as read. Treat the schema-version-2 journal and
 its tool messages as private user data.
 
 The CLI supports `session new`, `inspect`, `archive`, `restore`, and
-`interrupt JOURNAL`. Interrupt marks a recorded active turn failed with the code
+`interrupt JOURNAL`. `inspect` also lists every recorded `tool.requested`
+event as `tool_requests`, with its turn, call ID, tool name, and exact
+arguments string, so the operator can review an edit's `old_text` and
+`new_text` before approving it. The arguments are untrusted model data, and
+listing them dispatches nothing. Interrupt marks a recorded active turn failed with the code
 `operator_interrupted`; it does not retry the model request. The current Archive
 operation refuses an active turn. The operator can interrupt it first, then
 archive it. There are no session-owned processes or MCP connections to clean up

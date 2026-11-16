@@ -285,7 +285,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "edit_previews": cfg!(any(target_os = "linux", target_os = "windows")),
             "model_read_list_tools": model_tools::MODEL_TOOLS_SUPPORTED,
             "model_command_tool": "approval_required",
-            "model_write_tools": false,
+            "model_write_tools": "approval_required",
             "workspace_container_grants": omgcode_core::control::CONTAINER_GRANTS_SUPPORTED,
             "workspace_file_tools": false,
             "toolchain_profiles": RUN_SUPPORTED,
@@ -312,7 +312,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 "unavailable"
             },
             "tool_policy": if cfg!(any(target_os = "linux", target_os = "windows")) {
-                "read_list_only_when_workspace_model_tools_enabled"
+                "read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval"
             } else {
                 "reject all model-requested tools"
             },
@@ -327,7 +327,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
             SessionCommand::Inspect { locator } => {
                 let path = resolve_journal(locator.journal, locator.journal_native)?;
-                print_session(&SessionJournal::open(&path).map_err(session_error)?)
+                print_inspection(&SessionJournal::open(&path).map_err(session_error)?)
             }
             SessionCommand::Archive { locator } => {
                 let path = resolve_journal(locator.journal, locator.journal_native)?;
@@ -802,6 +802,19 @@ fn print_session(journal: &SessionJournal) -> Result<(), CliError> {
     print_json(&JournalOutput {
         locator: journal_locator(journal)?,
         detail: json!({"session":journal.snapshot()}),
+    })
+}
+
+/// Print a session with its recorded tool requests, so the operator can review
+/// a call's exact arguments, such as an edit's `old_text` and `new_text`,
+/// before deciding its approval. The arguments remain untrusted model data.
+fn print_inspection(journal: &SessionJournal) -> Result<(), CliError> {
+    print_json(&JournalOutput {
+        locator: journal_locator(journal)?,
+        detail: json!({
+            "session": journal.snapshot(),
+            "tool_requests": journal.tool_requests(),
+        }),
     })
 }
 

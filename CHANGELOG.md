@@ -6,6 +6,56 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.28.0 adds the approval-gated model edit tool (Phase C17). See
+  ADR-0043.
+  - **Tool:** `workspace_edit_file { path, old_text, new_text }` replaces
+    exactly one occurrence of a non-empty `old_text` in an existing UTF-8
+    regular file. The current and proposed bytes must each fit 1 MiB, and the
+    arguments stay within the existing 4 KiB limit. Unknown fields, missing
+    fields, an empty `old_text`, and absolute, rooted, or parent paths are
+    refused before dispatch. The tool cannot create, delete, or rename files,
+    and it has no multi-edit form.
+  - **Offer and dispatch:** chat offers the tool, and the runtime dispatches
+    it, only while the workspace's live `model_tools`, `read`, and `write` are
+    all enabled. Because `read` and `write` default to enabled, enabling
+    `model_tools` now offers the edit tool; disable `write` to remove it. A
+    call without live `read` or `write` is denied with `edit_disabled`. The
+    tool schema version is 0.3.0; sessions that recorded 0.2.0 still replay.
+  - **Approval:** each call reads the live file through the audited broker and
+    binds a `file_write` approval to a digest under the domain tag
+    `omgcode-file-edit-v1`. The digest covers length-prefixed fields for the
+    session, workspace, normalized path, and the size and SHA-256 of both the
+    current and the proposed bytes, so the expected value comes from the live
+    read and a changed file needs a new approval. The summary holds the path,
+    sizes, and 12-character digest prefixes, never file text, with control
+    and hidden formatting characters replaced. The first call returns
+    `approval_required` and writes nothing; a pending record returns
+    `approval_required` and a denied one `approval_denied`.
+  - **Writers-stopped acknowledgement:** `approvals approve <id>
+    --writers-stopped` is required for a `file_write` record and refused for
+    every other operation. The decision records `writers_stopped`, which
+    `approvals show` and `list` report. Core `consume_approval` refuses a
+    `file_write` record without it; such a record from an earlier journal
+    still replays. A control journal holding the acknowledgement cannot be
+    read by 0.27.0; journals without it keep their exact bytes.
+  - **Apply:** an approved identical call consumes the record and then calls
+    the existing `apply_replacement` with the captured size and SHA-256 as
+    the expected value. `edit_no_match`, `edit_ambiguous`, `edit_unchanged`,
+    `edit_too_large`, `non_utf8`, and the checkpoint admission and conflict
+    codes, such as `checkpoint_conflict`, `checkpoint_pending`,
+    `checkpoint_busy`, and `checkpoint_unsupported`, are recoverable results
+    that let the turn continue. Corrupt or uncertain checkpoint evidence,
+    storage I/O failures, and denials end the turn. A consumed approval stays
+    spent when the apply fails. A success returns the path, new size and
+    SHA-256, and the checkpoint operation ID, never file contents. Neither
+    apply route detects a concurrent writer.
+  - **Review:** `session inspect` now lists every recorded tool request as
+    `tool_requests`, with its turn, call ID, tool, and exact arguments, so the
+    operator can review `old_text` and `new_text` before approving.
+  - **Capabilities:** `model_write_tools` is `approval_required`, and
+    `tool_policy` is
+    `read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval`
+    on Linux and Windows. `workspace_file_tools` stays `false`.
 - Version 0.27.0 adds the provider credential service (Phase D1). See
   ADR-0042. No provider adapter reads a stored credential yet.
   - **Native stores:** `omgcode-platform` stores each credential under a fresh

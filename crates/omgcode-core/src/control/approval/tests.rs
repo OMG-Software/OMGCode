@@ -255,3 +255,161 @@ fn approvals_survive_replay_and_refuse_invalid_requests() {
         Err(ControlError::UnknownApproval)
     ));
 }
+
+fn file_write(workspace_id: WorkspaceId, session_id: Uuid) -> ApprovalDeclaration {
+    ApprovalDeclaration {
+        operation: ApprovalOperation::FileWrite,
+        summary: "edit notes.txt".into(),
+        ..declaration(workspace_id, session_id)
+    }
+}
+
+fn file_write_binding(workspace_id: WorkspaceId, session_id: Uuid) -> ApprovalBinding {
+    ApprovalBinding {
+        operation: ApprovalOperation::FileWrite,
+        ..binding(workspace_id, session_id)
+    }
+}
+
+#[test]
+fn a_file_write_approval_records_and_requires_the_writers_stopped_acknowledgement() {
+    let (_directory, data, workspace_id, mut store) = scene();
+    let session_id = Uuid::new_v4();
+    let edit = store
+        .request_approval(&file_write(workspace_id, session_id), NOW)
+        .expect("request");
+    assert!(!edit.writers_stopped);
+    assert!(matches!(
+        store.decide_approval(edit.id, true, NOW + 1),
+        Err(ControlError::ApprovalRefused(_))
+    ));
+    assert_eq!(
+        store
+            .approval_status(edit.id, NOW + 1)
+            .expect("status")
+            .state,
+        ApprovalState::Pending,
+        "a refused approval records nothing"
+    );
+    let command = store
+        .request_approval(&declaration(workspace_id, session_id), NOW)
+        .expect("command request");
+    assert!(matches!(
+        store.approve_with_writers_stopped(command.id, NOW + 1),
+        Err(ControlError::ApprovalRefused(_))
+    ));
+
+    store
+        .approve_with_writers_stopped(edit.id, NOW + 1)
+        .expect("approve with the acknowledgement");
+    let status = store.approval_status(edit.id, NOW + 2).expect("status");
+    assert_eq!(status.state, ApprovalState::Approved);
+    assert!(status.writers_stopped);
+    drop(store);
+
+    let mut store = ControlStore::open(&data).expect("replay");
+    assert!(
+        store
+            .approval_status(edit.id, NOW + 2)
+            .expect("status")
+            .writers_stopped
+    );
+    store
+        .consume_approval(
+            edit.id,
+            &file_write_binding(workspace_id, session_id),
+            NOW + 3,
+        )
+        .expect("consume");
+    assert_eq!(
+        store
+            .approval_status(edit.id, NOW + 4)
+            .expect("status")
+            .state,
+        ApprovalState::Consumed
+    );
+}
+
+/// A journal written before the acknowledgement existed can hold an approved
+/// `file_write` record without it. It still replays, but cannot be consumed.
+#[test]
+fn consumption_refuses_a_file_write_approval_without_the_acknowledgement() {
+    let (_directory, data, workspace_id, mut store) = scene();
+    let session_id = Uuid::new_v4();
+    let edit = store
+        .request_approval(&file_write(workspace_id, session_id), NOW)
+        .expect("request");
+    store
+        .append(
+            crate::control::Action::ApprovalDecided {
+                approval_id: edit.id,
+                decision: ApprovalDecision::Approved,
+                writers_stopped: false,
+            },
+            store.revision(),
+        )
+        .expect("legacy decision");
+    drop(store);
+    let settings = fs::read_to_string(data.join("control-v1.jsonl")).expect("settings");
+    assert!(
+        !settings.contains("writers_stopped"),
+        "an absent acknowledgement keeps the earlier record shape"
+    );
+
+    let mut store = ControlStore::open(&data).expect("the legacy decision replays");
+    assert_eq!(
+        store
+            .approval_status(edit.id, NOW + 1)
+            .expect("status")
+            .state,
+        ApprovalState::Approved
+    );
+    assert!(matches!(
+        store.consume_approval(
+            edit.id,
+            &file_write_binding(workspace_id, session_id),
+            NOW + 2
+        ),
+        Err(ControlError::ApprovalRefused(_))
+    ));
+    assert_eq!(
+        store
+            .approval_status(edit.id, NOW + 3)
+            .expect("status")
+            .state,
+        ApprovalState::Approved
+    );
+}
+
+/// Replay refuses an acknowledgement on a denial or another operation.
+#[test]
+fn replay_refuses_a_misplaced_writers_stopped_acknowledgement() {
+    for (operation, decision) in [
+        (ApprovalOperation::Command, ApprovalDecision::Approved),
+        (ApprovalOperation::FileWrite, ApprovalDecision::Denied),
+    ] {
+        let (_directory, _data, workspace_id, mut store) = scene();
+        let approval = store
+            .request_approval(
+                &ApprovalDeclaration {
+                    operation,
+                    ..declaration(workspace_id, Uuid::new_v4())
+                },
+                NOW,
+            )
+            .expect("request");
+        assert!(
+            store
+                .append(
+                    crate::control::Action::ApprovalDecided {
+                        approval_id: approval.id,
+                        decision,
+                        writers_stopped: true,
+                    },
+                    store.revision(),
+                )
+                .is_err(),
+            "{operation:?} {decision:?} accepted the acknowledgement"
+        );
+    }
+}

@@ -1,8 +1,9 @@
-//! Chat with the persisted model read/list tool preference.
+//! Chat with the persisted model-tool preference.
 //!
 //! The session journal only selects which registered workspace to consult.
 //! Authority comes from the live settings preference, rechecked by the core
 //! runtime before every tool call, and each call stays inside that workspace.
+//! The edit and command tools also need a trusted single-use approval.
 
 use std::path::Path;
 use std::time::Duration;
@@ -30,6 +31,9 @@ pub(crate) const MODEL_TOOLS_SUPPORTED: bool =
     cfg!(any(target_os = "linux", target_os = "windows"));
 
 /// Conservative byte allowance for the advertised tool definitions.
+///
+/// The largest set (read, list, edit, and command) serializes to 2,763 bytes
+/// in the adapter's wire shape; a unit test keeps this allowance above it.
 pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 4 * 1024;
 
 /// Whether this chat turn offers the model the workspace read/list tools.
@@ -303,5 +307,33 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> CliError {
             "The previous turn is incomplete; inspect it, then use session interrupt to mark it failed without retrying",
         ),
         other => CliError::new("turn", other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use omgcode_core::turn::{command_tool_definition, edit_tool_definition, tool_definitions};
+    use serde_json::{Value, json};
+
+    use super::TOOL_SCHEMA_ESTIMATE_BYTES;
+
+    /// The estimate must cover the largest advertised tool set in the exact
+    /// OpenAI-compatible wire shape the adapter sends.
+    #[test]
+    fn the_schema_estimate_covers_every_advertised_tool_definition() {
+        let mut definitions = tool_definitions();
+        definitions.push(edit_tool_definition());
+        definitions.push(command_tool_definition());
+        let wire: Vec<Value> = definitions
+            .iter()
+            .map(|definition| json!({"type": "function", "function": definition}))
+            .collect();
+        let bytes = serde_json::to_vec(&wire).expect("serialize tool definitions");
+        println!("advertised tool definitions: {} bytes", bytes.len());
+        assert!(
+            bytes.len() <= TOOL_SCHEMA_ESTIMATE_BYTES,
+            "{} bytes exceed the {TOOL_SCHEMA_ESTIMATE_BYTES}-byte estimate",
+            bytes.len()
+        );
     }
 }

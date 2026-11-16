@@ -449,7 +449,7 @@ fn capabilities_report_configuration_only_policy_and_trusted_runs_only() {
     let runs = cfg!(any(target_os = "linux", windows));
     assert_eq!(capabilities["toolchain_profiles"], runs);
     assert_eq!(capabilities["model_command_tool"], "approval_required");
-    assert_eq!(capabilities["model_write_tools"], false);
+    assert_eq!(capabilities["model_write_tools"], "approval_required");
     assert_eq!(capabilities["package_network_profiles"], true);
     assert_eq!(capabilities["package_network_enforcement"], false);
     assert_eq!(capabilities["package_fetch"], true);
@@ -999,4 +999,84 @@ fn container_grants_are_refused_without_appcontainer_support() {
     let status = json_output(&status);
     assert_eq!(status["revision"], 2);
     assert!(status.get("container_grants").is_none());
+}
+
+/// Approving a `file_write` request needs `--writers-stopped`, which is refused
+/// for every other operation; `show` and `list` report the acknowledgement.
+#[test]
+fn file_write_approvals_require_the_writers_stopped_acknowledgement() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let data_root = temporary.path().join("application-data");
+    let development_root = temporary.path().join("development");
+    let workspace = development_root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let revision = set_root(&data_root, &development_root)["revision"]
+        .as_u64()
+        .expect("revision");
+    let workspace_id = register(&data_root, &workspace, revision);
+    let session = Uuid::new_v4().to_string();
+    let request = |operation: &str, digest: &str| {
+        let output = run_cli(
+            &data_root,
+            &[
+                "approvals",
+                "request",
+                "--session",
+                &session,
+                "--workspace",
+                &workspace_id,
+                "--operation",
+                operation,
+                "--digest",
+                digest,
+                "--summary",
+                "edit notes.txt",
+            ],
+        );
+        assert_success(&output);
+        json_output(&output)["approval"]["id"]
+            .as_str()
+            .expect("approval id")
+            .to_owned()
+    };
+
+    let edit = request("file_write", &"c".repeat(64));
+    assert_error_code(
+        &run_cli(&data_root, &["approvals", "approve", &edit]),
+        "approval",
+    );
+    let output = run_cli(&data_root, &["approvals", "show", &edit]);
+    assert_success(&output);
+    assert_eq!(json_output(&output)["approval"]["state"], "pending");
+    assert_eq!(json_output(&output)["approval"]["writers_stopped"], false);
+
+    let output = run_cli(
+        &data_root,
+        &["approvals", "approve", &edit, "--writers-stopped"],
+    );
+    assert_success(&output);
+    assert_eq!(json_output(&output)["decision"], "approved");
+    assert_eq!(json_output(&output)["approval"]["writers_stopped"], true);
+    let output = run_cli(&data_root, &["approvals", "list"]);
+    assert_success(&output);
+    assert_eq!(
+        json_output(&output)["approvals"][0]["writers_stopped"],
+        true
+    );
+
+    let command = request("command", &"d".repeat(64));
+    assert_error_code(
+        &run_cli(
+            &data_root,
+            &["approvals", "approve", &command, "--writers-stopped"],
+        ),
+        "approval",
+    );
+    let output = run_cli(&data_root, &["approvals", "show", &command]);
+    assert_success(&output);
+    assert_eq!(json_output(&output)["approval"]["state"], "pending");
+    assert_success(&run_cli(&data_root, &["approvals", "approve", &command]));
+    let output = run_cli(&data_root, &["approvals", "show", &command]);
+    assert_success(&output);
+    assert_eq!(json_output(&output)["approval"]["writers_stopped"], false);
 }

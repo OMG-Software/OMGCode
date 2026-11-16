@@ -378,6 +378,10 @@ enum Action {
     ApprovalDecided {
         approval_id: Uuid,
         decision: ApprovalDecision,
+        /// The operator's acknowledgement that other writers are stopped.
+        /// Absent in earlier journals and for every non-`file_write` decision.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        writers_stopped: bool,
     },
     ApprovalConsumed {
         approval_id: Uuid,
