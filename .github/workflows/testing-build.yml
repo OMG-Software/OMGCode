@@ -1,7 +1,7 @@
 name: Testing build
 
 # Every push to main (a merged pull request) tests, builds, and packages the
-# CLI and desktop binaries, then replaces the rolling `testing` prerelease.
+# CLI and desktop binaries, then replaces the rolling `latest` prerelease.
 # See docs/repository-checks.md#testing-build-workflow and ADR-0052.
 
 on:
@@ -68,7 +68,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = 'omgcode-testing-windows-x86_64'
+          $name = 'omgcode-windows-x86_64'
           New-Item -ItemType Directory -Path "dist/$name" | Out-Null
           Copy-Item target/release/omgcode.exe, target/release/omgcode-desktop.exe, LICENSE, README.md "dist/$name/"
           $version = (& .\target\release\omgcode.exe --version)
@@ -86,8 +86,8 @@ jobs:
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: omgcode-testing-windows-x86_64
-          path: dist/omgcode-testing-windows-x86_64.zip
+          name: omgcode-windows-x86_64
+          path: dist/omgcode-windows-x86_64.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -131,7 +131,7 @@ jobs:
           fi
       - name: Package
         env:
-          PACKAGE_NAME: omgcode-testing-ubuntu-x86_64
+          PACKAGE_NAME: omgcode-ubuntu-x86_64
           RUNTIME_NOTE: >-
             Runtime prerequisites for omgcode-desktop: libwebkit2gtk-4.1-0 and its
             GTK dependencies. The binaries link against this Ubuntu release's glibc.
@@ -152,8 +152,8 @@ jobs:
           tar -C dist -czf "dist/$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: omgcode-testing-ubuntu-x86_64
-          path: dist/omgcode-testing-ubuntu-x86_64.tar.gz
+          name: omgcode-ubuntu-x86_64
+          path: dist/omgcode-ubuntu-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -204,7 +204,7 @@ jobs:
           fi
       - name: Package
         env:
-          PACKAGE_NAME: omgcode-testing-fedora44-x86_64
+          PACKAGE_NAME: omgcode-fedora44-x86_64
           RUNTIME_NOTE: >-
             Runtime prerequisites for omgcode-desktop: webkit2gtk4.1 and its GTK
             dependencies. Built in a Fedora 44 container; the workspace tests did
@@ -226,13 +226,13 @@ jobs:
           tar -C dist -czf "dist/$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: omgcode-testing-fedora44-x86_64
-          path: dist/omgcode-testing-fedora44-x86_64.tar.gz
+          name: omgcode-fedora44-x86_64
+          path: dist/omgcode-fedora44-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    name: Publish the testing release
+    name: Publish the latest release
     # Publish only after every test and package job succeeds, and only from
     # main; a manual run on another branch builds but does not publish.
     needs: [rust, frontend, package-windows, package-ubuntu, package-fedora]
@@ -246,16 +246,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: omgcode-testing-*
+          pattern: omgcode-*
           path: assets
           merge-multiple: true
       - name: Write checksums
         working-directory: assets
         run: |
           set -euo pipefail
-          sha256sum -- omgcode-testing-* > SHA256SUMS
+          sha256sum -- omgcode-* > SHA256SUMS
           cat SHA256SUMS
-      - name: Replace the testing release
+      - name: Replace the latest release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -285,14 +285,14 @@ jobs:
           # the tag is absent, so any API error stops the job here, under
           # `set -e`, before anything is deleted. matching-refs matches by
           # prefix, so keep only the exact ref.
-          tag_count=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/testing" \
-            --jq '[.[] | select(.ref == "refs/tags/testing")] | length')
+          tag_count=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/latest" \
+            --jq '[.[] | select(.ref == "refs/tags/latest")] | length')
           if [ "$tag_count" != 0 ]; then
-            published=$(gh api "repos/${GH_REPO}/commits/refs/tags/testing" --jq .sha)
+            published=$(gh api "repos/${GH_REPO}/commits/refs/tags/latest" --jq .sha)
             if [ "$published" != "$GITHUB_SHA" ]; then
               status=$(gh api "repos/${GH_REPO}/compare/${published}...${GITHUB_SHA}" --jq .status)
               if [ "$status" != "ahead" ]; then
-                echo "::error::testing is at ${published}; ${GITHUB_SHA} is ${status} of it, not ahead. Refusing to replace a newer build."
+                echo "::error::latest is at ${published}; ${GITHUB_SHA} is ${status} of it, not ahead. Refusing to replace a newer build."
                 exit 1
               fi
             fi
@@ -300,16 +300,16 @@ jobs:
           # Delete the previous release and its tag, then recreate both at
           # this commit. With assets, gh creates a draft, uploads, and then
           # publishes, so readers never see a mix of old and new archives.
-          if gh release view testing >/dev/null 2>&1; then
-            gh release delete testing --yes --cleanup-tag
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --yes --cleanup-tag
           fi
-          if gh api "repos/${GH_REPO}/git/ref/tags/testing" >/dev/null 2>&1; then
-            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/testing"
+          if gh api "repos/${GH_REPO}/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/latest"
           fi
-          gh release create testing \
+          gh release create latest \
             --target "$GITHUB_SHA" \
             --prerelease \
             --latest=false \
-            --title "Testing build (${short_sha})" \
+            --title "Latest testing build (${short_sha})" \
             --notes-file notes.md \
-            assets/omgcode-testing-* assets/SHA256SUMS
+            assets/omgcode-* assets/SHA256SUMS

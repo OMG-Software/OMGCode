@@ -111,7 +111,7 @@ start delegated `systemd-run --user` scopes and fail without one.
 ## Testing build workflow
 
 `.github/workflows/testing-build.yml` runs on every push to main and on manual
-dispatch. It replaces the rolling `testing` prerelease with archives of the
+dispatch. It replaces the rolling `latest` prerelease with archives of the
 newest tested commit ([ADR-0052](adr/0052-publish-rolling-testing-builds-from-main.md)).
 
 | Job | Runner | Work |
@@ -145,8 +145,8 @@ The publish job needs every test and package job and runs only for
 `refs/heads/main`, so a manual run on another branch builds but publishes
 nothing. It is the only job with `contents: write`. It never checks out or runs
 repository or dependency code. It downloads the archives, writes `SHA256SUMS`,
-deletes the previous `testing` release and tag, and runs `gh release create
-testing --target <commit> --prerelease --latest=false` with the assets. With
+deletes the previous `latest` release and tag, and runs `gh release create
+latest --target <commit> --prerelease --latest=false` with the assets. With
 assets, `gh` creates a draft, uploads, and then publishes, so nobody sees a mix
 of old and new archives. Downloads fail for a few seconds between the delete
 and the publish.
@@ -157,7 +157,7 @@ waiting run in a group, so the tag ends at the newest main commit whose tests
 passed. Because the group includes the ref, a manual run on another branch
 cannot replace a waiting main run.
 
-Before deleting anything, the publish job resolves the commit that `testing`
+Before deleting anything, the publish job resolves the commit that `latest`
 points to and compares it with the run's commit through the compare API. It
 continues only when the two are the same commit or the run's commit is ahead.
 A re-run of an older main run keeps its original commit, so without this check
@@ -168,9 +168,15 @@ a confirmed missing tag skips the comparison. Any API error stops the job
 before anything is deleted.
 
 The assets have stable names, so links do not change between builds:
-`https://github.com/OMG-Software/OMGCode/releases/download/testing/omgcode-testing-windows-x86_64.zip`,
-`.../omgcode-testing-ubuntu-x86_64.tar.gz`,
-`.../omgcode-testing-fedora44-x86_64.tar.gz`, and `.../SHA256SUMS`.
+`https://github.com/OMG-Software/OMGCode/releases/download/latest/omgcode-windows-x86_64.zip`,
+`.../omgcode-ubuntu-x86_64.tar.gz`,
+`.../omgcode-fedora44-x86_64.tar.gz`, and `.../SHA256SUMS`.
+
+The tag is named `latest`, but GitHub's own `/releases/latest` route and the
+release list's "Latest" badge select the newest release that is not a
+prerelease. This release is a prerelease created with `--latest=false`, so
+those do not point to it. Link to `releases/tag/latest` or
+`releases/download/latest/<asset>` instead.
 
 Limits:
 
@@ -178,7 +184,7 @@ Limits:
   release assets, and the tag target before relying on it.
 - `ubuntu-latest` moves when GitHub changes its default image, and the Ubuntu
   archive's glibc and WebKitGTK requirements move with it.
-- Enabling immutable releases would block reusing the `testing` tag. Revisit
+- Enabling immutable releases would block reusing the `latest` tag. Revisit
   ADR-0052 first.
 - A start-up check is not a platform qualification. The
   [platform support guide](platform-support.md) remains the support statement.

@@ -37,7 +37,7 @@ owns the details.
   a `BUILD-INFO.txt`. Windows produces a `.zip` and Linux a `.tar.gz`.
 - **Publication.** A final job runs only from `main` after every test and
   package job succeeds. It is the only job with `contents: write`. It downloads
-  the archives, writes `SHA256SUMS`, deletes the previous `testing` release and
+  the archives, writes `SHA256SUMS`, deletes the previous `latest` release and
   tag, and recreates them at the built commit as a prerelease that is never
   marked latest. It does not check out or run repository code.
 - **Ordering.** Runs on a ref share one concurrency group and are never
@@ -73,7 +73,10 @@ run on Fedora, and the release notes and `BUILD-INFO.txt` say so.
 ## Consequences
 
 - Stable download URLs:
-  `releases/download/testing/omgcode-testing-<platform>.<zip|tar.gz>`.
+  `releases/download/latest/omgcode-<platform>.<zip|tar.gz>`. The tag is named
+  `latest`, but it stays a prerelease that is not marked latest, because the
+  prototype is not release-ready. GitHub's `/releases/latest` route therefore
+  does not resolve to it.
 - The archives are unsigned prototype builds. They carry no claim of release
   qualification, sandbox containment, or platform support beyond the
   [platform support guide](../platform-support.md).
@@ -83,7 +86,7 @@ run on Fedora, and the release notes and `BUILD-INFO.txt` say so.
   archive's glibc and WebKitGTK requirements move with it.
 - The Fedora image digest freezes the base packages until someone updates it.
 - If the repository enables immutable releases, deleting and recreating the
-  `testing` tag will fail. Revisit this decision before enabling that setting.
+  `latest` tag will fail. Revisit this decision before enabling that setting.
 - None of this has run on GitHub. Check the first run on `main`, the release
   assets, and the tag target before relying on it.
 
