@@ -888,7 +888,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
-- The five cancellation tests in `crates/omgcode-app/tests/chat_turn.rs` now
+- The six cancellation tests in `crates/omgcode-app/tests/chat_turn.rs` now
   time the interval from the moment the token is cancelled until the turn or
   compaction returns, as the desktop cancellation tests already did. They
   timed the whole turn, which also covers reading settings and the synced
