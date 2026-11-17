@@ -15,7 +15,9 @@ containment.
 | Linux distributions, kernels, and architectures | CI uses Ubuntu 24.04; supported distributions, kernels, and architectures are not selected |
 | Rust edition and minimum version | Edition 2024; workspace `rust-version` is 1.99.1 |
 | Pinned development toolchain | Rust 1.99.1 in `rust-toolchain.toml`, with rustfmt and Clippy |
-| Webview and frontend prerequisites | Not selected; no desktop frontend exists |
+| Webview and frontend prerequisites | Windows needs the WebView2 runtime. Linux needs the WebKitGTK 4.1 development packages to build ([Desktop shell](#desktop-shell)). The frontend build needs Node 24. No other version is qualified |
+| Desktop shell | Prototype `omgcode-desktop`. Built, tested, and driven end to end on Windows 11 build 26300 with WebView2 on 2026-11-16. On WSL 6.6 (Ubuntu 24.04) it compiled against WebKitGTK and its tests passed, but no window has been opened on Linux. The CI change that compiles it there has not run. No packaging |
+| Session index | `rusqlite` with bundled SQLite 3.54.1, so a C compiler is required on every build host. Tested on Windows 11 build 26300 and WSL 6.6 only; the Linux run covered the Unix-only inspection branch and the link-refusal tests |
 | User-project toolchains | Required; native installed/managed profile matrix not yet qualified |
 | Workspace directory identity | Configuration-only metadata check; required native ID and creation time must be available |
 | Workspace file broker | Bounded read/list/exclusive-create/single-directory creation through trusted CLI commands; release filesystem support is not qualified |
@@ -28,6 +30,21 @@ containment.
 | Checkpoint preparation/storage | Core API on Linux and Windows. Linux requires openat2/procfs, current-user mode0700 directories/mode0600 files, native birth-time metadata and real file/directory sync. Windows requires NTFS, exact protected per-user DACLs, and a trusted data root (ADR-0023) |
 | Trusted apply | Linux ext4 and Windows NTFS prototypes. Linux requires a positive statx mount ID (Linux 5.8 or later), same mount, supported file metadata, and file/parent sync. Windows requires one NTFS volume and supported metadata, with no power-loss claim (ADR-0024) |
 | macOS | Outside the first-release target |
+
+## Desktop shell
+
+The shell is a Tauri 2 application with a strict TypeScript frontend. It is a
+prototype. See the [desktop interface guide](desktop-interface.md).
+
+| Platform | Prerequisites | Evidence |
+| --- | --- | --- |
+| Windows | WebView2 runtime, MSVC build tools, Node 24 | Built and driven end to end on Windows 11 build 26300 with WebView2 on 2026-11-16 |
+| Linux | `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, and Node 24 | Compiled and passed the crate's tests on WSL 6.6 (Ubuntu 24.04) on 2026-11-16, with the frontend bundle built on Windows because that host has Node 18. The binary was started only to check its launch arguments; no window has been opened on Linux. The Rust workflow installs these packages on Ubuntu 24.04, but that workflow change has not run |
+
+Chat tools that start a process need a delegated cgroup v2 on Linux, as for
+`omgcode run` ([execution](execution.md#tree-limits)). The package list is the
+Tauri prerequisite list for Debian and Ubuntu as installed by the workflow; it
+is not a supported-distribution matrix.
 
 ## Support requirements
 

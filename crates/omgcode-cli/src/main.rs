@@ -2,33 +2,30 @@
 #![forbid(unsafe_code)]
 
 mod approvals_cli;
-mod context_cli;
 mod control_cli;
 mod credential_cli;
 mod file_cli;
-mod model_tools;
 mod packages_cli;
 mod run_cli;
+mod stream_cli;
 
 use clap::{Args, Parser, Subcommand};
-use directories::ProjectDirs;
-use omgcode_core::context::{
-    ContextBudget, DEFAULT_COMPACT_THRESHOLD, estimate_history_input_tokens,
+use omgcode_app::{
+    AppError, ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput,
+    ConnectionSource, LmToken, LocalConnection, MODEL_TOOLS_SUPPORTED, compact_journal,
+    create_session, data_root, read_lm_token, redact_known_secret, resolve_local_connection,
+    run_chat_turn_with_clients,
 };
-use omgcode_core::control::ControlStore;
-use omgcode_core::prompt::{
-    self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, PromptError,
-};
+use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
+use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
-use omgcode_core::session::{
-    MessageRole, NativePath, RequestManifest, SessionError, SessionJournal,
-};
-use omgcode_core::turn::replay_active;
+use omgcode_core::run::{InterruptWatch, watch_interrupt};
+use omgcode_core::session::{NativePath, SessionJournal};
+use omgcode_core::turn::CancelToken;
 use serde::Serialize;
 use serde_json::json;
-use std::env;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Whether trusted runs and toolchain profiles exist on this platform.
@@ -117,7 +114,13 @@ enum SessionCommand {
     Compact {
         #[command(flatten)]
         locator: JournalArgs,
-        #[arg(long, default_value = "http://127.0.0.1:1234/v1")]
+        /// The loopback endpoint. Not allowed with --provider-profile, whose
+        /// recorded endpoint is the only one a profile uses.
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:1234/v1",
+            conflicts_with = "provider_profile"
+        )]
         endpoint: String,
         #[arg(long)]
         model: String,
@@ -125,6 +128,11 @@ enum SessionCommand {
         context_tokens: u64,
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
+        /// Read the server token from this recorded `lm_studio` provider
+        /// profile's stored credential instead of OMGCODE_LM_TOKEN. The endpoint
+        /// then comes from the profile too.
+        #[arg(long, value_parser = non_empty_name)]
+        provider_profile: Option<String>,
     },
 }
 
@@ -149,7 +157,13 @@ struct ChatArgs {
     journal_native: Option<String>,
     #[arg(long, default_value = "Local model chat")]
     title: String,
-    #[arg(long, default_value = "http://127.0.0.1:1234/v1")]
+    /// The loopback endpoint. Not allowed with --provider-profile, whose
+    /// recorded endpoint is the only one a profile uses.
+    #[arg(
+        long,
+        default_value = "http://127.0.0.1:1234/v1",
+        conflicts_with = "provider_profile"
+    )]
     endpoint: String,
     #[arg(long)]
     model: String,
@@ -167,8 +181,27 @@ struct ChatArgs {
     /// Enable compaction at the effective trigger before a turn.
     #[arg(long)]
     auto_compact: bool,
+    /// Read the server token from this recorded `lm_studio` provider profile's
+    /// stored credential instead of OMGCODE_LM_TOKEN. The variable is then
+    /// not read, and the endpoint is the one recorded with the profile.
+    #[arg(long, value_parser = non_empty_name)]
+    provider_profile: Option<String>,
+    /// Stream the model's text to standard error as it arrives. The text is
+    /// provisional and escaped for display; standard output still carries the
+    /// one JSON result, and the journal records only the validated reply.
+    #[arg(long)]
+    stream: bool,
     /// Current user request. Quote it as one shell argument.
     message: String,
+}
+
+/// Reject an empty profile name. Core validates it against recorded profiles.
+fn non_empty_name(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Err("the provider profile name must not be empty".to_owned())
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 #[derive(Serialize)]
@@ -195,27 +228,10 @@ struct JournalOutput<T> {
     detail: T,
 }
 
-/// Visible, conservative context accounting for one chat turn.
-#[derive(Clone, Serialize)]
-pub(crate) struct ContextMeter {
-    estimated_input_tokens: u64,
-    context_tokens: u64,
-    max_output_tokens: u32,
-    effective_trigger: u64,
-    auto_compaction: bool,
-    estimate_scope: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compaction: Option<CompactionMeter>,
-}
-
-/// The active compaction boundary and summary identity.
-#[derive(Clone, Serialize)]
-struct CompactionMeter {
-    compacted_messages: u64,
-    retained_messages: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    summarizer_calls: Option<usize>,
-    summary_sha256: String,
+impl From<AppError> for CliError {
+    fn from(error: AppError) -> Self {
+        Self::new(error.code(), error.into_message())
+    }
 }
 
 impl CliError {
@@ -283,7 +299,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "checkpoint_restore": cfg!(any(target_os = "linux", target_os = "windows")),
             "checkpoint_deletion": cfg!(any(target_os = "linux", target_os = "windows")),
             "edit_previews": cfg!(any(target_os = "linux", target_os = "windows")),
-            "model_read_list_tools": model_tools::MODEL_TOOLS_SUPPORTED,
+            "model_read_list_tools": MODEL_TOOLS_SUPPORTED,
             "model_command_tool": "approval_required",
             "model_write_tools": "approval_required",
             "workspace_container_grants": omgcode_core::control::CONTAINER_GRANTS_SUPPORTED,
@@ -293,7 +309,11 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "package_network_enforcement": false,
             "package_fetch": true,
             "provider_profiles": true,
+            "provider_profile_endpoints": true,
             "provider_adapters": false,
+            "stored_credential_adapters": ["lm_studio"],
+            "streaming_adapters": ["lm_studio"],
+            "cancellable_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),
             "approvals": true,
@@ -357,6 +377,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 model,
                 context_tokens,
                 summary_tokens,
+                provider_profile,
             } => compact_session(
                 cli.data_dir,
                 locator,
@@ -364,6 +385,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 model,
                 context_tokens,
                 summary_tokens,
+                provider_profile,
             ),
         },
         Command::Workspace { action } => {
@@ -381,32 +403,27 @@ fn run(cli: Cli) -> Result<(), CliError> {
 
 /// Validate the provider before opening storage, then attach recovery information.
 fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
-    let token = read_lm_token()?;
-    let client = LocalModelClient::new(
-        LocalModelConfig {
-            base_url: args.endpoint.clone(),
-            model: args.model.clone(),
-            context_tokens: args.context_tokens,
-            max_output_tokens: args.max_output_tokens,
-        },
-        // CLI retains one copy for text redaction; the client owns its header.
-        token.clone(),
-    )
-    .map_err(provider_error)?;
-    let summary_tokens = context_cli::summary_output_tokens(args.context_tokens);
-    let summary_client = LocalModelClient::new(
-        LocalModelConfig {
-            base_url: args.endpoint.clone(),
-            model: args.model.clone(),
-            context_tokens: args.context_tokens,
-            max_output_tokens: summary_tokens,
-        },
-        token.clone(),
-    )
-    .map_err(provider_error)?;
-    args.title = redact_known_secret(&args.title, token.as_deref());
-    args.message = redact_known_secret(&args.message, token.as_deref());
-    args.instructions = redact_known_secret(&args.instructions, token.as_deref());
+    // The connection comes first, so an unreadable selected credential or a
+    // profile with no endpoint stops the command before the endpoint is
+    // checked and before any journal exists. With a profile, its recorded
+    // endpoint is the only endpoint used.
+    let LocalConnection { endpoint, token } = local_connection(
+        data_dir.as_deref(),
+        args.endpoint,
+        args.provider_profile.as_deref(),
+    )?;
+    let token_text = token.as_ref().map(LmToken::expose);
+    let settings = ChatSettings {
+        endpoint,
+        model: args.model,
+        context_tokens: args.context_tokens,
+        max_output_tokens: args.max_output_tokens,
+        instructions: args.instructions,
+        compact_threshold: args.compact_threshold,
+        auto_compact: args.auto_compact,
+    };
+    let clients = ChatClients::new(&settings, token_text)?;
+    let title = redact_known_secret(&args.title, token_text);
     let path = if args.journal.is_some() || args.journal_native.is_some() {
         Some(resolve_journal(
             args.journal.take(),
@@ -422,178 +439,45 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
             let workspace = args.workspace.as_deref().ok_or_else(|| {
                 CliError::new("configuration", "A workspace or journal is required")
             })?;
-            create_session(&data_root, workspace, &args.title)?
+            create_session(&data_root, workspace, &title)?
         }
     };
     let locator = journal_locator(&journal)?;
-    chat_turn(
-        &mut journal,
-        &data_root,
-        &client,
-        &summary_client,
-        args,
-        token.as_deref(),
-    )
-    .map_err(|error| error.with_session(locator))
-}
-
-/// Apply the context trigger before a turn and return the visible meter.
-fn preflight_context(
-    journal: &mut SessionJournal,
-    data_root: &std::path::Path,
-    args: &ChatArgs,
-    summary_client: &LocalModelClient,
-    token: Option<&str>,
-    fixed_extra_bytes: usize,
-    tools_enabled: bool,
-) -> Result<ContextMeter, CliError> {
-    if args.compact_threshold == 0 {
-        return Err(CliError::new(
-            "configuration",
-            "The compaction threshold must be a positive token count",
-        ));
-    }
-    let budget = ContextBudget {
-        threshold: args.compact_threshold,
-        context_tokens: args.context_tokens,
-        max_output_tokens: args.max_output_tokens,
+    let input = ChatTurnInput {
+        message: &args.message,
+        settings: &settings,
+        token: token_text,
     };
-    // Summary chunks are sized from the summary request's own output reserve.
-    let summary_budget = ContextBudget {
-        threshold: u64::MAX,
-        context_tokens: args.context_tokens,
-        max_output_tokens: context_cli::summary_output_tokens(args.context_tokens),
+    // From here an interrupt cancels the turn instead of ending the process,
+    // so the journal records the cancellation and keeps no open turn.
+    let cancel = CancelToken::new();
+    let interrupts =
+        cancel_on_interrupt(&cancel).map_err(|error| error.with_session(locator.clone()))?;
+    // Provisional text goes to standard error through one printer, which locks
+    // standard error only for each write, never across a model request.
+    let mut printer = stream_cli::StreamPrinter::new(std::io::stderr());
+    let turn = {
+        let mut on_stream = |event: ChatStreamEvent<'_>| printer.handle(event);
+        let mut hooks = ChatHooks {
+            cancel: Some(cancel),
+            ..ChatHooks::default()
+        };
+        if args.stream {
+            hooks.on_stream = Some(&mut on_stream);
+        }
+        run_chat_turn_with_clients(&mut journal, &data_root, &input, &clients, &mut hooks)
     };
-    let (mut estimate, mut assembly_blocked) = estimate_with_user(
-        journal,
-        args,
-        fixed_extra_bytes,
-        replay_allowed_now(journal, data_root, tools_enabled),
-    )?;
-    let mut summarizer_calls = None;
-    if budget.should_compact(estimate) || assembly_blocked {
-        if !args.auto_compact {
-            let reason = if assembly_blocked {
-                "Active history exceeds the prompt assembly limits".to_owned()
-            } else {
-                format!(
-                    "The conservative input estimate ({estimate} tokens) reaches the compaction trigger ({})",
-                    budget.trigger()
-                )
-            };
-            return Err(CliError::new(
-                "context",
-                format!("{reason}. Use session compact or rerun chat with --auto-compact."),
-            ));
-        }
-        let outcome = context_cli::compact_journal(
-            journal,
-            data_root,
-            summary_client,
-            token,
-            summary_budget,
-        )?;
-        summarizer_calls = Some(outcome.calls);
-        // Settings can change during the summarizer requests, so read the
-        // replay authority again for the compacted history.
-        (estimate, assembly_blocked) = estimate_with_user(
-            journal,
-            args,
-            fixed_extra_bytes,
-            replay_allowed_now(journal, data_root, tools_enabled),
-        )?;
-        if budget.should_compact(estimate) || assembly_blocked {
-            return Err(CliError::new(
-                "context",
-                "Compaction did not reduce the context below the trigger and assembly limits",
-            ));
-        }
-    }
-    Ok(context_meter(
-        journal,
-        args,
-        budget,
-        estimate,
-        summarizer_calls,
-    ))
-}
-
-/// Whether the next request may replay saved tool results, read from live
-/// settings at each call. Text-only chat never replays them; a tool turn
-/// replays them only under live `model_tools` and `read`, as the runtime
-/// does. Unreadable settings fail closed to the withheld form.
-fn replay_allowed_now(
-    journal: &SessionJournal,
-    data_root: &std::path::Path,
-    tools_enabled: bool,
-) -> bool {
-    tools_enabled
-        && model_tools::tool_replay_allowed(
-            data_root,
-            journal.snapshot().workspace_id,
-            journal.schema_version(),
-        )
-        .unwrap_or(false)
-}
-
-/// The input-only estimate for the next request, and whether its active
-/// history plus the pending user message exceeds a prompt-assembly limit that
-/// compaction can relieve (message count or total assembled bytes).
-fn estimate_with_user(
-    journal: &SessionJournal,
-    args: &ChatArgs,
-    fixed_extra_bytes: usize,
-    tool_results_allowed: bool,
-) -> Result<(u64, bool), CliError> {
-    // Estimate the history this mode will send: saved tool results, and a
-    // summary built from them, are withheld without live tool authority.
-    let (mut history, _) = replay_active(journal, tool_results_allowed);
-    history.push(ConversationMessage {
-        role: ConversationRole::User,
-        content: args.message.clone(),
+    stop_interrupts(interrupts);
+    // End the last streamed line, also after a failed turn.
+    printer.finish();
+    // Every post-open failure, including output failures, carries the locator.
+    let result = turn.map_err(CliError::from).and_then(|output| {
+        print_json(&JournalOutput {
+            locator: journal_locator(&journal)?,
+            detail: output,
+        })
     });
-    let estimate = estimate_history_input_tokens(
-        BASE_PROMPT.len(),
-        &args.instructions,
-        &history,
-        fixed_extra_bytes,
-    )
-    .map_err(|error| CliError::new("context", error.to_string()))?;
-    let assembly_blocked = matches!(
-        prompt::assemble(&args.instructions, &history),
-        Err(PromptError::TooManyHistoryMessages | PromptError::AssembledPromptTooLarge)
-    );
-    Ok((estimate, assembly_blocked))
-}
-
-fn context_meter(
-    journal: &SessionJournal,
-    args: &ChatArgs,
-    budget: ContextBudget,
-    estimate: u64,
-    summarizer_calls: Option<usize>,
-) -> ContextMeter {
-    let compaction = journal
-        .snapshot()
-        .compaction
-        .as_ref()
-        .map(|record| CompactionMeter {
-            compacted_messages: record.compacted_messages,
-            retained_messages: u64::try_from(journal.snapshot().messages.len())
-                .unwrap_or(u64::MAX)
-                .saturating_sub(record.compacted_messages),
-            summarizer_calls,
-            summary_sha256: record.summary_sha256.clone(),
-        });
-    ContextMeter {
-        estimated_input_tokens: estimate,
-        context_tokens: budget.context_tokens,
-        max_output_tokens: args.max_output_tokens,
-        effective_trigger: budget.trigger(),
-        auto_compaction: args.auto_compact,
-        estimate_scope: "pre_turn_conservative",
-        compaction,
-    }
+    result.map_err(|error| error.with_session(locator))
 }
 
 fn compact_session(
@@ -603,6 +487,7 @@ fn compact_session(
     model: String,
     context_tokens: u64,
     summary_tokens: u32,
+    provider_profile: Option<String>,
 ) -> Result<(), CliError> {
     if summary_tokens == 0 || u64::from(summary_tokens) >= context_tokens {
         return Err(CliError::new(
@@ -610,7 +495,9 @@ fn compact_session(
             "summary-tokens must be positive and below context-tokens",
         ));
     }
-    let token = read_lm_token()?;
+    let LocalConnection { endpoint, token } =
+        local_connection(data_dir.as_deref(), endpoint, provider_profile.as_deref())?;
+    let token_text = token.as_ref().map(LmToken::expose);
     let client = LocalModelClient::new(
         LocalModelConfig {
             base_url: endpoint,
@@ -618,24 +505,31 @@ fn compact_session(
             context_tokens,
             max_output_tokens: summary_tokens,
         },
-        token.clone(),
+        token_text.map(str::to_owned),
     )
     .map_err(provider_error)?;
     let data_root = data_root(data_dir)?;
     let path = resolve_journal(locator.journal, locator.journal_native)?;
     let mut journal = SessionJournal::open(&path).map_err(session_error)?;
+    // An interrupt stops the summarizer request in flight; a cancelled
+    // compaction records nothing.
+    let cancel = CancelToken::new();
+    let interrupts = cancel_on_interrupt(&cancel)?;
     // Live settings decide whether saved tool results may reach the summarizer.
-    let outcome = context_cli::compact_journal(
+    let outcome = compact_journal(
         &mut journal,
         &data_root,
         &client,
-        token.as_deref(),
+        token_text,
         ContextBudget {
             threshold: u64::MAX,
             context_tokens,
             max_output_tokens: summary_tokens,
         },
-    )?;
+        &cancel,
+    );
+    stop_interrupts(interrupts);
+    let outcome = outcome?;
     let locator = journal_locator(&journal)?;
     print_json(&JournalOutput {
         locator,
@@ -647,196 +541,56 @@ fn compact_session(
     })
 }
 
-/// Preflight deterministic failures before starting; preserve uncertain I/O state.
-fn chat_turn(
-    journal: &mut SessionJournal,
-    data_root: &std::path::Path,
-    client: &LocalModelClient,
-    summary_client: &LocalModelClient,
-    args: ChatArgs,
-    token: Option<&str>,
-) -> Result<(), CliError> {
-    if journal.snapshot().archived {
-        return Err(CliError::new(
-            "session",
-            "Restore the archived session before chatting",
-        ));
-    }
-    if journal.snapshot().active_turn.is_some() {
-        return Err(CliError::new(
-            "session",
-            "The previous turn is incomplete; inspect it, then use session interrupt to mark it failed without retrying",
-        ));
-    }
-    let mode = model_tools::select(data_root, journal)?;
-    let tool_extra = match &mode {
-        model_tools::ToolMode::Enabled { .. } => model_tools::TOOL_SCHEMA_ESTIMATE_BYTES,
-        model_tools::ToolMode::Disabled { .. } => 0,
-    };
-    let tools_enabled = matches!(mode, model_tools::ToolMode::Enabled { .. });
-    let meter = preflight_context(
-        journal,
-        data_root,
-        &args,
-        summary_client,
-        token,
-        tool_extra,
-        tools_enabled,
-    )?;
-    let manifest = RequestManifest {
-        base_prompt: BASE_PROMPT.to_owned(),
-        prompt_version: BASE_PROMPT_VERSION.to_owned(),
-        prompt_sha256: prompt::base_prompt_sha256(),
-        custom_instructions: args.instructions.clone(),
-        model: args.model.clone(),
-        base_url: args.endpoint.clone(),
-        context_tokens: args.context_tokens,
-        max_output_tokens: args.max_output_tokens,
-        tool_schema_version: None,
-        tools: None,
-    };
-    // Live settings decide whether this turn offers the workspace tools.
-    let reason = match mode {
-        model_tools::ToolMode::Enabled { workspace_id } => {
-            let mut output = model_tools::run(
-                journal,
-                data_root,
-                workspace_id,
-                client,
-                token,
-                model_tools::UserTurn {
-                    message: &args.message,
-                    instructions: &args.instructions,
-                    manifest,
-                },
-            )?;
-            output.context = Some(meter.clone());
-            return print_json(&JournalOutput {
-                locator: journal_locator(journal)?,
-                detail: output,
-            });
-        }
-        model_tools::ToolMode::Disabled { reason } => reason,
-    };
-    // Text-only chat has no model file-read authority, so saved tool results,
-    // and a summary built from them, are withheld rather than sent again.
-    let (mut history, withheld_tool_results) = replay_active(journal, false);
-    for message in &mut history {
-        message.content = redact_known_secret(&message.content, token);
-    }
-    history.push(ConversationMessage {
-        role: ConversationRole::User,
-        content: args.message.clone(),
-    });
-    let messages = prompt::assemble(&args.instructions, &history)
-        .map_err(|error| CliError::new("prompt", error.to_string()))?;
-    journal
-        .preflight_request(&args.message, &manifest)
-        .map_err(session_error)?;
-    let request_id = journal.start_turn().map_err(session_error)?;
-    journal
-        .record_message(MessageRole::User, &args.message)
-        .map_err(session_error)?;
-    journal
-        .record_manifest(request_id, manifest)
-        .map_err(session_error)?;
-    let mut reply = match client.complete(&messages) {
-        Ok(reply) => reply,
-        Err(error) => {
-            journal
-                .fail_turn(request_id, "provider_error")
-                .map_err(|_| {
-                    CliError::new(
-                        "persistence",
-                        "Provider failed and failure could not be recorded",
-                    )
-                })?;
-            return Err(provider_error(error));
-        }
-    };
-    reply.content = redact_known_secret(&reply.content, token);
-    // Keep every accepted reply resumable within the journal and prompt limits.
-    // The wire response limit also covers protocol metadata, so it is larger.
-    if reply.content.len() > 16 * 1024 {
-        journal
-            .fail_turn(request_id, "response_too_large")
-            .map_err(session_error)?;
-        return Err(CliError::new(
-            "provider",
-            "Assistant text exceeds the 16 KiB session message limit",
-        ));
-    }
-    if let Err(error) = journal.record_message(MessageRole::Assistant, &reply.content) {
-        if matches!(
-            error,
-            SessionError::LimitReached | SessionError::InvalidValue(_)
-        ) {
-            journal
-                .fail_turn(request_id, "response_too_large")
-                .map_err(session_error)?;
-        }
-        // Failed writes/syncs can have changed storage. Do not overwrite that
-        // uncertain state with a fabricated terminal event or an automatic retry.
-        return Err(session_error(error));
-    }
-    journal.complete_turn(request_id).map_err(session_error)?;
-    print_json(&JournalOutput {
-        locator: journal_locator(journal)?,
-        detail: json!({
-            "reply": reply,
-            "model_tools": {
-                "mode": "disabled",
-                "reason": reason,
-                "withheld_tool_results": withheld_tool_results,
-            },
-            "context": meter,
-        }),
+/// Cancel `cancel` when the operator interrupts the command (ADR-0051).
+///
+/// Ctrl-C and Ctrl-Break on Windows, and `SIGINT` and `SIGTERM` on Linux, are
+/// absorbed from here to the end of the process and set the token instead, so
+/// a model or compaction request stops within about 25 ms and the outcome is
+/// recorded. A command that cannot install the handler stops before any model
+/// request with the code `interrupt`.
+fn cancel_on_interrupt(cancel: &CancelToken) -> Result<InterruptWatch, CliError> {
+    let token = cancel.clone();
+    watch_interrupt(move || token.cancel()).map_err(|error| {
+        CliError::new(
+            "interrupt",
+            format!("Interrupt handling could not be installed: {error}"),
+        )
     })
 }
 
-/// Create a session with current registry metadata when a trusted root is configured.
-///
-/// An absent or valid unconfigured store preserves legacy session creation. Corrupt
-/// control state or an invalid workspace under a configured root fails closed.
-fn create_session(
-    data_root: &std::path::Path,
-    workspace: &std::path::Path,
-    title: &str,
-) -> Result<SessionJournal, CliError> {
-    let registration_id = match ControlStore::open_existing(data_root)
-        .map_err(|error| CliError::new("control", error.to_string()))?
-    {
-        Some(mut store) if store.has_development_root() => {
-            let registration = store
-                .register_workspace(workspace, store.revision())
-                .map_err(|error| CliError::new("control", error.to_string()))?;
-            let id = registration.id();
-            drop(store);
-            Some(id)
-        }
-        Some(store) => {
-            drop(store);
-            None
-        }
-        None => None,
-    };
-
-    let journal = match registration_id {
-        Some(id) => SessionJournal::create_with_workspace_id(data_root, workspace, title, id),
-        None => SessionJournal::create(data_root, workspace, title),
-    }
-    .map_err(session_error)?;
-    Ok(journal)
+/// Stop the interrupt watcher once the turn or compaction has returned.
+fn stop_interrupts(interrupts: InterruptWatch) {
+    // The watcher is joined on every path. Its only failure is a panic in
+    // the watcher thread, which cannot change the outcome that was already
+    // recorded, so it is not reported over the command's result.
+    let _ = interrupts.stop();
 }
 
-/// Choose trusted application storage; repository content cannot set this value.
-fn data_root(override_path: Option<PathBuf>) -> Result<PathBuf, CliError> {
-    if let Some(path) = override_path {
-        return Ok(path);
+/// Obtain the endpoint and server token for `chat` or `session compact`.
+///
+/// Without a profile this is exactly what it always was: the command-line
+/// endpoint and the environment token, with no data root computed. With one,
+/// the endpoint and the token come only from that profile (the clap
+/// definitions refuse `--endpoint` beside it) and `OMGCODE_LM_TOKEN` is not
+/// read.
+fn local_connection(
+    data_dir: Option<&Path>,
+    endpoint: String,
+    provider_profile: Option<&str>,
+) -> Result<LocalConnection, CliError> {
+    match provider_profile {
+        None => Ok(resolve_local_connection(
+            Path::new(""),
+            &ConnectionSource::Environment { endpoint },
+        )?),
+        Some(name) => {
+            let root = data_root(data_dir.map(Path::to_path_buf))?;
+            Ok(resolve_local_connection(
+                &root,
+                &ConnectionSource::Profile(name.to_owned()),
+            )?)
+        }
     }
-    ProjectDirs::from("org", "OMG-Software", "OMGCode")
-        .map(|directories| directories.data_local_dir().to_owned())
-        .ok_or_else(|| CliError::new("configuration", "No per-user application data directory"))
 }
 
 fn print_session(journal: &SessionJournal) -> Result<(), CliError> {
@@ -885,35 +639,6 @@ fn resolve_journal(path: Option<PathBuf>, native: Option<String>) -> Result<Path
     }
 }
 
-/// Read only the trusted CLI's credential input, without including it in errors.
-/// Session creation and chat use this same source for known-token redaction.
-fn read_lm_token() -> Result<Option<String>, CliError> {
-    match env::var("OMGCODE_LM_TOKEN") {
-        Ok(value) if !value.is_empty() => Ok(Some(value)),
-        Ok(_) | Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => Err(CliError::new(
-            "configuration",
-            "Server token must be Unicode",
-        )),
-    }
-}
-
-/// Remove the configured credential from untrusted text before retention or egress.
-/// If replacement would itself contain the credential, discard that text instead.
-fn redact_known_secret(text: &str, token: Option<&str>) -> String {
-    match token.filter(|token| !token.is_empty()) {
-        Some(token) => {
-            let result = text.replace(token, "[REDACTED]");
-            if result.contains(token) {
-                String::new()
-            } else {
-                result
-            }
-        }
-        None => text.to_owned(),
-    }
-}
-
 /// Serialize untrusted strings as escaped JSON and propagate broken output errors.
 fn print_json(value: &impl Serialize) -> Result<(), CliError> {
     let mut output = io::stdout().lock();
@@ -925,9 +650,9 @@ fn print_json(value: &impl Serialize) -> Result<(), CliError> {
 }
 
 fn session_error(error: omgcode_core::session::SessionError) -> CliError {
-    CliError::new("session", error.to_string())
+    AppError::session(error).into()
 }
 
 fn provider_error(error: omgcode_core::provider::ProviderError) -> CliError {
-    CliError::new("provider", error.to_string())
+    AppError::provider(error).into()
 }

@@ -1,7 +1,9 @@
 # Project documentation
 
 OMGCode has a Rust CLI prototype for local chat, JSONL sessions, and a
-bounded native workspace file broker. The broker is available only through
+bounded native workspace file broker, and a prototype Tauri desktop shell with a
+session tree, search, chat, and an isolated approvals window. The shell is
+unpackaged and has run only on Windows. The broker is available only through
 trusted operator commands and, when a workspace enables `model_tools`, to the
 local model's read, list, approval-gated exact-edit, and approval-gated command
 tools. The edit tool changes one existing file only through checkpointed apply
@@ -28,10 +30,11 @@ remaining product contracts.
 | [Project overview](../README.md) | Product scope, proposed architecture, and roadmap |
 | [Implementation plan](../IMPLEMENTATION_PLAN.md) | Resumable baseline, phase order, acceptance criteria, and resume commands |
 | [Build and run](development.md) | Current CLI, build commands, crate boundaries, limits, and dependencies |
+| [Desktop interface](desktop-interface.md) | The Tauri shell: windows, commands, session tree, search, chat, approvals, security limits, and development |
 | [Coding rules](coding-rules.md) | Rust design, ownership, errors, concurrency, and workflow |
-| [Security coding rules](security-coding-rules.md) | Permission, sandbox, credential, Git, and UI boundaries |
+| [Security coding rules](security-coding-rules.md) | Permission, sandbox, credential, Git, and UI boundaries, including the webview command rules |
 | [Testing standards](testing-standards.md) | Test design, execution, and evidence requirements |
-| [Platform support](platform-support.md) | Windows/Linux targets and the evidence needed for support |
+| [Platform support](platform-support.md) | Windows/Linux targets, prerequisites, and the evidence for each, including the desktop shell |
 | [Provider authentication](provider-authentication.md) | Required subscription/API profiles, provider evidence, and readiness gates |
 | [Workspace settings](workspace-permissions.md) | Implemented workspace IDs, configuration-only permissions, revisions, audit, and remaining gates |
 | [Workspace file access](file-access.md) | Native broker, previews, Linux ext4 apply, checkpoint storage, and existing-only recovery |
@@ -43,9 +46,9 @@ remaining product contracts.
 | [Skills](skills.md) | Settings, package validation, enablement, loading, and controlled scripts |
 | [Bundled skill sources](../skills/README.md) | Source-only packages and provenance; runtime loading remains planned |
 | [MCP support](mcp.md) | Server connections, transports, credentials, capabilities, and tool authorization |
-| [Session storage](session-storage.md) | JSONL layout/schema, tool events, durable journals, archive/restore, and safe resume |
+| [Session storage](session-storage.md) | JSONL layout/schema, tool events, durable journals, lock-free inspection, the derived session index, archive/restore, and safe resume |
 | [Memories](memories.md) | User-selected project/global scope, management, retrieval, and lifecycle |
-| [Repository checks](repository-checks.md) | CodeRabbit, CodeQL, Sonar, credentials, and main protection |
+| [Repository checks](repository-checks.md) | CodeRabbit, CodeQL, Sonar, the Rust and Frontend workflows, credentials, and main protection |
 | [ADR register](adr/index.md) | Lasting decisions, alternatives, and consequences |
 | [Changelog](../CHANGELOG.md) | Changes awaiting release |
 
@@ -68,6 +71,7 @@ remaining product contracts.
 | Skills, imports, enablement, or skill resources | Skills, agent instructions, and relevant security/testing guidance |
 | MCP connections, tools, resources, prompts, or client capabilities | MCP, security rules, and testing standards |
 | Session format, persistence, archives, restore, or resume | Session storage, security rules, and testing standards |
+| The desktop shell, its commands, windows, frontend, or approval review | Desktop interface, security rules, testing standards, and platform support |
 | Memory saving, scope, retrieval, deletion, or reuse | Memories, agent instructions, context management, and security/testing guidance |
 | Product scope or the proposed architecture | Root README |
 | Project implementation status or module guidance | Root AGENTS.md and relevant directory guidance |
@@ -86,7 +90,10 @@ links for repository files. Keep whitespace clean and end files with a newline.
 Repository review and analysis are configured in the repository-checks guide.
 The Rust workflow adds formatting, strict Clippy, unit/integration tests, and
 separate documentation tests on Windows and Linux. The development guide owns
-the current commands and limits. There is no frontend yet. The trusted `run`
+the current commands and limits. The desktop frontend (`crates/omgcode-desktop/ui`)
+has its own Frontend workflow with strict type checks, Biome, and Vitest; that
+workflow and the Rust workflow's frontend build step have not run on GitHub
+yet. The trusted `run`
 command uses native confinement that was tested on one Windows build and one
 Linux kernel only. Every trusted run has memory, process-count, CPU-time, and
 sampled net disk-growth limits; the disk limit is not a filesystem quota.
@@ -95,8 +102,12 @@ uses them, and network access remains all-or-nothing. The trusted
 `packages fetch` command downloads from declared origins into a per-workspace
 cache. A selected root is exposed read-only on Linux and Windows; Windows
 needs a read-execute grant, and Linux falls back to application storage.
-Provider profiles record connection shapes without credentials or adapters;
-no adapter or login uses them. Approval records authorize one exact
+Provider profiles record connection shapes without credentials, and an
+`lm_studio` profile can record a loopback endpoint. Only the local LM Studio
+adapter reads a stored credential, through an operator-selected profile that
+supplies both the endpoint and the token (ADR-0047, ADR-0048); no cloud adapter
+or login exists. That adapter can stream a reply (ADR-0049): the text is
+provisional, and the journals record only the validated reply. Approval records authorize one exact
 model-tool call, and the edit and command tools are their only consumers. Chat
 dispatches the read/list tools and, with the required live permissions, the
 approval-gated edit and command tools, only for a workspace that enables

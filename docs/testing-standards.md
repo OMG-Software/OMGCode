@@ -5,8 +5,10 @@ Use these standards with the [coding rules](coding-rules.md) and
 
 ## Current state
 
-The pinned Cargo workspace has three crates: `omgcode-core`,
-`omgcode-cli`, and `omgcode-platform`. It includes deterministic core,
+The pinned Cargo workspace has five crates: `omgcode-core`,
+`omgcode-cli`, `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The
+desktop crate has a TypeScript frontend with its own tests (see
+[Desktop shell and frontend](#desktop-shell-and-frontend)). It includes deterministic core,
 CLI, and platform tests. The core includes configuration-only workspace records,
 permission preferences, and a local settings/audit journal. Directory identity
 checks require a native file ID and directory creation time. On Linux, capture
@@ -54,7 +56,17 @@ unlocked Secret Service and fail without one; they must not be skipped or
 mocked. Only the Linux prompt-refusal tests use a mock Secret Service over a
 socket pair, because a real service cannot be made to answer with a prompt on
 demand. CI installs gnome-keyring and unlocks a login collection with one empty
-password line in the existing user session bus. See [workspace permissions](workspace-permissions.md)
+password line in the existing user session bus. The native store belongs to
+the user's account, so a test against it must delete only the items it
+created, including after a failed assertion. Tests of stored-credential use
+(0.30.0, [ADR-0047](adr/0047-read-the-local-provider-token-from-the-credential-store.md))
+assert the `Authorization` header that a mock provider received: the stored
+token is the bearer, and a different `OMGCODE_LM_TOKEN` value is ignored. The
+endpoint tests (0.31.0, [ADR-0048](adr/0048-bind-a-stored-credential-to-its-profile-endpoint.md))
+use two mock providers: the token must reach the profile's endpoint, and the
+test asserts that the second provider received nothing. They also assert that a
+control journal with a profile that has no endpoint replays and serializes
+with its exact bytes. See [workspace permissions](workspace-permissions.md)
 and the [workspace file-access contract](file-access.md) for their scope and
 current limits. [Repository review and analysis](repository-checks.md) have
 separate workflows.
@@ -120,6 +132,13 @@ tests for documentation-only work.
   tests. Pass explicit configuration or isolate the case in a subprocess.
 - Use barriers, channels, deterministic clocks, and injected failures for
   concurrency. Arbitrary sleeps are not evidence of ordering.
+- A fixed amount of work is not a reliable delay. Its duration depends on the
+  host, so a loop that takes two seconds on a quiet machine can outlast a
+  wall-clock limit on a loaded one. When a test needs two processes to
+  overlap, make each wait for a signal from the other, such as a file the
+  other writes, with a bounded wait and a failing exit when the signal never
+  comes. A pass then proves the overlap. A fixture that must reach a state
+  before the test acts signals that state; the test does not sleep and hope.
 - A Unix child can inherit a test-held `flock` until `exec`, so the lock can
   outlive the test's close. CLI integration tests must open lock-holding stores
   inside `without_child_spawns` and start children through the spawn gate in
@@ -152,7 +171,7 @@ As the relevant components are implemented, include:
 | Networking | Disabled egress, host-local access, redirects, provider routing |
 | Package network | Profile storage and the trusted fetch: recording, replay, revision, origin normalization, duplicate and invalid-origin refusal, removal, task-network gating, undeclared-origin and path refusal before a request, redirect refusal, size limits, cache-name validation, existing-cache refusal, remaining-time send and body reads under a trickled response, atomic no-replace publication under a concurrent collision, private cache content, and start/finish audit without the URL text. Cache roots cover per-workspace set/clear/replay, overlap refusals, grant revocation when a root changes or clears, stale foreign-grant refusal, refusal of a root another workspace can already read, the configured fetch location, Linux read/write/parent denial, Windows access with a scoped grant, and Windows refusal without one or without a selected root. No run accepts a profile. A future run-side mechanism must add allowed-origin success, undeclared-origin refusal, redirect and credential refusal, offline fallback, and platform refusal ([ADR-0034](adr/0034-gate-package-networking-behind-enforceable-destination-control.md), [ADR-0035](adr/0035-fetch-packages-through-a-trusted-allowlisted-cache.md), [ADR-0037](adr/0037-use-a-per-workspace-cache-root-and-a-scoped-windows-grant.md)) |
 | Providers | Partial/malformed streams, duplicate calls, interruption, retries |
-| Provider profiles | Kind/authentication pairing, duplicate and invalid names, case-insensitive lookup, revisioned add/remove, replay, no credential or endpoint storage, and capability reporting. No adapter or login is exercised |
+| Provider profiles | Kind/authentication pairing, duplicate and invalid names, case-insensitive lookup, revisioned add/remove, replay, no credential or endpoint storage, and capability reporting. No cloud adapter or login is exercised |
 | Provider credentials | Identifier format refused before I/O; empty, oversized, and line-ending input; `Debug` redaction; native round trip, create-only refusal, not-found, and delete on both hosts; on Windows, edited, truncated, and identifier-swapped blobs as corrupt and broadened or unprotected DACLs refused; on Linux, exact item attributes and label and duplicate items as corrupt; revisioned bind/unbind and replay; refusal for subscription and `none` profiles before any native store; rotation deleting the old item; a binding refused before any journal write deleting the new item; a binding whose journal sync failed keeping and naming the new item, with the binding on disk naming a present item; store-failure cleanup classification, cleanup of a left item, and an identifier kept when cleanup fails; on Windows, an injected directory-sync failure after a complete write removing the file, and with a failed removal as well, both failures reported and the file kept loadable and deletable; the secret read before the control store opens; on Linux, a pending placeholder loading as corrupt, a mock service's create and delete prompts refused without `Prompt` being called, and a create reply carrying both an item and a prompt refused with its placeholder deleted; profile removal naming its credential; and no secret in stdout, stderr, the control journal, or any file under the data root. A locked Linux collection is not exercised, because unlocking it again needs a prompt ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)) |
 | Approvals | Request validation, pending/list/show, approve/deny, single-use consume, expiry, binding mismatch, settings-revision invalidation, replay, unknown IDs, and limits; a `file_write` approval refused without `--writers-stopped`, the flag refused for other operations, the acknowledgement reported and replayed, an earlier journal's unacknowledged `file_write` record replayed but refused at consumption, and a misplaced acknowledgement refused at replay. No operation executes |
 | Authentication | Callback binding, consent, subscription entitlement, refresh, revocation, account/billing isolation |
@@ -183,8 +202,30 @@ be explicit opt-in, use disposable data and a budget, and report which endpoint
 and model were tested. A mock pass is not a live-provider compatibility result.
 
 The current LM Studio adapter tests use a local HTTP fixture. They do not call a
-live model. The adapter's text method sends one non-streaming Chat
-Completions request and rejects any tool call in the reply. It requires the
+live model. The adapter's text method sends one Chat Completions request,
+non-streaming by default, and rejects any tool call in the reply. Its streamed
+methods (0.32.0) are tested against the same kind of fixture. The fixtures
+cover the strict stream rules (content type, line forms, `[DONE]`, an
+incomplete stream, duplicate keys, an `error` member, finish reasons, and the
+size and deadline bounds), tool-call assembly by index, redaction of the token
+across piece boundaries, the display-safe stream, the desktop event hub, and
+the frontend runner and live preview. A mock pass is not a live-provider
+result, and no live LM Studio server was used for the stream rules. The
+cancellation fixtures (0.33.0) cover a cancel before the request is sent, before
+the response head, and during the body; the stream parser under arbitrary
+chunking; the turn runtime's cancelled arm; the cancellation of streamed
+text-only and tool-enabled turns; the desktop cancel and shutdown cases; and the
+frontend notice, which is decided by the error code. They used the same kind of
+local fixture. The 0.34.0 fixtures (ADR-0051) add a cancel of a non-streamed
+text and tool request before the request and before the response head; a
+unit test, ordered after the head arrived, that cancels while the rest of a
+held body is awaited; a slow non-streamed reply that a live token does not disturb;
+the runtime's use of a caller's token; the cancellation of non-streamed text
+and tool turns, of the compaction before a turn, and of `compact_journal`; a
+token set before a turn; the desktop cancel of a non-streamed turn and the
+shutdown grace with a turn held in an event sink; and, on Linux only, `SIGINT`
+delivered to the CLI during `chat` and `session compact`. The platform
+interrupt test also covers `watch_interrupt`. The adapter requires the
 compiled base prompt and accepts only a literal loopback HTTP endpoint. The
 adapter is not a permission boundary: the CLI selects tool mode from the live
 `model_tools` preference, and the runtime rechecks that preference before each
@@ -199,8 +240,10 @@ own. It passed on Windows 11 build 26300 and WSL 6.6 (Ubuntu 24.04) on
 2026-11-14. The turn-runtime tests use a scripted model interface. The tool-enabled chat tests
 use a mock that returns the documented OpenAI-compatible tool-call shape; they
 do not establish live LM Studio tool-call compatibility. A single opt-in spot-check
-with LM Studio 0.4.28 and `google/gemma-4-e4b` on Windows is recorded in the implementation plan. Model discovery, streaming, cancellation, and
-live model compatibility remain future qualification work. The CLI can inspect
+with LM Studio 0.4.28 and `google/gemma-4-e4b` on Windows is recorded in the implementation plan. Model discovery, streaming
+against a live server, cancellation against a live server, an interrupt
+delivered to the CLI on Windows, and live model compatibility remain future
+qualification work. The CLI can inspect
 and archive sessions, but it does not execute recorded tool actions or resume
 an incomplete turn.
 
@@ -252,8 +295,130 @@ form unsupported combinations. Explicitly document any excluded combination and
 its reason. Test a claimed minimum Rust version separately when it differs from
 the pinned development toolchain.
 
-The frontend does not exist. Add its actual type, lint, rendering, and link
-checks here when it is introduced. Do not report nonexistent gates as active.
+Build the desktop frontend before any of these Cargo commands. The desktop
+crate embeds `crates/omgcode-desktop/ui/dist`, so the commands fail without it.
+The frontend gates are listed in
+[Desktop shell and frontend](#desktop-shell-and-frontend). Do not report a gate
+that did not run as active.
+
+## Desktop shell and frontend
+
+Frontend commands, run from `crates/omgcode-desktop/ui` with Node 24:
+
+```text
+npm ci
+npm run check
+npm run lint
+npm test
+npm run test:dist
+```
+
+`npm run build` must run before the Cargo commands above. `npm test` runs the
+`dist` checks only when `dist/` exists; otherwise they show as skipped, so use
+`npm run test:dist` to build and run them.
+
+- **Frontend tests (Vitest, jsdom).** They cover the interface models, the
+  main window and transcript rendering, the approvals review flow, polling, the
+  chat runner (subscription, reconcile check, and fallback poll), the live
+  preview and its bounds, the channel wrapper, and the mock backend. Security scans assert that the source has no
+  `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, or
+  `new Function`; that the HTML entries have no inline script or style and no
+  `http` or `https` URL; that no browser storage is used; that
+  `@tauri-apps/api` is imported only in `src/ipc/client.ts`; that the main
+  bundle contains neither `approval_decide` nor `approval_detail`; that no
+  approvals asset contains `chat_subscribe`; and that no mock fixture is in
+  `dist`. jsdom is not a browser. These tests do not
+  establish how WebView2 or WebKitGTK behave.
+- **Desktop crate tests (no webview).** They check that the policy table, the
+  capability files, the build script's command list, and the frontend's command
+  names agree; the configuration and content security policy; the navigation
+  guard; handler registration; that every handler authorizes first with its own
+  command; that handler parameter names match the frontend's argument keys; the
+  launch argument parser; and the shutdown gate. They do not exercise the
+  capability layer, which Tauri enforces and which needs a real webview.
+- **Service tests.** `DesktopService` is tested with a mock provider. They cover
+  chat turns, cancellation, shutdown, review tokens, approvals, the chat event
+  hub (preview bounds, replay, event order, and the `finished` guard), and the
+  session index with its refusals and rebuilds. Core tests cover lock-free
+  inspection, discovery, the index, and approval review.
+- **Real-application end to end.** On 2026-11-16 the built Windows shell was
+  driven over the WebView2 remote-debugging port with real mouse and text
+  input, against a mock local model server and a scratch data root. The run
+  created a session in a registered workspace, ran a chat turn that requested
+  `workspace_edit_file`, reviewed the pending approval in the approvals window,
+  approved it with writers-stopped, and ran a second turn that applied the edit
+  (the file on disk changed). It also searched with a marked snippet, archived
+  and restored a session, and closed with exit status 0 in about one second
+  with no leftover processes. From page script, `main` was refused
+  `approval_decide`, `approval_detail`, and `approvals_list`; `approvals` was
+  refused `session_tree` and `chat_send`; a different endpoint returned
+  `invalid_request`; an unregistered workspace returned `unknown_workspace`; and
+  remote fetch, navigation, `window.open`, and string evaluation were blocked.
+  This proves the Windows shell's wiring against a mock server. It does not
+  prove a live model, Linux, packaging, or resistance to a hostile page. It did
+  not exercise shutdown with a provider request in flight (the 0.33.0 service
+  tests cover shutdown during a streamed request), or a live call that
+  reaches the Rust `authorize` check past the capability refusal.
+- **Streaming end to end.** On 2026-11-16 the built Windows shell was driven
+  the same way against a mock server that paces an event stream. A streamed
+  tool-enabled turn showed the live entry, reset it for the second model
+  request, kept markup as literal text, and marked a bidirectional override.
+  The recorded reply appeared within 100 ms of the end of the stream, which
+  shows the pushed `finished` event. A stream without `[DONE]` showed its
+  partial text and then failed, and the partial text was not recorded. A
+  subscription made from page script replaced the page's own and received the
+  events in order; the page then settled through its five-second check.
+  `approvals` was refused `chat_subscribe`. With `--stream off` the request was
+  not streamed and no live entry appeared. This proves the Windows wiring
+  against a mock. It does not prove a live LM Studio server, Linux, or the
+  fallback poll, which only the frontend tests exercise.
+- **Cancellation end to end.** On 2026-11-16 the built Windows shell was driven
+  the same way against a mock server that sends two pieces and then holds the
+  stream open. In a workspace without model tools, so the turn was text-only,
+  the Cancel button ended the turn: the window settled 74 ms after the click
+  with the plain notice `Turn cancelled.`, the server saw the connection close
+  28 ms after the click, `chat_status` reported `failed` with the code
+  `cancelled`, and the next turn in the session was accepted. Then the window
+  was closed while a second stream was held: the process exited with status 0
+  148 ms after the close message was posted, and after a restart the session
+  was idle, showed both turns as `Turn failed: cancelled`, held none of the
+  partial text, and accepted a new turn. The host was at about 100% CPU from
+  an unrelated build during this run. The shutdown time is measured from the
+  posting of the close message, because the helper that posts it takes
+  seconds to start on a loaded host. This proves the Windows wiring against a
+  mock. It does not prove a live LM Studio server or Linux.
+- **ReFS and `TEMP`.** If the repository is on a ReFS volume, point `TEMP` and
+  `TMP` at an NTFS directory before the Cargo tests. The private-store,
+  credential, container, and replacement tests need NTFS. Report the setting.
+- **Temp-directory ACL.** A data root under the user's Temp directory inherits
+  an ACL that the private store refuses. The fixtures reset it; for a manual
+  run do the same with
+  `icacls <dir> /inheritance:r /grant:r *<SID>:(OI)(CI)F`.
+- **Skipped link tests.** `a_symlinked_journal_is_rejected` and
+  `a_database_file_that_is_a_link_is_refused` print `SKIPPED link assertions` and
+  return when the host cannot create file symbolic links (Windows error 1314).
+  Report them as skipped, not passed, and run them on a host that can. The
+  directory-junction tests ran on the Windows development host, and both link
+  tests ran on Linux.
+- **Linux.** On 2026-11-16 the workspace, including the desktop crate, passed
+  formatting, Clippy, and every test on WSL 6.6 (Ubuntu 24.04, ext4), from a
+  clean LF clone with the frontend bundle built on Windows. That run executed
+  the Unix-only branches of inspection and the index. The Linux binary was
+  started only to check its launch arguments. No window has been opened on
+  Linux, so do not describe the webview, IPC, capability enforcement, or
+  navigation guard as tested there.
+- **Private data root on Unix.** The checkpoint store refuses a data root that
+  is not mode 0700. A fixture that creates the directory itself must set that
+  mode; the default create mode is refused with "private directory ownership
+  or mode is invalid".
+- **Secret Service state.** A login collection can exist and still be locked.
+  Check its `Locked` property, not only that the default alias resolves,
+  before running the credential suites. A daemon started by bus activation is
+  locked and owns the bus name, so an unlock sent afterwards reaches a second
+  instance and changes nothing. If `Locked` stays true, stop every
+  `gnome-keyring-daemon`, unlock, and poll `Locked` until it is false. Under
+  WSL the virtual machine restarts when idle and the collection comes back
+  locked, so unlock and run the tests in one session.
 
 ## Evidence and completion
 

@@ -475,8 +475,11 @@ size and SHA-256, and the checkpoint operation ID, never file contents.
 The operator reviews the exact `old_text` and `new_text` in the recorded tool
 request with `session inspect` before approving. This route does not detect a
 concurrent writer any more than the CLI route does; the acknowledgement records
-the operating assumption only. Restore and checkpoint management stay trusted
-CLI commands.
+the operating assumption only. The desktop approvals window shows the same
+`old_text` and `new_text` only when core reproduces the approval's digest from a
+recorded request and a live read of the file; otherwise it offers Deny only. See
+the [desktop interface guide](desktop-interface.md#approvals). Restore and
+checkpoint management stay trusted CLI commands.
 
 ### Private checkpoints, quota, and retention
 

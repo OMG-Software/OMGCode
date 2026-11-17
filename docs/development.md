@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.28.0 is a developer CLI prototype with workspace permission
+OMGCode 0.34.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
@@ -25,6 +25,11 @@ files in that workspace, request an approval-gated exact edit with read/write,
 and request an approval-gated command with execute/read/write. Model create,
 delete, rename, network, Git, and MCP tools are not implemented. Trusted commands record and apply the Windows container
 grants; see [command execution](execution.md).
+
+Version 0.29.0 also adds a prototype Tauri desktop shell,
+`omgcode-desktop`, with a session tree, search, chat, and an approvals window.
+It is unpackaged and has run only on Windows. See [Desktop shell](#desktop-shell)
+below and the [desktop interface guide](desktop-interface.md).
 
 The core's byte-input replacement inspectors remain read-only. Its file broker
 also provides `checkpoint_prepare` on Linux and Windows with fresh read/write
@@ -97,9 +102,43 @@ cargo run --locked -p omgcode-cli -- capabilities
 cargo run --locked -p omgcode-cli -- prompt
 ```
 
-The repository pins Rust 1.99.1, edition 2024, for all three crates. This is also
+`cargo build --workspace` includes the desktop crate, which embeds the built
+frontend. Build the frontend first (see [Desktop shell](#desktop-shell)), or
+build only the crates you need with `-p`. The core crate compiles SQLite's C
+source through the `cc` crate, so a C compiler is required on every host.
+
+The repository pins Rust 1.99.1, edition 2024, for all five crates. This is also
 the declared minimum version; no older compiler is supported. Cargo.lock fixes
 the resolved dependency graph. The executable is named omgcode.
+
+## Desktop shell
+
+The shell needs Node 24 for its frontend, and on Linux the WebKitGTK packages
+listed in [platform support](platform-support.md#desktop-shell). Build the
+frontend before any Cargo command that includes `omgcode-desktop`, including
+`check`, `clippy`, `build`, and `test`. Without `ui/dist` the build fails with
+`The frontendDist configuration is set to "ui/dist" but this path doesn't exist`.
+
+```text
+cd crates/omgcode-desktop/ui
+npm ci
+npm run build
+cd ../../..
+cargo build -p omgcode-desktop --locked
+cargo run -p omgcode-desktop --locked -- --data-dir <scratch-directory>
+```
+
+Always pass a scratch `--data-dir` when developing, so a run does not use the
+real per-user data. `--provider-profile <name>` makes the shell take its
+endpoint and its server token from a profile and its stored credential (see
+[Use a stored credential for chat](#use-a-stored-credential-for-chat)); it
+cannot be combined with `--endpoint`. `--stream <on|off>` (default `on`) chooses
+whether chat turns send streamed model requests and show the reply as it is
+generated; `off` sends non-streaming requests. Any other value is a usage error
+(exit status 2). The frontend commands, the launch arguments, the Tauri
+development command, and the limits are in the
+[desktop interface guide](desktop-interface.md#development). The shell has not
+run on Linux.
 
 ## Application namespace and existing prototype data
 
@@ -169,9 +208,24 @@ for the workspace's AppContainer and record each change; see
 
 Version 0.27.0 stores provider API keys in protected OS storage and binds each
 one to an `api_key` provider profile ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)).
-No provider adapter reads a stored credential yet; `chat` still uses only the
-prototype `OMGCODE_LM_TOKEN` input. Subscription and `none` profiles refuse a
-credential.
+Subscription and `none` profiles refuse a credential. Only the local LM Studio
+adapter reads a stored credential, and only through `--provider-profile` (see
+[Use a stored credential for chat](#use-a-stored-credential-for-chat)). Without
+that flag `chat` uses the prototype `OMGCODE_LM_TOKEN` input.
+
+A profile can record one endpoint (ADR-0048). `provider-profile-add` takes an
+optional `--endpoint <url>`. Only an `lm_studio` profile accepts one, in the
+form `http://<literal loopback IP>:<non-zero port>/v1`, at most 256 bytes, with
+no user information, query, or fragment. The endpoint is not a secret, and no
+command changes it. To use another endpoint, remove the profile and add a new
+one. For example:
+
+```powershell
+omgcode --data-dir C:\omgcode-data workspace provider-profile-add example-lms --kind lm_studio --auth api_key --endpoint http://127.0.0.1:1234/v1 --revision 6
+```
+
+`provider-profile-show` and `status` print an `endpoint` field only when the
+profile records one.
 
 In PowerShell:
 
@@ -252,6 +306,37 @@ backend and its state. A control journal written by 0.27.0 cannot be read by
 Any process running as the same user can read these credentials. The stores
 protect them at rest and from other users, not from same-user code.
 
+### Use a stored credential for chat
+
+ADR-0047 lets `chat` and `session compact` read the LM Studio server token
+from the credential bound to a recorded `lm_studio` profile. ADR-0048 makes the
+profile supply the endpoint too. Use a profile added with `--kind lm_studio
+--auth api_key --endpoint <url>` and a bound credential. The profile name below
+is a placeholder:
+
+```text
+omgcode --data-dir C:\omgcode-data chat --provider-profile example-lms --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Reply with READY."
+omgcode --data-dir C:\omgcode-data session compact <journal-path> --provider-profile example-lms --model <name> --context-tokens <n> --summary-tokens <n>
+```
+
+With the flag, `OMGCODE_LM_TOKEN` is not read, and the endpoint is the one
+recorded with the profile. `--endpoint` and `--provider-profile` together are a
+usage error (exit status 2). Core refuses an unknown profile, a profile of
+another provider kind, a profile with no recorded endpoint, a `subscription`
+profile, an unbound `api_key` profile, and a binding from another backend. A `none` profile sends
+no token. Any failure ends the command with a `credential` error whose message
+is `<cause code>: <text>`; nothing falls back to no token or to another token.
+The credential is resolved before the endpoint check and before any session or
+journal is created, so the error JSON has no session locator. The causes are
+listed in [provider authentication](provider-authentication.md#stored-credential-use-0300).
+A profile recorded before 0.31.0 has no endpoint and cannot be selected. A
+selected profile with no endpoint fails with `endpoint_not_recorded` before any
+native store access or request. Remove the profile, add it again with
+`--endpoint`, and store the credential again. The stored token goes only to the
+endpoint recorded with its profile. The desktop shell takes the same flag at
+launch and then uses the profile's endpoint
+([desktop shell](desktop-interface.md#development)).
+
 ## Trusted runs
 
 Enable `execute`, declare a toolchain profile, and run a program. On Windows,
@@ -298,8 +383,9 @@ workspace registration. Invalid settings or outside-root selections fail.
 Existing text-only journals remain readable without inferred access grants.
 With no configured root, the earlier text-only behavior remains available and
 sets no implicit root. Registrations store settings and audit history; they do
-not create project folders or grant access. A broader project registry and the
-folder/session tree remain future work.
+not create project folders or grant access. A broader project registry remains
+future work. The desktop shell's session tree groups sessions by the workspace
+path each journal recorded; it is not a project registry.
 
 ## Workspace files
 
@@ -433,7 +519,9 @@ cargo run --locked -p omgcode-cli -- chat --workspace . --model google/gemma-4-e
 ```
 
 The default endpoint is http://127.0.0.1:1234/v1. Override it with --endpoint
-only for an explicitly selected local service. This prototype accepts HTTP,
+only for an explicitly selected local service. A selected `--provider-profile`
+supplies its own recorded endpoint, and giving `--endpoint` as well is a usage
+error. This prototype accepts HTTP,
 literal loopback IP addresses, an explicit nonzero port, and the /v1 path.
 Hostnames, remote addresses, redirects, and proxy discovery are disabled. A
 loopback connection does not establish how the selected server handles data
@@ -460,7 +548,8 @@ is refused with a `provider` error before it is recorded, because editing its
 arguments could change the requested path. Add
 `--auto-compact --compact-threshold <tokens>` to compact older active context
 before a turn. `session compact <journal> --endpoint <url> --model <name>
---context-tokens <n> --summary-tokens <n>` performs the same manual action.
+--context-tokens <n> --summary-tokens <n>` (or `--provider-profile <name>` in
+place of `--endpoint`) performs the same manual action.
 Compaction records a schema-v3 `context.compacted` event, keeps the original
 messages, and injects a labelled untrusted summary; it never grants authority.
 Chat reports a conservative context meter. Saved tool results are sent again,
@@ -483,8 +572,33 @@ omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/
 Output is JSON so untrusted control characters are escaped rather than written
 as terminal instructions.
 
-Each text-only invocation sends one non-streaming request; a tool-enabled turn
-sends at most four. When `--auto-compact` compacts before the turn, the
+`chat --stream` sends streamed model requests and writes the provisional reply
+text to standard error as it arrives, one line per model request that produced
+text. The text is escaped like the JSON output, so model output cannot send
+control sequences to the terminal. Standard output still carries the one JSON
+result. The streamed text is provisional: a later failure fails the turn and the
+journal records only the validated reply. A failed write to standard error stops
+further writes and does not fail the turn. `session compact` has no `--stream`
+flag, and compaction requests are never streamed. See
+[streamed replies](provider-authentication.md#streamed-replies-0320).
+
+Since 0.34.0 an interrupt cancels `chat` and `session compact` (ADR-0051). Once
+the journal is open, Ctrl-C or Ctrl-Break on Windows and `SIGINT` or `SIGTERM`
+on Linux set the command's cancel token instead of ending the process. The
+model or summarizer request in flight stops within about 25 ms, streamed or
+not. The command then fails with the code `cancelled`: a chat turn that had
+started is recorded as cancelled with no final assistant reply and no open turn,
+and a cancelled compaction leaves the journal unchanged. A read, list, or edit
+tool call already running finishes first. Before the journal is open, an
+interrupt ends the process as before. A handler that cannot be installed fails
+the command with the code `interrupt` before any model request.
+
+```text
+omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Summarise README.md."
+```
+
+Each text-only invocation sends one request, which is not streamed unless
+`--stream` is given; a tool-enabled turn sends at most four. When `--auto-compact` compacts before the turn, the
 summarizer requests come first: at most 16 per round, with at most four
 combination rounds after the first. `session compact` sends only summarizer
 requests under the same bound. There is a five-second connect timeout and a thirty-second
@@ -497,8 +611,12 @@ OMGCODE_LM_TOKEN. The CLI retains the token in memory only and sends it as a
 sensitive Authorization header. It does not save it or pass it to a child task.
 Environment-based input is a temporary prototype interface, not protected
 credential storage or a claim of memory erasure. Protected storage for API
-keys exists (see [provider credentials](#provider-credentials)), but no adapter
-reads it yet; adapter use and the account/settings interface remain required. Use the no-token profile only for
+keys exists (see [provider credentials](#provider-credentials)). With
+`--provider-profile <name>` the adapter reads the token from a stored
+credential, and the endpoint from the same profile, and never reads the
+variable; the provider clients still
+hold an unzeroed header copy. No cloud adapter and no account/settings
+interface exists. Use the no-token profile only for
 an explicitly selected service configured for it.
 
 ### Model edit workflow
@@ -581,8 +699,11 @@ omgcode session interrupt <journal-path>
 Interrupt acquires the exclusive journal lock. It cannot interrupt another
 running writer. It records operator_interrupted for an abandoned turn, without
 retrying a request or claiming remote rollback. Invalid or truncated journals
-are rejected without modification. Automated repair and a recovery UI remain
-planned. See the complete [session contract](session-storage.md).
+are rejected without modification. Automated repair and a recovery interface
+remain planned. The desktop shell reads journals without the writer lock and
+can archive, restore, and interrupt a session; see the
+[desktop interface guide](desktop-interface.md). See the complete
+[session contract](session-storage.md).
 
 ## Implemented limits
 
@@ -623,17 +744,21 @@ heuristic, not a tokenizer or a guarantee for every chat template. The operator
 must supply a validated loaded-model capacity. Compaction and automatic history
 selection are not implemented: requests over a limit fail before inference.
 Provider-reported usage and finish reason appear in the reply JSON. Durable
-usage events, streaming chunks, and large-output artifacts remain planned.
+usage events and large-output artifacts remain planned. Streamed chunks are
+not stored.
 
 ## Code boundaries
 
 | Crate | Responsibility |
 | --- | --- |
-| omgcode-core | Compiled prompt, bounded model adapter, session/control/file-operation/run journals, workspace policy and toolchain profiles, broker orchestration, trusted runs, bounded turn/tool lifecycle, and non-destructive edit previews |
-| omgcode-cli | Trusted operator input, one-turn chat orchestration with optional read/list and approval-gated command model tools, bounded file and preview commands, trusted `run`, JSON output |
+| omgcode-core | Compiled prompt, bounded model adapter, session/control/file-operation/run journals, lock-free journal inspection and discovery, the derived SQLite session index, approval review, workspace policy and toolchain profiles, broker orchestration, trusted runs, bounded turn/tool lifecycle, and non-destructive edit previews |
+| omgcode-cli | Trusted operator input as a thin adapter over `omgcode-app`, bounded file and preview commands, trusted `run`, approvals, JSON output |
+| omgcode-app | Front-end-neutral chat turn with optional read/list and approval-gated edit and command tools, session creation, compaction, the data-root resolver, token redaction, and `DesktopService`. It grants no authority |
+| omgcode-desktop | The Tauri shell: windows, per-window capability files, the Rust window policy, command handlers, and the navigation guard. The TypeScript frontend is in `ui/` |
 | omgcode-platform | Native journal validation, directory identity, handle-relative workspace file operations, Windows AppContainer grants, interrupt-to-cancel handling, and a process-tree runner with Linux Landlock/seccomp and Windows AppContainer confinement |
 
-Core and CLI forbid unsafe code. The platform crate denies unsafe code except
+Core, CLI, application, and desktop crates forbid unsafe code through the
+workspace lint. Their dependencies, such as Tauri and SQLite, use it. The platform crate denies unsafe code except
 inside its reviewed Windows handle wrappers for directory identity, native file
 operations, process creation and job control, AppContainer profiles and ACL
 grants, and console control handler registration, and its Linux pre-exec
@@ -663,9 +788,10 @@ commands use existing settings to inspect or resolve file-operation recovery;
 they do not use a workspace or session binding. The control journal persists
 workspace registrations, settings, revisions, and policy audit events. File
 operations use a separate journal, so they do not change the `control-v1.jsonl`
-or session JSONL schemas. A broader project registry and the folder/session tree remain
-future work. The CLI's explicit journal path is a trusted operator interface;
-it must not become a raw-path command in the future web interface.
+or session JSONL schemas. A broader project registry remains future work. The
+desktop shell lists sessions from the derived index and addresses them by UUID.
+The CLI's explicit journal path is a trusted operator interface; it must not
+become a raw-path command in the web interface.
 
 ## Dependencies
 
@@ -686,7 +812,22 @@ Direct dependencies have specific purposes:
 | windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, DPAPI (`Win32_Security_Cryptography`), I/O handles, processes and jobs, and console control events |
 | zeroize | Zeroes owned secret buffers on drop; `alloc` only, no derive macro |
 | secret-service (Linux only) | Freedesktop Secret Service client over pure-Rust zbus, with the tokio runtime and Rust AES/DH session crypto (`rt-tokio-crypto-rust`); its blocking API runs an internal tokio runtime |
+| rusqlite | 0.43.0 with `default-features = false` and `bundled`; SQLite 3.54.1 with FTS5 for the derived session index. MIT. Compiles SQLite's C amalgamation through `cc` at build time, so a C compiler is required. Uses `unsafe` internally; core uses only its safe API. Adds `libsqlite3-sys`, `fallible-iterator`, and `fallible-streaming-iterator` |
+| tauri (`omgcode-desktop`) | 2.12.6 with `default-features = false` and features `wry` and `x11`. Apache-2.0 OR MIT. No plugin, tray, updater, asset protocol, or devtools feature. Linux needs the WebKitGTK development packages. The lockfile gained about 283 entries |
+| tauri-build (`omgcode-desktop`, build dependency) | 2.7.5 with `config-json`. Runs in `build.rs` to declare the application commands and generate permission manifests |
 | tempfile | Private disposable test data; development dependency only |
+
+The frontend in `crates/omgcode-desktop/ui` has one runtime dependency,
+`@tauri-apps/api` 2.12.5. Its build and test tools are `@tauri-apps/cli`
+2.12.5, `typescript` 7.0.2, `vite` 8.3.8, `vitest` 5.1.0, `jsdom` 31.0.1,
+`@biomejs/biome` 2.6.8, and `@vitest/coverage-v8` 5.1.0. Versions are exact,
+`package-lock.json` is committed, and `.npmrc` sets `ignore-scripts=true`.
+`@vitest/coverage-v8` is Vitest's own coverage provider, published with each
+Vitest release under the MIT licence. It is a development dependency that
+writes the report the Sonar quality gate needs, and nothing in the built
+bundle uses it. It added 12 packages to the lockfile, none with an install
+script. `npm audit` reported no vulnerabilities on 2026-11-17. See the
+[desktop interface guide](desktop-interface.md#development).
 
 The selected direct crates declare MIT and/or Apache-2.0 licensing and support
 the build targets. Cargo.lock and each update's metadata need review; this is

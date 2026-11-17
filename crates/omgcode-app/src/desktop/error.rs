@@ -1,0 +1,237 @@
+//! The one failure shape the desktop commands return.
+//!
+//! A [`DesktopError`] serializes as exactly `{ "code": string, "message":
+//! string }`. The code is a stable `snake_case` identifier that the interface
+//! may branch on. The message is short English text. It never carries an
+//! absolute path, recorded file content, or the local server token: every
+//! message is fixed text, a static reason from core, or the message of an
+//! [`AppError`], which the application layer already keeps free of secrets.
+
+use std::fmt;
+
+use omgcode_core::control::ControlError;
+use omgcode_core::session::SessionError;
+use omgcode_core::session_index::IndexError;
+use omgcode_core::turn::ReviewError;
+use serde::Serialize;
+
+use crate::error::{AppError, ErrorKind};
+
+/// A controlled failure of one desktop command.
+///
+/// Codes defined by this service: `busy`, `invalid_journal`, `review_expired`,
+/// `review_mismatch`, `not_found`, `invalid_request`, `archived`,
+/// `turn_running`, `turn_open`, `too_many_turns`, `not_pending`,
+/// `writers_stopped_required`, `unknown_workspace`, `shutting_down`, and
+/// `internal`. Failures that come from the application layer keep their
+/// [`ErrorKind`] code (`provider`, `session`, `control`, `context`,
+/// `permission`, `turn`, and the others).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DesktopError {
+    code: &'static str,
+    message: String,
+}
+
+impl DesktopError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// The stable machine-readable code.
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// The short human-readable message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// A journal, the settings store, or the index is held elsewhere. Retry later.
+    pub(crate) fn busy() -> Self {
+        Self::new(
+            "busy",
+            "The data is in use by another operation. Try again shortly.",
+        )
+    }
+
+    /// The session's journal failed validation.
+    pub(crate) fn invalid_journal() -> Self {
+        Self::new("invalid_journal", "The session journal failed validation.")
+    }
+
+    /// The review token is missing, used, or older than its lifetime.
+    pub(crate) fn review_expired() -> Self {
+        Self::new(
+            "review_expired",
+            "The review has expired. Open the approval again.",
+        )
+    }
+
+    /// The review token does not belong to this approval.
+    pub(crate) fn review_mismatch() -> Self {
+        Self::new(
+            "review_mismatch",
+            "The review does not match this approval. Open the approval again.",
+        )
+    }
+
+    /// No such session or approval.
+    pub(crate) fn not_found(what: &'static str) -> Self {
+        Self::new("not_found", format!("The {what} was not found."))
+    }
+
+    /// The request is not acceptable as sent.
+    pub(crate) fn invalid_request(message: impl Into<String>) -> Self {
+        Self::new("invalid_request", message)
+    }
+
+    /// The session is archived.
+    pub(crate) fn archived() -> Self {
+        Self::new("archived", "Restore the archived session before chatting.")
+    }
+
+    /// A turn for the session is running in this application.
+    pub(crate) fn turn_running() -> Self {
+        Self::new(
+            "turn_running",
+            "A chat turn is already running for this session.",
+        )
+    }
+
+    /// The journal records a turn that never finished.
+    pub(crate) fn turn_open() -> Self {
+        Self::new(
+            "turn_open",
+            "The session has an unfinished turn. Interrupt it first.",
+        )
+    }
+
+    /// The running-turn limit is reached.
+    pub(crate) fn too_many_turns() -> Self {
+        Self::new(
+            "too_many_turns",
+            "Too many chat turns are running. Wait for one to finish.",
+        )
+    }
+
+    /// The approval already has a decision, or it expired.
+    pub(crate) fn not_pending() -> Self {
+        Self::new("not_pending", "The approval is no longer pending.")
+    }
+
+    /// A file write needs the writers-stopped acknowledgement.
+    pub(crate) fn writers_stopped_required() -> Self {
+        Self::new(
+            "writers_stopped_required",
+            "Confirm that other writers to the file are stopped to approve a file write.",
+        )
+    }
+
+    /// The workspace is not registered.
+    pub(crate) fn unknown_workspace() -> Self {
+        Self::new("unknown_workspace", "The workspace is not registered.")
+    }
+
+    /// The application is shutting down.
+    pub(crate) fn shutting_down() -> Self {
+        Self::new("shutting_down", "The application is shutting down.")
+    }
+
+    /// Service state or a lower layer is unavailable.
+    pub(crate) fn internal(message: &'static str) -> Self {
+        Self::new("internal", message)
+    }
+
+    /// A poisoned service lock. State whose invariants are uncertain is not used.
+    pub(crate) fn poisoned() -> Self {
+        Self::internal("The desktop service state is unavailable.")
+    }
+
+    /// Keep the application layer's code and message.
+    pub(crate) fn from_app(error: &AppError) -> Self {
+        Self::new(error.code(), error.message())
+    }
+
+    /// Remove a known secret from the message.
+    pub(crate) fn redacted(mut self, secret: Option<&str>) -> Self {
+        self.message = crate::redact_known_secret(&self.message, secret);
+        self
+    }
+
+    /// Map a title-validation failure from session creation to `invalid_request`.
+    pub(crate) fn from_create(error: &AppError) -> Self {
+        if error.kind() == ErrorKind::Session
+            && error.message().starts_with("invalid session value")
+        {
+            Self::invalid_request(error.message())
+        } else {
+            Self::from_app(error)
+        }
+    }
+
+    /// Map a journal failure.
+    pub(crate) fn from_session(error: &SessionError) -> Self {
+        match error {
+            SessionError::Busy => Self::busy(),
+            SessionError::InvalidJournal(_) | SessionError::LimitReached => Self::invalid_journal(),
+            SessionError::ActiveTurn => Self::turn_open(),
+            SessionError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                Self::not_found("session")
+            }
+            SessionError::Io(_) => Self::new("session", "The session journal could not be read."),
+            SessionError::InvalidValue(reason) => Self::invalid_request(*reason),
+            SessionError::WrongTurn | SessionError::Poisoned => {
+                Self::new("session", error.to_string())
+            }
+        }
+    }
+
+    /// Map an index failure. Index text and stored values never reach the caller.
+    pub(crate) fn from_index(error: &IndexError) -> Self {
+        match error {
+            IndexError::Busy => Self::busy(),
+            IndexError::InvalidQuery(reason) => Self::invalid_request(*reason),
+            IndexError::InvalidIndexEntry(_) => Self::invalid_journal(),
+            IndexError::UnsafeLocation(_)
+            | IndexError::Session(_)
+            | IndexError::Io(_)
+            | IndexError::Sqlite(_) => Self::internal("The session index is unavailable."),
+        }
+    }
+
+    /// Map a settings-store failure.
+    pub(crate) fn from_control(error: &ControlError) -> Self {
+        match error {
+            ControlError::Busy => Self::busy(),
+            ControlError::UnknownWorkspace => Self::unknown_workspace(),
+            ControlError::UnknownApproval => Self::not_found("approval"),
+            ControlError::Io(_)
+            | ControlError::Container(_)
+            | ControlError::ProfileRemoval(_)
+            | ControlError::WorkspacePath(_) => {
+                Self::new("control", "The settings store could not be used.")
+            }
+            other => Self::new("control", other.to_string()),
+        }
+    }
+
+    /// Map an approval-review failure.
+    pub(crate) fn from_review(error: &ReviewError) -> Self {
+        match error {
+            ReviewError::Busy => Self::busy(),
+            other => Self::new("control", other.to_string()),
+        }
+    }
+}
+
+impl fmt::Display for DesktopError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for DesktopError {}

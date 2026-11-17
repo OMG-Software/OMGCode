@@ -1,6 +1,6 @@
 # OMGCode implementation plan
 
-Last verified: 2026-11-15.
+Last verified: 2026-11-17.
 
 This guide is part of `main` after PR #9. Read it before selecting the next
 increment. Checkpoint preparation does not mean native replacement exists.
@@ -66,21 +66,50 @@ This is a resume guide, not a replacement for the owning contracts in
   its native end-to-end acceptance test (C15).
 - **PR #31** merged at `28da2cf` on 2026-11-15: PR #30 review fixes, including
   asynchronous package-fetch file I/O.
-- This branch, `codex/context-compaction`: **Phase C16**, version **0.26.0**,
-  with manual and pre-turn automatic context compaction (ADR-0041). It starts
-  from `97c733e`, the PR #31 head. No run accepts a profile or has
-  destination-scoped networking; no provider adapter is enabled, and the
-  command tool is the only model tool that can request a process.
-- Commit `e88df5b` on this branch: **Phase D1**, version **0.27.0**, the
-  provider credential service (ADR-0042). No adapter reads a stored credential.
-- This change: **Phase C17**, version **0.28.0**, the approval-gated model
-  edit tool (ADR-0043). It writes only through the checkpointed apply after an
-  approved, writers-stopped decision.
+- **PR #32** merged at `60430ee` on 2026-11-16, from
+  `codex/context-compaction`. The merge was verified through GitHub. It
+  carried three phases:
+  - **Phase C16**, version **0.26.0**, with manual and pre-turn automatic
+    context compaction (ADR-0041). No run accepts a profile or has
+    destination-scoped networking, and no provider adapter is enabled.
+  - **Phase D1**, version **0.27.0**, the provider credential service
+    (ADR-0042). No adapter reads a stored credential.
+  - **Phase C17**, version **0.28.0**, the approval-gated model edit tool
+    (ADR-0043). It writes only through the checkpointed apply after an
+    approved, writers-stopped decision.
+- Branch `codex/desktop-interface`: **Phase E**, version **0.29.0**, the
+  desktop interface and session tree (ADR-0044, ADR-0045, ADR-0046). Unlike
+  the entries above, it is **not merged and has no pull request yet**. It is a
+  prototype whose windows have run only on Windows; on Linux it builds and its
+  tests pass. See [the desktop interface guide](docs/desktop-interface.md).
+- Same branch, after the Phase E commit `cbbec85`: **Phase D2**, version
+  **0.30.0**, which lets the local LM Studio adapter read its token from a
+  stored credential through an operator-selected profile (ADR-0047). It is
+  **not merged and has no pull request**.
+- Same branch, after the Phase D2 commit `b9f7d11`: **Phase D3**, version
+  **0.31.0**, which binds a stored credential to its profile's endpoint
+  (ADR-0048). A profile can record a loopback endpoint, and a selected profile
+  supplies both the endpoint and the token. It is **not merged and has no pull
+  request**.
+- Same branch, after the Phase D3 commit `19b3747`: **Phase D4 and E6**, version
+  **0.32.0**, which streams the local model's reply and pushes chat events to
+  the desktop window (ADR-0049). It is **not merged and has no pull request**.
+- Same branch, after the Phase D4 and E6 commit `02221e9`: **Phase D5**, version
+  **0.33.0**, which interrupts a streamed model request when a turn is
+  cancelled (ADR-0050). A cancelled turn is recorded with the failure reason
+  `cancelled`, and the desktop exit no longer abandons a streamed turn. It is
+  **not merged and has no pull request**.
+- Branch `codex/request-cancellation`, stacked on `codex/desktop-interface`
+  (open PR #33): **Phase D6**, version **0.34.0**, which lets a cancel request
+  stop every model request, streamed or not, and the compaction requests, and
+  lets Ctrl-C cancel a CLI `chat` turn or `session compact` (ADR-0051). It is
+  **not committed, not merged, and has no pull request**.
 
 Implemented today:
 
-- Pinned Rust 1.99.1 workspace with `omgcode-core`, `omgcode-cli`, and
-  `omgcode-platform`.
+- Pinned Rust 1.99.1 workspace with `omgcode-core`, `omgcode-cli`,
+  `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The last two exist
+  only on the unmerged Phase E branch.
 - Compiled, versioned base prompt `0.1.4` with a visible digest.
 - Workspace settings, native directory identity, process-local bindings, and a
   separate settings/audit journal.
@@ -101,7 +130,9 @@ Implemented today:
 - Read-only `file diff`: trusted CLI preview of a broker-read file against
   complete proposed UTF-8 content. Exact digests, bounded one-hunk diff, no
   workspace mutation, no checkpoint, no replacement.
-- LM Studio Chat Completions chat with non-streaming requests. It is text-only
+- LM Studio Chat Completions chat. Requests are non-streaming by default, and
+  `chat --stream` and the desktop shell stream the reply as provisional text
+  (ADR-0049). It is text-only
   unless the session's workspace enables `model_tools`; then it offers the read
   and list tools, the approval-gated edit tool when `read` and `write` also
   allow it, and the approval-gated command tool when `execute`, `read`, and
@@ -177,7 +208,11 @@ Implemented today:
   `workspace provider-credential-set` reads an API key from standard input and
   binds a new opaque identifier to an `api_key` profile in the control
   journal; `provider-credential-remove` and `provider-profile-remove` unbind
-  and then delete the native item. No adapter reads a stored credential.
+  and then delete the native item. Only the local LM Studio adapter reads a
+  stored credential, through a selected `lm_studio` profile (ADR-0047). An
+  `lm_studio` profile can record one endpoint, fixed for its life, and a
+  selected profile supplies both the endpoint and the token (ADR-0048). No
+  cloud adapter exists.
 - The `workspace_run_command` model tool (ADR-0040) is offered only with live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; an approved exact call consumes the
@@ -203,12 +238,23 @@ Not implemented:
   compaction, and standalone CLI checkpoint preparation.
 - Model create, delete, rename, multi-edit, network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
-  qualification; and streaming, discovery, and cancellation in a live provider.
-- A run network destination allowlist, runtime skills, memories, desktop/UI
-  panels, mid-turn and provider-native compaction, and caches. Nothing calls the unconfined process runner.
-- Provider adapters and subscription/API-key login; the recorded provider
-  profiles are configuration only, and no adapter reads a stored credential.
-- Subscription token storage and a memory-only session credential.
+  qualification; and streaming against a live server, discovery, and
+  cancellation of any request against a live provider. A read, list, or edit
+  tool call in progress cannot be interrupted, and a CLI interrupt has not been
+  delivered on Windows.
+- A run network destination allowlist, runtime skills, memories, mid-turn and
+  provider-native compaction, and caches. Nothing calls the unconfined process
+  runner.
+- Desktop development panels (terminal tabs, task logs, and diffs), a settings
+  interface, a recovery interface, packaging and installers, and a
+  Linux run of the desktop shell's windows. The prototype shell, session tree,
+  search, chat, and approvals window exist on the Phase E branch only.
+- Cloud provider adapters and subscription/API-key login. Only the local LM
+  Studio adapter reads a stored credential, and only at the loopback endpoint
+  recorded with its profile. No endpoint rule exists for a non-loopback
+  provider, HTTPS, or certificates.
+- Subscription token storage, token refresh, account lifecycle, and a
+  memory-only session credential.
 
 ## Resume steps
 
@@ -237,6 +283,20 @@ Not implemented:
 
 ## Verification baseline
 
+Build the desktop frontend before any Cargo step that includes
+`omgcode-desktop`. The crate embeds `crates/omgcode-desktop/ui/dist` at compile
+time, and `cargo check`, `clippy`, `build`, and `test` fail without it:
+
+```text
+cd crates/omgcode-desktop/ui
+npm ci
+npm run build
+```
+
+The frontend checks, run from the same directory, are `npm run check`,
+`npm run lint`, `npm test`, and `npm run test:dist`. They need Node 24. The
+Frontend workflow runs them on Linux and Windows.
+
 Run from the repository root with the pinned toolchain:
 
 ```text
@@ -260,6 +320,254 @@ suite on both hosts with default parallelism, as CI does. Use
 `-- --test-threads=1` only as an additional run when host contention affects local
 provider fixtures; record failures before any isolated rerun or full retry. A
 serial run alone cannot detect races between test threads.
+
+On a Windows host whose repository is on ReFS, point `TEMP` and `TMP` at a
+directory on NTFS. The private-store, credential, container, and replacement
+tests need NTFS. Earlier notes here put `TEMP` and `TMP` on the same volume as
+the fixtures; that works only when the repository volume is NTFS. Phase E
+development ran with the repository on a ReFS volume. See
+[testing standards](docs/testing-standards.md#desktop-shell-and-frontend).
+
+Phase E final verification on 2026-11-16 used Rust 1.99.1 and default test
+parallelism, with the Windows and Linux runs one after the other.
+
+- **Windows** (Windows 11 build 26300, repository on ReFS, `TEMP` and `TMP`
+  on NTFS): formatting, Clippy with `--locked`, all-target tests, and doc
+  tests each exited zero. 782 tests in 36 test binaries and one doc test
+  passed. None failed. Eight were ignored, the same eight as before this
+  phase: one in `run_workflow`, six in `toolchain_acceptance`, and one in
+  `omgcode-platform`. The two file-symlink tests printed `SKIPPED link
+  assertions`. The frontend passed `npm run check`, `npm run lint`, and 113
+  Vitest tests, including the four bundle checks.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `60430ee` with
+  the changed files overlaid and the frontend bundle built on Windows):
+  formatting, Clippy with `--locked`, all-target tests with `--no-fail-fast`,
+  and doc tests each exited zero. 776 tests in 36 test binaries and one doc
+  test passed. None failed. Eight were ignored. The platform suite re-runs
+  four tests inside `systemd-run` scopes and prints a nested result line for
+  each; those four are not counted twice here. The frontend commands did not
+  run on Linux, because that host has Node 18.
+- **Failures before the final runs.** The first complete Linux run failed 19
+  tests. Eighteen credential tests failed because the login keyring was
+  locked; they passed after it was unlocked, with no code change. One desktop
+  approval test failed because its fixture created the data root with the
+  default mode; the fixture now creates it with mode 0700. An earlier Linux
+  run stopped at one `omgcode-app` test that assumed the Windows spelling of
+  the data directory; that assertion is now case-insensitive.
+- No test timed out and no provider fixture was retried on either host.
+
+Phase D2 final verification on 2026-11-16 used Rust 1.99.1, default test
+parallelism, and `--no-fail-fast`, with the Windows and Linux runs one after
+the other.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, all-target tests, and doc tests
+  each exited zero. 815 tests in 39 test binaries and one doc test passed.
+  None failed. The same eight were ignored. The run took under four minutes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `cbbec85` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): the same four commands each exited zero. 807 tests in 39 test
+  binaries and one doc test passed, not counting five nested result lines from
+  the platform suite's `systemd-run` re-runs. None failed. Eight were ignored.
+- **Failures before the final runs.**
+  - Linux Clippy failed once on `drop_non_drop`: `CredentialStore` has drop
+    glue on Windows and none on Linux, so an explicit `drop` of it was a lint
+    error only there. A block scope replaced it.
+  - Three Linux desktop credential tests failed once because the WSL virtual
+    machine had restarted and the login collection was locked again. They
+    passed after it was unlocked, with no code change.
+  - The implementing worker's own Windows run had one `run_workflow` test
+    exceed its 60-second limit while another project was compiling on the
+    host. It passed on a single rerun and in both full runs above. No timeout
+    was changed.
+- The frontend did not change in D2, so its commands were not rerun.
+- A manual run with the real binaries on Windows showed the stored token
+  arriving as the bearer header while a different `OMGCODE_LM_TOKEN` value was
+  ignored, an unknown profile refused with exit 1 by both `omgcode chat` and
+  `omgcode-desktop`, and the shell starting with a valid profile. It was done
+  before the profile checks were moved ahead of the native store open and was
+  not repeated afterwards; the automated tests cover the final order.
+- Not run: a chat turn with a stored credential through the real shell's
+  windows, on either platform.
+
+Phase D3 final verification on 2026-11-16 used Rust 1.99.1, default test
+parallelism, and `--no-fail-fast`, with the Windows and Linux runs one after
+the other.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, all-target tests, and doc tests
+  each exited zero. 839 tests in 40 test binaries and one doc test passed.
+  None failed. The same eight were ignored. The run took about two minutes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `b9f7d11` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): the same four commands each exited zero. 831 tests in 40 test
+  binaries and one doc test passed, not counting five nested result lines from
+  the platform suite's `systemd-run` re-runs. None failed. Eight were ignored.
+  The new `launch_flags` suite ran the real desktop binary there: both flags
+  together exited 2, and a profile with no settings store exited 1 and
+  created nothing, each before any window.
+- No command failed or timed out in these two final runs.
+- The frontend did not change in D3, so its commands were not rerun.
+- A manual run with the real binaries on Windows used two mock local servers.
+  The stored token arrived only at the endpoint the profile records while a
+  different `OMGCODE_LM_TOKEN` value was set. `--endpoint` beside
+  `--provider-profile` was a usage error with exit 2 and no request, for both
+  `omgcode chat` and `omgcode-desktop`. The shell started with a valid profile
+  and reported the profile's endpoint. The first attempt at the shell check
+  attached to another application that already held the WebView2 debugging
+  port; it was repeated on a free port.
+- Not run: a chat turn with a stored credential through the real shell's
+  windows, on either platform.
+
+Phase D4 and E6 final verification on 2026-11-16 used Rust 1.99.1, default
+test parallelism, and `--no-fail-fast`.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, all-target tests, and doc tests
+  each exited zero. 923 tests in 41 test binaries and one doc test passed.
+  None failed. The same eight were ignored. The test run took about two
+  minutes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `19b3747` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): the same four commands each exited zero. 915 tests in 41 test
+  binaries and one doc test passed, not counting five nested result lines from
+  the platform suite's `systemd-run` re-runs. None failed. Eight were ignored.
+  The desktop binary exited 2 for `--stream maybe`.
+- **Frontend** (Windows, Node 24): the type check and Biome were clean. 155
+  tests in 11 files passed, and the five bundle tests passed after a rebuild.
+  The frontend commands were not run on Linux, whose Node is too old.
+- **Failures before the final runs.**
+  - The first Linux run did not run at all: `cargo` was not on the path of
+    the non-login shell, and every step exited 127. The script now loads the
+    Cargo environment and stops if `cargo` is missing. The rerun is the result
+    above.
+  - The first end-to-end run reported one failed step. The driver fetched the
+    approvals bundle from page script, and the content security policy
+    blocked the fetch. The check was removed, because the bundle test already
+    covers it, and the whole run was repeated.
+  - Workers' own test failures were in tests they were writing. No existing
+    assertion was weakened and no timeout was changed.
+- **Real shell, Windows.** The built shell was driven over the WebView2
+  debugging port against a paced event-stream mock server and a scratch data
+  root. All eleven steps passed on the repeated run:
+  - a streamed tool-enabled turn showed the live entry for the first request,
+    reset it for the second, and showed seven distinct preview states;
+  - markup in the stream stayed literal text, no element was created, no
+    script ran, and a bidirectional override was shown as `[U+202E]`;
+  - both requests carried `"stream":true` and `Accept: text/event-stream`, and
+    none carried `stream_options`;
+  - the recorded reply appeared 49 ms after the mock ended the stream, which
+    is the pushed `finished` event, not the five-second check;
+  - a stream that ended without `[DONE]` showed its partial text, then failed
+    with `local model stream ended before completion`, and the partial text
+    was not in the transcript;
+  - a second subscription made from page script received `request_started`,
+    three `delta` events, and `finished` in order, and the page, whose own
+    subscription it had replaced, settled about four seconds later through
+    the reconcile check;
+  - `approvals` was refused `chat_subscribe` by its capability;
+  - with `--stream off` the request carried `"stream":false`, no live entry
+    appeared, and the reply appeared 79 ms after the response;
+  - both launches closed with exit status 0 and left no process.
+- Not run: any live LM Studio server; the channel or any window on Linux; the
+  750 ms fallback poll in the real shell (the frontend tests cover it);
+  `chat --stream` by hand in a terminal (the CLI tests run the real binary).
+
+Phase D5 final verification on 2026-11-16 used Rust 1.99.1, default test
+parallelism, and `--no-fail-fast`. An unrelated project was building on the
+host for the whole period, and the host stayed between 82% and 100% CPU on all
+16 logical processors. A watcher waited about 20 minutes for the load to drop.
+It did not, so the runs were made under that load.
+
+- **Windows** (Windows 11 build 26300, `TEMP` and `TMP` on NTFS, real DPAPI
+  store): formatting, Clippy with `--locked`, and doc tests each exited zero.
+  The all-target test run exited non-zero: 942 tests passed, **one failed**,
+  and the same eight were ignored, in 41 test binaries. The run took about four
+  and a half minutes, against about two minutes on a quiet host. It was run
+  twice with the same result.
+- **The Windows failure** is
+  `run_workflow::concurrent_runs_complete_and_are_recorded`, which reached its
+  60-second limit. It runs a CPU-bound loop in the confined runner and does not
+  use the provider or chat code. The same test, run alone against a clean
+  checkout of `02221e9` at 90% load, failed the same way. That commit passed it
+  on a quiet host earlier the same day. This change touches nothing in
+  `omgcode-platform` or the run path. The cause is taken to be host load. It
+  is still a failed check in this run, and it was not rerun on a quiet host.
+  No timeout was changed.
+- **A third Windows run after the commit** (`f3d8be2`, host at 77% to 100%
+  CPU) gave the same result: 942 passed, the same one failed, eight ignored.
+  The test's own shell loop was then timed outside OMGCode on the same host:
+  one `cmd` loop of 30,000 `cd .` iterations took 22 to 24 seconds, and two at
+  once took 38 seconds, before any confinement, limit sampling, or journal
+  work. The test allows 60 seconds for two confined runs. Its duration
+  therefore depends on host speed, and it has not been seen to fail on a quiet
+  host.
+- **The test was then changed** so that it no longer depends on host speed.
+  Each run writes its file and waits until it sees the other run's file, on
+  both platforms, so exit code 0 from both also proves the runs overlapped.
+  The assertions and the 60-second limit are unchanged, and no production
+  code changed. The script's exit behaviour was first checked in a plain
+  shell: exit 3 when the other file never appears, exit 0 at once when it is
+  present, and both exit 0 when two start together. The changed test then
+  passed three runs in 1.2 to 3.0 seconds at 82% to 91% CPU.
+- **Full runs with the changed test**, on the same loaded host.
+  - Windows, at 100% CPU: formatting, Clippy with `--locked`, all-target
+    tests, and doc tests each exited zero. 943 tests in 41 test binaries and
+    one doc test passed. None failed. Eight were ignored.
+  - Linux (a clean LF clone of `f3d8be2` with the changed files overlaid):
+    the same four commands each exited zero. 935 tests in 41 test binaries and
+    one doc test passed, not counting the five nested result lines. None
+    failed. Eight were ignored. The `run_workflow` binary, which holds the
+    changed test, took 2.2 seconds.
+  - Still not run: either suite on a quiet host after these changes.
+- **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `02221e9` with
+  the changed files overlaid, real Secret Service with the login collection
+  unlocked): formatting, Clippy, all-target tests, and doc tests each exited
+  zero on the final run. 935 tests in 41 test binaries and one doc test passed,
+  not counting five nested result lines from the platform suite's
+  `systemd-run` re-runs. None failed. Eight were ignored.
+- **Frontend** (Windows, Node 24): the type check and Biome were clean. 159
+  tests in 11 files passed, and the five bundle tests passed after a rebuild.
+  The frontend commands were not run on Linux.
+- **Failures before the final runs.**
+  - The first Linux run had one failed test,
+    `cancelling_while_the_response_head_is_awaited_stops_the_request`. The test
+    cancelled after a fixed 150 ms sleep. On the loaded host the client had not
+    connected by then, so the adapter returned `Cancelled` without connecting,
+    which is correct, and the mock server timed out waiting for a connection.
+    The test now cancels when the server signals that it has read the request.
+    It then passed three runs on Windows and the full Linux rerun above. The
+    adapter was not changed.
+  - The first end-to-end run reported one failed step. The driver timed the
+    exit from the start of the PowerShell helper that posts the close message,
+    and on the loaded host an idle application took 4.6 seconds by that
+    measure. The helper now prints the moment it posts the message, and the
+    whole run was repeated.
+  - The implementing worker reported the Windows failure above and one Clippy
+    lint in a test it was writing, which it fixed.
+- **Real shell, Windows.** The built shell was driven over the WebView2
+  debugging port against a mock server that holds a stream open, with a
+  scratch data root and a workspace without model tools, so every turn was
+  text-only. All nine steps passed on the repeated run:
+  - the Cancel button ended a held turn: the window settled 74 ms after the
+    click with the notice `Turn cancelled.` and no error styling, the server
+    saw the connection close 28 ms after the click, and `chat_status` reported
+    `failed` with the code `cancelled`;
+  - the next turn in the session was accepted and completed;
+  - closing the window while a second stream was held ended the process with
+    status 0, 148 ms after the close message was posted (101 ms for an idle
+    application in the same run), and the server saw the connection close;
+  - after a restart the session was idle, showed both turns as
+    `Turn failed: cancelled`, held none of the partial text, and accepted a
+    new turn.
+- Not run: any live LM Studio server; any window on Linux; the Windows suite
+  on a quiet host; cancellation of a tool-enabled turn in the real shell (the
+  service tests cover it); `--stream off` in the real shell for this change.
+
+These local results do not establish remote CI status: neither workflow change
+has run. The real shell was driven end to end on Windows only
+([testing standards](docs/testing-standards.md#desktop-shell-and-frontend)).
+No window has been opened on Linux.
 
 A2b local verification on 2026-11-10 passed formatting, Clippy, serial all-target
 tests, and doc tests with Rust 1.99.1. Ubuntu 24.04 under WSL, uid 1000, passed
@@ -599,7 +907,8 @@ on Windows, and trusted CLI commands as the first caller. See
   [ADR-0037](docs/adr/0037-use-a-per-workspace-cache-root-and-a-scoped-windows-grant.md).
 - **C13 (merged in PR #30, version 0.24.0):** provider-profile records and trusted
   per-call approval records. Profiles store only a name, kind, and
-  authentication mode; no credential, endpoint, adapter, or login exists.
+  authentication mode; no credential, endpoint, adapter, or login exists at
+  this version (0.31.0 later lets an `lm_studio` profile record an endpoint).
   Approvals are bound, expiring, single-use records; the first consumer is the
   command tool in C14. See
   [ADR-0038](docs/adr/0038-record-provider-profiles-without-credentials.md) and
@@ -655,8 +964,10 @@ on Windows, and trusted CLI commands as the first caller. See
 
 Next decisions, not yet scheduled:
 
-- provider adapters that read stored credentials, and subscription/API-key
-  login;
+- cloud provider adapters, subscription/API-key login, token refresh, and
+  endpoint rules for non-loopback providers, HTTPS, and certificates (one
+  adapter, the local LM Studio route, now reads a stored credential, only at
+  its profile's loopback endpoint);
 - model create, delete, rename, and multi-edit tools, and network, Git, and
   MCP tools;
 - registry credentials and development-server networking.
@@ -684,12 +995,176 @@ login or entitlement route.
   `credential_orphaned` warning. Only `api_key` profiles accept a credential.
   Native tests run on both hosts; Linux needs an unlocked Secret Service, which
   CI provides with gnome-keyring. No adapter reads a stored credential.
+- **D2 (version 0.30.0):** the first stored-credential read. See
+  [ADR-0047](docs/adr/0047-read-the-local-provider-token-from-the-credential-store.md).
+  `omgcode chat --provider-profile <name>`, `session compact
+  --provider-profile <name>`, and `omgcode-desktop --provider-profile <name>`
+  (fixed at launch) make the LM Studio adapter read its token from the
+  profile's stored credential and ignore `OMGCODE_LM_TOKEN`. Core's
+  `provider_credential_binding` takes no credential store and refuses an
+  unknown profile, another provider kind, a `subscription` profile, and an
+  unbound `api_key` profile; a `none` profile gives no token there. The native
+  store is opened only after it returns a binding, and
+  `load_provider_credential` refuses a binding from another backend before it
+  reads a secret. Every failure ends the turn with a `credential` error and a
+  cause code, with no fallback to no token or to another token. The secret is loaded
+  while the settings store is held and the store is released before any
+  request. The desktop resolves it again each turn and checks it once at
+  launch. A read records nothing. The token is held in a zeroing buffer; the
+  provider clients' header copies are not zeroed. `capabilities` reports
+  `stored_credential_adapters: ["lm_studio"]`; `provider_adapters` stays
+  `false`.
+- **D3 (version 0.31.0):** the stored credential is bound to its profile's
+  endpoint. See
+  [ADR-0048](docs/adr/0048-bind-a-stored-credential-to-its-profile-endpoint.md).
+  `provider-profile-add --endpoint <url>` records one endpoint on an
+  `lm_studio` profile. It must pass the rule the adapter enforces on every
+  request (plain `http`, a literal loopback IP, a non-zero port, `/v1`, no
+  user information, query, or fragment, at most 256 bytes), through one core
+  implementation that the record and replay also use. Every other kind refuses
+  an endpoint. The endpoint is fixed for the profile's life: to change it,
+  remove the profile (which deletes its credential) and add a new one.
+  `provider_credential_binding` returns the recorded endpoint with the
+  credential decision, and a selected profile with no endpoint fails with
+  `endpoint_not_recorded` before any native store access. `--endpoint` and
+  `--provider-profile` are mutually exclusive in `chat`, `session compact`, and
+  `omgcode-desktop`. The desktop fixes the profile's endpoint at launch and
+  refuses a turn with `endpoint_changed` if a re-added profile records another.
+  The profile record's `endpoint` field is written only when present, so a
+  journal without endpoints keeps its bytes; a journal with one is not
+  readable by 0.30.0 or earlier. A profile recorded before 0.31.0 must be
+  removed and added again. `capabilities` reports
+  `provider_profile_endpoints: true`.
+- **D4 (version 0.32.0):** the local adapter can stream. See
+  [ADR-0049](docs/adr/0049-stream-local-model-replies-and-push-chat-events.md).
+  `LocalModelClient::complete_streaming` and `complete_with_tools_streaming`
+  send the same body as the non-streaming methods with `stream: true` and read
+  server-sent events under strict rules (success status and content type, the
+  existing 1 MiB and thirty-second bounds over the whole stream, no repair,
+  `[DONE]` required or `IncompleteStream`, duplicate-key refusal, a non-null
+  `error` refused, tool calls assembled by `index`). `stream_options` is never
+  sent. The non-streaming methods stay the default. `ChatHooks::on_stream`
+  makes a turn stream and receives `RequestStarted` and `Text` events;
+  compaction requests never stream. `StreamRedactor` removes the known token
+  across piece boundaries, and the final reply is still redacted as a whole.
+  The journals record only the validated reply. `omgcode chat --stream`
+  writes the provisional text to standard error through `DisplaySafeStream`.
+  `capabilities` reports `streaming_adapters: ["lm_studio"]`. The stream rules
+  were checked against local fixtures only.
+- **D5 (version 0.33.0):** a cancelled streamed request is interrupted. See
+  [ADR-0050](docs/adr/0050-interrupt-a-streamed-model-request-on-cancellation.md).
+  `complete_streaming` and `complete_with_tools_streaming` take a
+  `CancelToken`. The streamed request runs on an async client inside a
+  single-thread runtime created for that request, with the blocking client's
+  settings and the same thirty-second deadline. The token is checked before the
+  request, while waiting for the response head, and while waiting for each
+  piece of the body, every 25 ms. A set token drops the request and returns
+  `ProviderError::Cancelled`. `ToolModelRequest` carries the token and
+  `ModelError::Cancelled` ends the turn with the failure reason `cancelled`
+  when the token is set. A streamed text-only turn now has a cancel token. The
+  application error kind `cancelled` replaces `turn` for a cancelled
+  tool-enabled turn. `chat_cancel` stops a streamed request, the window shows
+  "Turn cancelled.", and exit leaves no open turn for a streamed turn. No
+  journal record changes shape. A non-streamed request, the compaction request,
+  and a tool call in progress are not interrupted, and the CLI has no cancel
+  source. The cancel path was checked against local fixtures only.
+- **D6 (version 0.34.0):** every model request can be cancelled, and an
+  interrupt cancels a CLI turn. See
+  [ADR-0051](docs/adr/0051-cancel-every-model-request-and-interrupt-cli-turns.md).
+  `complete` and `complete_with_tools` take a `CancelToken`; all four adapter
+  methods share the async transport of D5, and reqwest's `blocking` feature is
+  removed. A non-streamed body read in part is discarded. Every chat turn
+  creates one token before the compaction check and hands it to
+  `ChatHooks::on_cancel_token` on every path; `ChatHooks::cancel` lets a front
+  end supply it and `TurnRuntime::with_cancel_token` passes it to the runtime.
+  A token set before the turn starts records nothing. `compact_journal` takes
+  a token, and a cancelled compaction records nothing. `omgcode chat` and
+  `session compact` install the platform interrupt handler through the new
+  `watch_interrupt`; the command fails with the code `cancelled`, and a
+  started chat turn is recorded as cancelled. A handler that cannot be
+  installed fails the command with the code `interrupt`. `capabilities`
+  reports `cancellable_adapters: ["lm_studio"]`. The desktop stops a
+  non-streamed turn and a pre-turn compaction with no command change. Checked
+  against local fixtures; the CLI interrupt was delivered on Linux only.
+
+Still open in Phase D: cloud provider adapters, subscription and API-key
+login, token refresh, account lifecycle, a memory-only session credential,
+endpoint rules for non-loopback providers, HTTPS, and certificates,
+qualification of the stream rules and of cancellation against a live LM Studio
+server, an interrupt delivered to the CLI on Windows, interrupting a read,
+list, or edit tool call in progress, and a longer deadline for long
+generations (the thirty-second deadline covers the whole response). The frontend shows nothing about the credential source beyond the
+endpoint text it already displayed.
 
 ### Phase E: desktop interface and session tree
 
 The Rust core remains the authority. The UI must not receive raw journal paths,
 credentials, or unrestricted host capabilities. Follow the session, permission,
-context, and security contracts.
+context, and security contracts. Follow the
+[desktop interface guide](docs/desktop-interface.md).
+
+Version 0.29.0 builds a prototype on branch `codex/desktop-interface`. It is
+not merged, and no pull request exists yet.
+
+- **E1 (ADR-0044):** lock-free journal inspection. `SessionInspection::inspect`
+  reads one journal with no lock call, no link following, and the writer's
+  validator. Windows lock and sharing violations become `Busy`. Bytes after the
+  last line feed are reported as `incomplete_tail`. It adds times and a bounded
+  transcript entry list. `session::discover` walks only the dated layout and
+  never opens a journal or follows a link. Limits: 50,000 journals and 500,000
+  directory entries.
+- **E2 (ADR-0044):** a derived SQLite index in
+  `<data_root>/session-index-v1/index.sqlite3` through `rusqlite` 0.43.0 with
+  the bundled SQLite and FTS5. Incremental, bounded refresh; a busy journal
+  keeps its last metadata; an invalid journal is listed with a code. A
+  missing, corrupt, or foreign index is deleted and rebuilt.
+- **E3 (ADR-0045):** the `omgcode-app` library. The chat turn, compaction,
+  session creation, the data-root resolver, and token redaction moved out of
+  the CLI, which is now a thin adapter. `DesktopService` is the
+  front-end-neutral command service, including review tokens. Core adds
+  `review_approval` and display-safe text. No CLI behaviour changed.
+- **E4 (ADR-0045, ADR-0046):** the Tauri shell `omgcode-desktop`: two windows,
+  18 commands (19 since E6), a capability file per window, the Rust window
+  policy, the content
+  policy, the navigation guard, and a bounded shutdown.
+- **E5 (ADR-0045, ADR-0046):** the strict TypeScript frontend with Vite,
+  Vitest, and Biome: the session tree, search, transcript, composer, and the
+  separate approvals bundle.
+- **E6 (ADR-0049):** the command `chat_subscribe` (`main` only; 19 commands)
+  takes a caller-created Tauri IPC channel and needs no `core:` permission.
+  The service keeps one subscriber, replays the preview of every running turn
+  to a new one, and pushes `request_started`, `delta` (at most 1,024 bytes),
+  `preview_truncated` (16 KiB preview per request), and `finished`. A guard
+  sends `finished` after the result is recorded and records a panicked turn as
+  failed first. `omgcode-desktop --stream <on|off>` defaults to `on`. The
+  frontend subscribes once, reads `chat_status` on `finished`, keeps a
+  five-second reconcile check, falls back to the 750 ms poll if subscribing
+  fails, and shows one live entry "Assistant (generating, not saved yet)" with
+  the preview. The approvals polls are unchanged.
+- **D5 (ADR-0050):** `chat_cancel` interrupts a streamed turn, the main window
+  shows the notice "Turn cancelled." decided by the error code `cancelled`, and
+  exit cancels every running turn. No command or wire type changes.
+- **D6 (ADR-0051):** `chat_cancel` and exit also stop a non-streamed turn
+  (`--stream off`) and a pre-turn compaction. No command or wire type changes.
+
+Still open for the desktop:
+
+- opening the shell's windows on Linux. It builds and its tests pass there,
+  including the Unix-only inspection and index branches, but its webview, IPC,
+  capability enforcement, and navigation guard have not run on Linux;
+- development panels (terminal tabs, task logs, and diffs), a settings
+  interface, and persisted chat settings;
+- push for approvals and the session tree, which still poll or refresh on
+  request, and a run of the event channel on Linux, where no window has been
+  opened;
+- a recovery interface for an incomplete tail or a damaged journal, plus
+  `session.archive_requested` stop-and-archive and storage-use display;
+- Git, MCP, skills, and memory interfaces;
+- a native confirmation dialog for approvals, which would remove the webview
+  from the final decision;
+- packaging, signing, and installers (Phase G);
+- automatic repair of a corrupt index behind a valid header, and a protection
+  against two versions sharing one data root and rebuilding each other's index.
 
 ### Phase F: runtime skills, MCP, memories, compaction, and caches
 
@@ -713,6 +1188,29 @@ release readiness remain separate gates.
 
 ## Known cautions
 
+- Build `crates/omgcode-desktop/ui/dist` before any Cargo command that includes
+  `omgcode-desktop`. Without it the build fails with `The frontendDist
+  configuration is set to "ui/dist" but this path doesn't exist`.
+- Never run `tauri dev` or the shell without `--data-dir <scratch>`. Without it
+  the shell uses the real per-user data directory.
+- Two tests print `SKIPPED link assertions` and return on a host that cannot
+  create file symbolic links (error 1314): `a_symlinked_journal_is_rejected`
+  and `a_database_file_that_is_a_link_is_refused`. They did not run on the
+  Phase E Windows host; they ran in the Linux run. A privileged Windows run
+  has not executed them.
+- A Linux login keyring can exist and still be locked, which fails every
+  credential suite with "an unlocked Secret Service default collection is
+  required". Check the collection's `Locked` property before a Linux run.
+- A test fixture that creates its own data root must make it mode 0700 on
+  Unix. The checkpoint store refuses the default mode.
+- A data root under the user's Temp directory inherits an ACL that the private
+  store refuses. Reset it before a manual run:
+  `icacls <dir> /inheritance:r /grant:r *<SID>:(OI)(CI)F`.
+- The session index file carries a version. A binary with a different index
+  version deletes and rebuilds the index, so two versions sharing a data root
+  rebuild each other's index. Rebuild also fails on Windows while another
+  process has the database open.
+- `.claude/` is untracked local tooling state. Do not commit it.
 - Linux CLI integration tests raced on inherited `flock` descriptors, producing
   `Busy` and mock-provider timeouts. The spawn gate in
   [testing standards](docs/testing-standards.md#isolation-and-concurrency) covers
@@ -724,7 +1222,11 @@ release readiness remain separate gates.
   deadline instead of a killed CLI with a pending run. The pre-existing
   multi-fixture provider tests also timed out locally under host load; they
   pass individually and passed CI on `987a5aa`. Recheck timeouts on a clean
-  host rather than weakening an assertion.
+  host rather than weakening an assertion. A test that fails only under load
+  may be measuring the host: `concurrent_runs_complete_and_are_recorded` spun
+  a fixed loop and was changed to a file rendezvous. To tell load from a
+  regression, run the failing test alone on a clean checkout of the previous
+  commit, and time its workload outside OMGCode.
 - `.serena/` is untracked and unrelated. Do not commit or delete it without
   deciding what it is.
 - The turn runtime is library/test infrastructure until a provider adapter and

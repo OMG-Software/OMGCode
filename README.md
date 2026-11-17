@@ -8,8 +8,11 @@ native workspace file broker is available through trusted CLI commands. A core
 turn/tool runtime and schema-v2 session format let chat offer the local LM Studio
 model read, list, approval-gated exact-edit, and approval-gated command tools,
 only for a workspace that enables `model_tools` and each tool's own
-preferences. Model file creation, deletion, and renaming, a desktop interface,
-and Git workflows remain planned. The trusted CLI `run` command starts one program for a workspace whose
+preferences. Model file creation, deletion, and renaming, and Git workflows
+remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
+frontend) browses and searches sessions, runs chat, and decides model-tool
+approvals in a separate window; it is unpackaged and has run only on Windows.
+The trusted CLI `run` command starts one program for a workspace whose
 `execute` preference is enabled. It uses an operator-declared toolchain
 profile, records each run in a run journal, and confines the process tree with
 Landlock and a seccomp socket filter on Linux or a per-workspace AppContainer
@@ -20,8 +23,9 @@ directory grants.
 > compiled prompt, report implemented capabilities, manage JSONL sessions and
 > workspace permission preferences, perform bounded workspace reads/listings,
 > create new files/directories through the trusted CLI, preview bounded diffs
-> against trusted proposed content, and send one non-streaming chat request to
-> an explicitly selected local LM Studio model.
+> against trusted proposed content, and send a chat request to
+> an explicitly selected local LM Studio model. `omgcode chat --stream` streams
+> that model's reply to standard error as provisional text.
 > When a workspace enables the `model_tools` preference, chat lets the local
 > model read and list files inside that workspace through a bounded runtime.
 > When `execute`, `read`, and `write` are also enabled, it offers a confined
@@ -50,13 +54,16 @@ directory grants.
 > declared origins into a private per-workspace cache. A selected cache root
 > is exposed read-only on Linux and Windows; Windows needs a read-execute
 > container grant, and Linux falls back to application storage when no root is
-> selected. Provider profiles record connection shapes, and trusted
-> single-use approval records prepare per-call model-tool consent; neither
-> enables an adapter, login, or model tool. API keys can be stored in protected
-> OS storage (DPAPI on Windows, the Secret Service on Linux) and bound to a
-> profile, but no adapter reads them yet. Runs have memory, process-count,
-> CPU-time, and sampled disk-growth limits; the disk limit is not a filesystem
-> quota. See [command execution](docs/execution.md#tree-limits).
+> selected. Provider profiles record connection shapes and enable no cloud
+> adapter or login. Trusted single-use approval records authorize one exact
+> model-tool call; the trusted CLI or the desktop approvals window can decide
+> them. API keys can be stored in protected OS storage (DPAPI on Windows, the
+> Secret Service on Linux) and bound to a profile. Only the local LM Studio
+> adapter reads one, through an operator-selected `lm_studio` profile
+> (`--provider-profile`) that also supplies the endpoint; no other adapter
+> reads them. Runs have memory,
+> process-count, CPU-time, and sampled disk-growth limits; the disk limit is
+> not a filesystem quota. See [command execution](docs/execution.md#tree-limits).
 
 ## Goals
 
@@ -71,8 +78,10 @@ Security takes priority when an optimization would weaken these boundaries.
 
 ## Current prototype
 
-The workspace contains three Rust crates: `omgcode-core`, `omgcode-cli`,
-and `omgcode-platform`. The CLI command is `omgcode`. It provides:
+The workspace contains five Rust crates: `omgcode-core`, `omgcode-cli`,
+`omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The CLI command is
+`omgcode`. The desktop shell is the `omgcode-desktop` binary, with its
+frontend in `crates/omgcode-desktop/ui`. The CLI provides:
 
 - `prompt`: print the compiled, read-only base prompt, version, and SHA-256 digest.
 - `capabilities`: report what this prototype implements and rejects.
@@ -123,6 +132,20 @@ It has no create, delete, rename, Git, MCP, or network tool.
 New sessions use schema version 3; version 1 and 2 journals remain readable
 and writable with their original subsets.
 
+The desktop shell is a prototype. It has a session tree grouped by workspace
+folder, full-text search over a derived SQLite index, a paged transcript view,
+chat that runs the same turn as `omgcode chat`, and an approvals window that
+shows an exact reviewed request before it lets the operator decide. The webview
+gets no authority: the Rust side authorizes every command, and no command
+accepts a host path. The webview is still not a trusted computing base. It has
+no packaging, settings interface, development panels, or recovery
+interface, and it has not been run on Linux. Chat streams the local model's
+reply into the window by default (`--stream off` at launch disables it). The
+text is provisional, and the journal records only the validated reply. The
+shell pushes chat events to the main window through one caller-scoped channel
+that needs no Tauri `core:` permission (ADR-0049). See the
+[desktop interface guide](docs/desktop-interface.md).
+
 The platform crate checks opened journal handles, captures native directory
 identity for workspace registration, and implements handle-relative file
 operations. The broker applies the current registered workspace checks, but it
@@ -147,9 +170,19 @@ guide](docs/development.md) for limits and command details.
 
 The CLI stores provider API keys in operating-system protected storage through
 trusted `workspace provider-credential-set` and `provider-credential-remove`
-commands (ADR-0042). No provider adapter reads them yet. The optional local
-server token input for chat remains prototype wiring; it is not a release
-credential boundary. Do not treat the prototype as release-ready or use it to handle
+commands (ADR-0042). Only the local LM Studio adapter reads one: with
+`--provider-profile <name>`, `chat` and `session compact` (and the desktop
+shell, at launch) take the server token from the stored credential of that
+`lm_studio` profile and do not read `OMGCODE_LM_TOKEN` (ADR-0047). A
+credential that cannot be read stops the turn. An `lm_studio` profile can
+record one loopback endpoint with `provider-profile-add --endpoint`, and a
+selected profile supplies both its endpoint and its token, so the stored token
+goes only to that endpoint (ADR-0048). `--endpoint` and `--provider-profile`
+cannot be combined. A profile recorded before 0.31.0 has no endpoint and must be
+removed and added again before it can be selected. Without the flag, `--endpoint`
+and its default apply, and the optional local server token comes from
+`OMGCODE_LM_TOKEN`, which remains prototype wiring; it is not
+a release credential boundary. Do not treat the prototype as release-ready or use it to handle
 sensitive credentials.
 
 To build and run the prototype with the pinned Rust toolchain:
@@ -209,9 +242,12 @@ check the server's configuration before sending sensitive text.
   pull, and push, with controlled remote access and credential handling.
 - **Development panels:** Terminal tabs, background task status and logs, and
   file and hunk diffs.
-- **Session interface:** A searchable desktop session tree grouped by working
-  folder, with sorting and status. The current CLI stores versioned JSONL
-  journals and supports inspect, archive, and restore.
+- **Session interface:** The prototype desktop shell has a searchable session
+  tree grouped by working folder, with sorting, archived and active views, and
+  status; it supports archive, restore, and interrupt. Recovery workflows,
+  storage-use display, and packaging remain planned. The CLI stores the
+  versioned JSONL journals and supports inspect, archive, and restore. See the
+  [desktop interface guide](docs/desktop-interface.md).
 - **MCP support:** Connect local stdio and remote Streamable HTTP servers for
   tools, resources, and prompt templates through core-owned permissions. See
   [MCP support](docs/mcp.md).
@@ -243,7 +279,7 @@ check the server's configuration before sending sensitive text.
 | Ollama Local | Planned: local Ollama API |
 | Ollama Cloud | Planned: authenticated cloud API |
 | OpenRouter | Planned: explicit upstream routing controls |
-| LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; model discovery, streaming, and release authentication remain unqualified |
+| LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; a selected profile supplies the endpoint and the optional server token from its stored credential, otherwise `--endpoint` and `OMGCODE_LM_TOKEN` apply; model discovery and release authentication remain unqualified, and streamed replies have met local fixtures only |
 
 API-key and subscription connections are distinct authentication and billing
 profiles. Subscription-backed usage for both ChatGPT and Claude is required for
@@ -262,15 +298,18 @@ explicit rather than being assumed to work identically across providers.
   authentication, permissions, file access, toolchain profiles, Git operations,
   task supervision, prompt assembly, context management, caching, skills, MCP,
   and scoped memories.
-- **Desktop interface:** Tauri with a bundled TypeScript web interface.
+- **Desktop interface:** Tauri with a bundled TypeScript web interface. A
+  prototype exists (`omgcode-desktop`); see the
+  [desktop interface guide](docs/desktop-interface.md).
 - **Execution backends:** Separate Windows and Linux sandbox implementations.
 - **Local storage:** Versioned JSONL session journals, archive/restore events,
-  a rebuildable folder/search index, settings, scoped memories, and referenced
+  a rebuildable SQLite folder and search index (implemented), settings, scoped memories, and referenced
   task artifacts.
 - **Credential handling:** Operating-system credential storage, accessed through
   narrow services in the Rust core.
 
-The interface will use a limited command interface to the Rust core. Provider
+The desktop prototype uses a limited command interface to the Rust core: 19
+commands, no host paths, and per-window permissions checked in Rust. Provider
 keys will stay out of frontend state, repository files, and task environments.
 
 ## Development tools
@@ -332,8 +371,11 @@ cannot grant permissions. See [context management](docs/context-management.md) a
 2. Resolve subscription integration eligibility and validate both login/usage paths.
 3. Prove Windows/Linux isolation, representative toolchains, and process cleanup.
 4. Extend the Rust core and build the desktop interface, session tree, and
-   remaining persistence and recovery workflows.
-5. Expand provider adapters and add streaming and core-authorized tool workflows.
+   remaining persistence and recovery workflows. The first desktop prototype
+   (session tree, search, chat, and approvals) is implemented; recovery,
+   settings, development panels, and packaging remain. Streaming of the local
+   model's reply is implemented for that adapter only (ADR-0049).
+5. Expand provider adapters and add core-authorized tool workflows.
 6. Add visible instructions, token accounting, compaction, safe caching, skills,
    and project/global memories with boundary tests and efficiency measurements.
 7. Add model-scoped file tools, sandboxed terminals, background tasks, and MCP clients.

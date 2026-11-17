@@ -6,6 +6,425 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.34.0 lets a cancel request stop every model request, streamed or
+  not, and the compaction requests, and lets an interrupt cancel a CLI turn
+  (Phase D6). See ADR-0051 and
+  [cancelling every request](docs/provider-authentication.md#cancelling-every-request-0340).
+  Until now a non-streamed request and every compaction request ran to their
+  end or to the thirty-second deadline, a non-streamed text-only turn had no
+  cancel token, and Ctrl-C ended the CLI and left an open turn. It is a
+  prototype on branch `codex/request-cancellation`, stacked on
+  `codex/desktop-interface`; it is not merged. It adds no dependency and
+  removes reqwest's `blocking` feature, which drops `futures-channel` and
+  `futures-sink` from two dependency lists in `Cargo.lock`.
+  - **Adapter:** `complete` and `complete_with_tools` take a `CancelToken`, like
+    the streamed methods. All four methods share one transport: an async client
+    built inside a single-thread runtime created for the request, with the
+    settings and the thirty-second deadline of ADR-0050. The token is checked
+    before the request is sent, while the response head is awaited, and before
+    and while each piece of the body is awaited, every 25 ms. A set token drops
+    the request and returns `ProviderError::Cancelled`; a non-streamed body
+    read in part is discarded. The 1 MiB response bound is applied as pieces
+    arrive. The blocking client is removed. The wire request is unchanged.
+  - **Turn:** every chat turn creates one token after the session checks and
+    before the compaction check, and `ChatHooks::on_cancel_token` receives it
+    on every path, streamed or not. The new `ChatHooks::cancel` lets a front
+    end supply the token, and the new `TurnRuntime::with_cancel_token` hands it
+    to the runtime. A token already set when the turn would start ends it as
+    `cancelled` before the turn marker, recording nothing; the text-only path
+    now matches the runtime here.
+  - **Compaction:** `compact_journal` takes a token. A cancelled compaction
+    fails with the error kind `cancelled` and the message "Compaction was
+    cancelled; nothing was recorded", and the journal is unchanged.
+  - **CLI:** `omgcode chat` and `session compact` install the interrupt handler
+    of the trusted `run` command once the journal is open. Ctrl-C or
+    Ctrl-Break on Windows and `SIGINT` or `SIGTERM` on Linux set the token. The
+    command fails with the code `cancelled`; a chat turn that had started is
+    recorded as cancelled and the error carries the session locator. A handler
+    that cannot be installed fails the command with the new code `interrupt`.
+    `omgcode-platform` gains `watch_interrupt`, which runs a closure once on an
+    interrupt; `cancel_on_interrupt` wraps it. `capabilities` reports
+    `cancellable_adapters: ["lm_studio"]`.
+  - **Desktop:** no command or wire type changes. `chat_cancel` and exit now
+    stop a non-streamed request (`--stream off`) and a pre-turn compaction. A
+    turn cancelled before it handed over its token ends before it is recorded.
+  - **Tests:** core fixtures for a cancel of a non-streamed text and tool
+    request before sending and before the head, a unit test that cancels
+    while the rest of a held body is awaited once the head has arrived, and a
+    slow non-streamed reply under a live token; the runtime's caller token; app
+    tests for cancelled non-streamed text and tool turns, a cancelled pre-turn
+    compaction, a cancelled `compact_journal`, and a token set before the turn;
+    desktop tests for cancelling a non-streamed turn and for the shutdown grace
+    with a turn held in an event sink; Linux CLI tests that deliver `SIGINT`
+    during `chat` and `session compact`; and `watch_interrupt` in the platform
+    interrupt test. Two tests that asserted the old behaviour were rewritten:
+    `a_text_only_turn_..._calls_the_cancel_hook_once` (it skipped the hook) and
+    the desktop `cancelling_a_non_streamed_text_turn_stops_its_request` (it
+    asserted that cancelling changed nothing). Two others were replaced:
+    `a_non_streamed_text_turn_never_calls_the_cancel_hook_and_cannot_be_cancelled`
+    and the desktop shutdown-grace test's use of a held non-streamed reply,
+    which can now be cancelled.
+  - **Still not interruptible:** a read, list, or edit tool call in progress.
+    Not verified: a live LM Studio server, and an interrupt delivered to the
+    CLI on Windows.
+- Version 0.33.0 interrupts a streamed model request when a turn is cancelled
+  (Phase D5). See ADR-0050 and
+  [cancellation](docs/provider-authentication.md#cancellation-0330). Until now
+  cancellation was checked only between model rounds and tool calls, a request
+  in flight ran to its end or to the thirty-second deadline, a text-only turn
+  had no cancellation point, and on exit the desktop abandoned a turn still
+  waiting on the model, leaving an open turn. It is a prototype on branch
+  `codex/desktop-interface`; it is not merged. It adds no dependency and no
+  cargo feature.
+  - **Adapter:** `complete_streaming` and `complete_with_tools_streaming` take a
+    `CancelToken`. The streamed request runs on an async HTTP client inside a
+    single-thread runtime created for that one request. The client is built
+    inside that runtime and is not reused. Its settings equal the blocking
+    client's: no proxy, no redirect, no retry, the same connect timeout, and
+    the same thirty-second deadline for the whole response. The token is
+    checked before the request is sent, so an already cancelled turn makes no
+    connection, while waiting for the response head, and while waiting for each
+    piece of the body, every 25 ms, and also before each piece. When it is set
+    the request is dropped, which closes the connection, and the method returns
+    the new error `ProviderError::Cancelled` (`local model request was
+    cancelled`). Text already delivered stays delivered and is still
+    provisional. The event-stream rules of ADR-0049 are unchanged; the reader
+    is now a parser fed bytes in any chunking. The non-streaming methods keep
+    the blocking client and cannot be interrupted.
+  - **Runtime and recorded outcome:** `ToolModelRequest` carries the turn's
+    cancel token and `ModelError` gains `Cancelled`. When a model returns it
+    and the token is set, the turn ends as it does for a cancellation between
+    rounds: failure reason `cancelled`, error `TurnError::Cancelled`. A model
+    that returns it while the token is not set is recorded as a model error. A
+    streamed text-only turn now creates a cancel token and hands it to the
+    front end through the existing `on_cancel_token` hook. A cancelled request,
+    or a cancellation seen after the reply arrived and before it is recorded,
+    ends the turn with the failure reason `cancelled`. A non-streamed text-only
+    turn creates no token and cannot be cancelled. A cancelled turn has a
+    turn-failed record with the reason `cancelled`, no assistant message, and
+    no open turn. The partial text is never recorded.
+  - **Error kind:** the application layer reports a cancelled turn with the new
+    kind `cancelled` and the message `turn was cancelled`. The tool path
+    reported it with the general kind `turn` before.
+  - **Desktop and frontend:** `chat_cancel` now stops a streamed request. The
+    turn ends as `failed` with the error code `cancelled`, `finished` is
+    pushed, and the main window shows the plain notice "Turn cancelled." with
+    no error styling, decided by the error code only. Exit cancels every
+    running turn, so a streamed turn ends within the five-second grace period
+    and leaves no open turn. No command, argument, event, or wire type
+    changes; the shell still has 19 commands. The content security policy, the
+    windows, and the navigation guard are unchanged.
+  - **Compatibility:** no journal record changes shape, and sessions stay at
+    schema version 3.
+  - **Limits:** these are not interrupted: a non-streamed request
+    (`omgcode-desktop --stream off`, or the CLI without `--stream`), the
+    compaction request before a turn, and a tool call in progress. The CLI has
+    no cancel source, so stopping its process still leaves an open turn. A
+    long generation still fails at the thirty-second deadline. No live LM
+    Studio server was used, and no window has been opened on Linux. The
+    Windows shell was driven end to end against a mock that holds a stream
+    open, which does not qualify a live server. The CI workflows have still
+    never run.
+- Version 0.32.0 streams the local model's reply and pushes chat events to the
+  desktop window (Phases D4 and E6). See ADR-0049 and
+  [streamed replies](docs/provider-authentication.md#streamed-replies-0320).
+  Until now the adapter sent one non-streaming request, and the desktop
+  learned that a turn had ended by calling `chat_status` every 750 ms. It is a
+  prototype on branch `codex/desktop-interface`; it is not merged. It adds no
+  dependency.
+  - **Adapter:** `LocalModelClient::complete_streaming` and
+    `complete_with_tools_streaming` send the same body as the non-streaming
+    methods with `stream: true` and `Accept: text/event-stream`.
+    `stream_options` is never sent. The non-streaming methods are unchanged
+    and remain the default. The response is read as server-sent events under
+    strict rules: a success status and the `text/event-stream` content type;
+    the 1 MiB response limit and the thirty-second request deadline cover the
+    whole stream; LF or CRLF lines; empty lines, comment lines, and the
+    `event`, `id`, and `retry` fields are ignored and any other non-`data`
+    line is refused; `[DONE]` ends the stream; end of input without `[DONE]`
+    is the new error `IncompleteStream` (`local model stream ended before
+    completion`); every payload goes through the parser that refuses duplicate
+    keys; a non-null `error` member is refused and never reported; zero or one
+    choice and one finish reason, with the same accepted finish reasons as
+    before. The text method refuses any tool call. Tool calls are assembled by
+    `index` (in order from 0, below 64, only `index`, `id`, `type`, and
+    `function` with `name` and `arguments`, `id` set once, pieces
+    concatenated, a null member treated as absent). The assembled value holds
+    only the members received, so the existing tool-call validation applies
+    unchanged. Usage counters are present only when the server sends them.
+  - **Provisional text and redaction:** text goes to the caller as each payload
+    passes validation. It is provisional: a later failure fails the request and
+    the delivered text is not a reply. `ChatHooks::on_stream` receives
+    `ChatStreamEvent::RequestStarted` before each model request of a turn and
+    `ChatStreamEvent::Text` for each piece. A turn sends streamed requests only
+    when the hook is set, and compaction requests are never streamed.
+    `StreamRedactor` removes the known server token across piece boundaries by
+    withholding any tail that could be the start of the token. If its output
+    would itself contain the token, it emits nothing further for that request.
+    The final reply is still redacted as a whole before it is recorded.
+    Streaming changes no journal record, and the journal does not say whether a
+    reply was streamed. Sessions stay at schema version 3.
+  - **CLI:** `omgcode chat --stream` writes the provisional text to standard
+    error as it arrives, escaped by `DisplaySafeStream`, the streaming form of
+    core's display-safe escaping, so model output cannot send control sequences
+    to a terminal. It writes one line per model request that produced text.
+    Standard output still carries the one JSON result. A failed write to
+    standard error stops further writes and does not fail the turn. Without the
+    flag the request is not streamed. `session compact` has no such flag.
+    `capabilities` reports `"streaming_adapters": ["lm_studio"]`.
+  - **Desktop:** a new command, `chat_subscribe`, is allowed for `main` only,
+    so the shell has 19 commands (16 for `main`, 3 for `approvals`). Its
+    argument `on_event` is a Tauri IPC channel created by the caller. The
+    service keeps at most one subscriber; a new subscription replaces the old
+    one and first replays the preview of every running turn. Events are tagged
+    by `kind`: `request_started`, `delta` (text of at most 1,024 bytes),
+    `preview_truncated` (the 16 KiB preview bound for one request was reached),
+    and `finished` (the turn left `running`; the caller reads `chat_status`).
+    The service keeps each running turn's preview for the current request
+    only. Preview text is returned as received after token redaction, like
+    transcript text. A guard sends `finished` after the result is recorded and
+    records a panicked turn as failed first, so `chat_status` read after
+    `finished` never reports `running`. Events are sent while the hub lock is
+    held, and the `turns` and `events` locks are never held together. A channel
+    needs no capability beyond the command's own permission; Tauri events would
+    need a `core:event` permission, and both windows still have no `core:`
+    permission. The launch argument `omgcode-desktop --stream <on|off>`
+    defaults to `on`; `off` sends non-streaming requests, and `finished` is
+    still pushed. Any other value is a usage error with exit status 2. It
+    exists because the stream rules have not met a live LM Studio server.
+  - **Frontend:** the main window subscribes once, on the first send or watch.
+    It no longer polls `chat_status` every 750 ms. It reads `chat_status` once
+    on `finished`, keeps a five-second reconcile check while a turn runs in
+    case an event is lost, and falls back to the 750 ms poll if subscribing
+    fails. While a turn generates, the open session shows one live entry
+    labelled "Assistant (generating, not saved yet)", updated at most once per
+    animation frame and replaced by the recorded transcript when the turn
+    settles. A note appears when the preview is cut off. The frontend keeps
+    previews for up to 4 sessions it is not tracking and bounds each at 64 KiB
+    of UTF-16 code units. It renders preview text as text and marks
+    bidirectional overrides. The command name lives in `src/ipc/chat_events.ts`,
+    which only the main bundle imports, and a bundle test checks that no
+    approvals asset contains `chat_subscribe`. The approvals polls (3 seconds)
+    are unchanged.
+  - **Compatibility:** the non-streaming adapter methods, the journal records,
+    schema version 3, the content security policy, the windows, and the
+    navigation guard are unchanged. Cancellation is still cooperative, between
+    rounds and tool calls; a request in flight is not interrupted.
+  - **Limits:** the stream rules were checked against local fixtures only, and
+    no live LM Studio server was used. The Windows shell was driven end to end
+    against a paced event-stream mock, which does not qualify a live server.
+    No window has been opened on Linux, so the channel is unverified there. A streamed text reply has no usage
+    counters unless the server sends them. Preview text can differ from the
+    recorded reply: a later failure discards it, and a reply over the 16 KiB
+    session message limit is shown in part and then fails as before. The
+    request deadline is still thirty seconds for the whole response, so a long
+    generation fails as before. The approvals polls and the session tree still
+    do not use push. The CI workflows have still never run.
+- Version 0.31.0 binds a stored credential to its profile's endpoint (Phase
+  D3). See ADR-0048 and
+  [endpoint binding](docs/provider-authentication.md#endpoint-binding-0310).
+  In 0.30.0 a stored token went to whichever literal loopback endpoint the
+  operator named with `--endpoint`. It is a prototype on branch
+  `codex/desktop-interface`; it is not merged. It tightens the 0.30.0
+  behaviour, which was never merged or released, and adds no dependency.
+  - **Profile endpoint:** `workspace provider-profile-add <name> ... --endpoint
+    <url>` records one endpoint on a profile. `provider-profile-show` and
+    `status` print `"endpoint"` only when one is recorded; a profile without
+    one prints as before. An endpoint is not a secret. It is fixed for the
+    profile's life: no command changes it. To use another endpoint, remove the
+    profile and add a new one. Removing a profile already records the unbinding
+    and deletes its credential, so a stored credential cannot be moved to
+    another endpoint.
+  - **Validation:** only an `lm_studio` profile accepts an endpoint. It must be
+    `http://<literal loopback IP>:<non-zero port>/v1` (or `/v1/`), with no user
+    information, query, or fragment, and at most 256 bytes. This is the rule
+    the local adapter enforces on every request. Core has one implementation
+    (`validate_base_url`), used by the provider client and the profile record,
+    and journal replay applies it again. Every other provider kind refuses an
+    endpoint for now. The text is stored exactly as given. The refusals are
+    `provider profile refused: an lm_studio endpoint must be
+    http://<loopback IP>:<port>/v1 with no user information, query, or
+    fragment`, `... the provider endpoint is longer than 256 bytes`, and `...
+    this provider kind does not accept an endpoint yet`.
+  - **Selection:** a selected profile supplies the endpoint and the token.
+    `ControlStore::provider_credential_binding` returns the recorded endpoint
+    with the credential decision, so the two cannot come from different
+    places. It still takes no credential store. It checks the settings store,
+    the profile, the provider kind, the endpoint, and then the authentication
+    mode. A selected profile with no recorded endpoint is refused in every
+    authentication mode with a `credential` error that starts
+    `endpoint_not_recorded:`, before any native store access or request.
+    `--endpoint` and `--provider-profile` together are a usage error with exit
+    status 2 in `omgcode chat`, `omgcode session compact`, and
+    `omgcode-desktop`. The default value of `--endpoint` does not trigger it.
+    Without a profile, `--endpoint`, its default, and `OMGCODE_LM_TOKEN` behave
+    as before.
+  - **Desktop:** with a profile, the shell resolves the endpoint once at
+    launch, and a failure exits with status 1 before any window opens. That
+    value is the process's fixed endpoint: the webview is shown it and each chat
+    request is compared with it. Each turn resolves the profile again. If the
+    recorded endpoint no longer equals the launch value, because the profile
+    was removed and added again, `chat_send` fails at once with a `credential`
+    error that starts `endpoint_changed:` and no turn starts. A replaced
+    profile with the same endpoint and a new credential is accepted. The wire
+    contract is unchanged.
+  - **Compatibility:** the profile record's `endpoint` field is written only
+    when present, so a control journal without endpoints replays and serializes
+    with its exact bytes. A journal that contains an endpoint cannot be read by
+    0.30.0 or earlier, which reject the unknown field. Replay rejects an
+    invalid endpoint, an endpoint on a kind that does not accept one, and any
+    unknown field. A profile recorded before 0.31.0 has no endpoint and cannot
+    be selected until it is removed and added again with `--endpoint`; the
+    credential must then be stored again.
+  - **Capabilities:** `capabilities` adds `"provider_profile_endpoints": true`.
+  - **Limits:** only `lm_studio` profiles accept an endpoint. No endpoint rule
+    exists for a non-loopback provider, HTTPS, or certificates, and no cloud
+    adapter exists. Any process running as the same user can still read a stored
+    credential. A hand-edited control journal is checked only by replay
+    validation and is not tamper-evident. The frontend shows nothing about the
+    credential source beyond the endpoint text it already displayed.
+- Version 0.30.0 adds stored credential use for the local LM Studio adapter
+  (Phase D2). See ADR-0047 and
+  [stored credential use](docs/provider-authentication.md#stored-credential-use-0300).
+  Until now nothing read a stored credential, and the adapter took its optional
+  server token only from `OMGCODE_LM_TOKEN`. It is a prototype on branch
+  `codex/desktop-interface`; it is not merged. It adds no dependency outside
+  the existing workspace set (`omgcode-app` now uses `zeroize`).
+  - **Selection:** `omgcode chat --provider-profile <name>` and `omgcode
+    session compact --provider-profile <name>` read the token from the
+    credential bound to that recorded `lm_studio` profile. `omgcode-desktop
+    --provider-profile <name>` does the same for the whole process, fixed at
+    launch; the webview cannot choose or see it and the wire contract is
+    unchanged. With a profile selected, `OMGCODE_LM_TOKEN` is not read.
+    Without one, behaviour is unchanged and the variable remains the
+    prototype input, which still does not meet the credential-service
+    requirement.
+  - **Core checks:** `ControlStore::provider_credential_binding(name,
+    adapter_kind)` takes no credential store, so it cannot touch native
+    storage. It refuses an unknown profile, a profile of another provider
+    kind, a `subscription` profile, and an `api_key` profile with no bound
+    credential, and it yields no token for a `none` profile. The native store
+    is opened only when it returns a binding.
+    `ControlStore::load_provider_credential` then refuses a binding stored by
+    another backend before it reads any secret. The adapter passes
+    `lm_studio`, so a key recorded for another provider is never sent to it.
+  - **Failure:** any failure on the profile path ends the turn with a
+    `credential` error before a model request is built. The message is `<cause
+    code>: <text>`, with the codes `unknown_profile`, `wrong_provider`,
+    `subscription_unsupported`, `not_bound`, `other_backend`,
+    `settings_unusable`, `credential_not_found`, `credential_locked`,
+    `credential_unavailable`, `credential_corrupt`,
+    `credential_prompt_required`, `credential_io`, `credential_refused`, and
+    `credential_invalid`. A missing or busy settings store is also a
+    `credential` error, with no cause code, and a busy store is not retried.
+    There is no fallback to no token or to another token. A locked Secret
+    Service is an error; OMGCode still never runs a prompt. In the CLI the
+    credential is resolved before the endpoint check and before any session or
+    journal exists, so the error JSON has no session locator.
+  - **Rotation and lifetime:** the secret is loaded while the settings store is
+    held, so a rotation cannot delete the item between the binding lookup and
+    the load. The store is released before any network request. A read records
+    nothing: no control-journal entry and no revision change, and the session
+    journal does not name the profile or the credential. The token is held in
+    a zeroing buffer with a redacted `Debug` and no serialization for one
+    turn, and the existing redaction of the token from recorded and returned
+    text applies. The provider clients' request-header copies and transport
+    buffers are not zeroed.
+  - **Desktop:** the service resolves the token again for every turn and caches
+    nothing, so a rotated credential applies to the next turn. An unreadable
+    credential is a synchronous `credential` error and no turn thread starts.
+    With a profile selected, the shell also resolves once at launch and exits
+    with status 1 and `omgcode-desktop: credential: <cause>: <text>` before any
+    window opens. The frontend shows nothing about the credential source.
+  - **Capabilities:** `capabilities` adds `"stored_credential_adapters":
+    ["lm_studio"]`. `provider_adapters` stays `false`: no adapter exists for
+    any provider other than the local LM Studio route.
+  - **Limits:** the credential is bound to a provider kind, not to an endpoint,
+    so a stored LM Studio token is sent to whichever literal loopback endpoint
+    the operator selects. Any process running as the same user can still read
+    the stored credential. A memory-only session credential is not
+    implemented, and no cloud adapter, subscription sign-in, token refresh, or
+    account lifecycle exists.
+- Version 0.29.0 adds the desktop interface and session tree (Phase E). See
+  ADR-0044, ADR-0045, and ADR-0046, and the
+  [desktop interface guide](docs/desktop-interface.md). It is a prototype on
+  branch `codex/desktop-interface`; it has no installer and has run only on
+  Windows. No CLI command changed behaviour: every existing CLI test suite
+  passes unmodified, and `model_tools.rs` and `context_cli.rs` moved from
+  `omgcode-cli` into the new `omgcode-app` crate.
+  - **Journal inspection:** `SessionInspection::inspect` reads one journal
+    without any lock call, without following links, and with the writer's
+    validator, so a viewer never makes a writer report `Busy`. On Windows a
+    lock or sharing violation becomes `Busy` with no retry. Bytes after the last
+    line feed are ignored and reported as `incomplete_tail`; the file is never
+    changed, and `SessionJournal::open` still rejects such a file. The result
+    adds `created_at`, `updated_at`, and an ordered list of transcript entries;
+    a request manifest entry carries the model, prompt version, and tool names
+    only. `MessageSource` is now public.
+  - **Discovery:** `session::discover` and `session::locate` walk only the dated
+    `sessions` layout with a strict file-name parser, never open a journal or
+    follow a link or reparse point, and stop with `LimitReached` after 50,000
+    journals or 500,000 directory entries.
+  - **Session index:** `session_index::SessionIndex` keeps a derived SQLite
+    index with FTS5 in `<data_root>/session-index-v1/index.sqlite3`. It is a
+    cache that is deleted and rebuilt when it is foreign or corrupt at open.
+    Refresh is incremental and bounded to 1,000 journals per call; a busy
+    journal keeps its last metadata, and an invalid journal is listed with a
+    code. Search quotes every term and binds the expression as a parameter; it
+    refuses more than 16 terms or 256 characters. Titles and the user,
+    assistant, tool, and summary text are indexed; tool arguments, manifests,
+    and instructions are not. New dependency: `rusqlite` 0.43.0 with the
+    bundled SQLite 3.54.1 (MIT), which compiles C source at build time, so a C
+    compiler is required. The lockfile gains `rusqlite`, `libsqlite3-sys`,
+    `fallible-iterator`, and `fallible-streaming-iterator`.
+  - **Application library:** `omgcode-app` holds the chat turn, compaction,
+    session creation, the data-root resolver, token redaction, and
+    `DesktopService`. The CLI and the desktop shell both call it. It grants no
+    authority. Chat gains a cooperative cancellation hook; the CLI does not use
+    it, and it cannot interrupt a provider request in flight.
+  - **Approval review:** core adds `review_approval` and display-safe text. It
+    recomputes an approval's digest from the recorded tool request with the
+    tool handler's own function and returns `exact`, `stale`, or `not_found`.
+    It decides, consumes, and applies nothing. `ControlStore` gains
+    `workspaces()`, `directory_path()`, and `directory_display()`.
+  - **Desktop shell:** the new `omgcode-desktop` crate is a Tauri 2 shell with
+    two windows, 18 commands, a capability file per window and no `core:`
+    permission, a Rust window check as the first statement of every handler, a
+    content security policy, a navigation guard, and a five second bounded
+    shutdown. It takes `--data-dir` and `--endpoint` and reads no other
+    configuration. The webview receives no host path, journal path, or token.
+    Chat tools follow the workspace settings as in the CLI. New dependencies:
+    `tauri` 2.12.6 (`wry` and `x11` features only) and `tauri-build` 2.7.5,
+    Apache-2.0 OR MIT, with no plugin, tray, updater, asset protocol, or
+    devtools feature. The lockfile grows by about 283 entries. A Linux build
+    needs the WebKitGTK development packages.
+  - **Approvals window:** a separate `approvals` window holds the only decision
+    controls. Approving needs an `exact` review binding and a single-use review
+    token that lives 120 seconds; a file edit also needs the writers-stopped
+    checkbox. The CLI `approvals` commands are unchanged. The window is still
+    web content and is not a trusted computing base.
+  - **Frontend:** `crates/omgcode-desktop/ui` is strict TypeScript with Vite,
+    Vitest (jsdom), and Biome, with one runtime dependency, `@tauri-apps/api`
+    2.12.5. Versions are exact, the lockfile is committed, and `.npmrc` sets
+    `ignore-scripts=true`. The interface builds its document from text nodes
+    only; tests scan for markup injection, inline script, remote resources, and
+    browser storage. It polls for chat status and approvals; there is no push
+    channel.
+  - **Continuous integration:** the Rust workflow installs the Tauri Linux
+    packages, sets up Node 24, builds the frontend before Clippy, and has a 40
+    minute timeout (was 20). A new Frontend workflow runs the type check, Biome,
+    Vitest, and the bundle checks on Ubuntu 24.04 and Windows Server 2025.
+    `.gitattributes` checks the frontend out with LF. The root `.gitignore`
+    gains `node_modules/` and `dist/`.
+  - **Limits:** on Linux the shell builds and the workspace tests pass (WSL
+    6.6, Ubuntu 24.04), but no window has been opened there, so its webview,
+    IPC, and capability enforcement are unverified on Linux. The workflow
+    changes have not run on GitHub, and CodeQL's JavaScript/TypeScript
+    selection is unverified. Two link tests are skipped on a host without
+    symlink privilege; they ran on Linux. The shell has no packaging, streaming, settings
+    interface, development panels, or recovery interface. Corruption inside an
+    index table behind a valid header is not rebuilt automatically, and two
+    versions sharing a data root rebuild each other's index.
 - Version 0.28.0 adds the approval-gated model edit tool (Phase C17). See
   ADR-0043.
   - **Tool:** `workspace_edit_file { path, old_text, new_text }` replaces
@@ -469,6 +888,38 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Findings from the first Sonar analysis of the desktop frontend:
+  - Both workflows now install the frontend's dependencies with
+    `npm ci --ignore-scripts`. `ui/.npmrc` already set this; the flag makes
+    it hold even if that file changes.
+  - Four lines of frontend source and tests held raw bidirectional control
+    characters, inside the pattern and the test strings that deal with those
+    characters. They are now written as `\u` escapes, which denote the same
+    characters, and a frontend test fails if a raw one is added.
+  - `sonar-project.properties` declares test code as test code. Every
+    duplicated line Sonar reported, and about half the lines it counted as
+    code to cover, were in test files analysed as production code.
+  - Sonar's condition on coverage of new code failed because no coverage
+    report existed for the frontend's TypeScript sources. `npm run coverage`
+    now writes one with `@vitest/coverage-v8` 5.1.0, a new development
+    dependency pinned to the Vitest version. The Sonar workflow runs it in a
+    separate job that never references the Sonar credential and passes only
+    the report to the analysis job. Nothing is excluded from the measure. It
+    stood at 85.7% of lines and 76.0% of branches on 2026-11-17, about 82%
+    by Sonar's combined measure against a required 80%. Rust is still not
+    measured for coverage.
+- The CLI test `concurrent_runs_complete_and_are_recorded` no longer depends
+  on host speed. On Windows each run spun a fixed loop of 30,000 `cd .`
+  iterations before writing its file, and the test allowed 60 seconds for
+  both. On a host held near 100% CPU by an unrelated build, one such loop took
+  22 to 24 seconds in a plain shell, and the test failed three times in a row,
+  on this change and on the commit before it. Each run now writes its own file
+  and waits until it sees the other run's file. Exit code 0 from both proves
+  the runs were alive at the same time, which the old scripts did not: two
+  runs made one after the other would also have passed. A run that never sees
+  the other's file exits non-zero. The Linux scripts use the same rendezvous
+  in place of `sleep 1`. The assertions are unchanged, and no limit was
+  raised. No production code changed.
 - PR #32 review follow-up:
   - Compaction splits summarizer input at the 128-message prompt-assembly
     limit as well as the byte limit, in history chunks and combination

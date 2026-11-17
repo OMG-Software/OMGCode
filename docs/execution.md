@@ -684,8 +684,10 @@ run that fails after consumption uses the approval.
 
 Output is untrusted and bounded. The session journal records the tool intent
 and result; the run journal records the run. No replay executes a recorded
-call. The model can request but cannot approve; the CLI approval commands are
-the operator surface, and there is no approval UI. A CLI acceptance test runs
+call. The model can request but cannot approve. The CLI approval commands and
+the desktop shell's approvals window are the two operator surfaces; the window
+adds no authority and needs a review token (see the
+[desktop interface guide](desktop-interface.md#approvals)). A CLI acceptance test runs
 one approved command through the real chat process, a mock provider, and the
 trusted runner on both Linux and Windows, and asserts a successful exit, the
 bounded output, and the consumed approval. On Linux the chat process starts in
@@ -1012,8 +1014,8 @@ These remain true after C6:
   configuring a toolchain to use the directory is operator work.
 - **Model command limits.** The model command tool accepts no model-selected
   limits, network, or host services. It uses a 20-second deadline and 4 KiB
-  per output stream. The operator flow spans two turns, and no approval UI
-  exists. A denied exact request stays denied for the current settings
+  per output stream. The operator flow spans two turns, and the operator
+  decides in the CLI or in the desktop approvals window. A denied exact request stays denied for the current settings
   revision; a failed run consumes the approval. A CLI acceptance test runs one
   approved command through the real chat process and the trusted runner on
   both hosts; it needs a delegated cgroup on Linux and a workspace container

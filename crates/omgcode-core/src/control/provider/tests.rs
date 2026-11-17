@@ -15,6 +15,7 @@ fn declaration(name: &str, kind: &str, auth: &str) -> ProviderProfileDeclaration
         name: name.into(),
         kind: kind.into(),
         auth: auth.into(),
+        endpoint: None,
     }
 }
 
@@ -115,5 +116,241 @@ fn provider_authentication_pairs_are_supported() {
         store
             .add_provider_profile(&declaration(&format!("p{index}"), kind, auth), revision)
             .unwrap_or_else(|error| panic!("{kind}/{auth}: {error}"));
+    }
+}
+
+const ENDPOINT: &str = "http://127.0.0.1:1234/v1";
+
+fn with_endpoint(
+    name: &str,
+    kind: &str,
+    auth: &str,
+    endpoint: Option<&str>,
+) -> ProviderProfileDeclaration {
+    ProviderProfileDeclaration {
+        endpoint: endpoint.map(str::to_owned),
+        ..declaration(name, kind, auth)
+    }
+}
+
+fn refusal(result: Result<ProviderProfile, ControlError>) -> &'static str {
+    match result {
+        Err(ControlError::ProviderRefused(message)) => message,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// An `lm_studio` profile records the exact endpoint text, which survives
+/// replay and appears in the serialized profile and status.
+#[test]
+fn an_lm_studio_profile_records_its_endpoint_exactly() {
+    let (_directory, data, mut store) = store();
+    for (index, text) in [ENDPOINT, "http://[::1]:4321/v1/"].into_iter().enumerate() {
+        let revision = store.revision();
+        let profile = store
+            .add_provider_profile(
+                &with_endpoint(&format!("p{index}"), "lm_studio", "api_key", Some(text)),
+                revision,
+            )
+            .expect("profile");
+        assert_eq!(profile.endpoint().map(ProviderEndpoint::as_str), Some(text));
+    }
+    let status = store.provider_profile("P0").expect("profile");
+    assert_eq!(
+        status.profile().endpoint().map(ProviderEndpoint::as_str),
+        Some(ENDPOINT)
+    );
+    let encoded = serde_json::to_value(store.snapshot()).expect("snapshot");
+    assert_eq!(encoded["provider_profiles"][0]["endpoint"], ENDPOINT);
+    assert_eq!(
+        encoded["provider_profiles"][1]["endpoint"], "http://[::1]:4321/v1/",
+        "stored without normalisation"
+    );
+    drop(store);
+    let store = ControlStore::open(&data).expect("replay");
+    assert_eq!(
+        store
+            .provider_profile("p1")
+            .and_then(|status| status.profile().endpoint())
+            .map(ProviderEndpoint::as_str),
+        Some("http://[::1]:4321/v1/")
+    );
+}
+
+/// The profile uses the adapter's own rule: every destination the provider
+/// module refuses is refused at add time, and nothing is recorded.
+#[test]
+fn every_endpoint_the_adapter_refuses_is_refused_at_add_time() {
+    let (_directory, _data, mut store) = store();
+    for text in crate::provider::REFUSED_ENDPOINTS {
+        let message = refusal(
+            store.add_provider_profile(&with_endpoint("bad", "lm_studio", "none", Some(text)), 0),
+        );
+        assert!(
+            message.contains("lm_studio endpoint"),
+            "{text:?}: {message}"
+        );
+    }
+    let long = format!("http://127.0.0.1:{}1234/v1", "0".repeat(300));
+    assert!(
+        crate::provider::validate_base_url(&long).is_ok(),
+        "only the length bound refuses this one"
+    );
+    let message = refusal(
+        store.add_provider_profile(&with_endpoint("bad", "lm_studio", "none", Some(&long)), 0),
+    );
+    assert!(message.contains("256 bytes"), "{message}");
+    assert_eq!(MAX_PROVIDER_ENDPOINT_BYTES, 256);
+    assert_eq!(store.revision(), 0, "a refusal records nothing");
+    let exact = format!(
+        "http://127.0.0.1:{}1234/v1",
+        "0".repeat(MAX_PROVIDER_ENDPOINT_BYTES - ENDPOINT.len())
+    );
+    assert_eq!(exact.len(), MAX_PROVIDER_ENDPOINT_BYTES);
+    store
+        .add_provider_profile(&with_endpoint("edge", "lm_studio", "none", Some(&exact)), 0)
+        .expect("exactly 256 bytes is accepted");
+}
+
+#[test]
+fn a_refused_endpoint_writes_no_event() {
+    let (_directory, data, mut store) = store();
+    let _ = refusal(store.add_provider_profile(
+        &with_endpoint("bad", "lm_studio", "none", Some("https://127.0.0.1:1/v1")),
+        0,
+    ));
+    drop(store);
+    let text = fs::read_to_string(data.join(FILE_NAME)).expect("journal text");
+    assert_eq!(text.matches("provider_profile_added").count(), 0, "{text}");
+}
+
+/// Kinds without an adapter refuse an endpoint, whatever its text.
+#[test]
+fn other_provider_kinds_refuse_an_endpoint() {
+    let (_directory, _data, mut store) = store();
+    for (kind, auth) in [
+        ("openai", "api_key"),
+        ("anthropic", "subscription"),
+        ("ollama_local", "none"),
+        ("ollama_cloud", "api_key"),
+        ("open_router", "api_key"),
+    ] {
+        let message = refusal(
+            store.add_provider_profile(&with_endpoint("other", kind, auth, Some(ENDPOINT)), 0),
+        );
+        assert!(message.contains("does not accept an endpoint"), "{kind}");
+    }
+    assert_eq!(store.revision(), 0);
+}
+
+/// A profile without an endpoint still works and writes exactly the bytes it
+/// wrote before endpoints existed.
+#[test]
+fn a_profile_without_an_endpoint_keeps_its_pre_endpoint_bytes() {
+    let (_directory, data, mut store) = store();
+    let profile = store
+        .add_provider_profile(&declaration("legacy", "lm_studio", "none"), 0)
+        .expect("profile");
+    assert!(profile.endpoint().is_none());
+    let encoded = serde_json::to_string(&profile).expect("profile JSON");
+    assert_eq!(
+        encoded,
+        format!(
+            r#"{{"id":"{}","name":"legacy","kind":"lm_studio","auth":"none"}}"#,
+            profile.id()
+        )
+    );
+    let status = serde_json::to_value(store.snapshot()).expect("snapshot");
+    assert!(status["provider_profiles"][0].get("endpoint").is_none());
+    drop(store);
+    let text = fs::read_to_string(data.join(FILE_NAME)).expect("journal text");
+    let event = text
+        .lines()
+        .find(|line| line.contains("provider_profile_added"))
+        .expect("event");
+    assert!(!event.contains("endpoint"), "{event}");
+}
+
+/// A pre-endpoint profile record deserializes with no endpoint and
+/// re-serializes to the identical text.
+#[test]
+fn a_pre_endpoint_profile_record_round_trips() {
+    let text = r#"{"id":"0b7f2c2e-6f0a-4f6c-8f7e-1d2f3a4b5c6d","name":"legacy","kind":"lm_studio","auth":"api_key"}"#;
+    let profile: ProviderProfile = serde_json::from_str(text).expect("pre-change record");
+    assert!(profile.endpoint().is_none());
+    assert_eq!(serde_json::to_string(&profile).expect("JSON"), text);
+}
+
+/// A journal written without endpoints replays, and re-serializing its
+/// events reproduces the same bytes.
+#[test]
+fn a_pre_endpoint_journal_replays_and_reserializes_identically() {
+    let (_directory, data, mut store) = store();
+    store
+        .add_provider_profile(&declaration("legacy", "lm_studio", "api_key"), 0)
+        .expect("profile");
+    drop(store);
+    let bytes = fs::read(data.join(FILE_NAME)).expect("journal");
+    let copy = tempfile::tempdir().expect("copy");
+    let copied = copy.path().join("data");
+    drop(ControlStore::open(&copied).expect("create the directory"));
+    fs::write(copied.join(FILE_NAME), &bytes).expect("fixture");
+    let store = ControlStore::open(&copied).expect("replay");
+    assert!(
+        store
+            .provider_profile("legacy")
+            .expect("profile")
+            .profile()
+            .endpoint()
+            .is_none()
+    );
+    let mut again = Vec::new();
+    for entry in &store.entries {
+        again.extend(serde_json::to_vec(entry).expect("event JSON"));
+        again.push(b'\n');
+    }
+    assert_eq!(again, bytes);
+}
+
+/// Replay applies the validation: a hand-edited journal cannot introduce an
+/// endpoint the command would refuse, or any unknown field.
+#[test]
+fn replay_rejects_invalid_endpoints_and_unknown_fields() {
+    let (_directory, data, mut store) = store();
+    store
+        .add_provider_profile(
+            &with_endpoint("edited", "lm_studio", "none", Some(ENDPOINT)),
+            0,
+        )
+        .expect("profile");
+    store
+        .add_provider_profile(&declaration("plain", "openai", "api_key"), 1)
+        .expect("profile");
+    drop(store);
+    let original = fs::read_to_string(data.join(FILE_NAME)).expect("journal");
+    assert!(original.contains(ENDPOINT));
+    let cases = [
+        (ENDPOINT, "http://localhost:1234/v1"),
+        (ENDPOINT, "https://127.0.0.1:1234/v1"),
+        (ENDPOINT, "http://192.0.2.1:1234/v1"),
+        (
+            r#""kind":"openai","auth":"api_key""#,
+            r#""kind":"openai","auth":"api_key","endpoint":"http://127.0.0.1:1234/v1""#,
+        ),
+        (r#""kind":"lm_studio""#, r#""kind":"lm_studio","extra":1"#),
+    ];
+    for (from, to) in cases {
+        assert!(original.contains(from), "{from}");
+        let edited = original.replacen(from, to, 1);
+        let directory = tempfile::tempdir().expect("copy");
+        let path = directory.path().join("data");
+        drop(ControlStore::open(&path).expect("directory"));
+        fs::write(path.join(FILE_NAME), edited).expect("edited fixture");
+        let result = ControlStore::open(&path);
+        assert!(
+            matches!(result, Err(ControlError::Invalid(_))),
+            "{to}: {:?}",
+            result.err()
+        );
     }
 }

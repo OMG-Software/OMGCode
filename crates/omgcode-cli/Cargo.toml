@@ -12,9 +12,9 @@ name = "omgcode"
 path = "src/main.rs"
 
 [dependencies]
+omgcode-app = { path = "../omgcode-app" }
 omgcode-core = { path = "../omgcode-core" }
 clap.workspace = true
-directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

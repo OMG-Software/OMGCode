@@ -58,3 +58,11 @@ meaningful alternative does not need an ADR.
 | [0041: Compact active context with readable summaries](0041-compact-active-context-with-readable-summaries.md) | Accepted | 2026-11-15 |
 | [0042: Store provider credentials in protected OS storage](0042-store-provider-credentials-in-protected-os-storage.md) | Accepted | 2026-11-15 |
 | [0043: Gate the model file edit tool with approvals and checkpointed apply](0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md) | Accepted | 2026-11-16 |
+| [0044: Observe journals without the writer lock and index them in SQLite](0044-observe-journals-without-the-writer-lock-and-index-them-in-sqlite.md) | Accepted | 2026-11-16 |
+| [0045: Build the desktop shell on Tauri with a narrow command surface](0045-build-the-desktop-shell-on-tauri-with-a-narrow-command-surface.md) | Accepted | 2026-11-16 |
+| [0046: Decide model tool approvals in an isolated desktop window](0046-decide-model-tool-approvals-in-an-isolated-desktop-window.md) | Accepted | 2026-11-16 |
+| [0047: Read the local provider token from the credential store](0047-read-the-local-provider-token-from-the-credential-store.md) | Accepted; amended by ADR-0048 | 2026-11-16 |
+| [0048: Bind a stored credential to its profile's endpoint](0048-bind-a-stored-credential-to-its-profile-endpoint.md) | Accepted | 2026-11-16 |
+| [0049: Stream local model replies and push chat events to the main window](0049-stream-local-model-replies-and-push-chat-events.md) | Accepted | 2026-11-16 |
+| [0050: Interrupt a streamed model request when a turn is cancelled](0050-interrupt-a-streamed-model-request-on-cancellation.md) | Accepted; amended by ADR-0051 | 2026-11-16 |
+| [0051: Cancel every model request and let an interrupt cancel a CLI turn](0051-cancel-every-model-request-and-interrupt-cli-turns.md) | Accepted | 2026-11-17 |

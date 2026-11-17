@@ -55,7 +55,11 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
   recorded.
 
 Not implemented: mid-turn compaction after tool results, persisted workspace
-settings, provider-native opaque compaction, caches, memories, and a UI meter.
+settings, provider-native opaque compaction, caches, and memories. The desktop
+shell shows the context meter line after each turn (estimated tokens, context
+size, and the compaction trigger). It has no settings interface, persisted
+settings, or live meter while a turn runs, and it shows the meter only for a
+turn that reports one.
 
 ## Settings and accounting
 

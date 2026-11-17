@@ -44,7 +44,7 @@ KiB, history to 128 messages, and the assembled UTF-8 text to 256 KiB. The
 adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
 prototype has no settings UI, application/workspace/session preference store,
-preview UI, token-count display, skills, memories, model create,
+preview UI, exact token-count display, skills, memories, model create,
 delete, rename, network, Git, or MCP tools, or provider-specific subscription routes.
 Its only model tools are read, list, the approval-gated exact edit, and the
 approval-gated command tool. The current
@@ -183,6 +183,19 @@ acknowledgement, other operations refuse the flag, and consumption refuses a
 once. Consumption checks the binding and refuses if the settings revision
 changed. The CLI consume command executes nothing. The tool must fail closed
 when the record is missing, denied, expired, consumed, or bound differently.
+
+The desktop approvals window is a second operator surface for the same records
+([ADR-0046](adr/0046-decide-model-tool-approvals-in-an-isolated-desktop-window.md)).
+Because a record stores a digest and not the arguments, core finds the recorded
+tool request that the approval is bound to by recomputing the digest with the
+tool handler's own function. The result is an `exact`, `stale`, or `not_found`
+review binding. The window shows request fields only for `exact`. Approving
+needs a random, single-use review token that lives for 120 seconds, is bound to
+the approval identifier and digest, and is issued only for an `exact`, pending
+record. Approving a `file_write` record still needs the writers-stopped
+acknowledgement. Deny needs no token. The window adds no authority: core still
+checks the binding, expiry, and settings revision when the record is consumed.
+See the [desktop interface guide](desktop-interface.md#approvals).
 Approval events preserve the settings revision. See
 [ADR-0039](adr/0039-gate-future-model-tools-with-bound-single-use-approval-records.md)
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md),

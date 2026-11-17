@@ -465,16 +465,29 @@ fn the_deadline_terminates_and_is_recorded() {
 }
 
 /// Two runs in the same workspace at once both complete and are recorded.
+///
+/// Each run writes its own file and then waits until it sees the other run's
+/// file, so exit code 0 from both proves the two runs were alive at the same
+/// time. A run that never sees the other's file exits non-zero. The wait ends
+/// as soon as the file appears, so the test does not depend on how fast the
+/// host does a fixed amount of work. The wait is bounded: 20 seconds of
+/// polling on Linux, and on Windows the loop count or the run's CPU-time limit,
+/// whichever comes first.
 #[test]
 fn concurrent_runs_complete_and_are_recorded() {
     let scene = Scene::new();
     assert_success(&scene.add_profile("system", &[]));
     #[cfg(target_os = "linux")]
-    let scripts = ["sleep 1; echo one > one.txt", "sleep 1; echo two > two.txt"];
+    let scripts = [
+        "echo one > one.txt; i=0; while [ ! -e two.txt ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; test -e two.txt",
+        "echo two > two.txt; i=0; while [ ! -e one.txt ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; test -e one.txt",
+    ];
+    // `exit 0` inside the loop ends `cmd` at once; running out of iterations
+    // falls through to `exit 3`.
     #[cfg(windows)]
     let scripts = [
-        "(for /l %i in (1,1,30000) do @cd .)& echo one>one.txt",
-        "(for /l %i in (1,1,30000) do @cd .)& echo two>two.txt",
+        "echo one>one.txt& (for /l %i in (1,1,1000000) do @if exist two.txt exit 0)& exit 3",
+        "echo two>two.txt& (for /l %i in (1,1,1000000) do @if exist one.txt exit 0)& exit 3",
     ];
     let children: Vec<_> = scripts
         .iter()

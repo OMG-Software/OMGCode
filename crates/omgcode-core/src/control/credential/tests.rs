@@ -47,6 +47,7 @@ fn fixture() -> Fixture {
                     name: name.into(),
                     kind: kind.into(),
                     auth: auth.into(),
+                    endpoint: None,
                 },
                 revision,
             )
@@ -675,3 +676,5 @@ fn recorded_bindings_reject_malformed_identifiers_and_backends() {
         );
     }
 }
+
+mod loading;

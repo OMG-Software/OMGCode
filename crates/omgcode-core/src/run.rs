@@ -35,7 +35,7 @@ use crate::session::{NativePath, SessionError};
 use crate::storage::{self, StorageError};
 use crate::workspace::DirectoryRecord;
 
-pub use omgcode_platform::interrupt::{InterruptWatch, cancel_on_interrupt};
+pub use omgcode_platform::interrupt::{InterruptWatch, cancel_on_interrupt, watch_interrupt};
 pub use omgcode_platform::process::{CancelSignal, ProcessLimits, TreeLimits};
 pub use omgcode_platform::process::{
     MAX_CAPTURE_BYTES, MAX_DEADLINE, MAX_TREE_CPU_TIME, MAX_TREE_DISK_BYTES, MAX_TREE_MEMORY_BYTES,

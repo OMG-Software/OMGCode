@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Application commands for the main window only. No core permissions and no approval-decision commands.",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-app-info",
+    "allow-session-tree",
+    "allow-session-search",
+    "allow-session-transcript",
+    "allow-session-archive",
+    "allow-session-restore",
+    "allow-session-interrupt",
+    "allow-workspace-list",
+    "allow-session-create",
+    "allow-chat-defaults",
+    "allow-chat-send",
+    "allow-chat-status",
+    "allow-chat-cancel",
+    "allow-chat-subscribe",
+    "allow-approvals-summary",
+    "allow-approvals-show-window"
+  ]
+}

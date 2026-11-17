@@ -88,7 +88,8 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
-    /// Record a provider connection shape. No credential or adapter is used.
+    /// Record a provider connection shape, optionally with its endpoint. No
+    /// credential is stored; the local lm_studio adapter reads a selected profile.
     ProviderProfileAdd(ProviderProfileAddArgs),
     /// Show one recorded provider profile.
     ProviderProfileShow { name: String },
@@ -103,7 +104,8 @@ pub(crate) enum WorkspaceCommand {
     ///
     /// The secret is read from standard input only, up to 16 KiB; one
     /// trailing newline is removed. A previously bound credential is deleted
-    /// after the new binding is recorded. No adapter uses the credential yet.
+    /// after the new binding is recorded. The local lm_studio adapter reads it
+    /// for a selected profile.
     ProviderCredentialSet {
         name: String,
         #[arg(long)]
@@ -128,6 +130,11 @@ pub(crate) struct ProviderProfileAddArgs {
     /// One of: subscription, api_key, none.
     #[arg(long)]
     auth: String,
+    /// The endpoint the profile's adapter uses. Only lm_studio accepts one:
+    /// http://<loopback IP>:<port>/v1. It cannot be changed later; remove the
+    /// profile and add it again.
+    #[arg(long)]
+    endpoint: Option<String>,
     #[arg(long)]
     revision: u64,
 }
@@ -491,6 +498,7 @@ fn provider_profile_add(args: ProviderProfileAddArgs, data_root: &Path) -> Resul
                 name: args.name,
                 kind: args.kind,
                 auth: args.auth,
+                endpoint: args.endpoint,
             },
             args.revision,
         )

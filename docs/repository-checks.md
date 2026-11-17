@@ -61,12 +61,42 @@ No application build is claimed. CodeQL's Rust processing can still execute
 build scripts or procedural macros; the analysis job has no Sonar or provider
 secrets. Keep its permissions restricted.
 
-The repository now contains Rust source in the core, CLI, and platform crates.
+The repository now contains Rust source in the core, CLI, platform, application,
+and desktop crates.
 CodeQL selects Rust when tracked Rust files and a Cargo manifest are present.
 Its no-build scan is separate from the locked Cargo checks in
 `.github/workflows/rust.yml`; it is not a full application build or proof of
-application security. There is no frontend source to scan yet. Add other source
-languages deliberately when the implementation needs them.
+application security. The desktop frontend adds tracked `.ts` files under
+`crates/omgcode-desktop/ui`, so the selection rule above now adds
+JavaScript/TypeScript. That is expected from the rule and is unverified until a
+CodeQL run completes on a pull request. `node_modules` and the generated `dist`
+directory are ignored by Git and the extractor. Add other source languages
+deliberately when the implementation needs them.
+
+## Rust and Frontend workflows
+
+`.github/workflows/rust.yml` runs on Ubuntu 24.04 and Windows Server 2025 with a
+40 minute timeout (it was 20). Before Clippy it installs the Tauri build
+packages on Ubuntu (`libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`,
+`file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and
+`librsvg2-dev`), sets up Node 24 with `actions/setup-node` pinned to a full
+commit (v7.1.0), and runs `npm ci` and `npm run build` in
+`crates/omgcode-desktop/ui`. The desktop crate embeds `ui/dist` at compile time,
+so every workspace-wide Cargo step needs that build first.
+
+`.github/workflows/frontend.yml` is new. It runs on pull requests to main,
+pushes to main, and manual dispatch, on Ubuntu 24.04 and Windows Server 2025. It
+runs `npm ci`, `npm run check`, `npm run lint`, `npm test`, and
+`npm run test:dist`. `.npmrc` sets `ignore-scripts=true`, so no dependency
+install script runs.
+
+`.gitattributes` sets `crates/omgcode-desktop/ui/** text=auto eol=lf` so a CRLF
+checkout on Windows does not fail Biome's format check.
+
+None of these workflow changes has run on GitHub. They run only on a pull
+request, and none exists yet. Treat their behaviour, including the added
+timeout and the Windows legs of the frontend build, as unverified until a run
+completes.
 
 On Ubuntu, the Rust workflow enables lingering for the runner user and waits
 for its user service manager before the tests. The run and tree-limit tests
@@ -117,7 +147,39 @@ The source root is the repository, including Rust crates, workflow, and tooling
 files. The explicit exclusions cover .git, target, node_modules, dist, and
 coverage directories at any depth. They do not cover every generated directory;
 review exclusions as the repository grows. Use the Rust workflow for compilation
-and Clippy checks. Coverage reporting is not configured in either workflow.
+and Clippy checks. The Rust workflow reports no coverage.
+
+Test code is declared to Sonar as test code: every `tests` directory, every
+`tests.rs` module, and every `*.test.ts` file. The same patterns are excluded
+from the sources, because a file cannot be both. Sonar then applies its test
+rules to those files and does not count them as code to cover or measure them
+for duplication. Rust unit tests written inside a source file in a
+`#[cfg(test)]` module cannot be separated this way and are still analysed as
+source.
+
+Sonar counts the frontend's TypeScript sources as code to cover, so the Sonar
+workflow gives it a coverage report. A first job, `Frontend coverage`, installs
+the locked dependencies, runs `npm run coverage`, and uploads `lcov.info` as an
+artifact kept for one day. The analysis job waits for it and downloads the
+report to `crates/omgcode-desktop/ui/coverage`, where
+`sonar.javascript.lcov.reportPaths` points. The report's paths are relative to
+the repository root. The tests run dependency code, so they run in a job that
+never references the Sonar credential; the analysis job receives only the
+report. Keep it that way.
+
+The coverage provider is `@vitest/coverage-v8`, pinned to the Vitest version.
+The report covers every file under `ui/src`, including the development mock,
+with no exclusion. On 2026-11-17 it measured 85.7% of lines and 76.0% of
+branches, which is about 82% by Sonar's combined measure against a required
+80%. That margin is thin: new frontend code needs tests, or the gate fails.
+Rust is not measured for coverage at all. Do not read a passing gate as
+evidence of Rust test coverage.
+
+Both workflows install the frontend's dependencies with
+`npm ci --ignore-scripts`. The flag repeats what `ui/.npmrc` sets, so no
+package install script runs even if that file changes. Source and tests name
+bidirectional control characters with `\u` escapes, never as raw characters; a
+frontend test scans for raw ones.
 
 Check the current Sonar result and quality gate for each pull request. Do not
 present a missing, empty, or failed analysis as proof that application code
@@ -128,6 +190,7 @@ passed.
 - Third-party actions use verified full commit pins with release comments.
   Review vendor releases before updating them.
 - Check YAML, the CodeRabbit schema, workflow syntax, and changed documentation.
+  Run the frontend gates locally when `crates/omgcode-desktop/ui` changes.
   Verify CodeQL language selection for absent and newly introduced source.
 - After publishing through a pull request, inspect the actual review and
   completed workflow results. Check the head commit and final exit statuses.

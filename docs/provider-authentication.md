@@ -21,7 +21,7 @@ billing or defer it.
 | Ollama Local | Local service configuration; authentication where configured | Planned; not implemented |
 | Ollama Cloud | Provider cloud credentials | Planned; not implemented |
 | OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
-| LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, but the adapter does not read it; full platform/auth qualification pending |
+| LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
 
 The provider, authentication method, account/workspace, billing mode, and model
 capabilities form one connection profile. Do not infer all of these from a
@@ -29,7 +29,9 @@ provider name.
 
 ## Implemented prototype (v0.1.0)
 
-The current CLI has one non-streaming LM Studio Chat Completions adapter. The
+The current CLI has one LM Studio Chat Completions adapter. It sends
+non-streaming requests by default and streamed requests on request
+([streamed replies](#streamed-replies-0320)). The
 caller supplies an already available model name, a maximum output budget, and a
 context budget with `--context-tokens`. For example, the CLI test fixture passes
 131072 as its configured context budget. This value is caller input; the
@@ -47,9 +49,10 @@ configure that service.
 
 The CLI accepts an optional `OMGCODE_LM_TOKEN` in its own process
 environment. The core keeps the resulting authorization header in memory and
-does not add the token to a request manifest. The adapter does not read the
-stored credentials described below, and there is no token settings UI. This is
-a prototype-only developer input. Task execution
+does not add the token to a request manifest. With `--provider-profile` the
+adapter reads the stored credential described below instead, and the variable
+is not read. The profile also supplies the endpoint (0.31.0). There is no token settings UI. The variable is a prototype-only
+developer input. Task execution
 and task environments do not exist in the prototype; this does not qualify the
 future task-environment credential boundary.
 
@@ -137,13 +140,44 @@ and an authentication mode. Kinds are `openai`, `anthropic`, `ollama_local`,
 API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio.
 Ollama Local accepts only `none`.
 
-A profile stores no endpoint, account, token, password, certificate, or other
-credential. Since 0.27.0 its status can name a bound credential's opaque
-identifier and backend (below). It is configuration only: no adapter, login,
-entitlement check, billing mode, or model context uses it. `capabilities`
-reports `provider_profiles: true` and `provider_adapters: false`. Adapters that
-read stored credentials and the provider-specific login approvals remain
-prerequisites for any real connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
+A profile stores no account, token, password, certificate, or other
+credential. Since 0.31.0 it can record one endpoint (below). An endpoint is not
+a secret. Since 0.27.0 its status can name a bound credential's opaque
+identifier and backend (below). It is configuration only: no login,
+entitlement check, billing mode, or model context uses it. Since 0.30.0 the
+local LM Studio adapter can read a bound credential of an `lm_studio` profile
+that the operator selects (below). `capabilities` reports
+`provider_profiles: true`, `provider_adapters: false`, and
+`stored_credential_adapters: ["lm_studio"]`, and, since 0.31.0,
+`provider_profile_endpoints: true`. Cloud adapters and the
+provider-specific login approvals remain prerequisites for any real
+connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
+
+Since 0.31.0 `provider-profile-add` accepts `--endpoint <url>` (ADR-0048). Only
+an `lm_studio` profile accepts one. It must pass the rule the local adapter
+applies to every request: plain `http`, a literal loopback IP, an explicit
+non-zero port, the path `/v1` or `/v1/`, no user information, query, or
+fragment, and at most 256 bytes. Core has one implementation of that rule, and
+both the provider client and the profile record use it. Replay of the control
+journal applies it again. Every other provider kind refuses an endpoint for
+now, because no adapter defines its rule. The text is stored exactly as given,
+without normalisation. The refusals are `provider profile refused: an
+lm_studio endpoint must be http://<loopback IP>:<port>/v1 with no user
+information, query, or fragment`, `provider profile refused: the provider
+endpoint is longer than 256 bytes`, and `provider profile refused: this
+provider kind does not accept an endpoint yet`.
+
+`provider-profile-show` and `status` print an `endpoint` field only when the
+profile records one. A profile without one prints as before. The endpoint is
+fixed for the profile's life, and no command changes it. To use another
+endpoint, remove the profile and add a new one.
+
+The record's `endpoint` field is written only when present, so a control journal
+without endpoints replays and serializes with its exact bytes. A journal that
+contains an endpoint cannot be read by 0.30.0 or earlier, which reject the
+unknown field. Replay rejects an invalid endpoint, an endpoint on a kind that
+does not accept one, and any unknown field. A hand-edited control journal is
+checked only by this replay validation. It is not tamper-evident.
 
 ## Stored provider credentials (0.27.0)
 
@@ -169,9 +203,253 @@ only identifiers, backends, and store state. See
 
 Only `api_key` profiles accept a credential. Subscription tokens, login codes,
 and refresh tokens are not stored, and subscription sign-in remains blocked as
-described above. **No provider adapter reads a stored credential yet**, so no
-connection uses one. A memory-only session credential belongs to the adapter
-increment. Any process running as the same user can read these credentials.
+described above. Until 0.30.0 no adapter read a stored credential. Now only
+the local LM Studio adapter does (next section). A memory-only session
+credential is not implemented. Any process running as the same user can read
+these credentials.
+
+## Stored credential use (0.30.0)
+
+[ADR-0047](adr/0047-read-the-local-provider-token-from-the-credential-store.md)
+lets the local LM Studio adapter take its optional server token from a stored
+credential. It is the only adapter that reads one.
+
+- **Selection.** The operator names a profile with `omgcode chat
+  --provider-profile <name>` or `omgcode session compact --provider-profile
+  <name>`. `omgcode-desktop --provider-profile <name>` selects it for the whole
+  process at launch. The webview cannot choose or see it. With a profile
+  selected, `OMGCODE_LM_TOKEN` is not read and the endpoint comes from the
+  profile, not from `--endpoint` (see
+  [endpoint binding](#endpoint-binding-0310)). Without one, behaviour is
+  unchanged: `--endpoint` and its default, and the variable as the prototype
+  input. Two sources are never combined for one request.
+- **Core checks.** `ControlStore::provider_credential_binding` takes no
+  credential store, so it cannot touch native storage. It refuses an unknown
+  profile, a profile of another provider kind, a profile with no recorded
+  endpoint, a `subscription` profile, and an `api_key` profile with no bound
+  credential. A `none` profile yields no token there, so it needs no native
+  store. Only when it returns a binding is
+  the native store opened. `ControlStore::load_provider_credential` then
+  refuses a binding stored by another backend before it reads any secret. The
+  LM Studio adapter passes `lm_studio`, so an OpenAI or Anthropic profile's key
+  cannot be sent to it.
+- **Failure.** Any failure on this path ends the turn with a `credential`
+  error before a model request is built. The message has the form `<cause
+  code>: <text>`. There is no fallback to no token or to another token. A
+  locked Secret Service is an error; OMGCode still never runs a prompt. A
+  missing or busy settings store is also a `credential` error, without a cause
+  code, and a busy store is refused without a retry. The cause codes are
+  `unknown_profile`, `wrong_provider`, `endpoint_not_recorded`,
+  `subscription_unsupported`, `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
+  `credential_locked`, `credential_unavailable`, `credential_corrupt`,
+  `credential_prompt_required`, `credential_io`, `credential_refused`, and
+  `credential_invalid`. The desktop adds `endpoint_changed` (see the next
+  section).
+- **Rotation and lifetime.** The secret is loaded while the settings store is
+  held, so a rotation cannot delete the item between the binding lookup and the
+  load. The store is released before any network request. The desktop resolves
+  the token again for each turn and caches nothing, so the next turn uses a
+  rotated credential. In the CLI the credential is resolved before the endpoint
+  check and before any session or journal exists, so the error JSON carries no
+  session locator. A read records nothing: no control-journal entry and no
+  revision change. The session journal does not name the profile or the
+  credential.
+- **Memory.** The token is held in a zeroing buffer with redacted `Debug` and
+  no serialization for one turn, and the existing redaction of the token from
+  recorded and returned text applies to it. The provider clients' request-header
+  copies and transport buffers are not zeroed.
+- **Limits.** Any process running as the same user can still read the stored
+  credential. A memory-only session credential, a cloud adapter, subscription
+  sign-in, token refresh, and account lifecycle are not implemented. The
+  frontend shows nothing about the credential source beyond the endpoint text
+  it already displayed. Version 0.30.0 bound the credential to a provider kind
+  only; 0.31.0 amends that (next section).
+
+## Endpoint binding (0.31.0)
+
+[ADR-0048](adr/0048-bind-a-stored-credential-to-its-profile-endpoint.md) sends a
+stored credential only to the endpoint recorded with its profile. It amends
+ADR-0047, whose statement that a credential is bound to a provider kind and not
+to an endpoint no longer holds for a usable profile.
+
+- **One source.** A selected profile supplies the endpoint and the token.
+  `ControlStore::provider_credential_binding(name, adapter_kind)` returns the
+  recorded endpoint together with the credential decision, so the two cannot
+  come from different places. It still takes no credential store. It checks, in
+  order: the settings store is usable, the profile exists, its kind matches the
+  adapter, an endpoint is recorded, and then the authentication mode (`none`
+  yields no token, `subscription` is refused, `api_key` must be bound).
+- **No endpoint recorded.** A selected profile with no recorded endpoint is
+  refused in every authentication mode with a `credential` error that starts
+  `endpoint_not_recorded:` and reads `provider profile <name> has no recorded
+  endpoint; remove it and add it again with an endpoint`. The refusal comes
+  before any native store access and before any request.
+- **Exclusive flags.** `--endpoint` and `--provider-profile` together are a
+  usage error with exit status 2 in `omgcode chat`, `omgcode session compact`,
+  and `omgcode-desktop`. The default value of `--endpoint` does not trigger it.
+  There is no case where both are allowed because they are equal.
+- **Immutable endpoint.** No command edits a recorded endpoint. Removing a
+  profile records the unbinding and deletes its credential, so a stored
+  credential cannot be moved to another endpoint.
+- **Desktop.** With a profile, the shell resolves the endpoint once at launch.
+  A failure exits with status 1 and `omgcode-desktop: <message>` before any
+  window opens. That value is the endpoint of the process: the webview is shown
+  it, and each chat request is compared with it. Each turn resolves the profile
+  again. If the recorded endpoint no longer equals the launch value, because
+  the profile was removed and added again, the turn is refused with a
+  `credential` error that starts `endpoint_changed:` (the provider profile's
+  endpoint changed since launch; restart the application) and no turn starts. A
+  replaced profile with the same endpoint and a new credential is accepted and
+  uses the new credential. The wire contract is unchanged.
+- **Migration.** A profile recorded before 0.31.0 has no endpoint and cannot be
+  selected. Remove it, add it again with `--endpoint`, and store the credential
+  again. The 0.30.0 behaviour, which took the endpoint from `--endpoint`, was
+  never merged or released.
+- **Limits.** Only `lm_studio` profiles accept an endpoint. No endpoint rule
+  exists for a non-loopback provider, HTTPS, or certificates, and no cloud
+  adapter exists. Any process running as the same user can still read a stored
+  credential. A hand-edited control journal is checked only by replay
+  validation and is not tamper-evident. The frontend shows nothing about the
+  credential source beyond the endpoint text it already displayed. The tests
+  for this change ran against DPAPI on Windows and the Secret Service on Linux
+  under WSL. A chat turn with a stored credential was not driven through the
+  desktop shell's windows on either platform.
+
+## Streamed replies (0.32.0)
+
+[ADR-0049](adr/0049-stream-local-model-replies-and-push-chat-events.md) adds an
+opt-in streamed request to the LM Studio adapter. The non-streaming methods are
+unchanged and remain the default.
+
+- **Request.** `LocalModelClient::complete_streaming` and
+  `complete_with_tools_streaming` send the same body as the non-streaming
+  methods with `stream` set to `true` and an `Accept: text/event-stream`
+  header. `stream_options` is never sent, because LM Studio's documentation
+  does not list it. They call a caller-supplied function with each piece of
+  assistant text and return the same reply type as the non-streaming methods.
+  Usage counters are present only when the server sends them.
+- **Stream rules.** The response is read as server-sent events. Any breach fails
+  the request, and nothing is repaired. The status must be a success and the
+  content type `text/event-stream`. The existing 1 MiB response limit and the
+  thirty-second request deadline cover the whole stream. Lines end with LF or
+  CRLF. Empty lines, comment lines, and the `event`, `id`, and `retry` fields
+  are ignored, and any other line that is not a `data` field is refused.
+  `[DONE]` ends the stream, and nothing after it is read. A stream that ends
+  without `[DONE]` fails with the error `IncompleteStream` (`local model stream
+  ended before completion`). Every other payload goes through the parser that
+  refuses duplicate keys and must be an object. A non-null `error` member is
+  refused, and its body is never reported. A payload holds zero or one choice
+  and one finish reason, and the accepted finish reasons are those of the
+  non-streaming methods.
+- **Tool calls.** The text method refuses any tool call. The tool method
+  assembles calls by `index`: indexes start at 0, appear in order, and stay
+  below 64. A call object holds only `index`, `id`, `type`, and `function`, and
+  `function` only `name` and `arguments`. `id` is set once, name and argument
+  pieces are concatenated, and a null member counts as absent. The assembled
+  value holds only the members received, so the existing tool-call validation
+  applies to it unchanged.
+- **Provisional text.** Text goes to the caller as each payload passes
+  validation. It is provisional: if the stream fails later, the request fails
+  and the delivered text is not a reply. The journal records only the validated
+  whole reply, and does not say whether it was streamed. Sessions stay at schema
+  version 3.
+- **Redaction.** A turn streams only when `ChatHooks::on_stream` is set, and
+  compaction requests are never streamed. `StreamRedactor` removes the known
+  server token across piece boundaries by withholding any tail that could be
+  the start of the token. If its output would itself contain the token, it
+  emits nothing further for that request. The final reply is still redacted as
+  a whole before it is recorded. This is known-token redaction, not general
+  secret detection.
+- **Use.** `omgcode chat --stream` writes the escaped provisional text to
+  standard error. The desktop shell streams by default and `--stream off`
+  turns it off. See [development](development.md) and the
+  [desktop interface](desktop-interface.md).
+- **Limits.** The stream rules were checked against local fixtures only. No live
+  LM Studio server was used. A streamed text reply has no usage counters unless
+  the server sends them. A long generation still fails at the thirty-second
+  deadline. Preview text can differ from the recorded reply. Since 0.33.0 a
+  cancelled turn interrupts a streamed request, and since 0.34.0 any request,
+  as described below.
+
+### Cancellation (0.33.0)
+
+[ADR-0050](adr/0050-interrupt-a-streamed-model-request-on-cancellation.md)
+makes a streamed request watch a cancel token. The ADR-0049 stream rules above
+are unchanged.
+
+- **Transport.** `complete_streaming` and `complete_with_tools_streaming` take
+  a `CancelToken`. The streamed request runs on an async HTTP client inside a
+  single-thread runtime created for that one request. The client is built
+  inside that runtime and is not reused, so a pooled connection never outlives
+  the runtime that drives it. Its settings equal the blocking client's: no
+  proxy, no redirect, no retry, the same connect timeout, and the same
+  thirty-second deadline, which covers the whole response. The reader is now a
+  parser fed bytes in any chunking, and the same stream rules apply to any
+  chunking.
+- **Cancel rule.** The token is checked before the request is sent, so a turn
+  that is already cancelled makes no connection. It is checked while waiting
+  for the response head and while waiting for each piece of the body, every 25
+  ms, and also before each piece, so a fast stream cannot starve the check.
+  When it is set, the request is dropped, which closes the connection, and the
+  method returns `ProviderError::Cancelled` (`local model request was
+  cancelled`). Text already delivered stays delivered and is still provisional.
+  The journal never records it.
+- **Runtime.** The turn runtime passes the turn's token to the model with each
+  request. A model that returns `Cancelled` while the token is set ends the
+  turn with the failure reason `cancelled`. If the token is not set, the
+  runtime records a model error. A streamed text-only turn creates a token and
+  ends as cancelled in the same way, including when the cancellation is seen
+  after the reply arrived and before it is recorded.
+- **Not interruptible in 0.33.0.** The non-streaming methods kept the blocking
+  client. A non-streamed request, the compaction request before a turn, and a
+  tool call in progress were not interrupted, and the CLI had no cancel source.
+  Version 0.34.0 closes the first, second, and fourth gaps, below.
+- **Limits.** The cancel path was checked against local fixtures only. No live
+  LM Studio server was used.
+
+### Cancelling every request (0.34.0)
+
+[ADR-0051](adr/0051-cancel-every-model-request-and-interrupt-cli-turns.md)
+applies the cancel rule above to every request.
+
+- **Transport.** `complete` and `complete_with_tools` take a `CancelToken` too.
+  All four methods share one transport: each request builds its own async
+  client inside a single-thread runtime created for that request, with the
+  settings and the deadline above. The blocking client and reqwest's `blocking`
+  feature are removed. The wire request is unchanged: reqwest's blocking client
+  was the same async client driven from a background thread. A non-streamed
+  body is read piece by piece within the 1 MiB bound; a body read in part when
+  the token is set is discarded.
+- **One token per turn.** Every chat turn creates one token after the session
+  checks and before the compaction check, hands a clone to
+  `ChatHooks::on_cancel_token` on every path, and uses it for the pre-turn
+  compaction requests and for every model request. A front end can supply the
+  token through `ChatHooks::cancel`. A token already set when the turn would
+  start ends it as `cancelled` before the turn marker, recording nothing.
+- **Compaction.** `compact_journal` takes a token. A cancelled compaction
+  returns the error kind `cancelled` ("Compaction was cancelled; nothing was
+  recorded"). The journal is written only after the last summary, so it is
+  unchanged.
+- **CLI.** `omgcode chat` and `session compact` install the interrupt handler
+  of the trusted `run` command once the journal is open. Ctrl-C or Ctrl-Break
+  on Windows and `SIGINT` or `SIGTERM` on Linux then set the token instead of
+  ending the process. The command fails with the code `cancelled`; a chat turn
+  that had started is recorded as cancelled and the error carries the session
+  locator. A handler that cannot be installed fails the command with the code
+  `interrupt` before any model request. `capabilities` reports
+  `cancellable_adapters: ["lm_studio"]`.
+- **Still not interruptible.** A read, list, or edit tool call already in
+  progress. A command tool call is cancelled through its run.
+- **Limits.** Checked against local fixtures only. No live LM Studio server
+  was used, and the CLI interrupt was delivered by a test only on Linux.
+
+LM Studio documents the request fields in
+[Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions)
+and tool calls arriving in pieces in
+[tool use](https://lmstudio.ai/docs/developer/openai-compat/tools). The line
+rules follow the
+[HTML Standard on server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html),
+more strictly.
 
 ## Settings and account lifecycle
 
@@ -190,7 +468,13 @@ http://localhost:1234/v1 as an editable starting address, not as proof of a runn
 server. Allow a no-token profile only for the explicitly selected local service.
 If authentication is enabled, use its scoped LM Studio token through the
 credential service. A separately selected non-loopback service requires
-authenticated HTTPS; never silently redirect requests or credentials.
+authenticated HTTPS; never silently redirect requests or credentials. The
+prototype desktop shell fixes the endpoint and the token source at launch. With
+`--provider-profile`, both come from the profile: its recorded endpoint and its
+stored credential. Without it, the endpoint is `--endpoint` (default
+`http://127.0.0.1:1234/v1`) and the token is `OMGCODE_LM_TOKEN`, read for each
+turn. The two flags are mutually exclusive. A webview request cannot change
+either, and the shell has no connection test or model discovery.
 
 Qualify Chat Completions and Responses independently for the chosen server
 version and model. Reuse wire-format code only where its contract matches.
@@ -216,9 +500,11 @@ resource limits. This grants no general model-management authority.
 Test model discovery, absent/unloaded models, token and no-token modes,
 authentication failure, streaming/cancellation, validated tool calls, changed
 context limits, and absence of unexpected cloud fallback on both supported
-platforms. The current prototype does not implement model discovery, streaming,
-or tool calls. The Windows Gemma smoke check above covers one live profile;
-full platform and authentication qualification remains pending.
+platforms. The current prototype does not implement model discovery. Its
+streamed requests ([streamed replies](#streamed-replies-0320)) have been checked
+against local fixtures only. The Windows Gemma smoke check above covers one live
+profile, and it sent no streamed request; full platform and authentication
+qualification remains pending.
 
 ### Shared settings and lifecycle
 
@@ -249,8 +535,10 @@ For release, keep access tokens, refresh tokens, API keys, login codes, and
 verifier values in the trusted authentication service. Store durable credentials
 in protected OS storage. Do not silently fall back to plaintext when that store
 is unavailable; offer an explicit memory-only session if appropriate. Version
-0.27.0 implements that protected store for API keys (ADR-0042); no adapter
-reads it yet. The prototype's `OMGCODE_LM_TOKEN` process-environment input does
+0.27.0 implements that protected store for API keys (ADR-0042); since 0.30.0
+only the local LM Studio adapter reads it (ADR-0047), and since 0.31.0 only
+at the endpoint recorded with its profile (ADR-0048). The prototype's
+`OMGCODE_LM_TOKEN` process-environment input does
 not meet this credential-service requirement and must not be treated as its
 replacement.
 
