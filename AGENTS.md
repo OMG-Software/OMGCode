@@ -65,8 +65,8 @@ edit tool call in progress is not interruptible
 On the CLI, Ctrl-C during `chat` or `session compact` cancels instead of ending
 the process.
 The desktop shell has no settings interface, development panels, installer, or
-recovery interface. CI publishes unsigned archives of each merge to `main` under
-the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
+recovery interface. CI publishes unsigned archives of the newest tested merge to
+`main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides

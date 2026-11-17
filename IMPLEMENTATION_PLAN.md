@@ -100,9 +100,11 @@ This is a resume guide, not a replacement for the owning contracts in
     model request, streamed or not, and the compaction requests, and Ctrl-C
     cancels a CLI `chat` turn or `session compact` (ADR-0051).
 - **PR #36** merged at `b58f3f7` on 2026-11-17, from `codex/testing-builds`:
-  the Testing build workflow, which tests each push to `main`, packages
-  unsigned Windows, Ubuntu, and Fedora 44 archives with no installer, and
-  publishes them as the rolling `latest` prerelease (ADR-0052). No
+  the Testing build workflow, which runs on pushes to `main`, tests the
+  commit, packages unsigned Windows, Ubuntu, and Fedora 44 archives with no
+  installer, and publishes them as the rolling `latest` prerelease
+  (ADR-0052). While a run is active, GitHub keeps only the newest waiting
+  run, so a push that a later push supersedes is never tested or published. No
   application change; the version stays 0.34.0. On 2026-11-17 its first two
   runs, for `b58f3f7` and `4f94774`, were still queued and no `latest`
   release existed, so the workflow has not yet completed on GitHub.
@@ -1207,9 +1209,11 @@ policy, and push approval. Platform qualification, security testing, and
 release readiness remain separate gates.
 
 PR #36 added the first packaging step: a Testing build workflow publishes
-unsigned Windows, Ubuntu, and Fedora 44 archives of each push to `main` as the
-rolling `latest` prerelease, with no installer
-([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). The
+unsigned Windows, Ubuntu, and Fedora 44 archives of the newest tested `main`
+commit as the rolling `latest` prerelease, with no installer
+([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Only
+the newest waiting push is guaranteed a run; a push that arrives while a run is
+active can be superseded by a later one and never be tested or published. The
 workspace tests do not run on Fedora. The workflow had not completed a run
 when this plan was last verified. Signing, installers, Git workflows,
 platform qualification, and release readiness remain open.
