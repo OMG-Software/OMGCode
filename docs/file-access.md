@@ -171,8 +171,10 @@ Phase A2b adds Linux private checkpoint storage and existing-only recovery.
 Phase A2c adds trusted native apply on Linux ext4. Phase A3b adds Windows NTFS
 storage and apply. Phase A4 adds explicit restore and checkpoint deletion on both.
 Since 0.28.0 the approval-gated model edit tool reaches the same apply; see
-[Model edit route](#model-edit-route-adr-0043). No model tool creates, deletes,
-renames, restores, or manages checkpoints.
+[Model edit route](#model-edit-route-adr-0043). Since 0.36.0 the model
+multi-edit tool reaches it too, and the model create tool reaches the exclusive
+create; see [Model multi-edit and create routes](#model-multi-edit-and-create-routes-adr-0054).
+No model tool deletes, renames, restores, or manages checkpoints.
 
 ### Implemented record inspection (Phase A2a)
 
@@ -484,6 +486,51 @@ the operating assumption only. The desktop approvals window shows the same
 recorded request and a live read of the file; otherwise it offers Deny only. See
 the [desktop interface guide](desktop-interface.md#approvals). Restore and
 checkpoint management stay trusted CLI commands.
+
+### Model multi-edit and create routes (ADR-0054)
+
+Both tools are advertised and dispatched only under the same live
+`model_tools`, `read`, and `write` preferences as `workspace_edit_file`, with
+the same per-call recheck and `edit_disabled` denial. Both use
+`file_write` approvals with the 900-second lifetime and the writers-stopped
+acknowledgement, and the same lookup filters (session, workspace, operation,
+exact digest, current settings revision). Each has its own digest domain tag,
+so a record for one tool, including `workspace_edit_file`, can never be
+consumed by another.
+
+`workspace_multi_edit_file` takes a path and one to 16 `old_text`/`new_text`
+pairs. It reads the live file through the audited broker (at most 1 MiB, UTF-8)
+and matches every `old_text` against that original content: each must occur
+exactly once (`edit_no_match`, `edit_ambiguous`, naming the 1-based edit index),
+and the matched ranges must not overlap (`edit_overlap`). It applies the
+replacements in ascending offset order into one proposed buffer, which must
+differ from the file (`edit_unchanged`) and fit 1 MiB (`edit_too_large`). The
+digest, under `omgcode-file-multi-edit-v1`, covers the session, workspace,
+normalized path, and the size and SHA-256 of the current and proposed bytes.
+After approval, the handler checks the success report fits, consumes the
+record, and calls `apply_replacement` with the captured size and digest, like
+the single edit. One approval and one checkpoint cover the whole call.
+
+`workspace_create_file` takes a path and complete UTF-8 content (empty
+allowed), bounded by the 4 KiB argument limit. Before recording any approval, a
+live audited read must find the path absent (an existing entry returns
+`file_exists`) and a one-entry listing must find its parent directory (a missing
+parent returns `not_found`); nothing is recorded in either case. The digest,
+under `omgcode-file-create-v1`, covers the session, workspace, normalized path,
+and the size and SHA-256 of the content. After approval, the handler checks the
+success report fits, consumes the record, and calls the broker's exclusive
+`create_file`. The write is not checkpointed: nothing existed before, and the
+exclusive create refuses an existing entry. If another writer creates the path
+between the check and the create, the create returns `file_exists`, replaces
+nothing, and the approval stays spent. An uncertain outcome is a terminal
+failure that leaves the file-operation journal's pending record for the trusted
+acknowledgement; nothing is retried or deleted. A success reports the path,
+size, SHA-256, and operation ID, never the content.
+
+Neither tool detects a concurrent writer, and neither is power-loss qualified.
+The desktop approvals window reproduces the digest from a recorded request of
+any of the three tools before it shows fields. A create request also becomes
+stale once its path exists.
 
 ### Private checkpoints, quota, and retention
 

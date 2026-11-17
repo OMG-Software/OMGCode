@@ -6,6 +6,60 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.36.0 adds two approval-gated model file tools, multi-edit and create
+  (Phase C18). See ADR-0054 and the
+  [multi-edit and create routes](docs/file-access.md#model-multi-edit-and-create-routes-adr-0054).
+  Until now the model could change a file only one exact replacement at a time,
+  each needing its own approval and checkpoint, and could not create a file.
+  It is on branch `codex/model-file-tools`, stacked on
+  `codex/checkpoint-ledger-compaction`; it is not merged. It adds no dependency.
+  - **Tools:** `workspace_multi_edit_file` applies one to 16 exact replacements
+    to one existing file under one approval and one checkpointed apply.
+    `workspace_create_file` creates one new UTF-8 file through the broker's
+    exclusive create. Both are advertised and dispatched only under live
+    `model_tools`, `read`, and `write`, with the edit tool's per-call recheck
+    and `edit_disabled` denial. Tool schema 0.4.0; 0.2.0 and 0.3.0 sessions
+    still replay. Six of the eight tool-name slots are used, and no cap rose.
+  - **Approvals:** both reuse the `file_write` operation, so the
+    writers-stopped acknowledgement is required and no enum, wire type, or
+    TypeScript union changed. Each has its own digest domain tag
+    (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`), so an approval for
+    `workspace_edit_file`, multi-edit, or create is never consumed by another
+    tool. The approval flow itself is one shared gate; the edit tool's digest,
+    codes, and messages are unchanged.
+  - **Multi-edit rules:** every `old_text` must occur exactly once in the
+    original live bytes and the matches may not overlap (`edit_overlap`);
+    touching matches are allowed. The messages name the 1-based edit index and
+    never file text. The result must differ and fit 1 MiB.
+  - **Create rules:** before an approval is recorded, a live audited read must
+    find the path absent (`file_exists`) and a listing must find the parent
+    (`not_found`). A file that another writer creates after approval is never
+    replaced; the call returns `file_exists` and the approval stays spent.
+    Creation is not checkpointed. An uncertain creation is a terminal failure
+    that leaves the pending file-operation record for the trusted
+    acknowledgement.
+  - **Review:** the desktop approvals window reproduces the digest from any of
+    the three tools (at most eight distinct candidates in total) and shows
+    numbered `Old text N` and `New text N` fields for a multi-edit and
+    `File`, `Size`, `SHA-256`, and `Content` for a create. A create review is
+    stale once its path exists. The approvals label reads "File change".
+  - **Limits:** the 4 KiB argument cap bounds create content and multi-edit
+    size. There is no multi-file atomicity and no concurrent-writer detection,
+    and neither tool is power-loss qualified. No model delete or rename tool
+    exists. The schema estimate for context accounting rises from 4 KiB to
+    5 KiB (the six definitions serialize to 4,546 bytes).
+  - **Windows missing paths:** the platform now exports `is_missing_entry`,
+    which recognises the native not-found status Windows keeps inside an
+    `ErrorKind::Other` error. A missing path in a read, list, edit, or create
+    call is now the recoverable `not_found` on Windows, as it already was on
+    Linux, instead of a terminal `native_error`.
+  - **Tests:** new core tests cover strict argument parsing, the approval flow,
+    cross-tool non-consumption, refusals, live-permission gating, output-fit
+    refusal, summaries, and schema 0.3.0 replay. New review tests cover exact
+    fields, staleness, the shared candidate bound, and hostile text. New app
+    and CLI tests drive both tools through the desktop service and the operator
+    flow. New frontend tests cover the review fields and the mock detail.
+
 - Version 0.35.0 compacts the checkpoint ledger in place and raises its bounds
   (Phase A5). See ADR-0053 and
   [ledger compaction](docs/file-access.md#implemented-ledger-compaction-phase-a5).

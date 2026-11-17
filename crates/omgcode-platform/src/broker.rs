@@ -37,6 +37,27 @@ const MAX_PATH_UNITS: usize = 4096;
 const MAX_COMPONENT_UNITS: usize = 255;
 const MAX_COMPONENTS: usize = 32;
 
+/// Report whether a broker error means that a named workspace entry was
+/// absent.
+///
+/// Linux reports `ErrorKind::NotFound`. Windows keeps the native status inside
+/// an `ErrorKind::Other` error, so a missing name is recognised from that
+/// status. Callers use this to tell "does not exist" from other native
+/// failures; it grants no authority.
+pub fn is_missing_entry(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::NotFound {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        windows::is_name_not_found(error)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// A bounded sequence of native names. It grants no filesystem authority.
 ///
 /// Empty paths identify the workspace for listing only. Other paths reject

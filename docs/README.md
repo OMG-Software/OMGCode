@@ -5,10 +5,11 @@ bounded native workspace file broker, and a prototype Tauri desktop shell with a
 session tree, search, chat, and an isolated approvals window. The shell is
 without an installer and has run only on Windows. The broker is available only through
 trusted operator commands and, when a workspace enables `model_tools`, to the
-local model's read, list, approval-gated exact-edit, and approval-gated command
-tools. The edit tool changes one existing file only through checkpointed apply
-after an approved, writers-stopped decision. Model create, delete, rename,
-network, Git, and MCP tools are not implemented. The
+local model's read, list, approval-gated edit, multi-edit, create, and command
+tools. The edit and multi-edit tools change one existing file only through
+checkpointed apply after an approved, writers-stopped decision; the create tool
+makes one new file through the exclusive create, without a checkpoint. Model
+delete, rename, network, Git, and MCP tools are not implemented. The
 trusted CLI `run` command runs one program under Linux Landlock or Windows
 AppContainer confinement with an operator-declared toolchain profile. A model
 tool starts a process only through the approval-gated command tool and the
@@ -109,11 +110,13 @@ adapter reads a stored credential, through an operator-selected profile that
 supplies both the endpoint and the token (ADR-0047, ADR-0048); no cloud adapter
 or login exists. That adapter can stream a reply (ADR-0049): the text is
 provisional, and the journals record only the validated reply. Approval records authorize one exact
-model-tool call, and the edit and command tools are their only consumers. Chat
+model-tool call, and the file-write and command tools are their only consumers. Chat
 dispatches the read/list tools and, with the required live permissions, the
-approval-gated edit and command tools, only for a workspace that enables
-`model_tools`. The edit tool writes only through checkpointed apply after an
-approved, writers-stopped decision and does not detect concurrent writers.
+approval-gated edit, multi-edit, create, and command tools, only for a workspace
+that enables `model_tools`. The edit and multi-edit tools write only through
+checkpointed apply after an approved, writers-stopped decision, the create tool
+only through the exclusive create after the same decision, and none detects
+concurrent writers.
 A read-only CLI preview compares a workspace file with trusted proposed
 content without writing to the workspace or creating a checkpoint.
 Dependency security audits, native containment qualification, and release checks

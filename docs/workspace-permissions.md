@@ -93,7 +93,8 @@ it runs. A change that withdraws one stops the running tree, which is recorded
 as `revoked`. The `permissions` command reports success only after the runs it
 affects have stopped; see [settings changes during a
 run](execution.md#settings-changes-during-a-run). Per-target grants remain
-required. Single-use approvals now exist for the model edit and command tools:
+required. Single-use approvals now exist for the model edit, multi-edit, create, and
+command tools:
 the trusted CLI and the desktop approvals window decide them. Workspace
 settings still change only through the trusted CLI; the desktop shell has no
 settings interface.
@@ -315,6 +316,16 @@ is denied with `edit_disabled` and ends the turn. Disable `write` to remove
 the tool. See [model edit route](file-access.md#model-edit-route-adr-0043) and
 [ADR-0043](adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
 
+The same three preferences also offer `workspace_multi_edit_file`, which
+applies up to 16 exact replacements to one existing file under one approval and
+one checkpoint, and `workspace_create_file`, which creates one new file through
+the exclusive create without a checkpoint. They share the edit tool's
+`file_write` approvals, writers-stopped acknowledgement, per-call recheck, and
+`edit_disabled` denial, and each has its own digest domain, so an approval for
+one never authorizes another. Disabling `write` or `read` removes all three. See
+[model multi-edit and create routes](file-access.md#model-multi-edit-and-create-routes-adr-0054)
+and [ADR-0054](adr/0054-add-multi-edit-and-create-model-file-tools.md).
+
 When `model_tools`, `execute`, `read`, and `write` are all enabled, the runtime
 also offers `workspace_run_command`. Its first call records a pending approval
 and does not run; after `approvals approve <id>`, a second identical call
@@ -322,9 +333,10 @@ consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.3.0, which added `workspace_edit_file`. Each
-request manifest records the version it advertised, and sessions that recorded
-0.2.0 still replay and accept new turns.
+The tool schema version is 0.4.0, which added `workspace_multi_edit_file` and
+`workspace_create_file`; 0.3.0 added `workspace_edit_file`. Each request
+manifest records the version it advertised, and sessions that recorded 0.2.0 or
+0.3.0 still replay and accept new turns.
 
 `workspace status` always reports `model_tools`. Persisted settings omit the
 field while it is `false`, so settings that never enable it keep their exact

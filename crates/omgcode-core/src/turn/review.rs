@@ -10,20 +10,23 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use omgcode_platform::broker::is_missing_entry;
 use serde::Serialize;
 use serde_json::json;
 use thiserror::Error;
 
 use super::{
-    PreparedEdit, ToolArguments, ToolCall, ToolName, command_digest, command_run_request,
-    edit_digest, edit_target, is_hidden_format, prepare_edit, read_edit_source,
+    PreparedEdit, TextEdit, ToolArguments, ToolCall, ToolName, artifact, command_digest,
+    command_run_request, create_digest, edit_digest, edit_target, is_hidden_format,
+    multi_edit_digest, normalized_path, prepare_edit, prepare_multi_edit, read_edit_source,
 };
 use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
 use crate::file_audit::FileAuditError;
 use crate::files::FileError;
 use crate::replacement::CheckpointError;
 
-/// Most distinct edit requests evaluated for one review.
+/// Most distinct file-write requests (edit, multi-edit, and create together)
+/// evaluated for one review.
 ///
 /// Each evaluation reads a workspace file through the audited broker and
 /// writes one audit record, so the work and the audit growth are bounded.
@@ -118,17 +121,20 @@ pub enum ReviewError {
 ///    store or unregistered workspace gives `NotFound`, a busy store gives
 ///    [`ReviewError::Busy`], and a settings revision that differs from the
 ///    approval's gives `Stale(SettingsChanged)`.
-/// 3. Only candidates whose tool is the operation's tool are considered; with
-///    none, the result is `NotFound`.
+/// 3. Only candidates whose tool belongs to the operation are considered: the
+///    command tool for `Command`, and the edit, multi-edit, and create tools
+///    for `FileWrite`; with none, the result is `NotFound`.
 /// 4. They are tried newest first, each parsed by [`ToolCall::parse`]. A
 ///    candidate that fails to parse is skipped. A command candidate is built
-///    into a run request by the dispatcher's own constructor. An edit candidate
-///    is read live through the audited broker under the live `read`
-///    requirement and prepared by the dispatcher's own edit preparation. At
-///    most eight distinct edit candidates (distinct by exact arguments) are
-///    evaluated, newest first. A candidate whose preparation fails for a
-///    recoverable reason (missing file, no match, ambiguous match, too large,
-///    read denied) is not a match.
+///    into a run request by the dispatcher's own constructor. A file-write
+///    candidate is read live through the audited broker under the live `read`
+///    requirement and prepared by the dispatcher's own preparation for its
+///    tool, then compared with that tool's own digest. At most eight distinct
+///    file-write candidates in total (distinct by tool and exact arguments)
+///    are evaluated, newest first. A candidate whose preparation fails for a
+///    recoverable reason (missing file, no match, ambiguous match, overlap,
+///    too large, read denied) is not a match, and a create candidate whose
+///    path now exists is not a match.
 /// 5. If none reproduces the digest, the result is `Stale(NoMatchingRequest)`.
 ///
 /// The fields of an `Exact` result come from the request that reproduced the
@@ -163,9 +169,13 @@ pub fn review_approval(
     approval: &ApprovalStatus,
     candidates: &[ReviewCandidate<'_>],
 ) -> Result<ApprovalReview, ReviewError> {
-    let tool = match approval.operation {
-        ApprovalOperation::Command => ToolName::Command,
-        ApprovalOperation::FileWrite => ToolName::EditFile,
+    let tools: &[ToolName] = match approval.operation {
+        ApprovalOperation::Command => &[ToolName::Command],
+        ApprovalOperation::FileWrite => &[
+            ToolName::EditFile,
+            ToolName::MultiEditFile,
+            ToolName::CreateFile,
+        ],
         ApprovalOperation::GitPush | ApprovalOperation::Network => {
             return Ok(ApprovalReview::NotFound);
         }
@@ -185,17 +195,17 @@ pub fn review_approval(
     let mut relevant = candidates
         .iter()
         .rev()
-        .filter(|candidate| candidate.tool == tool.as_str())
+        .filter(|candidate| tools.iter().any(|tool| candidate.tool == tool.as_str()))
         .peekable();
     if relevant.peek().is_none() {
         return Ok(ApprovalReview::NotFound);
     }
-    let found = match tool {
-        ToolName::Command => {
+    let found = match approval.operation {
+        ApprovalOperation::Command => {
             drop(control);
             review_command(approval, relevant)
         }
-        _ => review_edit(control, approval, relevant)?,
+        _ => review_file_write(control, approval, relevant)?,
     };
     Ok(found.map_or(
         ApprovalReview::Stale(StaleReason::NoMatchingRequest),
@@ -253,10 +263,11 @@ fn review_command<'a>(
     None
 }
 
-/// Find the newest edit candidate that reproduces the approval's digest.
+/// Find the newest file-write candidate that reproduces the approval's digest.
 ///
-/// Evaluates at most [`MAX_REVIEW_EDIT_CANDIDATES`] distinct candidates.
-fn review_edit<'a>(
+/// Evaluates at most [`MAX_REVIEW_EDIT_CANDIDATES`] distinct candidates across
+/// the edit, multi-edit, and create tools.
+fn review_file_write<'a>(
     mut control: ControlStore,
     approval: &ApprovalStatus,
     candidates: impl Iterator<Item = &'a ReviewCandidate<'a>>,
@@ -270,50 +281,100 @@ fn review_edit<'a>(
     let mut seen = HashSet::new();
     let mut evaluated = 0usize;
     for candidate in candidates {
-        let Some(call) = parse_candidate(candidate, ToolName::EditFile) else {
+        let Some(tool) = file_write_tool(candidate.tool) else {
             continue;
         };
-        let ToolArguments::EditFile {
-            path,
-            old_text,
-            new_text,
-        } = &call.arguments
-        else {
+        let Some(call) = parse_candidate(candidate, tool) else {
             continue;
         };
-        if !seen.insert(candidate.arguments) {
+        if !seen.insert((candidate.tool, candidate.arguments)) {
             continue;
         }
         if evaluated == MAX_REVIEW_EDIT_CANDIDATES {
             break;
         }
         evaluated += 1;
+        let path = call.path();
         let target = edit_target(approval.session_id, approval.workspace_id, path);
         let current = match read_edit_source(&mut control, &binding, &target) {
-            Ok(bytes) => bytes,
+            Ok(bytes) => Some(bytes),
+            // A creation is reviewable only while its path is absent.
+            Err(FileError::Native(native))
+                if tool == ToolName::CreateFile && is_missing_entry(&native) =>
+            {
+                None
+            }
             Err(error) => {
                 classify_review_read(error)?;
                 continue;
             }
         };
-        let Ok(prepared) = prepare_edit(path, old_text, new_text, &current) else {
-            continue;
+        let reviewed = match (&call.arguments, current) {
+            (
+                ToolArguments::EditFile {
+                    old_text, new_text, ..
+                },
+                Some(current),
+            ) => prepare_edit(path, old_text, new_text, &current)
+                .ok()
+                .filter(|prepared| {
+                    edit_digest(
+                        approval.session_id,
+                        approval.workspace_id,
+                        &prepared.normalized,
+                        &prepared.current_artifact,
+                        &prepared.proposed_artifact,
+                    ) == approval.request_sha256
+                })
+                .map(|prepared| edit_fields(&prepared, old_text, new_text)),
+            (ToolArguments::MultiEditFile { edits, .. }, Some(current)) => {
+                prepare_multi_edit(path, edits, &current)
+                    .ok()
+                    .filter(|prepared| {
+                        multi_edit_digest(
+                            approval.session_id,
+                            approval.workspace_id,
+                            &prepared.normalized,
+                            &prepared.current_artifact,
+                            &prepared.proposed_artifact,
+                        ) == approval.request_sha256
+                    })
+                    .map(|prepared| multi_edit_fields(&prepared, edits))
+            }
+            (ToolArguments::CreateFile { content, .. }, None) => {
+                let normalized = normalized_path(path);
+                artifact(content.as_bytes())
+                    .filter(|content_artifact| {
+                        create_digest(
+                            approval.session_id,
+                            approval.workspace_id,
+                            &normalized,
+                            content_artifact,
+                        ) == approval.request_sha256
+                    })
+                    .map(|content_artifact| create_fields(&normalized, content, &content_artifact))
+            }
+            _ => None,
         };
-        let digest = edit_digest(
-            approval.session_id,
-            approval.workspace_id,
-            &prepared.normalized,
-            &prepared.current_artifact,
-            &prepared.proposed_artifact,
-        );
-        if digest == approval.request_sha256 {
+        if let Some(fields) = reviewed {
             return Ok(Some(ReviewedRequest {
-                tool: ToolName::EditFile.as_str().to_owned(),
-                fields: edit_fields(&prepared, old_text, new_text),
+                tool: tool.as_str().to_owned(),
+                fields,
             }));
         }
     }
     Ok(None)
+}
+
+/// Map a recorded tool name to a file-write tool.
+fn file_write_tool(name: &str) -> Option<ToolName> {
+    [
+        ToolName::EditFile,
+        ToolName::MultiEditFile,
+        ToolName::CreateFile,
+    ]
+    .into_iter()
+    .find(|tool| tool.as_str() == name)
 }
 
 /// Decide whether a failed review read is a plain non-match (`Ok`) or leaves
@@ -442,6 +503,83 @@ fn edit_fields(prepared: &PreparedEdit, old_text: &str, new_text: &str) -> Vec<R
             "Proposed SHA-256",
             prepared.proposed_artifact.sha256.clone(),
         ),
+    ]
+}
+
+/// Fixed labels for the replacements of one multi-edit review, one pair per
+/// possible edit (`MAX_MULTI_EDITS`).
+const EDIT_LABELS: [(&str, &str); 16] = [
+    ("Old text 1", "New text 1"),
+    ("Old text 2", "New text 2"),
+    ("Old text 3", "New text 3"),
+    ("Old text 4", "New text 4"),
+    ("Old text 5", "New text 5"),
+    ("Old text 6", "New text 6"),
+    ("Old text 7", "New text 7"),
+    ("Old text 8", "New text 8"),
+    ("Old text 9", "New text 9"),
+    ("Old text 10", "New text 10"),
+    ("Old text 11", "New text 11"),
+    ("Old text 12", "New text 12"),
+    ("Old text 13", "New text 13"),
+    ("Old text 14", "New text 14"),
+    ("Old text 15", "New text 15"),
+    ("Old text 16", "New text 16"),
+];
+
+/// Multi-edit fields. Every old and new text comes from the parsed arguments
+/// that reproduced the digest.
+fn multi_edit_fields(prepared: &PreparedEdit, edits: &[TextEdit]) -> Vec<ReviewField> {
+    let mut fields = vec![
+        single("File", display_safe_line(&prepared.normalized)),
+        single("Edits", edits.len().to_string()),
+    ];
+    for (edit, (old_label, new_label)) in edits.iter().zip(EDIT_LABELS) {
+        fields.push(ReviewField {
+            label: old_label,
+            value: display_safe(&edit.old_text),
+            multiline: true,
+        });
+        fields.push(ReviewField {
+            label: new_label,
+            value: display_safe(&edit.new_text),
+            multiline: true,
+        });
+    }
+    fields.push(single(
+        "Size",
+        format!(
+            "{} -> {} bytes",
+            prepared.current_artifact.bytes, prepared.proposed_artifact.bytes
+        ),
+    ));
+    fields.push(single(
+        "Current SHA-256",
+        prepared.current_artifact.sha256.clone(),
+    ));
+    fields.push(single(
+        "Proposed SHA-256",
+        prepared.proposed_artifact.sha256.clone(),
+    ));
+    fields
+}
+
+/// Create fields. The path and content come from the parsed arguments that
+/// reproduced the digest.
+fn create_fields(
+    normalized: &str,
+    content: &str,
+    content_artifact: &crate::replacement::RecordedArtifact,
+) -> Vec<ReviewField> {
+    vec![
+        single("File", display_safe_line(normalized)),
+        single("Size", format!("{} bytes", content_artifact.bytes)),
+        single("SHA-256", content_artifact.sha256.clone()),
+        ReviewField {
+            label: "Content",
+            value: display_safe(content),
+            multiline: true,
+        },
     ]
 }
 

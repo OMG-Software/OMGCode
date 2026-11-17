@@ -336,7 +336,9 @@ fn an_enabled_preference_lets_the_model_read_the_workspace_through_the_runtime()
             [
                 "workspace_read_file",
                 "workspace_list_directory",
-                "workspace_edit_file"
+                "workspace_edit_file",
+                "workspace_multi_edit_file",
+                "workspace_create_file"
             ]
         );
         // The compiled base prompt remains the only system message.
@@ -1530,4 +1532,210 @@ fn chat_does_not_offer_or_run_the_edit_tool_without_write() {
     assert_eq!(json_output(&listed)["approvals"], json!([]));
     let events = fs::read_to_string(&journal).expect("journal");
     assert!(events.contains("edit_disabled"));
+}
+
+/// The operator flow for a model multi-edit: one approval covers two
+/// replacements, which apply together through one checkpoint.
+#[test]
+fn an_approved_model_multi_edit_applies_through_the_operator_flow() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let edit = json!({
+        "path": "note.txt",
+        "edits": [
+            {"old_text": "model", "new_text": "agent"},
+            {"old_text": "notes", "new_text": "facts"},
+        ],
+    });
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-1", "workspace_multi_edit_file", &edit),
+        text("Waiting for operator approval."),
+    ]);
+    let first = fixture.chat(&journal, &server.endpoint, "edit the note twice");
+    let requests = server.finish();
+    assert_success(&first);
+    let names: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().expect("name"))
+        .collect();
+    assert!(names.contains(&"workspace_multi_edit_file"), "{names:?}");
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-1"))
+        .expect("approval result sent to the model");
+    assert!(
+        result.contains("\"status\":\"approval_required\""),
+        "{result}"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        NOTE
+    );
+
+    let inspected = run_cli(&fixture.data, &["session", "inspect", path_arg(&journal)]);
+    assert_success(&inspected);
+    let inspected = json_output(&inspected);
+    let recorded = inspected["tool_requests"]
+        .as_array()
+        .expect("tool requests")
+        .iter()
+        .find(|request| request["tool"] == "workspace_multi_edit_file")
+        .expect("the recorded multi-edit request");
+    let arguments: Value =
+        serde_json::from_str(recorded["arguments"].as_str().expect("arguments")).expect("JSON");
+    assert_eq!(arguments, edit);
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"]
+        .as_array()
+        .expect("approvals")
+        .to_vec();
+    assert_eq!(approvals.len(), 1, "one pending request: {approvals:?}");
+    assert_eq!(approvals[0]["operation"], "file_write");
+    let summary = approvals[0]["summary"].as_str().expect("summary");
+    assert!(
+        summary.starts_with("multi-edit note.txt (2 edits): 29 -> 29 bytes, sha256 "),
+        "{summary}"
+    );
+    assert!(!summary.contains("workspace"), "{summary}");
+    let approval = approvals[0]["id"].as_str().expect("approval id").to_owned();
+
+    assert_error_code(
+        &run_cli(&fixture.data, &["approvals", "approve", &approval]),
+        "approval",
+    );
+    assert_success(&run_cli(
+        &fixture.data,
+        &["approvals", "approve", &approval, "--writers-stopped"],
+    ));
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-2", "workspace_multi_edit_file", &edit),
+        text("The note is edited."),
+    ]);
+    let second = fixture.chat(&journal, &server.endpoint, "edit the note twice");
+    let requests = server.finish();
+    assert_success(&second);
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-2"))
+        .expect("applied result sent to the model");
+    assert!(result.contains("\"status\":\"applied\""), "{result}");
+    assert!(result.contains("\"edits\":2"), "{result}");
+    assert!(
+        !result.contains("notes") && !result.contains("facts"),
+        "no file text: {result}"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("note"),
+        b"workspace facts for the agent"
+    );
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    assert_eq!(json_output(&listed)["approvals"][0]["state"], "consumed");
+    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&checkpoints);
+    assert_eq!(
+        json_output(&checkpoints)["operations"]
+            .as_array()
+            .expect("operations")
+            .len(),
+        1
+    );
+}
+
+/// The operator flow for a model file creation: approval, then one exclusive
+/// create with no checkpoint, and a repeat is refused because the file exists.
+#[test]
+fn an_approved_model_create_makes_the_file_through_the_operator_flow() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let create = json!({"path": "created.txt", "content": "fresh\n"});
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-1", "workspace_create_file", &create),
+        text("Waiting for operator approval."),
+    ]);
+    let first = fixture.chat(&journal, &server.endpoint, "add a file");
+    let requests = server.finish();
+    assert_success(&first);
+    assert!(
+        requests[0]["tools"]
+            .to_string()
+            .contains("workspace_create_file")
+    );
+    assert!(!fixture.workspace.join("created.txt").exists());
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"]
+        .as_array()
+        .expect("approvals")
+        .to_vec();
+    assert_eq!(approvals.len(), 1, "one pending request: {approvals:?}");
+    assert_eq!(approvals[0]["operation"], "file_write");
+    let summary = approvals[0]["summary"].as_str().expect("summary");
+    assert!(
+        summary.starts_with("create created.txt: 6 bytes, sha256 "),
+        "{summary}"
+    );
+    assert!(!summary.contains("fresh"), "{summary}");
+    let approval = approvals[0]["id"].as_str().expect("approval id").to_owned();
+    assert_error_code(
+        &run_cli(&fixture.data, &["approvals", "approve", &approval]),
+        "approval",
+    );
+    assert_success(&run_cli(
+        &fixture.data,
+        &["approvals", "approve", &approval, "--writers-stopped"],
+    ));
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-2", "workspace_create_file", &create),
+        text("The file is created."),
+        tool_call("call-3", "workspace_create_file", &create),
+        text("It already exists."),
+    ]);
+    let second = fixture.chat(&journal, &server.endpoint, "add a file");
+    assert_success(&second);
+    assert_eq!(
+        fs::read(fixture.workspace.join("created.txt")).expect("created"),
+        b"fresh\n"
+    );
+    let third = fixture.chat(&journal, &server.endpoint, "add it again");
+    assert_success(&third);
+    let requests = server.finish();
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-2"))
+        .expect("created result sent to the model");
+    assert!(result.contains("\"status\":\"created\""), "{result}");
+    assert!(!result.contains("fresh"), "no file text: {result}");
+    assert!(
+        user_texts(&requests[3]).iter().any(|text| {
+            text.starts_with("Tool error [call call-3") && text.contains("file_exists")
+        }),
+        "a second creation is refused"
+    );
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"].clone();
+    assert_eq!(approvals.as_array().expect("approvals").len(), 1);
+    assert_eq!(approvals[0]["state"], "consumed");
+    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&checkpoints);
+    assert_eq!(
+        json_output(&checkpoints)["operations"]
+            .as_array()
+            .expect("operations")
+            .len(),
+        0,
+        "creation is not checkpointed"
+    );
 }

@@ -8,7 +8,8 @@ files/directories, and preview a bounded diff against trusted proposed content
 in a registered workspace. When a workspace enables `model_tools`, chat runs
 the core's bounded turn/tool runtime so the model can read and list files in
 that workspace; with `read` and `write` enabled it can request an
-approval-gated exact edit of an existing file, and with `execute`, `read`, and
+approval-gated exact edit or multi-edit of an existing file or the creation of
+a new file, and with `execute`, `read`, and
 `write` enabled it can request an approval-gated command. Trusted CLI apply can
 replace an existing file on Linux ext4 or Windows NTFS. Trusted restore puts a
 retained checkpoint's original bytes back through apply, and trusted checkpoint
@@ -21,9 +22,10 @@ time. A program started by `run` can create, change, and
 delete workspace files without a checkpoint. The CLI's `file` commands cannot
 delete workspace files, and the CLI cannot use Git or connect to MCP servers.
 When a workspace enables `model_tools`, chat lets the local model read and list
-files in that workspace, request an approval-gated exact edit with read/write,
-and request an approval-gated command with execute/read/write. Model create,
-delete, rename, network, Git, and MCP tools are not implemented. Trusted commands record and apply the Windows container
+files in that workspace, request an approval-gated exact edit, multi-edit, or
+file creation with read/write, and request an approval-gated command with
+execute/read/write. Model delete, rename, network, Git, and MCP tools are not
+implemented. Trusted commands record and apply the Windows container
 grants; see [command execution](execution.md).
 
 Version 0.29.0 also adds a prototype Tauri desktop shell,
@@ -207,7 +209,8 @@ default to disabled. All decisions still report `execution_allowed: false`;
 only the trusted `run` command starts a process, and the model command tool
 reaches it only after consuming an approval. Settings commands do not dispatch
 tools. `--model-tools true` lets chat offer the model read/list tools, with
-read/write the approval-gated edit tool, and with execute/read/write the
+read/write the approval-gated edit, multi-edit, and create tools, and with
+execute/read/write the
 approval-gated command tool; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 See the [workspace contract](workspace-permissions.md) for limits and failures.
@@ -412,7 +415,8 @@ native mount. Execute remains disabled. The `audit`, `acknowledge`,
 `compact-checkpoints` commands require existing workspace settings.
 They do not require a configured root, workspace registration, or session
 selection. Chat advertises the read/list tools when the session's workspace
-enables `model_tools`, the edit tool when `read` and `write` are also enabled,
+enables `model_tools`, the edit, multi-edit, and create tools when `read` and
+`write` are also enabled,
 and the command tool when `execute`, `read`, and `write` are also enabled; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 
@@ -428,11 +432,11 @@ implementation, and `false` elsewhere. The CLI does not probe the mount, metadat
 or permissions for that flag. `checkpoint_restore` and `checkpoint_deletion`
 follow the same rule for `file restore` and `file delete-checkpoint`.
 `model_read_list_tools` is `true` on Linux and Windows, and `tool_policy` is
-`read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval`
+`read_list_when_workspace_model_tools_enabled_edit_multi_edit_create_and_command_require_approval`
 there. `model_write_tools` and `model_command_tool` are `approval_required`.
 None of them reports whether any workspace enables the preference.
-`workspace_file_tools`, which covers general model file tools such as create,
-delete, or rename, remains `false`.
+`workspace_file_tools`, which covers general model file tools such as delete
+or rename, remains `false`.
 
 ```text
 omgcode --data-dir C:\omgcode-data file read WORKSPACE_ID --session SESSION_UUID src\main.rs --max-bytes 65536
@@ -482,7 +486,8 @@ model/tool turn. `chat` runs it when the session's workspace enables
 trusted application-data directory, and the workspace ID. The runtime:
 
 - parses strict OpenAI-style function calls for `workspace_read_file`,
-  `workspace_list_directory`, `workspace_edit_file`, and
+  `workspace_list_directory`, `workspace_edit_file`,
+  `workspace_multi_edit_file`, `workspace_create_file`, and
   `workspace_run_command`;
 - rejects unknown tools, malformed or duplicate arguments, absolute or parent
   paths, and duplicate call identifiers before dispatch;
@@ -502,13 +507,16 @@ trusted application-data directory, and the workspace ID. The runtime:
 - sends saved tool results from earlier turns again only while the live
   `model_tools` and `read` preferences both allow it, and otherwise replaces
   each with a fixed withheld notice;
-- offers `workspace_edit_file` only under live `model_tools`, `read`, and
-  `write`, and `workspace_run_command` only when `execute` is also enabled;
-  every edit or command first needs a trusted single-use approval;
+- offers `workspace_edit_file`, `workspace_multi_edit_file`, and
+  `workspace_create_file` only under live `model_tools`, `read`, and `write`,
+  and `workspace_run_command` only when `execute` is also enabled; every
+  edit, multi-edit, creation, or command first needs a trusted single-use
+  approval;
 - reports the final reply's provider `finish_reason`.
 
-The runtime has no create, delete, rename, Git, MCP, or network tool. Its only
-write is the approved exact edit through checkpointed apply, and its only
+The runtime has no delete, rename, Git, MCP, or network tool. Its only
+writes are the approved exact edit and multi-edit through checkpointed apply and
+the approved creation of one new file through the exclusive create, and its only
 process execution is the approved command through the trusted runner.
 `LocalToolModel` adapts the LM Studio client to its model interface. The adapter
 sends the tool definitions in the OpenAI-compatible `tools` field, parses the
@@ -549,7 +557,8 @@ remains text.
 
 When the workspace enables `model_tools`, chat offers `workspace_read_file` and
 `workspace_list_directory`. When `read` and `write` also allow it, it offers
-the approval-gated `workspace_edit_file`. When `execute`, `read`, and `write`
+the approval-gated `workspace_edit_file`, `workspace_multi_edit_file`, and
+`workspace_create_file`. When `execute`, `read`, and `write`
 also allow it, it offers the approval-gated `workspace_run_command`. The model may make up to
 four requests in one turn. Each read/list call is rechecked against live
 settings and stays inside the workspace. Results return to the model as
@@ -669,6 +678,30 @@ recoverable result with its checkpoint code. The apply cannot detect a
 concurrent writer; the acknowledgement records the operating assumption only.
 Restore and checkpoint management stay trusted `file` commands.
 
+`workspace_multi_edit_file` takes a `path` and one to 16 `edits`, each with a
+non-empty `old_text` and a `new_text`, all within the 4 KiB argument limit.
+Every `old_text` must occur exactly once in the original file, so no
+replacement can see another's output. The matches must not overlap
+(`edit_overlap`); touching matches are allowed. A missing or repeated
+`old_text` returns `edit_no_match` or `edit_ambiguous` with the 1-based edit
+index in the message, and a call whose result equals the file returns
+`edit_unchanged`. The approval digest uses its own domain tag, so an approval
+for a `workspace_edit_file` call never applies a multi-edit. Review shows each
+`Old text N` and `New text N`. One approval covers one checkpointed apply, and
+there is no atomicity across files.
+
+`workspace_create_file` takes a `path` and `content` (possibly empty) within the
+same 4 KiB limit, which also bounds the new file. Before recording an approval
+it reads the path through the audited broker and lists its parent: an existing
+file returns `file_exists`, and a missing parent returns `not_found`, and
+neither records an approval. After approval, the approval is consumed and the
+broker's exclusive create runs. If another writer created the file in the
+meantime, the create returns `file_exists`, replaces nothing, and the approval
+is spent. An uncertain creation outcome is a terminal failure that leaves the
+file-operation journal's pending record for the trusted acknowledgement. Creation
+is not checkpointed: there is no prior content to keep. The result reports the
+path, size, SHA-256, and operation ID, never the content.
+
 ## Saved sessions
 
 By default, journals use the platform's per-user local application data
@@ -728,7 +761,8 @@ can archive, restore, and interrupt a session; see the
 | Encoded journal event, including LF | 64 KiB |
 | Journal | 8 MiB and 10,000 events |
 | Tool call arguments in a session event | 4 KiB |
-| Model edit file size, before and after | 1 MiB |
+| Model edit and multi-edit file size, before and after | 1 MiB |
+| Model multi-edit replacements per call | 16 |
 | Read file size per call | 15 KiB maximum, 8 KiB default |
 | Edit preview content | 1 MiB per side |
 | Edit preview lines | 65,536 per side when changed |

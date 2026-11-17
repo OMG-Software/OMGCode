@@ -126,8 +126,8 @@ Implemented today:
 - Conservative context accounting, manual `session compact`, and pre-turn
   auto-compaction for the local LM Studio route. Summaries are labelled
   untrusted evidence and follow the live tool-result replay rule (ADR-0041).
-- Core turn/tool runtime for read/list, the approval-gated exact edit, and the
-  approval-gated command through a caller-supplied model interface. It has strict tool-call parsing, round/call/byte/prompt limits,
+- Core turn/tool runtime for read/list, the approval-gated exact edit,
+  multi-edit, and create, and the approval-gated command through a caller-supplied model interface. It has strict tool-call parsing, round/call/byte/prompt limits,
   cooperative cancellation, source-labelled messages, and fresh per-operation
   policy bindings. Chat dispatches it through the LM Studio adapter for a
   workspace that enables `model_tools`.
@@ -138,8 +138,9 @@ Implemented today:
   `chat --stream` and the desktop shell stream the reply as provisional text
   (ADR-0049). It is text-only
   unless the session's workspace enables `model_tools`; then it offers the read
-  and list tools, the approval-gated edit tool when `read` and `write` also
-  allow it, and the approval-gated command tool when `execute`, `read`, and
+  and list tools, the approval-gated edit, multi-edit, and create tools when
+  `read` and `write` also allow it, and the approval-gated command tool when
+  `execute`, `read`, and
   `write` also allow it. See
   [ADR-0026](docs/adr/0026-offer-read-list-tools-through-a-workspace-preference.md),
   [ADR-0040](docs/adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md),
@@ -204,8 +205,8 @@ Implemented today:
   (ADR-0038). Trusted approval records bind a future model-tool call to a
   session, workspace, operation, request digest, and settings revision, expire,
   and are consumed once (ADR-0039). Provider profiles enable no connection; the
-  command and edit tools are the only model tools that consume an approval
-  record.
+  command, edit, multi-edit, and create tools are the only model tools that
+  consume an approval record.
 - Provider credentials in protected OS storage (ADR-0042): DPAPI files with
   verified private DACLs on Windows and Secret Service items in the default
   collection on Linux, with no plaintext fallback. Trusted
@@ -229,8 +230,16 @@ Implemented today:
   The first call records a pending `file_write` approval with no file text;
   approval needs `--writers-stopped`, and an identical later call consumes it
   and calls the checkpointed apply with the live-read expected value.
-  `session inspect` lists recorded tool requests for review. No model create,
-  delete, rename, network, Git, or MCP tool exists.
+  `session inspect` lists recorded tool requests for review.
+- The `workspace_multi_edit_file` and `workspace_create_file` model tools
+  (0.36.0, ADR-0054, on branch `codex/model-file-tools`, stacked on
+  `codex/checkpoint-ledger-compaction`, not merged) are offered under the same
+  live `model_tools`, `read`, and `write` preferences, share the `file_write`
+  approvals and writers-stopped acknowledgement, and each has its own digest
+  domain. Multi-edit applies one to 16 non-overlapping exact replacements
+  through one checkpointed apply; create makes one new file through the
+  exclusive create without a checkpoint. Tool schema 0.4.0; no model delete,
+  rename, network, Git, or MCP tool exists.
 - Trusted `file restore` through a new checkpoint and
   `file delete-checkpoint --permanent` for one resolved checkpoint, on the same
   filesystems as apply. Neither is power-loss qualified. See
@@ -247,7 +256,7 @@ Not implemented:
 
 - Apply or restore on other filesystems, workspace file deletion, ledger
   compaction, and standalone CLI checkpoint preparation.
-- Model create, delete, rename, multi-edit, network, Git, and MCP tools;
+- Model delete, rename, network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
   qualification; and streaming against a live server, discovery, and
   cancellation of any request against a live provider. A read, list, or edit
@@ -971,8 +980,21 @@ on Windows, and trusted CLI commands as the first caller. See
   unsupported filesystems are recoverable results. Tool schema 0.3.0;
   0.2.0 sessions still replay. See
   [ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
-  Concurrent-writer detection, multi-edit, create, delete, and rename remain
-  unimplemented.
+  Concurrent-writer detection, delete, and rename remain unimplemented.
+- **C18 (version 0.36.0):** the `workspace_multi_edit_file` and
+  `workspace_create_file` model tools (ADR-0054), on branch
+  `codex/model-file-tools`, stacked on `codex/checkpoint-ledger-compaction`
+  and not merged. Both are offered and dispatched under the edit tool's live
+  `model_tools`, `read`, and `write` rule and reuse the `file_write` approval
+  operation with its writers-stopped gate, each under its own digest domain
+  (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`). Multi-edit matches
+  one to 16 `old_text` values against the original live bytes (each exactly
+  once, no overlap) and uses one checkpointed apply. Create requires an absent
+  path and an existing parent before any approval is recorded, and uses the
+  exclusive create without a checkpoint. Tool schema 0.4.0; 0.2.0 and 0.3.0
+  sessions still replay. The 4 KiB argument cap bounds create content and
+  multi-edit size, there is no multi-file atomicity, and 6 of the 8 tool-name
+  slots are used.
 - **Run network destination allowlist: deferred (2026-11-16).** No
   unprivileged mechanism passes the ADR-0034 gate on both hosts. The only
   candidate is a Linux user and network namespace with a trusted relay, which
@@ -987,8 +1009,7 @@ Next decisions, not yet scheduled:
   endpoint rules for non-loopback providers, HTTPS, and certificates (one
   adapter, the local LM Studio route, now reads a stored credential, only at
   its profile's loopback endpoint);
-- model create, delete, rename, and multi-edit tools, and network, Git, and
-  MCP tools;
+- model delete and rename tools, and network, Git, and MCP tools;
 - registry credentials and development-server networking.
 
 ### Phase D: additional providers, streaming, and account lifecycle

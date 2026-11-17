@@ -803,3 +803,308 @@ fn hostile_edit_text_is_escaped_and_a_literal_escape_stays_distinguishable() {
         "ok\\u{2028}\\u{feff}\\u{000d}\\u{5c}u{200b}"
     );
 }
+
+// ------------------------------------------------- multi-edit and create
+
+const MULTI_EDIT_TOOL: &str = "workspace_multi_edit_file";
+const CREATE_TOOL: &str = "workspace_create_file";
+
+fn multi_call(id: &str, path: &str, edits: &[(&str, &str)]) -> Value {
+    let edits: Vec<Value> = edits
+        .iter()
+        .map(|(old, new)| json!({"old_text": old, "new_text": new}))
+        .collect();
+    call(id, MULTI_EDIT_TOOL, json!({"path": path, "edits": edits}))
+}
+
+fn create_call(id: &str, path: &str, content: &str) -> Value {
+    call(id, CREATE_TOOL, json!({"path": path, "content": content}))
+}
+
+fn approve(fixture: &Fixture, approval: &ApprovalStatus) {
+    ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store")
+        .approve_with_writers_stopped(approval.id, now_unix())
+        .expect("approve");
+}
+
+#[test]
+fn a_multi_edit_approval_reviews_exact_fields_without_touching_the_file() {
+    let mut fixture = Fixture::new();
+    let target = fixture.write_file("notes.txt", "alpha beta gamma\n");
+    fixture.turn(vec![multi_call(
+        "multi-1",
+        "notes.txt",
+        &[("gamma", "G"), ("alpha", "A")],
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let before = statuses_json(&fixture.approvals());
+    let reads = fixture.audit_reads();
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, MULTI_EDIT_TOOL);
+    let values: Vec<(&str, String, bool)> = request
+        .fields
+        .iter()
+        .map(|field| (field.label, field.value.clone(), field.multiline))
+        .collect();
+    assert_eq!(
+        values,
+        [
+            ("File", "notes.txt".to_owned(), false),
+            ("Edits", "2".to_owned(), false),
+            ("Old text 1", "gamma".to_owned(), true),
+            ("New text 1", "G".to_owned(), true),
+            ("Old text 2", "alpha".to_owned(), true),
+            ("New text 2", "A".to_owned(), true),
+            ("Size", "17 -> 9 bytes".to_owned(), false),
+            ("Current SHA-256", sha256(b"alpha beta gamma\n"), false),
+            ("Proposed SHA-256", sha256(b"A beta G\n"), false),
+        ]
+    );
+    assert_eq!(fs::read(&target).expect("read"), b"alpha beta gamma\n");
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    assert_eq!(statuses_json(&fixture.approvals()), before);
+    assert_eq!(fixture.audit_reads(), reads + 1, "one audited read");
+}
+
+/// After an exact review and an approval, the identical multi-edit applies:
+/// the review digest is the dispatch digest.
+#[test]
+fn an_exactly_reviewed_multi_edit_is_the_call_that_applies() {
+    let mut fixture = Fixture::new();
+    let target = fixture.write_file("notes.txt", "alpha beta\n");
+    let edits = [("alpha", "A"), ("beta", "B")];
+    fixture.turn(vec![multi_call("multi-1", "notes.txt", &edits)]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    exact(fixture.review(&approval, &recorded));
+
+    approve(&fixture, &approval);
+    fixture.turn(vec![multi_call("multi-2", "notes.txt", &edits)]);
+
+    assert_eq!(fs::read_to_string(&target).expect("read"), "A B\n");
+    assert_eq!(fixture.state(approval.id), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 1);
+}
+
+#[test]
+fn a_multi_edit_review_is_stale_after_the_file_changes() {
+    let mut fixture = Fixture::new();
+    let target = fixture.write_file("notes.txt", "one two");
+    fixture.turn(vec![multi_call(
+        "multi-1",
+        "notes.txt",
+        &[("one", "1"), ("two", "2")],
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    exact(fixture.review(&approval, &recorded));
+
+    fs::write(&target, "one two!").expect("change the file after the request");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    // A change that breaks one match is also not a match.
+    fs::write(&target, "one three").expect("remove a match");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+#[test]
+fn a_create_approval_reviews_exact_fields_and_is_stale_once_the_file_exists() {
+    let mut fixture = Fixture::new();
+    fixture.turn(vec![create_call("create-1", "new.txt", "hello\nworld\n")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let before = statuses_json(&fixture.approvals());
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, CREATE_TOOL);
+    let values: Vec<(&str, String, bool)> = request
+        .fields
+        .iter()
+        .map(|field| (field.label, field.value.clone(), field.multiline))
+        .collect();
+    assert_eq!(
+        values,
+        [
+            ("File", "new.txt".to_owned(), false),
+            ("Size", "12 bytes".to_owned(), false),
+            ("SHA-256", sha256(b"hello\nworld\n"), false),
+            ("Content", "hello\nworld\n".to_owned(), true),
+        ]
+    );
+    assert!(!fixture.workspace.join("new.txt").exists());
+    assert_eq!(statuses_json(&fixture.approvals()), before);
+
+    // Another writer creates the file: the request can no longer proceed.
+    fixture.write_file("new.txt", "other");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("new.txt")).expect("read"),
+        b"other"
+    );
+}
+
+/// After an exact review and an approval, the identical call creates the file.
+#[test]
+fn an_exactly_reviewed_create_is_the_call_that_creates() {
+    let mut fixture = Fixture::new();
+    fixture.turn(vec![create_call("create-1", "new.txt", "content")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    exact(fixture.review(&approval, &recorded));
+
+    approve(&fixture, &approval);
+    fixture.turn(vec![create_call("create-2", "new.txt", "content")]);
+
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("new.txt")).expect("read"),
+        "content"
+    );
+    assert_eq!(fixture.state(approval.id), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+}
+
+/// A review matches only the tool whose digest the approval holds: an edit
+/// approval is not shown as a multi-edit, and the reverse.
+#[test]
+fn a_review_never_matches_another_tools_candidate() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("notes.txt", "alpha beta\n");
+    fixture.turn(vec![edit_call("edit-1", "notes.txt", "beta", "gamma")]);
+    let edit_approval = fixture.pending(ApprovalOperation::FileWrite);
+    let edit_recorded = fixture.recorded();
+
+    // Only an equivalent multi-edit is offered for the edit approval.
+    let equivalent = vec![RecordedToolRequest {
+        request_id: Uuid::new_v4(),
+        call_id: "multi-1".into(),
+        tool: MULTI_EDIT_TOOL.to_owned(),
+        arguments:
+            json!({"path": "notes.txt", "edits": [{"old_text": "beta", "new_text": "gamma"}]})
+                .to_string(),
+    }];
+    assert_eq!(
+        fixture.review(&edit_approval, &equivalent).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    // The real edit candidate still matches, even with the multi-edit present.
+    let mut both = equivalent;
+    both.splice(0..0, edit_recorded);
+    let request = exact(fixture.review(&edit_approval, &both));
+    assert_eq!(request.tool, EDIT_TOOL);
+
+    // A create candidate never matches a replacement approval either.
+    let creates = vec![RecordedToolRequest {
+        request_id: Uuid::new_v4(),
+        call_id: "create-1".into(),
+        tool: CREATE_TOOL.to_owned(),
+        arguments: json!({"path": "fresh.txt", "content": "gamma"}).to_string(),
+    }];
+    assert_eq!(
+        fixture.review(&edit_approval, &creates).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+/// The eight-candidate bound counts distinct requests across all three
+/// file-write tools together, newest first.
+#[test]
+fn the_candidate_bound_spans_all_file_write_tools() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("notes.txt", "alpha bcc\n");
+    fixture.turn(vec![create_call("create-1", "new.txt", "x")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let matching = fixture.recorded();
+
+    let newer = |count: usize| {
+        let mut all = matching.clone();
+        for index in 0..count {
+            let (tool, arguments) = match index % 3 {
+                0 => (
+                    EDIT_TOOL,
+                    json!({"path": "notes.txt", "old_text": "alpha", "new_text": format!("o{index}")}),
+                ),
+                1 => (
+                    MULTI_EDIT_TOOL,
+                    json!({"path": "notes.txt", "edits": [{"old_text": "alpha", "new_text": format!("o{index}")}]}),
+                ),
+                _ => (
+                    CREATE_TOOL,
+                    json!({"path": format!("other{index}.txt"), "content": "y"}),
+                ),
+            };
+            all.push(RecordedToolRequest {
+                request_id: Uuid::new_v4(),
+                call_id: format!("call-{index}"),
+                tool: tool.to_owned(),
+                arguments: arguments.to_string(),
+            });
+        }
+        all
+    };
+
+    // Seven newer candidates: the matching one is the eighth and is found.
+    let reads = fixture.audit_reads();
+    exact(fixture.review(&approval, &newer(7)));
+    assert_eq!(fixture.audit_reads() - reads, 8);
+
+    // Eight newer candidates push it beyond the bound.
+    let reads = fixture.audit_reads();
+    assert_eq!(
+        fixture.review(&approval, &newer(8)).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    assert_eq!(fixture.audit_reads() - reads, 8);
+}
+
+#[test]
+fn hostile_multi_edit_and_create_text_is_escaped() {
+    let mut fixture = Fixture::new();
+    let contents = "a\u{202e}b \\u{202e} c\n";
+    fixture.write_file("odd.txt", contents);
+    fixture.turn(vec![multi_call(
+        "multi-1",
+        "odd.txt",
+        &[("a\u{202e}b", "x\u{2028}y\r"), ("\\u{202e}", "\\u{200b}")],
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let request = exact(fixture.review(&approval, &recorded));
+    for field in &request.fields {
+        assert_display_clean(&field.value);
+    }
+    assert_eq!(field(&request, "Old text 1").value, "a\\u{202e}b");
+    assert_eq!(field(&request, "New text 1").value, "x\\u{2028}y\\u{000d}");
+    assert_eq!(field(&request, "Old text 2").value, "\\u{5c}u{202e}");
+    assert_eq!(field(&request, "New text 2").value, "\\u{5c}u{200b}");
+
+    let mut fixture = Fixture::new();
+    fixture.turn(vec![create_call(
+        "create-1",
+        "new.txt",
+        "ok\u{202e}\u{feff}\r\\u{200b}\0",
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let request = exact(fixture.review(&approval, &recorded));
+    for field in &request.fields {
+        assert_display_clean(&field.value);
+    }
+    assert_eq!(
+        field(&request, "Content").value,
+        "ok\\u{202e}\\u{feff}\\u{000d}\\u{5c}u{200b}\\u{0000}"
+    );
+}

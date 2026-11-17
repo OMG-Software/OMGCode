@@ -152,8 +152,9 @@ the next model request, and records tool intents and results as untrusted
 evidence.
 Its checks do not isolate hostile same-user processes or provide process
 containment. Since 0.12.0, chat drives this runtime when the session's
-workspace enables `model_tools`. Since 0.28.0 the only model write is the
-approval-gated exact edit (ADR-0043). Model create, delete, rename, and
+workspace enables `model_tools`. Since 0.28.0 the model writes only through
+approval-gated tools: the exact edit (ADR-0043) and, since 0.36.0, the
+multi-edit and create tools (ADR-0054). Model delete, rename, and
 general file tools remain disabled; capability output keeps
 `workspace_file_tools` false. For model tools:
 
@@ -277,6 +278,18 @@ crate.
   consuming a `file_write` approval, consume it before the apply, and use only
   the checkpointed apply. Do not claim concurrent-writer detection. See
   ADR-0043.
+- The `workspace_multi_edit_file` and `workspace_create_file` model tools follow
+  the same advertisement, live-recheck, approval, and writers-stopped rules as
+  `workspace_edit_file`, each under its own digest domain tag
+  (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`) so no approval can be
+  consumed by another tool. A multi-edit matches every `old_text` against the
+  original live bytes, refuses ambiguous, missing, overlapping, unchanged, or
+  oversized results before recording an approval, and uses only the checkpointed
+  apply. A creation must find the path absent and its parent present through
+  audited broker calls before recording an approval, and uses only the broker's
+  exclusive create after consuming the approval; it never replaces, retries, or
+  deletes, and leaves an uncertain outcome's pending record for the trusted
+  acknowledgement. Keep file text out of summaries and results. See ADR-0054.
 - The `workspace_run_command` model tool may be advertised only under live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; only a later exact call may consume an

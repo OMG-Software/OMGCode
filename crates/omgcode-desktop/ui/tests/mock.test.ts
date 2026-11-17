@@ -6,6 +6,8 @@ import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 interface Detail {
   review_token: string | null;
   binding: string;
+  tool: string | null;
+  fields: Array<{ label: string }>;
 }
 
 describe("mock backend", () => {
@@ -63,6 +65,20 @@ describe("mock backend", () => {
     const stale = (await invoke("approval_detail", { id: "a3" })) as Detail;
     expect(stale.binding).toBe("stale");
     expect(stale.review_token).toBeNull();
+  });
+
+  it("reviews a multi-edit with numbered old and new text fields", async () => {
+    const { invoke } = createMockBackend();
+    const detail = (await invoke("approval_detail", { id: "a2" })) as Detail;
+    expect(detail.tool).toBe("workspace_multi_edit_file");
+    expect(detail.fields.map((field) => field.label)).toEqual([
+      "File",
+      "Edits",
+      "Old text 1",
+      "New text 1",
+      "Old text 2",
+      "New text 2",
+    ]);
   });
 
   it("requires the acknowledgement for a file edit", async () => {

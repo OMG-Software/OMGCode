@@ -6,9 +6,9 @@ OMGCode aims to connect language models to controlled development tools.
 The current code is an early Rust core and command-line prototype. A bounded
 native workspace file broker is available through trusted CLI commands. A core
 turn/tool runtime and schema-v2 session format let chat offer the local LM Studio
-model read, list, approval-gated exact-edit, and approval-gated command tools,
+model read, list, approval-gated edit, multi-edit, create, and command tools,
 only for a workspace that enables `model_tools` and each tool's own
-preferences. Model file creation, deletion, and renaming, and Git workflows
+preferences. Model file deletion and renaming, and Git workflows
 remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
 frontend) browses and searches sessions, runs chat, and decides model-tool
 approvals in a separate window; it has no installer and has run only on Windows.
@@ -31,11 +31,13 @@ directory grants.
 > When `execute`, `read`, and `write` are also enabled, it offers a confined
 > command tool that records a pending approval and runs only after the operator
 > approves that exact call. When `read` and `write` are enabled, it offers an
-> edit tool that replaces one exact text occurrence in an existing file. Each
-> edit records a pending approval and is applied through a checkpoint only
-> after the operator approves that exact call and acknowledges that other
-> writers are stopped. It has no model create, delete, rename, network, Git, or
-> MCP tools.
+> edit tool that replaces one exact text occurrence in an existing file, a
+> multi-edit tool that replaces up to 16 exact occurrences in one existing
+> file, and a create tool that makes one new file. Each records a pending
+> approval and acts only after the operator approves that exact call and
+> acknowledges that other writers are stopped; edits are applied through a
+> checkpoint, and creation is not checkpointed. It has no model delete, rename,
+> network, Git, or MCP tools.
 > The trusted
 > CLI can replace or restore one existing file through a checkpoint on qualified
 > Linux ext4 or Windows NTFS, and can permanently delete one resolved checkpoint.
@@ -107,7 +109,7 @@ frontend in `crates/omgcode-desktop/ui`. The CLI provides:
   loopback HTTP endpoint. It does not discover, start, or download models, and it
   rejects model tool requests unless the session's workspace enables
   `model_tools`. Then it offers read/list tools; when `read` and `write` are
-  also enabled, the approval-gated edit tool; and when `execute`, `read`, and
+  also enabled, the approval-gated edit, multi-edit, and create tools; and when `execute`, `read`, and
   `write` are all enabled, the approval-gated command tool. Each is rechecked
   against live settings before every call.
 
@@ -162,9 +164,10 @@ an explicit current-content check. Trusted `file delete-checkpoint --permanent`
 removes one resolved checkpoint's files and keeps its ledger history until
 trusted `file compact-checkpoints --discard-history`, or an apply, restore, or
 deletion that would not fit, compacts the ledger. Neither
-command is power-loss qualified. The model edit tool uses the same
-checkpointed apply after an approved, writers-stopped decision; it cannot
-create, delete, or rename files and does not detect a concurrent writer.
+command is power-loss qualified. The model edit and multi-edit tools use the same
+checkpointed apply after an approved, writers-stopped decision; the create tool
+uses the exclusive create without a checkpoint. None can delete or rename files,
+and none detects a concurrent writer.
 Model-dispatched process execution, Git, MCP, and memories remain planned. See the
 [workspace settings contract](docs/workspace-permissions.md), the
 [workspace file-access guide](docs/file-access.md), and the [development

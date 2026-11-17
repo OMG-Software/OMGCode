@@ -117,8 +117,9 @@ journal, the current control-store writer, and the workspace ID from trusted
 settings. The journal's recorded workspace ID is only a coherence check.
 
 The runtime supports `workspace_read_file` and `workspace_list_directory`,
-plus two approval-gated tools offered only under their live settings:
-`workspace_edit_file` (ADR-0043) and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function calls,
+plus approval-gated tools offered only under their live settings:
+`workspace_edit_file` (ADR-0043), `workspace_multi_edit_file` and
+`workspace_create_file` (ADR-0054), and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function calls,
 rejects unknown tools, malformed or duplicate arguments, absolute or parent
 paths, and duplicate call identifiers before dispatch. For each operation it
 opens the control store, obtains a fresh session binding, releases the settings

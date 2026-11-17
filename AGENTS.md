@@ -13,12 +13,15 @@ without an installer, has run only on Windows, and gives the webview no authorit
 Rust side authorizes every command and the trusted CLI remains. Follow the
 [desktop interface](docs/desktop-interface.md) contract.
 Chat offers the local LM Studio model read and list tools; when the workspace
-also enables `read` and `write`, one exact-edit tool; and, when it also enables
-`execute`, `read`, and `write`, one command tool. The edit and command tools
-each require a trusted single-use approval. The edit tool replaces one exact
-text occurrence in an existing file through checkpointed apply and needs the
-operator's writers-stopped acknowledgement. No model create, delete, rename,
-network, Git, or MCP tool exists. Chat offers tools only for a
+also enables `read` and `write`, three file-write tools (exact edit, multi-edit,
+and create); and, when it also enables `execute`, `read`, and `write`, one
+command tool. The file-write and command tools each require a trusted
+single-use approval. The edit tool replaces one exact text occurrence in an
+existing file, and the multi-edit tool several exact occurrences in one
+existing file, each through checkpointed apply. The create tool makes one new
+file through the exclusive create, without a checkpoint. All three need the
+operator's writers-stopped acknowledgement. No model delete, rename, network,
+Git, or MCP tool exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. There are no unapproved
 model writes, other provider adapters, or unreviewed model-callable process
 execution. The

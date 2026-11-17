@@ -21,9 +21,10 @@ pub const MODEL_TOOLS_SUPPORTED: bool = cfg!(any(target_os = "linux", target_os 
 
 /// Conservative byte allowance for the advertised tool definitions.
 ///
-/// The largest set (read, list, edit, and command) serializes to 2,763 bytes
-/// in the adapter's wire shape; a unit test keeps this allowance above it.
-pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 4 * 1024;
+/// The largest set (read, list, edit, multi-edit, create, and command)
+/// serializes to 4,546 bytes in the adapter's wire shape; a unit test keeps
+/// this allowance above it.
+pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 5 * 1024;
 
 /// Whether this chat turn offers the model the workspace tools.
 #[derive(Debug)]
@@ -115,7 +116,10 @@ pub fn tool_replay_allowed(
 
 #[cfg(test)]
 mod tests {
-    use omgcode_core::turn::{command_tool_definition, edit_tool_definition, tool_definitions};
+    use omgcode_core::turn::{
+        command_tool_definition, create_tool_definition, edit_tool_definition,
+        multi_edit_tool_definition, tool_definitions,
+    };
     use serde_json::{Value, json};
 
     use super::TOOL_SCHEMA_ESTIMATE_BYTES;
@@ -126,6 +130,8 @@ mod tests {
     fn the_schema_estimate_covers_every_advertised_tool_definition() {
         let mut definitions = tool_definitions();
         definitions.push(edit_tool_definition());
+        definitions.push(multi_edit_tool_definition());
+        definitions.push(create_tool_definition());
         definitions.push(command_tool_definition());
         let wire: Vec<Value> = definitions
             .iter()

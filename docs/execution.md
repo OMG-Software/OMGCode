@@ -698,7 +698,9 @@ approval records with the `file_write` operation, but never starts a process:
 it writes only through the checkpointed apply in the
 [file-access contract](file-access.md#model-edit-route-adr-0043). Approving its
 record requires `approvals approve <id> --writers-stopped`, which the command
-operation refuses.
+operation refuses. The `workspace_multi_edit_file` and `workspace_create_file`
+tools (0.36.0, ADR-0054) use the same `file_write` records, each under its own
+digest domain, and start no process either.
 
 ### Toolchain profiles
 
@@ -1079,10 +1081,11 @@ These remain true after C6:
 | C13 (0.24.0) | Provider profiles and trusted approval records | Done: see the [provider authentication guide](provider-authentication.md#recorded-provider-profiles-0240) and [approval records](agent-instructions.md#approval-records). No adapter or model tool executed. |
 | C14 (0.25.0) | Approval-gated model command tool | Done: see [model command tool](#model-command-tool) and ADR-0040. A CLI acceptance test qualifies one successful approved command on both hosts; confinement correctness remains the platform suites' responsibility. |
 | C17 (0.28.0) | Approval-gated model edit tool | Done: see the [model edit route](file-access.md#model-edit-route-adr-0043) and ADR-0043. It starts no process; it writes one exact edit through the checkpointed apply after a writers-stopped approval. |
+| C18 (0.36.0) | Approval-gated model multi-edit and create tools | Done: see the [model multi-edit and create routes](file-access.md#model-multi-edit-and-create-routes-adr-0054) and ADR-0054. They start no process; multi-edit writes through the checkpointed apply and create through the broker's exclusive create, each after a writers-stopped approval. |
 
 Later work needs its own decisions:
 
 - registry credentials and development-server networking;
-- model create, delete, rename, network, Git, and MCP tools;
+- model delete, rename, network, Git, and MCP tools;
 
 Live qualification on each supported OS remains a separate gate.
