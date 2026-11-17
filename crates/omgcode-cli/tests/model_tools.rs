@@ -338,7 +338,9 @@ fn an_enabled_preference_lets_the_model_read_the_workspace_through_the_runtime()
                 "workspace_list_directory",
                 "workspace_edit_file",
                 "workspace_multi_edit_file",
-                "workspace_create_file"
+                "workspace_create_file",
+                "workspace_rename_file",
+                "workspace_delete_file"
             ]
         );
         // The compiled base prompt remains the only system message.
@@ -1737,5 +1739,251 @@ fn an_approved_model_create_makes_the_file_through_the_operator_flow() {
             .len(),
         0,
         "creation is not checkpointed"
+    );
+}
+
+/// The operator flow for a model rename: approval, then one no-replace rename
+/// with no checkpoint. A repeat is refused because the source is gone.
+#[test]
+fn an_approved_model_rename_moves_the_file_through_the_operator_flow() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let rename = json!({"from": "note.txt", "to": "moved.txt"});
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-1", "workspace_rename_file", &rename),
+        text("Waiting for operator approval."),
+    ]);
+    let first = fixture.chat(&journal, &server.endpoint, "rename the note");
+    let requests = server.finish();
+    assert_success(&first);
+    let names: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().expect("name"))
+        .collect();
+    assert!(names.contains(&"workspace_rename_file"), "{names:?}");
+    assert!(names.contains(&"workspace_delete_file"), "{names:?}");
+    assert!(fixture.workspace.join("note.txt").exists());
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"]
+        .as_array()
+        .expect("approvals")
+        .to_vec();
+    assert_eq!(approvals.len(), 1, "one pending request: {approvals:?}");
+    assert_eq!(approvals[0]["operation"], "file_write");
+    let summary = approvals[0]["summary"].as_str().expect("summary");
+    assert!(
+        summary.starts_with(&format!(
+            "rename note.txt -> moved.txt: {} bytes, sha256 ",
+            NOTE.len()
+        )),
+        "{summary}"
+    );
+    let approval = approvals[0]["id"].as_str().expect("approval id").to_owned();
+    assert_error_code(
+        &run_cli(&fixture.data, &["approvals", "approve", &approval]),
+        "approval",
+    );
+    assert_success(&run_cli(
+        &fixture.data,
+        &["approvals", "approve", &approval, "--writers-stopped"],
+    ));
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-2", "workspace_rename_file", &rename),
+        text("The note is renamed."),
+        tool_call("call-3", "workspace_rename_file", &rename),
+        text("It is gone."),
+    ]);
+    let second = fixture.chat(&journal, &server.endpoint, "rename the note");
+    assert_success(&second);
+    assert!(!fixture.workspace.join("note.txt").exists());
+    assert_eq!(
+        fs::read(fixture.workspace.join("moved.txt")).expect("moved"),
+        NOTE
+    );
+    let third = fixture.chat(&journal, &server.endpoint, "rename it again");
+    assert_success(&third);
+    let requests = server.finish();
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-2"))
+        .expect("renamed result sent to the model");
+    assert!(result.contains("\"status\":\"renamed\""), "{result}");
+    assert!(result.contains("\"from\":\"note.txt\""), "{result}");
+    assert!(result.contains("\"to\":\"moved.txt\""), "{result}");
+    assert!(!result.contains("notes for"), "no file text: {result}");
+    assert!(
+        user_texts(&requests[3]).iter().any(|text| {
+            text.starts_with("Tool error [call call-3") && text.contains("not_found")
+        }),
+        "a second rename is refused"
+    );
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"].clone();
+    assert_eq!(approvals.as_array().expect("approvals").len(), 1);
+    assert_eq!(approvals[0]["state"], "consumed");
+    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&checkpoints);
+    assert_eq!(
+        json_output(&checkpoints)["operations"]
+            .as_array()
+            .expect("operations")
+            .len(),
+        0,
+        "rename is not checkpointed"
+    );
+    // The file-operation audit names both the source and the destination.
+    let audit = run_cli(&fixture.data, &["file", "audit"]);
+    assert_success(&audit);
+    let audit = json_output(&audit);
+    assert!(
+        audit["entries"].as_array().expect("entries").iter().any(
+            |entry| entry["action"]["payload"]["operation"] == "rename_file"
+                && entry["action"]["payload"]["destination"].is_object()
+        ),
+        "{audit}"
+    );
+}
+
+/// The operator flow for a model deletion: approval, then one checkpointed
+/// removal, and the trusted `file restore` recreates the exact bytes.
+#[test]
+fn an_approved_model_delete_removes_the_file_and_the_operator_restores_it() {
+    let fixture = Fixture::new(NOTE);
+    let journal = fixture.session();
+    fixture.set("--model-tools", true);
+    let delete = json!({"path": "note.txt"});
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-1", "workspace_delete_file", &delete),
+        text("Waiting for operator approval."),
+    ]);
+    let first = fixture.chat(&journal, &server.endpoint, "delete the note");
+    server.finish();
+    assert_success(&first);
+    assert!(fixture.workspace.join("note.txt").exists());
+
+    let listed = run_cli(&fixture.data, &["approvals", "list"]);
+    assert_success(&listed);
+    let approvals = json_output(&listed)["approvals"]
+        .as_array()
+        .expect("approvals")
+        .to_vec();
+    assert_eq!(approvals.len(), 1, "one pending request: {approvals:?}");
+    let summary = approvals[0]["summary"].as_str().expect("summary");
+    assert!(
+        summary.starts_with(&format!("delete note.txt: {} bytes, sha256 ", NOTE.len())),
+        "{summary}"
+    );
+    let approval = approvals[0]["id"].as_str().expect("approval id").to_owned();
+    assert_error_code(
+        &run_cli(&fixture.data, &["approvals", "approve", &approval]),
+        "approval",
+    );
+    assert_success(&run_cli(
+        &fixture.data,
+        &["approvals", "approve", &approval, "--writers-stopped"],
+    ));
+
+    let server = SequenceServer::start(vec![
+        tool_call("call-2", "workspace_delete_file", &delete),
+        text("The note is deleted."),
+        tool_call("call-3", "workspace_delete_file", &delete),
+        text("It is gone."),
+    ]);
+    let second = fixture.chat(&journal, &server.endpoint, "delete the note");
+    assert_success(&second);
+    assert!(!fixture.workspace.join("note.txt").exists());
+    let third = fixture.chat(&journal, &server.endpoint, "delete it again");
+    assert_success(&third);
+    let requests = server.finish();
+    let result = user_texts(&requests[1])
+        .into_iter()
+        .find(|text| text.starts_with("Tool result [call call-2"))
+        .expect("deleted result sent to the model");
+    assert!(result.contains("\"status\":\"deleted\""), "{result}");
+    assert!(!result.contains("notes for"), "no file text: {result}");
+    assert!(
+        user_texts(&requests[3]).iter().any(|text| {
+            text.starts_with("Tool error [call call-3") && text.contains("not_found")
+        }),
+        "a second deletion is refused"
+    );
+
+    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&checkpoints);
+    let checkpoints = json_output(&checkpoints);
+    let operations = checkpoints["operations"].as_array().expect("operations");
+    assert_eq!(operations.len(), 1, "one checkpoint: {checkpoints}");
+    assert_eq!(operations[0]["kind"], "remove");
+    assert_eq!(operations[0]["outcome"], "succeeded");
+    let checkpoint = operations[0]["operation_id"]
+        .as_str()
+        .expect("operation ID")
+        .to_owned();
+    assert!(
+        result.contains(&checkpoint),
+        "the result names the checkpoint: {result}"
+    );
+
+    // The trusted restore with `--removed` recreates the file and needs no
+    // current-file precondition; a replacement restore refuses a removal
+    // checkpoint.
+    let workspace_id = fixture.workspace_id.to_string();
+    let session_id = fixture.session_id.to_string();
+    let restore = |extra: &[&str]| {
+        let mut arguments = vec![
+            "file",
+            "restore",
+            workspace_id.as_str(),
+            "note.txt",
+            "--session",
+            session_id.as_str(),
+            "--checkpoint",
+            checkpoint.as_str(),
+            "--writers-stopped",
+        ];
+        arguments.extend_from_slice(extra);
+        run_cli(&fixture.data, &arguments)
+    };
+    let wrong_kind = restore(&[
+        "--expected-sha256",
+        &"0".repeat(64),
+        "--expected-bytes",
+        "1",
+    ]);
+    assert_error_code(&wrong_kind, "checkpoint_unavailable");
+    assert!(!fixture.workspace.join("note.txt").exists());
+    let restored = restore(&["--removed"]);
+    assert_success(&restored);
+    let restored = json_output(&restored);
+    assert_eq!(restored["restored_from"], checkpoint);
+    assert_eq!(restored["bytes_written"], NOTE.len());
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("restored"),
+        NOTE
+    );
+    // The name is taken now: a second restore never replaces it.
+    assert_error_code(&restore(&["--removed"]), "checkpoint_conflict");
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("kept"),
+        NOTE
+    );
+    let after = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&after);
+    assert_eq!(
+        json_output(&after)["operations"]
+            .as_array()
+            .expect("operations")
+            .len(),
+        1,
+        "a restore of a removal records no new checkpoint"
     );
 }

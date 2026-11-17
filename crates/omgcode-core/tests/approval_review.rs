@@ -1108,3 +1108,290 @@ fn hostile_multi_edit_and_create_text_is_escaped() {
         "ok\\u{202e}\\u{feff}\\u{000d}\\u{5c}u{200b}\\u{0000}"
     );
 }
+
+// ---------------------------------------------------- rename and delete
+
+const RENAME_TOOL: &str = "workspace_rename_file";
+const DELETE_TOOL: &str = "workspace_delete_file";
+
+fn rename_call(id: &str, from: &str, to: &str) -> Value {
+    call(id, RENAME_TOOL, json!({"from": from, "to": to}))
+}
+
+fn delete_call(id: &str, path: &str) -> Value {
+    call(id, DELETE_TOOL, json!({"path": path}))
+}
+
+fn labelled(request: &ReviewedRequest) -> Vec<(&'static str, String, bool)> {
+    request
+        .fields
+        .iter()
+        .map(|field| (field.label, field.value.clone(), field.multiline))
+        .collect()
+}
+
+#[test]
+fn a_rename_approval_reviews_exact_fields_without_touching_the_files() {
+    let mut fixture = Fixture::new();
+    let source = fixture.write_file("a.txt", "alpha\nbeta\n");
+    fs::create_dir(fixture.workspace.join("sub")).expect("destination parent");
+    fixture.turn(vec![rename_call("rename-1", "a.txt", "sub/b.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let before = statuses_json(&fixture.approvals());
+    let reads = fixture.audit_reads();
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, RENAME_TOOL);
+    assert_eq!(
+        labelled(&request),
+        [
+            ("From", "a.txt".to_owned(), false),
+            ("To", "sub/b.txt".to_owned(), false),
+            ("Size", "11 bytes".to_owned(), false),
+            ("SHA-256", sha256(b"alpha\nbeta\n"), false),
+        ]
+    );
+    assert_eq!(fs::read(&source).expect("read"), b"alpha\nbeta\n");
+    assert!(!fixture.workspace.join("sub/b.txt").exists());
+    assert_eq!(statuses_json(&fixture.approvals()), before);
+    assert_eq!(fixture.audit_reads(), reads + 2, "source and destination");
+}
+
+#[test]
+fn a_rename_review_is_stale_when_the_source_changes_or_the_destination_exists() {
+    let mut fixture = Fixture::new();
+    let source = fixture.write_file("a.txt", "alpha");
+    fixture.turn(vec![rename_call("rename-1", "a.txt", "b.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    exact(fixture.review(&approval, &recorded));
+
+    // Another writer creates the destination.
+    let destination = fixture.write_file("b.txt", "theirs");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    assert_eq!(fs::read(&destination).expect("read"), b"theirs");
+    fs::remove_file(&destination).expect("clear the destination");
+    exact(fixture.review(&approval, &recorded));
+
+    // The source changes, then disappears.
+    fs::write(&source, "alpha changed").expect("change the source");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    fs::remove_file(&source).expect("remove the source");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+/// After an exact review and an approval, the identical call renames the file.
+#[test]
+fn an_exactly_reviewed_rename_is_the_call_that_renames() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("a.txt", "alpha");
+    fixture.turn(vec![rename_call("rename-1", "a.txt", "b.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    exact(fixture.review(&approval, &recorded));
+
+    approve(&fixture, &approval);
+    fixture.turn(vec![rename_call("rename-2", "a.txt", "b.txt")]);
+
+    assert!(!fixture.workspace.join("a.txt").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("b.txt")).expect("read"),
+        "alpha"
+    );
+    assert_eq!(fixture.state(approval.id), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+}
+
+#[test]
+fn a_delete_approval_reviews_exact_fields_and_is_stale_after_a_change() {
+    let mut fixture = Fixture::new();
+    let target = fixture.write_file("old.txt", "alpha\nbeta\n");
+    fixture.turn(vec![delete_call("delete-1", "old.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let before = statuses_json(&fixture.approvals());
+    let reads = fixture.audit_reads();
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, DELETE_TOOL);
+    assert_eq!(
+        labelled(&request),
+        [
+            ("File", "old.txt".to_owned(), false),
+            ("Size", "11 bytes".to_owned(), false),
+            ("SHA-256", sha256(b"alpha\nbeta\n"), false),
+        ]
+    );
+    assert_eq!(fs::read(&target).expect("read"), b"alpha\nbeta\n");
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    assert_eq!(statuses_json(&fixture.approvals()), before);
+    assert_eq!(fixture.audit_reads(), reads + 1, "one audited read");
+
+    fs::write(&target, "alpha\nbeta\nchanged\n").expect("change the file");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    fs::remove_file(&target).expect("remove the file");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+/// After an exact review and an approval, the identical call deletes the file
+/// through a checkpoint.
+#[test]
+fn an_exactly_reviewed_delete_is_the_call_that_deletes() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("old.txt", "alpha");
+    fixture.turn(vec![delete_call("delete-1", "old.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    exact(fixture.review(&approval, &recorded));
+
+    approve(&fixture, &approval);
+    fixture.turn(vec![delete_call("delete-2", "old.txt")]);
+
+    assert!(!fixture.workspace.join("old.txt").exists());
+    assert_eq!(fixture.state(approval.id), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 1);
+}
+
+/// A review matches only the tool whose digest the approval holds.
+#[test]
+fn rename_and_delete_candidates_never_match_each_others_or_other_approvals() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("a.txt", "alpha");
+    fixture.turn(vec![rename_call("rename-1", "a.txt", "b.txt")]);
+    let rename_approval = fixture.pending(ApprovalOperation::FileWrite);
+    let renames = fixture.recorded();
+    let others = [
+        (DELETE_TOOL, json!({"path": "a.txt"})),
+        (
+            EDIT_TOOL,
+            json!({"path": "a.txt", "old_text": "alpha", "new_text": "b"}),
+        ),
+        (CREATE_TOOL, json!({"path": "b.txt", "content": "alpha"})),
+    ]
+    .map(|(tool, arguments)| RecordedToolRequest {
+        request_id: Uuid::new_v4(),
+        call_id: "other".into(),
+        tool: tool.to_owned(),
+        arguments: arguments.to_string(),
+    });
+    assert_eq!(
+        fixture.review(&rename_approval, &others).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    // The real rename candidate still matches among them.
+    let mut all = renames;
+    all.extend(others);
+    assert_eq!(
+        exact(fixture.review(&rename_approval, &all)).tool,
+        RENAME_TOOL
+    );
+
+    let mut fixture = Fixture::new();
+    fixture.write_file("a.txt", "alpha");
+    fixture.turn(vec![delete_call("delete-1", "a.txt")]);
+    let delete_approval = fixture.pending(ApprovalOperation::FileWrite);
+    let renamed = vec![RecordedToolRequest {
+        request_id: Uuid::new_v4(),
+        call_id: "rename-1".into(),
+        tool: RENAME_TOOL.to_owned(),
+        arguments: json!({"from": "a.txt", "to": "b.txt"}).to_string(),
+    }];
+    assert_eq!(
+        fixture.review(&delete_approval, &renamed).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+/// The eight-candidate bound counts distinct requests across all five
+/// file-write tools together, newest first.
+#[test]
+fn the_candidate_bound_spans_rename_and_delete_too() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("a.txt", "alpha");
+    fixture.turn(vec![rename_call("rename-1", "a.txt", "b.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let matching = fixture.recorded();
+
+    let newer = |count: usize| {
+        let mut all = matching.clone();
+        for index in 0..count {
+            let (tool, arguments) = if index % 2 == 0 {
+                (DELETE_TOOL, json!({"path": format!("gone{index}.txt")}))
+            } else {
+                (
+                    RENAME_TOOL,
+                    json!({"from": format!("gone{index}.txt"), "to": "c.txt"}),
+                )
+            };
+            all.push(RecordedToolRequest {
+                request_id: Uuid::new_v4(),
+                call_id: format!("call-{index}"),
+                tool: tool.to_owned(),
+                arguments: arguments.to_string(),
+            });
+        }
+        all
+    };
+
+    // Seven newer candidates read one missing file each, then the match reads
+    // its source and destination.
+    let reads = fixture.audit_reads();
+    exact(fixture.review(&approval, &newer(7)));
+    assert_eq!(fixture.audit_reads() - reads, 7 + 2);
+
+    // Eight newer candidates push it beyond the bound.
+    let reads = fixture.audit_reads();
+    assert_eq!(
+        fixture.review(&approval, &newer(8)).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    assert_eq!(fixture.audit_reads() - reads, 8);
+}
+
+#[test]
+fn hostile_rename_and_delete_paths_are_escaped() {
+    let mut fixture = Fixture::new();
+    fixture.write_file("a\u{202e}b.txt", "alpha");
+    fixture.turn(vec![rename_call(
+        "rename-1",
+        "a\u{202e}b.txt",
+        "c\u{200b}d\u{2028}e.txt",
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let request = exact(fixture.review(&approval, &recorded));
+    for field in &request.fields {
+        assert_display_clean(&field.value);
+    }
+    assert_eq!(field(&request, "From").value, "a\\u{202e}b.txt");
+    assert_eq!(field(&request, "To").value, "c\\u{200b}d\\u{2028}e.txt");
+
+    let mut fixture = Fixture::new();
+    fixture.write_file("a\u{202e}b.txt", "alpha");
+    fixture.turn(vec![delete_call("delete-1", "a\u{202e}b.txt")]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let request = exact(fixture.review(&approval, &recorded));
+    for field in &request.fields {
+        assert_display_clean(&field.value);
+    }
+    assert_eq!(field(&request, "File").value, "a\\u{202e}b.txt");
+}

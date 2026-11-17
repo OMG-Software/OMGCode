@@ -6,10 +6,9 @@ OMGCode aims to connect language models to controlled development tools.
 The current code is an early Rust core and command-line prototype. A bounded
 native workspace file broker is available through trusted CLI commands. A core
 turn/tool runtime and schema-v2 session format let chat offer the local LM Studio
-model read, list, approval-gated edit, multi-edit, create, and command tools,
-only for a workspace that enables `model_tools` and each tool's own
-preferences. Model file deletion and renaming, and Git workflows
-remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
+model read, list, approval-gated edit, multi-edit, create, rename, delete, and
+command tools, only for a workspace that enables `model_tools` and each tool's
+own preferences. Git workflows remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
 frontend) browses and searches sessions, runs chat, and decides model-tool
 approvals in a separate window; it has no installer and has run only on Windows.
 The trusted CLI `run` command starts one program for a workspace whose
@@ -33,15 +32,18 @@ directory grants.
 > approves that exact call. When `read` and `write` are enabled, it offers an
 > edit tool that replaces one exact text occurrence in an existing file, a
 > multi-edit tool that replaces up to 16 exact occurrences in one existing
-> file, and a create tool that makes one new file. Each records a pending
-> approval and acts only after the operator approves that exact call and
-> acknowledges that other writers are stopped; edits are applied through a
-> checkpoint, and creation is not checkpointed. It has no model delete, rename,
-> network, Git, or MCP tools.
+> file, a create tool that makes one new file, a rename tool that moves one file
+> to a name that does not exist, and a delete tool that removes one file after
+> a checkpoint of its bytes. Each records a pending approval and acts only after
+> the operator approves that exact call and acknowledges that other writers are
+> stopped; edits and deletions are applied through a checkpoint, and creation
+> and renaming are not checkpointed. It has no model network, Git, or MCP
+> tools.
 > The trusted
 > CLI can replace or restore one existing file through a checkpoint on qualified
 > Linux ext4 or Windows NTFS, and can permanently delete one resolved checkpoint.
-> The `file` commands cannot delete workspace files. The trusted CLI `run`
+> The `file` commands cannot delete workspace files, though `file restore
+> --removed` recreates one that a model deletion removed. The trusted CLI `run`
 > command executes programs under native confinement, and those programs can
 > create, change, and delete workspace files without a checkpoint. That
 > confinement was tested on one Windows build and one Linux kernel only and is
@@ -109,7 +111,8 @@ frontend in `crates/omgcode-desktop/ui`. The CLI provides:
   loopback HTTP endpoint. It does not discover, start, or download models, and it
   rejects model tool requests unless the session's workspace enables
   `model_tools`. Then it offers read/list tools; when `read` and `write` are
-  also enabled, the approval-gated edit, multi-edit, and create tools; and when `execute`, `read`, and
+  also enabled, the approval-gated edit, multi-edit, create, rename, and delete
+  tools; and when `execute`, `read`, and
   `write` are all enabled, the approval-gated command tool. Each is rechecked
   against live settings before every call.
 
@@ -130,7 +133,7 @@ source-labelled messages. The edit and command tools additionally require a
 consumed approval; an edit also needs the operator's writers-stopped
 acknowledgement and writes only through checkpointed apply. `chat` runs it
 with the local LM Studio adapter for a workspace that enables `model_tools`.
-It has no create, delete, rename, Git, MCP, or network tool.
+It has no Git, MCP, or network tool.
 New sessions use schema version 3; version 1 and 2 journals remain readable
 and writable with their original subsets.
 
@@ -166,8 +169,11 @@ trusted `file compact-checkpoints --discard-history`, or an apply, restore, or
 deletion that would not fit, compacts the ledger. Neither
 command is power-loss qualified. The model edit and multi-edit tools use the same
 checkpointed apply after an approved, writers-stopped decision; the create tool
-uses the exclusive create without a checkpoint. None can delete or rename files,
-and none detects a concurrent writer.
+uses the exclusive create without a checkpoint; the delete tool uses a
+checkpointed removal; and the rename tool uses a no-replace rename without a
+checkpoint. None detects a concurrent writer, and none is power-loss
+qualified. A deleted file is restored with trusted `file restore --removed`,
+which does not restore its mode or access list.
 Model-dispatched process execution, Git, MCP, and memories remain planned. See the
 [workspace settings contract](docs/workspace-permissions.md), the
 [workspace file-access guide](docs/file-access.md), and the [development

@@ -17,19 +17,21 @@ use thiserror::Error;
 
 use super::{
     PreparedEdit, TextEdit, ToolArguments, ToolCall, ToolName, artifact, command_digest,
-    command_run_request, create_digest, edit_digest, edit_target, is_hidden_format,
+    command_run_request, create_digest, delete_digest, edit_digest, edit_target, is_hidden_format,
     multi_edit_digest, normalized_path, prepare_edit, prepare_multi_edit, read_edit_source,
+    rename_digest,
 };
 use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
 use crate::file_audit::FileAuditError;
 use crate::files::FileError;
 use crate::replacement::CheckpointError;
 
-/// Most distinct file-write requests (edit, multi-edit, and create together)
-/// evaluated for one review.
+/// Most distinct file-write requests (edit, multi-edit, create, rename, and
+/// delete together) evaluated for one review.
 ///
-/// Each evaluation reads a workspace file through the audited broker and
-/// writes one audit record, so the work and the audit growth are bounded.
+/// Each evaluation reads one or two workspace files through the audited broker
+/// and writes one audit record per read, so the work and the audit growth are
+/// bounded.
 const MAX_REVIEW_EDIT_CANDIDATES: usize = 8;
 
 /// One recorded model tool request offered as a candidate for review.
@@ -122,8 +124,8 @@ pub enum ReviewError {
 ///    [`ReviewError::Busy`], and a settings revision that differs from the
 ///    approval's gives `Stale(SettingsChanged)`.
 /// 3. Only candidates whose tool belongs to the operation are considered: the
-///    command tool for `Command`, and the edit, multi-edit, and create tools
-///    for `FileWrite`; with none, the result is `NotFound`.
+///    command tool for `Command`, and the edit, multi-edit, create, rename, and
+///    delete tools for `FileWrite`; with none, the result is `NotFound`.
 /// 4. They are tried newest first, each parsed by [`ToolCall::parse`]. A
 ///    candidate that fails to parse is skipped. A command candidate is built
 ///    into a run request by the dispatcher's own constructor. A file-write
@@ -134,7 +136,8 @@ pub enum ReviewError {
 ///    are evaluated, newest first. A candidate whose preparation fails for a
 ///    recoverable reason (missing file, no match, ambiguous match, overlap,
 ///    too large, read denied) is not a match, and a create candidate whose
-///    path now exists is not a match.
+///    path now exists is not a match. A rename candidate also needs its
+///    destination to be absent now.
 /// 5. If none reproduces the digest, the result is `Stale(NoMatchingRequest)`.
 ///
 /// The fields of an `Exact` result come from the request that reproduced the
@@ -171,11 +174,7 @@ pub fn review_approval(
 ) -> Result<ApprovalReview, ReviewError> {
     let tools: &[ToolName] = match approval.operation {
         ApprovalOperation::Command => &[ToolName::Command],
-        ApprovalOperation::FileWrite => &[
-            ToolName::EditFile,
-            ToolName::MultiEditFile,
-            ToolName::CreateFile,
-        ],
+        ApprovalOperation::FileWrite => &FILE_WRITE_TOOLS,
         ApprovalOperation::GitPush | ApprovalOperation::Network => {
             return Ok(ApprovalReview::NotFound);
         }
@@ -341,6 +340,46 @@ fn review_file_write<'a>(
                     })
                     .map(|prepared| multi_edit_fields(&prepared, edits))
             }
+            (ToolArguments::RenameFile { from, to }, Some(current)) => {
+                let from_normalized = normalized_path(from);
+                let to_normalized = normalized_path(to);
+                // A rename is reviewable only while its destination is absent.
+                let destination = edit_target(approval.session_id, approval.workspace_id, to);
+                let absent = match read_edit_source(&mut control, &binding, &destination) {
+                    Ok(_) => false,
+                    Err(FileError::Native(native)) if is_missing_entry(&native) => true,
+                    Err(error) => {
+                        classify_review_read(error)?;
+                        false
+                    }
+                };
+                artifact(&current)
+                    .filter(|source| {
+                        absent
+                            && from_normalized != to_normalized
+                            && rename_digest(
+                                approval.session_id,
+                                approval.workspace_id,
+                                &from_normalized,
+                                &to_normalized,
+                                source,
+                            ) == approval.request_sha256
+                    })
+                    .map(|source| rename_fields(&from_normalized, &to_normalized, &source))
+            }
+            (ToolArguments::DeleteFile { .. }, Some(current)) => {
+                let normalized = normalized_path(path);
+                artifact(&current)
+                    .filter(|source| {
+                        delete_digest(
+                            approval.session_id,
+                            approval.workspace_id,
+                            &normalized,
+                            source,
+                        ) == approval.request_sha256
+                    })
+                    .map(|source| delete_fields(&normalized, &source))
+            }
             (ToolArguments::CreateFile { content, .. }, None) => {
                 let normalized = normalized_path(path);
                 artifact(content.as_bytes())
@@ -366,15 +405,20 @@ fn review_file_write<'a>(
     Ok(None)
 }
 
+/// Every tool whose requests a `FileWrite` approval can be bound to.
+const FILE_WRITE_TOOLS: [ToolName; 5] = [
+    ToolName::EditFile,
+    ToolName::MultiEditFile,
+    ToolName::CreateFile,
+    ToolName::RenameFile,
+    ToolName::DeleteFile,
+];
+
 /// Map a recorded tool name to a file-write tool.
 fn file_write_tool(name: &str) -> Option<ToolName> {
-    [
-        ToolName::EditFile,
-        ToolName::MultiEditFile,
-        ToolName::CreateFile,
-    ]
-    .into_iter()
-    .find(|tool| tool.as_str() == name)
+    FILE_WRITE_TOOLS
+        .into_iter()
+        .find(|tool| tool.as_str() == name)
 }
 
 /// Decide whether a failed review read is a plain non-match (`Ok`) or leaves
@@ -580,6 +624,31 @@ fn create_fields(
             value: display_safe(content),
             multiline: true,
         },
+    ]
+}
+
+/// Rename fields. Both names come from the parsed arguments that reproduced
+/// the digest, and the size and digest from the live source.
+fn rename_fields(
+    from: &str,
+    to: &str,
+    source: &crate::replacement::RecordedArtifact,
+) -> Vec<ReviewField> {
+    vec![
+        single("From", display_safe_line(from)),
+        single("To", display_safe_line(to)),
+        single("Size", format!("{} bytes", source.bytes)),
+        single("SHA-256", source.sha256.clone()),
+    ]
+}
+
+/// Delete fields. The path comes from the parsed arguments that reproduced
+/// the digest, and the size and digest from the live file.
+fn delete_fields(path: &str, current: &crate::replacement::RecordedArtifact) -> Vec<ReviewField> {
+    vec![
+        single("File", display_safe_line(path)),
+        single("Size", format!("{} bytes", current.bytes)),
+        single("SHA-256", current.sha256.clone()),
     ]
 }
 

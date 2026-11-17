@@ -167,15 +167,25 @@ pub(super) fn validate_capture(
     capture: &FileCapture,
     expected: &RecordedArtifact,
 ) -> Result<(), FileError> {
+    validate_capture_bytes(capture, expected)?;
+    if std::str::from_utf8(&capture.bytes).is_err() {
+        return Err(FileError::Invalid("checkpoint source is not UTF-8"));
+    }
+    Ok(())
+}
+
+/// Compare the exact size and SHA-256 of the retained source without
+/// interpreting its bytes. A removal checkpoint keeps them as they are.
+pub(super) fn validate_capture_bytes(
+    capture: &FileCapture,
+    expected: &RecordedArtifact,
+) -> Result<(), FileError> {
     if u64::try_from(capture.bytes.len())
         .map_err(|_| FileError::Invalid("capture size overflow"))?
         != expected.bytes
         || sha256_hex(&capture.bytes) != expected.sha256
     {
         return Err(CheckpointError::Conflict.into());
-    }
-    if std::str::from_utf8(&capture.bytes).is_err() {
-        return Err(FileError::Invalid("checkpoint source is not UTF-8"));
     }
     Ok(())
 }

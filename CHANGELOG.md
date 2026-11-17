@@ -6,6 +6,80 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.38.0 adds two approval-gated model file tools, rename and delete
+  (Phase C19). See ADR-0055 and the
+  [rename and delete routes](docs/file-access.md#model-rename-and-delete-routes-adr-0055).
+  Until now the model could neither move nor remove a file. It is on branch
+  `codex/model-file-tools`, stacked on `codex/checkpoint-ledger-compaction`; it
+  is not merged. It adds no dependency.
+  - **Tools:** `workspace_rename_file` moves one regular file to a name that
+    does not exist and never replaces an entry. `workspace_delete_file` removes
+    one regular file after a durable checkpoint of its bytes. Both are advertised
+    and dispatched only under live `model_tools`, `read`, and `write`, with the
+    edit tool's per-call recheck and `edit_disabled` denial, in the order read,
+    list, edit, multi-edit, create, rename, delete, command. Tool schema 0.5.0;
+    0.2.0 to 0.4.0 sessions still replay. Eight of eight tool-name slots are used,
+    and no cap rose.
+  - **Approvals:** both reuse the `file_write` operation, so the
+    writers-stopped acknowledgement is required and no enum, wire type, or
+    TypeScript union changed. Each has its own digest domain tag
+    (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`), so an approval for any
+    of the five file-write tools is never consumed by another. Before an
+    approval is recorded, a live audited read supplies the source's exact size
+    and SHA-256; a source over 1 MiB is the recoverable `edit_too_large`, and
+    non-UTF-8 content is accepted. A rename also needs an absent destination
+    (`file_exists`) and an existing parent (`not_found`).
+  - **Rename:** a new `FileBroker::rename_file` records a `rename_file`
+    file-operation intent that names both the source and the destination, then
+    calls the platform's `rename_no_replace`. The source is pinned, its bytes
+    are verified through the pinned handle, and directories, links, junctions,
+    hard-linked files, and other filesystems are refused. Linux uses
+    `renameat2` with `RENAME_NOREPLACE` and compares the name with the pinned
+    inode before and after. Windows holds a DELETE handle that denies other
+    writers and deleters and renames with POSIX semantics and no replace flag.
+    An error after the native call is uncertain, leaves the audit record pending,
+    and is never retried. Rename is not checkpointed.
+  - **Delete:** a new `FileBroker::apply_removal` follows the checkpointed
+    apply without a stage: the same binding, permission, admission, and
+    qualified-filesystem gates, a durable checkpoint, a recheck, commit intent,
+    one native removal, and the same uncertain-outcome recovery. Linux unlinks by
+    name and reports a swapped name as uncertain from the pinned inode's link
+    count; Windows deletes through the verified handle. Neither is power-loss
+    qualified.
+  - **Ledger:** operation records gain an optional `kind` of `replace` or
+    `remove`, omitted for `replace` so every earlier ledger, carried record, and
+    manifest stays byte-identical. A `remove` proposes exactly the empty artifact,
+    has no stage, and goes from `checkpoint_prepared` to `commit_intended`.
+    Replay refuses a `remove` that proposes bytes, has a stage record, or carries
+    a stage identity; compaction carries `kind`. Older binaries refuse a ledger
+    that holds a `remove` record. A `remove` entry's original need not be UTF-8.
+  - **Restore:** trusted `file restore --removed` (and
+    `FileBroker::restore_removed_file`) recreates a deleted file through the
+    audited exclusive create when its name is free, records no new operation, and
+    does not restore its mode, owner, access list, or timestamps. A replacement
+    checkpoint and a removal checkpoint each refuse the other route.
+  - **Review:** the desktop approvals window reproduces the digest from any of the
+    five file-write tools (at most eight distinct candidates) and shows `From`,
+    `To`, `Size`, and `SHA-256` for a rename and `File`, `Size`, and `SHA-256`
+    for a delete. A rename review is stale once its source changed or its
+    destination exists; a delete review is stale once the file changed or is gone.
+  - **Limits:** neither tool detects a concurrent writer, and neither is
+    power-loss qualified. The context estimate for tool definitions rises from
+    5 KiB to 6 KiB (the eight definitions serialize to 5,968 bytes). The Linux
+    paths are not qualified on a Linux host. A bounded read that exceeds its
+    limit now carries a typed marker, `is_oversize_entry`, so a source over
+    1 MiB is told from other invalid objects; the error kind is unchanged.
+  - **Tests:** new platform tests cover the no-replace rename (existing target,
+    directories, junctions, hard links, changed source, a swap the sharing mode
+    prevents, and faults before and after the call) and the verified-handle
+    removal (swapped name refused, single attempt, faults). New core tests cover
+    the `remove` ledger rules and refusals, removal and restore through the
+    broker, the audit record, strict parsing, the approval flow, cross-tool
+    non-consumption, refusals, live-permission gating, output-fit refusal, schema
+    0.4.0 replay, the eight-tool list, and review fields and staleness. New app,
+    CLI, and frontend tests drive both tools through the desktop service, the
+    operator flow, and `file restore --removed`.
+
 - Version 0.37.0 adds registry credentials for the trusted `packages fetch`
   (Phase C20). See ADR-0056 and
   [registry credentials](docs/execution.md#registry-credentials). Until now

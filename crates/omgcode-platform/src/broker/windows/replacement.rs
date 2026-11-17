@@ -24,22 +24,22 @@ use windows_sys::Win32::Foundation::{
     STATUS_OBJECT_NAME_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ADD_FILE, FILE_NAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FileNormalizedNameInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
+    DELETE, FILE_ADD_FILE, FILE_NAME_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FileNormalizedNameInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
 };
 
 use super::{
     DIRECTORY_ACCESS, NativeStatus, NativeWorkspace, RelativePath, SHARE_READ_WRITE, creation_time,
-    invalid_data, invalid_input, last_directory, open_relative, query_attributes, query_basic,
-    query_identity, query_standard, read_bounded, rename_onto, validate_component,
-    validate_directory, validate_regular_file,
+    invalid_data, invalid_input, is_name_not_found, last_directory, open_relative,
+    query_attributes, query_basic, query_identity, query_standard, read_bounded, rename_onto,
+    validate_component, validate_directory, validate_regular_file,
 };
 use crate::broker::{FileCapture, MAX_FILE_BYTES};
 use crate::directory_identity;
 use crate::private_store::windows::{
     DIRECTORY_OPTIONS, FILE_OPTIONS, FILE_READ_ACCESS, STAGE_NAME, apply_security, is_private_file,
-    read_native_security, require_ntfs, set_content_indexing, split_native_security,
-    validate_file_metadata,
+    mark_for_deletion, read_native_security, require_ntfs, set_content_indexing,
+    split_native_security, validate_file_metadata,
 };
 use crate::private_store::{
     NativeSecurity, PrivateDirectory, PrivateFileIdentity, StageMetadata, stage_metadata,
@@ -86,6 +86,8 @@ enum TestPoint {
     SourceParentSync,
     TargetParentSync,
     RestorePrivacy,
+    Delete,
+    Deleted,
 }
 
 /// One object and version. Access time is excluded because reads change it.
@@ -393,6 +395,77 @@ impl ReplacementTarget<'_> {
         #[cfg(test)]
         self.run_hook(TestPoint::SourceParentSync)?;
         stage.directory.sync()?;
+        #[cfg(test)]
+        self.run_hook(TestPoint::TargetParentSync)?;
+        self.parent.sync_all()
+    }
+
+    /// Recheck the retained target before a removal without changing it.
+    ///
+    /// `false` means the name no longer resolves to the object whose bytes,
+    /// version, and security were captured. A read-only source was already
+    /// refused at capture.
+    pub fn recheck_removal(&self) -> io::Result<bool> {
+        self.target_matches_current()
+    }
+
+    /// Make one native removal attempt of the verified file.
+    ///
+    /// The target is consumed, so one retained target allows one attempt. The
+    /// name is opened with DELETE access, and that same handle is verified
+    /// (object, name, security, and every byte) and then marked for
+    /// POSIX-semantics deletion, so exactly the verified file is deleted even
+    /// if the name is swapped after the recheck. Every error is an uncertain
+    /// result and must never be retried. Windows makes no power-loss claim for
+    /// the parent flush (ADR-0023).
+    pub fn remove(self, before_attempt: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        if !self.recheck_removal()? {
+            return Err(changed_during_operation());
+        }
+        #[cfg(test)]
+        self.run_hook(TestPoint::AfterFinalCheck)?;
+        before_attempt()?;
+        #[cfg(test)]
+        self.run_hook(TestPoint::Delete)?;
+        let directory = last_directory(&self.handles)?;
+        let doomed = open_relative(
+            directory,
+            &self.name,
+            FILE_READ_ACCESS | DELETE,
+            FILE_OPEN,
+            FILE_OPTIONS,
+            FILE_SHARE_READ,
+            0,
+        )?;
+        let verified = file_snapshot(&doomed)? == self.source_snapshot
+            && has_exact_name(&doomed, &self.name)?
+            && security_matches(&doomed, &self.capture.security)?
+            && file_bytes_matches(&doomed, &self.capture.bytes)?
+            && file_snapshot(&doomed)? == self.source_snapshot;
+        if !verified {
+            return Err(changed_during_operation());
+        }
+        mark_for_deletion(&doomed, false)?;
+        drop(doomed);
+        #[cfg(test)]
+        self.run_hook(TestPoint::Deleted)?;
+        match open_relative(
+            directory,
+            &self.name,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_OPTIONS,
+            SHARE_ALL,
+            0,
+        ) {
+            Err(error) if is_name_not_found(&error) => {}
+            Ok(_) => {
+                return Err(invalid_data(
+                    "the removed name still resolves after deletion",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
         #[cfg(test)]
         self.run_hook(TestPoint::TargetParentSync)?;
         self.parent.sync_all()

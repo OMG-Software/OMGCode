@@ -738,3 +738,118 @@ fn a_create_review_becomes_stale_once_the_file_exists() {
     assert_eq!(detail.review_token, None);
     assert_eq!(setup.server.finish(), 2);
 }
+
+const RENAME_TOOL: &str = "workspace_rename_file";
+const DELETE_TOOL: &str = "workspace_delete_file";
+
+#[test]
+fn a_rename_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+    let args = json!({"from": "a.txt", "to": "b.txt"});
+    let setup = setup(vec![
+        Step::reply(tool_call("rename-1", RENAME_TOOL, &args)),
+        Step::reply(text("waiting for approval")),
+        Step::reply(tool_call("rename-2", RENAME_TOOL, &args)),
+        Step::reply(text("renamed")),
+    ]);
+    let source = setup.workspace.path.join("a.txt");
+    fs::write(&source, "alpha\n").expect("workspace file");
+    let session = setup.session("Rename");
+    setup.turn(session, "rename a file");
+
+    let pending = setup.pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation, ApprovalOperationDto::FileWrite);
+    let id = pending[0].id;
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Exact);
+    assert_eq!(detail.tool.as_deref(), Some(RENAME_TOOL));
+    assert_eq!(field_value(&detail, "From"), "a.txt");
+    assert_eq!(field_value(&detail, "To"), "b.txt");
+    assert_eq!(field_value(&detail, "Size"), "6 bytes");
+    assert!(source.exists());
+    let token = detail.review_token.clone().expect("a review token");
+    setup
+        .decide(id, "approve", true, Some(&token))
+        .expect("approve");
+
+    setup.turn(session, "try again");
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read_to_string(setup.workspace.path.join("b.txt")).expect("read"),
+        "alpha\n"
+    );
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
+    assert_eq!(setup.server.finish(), 4);
+}
+
+#[test]
+fn a_rename_review_becomes_stale_once_the_destination_exists() {
+    let args = json!({"from": "a.txt", "to": "b.txt"});
+    let setup = setup(vec![
+        Step::reply(tool_call("rename-1", RENAME_TOOL, &args)),
+        Step::reply(text("waiting for approval")),
+    ]);
+    fs::write(setup.workspace.path.join("a.txt"), "alpha\n").expect("file");
+    let session = setup.session("Rename");
+    setup.turn(session, "rename a file");
+    let id = setup.pending()[0].id;
+    assert_eq!(setup.detail(id).binding, Binding::Exact);
+    fs::write(setup.workspace.path.join("b.txt"), "someone else").expect("other writer");
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Stale);
+    assert_eq!(detail.review_token, None);
+    assert_eq!(setup.server.finish(), 2);
+}
+
+#[test]
+fn a_delete_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+    let args = json!({"path": "old.txt"});
+    let setup = setup(vec![
+        Step::reply(tool_call("delete-1", DELETE_TOOL, &args)),
+        Step::reply(text("waiting for approval")),
+        Step::reply(tool_call("delete-2", DELETE_TOOL, &args)),
+        Step::reply(text("deleted")),
+    ]);
+    let target = setup.workspace.path.join("old.txt");
+    fs::write(&target, "alpha\n").expect("workspace file");
+    let session = setup.session("Delete");
+    setup.turn(session, "delete a file");
+
+    let pending = setup.pending();
+    assert_eq!(pending.len(), 1);
+    let id = pending[0].id;
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Exact);
+    assert_eq!(detail.tool.as_deref(), Some(DELETE_TOOL));
+    assert_eq!(field_value(&detail, "File"), "old.txt");
+    assert_eq!(field_value(&detail, "Size"), "6 bytes");
+    assert!(target.exists());
+    let token = detail.review_token.clone().expect("a review token");
+    setup
+        .decide(id, "approve", true, Some(&token))
+        .expect("approve");
+
+    setup.turn(session, "try again");
+    assert!(!target.exists());
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
+    assert_eq!(setup.server.finish(), 4);
+}
+
+#[test]
+fn a_delete_review_becomes_stale_once_the_file_changes() {
+    let args = json!({"path": "old.txt"});
+    let setup = setup(vec![
+        Step::reply(tool_call("delete-1", DELETE_TOOL, &args)),
+        Step::reply(text("waiting for approval")),
+    ]);
+    fs::write(setup.workspace.path.join("old.txt"), "alpha\n").expect("file");
+    let session = setup.session("Delete");
+    setup.turn(session, "delete a file");
+    let id = setup.pending()[0].id;
+    assert_eq!(setup.detail(id).binding, Binding::Exact);
+    fs::write(setup.workspace.path.join("old.txt"), "alpha changed\n").expect("change");
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Stale);
+    assert_eq!(detail.review_token, None);
+    assert_eq!(setup.server.finish(), 2);
+}

@@ -153,9 +153,9 @@ evidence.
 Its checks do not isolate hostile same-user processes or provide process
 containment. Since 0.12.0, chat drives this runtime when the session's
 workspace enables `model_tools`. Since 0.28.0 the model writes only through
-approval-gated tools: the exact edit (ADR-0043) and, since 0.36.0, the
-multi-edit and create tools (ADR-0054). Model delete, rename, and
-general file tools remain disabled; capability output keeps
+approval-gated tools: the exact edit (ADR-0043), since 0.36.0 the multi-edit
+and create tools (ADR-0054), and since 0.38.0 the rename and delete tools
+(ADR-0055). General file tools remain disabled; capability output keeps
 `workspace_file_tools` false. For model tools:
 
 - Check the live `model_tools` preference before each call, then let the broker
@@ -290,6 +290,22 @@ crate.
   exclusive create after consuming the approval; it never replaces, retries, or
   deletes, and leaves an uncertain outcome's pending record for the trusted
   acknowledgement. Keep file text out of summaries and results. See ADR-0054.
+- The `workspace_rename_file` and `workspace_delete_file` model tools follow the
+  same advertisement, live-recheck, approval, and writers-stopped rules, under
+  their own digest domain tags (`omgcode-file-rename-v1`,
+  `omgcode-file-delete-v1`). Each reads its source live through the audited
+  broker (at most 1 MiB, bytes not interpreted) before recording an approval,
+  and binds the approval to that size and SHA-256 and to the normalized names.
+  A rename must find its destination absent and its parent present before an
+  approval, never replaces an entry, and is not checkpointed. A delete uses only
+  `FileBroker::apply_removal`, which checkpoints the original bytes first and
+  follows the checkpointed apply's gates, recheck, and uncertain-outcome rules.
+  The native rename must pin the source, verify its bytes through the pinned
+  handle, and use a no-replace primitive; the native removal must verify the
+  object it removes (a verified handle on Windows, the pinned inode's link count
+  afterwards on Linux). Neither retries, repairs, or deletes after an uncertain
+  outcome, and neither reports concurrent-writer detection. Keep file text and
+  full paths out of results. See ADR-0055.
 - The `workspace_run_command` model tool may be advertised only under live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; only a later exact call may consume an

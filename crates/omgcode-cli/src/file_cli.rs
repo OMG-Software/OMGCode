@@ -92,11 +92,15 @@ pub(crate) enum FileCommand {
         #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
         writers_stopped: bool,
     },
-    /// Restore a retained checkpoint's original bytes over the current file.
+    /// Restore a retained checkpoint's original bytes.
     ///
-    /// The expected digest and size describe the current file, never the
-    /// checkpoint. The current bytes are checkpointed again before publication.
-    /// Stop every other writer; this does not provide atomic compare-and-swap.
+    /// For a replacement checkpoint, the expected digest and size describe the
+    /// current file, never the checkpoint, and the current bytes are
+    /// checkpointed again before publication. With `--removed`, the checkpoint
+    /// must be one that a removal recorded: the file must not exist and is
+    /// recreated through the exclusive create, without its former mode or
+    /// access list, and no new checkpoint is recorded. Stop every other
+    /// writer; this does not provide atomic compare-and-swap.
     Restore {
         #[command(flatten)]
         scope: Scope,
@@ -106,11 +110,15 @@ pub(crate) enum FileCommand {
         #[arg(long)]
         checkpoint: Uuid,
         /// Expected SHA-256 of the current file's exact bytes.
-        #[arg(long)]
-        expected_sha256: String,
+        #[arg(long, required_unless_present = "removed", conflicts_with = "removed")]
+        expected_sha256: Option<String>,
         /// Expected byte count of the current file.
+        #[arg(long, required_unless_present = "removed", conflicts_with = "removed")]
+        expected_bytes: Option<u64>,
+        /// The checkpoint recorded a file that a removal deleted; recreate it.
+        /// The name must be free, so there is no current file to describe.
         #[arg(long)]
-        expected_bytes: u64,
+        removed: bool,
         /// Acknowledge that all other writers are stopped. This does not provide CAS.
         #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
         writers_stopped: bool,
@@ -164,6 +172,16 @@ struct RestoreOutput {
     restored_from: Uuid,
     #[serde(flatten)]
     receipt: omgcode_core::replacement::ReplacementReceipt,
+}
+
+/// Output of restoring a deleted file: the checkpoint it read and the audited
+/// creation that recreated the file.
+#[cfg(any(target_os = "linux", windows))]
+#[derive(serde::Serialize)]
+struct RestoreRemovedOutput {
+    restored_from: Uuid,
+    #[serde(flatten)]
+    created: omgcode_core::files::FileCreated,
 }
 
 /// Open existing trusted settings. No command silently chooses a development root.
@@ -291,11 +309,19 @@ pub(crate) fn run(command: FileCommand, data_root: &Path) -> Result<(), CliError
             checkpoint,
             expected_sha256,
             expected_bytes,
+            removed,
             writers_stopped: _,
         } => {
             #[cfg(not(any(target_os = "linux", windows)))]
             {
-                let _ = (scope, path, checkpoint, expected_sha256, expected_bytes);
+                let _ = (
+                    scope,
+                    path,
+                    checkpoint,
+                    expected_sha256,
+                    expected_bytes,
+                    removed,
+                );
                 Err(CliError::new(
                     "file_unsupported",
                     "File restore is available only on Linux and Windows",
@@ -307,6 +333,24 @@ pub(crate) fn run(command: FileCommand, data_root: &Path) -> Result<(), CliError
                     .bind_session(scope.session, scope.workspace)
                     .map_err(|error| CliError::new("control", error.to_string()))?;
                 let target = target(scope, path);
+                if removed {
+                    let created = FileBroker::new(&mut control)
+                        .restore_removed_file(&binding, &target, checkpoint)
+                        .map_err(file_error)?;
+                    return print_json(&RestoreRemovedOutput {
+                        restored_from: checkpoint,
+                        created,
+                    });
+                }
+                // Clap requires both unless `--removed` is present.
+                let (Some(expected_sha256), Some(expected_bytes)) =
+                    (expected_sha256, expected_bytes)
+                else {
+                    return Err(CliError::new(
+                        "usage",
+                        "restore needs --expected-sha256 and --expected-bytes, or --removed",
+                    ));
+                };
                 let expected = RecordedArtifact {
                     bytes: expected_bytes,
                     sha256: expected_sha256,

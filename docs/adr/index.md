@@ -69,4 +69,5 @@ meaningful alternative does not need an ADR.
 | [0052: Publish rolling testing builds from main](0052-publish-rolling-testing-builds-from-main.md) | Accepted | 2026-11-17 |
 | [0053: Compact the checkpoint ledger in place](0053-compact-the-checkpoint-ledger-in-place.md) | Accepted | 2026-11-17 |
 | [0054: Add multi-edit and create model file tools](0054-add-multi-edit-and-create-model-file-tools.md) | Accepted | 2026-11-17 |
+| [0055: Add checkpointed delete and no-replace rename model tools](0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md) | Accepted | 2026-11-17 |
 | [0056: Send registry credentials to one declared origin](0056-send-registry-credentials-to-one-declared-origin.md) | Accepted | 2026-11-17 |

@@ -42,6 +42,7 @@ use crate::{DirectoryIdentity, directory_identity};
 
 use super::{CreateError, DirectoryEntry, EntryKind, Listing, RelativePath};
 
+pub(super) mod rename;
 pub(super) mod replacement;
 
 const WINDOWS_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
@@ -589,8 +590,32 @@ fn encode_component(name: &OsStr) -> io::Result<Vec<u16>> {
 /// source handle needs DELETE access, and every open handle to the replaced
 /// object must permit delete sharing or the call fails. One attempt is made;
 /// an error is never retried here. The caller flushes the parent.
-#[allow(unsafe_code)]
 pub(crate) fn rename_onto(source: &File, parent: &File, name: &OsStr) -> io::Result<()> {
+    rename_by_handle(
+        source,
+        parent,
+        name,
+        FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,
+    )
+}
+
+/// Move the object behind `source` to `name` beneath `parent` and never
+/// replace an existing entry (ADR-0055).
+///
+/// The rename is by handle with POSIX semantics and without the
+/// replace-if-exists flag, so an existing name fails with
+/// `STATUS_OBJECT_NAME_COLLISION`, which is reported as
+/// `ErrorKind::AlreadyExists`. The source handle needs DELETE access and
+/// `parent` needs FILE_ADD_FILE. One attempt is made; an error is never
+/// retried here. The caller flushes both parents.
+pub(crate) fn rename_no_replace_onto(source: &File, parent: &File, name: &OsStr) -> io::Result<()> {
+    rename_by_handle(source, parent, name, FILE_RENAME_POSIX_SEMANTICS)
+}
+
+/// Build one `FILE_RENAME_INFORMATION` for `name` beneath `parent` and apply
+/// it to `source` with the given extended flags.
+#[allow(unsafe_code)]
+fn rename_by_handle(source: &File, parent: &File, name: &OsStr, flags: u32) -> io::Result<()> {
     let units = encode_component(name)?;
     if units.is_empty() {
         return Err(invalid_input("replacement requires a target name"));
@@ -616,8 +641,7 @@ pub(crate) fn rename_onto(source: &File, parent: &File, name: &OsStr) -> io::Res
     // `total` bytes, so every field and all of `name_bytes` at `name_offset` are
     // in bounds. `parent` outlives the synchronous call that reads its handle.
     let status = unsafe {
-        (*information).Anonymous.Flags =
-            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
+        (*information).Anonymous.Flags = flags;
         (*information).RootDirectory = parent.as_raw_handle() as HANDLE;
         (*information).FileNameLength = file_name_length;
         std::ptr::copy_nonoverlapping(
@@ -696,7 +720,9 @@ fn require_file_size(file: &File, max_bytes: usize) -> io::Result<()> {
     let limit =
         u64::try_from(max_bytes).map_err(|_| invalid_input("file read limit is too large"))?;
     if size > limit {
-        return Err(invalid_data("file exceeds the requested read limit"));
+        return Err(super::oversize_file(
+            "file exceeds the requested read limit",
+        ));
     }
     Ok(())
 }
@@ -709,7 +735,9 @@ fn read_bounded(reader: impl Read, max_bytes: usize) -> io::Result<Vec<u8>> {
     let mut data = Vec::new();
     reader.take(read_limit).read_to_end(&mut data)?;
     if data.len() > max_bytes {
-        return Err(invalid_data("file exceeds the requested read limit"));
+        return Err(super::oversize_file(
+            "file exceeds the requested read limit",
+        ));
     }
     Ok(data)
 }

@@ -174,7 +174,10 @@ Since 0.28.0 the approval-gated model edit tool reaches the same apply; see
 [Model edit route](#model-edit-route-adr-0043). Since 0.36.0 the model
 multi-edit tool reaches it too, and the model create tool reaches the exclusive
 create; see [Model multi-edit and create routes](#model-multi-edit-and-create-routes-adr-0054).
-No model tool deletes, renames, restores, or manages checkpoints.
+Since 0.38.0 the model delete tool reaches a checkpointed removal and the
+model rename tool a no-replace rename; see
+[Model rename and delete routes](#model-rename-and-delete-routes-adr-0055). No
+model tool restores or manages checkpoints.
 
 ### Implemented record inspection (Phase A2a)
 
@@ -209,15 +212,15 @@ The remaining action sequence is:
 
 | Action type | Payload and replay rule |
 | --- | --- |
-| `replacement_started` | A unique operation ID, valid session/workspace IDs, nondecreasing policy `revision`, `target`, `expected`, `proposed`, and `artifacts`. No other operation may be unresolved. |
+| `replacement_started` | A unique operation ID, valid session/workspace IDs, nondecreasing policy `revision`, `target`, `expected`, `proposed`, and `artifacts`, and optionally `kind`: `replace` (the default, never written) or `remove`. A `remove` proposes exactly the empty artifact. No other operation may be unresolved. |
 | `checkpoint_prepared` | Matching `operation_id` and exact `manifest` descriptor. Requires the intent phase. |
-| `stage_prepared` | Matching `operation_id`, native `identity`, and `content` descriptor equal to the intent's proposed bytes/digest. Requires checkpoint preparation. |
-| `commit_intended` | Matching `operation_id`. Requires stage preparation. |
+| `stage_prepared` | Matching `operation_id`, native `identity`, and `content` descriptor equal to the intent's proposed bytes/digest. Requires checkpoint preparation. Invalid for a `remove`, which has no stage. |
+| `commit_intended` | Matching `operation_id`. Requires stage preparation, or for a `remove` the prepared checkpoint. |
 | `replacement_finished` | Matching `operation_id`, `outcome`, and bounded non-success `code`. Success requires commit intent. Clean failure/conflict is accepted only before commit intent. Uncertainty remains unresolved. |
 | `replacement_acknowledged` | Matching unresolved `operation_id`. Clears only the recorded blocker; retains progress and outcome and never creates a success result. |
 | `checkpoint_deletion_started`, `checkpoint_deleted` | One resolved retained entry's deletion; see [Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). |
 | `compacted` | Only as the second record. The replaced ledger's `previous` descriptor (nonempty, at most 64 MiB), `previous_records` (1 to 65,536), and the optional `revision_floor` that later starts must not go below. |
-| `checkpoint_carried` | Only directly after `compacted` or another carried record. One retained entry's whole recorded state. Replay rebuilds it through the ordinary transitions above, so only a reachable state is accepted, and it must be resolved. Carried revisions are nondecreasing and at most the floor. See [ledger compaction](#implemented-ledger-compaction-phase-a5). |
+| `checkpoint_carried` | Only directly after `compacted` or another carried record. One retained entry's whole recorded state, including its `kind` (never a `remove` with a stage identity). Replay rebuilds it through the ordinary transitions above, so only a reachable state is accepted, and it must be resolved. Carried revisions are nondecreasing and at most the floor. See [ledger compaction](#implemented-ledger-compaction-phase-a5). |
 
 Artifact descriptors have `bytes` and lowercase hexadecimal `sha256`. File
 payload claims are at most 1 MiB; a manifest claim is nonempty and at most
@@ -529,8 +532,115 @@ size, SHA-256, and operation ID, never the content.
 
 Neither tool detects a concurrent writer, and neither is power-loss qualified.
 The desktop approvals window reproduces the digest from a recorded request of
-any of the three tools before it shows fields. A create request also becomes
-stale once its path exists.
+any of the file-write tools before it shows fields. A create request also
+becomes stale once its path exists.
+
+### Model rename and delete routes (ADR-0055)
+
+Both tools are advertised and dispatched only under the same live
+`model_tools`, `read`, and `write` preferences as `workspace_edit_file`, with
+the same per-call recheck and `edit_disabled` denial, in the order read, list,
+edit, multi-edit, create, rename, delete, command (eight names, the existing
+cap). Both use `file_write` approvals with the 900-second lifetime and the
+writers-stopped acknowledgement, and the same lookup filters. Each has its own
+digest domain tag (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`), so a
+record for one tool, including the three earlier file-write tools, can never be
+consumed by another. Both read the live source through the audited broker
+first, at most 1 MiB; a larger source is the recoverable `edit_too_large`, so
+the model cannot rename or delete a file over 1 MiB. The bytes are not
+interpreted, so a non-UTF-8 source is accepted.
+
+`workspace_rename_file` takes `from` and `to`. The names must differ after
+normalization (`invalid_request`). Before an approval is recorded, `from` must
+read (`not_found`), `to` must be absent (`file_exists`), and its parent must
+list (`not_found`). The digest covers the session, workspace, both normalized
+names, and the source's size and SHA-256, and the summary is `rename {from} ->
+{to}: {n} bytes, sha256 {12}`. After approval, the handler checks the success
+report fits, consumes the record, and calls `FileBroker::rename_file`. That
+call requires both preferences from the live binding and no unresolved
+checkpoint operation, records a `rename_file` intent that names the source and
+the destination in the file-operation journal, and calls the platform's
+`rename_no_replace`. A changed source is `checkpoint_conflict`, an existing
+destination is `file_exists`, and an error after the native call may have
+happened is uncertain: the audit record stays pending for the trusted
+acknowledgement, and nothing is retried. Rename is not checkpointed: no content
+is destroyed, and renaming back reverses it. A success reports both names, the
+size, the SHA-256, and the operation ID.
+
+The native rename, on both platforms, opens both parents handle-relative
+beneath the workspace without links or mount crossings, pins the source as a
+regular single-link file, reads it through the pinned handle, and requires the
+size and SHA-256 to match. Directories, links, junctions, reparse points,
+hard-linked files, devices, and a source on another filesystem are refused before
+any rename. Linux (a source owned by the effective user) re-stats the source name
+against the pinned inode immediately before `renameat2` with
+`RENAME_NOREPLACE`, requires the destination name to resolve to the pinned inode
+afterwards, and flushes both parents. Windows opens the source with DELETE access
+and sharing that denies every other writer and deleter, so the name cannot be
+swapped or removed while the handle is held, and renames with
+`FileRenameInformationEx` using POSIX semantics and no replace flag, so an
+existing name fails with a collision status. It reopens the destination to
+compare file IDs and flushes both parents; the flush carries the ADR-0023
+limitation. There is no filesystem qualification gate beyond the broker's
+existing checks, as for create.
+
+`workspace_delete_file` takes `path`. The digest covers the session, workspace,
+normalized path, and the file's size and SHA-256, and the summary is `delete
+{path}: {n} bytes, sha256 {12}`. After approval, the handler checks the success
+report fits, consumes the record, and calls `FileBroker::apply_removal`. It
+runs the checkpointed apply's sequence without a stage: the live binding, both
+preferences, checkpoint admission, the qualified filesystem (Linux ext4,
+Windows NTFS), a capture whose size and SHA-256 must match, a durable checkpoint
+of the original bytes under a `remove` record, a recheck that the target is
+still the captured object, commit intent, one native removal attempt, and a
+success record. A change before commit intent is `checkpoint_conflict` and
+records a conflict. Any later error is uncertain: the operation stays
+unresolved for the trusted acknowledgement, and nothing is retried, restored,
+or cleaned up. The success message names the checkpoint's operation ID.
+
+The native removal is a sibling of the replacement commit. On Linux it
+rechecks that the name still resolves to the pinned inode, then calls
+`unlinkat` by name and requires the pinned inode's link count to be zero. The
+call is by name, so a swap between the recheck and the call cannot be
+prevented: a different file may then have been removed, and the check reports
+it as uncertain. On Windows it opens the name with DELETE access, verifies that
+same handle (file ID, volume, exact name, security, and every byte), and marks
+that handle for POSIX-semantics deletion, so exactly the verified file is
+deleted. It then requires the name to stop resolving and flushes the parent
+(ADR-0023 limitation).
+
+**Ledger.** Each operation record has a `kind` of `replace` or `remove`. It is
+omitted for `replace`, so every earlier ledger, carried record, and manifest
+stays byte-identical and replays unchanged. For `remove`, the `proposed`
+artifact must be exactly the empty artifact (0 bytes, the SHA-256 of the empty
+string) and the empty `proposed` file keeps the fixed entry layout; there is no
+stage, so a `stage_prepared` record is invalid and `commit_intended` follows
+`checkpoint_prepared` directly; success still requires commit intent. A carried
+`remove` with a stage identity or the stage step is refused, and compaction
+carries `kind`. A `remove` entry holding a `stage` file fails inspection. A
+`remove` entry's original need not be UTF-8, because nothing interprets it;
+a `replace` entry's must be. Older binaries refuse a ledger that holds a
+`remove` record, because they reject the unknown `kind` field. Acknowledgement
+and checkpoint deletion work on `remove` entries unchanged.
+
+**Restore.** A `remove` checkpoint is restored by `FileBroker::restore_removed_file`
+and the trusted `file restore --removed`, not by the apply path. The target must
+not exist: the retained original is reread and compared with its record, then
+written through the audited exclusive create, so an existing entry is
+`checkpoint_conflict` and is never replaced. No operation is recorded, because
+nothing is destroyed. Mode, owner, access list, and timestamps are not restored:
+the new file gets the broker's default creation metadata. The checkpoint must be
+for the same workspace and exact target. `file restore` of a replacement
+checkpoint and `--removed` of a removal checkpoint are each refused as
+`checkpoint_unavailable`.
+
+Neither tool detects a concurrent writer, and neither primitive is power-loss
+qualified. The desktop approvals window reproduces the digest from a recorded
+request of any of the five file-write tools (at most eight distinct candidates,
+newest first) before it shows fields: `From`, `To`, `Size`, and `SHA-256` for
+a rename, and `File`, `Size`, and `SHA-256` for a delete. A rename review is
+stale once its source changed or its destination exists, and a delete review is
+stale once the file changed or is gone.
 
 ### Private checkpoints, quota, and retention
 
@@ -795,6 +905,14 @@ replaced, so a restore can itself be restored. Identical bytes change nothing
 and create no operation. A missing target is refused. The output adds
 `restored_from` to the apply receipt. The ledger does not link the two
 operations, so a restore stays readable by 0.10.0.
+
+Since 0.38.0, `file restore --removed` (without the current digest and size)
+restores the checkpoint of a file that the model's approved deletion removed.
+The target must not exist, and the retained original is written through the
+broker's audited exclusive create instead of apply; an existing entry is
+`checkpoint_conflict`. No operation is recorded, mode and access list are not
+restored, and the output has `restored_from` and the creation receipt. See
+[Model rename and delete routes](#model-rename-and-delete-routes-adr-0055).
 
 `file delete-checkpoint` removes one resolved entry: an unresolved operation
 must be acknowledged first. It needs no workspace binding and opens no

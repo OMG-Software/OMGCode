@@ -12,7 +12,8 @@ use uuid::{Uuid, Variant, Version};
 use super::{
     CheckpointRetention, InitializationPhase, InitializationSnapshot, RecordedArtifact,
     RecordedCompaction, RecordedFileIdentity, RecordedReplacement, ReplacementError,
-    ReplacementOutcome, ReplacementProgress, ReplacementScope, ReplacementSnapshot,
+    ReplacementKind, ReplacementOutcome, ReplacementProgress, ReplacementScope,
+    ReplacementSnapshot,
 };
 use crate::policy::WorkspaceId;
 use crate::session::NativePath;
@@ -26,6 +27,9 @@ pub(super) const MAX_LEDGER_RECORDS: usize = 65_536;
 pub(super) const MAX_OPERATIONS: usize = 64;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+/// SHA-256 of the empty byte string: the proposed artifact of every removal.
+pub(super) const EMPTY_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +75,10 @@ pub(super) enum LedgerAction {
     Created,
     ReplacementStarted {
         operation_id: Uuid,
+        /// Absent for a replacement, so earlier records stay byte-identical.
+        /// Older readers refuse a record that carries it.
+        #[serde(default, skip_serializing_if = "ReplacementKind::is_replace")]
+        kind: ReplacementKind,
         session_id: Uuid,
         workspace_id: Uuid,
         revision: u64,
@@ -118,6 +126,9 @@ pub(super) enum LedgerAction {
     /// compaction. It follows the compaction record or another carried record.
     CheckpointCarried {
         operation_id: Uuid,
+        /// Absent for a replacement, like the started record.
+        #[serde(default, skip_serializing_if = "ReplacementKind::is_replace")]
+        kind: ReplacementKind,
         session_id: Uuid,
         workspace_id: Uuid,
         revision: u64,
@@ -136,6 +147,7 @@ pub(super) enum LedgerAction {
 /// The recorded fields that start an operation, whether new or carried.
 struct Started {
     operation_id: Uuid,
+    kind: ReplacementKind,
     session_id: Uuid,
     workspace_id: Uuid,
     revision: u64,
@@ -417,6 +429,7 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
         LedgerAction::Created => {}
         LedgerAction::ReplacementStarted {
             operation_id,
+            kind,
             session_id,
             workspace_id,
             revision,
@@ -438,6 +451,7 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
                 snapshot,
                 Started {
                     operation_id,
+                    kind,
                     session_id,
                     workspace_id,
                     revision,
@@ -468,6 +482,9 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
             content,
         } => {
             let operation = pending(snapshot, operation_id)?;
+            if operation.kind == ReplacementKind::Remove {
+                return Err(ReplacementError::Invalid("a removal has no stage"));
+            }
             if operation.progress != ReplacementProgress::CheckpointPrepared
                 || operation.outcome.is_some()
                 || content != operation.proposed
@@ -481,9 +498,12 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
         }
         LedgerAction::CommitIntended { operation_id } => {
             let operation = pending(snapshot, operation_id)?;
-            if operation.progress != ReplacementProgress::StagePrepared
-                || operation.outcome.is_some()
-            {
+            // A removal has no stage, so its intent follows the checkpoint.
+            let required = match operation.kind {
+                ReplacementKind::Replace => ReplacementProgress::StagePrepared,
+                ReplacementKind::Remove => ReplacementProgress::CheckpointPrepared,
+            };
+            if operation.progress != required || operation.outcome.is_some() {
                 return Err(ReplacementError::Invalid("commit intent is out of order"));
             }
             operation.progress = ReplacementProgress::CommitIntended;
@@ -596,6 +616,7 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
         }
         LedgerAction::CheckpointCarried {
             operation_id,
+            kind,
             session_id,
             workspace_id,
             revision,
@@ -612,6 +633,7 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
             snapshot,
             Started {
                 operation_id,
+                kind,
                 session_id,
                 workspace_id,
                 revision,
@@ -663,6 +685,7 @@ fn carry(
         ));
     }
     let content = started.proposed.clone();
+    let kind = started.kind;
     start(snapshot, started, true)?;
     let Carried {
         manifest,
@@ -673,10 +696,14 @@ fn carry(
         acknowledged,
     } = carried;
     let prepared = progress != ReplacementProgress::Intent;
-    let staged = matches!(
-        progress,
-        ReplacementProgress::StagePrepared | ReplacementProgress::CommitIntended
-    );
+    if kind == ReplacementKind::Remove && progress == ReplacementProgress::StagePrepared {
+        return Err(ReplacementError::Invalid("a removal has no stage"));
+    }
+    let staged = kind == ReplacementKind::Replace
+        && matches!(
+            progress,
+            ReplacementProgress::StagePrepared | ReplacementProgress::CommitIntended
+        );
     match (prepared, manifest) {
         (true, Some(manifest)) => apply(
             snapshot,
@@ -751,6 +778,7 @@ fn start(
 ) -> Result<(), ReplacementError> {
     let Started {
         operation_id,
+        kind,
         session_id,
         workspace_id,
         revision,
@@ -780,6 +808,11 @@ fn start(
     validate_target(&target)?;
     validate_artifact(&expected, MAX_PAYLOAD_BYTES, true)?;
     validate_artifact(&proposed, MAX_PAYLOAD_BYTES, true)?;
+    if kind == ReplacementKind::Remove && (proposed.bytes != 0 || proposed.sha256 != EMPTY_SHA256) {
+        return Err(ReplacementError::Invalid(
+            "a removal proposes the empty artifact",
+        ));
+    }
     let workspace_id = WorkspaceId::from_uuid(workspace_id)
         .map_err(|_| ReplacementError::Invalid("invalid workspace ID"))?;
     snapshot
@@ -791,6 +824,7 @@ fn start(
         .ok_or(ReplacementError::Limit("retained operations"))?;
     snapshot.operations.push(RecordedReplacement {
         operation_id,
+        kind,
         session_id,
         workspace_id,
         revision,

@@ -58,6 +58,35 @@ pub fn is_missing_entry(error: &io::Error) -> bool {
     }
 }
 
+/// Marks a read refusal whose cause is that the file is larger than the
+/// caller's byte bound, so callers can tell it from other invalid objects.
+#[derive(Debug)]
+struct OversizeFile(&'static str);
+
+impl std::fmt::Display for OversizeFile {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str(self.0)
+    }
+}
+
+impl std::error::Error for OversizeFile {}
+
+/// Build the `InvalidData` error that a bounded read reports for an oversize
+/// file. The kind is unchanged from earlier releases.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn oversize_file(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, OversizeFile(message))
+}
+
+/// Report whether a broker read error means the file exceeded the byte bound.
+/// This grants no authority; it only classifies a refusal.
+pub fn is_oversize_entry(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<OversizeFile>())
+        .is_some()
+}
+
 /// A bounded sequence of native names. It grants no filesystem authority.
 ///
 /// Empty paths identify the workspace for listing only. Other paths reject
@@ -238,6 +267,40 @@ impl std::error::Error for CreateError {
     }
 }
 
+/// Why a no-replace rename did not complete. Never retry an `Uncertain` result.
+#[derive(Debug)]
+pub enum RenameError {
+    /// Nothing was renamed: the destination name already exists.
+    TargetExists,
+    /// Nothing was renamed: the source name no longer resolves to the object
+    /// whose size and content the caller expected.
+    SourceChanged,
+    /// Nothing was renamed: the request or an object was refused.
+    Refused(io::Error),
+    /// A rename may have happened, or its durability is unknown. The caller
+    /// must inspect the workspace and must not retry.
+    Uncertain(io::Error),
+}
+
+impl std::fmt::Display for RenameError {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TargetExists => output.write_str("rename destination already exists"),
+            Self::SourceChanged => output.write_str("rename source no longer matches"),
+            Self::Refused(error) | Self::Uncertain(error) => error.fmt(output),
+        }
+    }
+}
+
+impl std::error::Error for RenameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused(error) | Self::Uncertain(error) => Some(error),
+            Self::TargetExists | Self::SourceChanged => None,
+        }
+    }
+}
+
 /// Captured source bytes and native metadata from the same retained file.
 /// This is evidence, not a write grant or an atomic filesystem snapshot.
 #[derive(Debug)]
@@ -354,6 +417,41 @@ impl Workspace {
     pub fn create_dir(&self, path: &RelativePath) -> Result<(), CreateError> {
         require_file_target(path).map_err(not_created)?;
         self.native.create_dir(path)
+    }
+
+    /// Rename one regular, single-link file to a name that does not exist,
+    /// without ever replacing an entry.
+    ///
+    /// Both parents are opened handle-relative beneath the workspace without
+    /// links or mount crossings. The source is pinned, must be a regular file
+    /// with one link on the destination's volume, and its bytes are read
+    /// through the pinned handle: the length must equal `expected_len` and
+    /// `matches` must accept them, or nothing is renamed. `matches` is called
+    /// with at most one MiB and holds no authority. One rename attempt is made
+    /// and never repeated; an error after it can be `Uncertain`. The caller
+    /// must stop other writers. Windows makes no power-loss claim (ADR-0023).
+    #[cfg(any(target_os = "linux", windows))]
+    pub fn rename_no_replace(
+        &self,
+        from: &RelativePath,
+        to: &RelativePath,
+        expected_len: u64,
+        matches: &dyn Fn(&[u8]) -> bool,
+    ) -> Result<(), RenameError> {
+        require_file_target(from).map_err(RenameError::Refused)?;
+        require_file_target(to).map_err(RenameError::Refused)?;
+        if from == to {
+            return Err(RenameError::Refused(invalid(
+                "rename source and destination are the same",
+            )));
+        }
+        let limit = u64::try_from(MAX_FILE_BYTES)
+            .map_err(|_| RenameError::Refused(invalid("rename size bound is invalid")))?;
+        if expected_len > limit {
+            return Err(RenameError::Refused(invalid("rename source exceeds 1 MiB")));
+        }
+        self.native
+            .rename_no_replace(from, to, expected_len, matches)
     }
 }
 

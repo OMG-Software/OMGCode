@@ -737,8 +737,9 @@ it writes only through the checkpointed apply in the
 [file-access contract](file-access.md#model-edit-route-adr-0043). Approving its
 record requires `approvals approve <id> --writers-stopped`, which the command
 operation refuses. The `workspace_multi_edit_file` and `workspace_create_file`
-tools (0.36.0, ADR-0054) use the same `file_write` records, each under its own
-digest domain, and start no process either.
+tools (0.36.0, ADR-0054) and the `workspace_rename_file` and
+`workspace_delete_file` tools (0.38.0, ADR-0055) use the same `file_write`
+records, each under its own digest domain, and start no process either.
 
 ### Toolchain profiles
 
@@ -1121,11 +1122,12 @@ These remain true after C6:
 | C14 (0.25.0) | Approval-gated model command tool | Done: see [model command tool](#model-command-tool) and ADR-0040. A CLI acceptance test qualifies one successful approved command on both hosts; confinement correctness remains the platform suites' responsibility. |
 | C17 (0.28.0) | Approval-gated model edit tool | Done: see the [model edit route](file-access.md#model-edit-route-adr-0043) and ADR-0043. It starts no process; it writes one exact edit through the checkpointed apply after a writers-stopped approval. |
 | C18 (0.36.0) | Approval-gated model multi-edit and create tools | Done: see the [model multi-edit and create routes](file-access.md#model-multi-edit-and-create-routes-adr-0054) and ADR-0054. They start no process; multi-edit writes through the checkpointed apply and create through the broker's exclusive create, each after a writers-stopped approval. |
+| C19 (0.38.0) | Approval-gated model rename and delete tools | Done: see the [model rename and delete routes](file-access.md#model-rename-and-delete-routes-adr-0055) and ADR-0055. They start no process; delete writes through a checkpointed removal and rename through a no-replace rename, each after a writers-stopped approval. |
 | C20 (0.37.0) | Registry credentials for the trusted fetch | Done: see [registry credentials](#registry-credentials) and ADR-0056. One bound secret per declared origin; no run receives it. |
 
 Later work needs its own decisions:
 
 - development-server networking;
-- model delete, rename, network, Git, and MCP tools;
+- model network, Git, and MCP tools;
 
 Live qualification on each supported OS remains a separate gate.

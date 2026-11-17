@@ -21,6 +21,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub(super) mod rename;
 pub(super) mod replacement;
 
 const OPEN_RETRIES: usize = 4;
@@ -146,7 +147,7 @@ impl NativeWorkspace {
             > u64::try_from(max_bytes)
                 .map_err(|_| invalid_input("read limit cannot be represented"))?
         {
-            return Err(invalid_data("file exceeds the read limit"));
+            return Err(super::oversize_file("file exceeds the read limit"));
         }
 
         after_validation()?;
@@ -174,7 +175,7 @@ impl NativeWorkspace {
             .take(take_limit)
             .read_to_end(&mut bytes)?;
         if bytes.len() > max_bytes {
-            return Err(invalid_data("file grew beyond the read limit"));
+            return Err(super::oversize_file("file grew beyond the read limit"));
         }
         let after = regular_single_link_snapshot(&readable)?;
         if !reopened.same_object_and_version(after) {
@@ -613,11 +614,11 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    fn relative(path: &str) -> RelativePath {
+    pub(super) fn relative(path: &str) -> RelativePath {
         RelativePath::new(Path::new(path)).expect("valid relative path")
     }
 
-    fn workspace() -> (tempfile::TempDir, NativeWorkspace) {
+    pub(super) fn workspace() -> (tempfile::TempDir, NativeWorkspace) {
         let temporary = tempfile::tempdir().expect("temporary root");
         let root = temporary.path().join("root");
         let selected = root.join("workspace");

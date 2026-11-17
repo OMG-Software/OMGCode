@@ -812,7 +812,7 @@ impl WindowsPrivateDirectory {
         )
         .map_err(map_missing)?;
         validate_regular_file(&file, self.volume)?;
-        mark_for_deletion(&file)?;
+        mark_for_deletion(&file, true)?;
         drop(file);
         self.require_removed(name)
     }
@@ -835,7 +835,7 @@ impl WindowsPrivateDirectory {
         .map_err(map_missing)?;
         validate_directory(&file, self.volume)?;
         require_private(&file, &self.principals)?;
-        mark_for_deletion(&file)?;
+        mark_for_deletion(&file, true)?;
         drop(file);
         self.require_removed(name)
     }
@@ -963,18 +963,20 @@ pub fn file_identity(file: &File) -> io::Result<PrivateFileIdentity> {
     })
 }
 
-/// Marks an open handle for POSIX-semantics deletion, ignoring read-only.
+/// Marks an open handle for POSIX-semantics deletion, optionally ignoring the
+/// read-only attribute.
 ///
 /// The handle must have DELETE access. Microsoft documents that the name is
 /// removed when this handle closes, even if other handles remain open. A
-/// nonempty directory fails with `ERROR_DIR_NOT_EMPTY`.
+/// nonempty directory fails with `ERROR_DIR_NOT_EMPTY`. Private entries ignore
+/// the read-only attribute; a workspace removal does not (ADR-0055).
 #[allow(unsafe_code)]
-fn mark_for_deletion(file: &File) -> io::Result<()> {
-    let information = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_FLAG_DELETE
-            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
-            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-    };
+pub(crate) fn mark_for_deletion(file: &File, ignore_read_only: bool) -> io::Result<()> {
+    let mut flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
+    if ignore_read_only {
+        flags |= FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE;
+    }
+    let information = FILE_DISPOSITION_INFO_EX { Flags: flags };
     let length = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>())
         .map_err(|_| invalid_data("disposition information is too large"))?;
     // SAFETY: `file` is a live handle opened with DELETE access, and

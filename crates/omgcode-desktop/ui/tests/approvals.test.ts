@@ -236,6 +236,47 @@ describe("approvals window", () => {
     expect(review.querySelector("pre")?.textContent).toBe(`hello\n${HOSTILE_IMG}`);
   });
 
+  it("renders the fields of the rename and delete tools as plain text", async () => {
+    approvals = [view({ operation: "file_write" })];
+    current = detail(
+      {
+        tool: "workspace_rename_file",
+        fields: [
+          { label: "From", value: "src/old.rs", multiline: false },
+          { label: "To", value: `src/new${HOSTILE_IMG}.rs`, multiline: false },
+          { label: "Size", value: "11 bytes", multiline: false },
+          { label: "SHA-256", value: "e".repeat(64), multiline: false },
+        ],
+      },
+      { operation: "file_write" },
+    );
+    await start();
+    await select();
+    let review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_rename_file");
+    expect(review.textContent).toContain("From");
+    expect(review.textContent).toContain("To");
+    expect(review.textContent).toContain(`src/new${HOSTILE_IMG}.rs`);
+    expect(review.querySelector("img")).toBeNull();
+
+    current = detail(
+      {
+        tool: "workspace_delete_file",
+        fields: [
+          { label: "File", value: `old${HOSTILE_IMG}.txt`, multiline: false },
+          { label: "Size", value: "11 bytes", multiline: false },
+          { label: "SHA-256", value: "f".repeat(64), multiline: false },
+        ],
+      },
+      { operation: "file_write" },
+    );
+    await select();
+    review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_delete_file");
+    expect(review.textContent).toContain(`old${HOSTILE_IMG}.txt`);
+    expect(review.querySelector("img")).toBeNull();
+  });
+
   it("requires the writers-stopped acknowledgement for a file change", async () => {
     approvals = [view({ operation: "file_write" })];
     current = detail({ tool: "workspace_edit_file" }, { operation: "file_write" });

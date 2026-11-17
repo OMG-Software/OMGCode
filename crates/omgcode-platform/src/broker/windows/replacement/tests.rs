@@ -966,3 +966,103 @@ fn name_records_return_the_last_component_and_reject_truncation() {
     assert!(final_component(&bytes).is_err());
     assert!(final_component(&[0u8; 2]).is_err());
 }
+
+#[test]
+fn removal_deletes_only_the_verified_file_in_order() {
+    let fixture = Fixture::with_source(b"before");
+    let bystander = fixture.path.with_file_name("other");
+    fs::write(&bystander, b"keep").expect("bystander");
+    let mut target = fixture.target();
+    assert!(target.recheck_removal().expect("recheck"));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&events);
+    target.hook = Some(Arc::new(move |point| {
+        recorded.lock().expect("event lock").push(point);
+        Ok(())
+    }));
+    target.remove(|| Ok(())).expect("remove");
+    assert!(!fixture.path.exists());
+    assert_eq!(fs::read(&bystander).expect("bystander"), b"keep");
+    assert_eq!(
+        *events.lock().expect("events"),
+        vec![
+            TestPoint::AfterFinalCheck,
+            TestPoint::Delete,
+            TestPoint::Deleted,
+            TestPoint::TargetParentSync,
+        ]
+    );
+}
+
+#[test]
+fn a_name_swapped_after_the_recheck_is_refused_and_the_impostor_survives() {
+    let fixture = Fixture::with_source(b"captured");
+    let mut target = fixture.target();
+    let path = fixture.path.clone();
+    target.hook = Some(Arc::new(move |point| {
+        if point == TestPoint::AfterFinalCheck {
+            fs::remove_file(&path)?;
+            fs::write(&path, b"captured")?;
+        }
+        Ok(())
+    }));
+    let error = target
+        .remove(|| Ok(()))
+        .expect_err("the opened handle is not the captured file");
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock, "{error}");
+    assert_eq!(
+        fs::read(&fixture.path).expect("impostor kept"),
+        b"captured",
+        "equal bytes in a different file are never removed"
+    );
+}
+
+#[test]
+fn removal_recheck_and_removal_refuse_a_changed_target() {
+    let fixture = Fixture::with_source(b"captured");
+    let target = fixture.target();
+    fs::remove_file(&fixture.path).expect("remove source");
+    fs::write(&fixture.path, b"captured").expect("equal bytes, new file");
+    assert!(!target.recheck_removal().expect("recheck"));
+    assert!(target.remove(|| Ok(())).is_err());
+    assert!(fixture.path.exists());
+}
+
+#[test]
+fn removal_faults_before_and_after_the_call_are_single_attempts() {
+    let fixture = Fixture::with_source(b"before");
+    let mut before = fixture.target();
+    before.hook = Some(Arc::new(|point| {
+        if point == TestPoint::Delete {
+            return Err(io::Error::other("injected fault before delete"));
+        }
+        Ok(())
+    }));
+    assert!(before.remove(|| Ok(())).is_err());
+    assert!(fixture.path.exists(), "nothing was removed");
+
+    let mut after = fixture.target();
+    after.hook = Some(Arc::new(|point| {
+        if point == TestPoint::Deleted {
+            return Err(io::Error::other("injected fault after delete"));
+        }
+        Ok(())
+    }));
+    assert!(after.remove(|| Ok(())).is_err());
+    assert!(
+        !fixture.path.exists(),
+        "the removal happened and is reported as an error"
+    );
+}
+
+#[test]
+fn a_last_moment_denial_removes_nothing() {
+    let fixture = Fixture::with_source(b"before");
+    let target = fixture.target();
+    assert!(
+        target
+            .remove(|| Err(io::Error::other("authorization refused")))
+            .is_err()
+    );
+    assert!(fixture.path.exists());
+}

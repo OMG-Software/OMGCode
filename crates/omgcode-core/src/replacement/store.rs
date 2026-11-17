@@ -24,8 +24,8 @@ use super::replay::{
 };
 use super::{
     CheckpointRetention, InitializationPhase, RecordedArtifact, RecordedCompaction,
-    RecordedReplacement, ReplacementProgress, ReplacementScope, ReplacementSnapshot,
-    inspect_initialization, inspect_ledger,
+    RecordedReplacement, ReplacementKind, ReplacementProgress, ReplacementScope,
+    ReplacementSnapshot, inspect_initialization, inspect_ledger,
 };
 use crate::control::{ControlError, ControlStore};
 use crate::files::FileTarget;
@@ -416,13 +416,16 @@ fn compact_with(
 
 /// Return one retained checkpoint's original bytes for an explicit restore.
 ///
-/// The entry must be prepared and recorded for the same workspace and native
-/// target path. Its bytes are reread and compared with the recorded digest.
-/// The store is opened read-only and closed before the caller applies them.
+/// The entry must be prepared, of the requested kind, and recorded for the
+/// same workspace and native target path. Its bytes are reread and compared
+/// with the recorded digest. A replacement checkpoint's original must be
+/// UTF-8; a removal checkpoint's need not be, because nothing interprets it.
+/// The store is opened read-only and closed before the caller restores them.
 pub(crate) fn read_original(
     control: &ControlStore,
     operation_id: Uuid,
     target: &FileTarget,
+    kind: ReplacementKind,
 ) -> Result<Vec<u8>, CheckpointError> {
     let (expected, control_id) = context(control)?;
     if !state_present(&expected.live_path()?)? {
@@ -441,6 +444,7 @@ pub(crate) fn read_original(
         .iter()
         .find(|operation| {
             operation.operation_id == operation_id
+                && operation.kind == kind
                 && operation.retention == CheckpointRetention::Retained
                 && operation.manifest.is_some()
         })
@@ -455,7 +459,9 @@ pub(crate) fn read_original(
         .open_dir(OsStr::new(&operation_id.to_string()))?;
     let mut file = entry.open_file(OsStr::new("original"), false)?;
     let bytes = read_bounded(&mut file, MAX_PAYLOAD)?;
-    if descriptor(&bytes)? != operation.expected || std::str::from_utf8(&bytes).is_err() {
+    if descriptor(&bytes)? != operation.expected
+        || (kind == ReplacementKind::Replace && std::str::from_utf8(&bytes).is_err())
+    {
         return Err(CheckpointError::Invalid(
             "checkpoint payload differs or is not UTF-8",
         ));
@@ -738,8 +744,29 @@ impl Store {
         capture: &FileCapture,
         proposed: &[u8],
     ) -> Result<CheckpointReceipt, CheckpointError> {
+        self.prepare_kind(
+            ReplacementKind::Replace,
+            target,
+            revision,
+            capture,
+            proposed,
+        )
+    }
+
+    /// Prepare a checkpoint of either kind. A removal proposes no bytes.
+    pub(crate) fn prepare_kind(
+        &mut self,
+        kind: ReplacementKind,
+        target: &FileTarget,
+        revision: u64,
+        capture: &FileCapture,
+        proposed: &[u8],
+    ) -> Result<CheckpointReceipt, CheckpointError> {
         if self.poisoned {
             return Err(CheckpointError::Poisoned);
+        }
+        if kind == ReplacementKind::Remove && !proposed.is_empty() {
+            return Err(CheckpointError::Invalid("a removal proposes no bytes"));
         }
         if let Some(operation) = self.snapshot.pending() {
             return Err(CheckpointError::Pending(operation.operation_id));
@@ -763,6 +790,7 @@ impl Store {
         let manifest = Manifest::encode(
             self.snapshot.scope,
             operation_id,
+            kind,
             target,
             revision,
             capture,
@@ -770,6 +798,7 @@ impl Store {
         )?;
         let start = LedgerAction::ReplacementStarted {
             operation_id,
+            kind,
             session_id: target.session_id,
             workspace_id: *target.workspace_id.as_uuid(),
             revision,
@@ -1121,6 +1150,7 @@ impl Store {
         for (offset, operation) in retained.enumerate() {
             let carried = LedgerAction::CheckpointCarried {
                 operation_id: operation.operation_id,
+                kind: operation.kind,
                 session_id: operation.session_id,
                 workspace_id: *operation.workspace_id.as_uuid(),
                 revision: operation.revision,
@@ -1376,6 +1406,14 @@ fn inventory(
             } else {
                 return Err(CheckpointError::Invalid("unknown checkpoint artifact"));
             };
+            if filename == OsStr::new("stage")
+                && operation.kind == ReplacementKind::Remove
+                && operation.retention != CheckpointRetention::Deleting
+            {
+                return Err(CheckpointError::Invalid(
+                    "a removal checkpoint has no stage",
+                ));
+            }
             let file = if filename == OsStr::new("stage") {
                 entry.open_stage()?
             } else {
@@ -1463,7 +1501,12 @@ fn validate_prepared(
     ] {
         let mut file = entry.open_file(OsStr::new(name), false)?;
         let bytes = read_bounded(&mut file, MAX_PAYLOAD)?;
-        if descriptor(&bytes)? != *expected || std::str::from_utf8(&bytes).is_err() {
+        // A removal keeps its original bytes only to restore them, so they
+        // are not interpreted as text.
+        let text_required = name == "proposed" || operation.kind == ReplacementKind::Replace;
+        if descriptor(&bytes)? != *expected
+            || (text_required && std::str::from_utf8(&bytes).is_err())
+        {
             return Err(CheckpointError::Invalid(
                 "checkpoint payload differs or is not UTF-8",
             ));

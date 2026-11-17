@@ -100,9 +100,33 @@ pub enum ReplacementProgress {
     /// An exact manifest reference has been recorded.
     CheckpointPrepared,
     /// A stage identity and matching proposed-content descriptor were recorded.
+    /// A removal never reaches this step.
     StagePrepared,
-    /// Commit intent exists; replacement may have occurred.
+    /// Commit intent exists; replacement or removal may have occurred.
     CommitIntended,
+}
+
+/// What a recorded operation does to its target.
+///
+/// A `Replace` publishes proposed bytes over an existing file. A `Remove`
+/// deletes the file (ADR-0055): its proposed artifact is the empty artifact
+/// and it has no stage. The default keeps every earlier record unchanged;
+/// older readers refuse a `Remove` record.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplacementKind {
+    /// Publish proposed bytes over the existing file.
+    #[default]
+    Replace,
+    /// Remove the existing file after its bytes are checkpointed.
+    Remove,
+}
+
+impl ReplacementKind {
+    /// Whether this is the default kind, which is not written to a record.
+    pub const fn is_replace(&self) -> bool {
+        matches!(self, Self::Replace)
+    }
 }
 
 /// Recorded terminal result. This enum cannot establish a native side effect.
@@ -158,6 +182,10 @@ pub struct RecordedFileIdentity {
 pub struct RecordedReplacement {
     /// Unique operation ID, also the fixed UUID-named private entry locator.
     pub operation_id: Uuid,
+    /// Whether the operation replaces or removes its target. Absent from the
+    /// serialized form for a replacement.
+    #[serde(skip_serializing_if = "ReplacementKind::is_replace")]
+    pub kind: ReplacementKind,
     /// Historical session association.
     pub session_id: Uuid,
     /// Historical workspace association, not a binding.
@@ -168,11 +196,12 @@ pub struct RecordedReplacement {
     pub target: NativePath,
     /// Expected original-byte claim, bounded to 1 MiB.
     pub expected: RecordedArtifact,
-    /// Proposed-byte claim, bounded to 1 MiB.
+    /// Proposed-byte claim, bounded to 1 MiB. Always the empty artifact for a
+    /// removal.
     pub proposed: RecordedArtifact,
     /// Exact manifest reference, if preparation was recorded.
     pub manifest: Option<RecordedArtifact>,
-    /// Stage identity, if stage preparation was recorded.
+    /// Stage identity, if stage preparation was recorded. A removal has none.
     pub stage_identity: Option<RecordedFileIdentity>,
     /// Last recorded step, retained even after outcome or acknowledgement.
     pub progress: ReplacementProgress,

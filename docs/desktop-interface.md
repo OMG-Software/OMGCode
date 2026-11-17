@@ -412,7 +412,8 @@ A panicked turn thread is recorded as a failed turn with the code `internal`.
 
 ## Approvals
 
-The model's edit and command tools need a trusted single-use approval
+The model's file-write (edit, multi-edit, create, rename, and delete) and
+command tools need a trusted single-use approval
 ([agent instructions](agent-instructions.md#approval-records)). The CLI
 commands `approvals list`, `show`, `approve`, and `deny` still work and remain
 the surface for headless use. The approvals window is a second surface for the
@@ -459,15 +460,21 @@ Reviewed fields:
   directory, Network (`off`), Host services (`off`), Time limit (`20 seconds`),
   and Output limit (`4096 bytes per stream`).
 - **Edit:** File, Old text, New text, Size, Current SHA-256, and Proposed
-  SHA-256.
+  SHA-256. The multi-edit tool numbers its texts (`Old text 1`, `New text 1`,
+  and so on), and the create tool shows File, Size, SHA-256, and Content.
+- **Rename:** From, To, Size, and SHA-256 of the source. The review is stale
+  once the source changed or the destination exists.
+- **Delete:** File, Size, and SHA-256. The review is stale once the file
+  changed or is gone.
 
 Review reads only what the approval needs:
 
 - Only `command` and `file_write` approvals can be reviewed.
 - Opening a command approval changes nothing.
-- Opening an edit approval makes one audited broker read of the target file,
-  under the same live `read` requirement as the tool, and writes one audit
-  record. It tries at most eight distinct candidate requests, newest first.
+- Opening a file-write approval makes one audited broker read of the target
+  file (two for a rename, which also reads the destination), under the same
+  live `read` requirement as the tool, and writes one audit record per read.
+  It tries at most eight distinct candidate requests, newest first.
   It happens only when the operator opens that approval, never while listing.
 - Opening a record that is no longer pending reads nothing.
 - Review does not check that the approval is still unexpired. Core checks that
