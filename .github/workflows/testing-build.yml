@@ -281,7 +281,14 @@ jobs:
           # Never move the tag backwards. A re-run of an older main run keeps
           # its original GITHUB_SHA, so compare it with the published commit
           # and refuse anything that is not the same commit or a descendant.
-          if published=$(gh api "repos/${GH_REPO}/commits/refs/tags/testing" --jq .sha 2>/dev/null); then
+          # Fail closed: matching-refs returns an empty list (HTTP 200) when
+          # the tag is absent, so any API error stops the job here, under
+          # `set -e`, before anything is deleted. matching-refs matches by
+          # prefix, so keep only the exact ref.
+          tag_count=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/testing" \
+            --jq '[.[] | select(.ref == "refs/tags/testing")] | length')
+          if [ "$tag_count" != 0 ]; then
+            published=$(gh api "repos/${GH_REPO}/commits/refs/tags/testing" --jq .sha)
             if [ "$published" != "$GITHUB_SHA" ]; then
               status=$(gh api "repos/${GH_REPO}/compare/${published}...${GITHUB_SHA}" --jq .status)
               if [ "$status" != "ahead" ]; then

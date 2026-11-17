@@ -162,7 +162,10 @@ points to and compares it with the run's commit through the compare API. It
 continues only when the two are the same commit or the run's commit is ahead.
 A re-run of an older main run keeps its original commit, so without this check
 it could roll the release back; with it, the job fails and leaves the newer
-release in place. If the tag is missing, the check is skipped.
+release in place. The check fails closed: it looks the tag up with
+`git/matching-refs`, which returns an empty list when the tag is absent, so only
+a confirmed missing tag skips the comparison. Any API error stops the job
+before anything is deleted.
 
 The assets have stable names, so links do not change between builds:
 `https://github.com/OMG-Software/OMGCode/releases/download/testing/omgcode-testing-windows-x86_64.zip`,
