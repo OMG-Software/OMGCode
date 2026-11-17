@@ -3,7 +3,9 @@
 This guide owns the desktop shell: what it is, how to start it, what each
 window may call, how the session tree, search, chat, and approvals behave, and
 what the design does and does not defend. It is a prototype. It is not
-release-ready, and it is not packaged.
+release-ready, and it has no installer. CI publishes unsigned archives of
+the binaries as a rolling `testing` prerelease
+([ADR-0052](adr/0052-publish-rolling-testing-builds-from-main.md)).
 
 The decisions behind it are recorded in
 [ADR-0044](adr/0044-observe-journals-without-the-writer-lock-and-index-them-in-sqlite.md),
@@ -50,7 +52,8 @@ merged to `main` at the time of writing):
 
 Not implemented:
 
-- Installers, signing, and any other packaging. `bundle.active` is `false`.
+- Installers, signing, and Tauri bundles. `bundle.active` is `false`. The
+  `testing` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
 - A settings interface. Workspace settings change only through the trusted
@@ -699,4 +702,4 @@ private store refuses, see the notes in
   the turn settles.
 - Opening a very large first index can take seconds, because each journal
   commits once.
-- No packaging, auto-update, or crash reporting exists.
+- No installer, signing, auto-update, or crash reporting exists.

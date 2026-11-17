@@ -84,8 +84,14 @@ commit (v7.1.0), and runs `npm ci` and `npm run build` in
 `crates/omgcode-desktop/ui`. The desktop crate embeds `ui/dist` at compile time,
 so every workspace-wide Cargo step needs that build first.
 
-`.github/workflows/frontend.yml` is new. It runs on pull requests to main,
-pushes to main, and manual dispatch, on Ubuntu 24.04 and Windows Server 2025. It
+Both workflows run on pull requests to main and manual dispatch. They no longer
+trigger on a push to main; the [Testing build workflow](#testing-build-workflow)
+calls them as reusable workflows instead, so each merge runs them once. The Rust
+workflow takes a `linux-runner` input (default `ubuntu-24.04`) for its Linux
+leg. Their concurrency groups start with `github.workflow`, which names the
+caller in a called workflow, so a direct run cannot cancel a Testing build run.
+
+`.github/workflows/frontend.yml` runs on Ubuntu 24.04 and Windows Server 2025. It
 runs `npm ci`, `npm run check`, `npm run lint`, `npm test`, and
 `npm run test:dist`. `.npmrc` sets `ignore-scripts=true`, so no dependency
 install script runs.
@@ -101,6 +107,69 @@ completes.
 On Ubuntu, the Rust workflow enables lingering for the runner user and waits
 for its user service manager before the tests. The run and tree-limit tests
 start delegated `systemd-run --user` scopes and fail without one.
+
+## Testing build workflow
+
+`.github/workflows/testing-build.yml` runs on every push to main and on manual
+dispatch. It replaces the rolling `testing` prerelease with archives of the
+newest tested commit ([ADR-0052](adr/0052-publish-rolling-testing-builds-from-main.md)).
+
+| Job | Runner | Work |
+| --- | --- | --- |
+| Rust tests | `ubuntu-latest`, Windows Server 2025 | `rust.yml`, called with `linux-runner: ubuntu-latest` |
+| Frontend tests | Ubuntu 24.04, Windows Server 2025 | `frontend.yml` |
+| Package (windows-x86_64) | Windows Server 2025 | Release build, start-up check, `.zip` |
+| Package (ubuntu-x86_64) | `ubuntu-latest` | Release build, start-up check, `.tar.gz` |
+| Package (fedora44-x86_64) | Fedora 44 container on Ubuntu 24.04 | Release build, start-up check, `.tar.gz` |
+| Publish the testing release | Ubuntu 24.04 | Checksums and release replacement |
+
+Each package job builds the frontend, then runs
+`cargo build --release --locked -p omgcode-cli -p omgcode-desktop` with the
+pinned toolchain. The start-up check runs `omgcode --version` and requires
+`omgcode-desktop --unknown-option` to exit with the usage code 2, which happens
+before any window opens. On Linux this also shows that the dynamic loader found
+WebKitGTK. Each archive holds both binaries, `LICENSE`, `README.md`, and a
+`BUILD-INFO.txt` with the version, commit, run URL, build OS, and toolchain.
+There is no installer and nothing is signed. The workflow artifacts are kept
+for seven days; the release holds the lasting copies.
+
+The Fedora job uses `registry.fedoraproject.org/fedora:44` pinned by its image
+index digest, recorded on 2026-11-17. It installs Git, the archive tools, GCC,
+Fedora's `rustup` package, and the Tauri prerequisites for Fedora with `dnf`,
+then installs the pinned toolchain through `rustup-init`. Update the digest
+deliberately to take newer Fedora packages. The workspace tests do not run on
+Fedora: the container has no user service manager for delegated cgroups and no
+Secret Service. The release notes and `BUILD-INFO.txt` state this.
+
+The publish job needs every test and package job and runs only for
+`refs/heads/main`, so a manual run on another branch builds but publishes
+nothing. It is the only job with `contents: write`. It never checks out or runs
+repository or dependency code. It downloads the archives, writes `SHA256SUMS`,
+deletes the previous `testing` release and tag, and runs `gh release create
+testing --target <commit> --prerelease --latest=false` with the assets. With
+assets, `gh` creates a draft, uploads, and then publishes, so nobody sees a mix
+of old and new archives. Downloads fail for a few seconds between the delete
+and the publish.
+
+Runs share the `testing-build` concurrency group with `cancel-in-progress:
+false`. A publish is never cancelled part way. GitHub keeps only the newest
+waiting run, so the tag ends at the newest main commit whose tests passed.
+
+The assets have stable names, so links do not change between builds:
+`https://github.com/OMG-Software/OMGCode/releases/download/testing/omgcode-testing-windows-x86_64.zip`,
+`.../omgcode-testing-ubuntu-x86_64.tar.gz`,
+`.../omgcode-testing-fedora44-x86_64.tar.gz`, and `.../SHA256SUMS`.
+
+Limits:
+
+- This workflow has not run on GitHub. Inspect the first run on main, the
+  release assets, and the tag target before relying on it.
+- `ubuntu-latest` moves when GitHub changes its default image, and the Ubuntu
+  archive's glibc and WebKitGTK requirements move with it.
+- Enabling immutable releases would block reusing the `testing` tag. Revisit
+  ADR-0052 first.
+- A start-up check is not a platform qualification. The
+  [platform support guide](platform-support.md) remains the support statement.
 
 ## SonarQube Cloud
 

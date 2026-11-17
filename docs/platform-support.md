@@ -11,12 +11,13 @@ containment.
 
 | Item | Current position |
 | --- | --- |
-| Windows versions and architectures | CI uses Windows Server 2025; supported client versions and architectures are not selected |
-| Linux distributions, kernels, and architectures | CI uses Ubuntu 24.04; supported distributions, kernels, and architectures are not selected |
+| Windows versions and architectures | CI tests and packages on Windows Server 2025 x86_64; supported client versions and architectures are not selected |
+| Linux distributions, kernels, and architectures | CI tests on Ubuntu 24.04 and `ubuntu-latest`, packages on `ubuntu-latest`, and builds a Fedora 44 archive in a container without running the tests there. All x86_64. Supported distributions, kernels, and architectures are not selected |
+| Testing archives | Unsigned `.zip`/`.tar.gz` archives of `omgcode` and `omgcode-desktop` for each merge to main, published as the rolling `testing` prerelease ([testing build](repository-checks.md#testing-build-workflow)). No installer. Not a release or a support claim |
 | Rust edition and minimum version | Edition 2024; workspace `rust-version` is 1.99.1 |
 | Pinned development toolchain | Rust 1.99.1 in `rust-toolchain.toml`, with rustfmt and Clippy |
 | Webview and frontend prerequisites | Windows needs the WebView2 runtime. Linux needs the WebKitGTK 4.1 development packages to build ([Desktop shell](#desktop-shell)). The frontend build needs Node 24. No other version is qualified |
-| Desktop shell | Prototype `omgcode-desktop`. Built, tested, and driven end to end on Windows 11 build 26300 with WebView2 on 2026-11-16. On WSL 6.6 (Ubuntu 24.04) it compiled against WebKitGTK and its tests passed, but no window has been opened on Linux. The CI change that compiles it there has not run. No packaging |
+| Desktop shell | Prototype `omgcode-desktop`. Built, tested, and driven end to end on Windows 11 build 26300 with WebView2 on 2026-11-16. On WSL 6.6 (Ubuntu 24.04) it compiled against WebKitGTK and its tests passed, but no window has been opened on Linux. The CI change that compiles it there has not run. No installer; CI publishes testing archives |
 | Session index | `rusqlite` with bundled SQLite 3.54.1, so a C compiler is required on every build host. Tested on Windows 11 build 26300 and WSL 6.6 only; the Linux run covered the Unix-only inspection branch and the link-refusal tests |
 | User-project toolchains | Required; native installed/managed profile matrix not yet qualified |
 | Workspace directory identity | Configuration-only metadata check; required native ID and creation time must be available |
@@ -130,7 +131,9 @@ is not a supported-distribution matrix.
   interrupted-write recovery, and archive/restore across restart.
 
 The workflow matrix in `.github/workflows/rust.yml` runs Rust checks on Ubuntu
-24.04 and Windows Server 2025. These CI hosts are not the release support matrix.
+24.04 and Windows Server 2025, and on `ubuntu-latest` instead of Ubuntu 24.04
+when the testing build calls it. These CI hosts and the testing archives are not
+the release support matrix.
 Native filesystem, sandbox, process-tree, networking, and toolchain behavior
 remain unqualified for release. Windows workspaces inherit directory ACLs, and
 directory entry power-loss durability is not qualified there. Linux broker behavior

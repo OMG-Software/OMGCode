@@ -6,6 +6,20 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- A Testing build workflow (`.github/workflows/testing-build.yml`) runs on every
+  push to `main`. It calls the Rust and Frontend workflows, builds release
+  binaries of `omgcode` and `omgcode-desktop`, and packages them without an
+  installer for Windows x86_64 (`.zip`), Ubuntu x86_64 on `ubuntu-latest`
+  (`.tar.gz`), and Fedora 44 x86_64 in a digest-pinned container (`.tar.gz`).
+  Each package job checks that both binaries start. After every job passes, a
+  publish job, the only one with `contents: write`, replaces the rolling
+  `testing` prerelease and tag with the archives and a `SHA256SUMS` file. The
+  workspace tests do not run on Fedora. The Rust and Frontend workflows no
+  longer trigger on a push to `main`, gain `workflow_call`, and use
+  caller-scoped concurrency groups; the Rust workflow takes a `linux-runner`
+  input. There is no application change, so the version stays 0.34.0. This
+  workflow has not run on GitHub. See ADR-0052 and
+  [the testing build](docs/repository-checks.md#testing-build-workflow).
 - Version 0.34.0 lets a cancel request stop every model request, streamed or
   not, and the compaction requests, and lets an interrupt cancel a CLI turn
   (Phase D6). See ADR-0051 and

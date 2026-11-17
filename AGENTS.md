@@ -9,7 +9,7 @@ and native identity checks. Follow [workspace settings](docs/workspace-permissio
 and [workspace file access](docs/file-access.md) for their contracts. Enabled
 preferences never authorize execution. A prototype Tauri desktop shell adds a
 session tree, full-text search, chat, and an isolated approvals window. It is
-unpackaged, has run only on Windows, and gives the webview no authority: the
+without an installer, has run only on Windows, and gives the webview no authority: the
 Rust side authorizes every command and the trusted CLI remains. Follow the
 [desktop interface](docs/desktop-interface.md) contract.
 Chat offers the local LM Studio model read and list tools; when the workspace
@@ -64,8 +64,9 @@ edit tool call in progress is not interruptible
 [ADR-0051](docs/adr/0051-cancel-every-model-request-and-interrupt-cli-turns.md)).
 On the CLI, Ctrl-C during `chat` or `session compact` cancels instead of ending
 the process.
-The desktop shell has no settings interface, development panels, packaging, or
-recovery interface. Most other planned features are not
+The desktop shell has no settings interface, development panels, installer, or
+recovery interface. CI publishes unsigned `testing` archives from each merge to
+`main` ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides

@@ -28,7 +28,7 @@ grants; see [command execution](execution.md).
 
 Version 0.29.0 also adds a prototype Tauri desktop shell,
 `omgcode-desktop`, with a session tree, search, chat, and an approvals window.
-It is unpackaged and has run only on Windows. See [Desktop shell](#desktop-shell)
+It has no installer and has run only on Windows. See [Desktop shell](#desktop-shell)
 below and the [desktop interface guide](desktop-interface.md).
 
 The core's byte-input replacement inspectors remain read-only. Its file broker

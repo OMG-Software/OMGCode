@@ -3,7 +3,7 @@
 OMGCode has a Rust CLI prototype for local chat, JSONL sessions, and a
 bounded native workspace file broker, and a prototype Tauri desktop shell with a
 session tree, search, chat, and an isolated approvals window. The shell is
-unpackaged and has run only on Windows. The broker is available only through
+without an installer and has run only on Windows. The broker is available only through
 trusted operator commands and, when a workspace enables `model_tools`, to the
 local model's read, list, approval-gated exact-edit, and approval-gated command
 tools. The edit tool changes one existing file only through checkpointed apply
@@ -48,7 +48,7 @@ remaining product contracts.
 | [MCP support](mcp.md) | Server connections, transports, credentials, capabilities, and tool authorization |
 | [Session storage](session-storage.md) | JSONL layout/schema, tool events, durable journals, lock-free inspection, the derived session index, archive/restore, and safe resume |
 | [Memories](memories.md) | User-selected project/global scope, management, retrieval, and lifecycle |
-| [Repository checks](repository-checks.md) | CodeRabbit, CodeQL, Sonar, the Rust and Frontend workflows, credentials, and main protection |
+| [Repository checks](repository-checks.md) | CodeRabbit, CodeQL, Sonar, the Rust, Frontend, and Testing build workflows, credentials, and main protection |
 | [ADR register](adr/index.md) | Lasting decisions, alternatives, and consequences |
 | [Changelog](../CHANGELOG.md) | Changes awaiting release |
 
