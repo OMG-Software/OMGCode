@@ -9,7 +9,8 @@
 
 use omgcode_core::control::{
     ControlStore, CredentialError, CredentialStore, CredentialStoreStatus, OrphanedCredential,
-    ProviderCredentialError, Secret, delete_unbound_credential,
+    PackageAuth, PackageCredentialError, ProviderCredentialError, Secret,
+    delete_unbound_credential,
 };
 use serde_json::{Value, json};
 use std::io::{self, IsTerminal};
@@ -107,6 +108,128 @@ pub(crate) fn remove_profile(
     Ok(output)
 }
 
+/// Store `secret` as a new registry credential, bind it to one declared
+/// origin of the package profile `name`, and delete any credential it
+/// replaces. The caller reads the secret with [`read_secret`] before it opens
+/// the control store. The secret is validated before anything is stored.
+pub(crate) fn set_package(
+    store: &mut ControlStore,
+    data_root: &Path,
+    name: &str,
+    origin: &str,
+    auth: &str,
+    secret: Secret,
+    revision: u64,
+) -> Result<(), CliError> {
+    let auth = PackageAuth::parse(auth)
+        .ok_or_else(|| CliError::new("configuration", "Authentication must be bearer or basic"))?;
+    let credentials = CredentialStore::open(data_root).map_err(credential_error)?;
+    let set = store
+        .set_package_credential(&credentials, name, origin, auth, &secret, revision)
+        .map_err(package_credential_error)?;
+    drop(secret);
+    let mut output = json!({
+        "package_credential": {
+            "profile": name,
+            "profile_id": set.profile_id,
+            "origin": set.origin,
+            "auth": set.auth.as_str(),
+            "credential_id": set.binding.id().as_str(),
+            "backend": set.binding.backend().as_str(),
+            "replaced_credential_id": set.replaced.as_ref().map(|id| id.as_str()),
+        },
+        "snapshot": store.snapshot(),
+    });
+    add_orphan_warning(&mut output, set.orphan.as_ref());
+    print_json(&output)
+}
+
+/// Record that one origin of the package profile `name` has no credential,
+/// then delete the native item.
+pub(crate) fn remove_package(
+    store: &mut ControlStore,
+    data_root: &Path,
+    name: &str,
+    origin: &str,
+    revision: u64,
+) -> Result<(), CliError> {
+    // Open the native store first, so an unavailable or locked store refuses
+    // the command before anything is recorded.
+    let credentials = CredentialStore::open(data_root).map_err(credential_error)?;
+    let removal = store
+        .remove_package_credential(&credentials, name, origin, revision)
+        .map_err(package_credential_error)?;
+    let mut output = json!({
+        "removed_package_credential": {
+            "profile": name,
+            "profile_id": removal.profile_id,
+            "origin": removal.origin,
+            "credential_id": removal.removed.as_str(),
+        },
+        "snapshot": store.snapshot(),
+    });
+    add_orphan_warning(&mut output, removal.orphan.as_ref());
+    print_json(&output)
+}
+
+/// Remove a package profile. Every credential bound to its origins ends in
+/// the same recorded event, and their native items are deleted afterwards.
+pub(crate) fn remove_package_profile(
+    store: &mut ControlStore,
+    data_root: &Path,
+    name: &str,
+    revision: u64,
+) -> Result<Value, CliError> {
+    let bound = store
+        .package_profile(name)
+        .is_some_and(|status| !status.credentials().is_empty());
+    let credentials = if bound {
+        Some(CredentialStore::open(data_root).map_err(credential_error)?)
+    } else {
+        None
+    };
+    let removal = store
+        .remove_package_profile(name, revision)
+        .map_err(crate::control_cli::control_error)?;
+    let orphans: Vec<OrphanedCredential> = removal
+        .credentials
+        .iter()
+        .filter_map(|binding| match &credentials {
+            Some(credentials) => delete_unbound_credential(credentials, binding),
+            None => Some(OrphanedCredential {
+                id: binding.id().clone(),
+                error: CredentialError::Unavailable(
+                    "the credential store was not opened".to_owned(),
+                ),
+            }),
+        })
+        .collect();
+    let mut output = json!({
+        "removed_package_profile_id": removal.profile_id,
+        "removed_credential_ids": removal
+            .credentials
+            .iter()
+            .map(|binding| binding.id().as_str())
+            .collect::<Vec<_>>(),
+        "snapshot": store.snapshot(),
+    });
+    if let (Some(first), Some(object)) = (orphans.first(), output.as_object_mut()) {
+        object.insert(
+            "warning".to_owned(),
+            json!({
+                "code": "credential_orphaned",
+                "credential_ids": orphans.iter().map(|orphan| orphan.id.as_str()).collect::<Vec<_>>(),
+                "message": format!(
+                    "{} credential(s) are no longer bound, but their native items could not be deleted (first: {}). Remove them manually.",
+                    orphans.len(),
+                    first.error
+                ),
+            }),
+        );
+    }
+    Ok(output)
+}
+
 /// The `credential_store` capability: a backend name, or `unavailable` with
 /// its reason. Probing creates, unlocks, and reads nothing.
 pub(crate) fn capability() -> Value {
@@ -189,6 +312,32 @@ fn provider_credential_error(error: ProviderCredentialError) -> CliError {
         error @ ProviderCredentialError::BindingUncertain { .. } => {
             let replaced = match &error {
                 ProviderCredentialError::BindingUncertain {
+                    replaced: Some(old),
+                    ..
+                } => format!(
+                    " If the new binding is recorded, the replaced credential {old} is no longer bound and was not deleted; delete it by hand."
+                ),
+                _ => String::new(),
+            };
+            CliError::new(
+                "credential_binding_uncertain",
+                format!("{error}.{replaced}"),
+            )
+        }
+    }
+}
+
+fn package_credential_error(error: PackageCredentialError) -> CliError {
+    match error {
+        PackageCredentialError::Control(error) => crate::control_cli::control_error(error),
+        PackageCredentialError::Credential(error) => credential_error(error),
+        error @ (PackageCredentialError::Unrecorded { .. }
+        | PackageCredentialError::Unstored { .. }) => {
+            CliError::new("credential_orphaned", error.to_string())
+        }
+        error @ PackageCredentialError::BindingUncertain { .. } => {
+            let replaced = match &error {
+                PackageCredentialError::BindingUncertain {
                     replaced: Some(old),
                     ..
                 } => format!(

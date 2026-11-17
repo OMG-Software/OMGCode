@@ -16,5 +16,7 @@ pub mod run_journal;
 pub mod session;
 pub mod session_index;
 mod storage;
+#[cfg(test)]
+mod test_support;
 pub mod turn;
 mod workspace;

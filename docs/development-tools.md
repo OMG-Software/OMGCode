@@ -137,8 +137,9 @@ into the selected per-workspace cache root. A run can read only that root
 through `OMGCODE_PACKAGE_CACHE`; Windows needs a read-execute container grant,
 and Linux falls back to application storage when no root is selected.
 Tool-specific
-configuration to use that directory is operator work. Registry credentials
-require a narrow reviewed credential path. Offline tasks
+configuration to use that directory is operator work. A registry credential can
+be bound to one declared origin for the trusted fetch only
+([ADR-0056](adr/0056-send-registry-credentials-to-one-declared-origin.md)); a run never receives one. Offline tasks
 must work with available dependencies or explain which download is needed.
 
 Development servers, debuggers, license servers, hardware access, and other

@@ -995,6 +995,15 @@ on Windows, and trusted CLI commands as the first caller. See
   sessions still replay. The 4 KiB argument cap bounds create content and
   multi-edit size, there is no multi-file atomicity, and 6 of the 8 tool-name
   slots are used.
+- **C20 (version 0.37.0):** registry credentials for the trusted
+  `packages fetch`. `workspace package-credential-set` and
+  `package-credential-remove` bind one stored secret, `bearer` or `basic`, to
+  one declared origin of a package-network profile. Fetch sends it as a
+  sensitive `Authorization` header only when that origin is the longest
+  matching one, refuses the fetch when a bound secret cannot be read, and
+  records only the opaque credential ID. No run, model, or journal receives
+  the secret. See
+  [ADR-0056](docs/adr/0056-send-registry-credentials-to-one-declared-origin.md).
 - **Run network destination allowlist: deferred (2026-11-16).** No
   unprivileged mechanism passes the ADR-0034 gate on both hosts. The only
   candidate is a Linux user and network namespace with a trusted relay, which
@@ -1010,7 +1019,7 @@ Next decisions, not yet scheduled:
   adapter, the local LM Studio route, now reads a stored credential, only at
   its profile's loopback endpoint);
 - model delete and rename tools, and network, Git, and MCP tools;
-- registry credentials and development-server networking.
+- development-server networking.
 
 ### Phase D: additional providers, streaming, and account lifecycle
 

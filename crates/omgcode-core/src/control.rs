@@ -43,16 +43,18 @@ pub use credential::{
     CredentialBackend, CredentialBinding, CredentialError, CredentialId, CredentialStore,
     CredentialStoreStatus, LoadedProviderConnection, MAX_SECRET_BYTES, OrphanedCredential,
     ProviderConnection, ProviderCredentialError, ProviderCredentialRemoval, ProviderCredentialSet,
-    ProviderCredentialUseError, ProviderProfileRemoval, Secret, delete_unbound_credential,
-    probe_credential_store,
+    ProviderCredentialUseError, ProviderProfileRemoval, Secret, Zeroizing,
+    delete_unbound_credential, probe_credential_store,
 };
 /// Whether this platform can record and apply container grants.
 pub use omgcode_platform::container::CONTAINER_GRANTS_SUPPORTED;
 pub use package::{
-    MAX_PACKAGE_ORIGIN_BYTES, MAX_PACKAGE_ORIGINS, MAX_PACKAGE_OUTPUT_BYTES, MAX_PACKAGE_PROFILES,
-    PackageFetchFailure, PackageFetchFinish, PackageFetchOutcome, PackageFetchStart, PackageOrigin,
-    PackageProfile, PackageProfileDeclaration, PackageProfileStatus, PackageScheme, parse_origin,
-    valid_output_name,
+    LoadedPackageCredential, MAX_PACKAGE_ORIGIN_BYTES, MAX_PACKAGE_ORIGINS,
+    MAX_PACKAGE_OUTPUT_BYTES, MAX_PACKAGE_PROFILES, PackageAuth, PackageCredentialError,
+    PackageCredentialRemoval, PackageCredentialSet, PackageCredentialStatus,
+    PackageCredentialUseError, PackageFetchFailure, PackageFetchFinish, PackageFetchOutcome,
+    PackageFetchStart, PackageOrigin, PackageProfile, PackageProfileDeclaration,
+    PackageProfileRemoval, PackageProfileStatus, PackageScheme, parse_origin, valid_output_name,
 };
 pub use profile::{
     MAX_PROFILE_NAME_CHARS, MAX_PROFILE_PATH_ENTRIES, MAX_PROFILE_ROOTS, MAX_PROFILE_VARIABLES,
@@ -361,6 +363,27 @@ enum Action {
     },
     PackageProfileRemoved {
         profile_id: Uuid,
+        /// The credentials whose bindings this removal also ends. Absent in
+        /// earlier journals and for a profile with no binding.
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            with = "credential::id_list_text"
+        )]
+        credential_ids: Vec<CredentialId>,
+    },
+    PackageCredentialBound {
+        profile_id: Uuid,
+        /// The profile origin's canonical text ([`PackageOrigin::render`]).
+        origin: String,
+        auth: PackageAuth,
+        binding: CredentialBinding,
+    },
+    PackageCredentialRemoved {
+        profile_id: Uuid,
+        origin: String,
+        #[serde(with = "credential::id_text")]
+        credential_id: CredentialId,
     },
     PackageFetchStarted {
         start: PackageFetchStart,
@@ -1266,6 +1289,8 @@ impl ControlStore {
             }
             Action::PackageProfileAdded { .. }
             | Action::PackageProfileRemoved { .. }
+            | Action::PackageCredentialBound { .. }
+            | Action::PackageCredentialRemoved { .. }
             | Action::PackageFetchStarted { .. }
             | Action::PackageFetchFinished { .. } => {
                 package::apply(state, &entry.action, revision)?;

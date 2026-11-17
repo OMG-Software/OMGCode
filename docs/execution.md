@@ -240,8 +240,9 @@ implemented:
   the profile rather than falling back to general network access;
 - its exact limits and bypass analysis are documented and qualified on both
   supported hosts;
-- registry credentials remain a separate reviewed design and never enter a
-  profile, run environment, journal, or model context;
+- a registry credential never enters a profile, run environment, journal, or
+  model context. The trusted fetch's bound credential ([ADR-0056](adr/0056-send-registry-credentials-to-one-declared-origin.md)) is a
+  separate path; a run never receives one;
 - acceptance tests prove allowed-origin success, undeclared-origin refusal,
   redirect refusal, credential refusal, offline fallback, and platform refusal.
 
@@ -293,7 +294,9 @@ Before the request it checks:
 5. The byte limit is 1 byte to 1 GiB and the deadline is 1 to 600 seconds.
 
 The request is one GET. Redirects are not followed, proxy environment
-variables are ignored, no credentials are sent, and nothing is retried. TLS
+variables are ignored, and nothing is retried. No credential is sent unless
+the operator bound one to the matched origin (see
+[registry credentials](#registry-credentials)). TLS
 uses the operating-system trust store through `reqwest`'s `native-tls`
 feature; certificate validation is never disabled. The response must be 2xx
 and its body is streamed, hashed with SHA-256, and stopped if it passes the
@@ -324,8 +327,43 @@ before the program starts. Without a selected root, Linux uses the
 application-storage fallback and Windows exposes nothing. The root's ancestors
 must be traversable by the container, so use a dedicated top-level directory
 rather than a user's private temporary tree. Tool-specific use of the
-directory is operator configuration. Registry credentials remain unsupported.
-`workspace status` lists selected roots under `package_cache_roots`.
+directory is operator configuration. A run never receives a registry
+credential. `workspace status` lists selected roots under `package_cache_roots`.
+
+### Registry credentials
+
+[ADR-0056](adr/0056-send-registry-credentials-to-one-declared-origin.md) lets the operator bind one stored secret to one declared origin of
+a package-network profile. Only `packages fetch` reads it, and it sends it to
+that origin alone. Binding is a trusted CLI action, never a model tool:
+
+```text
+omgcode workspace package-credential-set <profile> --origin <origin-url> --auth bearer|basic --revision <n>
+omgcode workspace package-credential-remove <profile> --origin <origin-url> --revision <n>
+```
+
+`package-credential-set` reads the secret from piped standard input only (as
+`provider-credential-set` does), refuses a terminal, and reads it before the
+control store opens. `--origin` must equal one of the profile's stored origins
+after normalization. The secret is at most 16 KiB of visible ASCII with no
+control character, line break, or leading or trailing whitespace. A `bearer`
+token has no whitespace; a `basic` secret is `user:password` with a nonempty
+user. Invalid input is refused before anything is stored. Storage, rotation,
+and recovery follow the provider credential rules (ADR-0042): the native item
+is stored, then `package_credential_bound` is recorded, then a replaced item is
+deleted. `package_credential_removed` and a profile removal that names its
+bound identifiers unbind the same way. `package-profile-show` and `status`
+list bound origins with the scheme, identifier, and backend, never the secret.
+
+At fetch time the matched origin decides; when several origins match, the
+longest path prefix wins. A bound origin sends `Authorization: Bearer <secret>`
+or `Authorization: Basic <base64(secret)>`, marked sensitive. An unbound origin
+sends no header. If the credential store cannot be opened or the bound item
+cannot be read, the fetch fails before the start record and sends nothing; it
+never falls back to an unauthenticated request or another credential.
+Redirects stay refused, so the header cannot follow one. `package_fetch_started`
+records the `credential_id` only when one was attached, and the receipt shows
+it. The credential still crosses the network to the declared origin, and the
+registry can log it; use `https`. The runner's environment is not touched.
 
 ## Container grants
 
@@ -1003,8 +1041,9 @@ These remain true after C6:
   does not expose the cache. A proxy or proxy environment variables are not a
   boundary: a hostile tree can connect directly.
 - **Package fetch limits.** The fetch is trusted-CLI only. It sends no
-  credentials, follows no redirects, ignores proxy variables, and uses the
-  system TLS store. The cache is the selected per-workspace root or, on Linux,
+  credentials unless one is bound to the matched origin
+  ([registry credentials](#registry-credentials)), follows no redirects,
+  ignores proxy variables, and uses the system TLS store. The cache is the selected per-workspace root or, on Linux,
   the application-storage fallback. It makes no power-loss claim. Tests use
   loopback HTTP; a live HTTPS registry is not qualified.
 - **Package cache exposure.** A run receives `OMGCODE_PACKAGE_CACHE` when the
@@ -1082,10 +1121,11 @@ These remain true after C6:
 | C14 (0.25.0) | Approval-gated model command tool | Done: see [model command tool](#model-command-tool) and ADR-0040. A CLI acceptance test qualifies one successful approved command on both hosts; confinement correctness remains the platform suites' responsibility. |
 | C17 (0.28.0) | Approval-gated model edit tool | Done: see the [model edit route](file-access.md#model-edit-route-adr-0043) and ADR-0043. It starts no process; it writes one exact edit through the checkpointed apply after a writers-stopped approval. |
 | C18 (0.36.0) | Approval-gated model multi-edit and create tools | Done: see the [model multi-edit and create routes](file-access.md#model-multi-edit-and-create-routes-adr-0054) and ADR-0054. They start no process; multi-edit writes through the checkpointed apply and create through the broker's exclusive create, each after a writers-stopped approval. |
+| C20 (0.37.0) | Registry credentials for the trusted fetch | Done: see [registry credentials](#registry-credentials) and ADR-0056. One bound secret per declared origin; no run receives it. |
 
 Later work needs its own decisions:
 
-- registry credentials and development-server networking;
+- development-server networking;
 - model delete, rename, network, Git, and MCP tools;
 
 Live qualification on each supported OS remains a separate gate.

@@ -320,6 +320,29 @@ backend and its state. A control journal written by 0.27.0 cannot be read by
 Any process running as the same user can read these credentials. The stores
 protect them at rest and from other users, not from same-user code.
 
+### Registry credentials for package fetch
+
+[ADR-0056](adr/0056-send-registry-credentials-to-one-declared-origin.md) binds a stored secret to one declared origin of a package-network
+profile. The commands are trusted-CLI only:
+
+```powershell
+omgcode --data-dir C:\omgcode-data workspace package-credential-set crates --origin https://registry.example.com/api/ --auth bearer --revision 9
+omgcode --data-dir C:\omgcode-data workspace package-profile-show crates
+omgcode --data-dir C:\omgcode-data workspace package-credential-remove crates --origin https://registry.example.com/api/ --revision 10
+```
+
+`package-credential-set` takes `--auth bearer` or `--auth basic` and reads the
+secret from piped standard input exactly as `provider-credential-set` does (see
+[provider credentials](#provider-credentials)): no argument or environment
+input, a terminal refused, one trailing line ending removed, and the secret read
+before the control store opens. A `basic` secret is `user:password`. A bound
+secret is sent only by `packages fetch`, only to that origin, and the output
+reports the identifier and backend, never the secret.
+`package-credential-remove` and `package-profile-remove` delete the native
+items after the journal event. `capabilities` reports
+`package_registry_credentials`. The error codes are those of provider
+credentials.
+
 ### Use a stored credential for chat
 
 ADR-0047 lets `chat` and `session compact` read the LM Studio server token

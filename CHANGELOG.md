@@ -6,6 +6,33 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.37.0 adds registry credentials for the trusted `packages fetch`
+  (Phase C20). See ADR-0056 and
+  [registry credentials](docs/execution.md#registry-credentials). Until now
+  fetch sent no credentials, so a private registry could not be used. It is on
+  branch `codex/model-file-tools`, stacked on
+  `codex/checkpoint-ledger-compaction`; it is not merged. It adds no
+  dependency.
+  - **Binding:** `workspace package-credential-set <profile> --origin <origin>
+    --auth bearer|basic --revision <n>` reads one secret from piped input only
+    and binds it to one declared origin of a package-network profile.
+    `package-credential-remove` unbinds and deletes it, and removing the
+    profile unbinds every credential in the same event. Secrets are stored
+    through the existing DPAPI or Secret Service store; the control journal
+    records only the opaque ID and backend. Bearer secrets are visible ASCII
+    without spaces; Basic secrets need a non-empty user before the first `:`.
+  - **Fetch:** the request carries a sensitive `Authorization` header only when
+    the matched origin, chosen by the longest path prefix, has a binding.
+    Redirects stay refused, so the header cannot follow one. A bound secret
+    that cannot be read refuses the fetch before a start record, and nothing is
+    sent. The start record and report carry an optional `credential_id`.
+  - **Limits:** the secret still crosses the network to the declared origin,
+    which may log it. A journal with the new events cannot be read by an older
+    version. Only loopback HTTP is tested; live HTTPS registries are not.
+  - **Tests:** header shape for both schemes, no header on an unbound origin,
+    no request when the secret is missing, no credential on a refused
+    redirect, journal replay and refusals, store ordering, base64 vectors, and
+    a CLI workflow that scans every data file and output for the secret.
 - Version 0.36.0 adds two approval-gated model file tools, multi-edit and create
   (Phase C18). See ADR-0054 and the
   [multi-edit and create routes](docs/file-access.md#model-multi-edit-and-create-routes-adr-0054).

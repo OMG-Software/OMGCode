@@ -86,6 +86,7 @@ Rules:
   inspect or import it until the exposure increment lands.
 - Registry credentials are still unsupported. The URL scheme, host, port, and
   path are the only authorization; a credential path needs a separate design.
+  Amended by ADR-0056.
 - `reqwest` gains the `native-tls` feature and its dependency tree. TLS uses
   the system trust store. The tests use loopback HTTP; they do not qualify a
   live HTTPS registry.

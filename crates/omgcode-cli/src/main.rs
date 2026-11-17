@@ -315,6 +315,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "streaming_adapters": ["lm_studio"],
             "cancellable_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
+            "package_registry_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),
             "approvals": true,
             "process_execution": if RUN_SUPPORTED {

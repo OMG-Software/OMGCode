@@ -206,6 +206,14 @@ the URL text), the cache name, limits, HTTP status, byte count, and content
 digest. A failed fetch records a controlled reason; an abandoned fetch leaves
 its start event. A control journal written by 0.21.0 cannot be read by 0.20.0.
 
+A registry credential bound to one origin of a profile
+([ADR-0056](adr/0056-send-registry-credentials-to-one-declared-origin.md))
+appends `package_credential_bound` and `package_credential_removed` events,
+each of which advances the settings revision. `package_profile_removed` then
+lists the identifiers it unbinds, and `package_fetch_started` records the
+`credential_id` of a credential it attached. A journal that holds these events
+cannot be read by an earlier version. Journals record only opaque identifiers.
+
 ## Package cache roots
 
 `workspace set-package-cache <workspace-id> <dir> --revision <n>` selects one

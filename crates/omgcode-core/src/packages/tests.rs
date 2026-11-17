@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::control::{ControlStore, PackageProfileDeclaration};
+use crate::control::{ControlStore, CredentialId, PackageAuth, PackageProfileDeclaration, Secret};
 use crate::policy::{PermissionSet, WorkspaceId};
+use crate::test_support::private_data_root;
 
 const PROFILE: &str = "registries";
 const MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
@@ -119,6 +120,7 @@ impl Scene {
         let root = directory.path().join("dev");
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).expect("workspace");
+        private_data_root(&data);
         let mut store = ControlStore::open(&data).expect("store");
         store.set_development_root(&root, 0).expect("root");
         let workspace_id = store
@@ -167,6 +169,35 @@ impl Scene {
         }
     }
 
+    /// Bind a registry credential to one declared origin through the real
+    /// control journal and the real native credential store.
+    fn bind(&self, origin: &str, auth: PackageAuth, secret: &str) -> CredentialId {
+        let credentials = CredentialStore::open(&self.data)
+            .expect("a native credential store is required (on Linux, an unlocked Secret Service)");
+        let mut store = ControlStore::open(&self.data).expect("store");
+        let revision = store.revision();
+        let set = store
+            .set_package_credential(
+                &credentials,
+                PROFILE,
+                origin,
+                auth,
+                &Secret::new(secret.as_bytes().to_vec()).expect("secret"),
+                revision,
+            )
+            .expect("bind credential");
+        set.binding.id().clone()
+    }
+
+    /// Delete a bound credential's native item, as an operator could outside
+    /// OMGCode, leaving the binding in place.
+    fn delete_native_item(&self, id: &CredentialId) {
+        CredentialStore::open(&self.data)
+            .expect("native credential store")
+            .delete(id)
+            .expect("delete item");
+    }
+
     fn cache_file(&self, name: &str) -> PathBuf {
         if cfg!(target_os = "linux") {
             self.data
@@ -188,6 +219,248 @@ impl Scene {
 
 fn hex_digest(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
+}
+
+/// A listener that records whether anything connected to it.
+struct Silent {
+    listener: TcpListener,
+}
+
+impl Silent {
+    fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        Self { listener }
+    }
+
+    fn address(&self) -> SocketAddr {
+        self.listener.local_addr().expect("address")
+    }
+
+    /// Whether no connection is waiting. A connection, even one that sent no
+    /// bytes, would have been accepted by the kernel into the backlog.
+    fn received_nothing(&self) -> bool {
+        matches!(
+            self.listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        )
+    }
+}
+
+/// The values of every `Authorization` header in a raw request head.
+fn authorization_values(head: &str) -> Vec<String> {
+    head.lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then(|| value.trim().to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn a_bound_bearer_credential_is_sent_to_its_origin_and_audited_by_identifier() {
+    let body = b"bearer-bytes".to_vec();
+    let fixture = Fixture::start(200, body.clone(), "");
+    let scene = Scene::new(&[format!("http://{}/fixtures/", fixture.address)]);
+    let origin = format!("http://{}/fixtures/", fixture.address);
+    let id = scene.bind(&origin, PackageAuth::Bearer, "tok-sentinel_9f3.abc");
+    let report = fetch(
+        &scene.data,
+        &scene.request(fixture.url("/fixtures/pkg.bin"), "pkg.bin", 1024),
+    )
+    .expect("fetch with a credential");
+    assert_eq!(report.credential_id.as_deref(), Some(id.as_str()));
+    let head = fixture.finish();
+    assert_eq!(
+        authorization_values(&head),
+        vec!["Bearer tok-sentinel_9f3.abc".to_owned()],
+        "{head}"
+    );
+    let audit = scene.audit_text();
+    assert!(audit.contains(id.as_str()), "{audit}");
+    assert!(!audit.contains("sentinel"), "{audit}");
+    let receipt = serde_json::to_string(&report).expect("report JSON");
+    assert!(!receipt.contains("sentinel"), "{receipt}");
+    assert!(
+        !fs::read(scene.data.join("control-v1.jsonl"))
+            .expect("journal")
+            .windows(8)
+            .any(|window| window == b"sentinel")
+    );
+}
+
+#[test]
+fn a_bound_basic_credential_is_sent_as_base64_user_and_password() {
+    let fixture = Fixture::start(200, b"basic-bytes".to_vec(), "");
+    let scene = Scene::new(&[format!("http://{}/fixtures/", fixture.address)]);
+    scene.bind(
+        &format!("http://{}/fixtures/", fixture.address),
+        PackageAuth::Basic,
+        "alice:s3cret",
+    );
+    fetch(
+        &scene.data,
+        &scene.request(fixture.url("/fixtures/pkg.bin"), "pkg.bin", 1024),
+    )
+    .expect("fetch with a credential");
+    let head = fixture.finish();
+    assert_eq!(
+        authorization_values(&head),
+        vec!["Basic YWxpY2U6czNjcmV0".to_owned()],
+        "{head}"
+    );
+}
+
+/// A credential belongs to one origin: another origin of the same profile
+/// gets no `Authorization` header and no `credential_id` in its audit start.
+#[test]
+fn an_unbound_origin_of_the_same_profile_sends_no_authorization() {
+    let fixture = Fixture::start(200, b"public-bytes".to_vec(), "");
+    let scene = Scene::new(&[
+        format!("http://{}/private/", fixture.address),
+        format!("http://{}/public/", fixture.address),
+    ]);
+    scene.bind(
+        &format!("http://{}/private/", fixture.address),
+        PackageAuth::Bearer,
+        "tok-sentinel",
+    );
+    let report = fetch(
+        &scene.data,
+        &scene.request(fixture.url("/public/pkg.bin"), "pkg.bin", 1024),
+    )
+    .expect("fetch from the unbound origin");
+    assert!(report.credential_id.is_none());
+    let head = fixture.finish();
+    assert!(authorization_values(&head).is_empty(), "{head}");
+    let audit = scene.audit_text();
+    let start = audit
+        .split("package_fetch_started")
+        .nth(1)
+        .and_then(|rest| rest.split("package_fetch_finished").next())
+        .expect("fetch start record");
+    assert!(!start.contains("credential_id"), "{start}");
+    assert!(!audit.contains("sentinel"), "{audit}");
+}
+
+/// When origins nest, the most specific one decides, so a credential bound to
+/// a broad origin is not sent to a path a narrower origin declares.
+#[test]
+fn the_most_specific_matching_origin_decides_the_credential() {
+    let fixture = Fixture::start(200, b"nested-bytes".to_vec(), "");
+    let scene = Scene::new(&[
+        format!("http://{}/", fixture.address),
+        format!("http://{}/public/", fixture.address),
+    ]);
+    scene.bind(
+        &format!("http://{}/", fixture.address),
+        PackageAuth::Bearer,
+        "tok-sentinel",
+    );
+    fetch(
+        &scene.data,
+        &scene.request(fixture.url("/public/pkg.bin"), "pkg.bin", 1024),
+    )
+    .expect("fetch under the narrower origin");
+    let head = fixture.finish();
+    assert!(authorization_values(&head).is_empty(), "{head}");
+}
+
+/// A binding that cannot be read refuses the fetch. Nothing is sent, nothing
+/// falls back to an unauthenticated request, and no start record exists.
+#[test]
+fn a_bound_credential_that_cannot_be_read_sends_nothing() {
+    let silent = Silent::new();
+    let scene = Scene::new(&[format!("http://{}/fixtures/", silent.address())]);
+    let id = scene.bind(
+        &format!("http://{}/fixtures/", silent.address()),
+        PackageAuth::Bearer,
+        "tok-sentinel",
+    );
+    scene.delete_native_item(&id);
+    let before = scene.audit_text();
+    let error = fetch(
+        &scene.data,
+        &scene.request(
+            format!("http://{}/fixtures/pkg.bin", silent.address()),
+            "pkg.bin",
+            1024,
+        ),
+    )
+    .expect_err("an unreadable credential refuses the fetch");
+    assert!(
+        matches!(
+            error,
+            FetchError::Credential(PackageCredentialUseError::Store {
+                error: CredentialError::NotFound,
+                ..
+            })
+        ),
+        "{error}"
+    );
+    assert!(error.to_string().contains(id.as_str()), "{error}");
+    assert!(!error.to_string().contains("sentinel"), "{error}");
+    assert!(silent.received_nothing(), "a request reached the registry");
+    assert_eq!(scene.audit_text(), before, "no start record is written");
+    assert!(!scene.cache_file("pkg.bin").exists());
+}
+
+/// Redirects stay refused for a credentialed request, so the credential
+/// cannot follow one to another origin.
+#[test]
+fn a_redirect_from_a_credentialed_origin_is_not_followed() {
+    let target = Silent::new();
+    let fixture = Fixture::start(
+        302,
+        Vec::new(),
+        &format!("Location: http://{}/steal\r\n", target.address()),
+    );
+    let scene = Scene::new(&[format!("http://{}/fixtures/", fixture.address)]);
+    scene.bind(
+        &format!("http://{}/fixtures/", fixture.address),
+        PackageAuth::Bearer,
+        "tok-sentinel",
+    );
+    let error = fetch(
+        &scene.data,
+        &scene.request(fixture.url("/fixtures/pkg.bin"), "pkg.bin", 1024),
+    )
+    .expect_err("redirect");
+    assert!(matches!(error, FetchError::Status(302)), "{error}");
+    let head = fixture.finish();
+    assert_eq!(authorization_values(&head).len(), 1, "{head}");
+    assert!(
+        target.received_nothing(),
+        "the redirect target was contacted"
+    );
+    assert!(!scene.audit_text().contains("sentinel"));
+}
+
+/// A rejected credential leaves no secret in the error, the audit, or the
+/// receipt, whatever the registry answers.
+#[test]
+fn a_rejected_credential_is_not_echoed_anywhere() {
+    let fixture = Fixture::start(401, b"denied".to_vec(), "");
+    let scene = Scene::new(&[format!("http://{}/fixtures/", fixture.address)]);
+    let id = scene.bind(
+        &format!("http://{}/fixtures/", fixture.address),
+        PackageAuth::Basic,
+        "alice:pw-sentinel",
+    );
+    let error = fetch(
+        &scene.data,
+        &scene.request(fixture.url("/fixtures/pkg.bin"), "pkg.bin", 1024),
+    )
+    .expect_err("unauthorized");
+    assert!(matches!(error, FetchError::Status(401)), "{error}");
+    for text in [format!("{error}"), format!("{error:?}"), scene.audit_text()] {
+        assert!(!text.contains("sentinel"), "{text}");
+        assert!(!text.contains("YWxpY2U6"), "{text}");
+    }
+    assert!(scene.audit_text().contains(id.as_str()));
+    let head = fixture.finish();
+    assert_eq!(authorization_values(&head).len(), 1, "{head}");
 }
 
 #[test]

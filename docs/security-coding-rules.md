@@ -306,8 +306,15 @@ crate.
   loopback, and alternate socket families. See ADR-0034.
 - A trusted `packages fetch` is an operator action, never a model tool. It may
   contact only a declared origin and path prefix, must disable redirects and
-  proxy variables, send no credentials, cap and hash the response, and write
-  only the private per-workspace cache. Record the intent and outcome without
+  proxy variables, cap and hash the response, and write only the private
+  per-workspace cache. It sends no credential unless the operator bound one to
+  the matched origin (ADR-0056): then it sends only that origin's credential,
+  read through core's load under the open control store, as one sensitive
+  `Authorization` header, and never to another origin. A bound credential that
+  cannot be read stops the fetch before any request; it never falls back to no
+  credential or another credential. Never put it in a URL, run environment,
+  journal, report, error text, or model context, and record only its opaque
+  identifier. Record the intent and outcome without
   the URL text. A run may read only the selected per-workspace cache root; do
   not expose its parent, journals, settings, or another workspace's root. On
   Windows the root needs a read-execute container grant, and overlapping cache

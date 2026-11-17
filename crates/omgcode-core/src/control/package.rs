@@ -12,8 +12,17 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::credential::{CredentialBinding, CredentialId};
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_profile_name, valid_uuid};
 use crate::policy::WorkspaceId;
+
+mod credential;
+
+pub use credential::{
+    LoadedPackageCredential, PackageAuth, PackageCredentialError, PackageCredentialRemoval,
+    PackageCredentialSet, PackageCredentialStatus, PackageCredentialUseError,
+    PackageProfileRemoval,
+};
 
 /// Most recorded package-network profiles.
 pub const MAX_PACKAGE_PROFILES: usize = 32;
@@ -80,6 +89,19 @@ impl PackageOrigin {
     pub fn path_prefix(&self) -> &str {
         &self.path_prefix
     }
+
+    /// The origin's canonical text: `scheme://host:port/prefix/`, with a
+    /// lowercase host and an explicit port. A credential binding names its
+    /// origin by this text, so recording and matching use one spelling.
+    pub fn render(&self) -> String {
+        format!(
+            "{}://{}:{}{}",
+            self.scheme.as_str(),
+            self.host.to_ascii_lowercase(),
+            self.port,
+            self.path_prefix
+        )
+    }
 }
 
 /// A recorded package-network profile.
@@ -114,6 +136,10 @@ pub struct PackageProfileStatus {
     #[serde(flatten)]
     profile: PackageProfile,
     revision: u64,
+    /// Registry credentials bound to origins of this profile. Opaque
+    /// identifiers only, never a secret.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) credentials: Vec<PackageCredentialStatus>,
 }
 
 impl PackageProfileStatus {
@@ -125,6 +151,26 @@ impl PackageProfileStatus {
     /// The settings revision of the event that added it.
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The registry credentials bound to this profile's origins.
+    pub fn credentials(&self) -> &[PackageCredentialStatus] {
+        &self.credentials
+    }
+
+    /// The credential bound to `origin`, if any.
+    pub fn credential_for(&self, origin: &PackageOrigin) -> Option<&PackageCredentialStatus> {
+        let text = origin.render();
+        self.credentials
+            .iter()
+            .find(|credential| credential.origin() == text)
+    }
+
+    /// Whether any origin of this profile is bound to credential `id`.
+    pub(super) fn binds_credential(&self, id: &CredentialId) -> bool {
+        self.credentials
+            .iter()
+            .any(|credential| credential.binding().id() == id)
     }
 }
 
@@ -154,6 +200,13 @@ pub struct PackageFetchStart {
     pub url_sha256: String,
     /// The cache file name.
     pub output_name: String,
+    /// The credential attached to the request, when one was. Never the secret.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::credential::optional_id_text"
+    )]
+    pub credential_id: Option<CredentialId>,
     /// The greatest response body accepted.
     pub max_bytes: u64,
     /// The request deadline.
@@ -330,22 +383,39 @@ impl ControlStore {
 
     /// Remove a package-network profile by name. This advances the settings
     /// revision.
+    ///
+    /// Every credential bound to the profile's origins is unbound by the same
+    /// recorded event, which names their identifiers. The caller then deletes
+    /// the native items with [`super::delete_unbound_credential`].
     pub fn remove_package_profile(
         &mut self,
         name: &str,
         expected_revision: u64,
-    ) -> Result<Uuid, ControlError> {
+    ) -> Result<PackageProfileRemoval, ControlError> {
         self.check_revision(expected_revision)?;
-        let profile_id = self
+        let status = self
             .package_profile(name)
-            .ok_or(ControlError::UnknownPackageProfile)?
-            .profile
-            .id;
+            .ok_or(ControlError::UnknownPackageProfile)?;
+        let profile_id = status.profile.id;
+        let credentials: Vec<CredentialBinding> = status
+            .credentials
+            .iter()
+            .map(|credential| credential.binding().clone())
+            .collect();
         self.append(
-            Action::PackageProfileRemoved { profile_id },
+            Action::PackageProfileRemoved {
+                profile_id,
+                credential_ids: credentials
+                    .iter()
+                    .map(|binding| binding.id().clone())
+                    .collect(),
+            },
             self.next_revision()?,
         )?;
-        Ok(profile_id)
+        Ok(PackageProfileRemoval {
+            profile_id,
+            credentials,
+        })
     }
 
     /// Record the intent of a trusted package fetch. This preserves the
@@ -437,9 +507,13 @@ pub(super) fn apply(
             state.package_profiles.push(PackageProfileStatus {
                 profile: profile.clone(),
                 revision,
+                credentials: Vec::new(),
             });
         }
-        Action::PackageProfileRemoved { profile_id } => {
+        Action::PackageProfileRemoved {
+            profile_id,
+            credential_ids,
+        } => {
             let index = state
                 .package_profiles
                 .iter()
@@ -447,7 +521,26 @@ pub(super) fn apply(
                 .ok_or(ControlError::Invalid(
                     "removal of an unknown package profile",
                 ))?;
+            // Every bound credential must be named by the removal itself, so
+            // the journal always shows which native items became unbound.
+            let bound = state
+                .package_profiles
+                .get(index)
+                .map(|status| status.credentials.as_slice())
+                .unwrap_or_default();
+            if bound.len() != credential_ids.len()
+                || !bound
+                    .iter()
+                    .all(|credential| credential_ids.contains(credential.binding().id()))
+            {
+                return Err(ControlError::Invalid(
+                    "package profile removal does not match its credential bindings",
+                ));
+            }
             state.package_profiles.remove(index);
+        }
+        Action::PackageCredentialBound { .. } | Action::PackageCredentialRemoved { .. } => {
+            credential::apply(state, action)?;
         }
         Action::PackageFetchStarted { start } => {
             validate_fetch_start(start)
