@@ -1211,7 +1211,9 @@ fn a_tampered_stored_path_is_rejected_with_a_typed_error() {
         format!("sessions/2026/01/02/{file}/"),
         String::new(),
     ];
-    for value in tampered {
+    // A failure names the case by its position in the list above. Some of the
+    // paths are built from a session identifier, and a test does not print one.
+    for (case, value) in tampered.into_iter().enumerate() {
         connection
             .execute(
                 "UPDATE journal SET relative_path = ?1 WHERE session_id = ?2",
@@ -1223,7 +1225,7 @@ fn a_tampered_stored_path_is_rejected_with_a_typed_error() {
                 index.journal_path(id),
                 Err(IndexError::InvalidIndexEntry(_))
             ),
-            "{value:?}"
+            "tampered path case {case} was accepted"
         );
     }
 }
