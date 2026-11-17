@@ -132,6 +132,13 @@ tests for documentation-only work.
   tests. Pass explicit configuration or isolate the case in a subprocess.
 - Use barriers, channels, deterministic clocks, and injected failures for
   concurrency. Arbitrary sleeps are not evidence of ordering.
+- A fixed amount of work is not a reliable delay. Its duration depends on the
+  host, so a loop that takes two seconds on a quiet machine can outlast a
+  wall-clock limit on a loaded one. When a test needs two processes to
+  overlap, make each wait for a signal from the other, such as a file the
+  other writes, with a bounded wait and a failing exit when the signal never
+  comes. A pass then proves the overlap. A fixture that must reach a state
+  before the test acts signals that state; the test does not sleep and hope.
 - A Unix child can inherit a test-held `flock` until `exec`, so the lock can
   outlive the test's close. CLI integration tests must open lock-holding stores
   inside `without_child_spawns` and start children through the spawn gate in

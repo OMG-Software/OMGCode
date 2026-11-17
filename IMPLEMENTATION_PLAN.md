@@ -489,6 +489,32 @@ It did not, so the runs were made under that load.
   `omgcode-platform` or the run path. The cause is taken to be host load. It
   is still a failed check in this run, and it was not rerun on a quiet host.
   No timeout was changed.
+- **A third Windows run after the commit** (`f3d8be2`, host at 77% to 100%
+  CPU) gave the same result: 942 passed, the same one failed, eight ignored.
+  The test's own shell loop was then timed outside OMGCode on the same host:
+  one `cmd` loop of 30,000 `cd .` iterations took 22 to 24 seconds, and two at
+  once took 38 seconds, before any confinement, limit sampling, or journal
+  work. The test allows 60 seconds for two confined runs. Its duration
+  therefore depends on host speed, and it has not been seen to fail on a quiet
+  host.
+- **The test was then changed** so that it no longer depends on host speed.
+  Each run writes its file and waits until it sees the other run's file, on
+  both platforms, so exit code 0 from both also proves the runs overlapped.
+  The assertions and the 60-second limit are unchanged, and no production
+  code changed. The script's exit behaviour was first checked in a plain
+  shell: exit 3 when the other file never appears, exit 0 at once when it is
+  present, and both exit 0 when two start together. The changed test then
+  passed three runs in 1.2 to 3.0 seconds at 82% to 91% CPU.
+- **Full runs with the changed test**, on the same loaded host.
+  - Windows, at 100% CPU: formatting, Clippy with `--locked`, all-target
+    tests, and doc tests each exited zero. 943 tests in 41 test binaries and
+    one doc test passed. None failed. Eight were ignored.
+  - Linux (a clean LF clone of `f3d8be2` with the changed files overlaid):
+    the same four commands each exited zero. 935 tests in 41 test binaries and
+    one doc test passed, not counting the five nested result lines. None
+    failed. Eight were ignored. The `run_workflow` binary, which holds the
+    changed test, took 2.2 seconds.
+  - Still not run: either suite on a quiet host after these changes.
 - **Linux** (WSL 6.6, Ubuntu 24.04, ext4, a clean LF clone of `02221e9` with
   the changed files overlaid, real Secret Service with the login collection
   unlocked): formatting, Clippy, all-target tests, and doc tests each exited
@@ -1171,7 +1197,11 @@ release readiness remain separate gates.
   deadline instead of a killed CLI with a pending run. The pre-existing
   multi-fixture provider tests also timed out locally under host load; they
   pass individually and passed CI on `987a5aa`. Recheck timeouts on a clean
-  host rather than weakening an assertion.
+  host rather than weakening an assertion. A test that fails only under load
+  may be measuring the host: `concurrent_runs_complete_and_are_recorded` spun
+  a fixed loop and was changed to a file rendezvous. To tell load from a
+  regression, run the failing test alone on a clean checkout of the previous
+  commit, and time its workload outside OMGCode.
 - `.serena/` is untracked and unrelated. Do not commit or delete it without
   deciding what it is.
 - The turn runtime is library/test infrastructure until a provider adapter and

@@ -827,6 +827,18 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- The CLI test `concurrent_runs_complete_and_are_recorded` no longer depends
+  on host speed. On Windows each run spun a fixed loop of 30,000 `cd .`
+  iterations before writing its file, and the test allowed 60 seconds for
+  both. On a host held near 100% CPU by an unrelated build, one such loop took
+  22 to 24 seconds in a plain shell, and the test failed three times in a row,
+  on this change and on the commit before it. Each run now writes its own file
+  and waits until it sees the other run's file. Exit code 0 from both proves
+  the runs were alive at the same time, which the old scripts did not: two
+  runs made one after the other would also have passed. A run that never sees
+  the other's file exits non-zero. The Linux scripts use the same rendezvous
+  in place of `sleep 1`. The assertions are unchanged, and no limit was
+  raised. No production code changed.
 - PR #32 review follow-up:
   - Compaction splits summarizer input at the 128-message prompt-assembly
     limit as well as the byte limit, in history chunks and combination
