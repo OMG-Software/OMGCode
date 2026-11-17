@@ -882,6 +882,12 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- The implementation plan's baseline now records PRs #33, #34, #36, and #37
+  as merged. It had still listed the desktop interface and Phases D2 to D6 as
+  unmerged branches with no pull request, and it did not mention the Testing
+  build workflow. The plan now notes that the workflow's first runs were still
+  queued on 2026-11-17 and that no `latest` release existed yet.
+  Documentation only.
 - Package-network destination enforcement is defined as a contract only in
   ADR-0034. No run accepts a package-network profile, and `--network` remains
   all-or-nothing. An advisory proxy or proxy environment variables are

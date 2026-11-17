@@ -77,39 +77,43 @@ This is a resume guide, not a replacement for the owning contracts in
   - **Phase C17**, version **0.28.0**, the approval-gated model edit tool
     (ADR-0043). It writes only through the checkpointed apply after an
     approved, writers-stopped decision.
-- Branch `codex/desktop-interface`: **Phase E**, version **0.29.0**, the
-  desktop interface and session tree (ADR-0044, ADR-0045, ADR-0046). Unlike
-  the entries above, it is **not merged and has no pull request yet**. It is a
-  prototype whose windows have run only on Windows; on Linux it builds and its
-  tests pass. See [the desktop interface guide](docs/desktop-interface.md).
-- Same branch, after the Phase E commit `cbbec85`: **Phase D2**, version
-  **0.30.0**, which lets the local LM Studio adapter read its token from a
-  stored credential through an operator-selected profile (ADR-0047). It is
-  **not merged and has no pull request**.
-- Same branch, after the Phase D2 commit `b9f7d11`: **Phase D3**, version
-  **0.31.0**, which binds a stored credential to its profile's endpoint
-  (ADR-0048). A profile can record a loopback endpoint, and a selected profile
-  supplies both the endpoint and the token. It is **not merged and has no pull
-  request**.
-- Same branch, after the Phase D3 commit `19b3747`: **Phase D4 and E6**, version
-  **0.32.0**, which streams the local model's reply and pushes chat events to
-  the desktop window (ADR-0049). It is **not merged and has no pull request**.
-- Same branch, after the Phase D4 and E6 commit `02221e9`: **Phase D5**, version
-  **0.33.0**, which interrupts a streamed model request when a turn is
-  cancelled (ADR-0050). A cancelled turn is recorded with the failure reason
-  `cancelled`, and the desktop exit no longer abandons a streamed turn. It is
-  **not merged and has no pull request**.
-- Branch `codex/request-cancellation`, stacked on `codex/desktop-interface`
-  (open PR #33): **Phase D6**, version **0.34.0**, which lets a cancel request
-  stop every model request, streamed or not, and the compaction requests, and
-  lets Ctrl-C cancel a CLI `chat` turn or `session compact` (ADR-0051). It is
-  **not committed, not merged, and has no pull request**.
+- **PR #33** merged at `9c9f606` on 2026-11-17, from
+  `codex/desktop-interface`. **PR #34**, from `codex/request-cancellation`,
+  was stacked on it and merged into that branch first, so both landed in the
+  same merge commit. The merges were verified through GitHub. Together they
+  carried:
+  - **Phase E**, version **0.29.0**, the prototype desktop interface and
+    session tree (ADR-0044, ADR-0045, ADR-0046). Its windows have run only on
+    Windows; on Linux it builds and its tests pass. See
+    [the desktop interface guide](docs/desktop-interface.md).
+  - **Phase D2**, version **0.30.0**: the local LM Studio adapter reads its
+    token from a stored credential through an operator-selected profile
+    (ADR-0047).
+  - **Phase D3**, version **0.31.0**: a stored credential is bound to its
+    profile's loopback endpoint, and a selected profile supplies both the
+    endpoint and the token (ADR-0048).
+  - **Phases D4 and E6**, version **0.32.0**: the local model's reply streams,
+    and chat events are pushed to the desktop window (ADR-0049).
+  - **Phase D5**, version **0.33.0**: a cancelled turn interrupts a streamed
+    request and is recorded with the failure reason `cancelled` (ADR-0050).
+  - **Phase D6**, version **0.34.0** (PR #34): a cancel request stops every
+    model request, streamed or not, and the compaction requests, and Ctrl-C
+    cancels a CLI `chat` turn or `session compact` (ADR-0051).
+- **PR #36** merged at `b58f3f7` on 2026-11-17, from `codex/testing-builds`:
+  the Testing build workflow, which tests each push to `main`, packages
+  unsigned Windows, Ubuntu, and Fedora 44 archives with no installer, and
+  publishes them as the rolling `latest` prerelease (ADR-0052). No
+  application change; the version stays 0.34.0. On 2026-11-17 its first two
+  runs, for `b58f3f7` and `4f94774`, were still queued and no `latest`
+  release existed, so the workflow has not yet completed on GitHub.
+- **PR #37** merged at `4f94774` on 2026-11-17: chat-turn cancellation tests
+  in `omgcode-app` measure their timing from the cancel rather than from the
+  turn start. Tests and documentation only.
 
 Implemented today:
 
 - Pinned Rust 1.99.1 workspace with `omgcode-core`, `omgcode-cli`,
-  `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The last two exist
-  only on the unmerged Phase E branch.
+  `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`.
 - Compiled, versioned base prompt `0.1.4` with a visible digest.
 - Workspace settings, native directory identity, process-local bindings, and a
   separate settings/audit journal.
@@ -246,9 +250,10 @@ Not implemented:
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
 - Desktop development panels (terminal tabs, task logs, and diffs), a settings
-  interface, a recovery interface, packaging and installers, and a
+  interface, a recovery interface, signed packages and installers, and a
   Linux run of the desktop shell's windows. The prototype shell, session tree,
-  search, chat, and approvals window exist on the Phase E branch only.
+  search, chat, and approvals window are on `main`. The only packaging is the
+  unsigned rolling testing archives (ADR-0052).
 - Cloud provider adapters and subscription/API-key login. Only the local LM
   Studio adapter reads a stored credential, and only at the loopback endpoint
   recorded with its profile. No endpoint rule exists for a non-loopback
@@ -270,9 +275,9 @@ Not implemented:
    git status --porcelain
    ```
 
-2. Verify that the preceding phase's PR is merged. A2b and its review fixes
-   are merged as PRs #13 and #14. Verify the A2c PR before starting another
-   increment. Preserve its feature branch while it is under review.
+2. Verify that the preceding phase's PR is merged. Every phase listed in the
+   current baseline is merged as of PR #37. Preserve a feature branch while its
+   PR is under review.
    Do not merge a PR without the user's authorization.
 3. Re-read the owning contracts for the selected phase. Do not infer authority
    from this plan, prompts, journals, or model output.
@@ -1103,8 +1108,8 @@ credentials, or unrestricted host capabilities. Follow the session, permission,
 context, and security contracts. Follow the
 [desktop interface guide](docs/desktop-interface.md).
 
-Version 0.29.0 builds a prototype on branch `codex/desktop-interface`. It is
-not merged, and no pull request exists yet.
+Version 0.29.0 built the prototype on branch `codex/desktop-interface`. It
+merged to `main` in PR #33 with Phases D2 to D6.
 
 - **E1 (ADR-0044):** lock-free journal inspection. `SessionInspection::inspect`
   reads one journal with no lock call, no link following, and the writer's
@@ -1162,7 +1167,8 @@ Still open for the desktop:
 - Git, MCP, skills, and memory interfaces;
 - a native confirmation dialog for approvals, which would remove the webview
   from the final decision;
-- packaging, signing, and installers (Phase G);
+- signing and installers (Phase G); the unsigned testing archives of
+  ADR-0052 are the only packaging;
 - automatic repair of a corrupt index behind a valid header, and a protection
   against two versions sharing one data root and rebuilding each other's index.
 
@@ -1185,6 +1191,14 @@ and memories remain open.
 Mediated Git workflows need controlled credentials, hooks/helpers, network
 policy, and push approval. Platform qualification, security testing, and
 release readiness remain separate gates.
+
+PR #36 added the first packaging step: a Testing build workflow publishes
+unsigned Windows, Ubuntu, and Fedora 44 archives of each push to `main` as the
+rolling `latest` prerelease, with no installer
+([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). The
+workspace tests do not run on Fedora. The workflow had not completed a run
+when this plan was last verified. Signing, installers, Git workflows,
+platform qualification, and release readiness remain open.
 
 ## Known cautions
 
