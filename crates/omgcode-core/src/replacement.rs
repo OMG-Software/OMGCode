@@ -10,9 +10,11 @@ mod manifest;
 mod replay;
 pub(crate) mod store;
 pub use store::{
-    CheckpointDeletion, CheckpointError, CheckpointInspection, CheckpointReceipt, CheckpointState,
-    ReplacementReceipt,
+    CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
+    CheckpointReceipt, CheckpointState, ReplacementReceipt,
 };
+
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -90,7 +92,7 @@ pub struct InitializationSnapshot {
 }
 
 /// Furthest recorded preparation/commit step. This is historical evidence only.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplacementProgress {
     /// Intent exists; no prepared checkpoint has been recorded.
@@ -185,20 +187,47 @@ pub struct RecordedReplacement {
     pub retention: CheckpointRetention,
 }
 
+/// The ledger that an in-place compaction replaced. Its records are gone;
+/// this claim alone cannot reproduce or verify them.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RecordedCompaction {
+    /// Claimed exact size and SHA-256 of the replaced ledger.
+    pub ledger: RecordedArtifact,
+    /// Claimed number of records in the replaced ledger.
+    pub records: u64,
+}
+
 /// Fully validated in-memory ledger evidence. No filesystem work is performed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplacementSnapshot {
     /// Expected store identities, matched by every record.
     pub scope: ReplacementScope,
-    /// All recorded operations in order, including deleted entries' history.
-    /// No history is evicted; at most 64 operations are not yet deleted.
+    /// Recorded operations in order, including deleted entries' history since
+    /// the last compaction. Compaction keeps only retained entries, as one
+    /// carried record each; at most 64 operations are not yet deleted.
     pub operations: Vec<RecordedReplacement>,
+    /// The replaced ledger, when this ledger was compacted in place.
+    pub compaction: Option<RecordedCompaction>,
     /// Number of complete accepted records, including the header.
     pub event_count: usize,
     /// Exact supplied byte count, including record delimiters.
     pub encoded_bytes: usize,
     pending_operation_id: Option<Uuid>,
     pending_deletion_id: Option<Uuid>,
+    /// Revision of the last started operation, or the floor a compaction
+    /// carried. A later start must not record a lower revision.
+    revision_floor: Option<u64>,
+    /// Revision of the last carried operation, for their own order.
+    carried_revision: Option<u64>,
+    /// Whether the previous record was a compaction or carried record.
+    carrying: bool,
+    /// Every accepted event ID, so one appended record validates alone.
+    event_ids: HashSet<Uuid>,
+    /// Index of each recorded operation ID in `operations`. Replay of a
+    /// 65,536-record ledger must not scan the history for every record.
+    positions: HashMap<Uuid, usize>,
+    /// Operations whose entries are not deleted, at most 64.
+    not_deleted: usize,
 }
 
 impl ReplacementSnapshot {
@@ -214,9 +243,11 @@ impl ReplacementSnapshot {
     }
 
     fn find(&self, id: Uuid) -> Option<&RecordedReplacement> {
-        self.operations
-            .iter()
-            .find(|operation| operation.operation_id == id)
+        self.operations.get(self.position(id)?)
+    }
+
+    fn position(&self, id: Uuid) -> Option<usize> {
+        self.positions.get(&id).copied()
     }
 }
 
@@ -256,8 +287,8 @@ pub fn inspect_initialization(
 
 /// Validate a complete bounded ledger and preserve every unfinished operation.
 ///
-/// Limits are 8 MiB, 4,096 records, 64 KiB per record including its delimiter,
-/// and 64 operation IDs whose entries are not deleted. Duplicate JSON keys and unknown fields fail.
+/// Limits are 64 MiB, 65,536 records, 64 KiB per record including its
+/// delimiter, and 64 operation IDs whose entries are not deleted. Duplicate JSON keys and unknown fields fail.
 /// Targets must use this OS's native encoding and broker-relative path syntax.
 /// This function validates only recorded claims, not checkpoint files, native
 /// identities, current policy, aggregate disk quota, durability, or authority.

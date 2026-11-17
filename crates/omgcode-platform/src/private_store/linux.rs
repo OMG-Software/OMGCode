@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use rustix::fs::{
     AtFlags, Dir, Mode, OFlags, ResolveFlags, StatxAttributes, StatxFlags, mkdirat, open, openat2,
-    statat, statx, unlinkat,
+    renameat, statat, statx, unlinkat,
 };
 use rustix::io::Errno;
 
@@ -314,6 +314,48 @@ impl PrivateDirectory {
         Ok(())
     }
 
+    /// Atomically replace one existing private file with another in this
+    /// directory without following a link.
+    ///
+    /// Both names are pinned and must be private regular single-link files on
+    /// this filesystem. One `renameat` replaces `target`. Afterwards `target`
+    /// must name the pinned source inode and the pinned old target must have
+    /// no link. A same-user substitution between the checks and the rename is
+    /// reported as an error, not prevented. Nothing is retried; the caller
+    /// syncs this directory afterwards.
+    pub fn replace_file(&self, source: &OsStr, target: &OsStr) -> io::Result<()> {
+        validate_name(source)?;
+        validate_name(target)?;
+        if source == target {
+            return Err(invalid("replacement needs two different names"));
+        }
+        let parent = self.validate()?;
+        let pinned_source = self.pin(source)?;
+        let expected = validate_file(&pinned_source, parent.dev())?;
+        let pinned_target = self.pin(target)?;
+        validate_file(&pinned_target, parent.dev())?;
+        renameat(&self.file, source, &self.file, target)?;
+        let published = self.pin(target)?.metadata()?;
+        if published.dev() != expected.dev()
+            || published.ino() != expected.ino()
+            || pinned_target.metadata()?.nlink() != 0
+        {
+            return Err(invalid("replaced name does not refer to the source"));
+        }
+        Ok(())
+    }
+
+    /// Pin one child name with `O_PATH` without following a link or mount.
+    fn pin(&self, name: &OsStr) -> io::Result<File> {
+        native_open(
+            &self.file,
+            Path::new(name),
+            OFlags::PATH | OFlags::CLOEXEC,
+            Mode::empty(),
+            child_flags(),
+        )
+    }
+
     /// Remove one empty private child directory. A nonempty directory fails;
     /// this never removes contents. The caller syncs this directory afterwards.
     pub fn remove_dir(&self, name: &OsStr) -> io::Result<()> {
@@ -581,6 +623,84 @@ mod tests {
         assert!(directory.remove_file(OsStr::new("link")).is_err());
         assert!(fs::symlink_metadata(root.path().join("link")).is_ok());
         assert!(directory.remove_file(OsStr::new("../escape")).is_err());
+    }
+
+    #[test]
+    fn replacement_swaps_one_private_file_and_refuses_links() {
+        let root = private_root();
+        let directory = PrivateDirectory::open(root.path()).expect("private root");
+        private_file(&root.path().join("ledger"), b"old");
+        private_file(&root.path().join("candidate"), b"new");
+        let source = fs::symlink_metadata(root.path().join("candidate")).expect("source");
+        let held = directory
+            .open_file(OsStr::new("ledger"), true)
+            .expect("held target");
+
+        directory
+            .replace_file(OsStr::new("candidate"), OsStr::new("ledger"))
+            .expect("replace");
+        assert_eq!(fs::read(root.path().join("ledger")).expect("new"), b"new");
+        assert!(!root.path().join("candidate").exists());
+        assert_eq!(
+            fs::symlink_metadata(root.path().join("ledger"))
+                .expect("published")
+                .ino(),
+            source.ino()
+        );
+        // A retained handle keeps the replaced inode, now with no link.
+        assert_eq!(held.metadata().expect("held").nlink(), 0);
+
+        for (source, target) in [("missing", "ledger"), ("ledger", "missing")] {
+            assert_eq!(
+                directory
+                    .replace_file(OsStr::new(source), OsStr::new(target))
+                    .expect_err("missing name")
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+        }
+        assert!(
+            directory
+                .replace_file(OsStr::new("ledger"), OsStr::new("ledger"))
+                .is_err()
+        );
+        private_file(&root.path().join("linked"), b"linked");
+        fs::hard_link(root.path().join("linked"), root.path().join("alias")).expect("hard link");
+        assert!(
+            directory
+                .replace_file(OsStr::new("linked"), OsStr::new("ledger"))
+                .is_err()
+        );
+        symlink("ledger", root.path().join("link")).expect("symlink");
+        assert!(
+            directory
+                .replace_file(OsStr::new("link"), OsStr::new("ledger"))
+                .is_err()
+        );
+        assert!(
+            directory
+                .replace_file(OsStr::new("ledger"), OsStr::new("link"))
+                .is_err()
+        );
+        private_file(&root.path().join("shared"), b"shared");
+        fs::set_permissions(
+            root.path().join("shared"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("shared mode");
+        assert!(
+            directory
+                .replace_file(OsStr::new("shared"), OsStr::new("ledger"))
+                .is_err()
+        );
+        assert!(
+            directory
+                .replace_file(OsStr::new("../escape"), OsStr::new("ledger"))
+                .is_err()
+        );
+        assert_eq!(fs::read(root.path().join("ledger")).expect("kept"), b"new");
+        assert!(fs::symlink_metadata(root.path().join("link")).is_ok());
+        assert!(root.path().join("linked").exists());
     }
 
     #[test]

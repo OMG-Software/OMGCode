@@ -198,7 +198,8 @@ optionally by `ready`, with unchanged identities. The first record alone returns
 an incomplete initialization snapshot. A `ready` record is a recorded claim,
 not evidence that files or directory entries are durable.
 
-Ledger input has the 8 MiB, 4,096-record, and 64 KiB-per-record bounds below.
+Ledger input has the 64 MiB, 65,536-record, and 64 KiB-per-record bounds
+below; 0.34.0 and earlier used 8 MiB and 4,096 records.
 It retains at most 64 operation intents, including failed and acknowledged
 intents that might have no artifact directory yet. This conservative count
 does not infer freed capacity from absent files. The first record is `created`.
@@ -212,6 +213,9 @@ The remaining action sequence is:
 | `commit_intended` | Matching `operation_id`. Requires stage preparation. |
 | `replacement_finished` | Matching `operation_id`, `outcome`, and bounded non-success `code`. Success requires commit intent. Clean failure/conflict is accepted only before commit intent. Uncertainty remains unresolved. |
 | `replacement_acknowledged` | Matching unresolved `operation_id`. Clears only the recorded blocker; retains progress and outcome and never creates a success result. |
+| `checkpoint_deletion_started`, `checkpoint_deleted` | One resolved retained entry's deletion; see [Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). |
+| `compacted` | Only as the second record. The replaced ledger's `previous` descriptor (nonempty, at most 64 MiB), `previous_records` (1 to 65,536), and the optional `revision_floor` that later starts must not go below. |
+| `checkpoint_carried` | Only directly after `compacted` or another carried record. One retained entry's whole recorded state. Replay rebuilds it through the ordinary transitions above, so only a reachable state is accepted, and it must be resolved. Carried revisions are nondecreasing and at most the floor. See [ledger compaction](#implemented-ledger-compaction-phase-a5). |
 
 Artifact descriptors have `bytes` and lowercase hexadecimal `sha256`. File
 payload claims are at most 1 MiB; a manifest claim is nonempty and at most
@@ -277,7 +281,7 @@ capacity before creating operation artifacts. It counts every retained intent,
 including acknowledged attempts, and all managed file lengths. A bounded
 inventory rejects unknown entries, unsafe objects, missing required files,
 changed manifests, and corrupt payloads. It revalidates existing payload bytes
-on every ready-store admission and inspection. This can read up to the 64 MiB
+on every ready-store admission and inspection. This can read up to the 128 MiB
 store bound per request; this deliberate cost avoids trusting cached evidence.
 
 Standalone preparation stops at `checkpoint_prepared`. It returns
@@ -503,11 +507,12 @@ objects, and unavailable controls. Native parent/entry checks must protect both
 creation and reopening. Existing journal helpers alone do not establish that
 protection.
 
-Replacement storage has at most 64 operation entries and 64 MiB of managed file
-bytes, including manifests, the replacement ledger, and the initialization
-journal described below. Each manifest is at most 64 KiB. Reserve the worst-case
-original, proposed, and staging payloads
-(1 MiB each), manifest, and terminal ledger space before preparation. Count
+Replacement storage has at most 64 operation entries and 128 MiB of managed
+file bytes, including manifests, the replacement ledger, and the initialization
+journal described below. The bound was 64 MiB before 0.35.0; it grew by the
+64 MiB that the ledger may now use. Each manifest is at most 64 KiB. Reserve
+the worst-case original, proposed, and staging payloads (1 MiB each), manifest,
+and terminal ledger space before preparation. Count
 incomplete entries and staging data inside this store against the limits.
 Bound enumeration and refuse an unknown layout; do not recursively scan an
 arbitrary tree or ignore unknown files to make capacity available. Only one
@@ -520,11 +525,13 @@ is durable only when the backend's reviewed persistence requirements succeed.
 Any preparation, quota, validation, or sync failure must prevent replacement.
 Partial preparation remains evidence and can require explicit acknowledgement.
 
-Keep completed, conflicted, and uncertain entries. There is no automatic
-expiration, eviction, export, or pruning. At the quota, refuse further
-replacements while preserving inspection and permission changes. Only an
+Keep completed, conflicted, and uncertain entries. No checkpoint entry is
+expired, evicted, exported, or pruned automatically. At the quota, refuse
+further replacements while preserving inspection and permission changes. Only an
 explicit trusted deletion of one resolved entry frees capacity; see
-[Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). Export needs a
+[Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). Ledger
+compaction drops the history of deleted entries only; see
+[Phase A5](#implemented-ledger-compaction-phase-a5). Export needs a
 later reviewed lifecycle; journal rotation must not discard referenced
 checkpoints. Checkpoints contain source bytes and can
 contain secrets. They are private recovery data, never ordinary model context,
@@ -569,8 +576,8 @@ Use a separate versioned replacement ledger in the private store. Do not add
 replacement variants to strict `file-operations-v1.jsonl` or rewrite control-v1
 settings or session journals. The new ledger must strictly validate bounded
 records, store identity, unique operation IDs, contiguous sequence numbers,
-state transitions, and exact manifest references. Limit it to 4,096 events,
-8 MiB total, and 64 KiB per event, also within the store's aggregate quota.
+state transitions, and exact manifest references. Limit it to 65,536 events,
+64 MiB total, and 64 KiB per event, also within the store's aggregate quota.
 Reserve terminal outcome and acknowledgement capacity before admission.
 
 Required ordering:
@@ -751,7 +758,7 @@ directory, and flushes the store directory. Last, it appends
 `checkpoint_deleted`. The intent reserves space for that completion record.
 The ledger keeps the operation's progress, outcome, and acknowledgement, and
 marks its `retention` as `deleted`. A deleted entry no longer counts toward the
-64-entry or 64 MiB caps.
+64-entry or 128 MiB caps.
 
 Removal never recurses. Linux pins each name with `openat2`, checks a local
 regular single-link file, calls `unlinkat`, and then requires the pinned inode
@@ -773,11 +780,73 @@ an explicit operator request, not an automatic retry. A partial deletion record
 fails inspection closed, as other partial ledger records do.
 
 New deletion records make a ledger unreadable to 0.10.0, which refuses it as an
-unknown record. History is never evicted, so the 4,096-record ledger cap still
-bounds an installation's lifetime operation count. A successful apply uses five
-records and its deletion two. Ledger compaction or rotation is future work.
-Deletion is not power-loss qualified on either platform. Windows directory
-flushes keep the ADR-0023 limitation.
+unknown record. A successful apply uses five records and its deletion two.
+Before 0.35.0 history was never evicted, so the 4,096-record cap bounded an
+installation's lifetime operation count. Deletion is not power-loss qualified on
+either platform. Windows directory flushes keep the ADR-0023 limitation.
+
+## Implemented ledger compaction (Phase A5)
+
+Version 0.35.0 raises the ledger bounds to 65,536 records and 64 MiB, raises the
+store's aggregate bound to 128 MiB, and compacts the ledger in place. See
+[ADR-0053](adr/0053-compact-the-checkpoint-ledger-in-place.md).
+
+A compacted ledger is the original `created` record byte for byte, one
+`compacted` record, and one `checkpoint_carried` record for each retained entry,
+in their recorded order. The `compacted` record holds the replaced ledger's size,
+SHA-256, and record count, and the revision of the last started operation. Every
+record of deleted entries' history is dropped; nothing else keeps it, and the
+digest alone cannot reproduce or verify it. `file checkpoints` reports the claim
+as `compacted_from`. A later compaction replaces the claim with one for the
+ledger it replaced, so the digests form a chain only if an operator kept each
+replaced ledger.
+
+Compaction runs in two ways:
+
+- `file compact-checkpoints --discard-history` is a trusted operator command. It
+  needs no workspace binding and opens no workspace file or checkpoint entry.
+- Apply, restore, and deletion compact first when the ledger lacks room for
+  their records: six for an apply or restore and two for a deletion. They do
+  not compact for the aggregate byte quota.
+
+Both refuse while an operation is unresolved or a deletion is unfinished; there
+is nothing to carry for those states. Both write nothing when the ledger is
+already its header, one compaction record, and one record per retained entry,
+or when the rewrite would be larger.
+
+The store builds the candidate in memory and replays it. It must hold exactly
+the retained entries' recorded state before anything is written. It writes the
+candidate to `replacement-v1/ledger.compact` with an exclusive private create,
+syncs it, reads it back, checks that the open ledger still holds the validated
+bytes, and closes that handle. Windows refuses to replace a name while a handle
+that denies delete sharing is open. One native rename then replaces
+`ledger.jsonl`: `renameat` on Linux, and a handle-relative POSIX-semantics
+replace-if-exists rename on Windows. Both check that the name refers to the
+source afterwards. The store flushes the directory, reopens the ledger, and
+compares its bytes with the candidate. The anchor lock is held throughout.
+
+A failure after the candidate is created poisons the writer and is uncertain.
+Either ledger reopens with the same retained state, because the rename is
+atomic and both ledgers describe the same entries. A left `ledger.compact` is a
+derived copy, never evidence. Inventory counts its bytes against the quota and
+otherwise ignores it; ordinary work continues. Only the next compaction removes
+it, before writing a new candidate. Nothing is retried automatically.
+
+Replay is incremental. An append validates its one record against the replayed
+state instead of parsing the whole ledger again, and the result equals a full
+replay. Operation IDs are indexed, so replay of a full ledger is linear in its
+records. A full open still reads and parses the whole ledger, which can be
+64 MiB.
+
+Limits:
+
+- Deleted entries' history is gone after compaction. An operator who needs it
+  must copy `ledger.jsonl` before compacting.
+- Operation-ID reuse is checked only against the history the ledger still holds.
+  IDs are random version-4 UUIDs created by the store.
+- Readers older than 0.35.0 refuse a compacted ledger as an unknown record.
+- Neither the rename nor the directory flush is power-loss qualified. On
+  Windows the flush keeps the ADR-0023 limitation.
 
 ## Private operation journal and recovery
 

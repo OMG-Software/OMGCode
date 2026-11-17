@@ -7,8 +7,9 @@ use super::*;
 use crate::control::ControlStore;
 use crate::policy::{PermissionSet, SessionBinding, WorkspaceId};
 use crate::replacement::{
-    CheckpointDeletion, CheckpointError, CheckpointInspection, CheckpointRetention,
-    RecordedArtifact, ReplacementOutcome, ReplacementProgress,
+    CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
+    CheckpointRetention, RecordedArtifact, RecordedReplacement, ReplacementOutcome,
+    ReplacementProgress,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -1017,4 +1018,328 @@ fn deletion_never_removes_an_unknown_name() {
     );
     assert_eq!(fs::read(&unexpected).unwrap(), b"operator data");
     assert!(fixture.inspect().is_err());
+}
+
+fn compact(fixture: &mut Fixture) -> Result<CheckpointCompaction, FileError> {
+    FileBroker::new(&mut fixture.control).checkpoint_compact()
+}
+
+fn ledger_path(fixture: &Fixture) -> PathBuf {
+    fixture.data.join("replacement-v1").join("ledger.jsonl")
+}
+
+fn candidate_path(fixture: &Fixture) -> PathBuf {
+    fixture.data.join("replacement-v1").join("ledger.compact")
+}
+
+fn record_count(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|byte| **byte == b'\n').count()
+}
+
+fn retained_operations(inspection: &CheckpointInspection) -> Vec<RecordedReplacement> {
+    inspection
+        .operations
+        .iter()
+        .filter(|operation| operation.retention == CheckpointRetention::Retained)
+        .cloned()
+        .collect()
+}
+
+/// Leave one retained entry and one deleted entry's history. The source ends
+/// with its original bytes.
+fn retained_and_deleted(fixture: &mut Fixture) -> (Uuid, Uuid) {
+    let retained = applied_id(fixture, ORIGINAL, PROPOSED);
+    let deleted = applied_id(fixture, PROPOSED, ORIGINAL);
+    delete(fixture, deleted).expect("delete one entry");
+    (retained, deleted)
+}
+
+/// Writes synthesized ledger records with the store's scope and sequence.
+struct Padding {
+    header: serde_json::Value,
+    revision: u64,
+    workspace_id: Uuid,
+    bytes: Vec<u8>,
+    /// Records in `bytes`, counted as they are pushed.
+    records: usize,
+}
+
+impl Padding {
+    fn push(&mut self, kind: &str, payload: serde_json::Value) {
+        let record = serde_json::json!({
+            "schema_version": 1,
+            "control_store_id": self.header["control_store_id"],
+            "replacement_store_id": self.header["replacement_store_id"],
+            "event_id": Uuid::new_v4(),
+            "sequence": self.records,
+            "timestamp": "2026-11-17T12:00:00Z",
+            "action": {"type": kind, "payload": payload},
+        });
+        serde_json::to_writer(&mut self.bytes, &record).expect("record JSON");
+        self.bytes.push(b'\n');
+        self.records += 1;
+    }
+
+    /// Record one operation that failed before preparing an entry.
+    fn failed(&mut self) -> Uuid {
+        let operation_id = Uuid::new_v4();
+        self.push(
+            "replacement_started",
+            serde_json::json!({
+                "operation_id": operation_id,
+                "session_id": Uuid::new_v4(),
+                "workspace_id": self.workspace_id,
+                "revision": self.revision,
+                "target": crate::session::NativePath::from_path(Path::new("padding.txt"))
+                    .expect("native target"),
+                "expected": {"bytes": 1, "sha256": "a".repeat(64)},
+                "proposed": {"bytes": 1, "sha256": "b".repeat(64)},
+                "artifacts": {
+                    "original": "original", "proposed": "proposed",
+                    "manifest": "manifest.json", "stage": "stage"
+                }
+            }),
+        );
+        self.push(
+            "replacement_finished",
+            serde_json::json!({
+                "operation_id": operation_id, "outcome": "failed", "code": "padding"
+            }),
+        );
+        operation_id
+    }
+}
+
+/// Append deleted operations, four records each, then at most one failed
+/// operation without an entry, until the ledger holds at least `minimum`
+/// records. Real failures and deletions write these same records. Returns the
+/// failed operation, which stays retained and is carried by compaction.
+fn pad_ledger(fixture: &Fixture, minimum: usize) -> Option<Uuid> {
+    let path = ledger_path(fixture);
+    let bytes = fs::read(&path).expect("ledger");
+    let header = serde_json::from_slice(
+        bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .next()
+            .expect("header record"),
+    )
+    .expect("header JSON");
+    let mut padding = Padding {
+        header,
+        revision: fixture.control.revision(),
+        workspace_id: *fixture.workspace_id.as_uuid(),
+        records: record_count(&bytes),
+        bytes,
+    };
+    while padding.records + 4 <= minimum {
+        let operation_id = padding.failed();
+        padding.push(
+            "checkpoint_deletion_started",
+            serde_json::json!({"operation_id": operation_id}),
+        );
+        padding.push(
+            "checkpoint_deleted",
+            serde_json::json!({"operation_id": operation_id}),
+        );
+    }
+    let failed = (padding.records < minimum).then(|| padding.failed());
+    fs::write(&path, padding.bytes).expect("write padded ledger");
+    failed
+}
+
+#[test]
+fn compaction_carries_retained_state_and_drops_deleted_history() {
+    let mut fixture = Fixture::new();
+    let (retained, deleted) = retained_and_deleted(&mut fixture);
+    let before = fixture.inspect().expect("inspect");
+    let old = fs::read(ledger_path(&fixture)).expect("ledger");
+    let header = old
+        .split_inclusive(|byte| *byte == b'\n')
+        .next()
+        .expect("header")
+        .to_vec();
+
+    let result = compact(&mut fixture).expect("compact");
+    assert!(result.compacted);
+    assert_eq!((result.carried, result.dropped), (1, 1));
+    assert_eq!(result.previous_records, record_count(&old));
+    assert_eq!(result.previous_bytes, old.len());
+    let new = fs::read(ledger_path(&fixture)).expect("compacted ledger");
+    assert_eq!(result.records, 3);
+    assert_eq!(record_count(&new), 3);
+    assert_eq!(result.bytes, new.len());
+    assert!(new.len() < old.len());
+    assert!(
+        new.starts_with(&header),
+        "the header record is kept exactly"
+    );
+    assert!(!candidate_path(&fixture).exists());
+
+    let after = fixture.inspect().expect("inspect compacted ledger");
+    assert_eq!(after.operations, retained_operations(&before));
+    assert!(
+        after
+            .operations
+            .iter()
+            .all(|entry| entry.operation_id != deleted)
+    );
+    let compacted_from = after.compacted_from.clone().expect("compaction recorded");
+    assert_eq!(compacted_from.ledger, artifact(&old));
+    assert_eq!(
+        compacted_from.records,
+        u64::try_from(record_count(&old)).unwrap()
+    );
+    assert_eq!(after.managed_bytes, result.managed_bytes);
+    assert_payloads(&fixture, retained);
+
+    // Nothing is left to drop, so a second request writes nothing.
+    let again = compact(&mut fixture).expect("compact again");
+    assert!(!again.compacted);
+    assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), new);
+
+    // New work appends after the carried record, and a carried entry
+    // restores and deletes like any other.
+    let target = fixture.workspace.join("source.txt");
+    let applied = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    restore(&mut fixture, retained, PROPOSED).expect("restore a carried entry");
+    assert_eq!(fs::read(&target).unwrap(), ORIGINAL);
+    delete(&mut fixture, retained).expect("delete a carried entry");
+    let chained_from = fs::read(ledger_path(&fixture)).expect("ledger");
+    let chained = compact(&mut fixture).expect("compact a compacted ledger");
+    assert!(chained.compacted);
+    assert_eq!(chained.dropped, 1);
+    let inspection = fixture.inspect().expect("inspect");
+    assert_eq!(
+        inspection.compacted_from.clone().expect("chained").ledger,
+        artifact(&chained_from)
+    );
+    assert_eq!(
+        operation(&inspection, applied).retention,
+        CheckpointRetention::Retained
+    );
+    assert_eq!(inspection.operations.len(), 2);
+}
+
+#[test]
+fn compaction_is_refused_while_an_operation_or_deletion_is_unresolved() {
+    let mut fixture = Fixture::new();
+    let binding = fixture.binding();
+    let pending = uncertain_id(fixture.apply(&binding, |store| {
+        store.inject_publication_fault("commit_intent_sync");
+    }));
+    let ledger = fs::read(ledger_path(&fixture)).expect("ledger");
+    assert_eq!(
+        checkpoint_error(compact(&mut fixture)).code(),
+        "checkpoint_pending"
+    );
+    assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), ledger);
+    FileBroker::new(&mut fixture.control)
+        .checkpoint_acknowledge(pending)
+        .expect("acknowledge");
+
+    let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    crate::replacement::store::delete_with_fault(&fixture.control, id, "deletion_artifact")
+        .expect_err("interrupted deletion");
+    let ledger = fs::read(ledger_path(&fixture)).expect("ledger");
+    assert_eq!(
+        checkpoint_error(compact(&mut fixture)).code(),
+        "checkpoint_deletion_pending"
+    );
+    assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), ledger);
+    assert!(!candidate_path(&fixture).exists());
+}
+
+#[test]
+fn compaction_faults_keep_a_valid_ledger_and_are_not_retried() {
+    for (fault, replaced) in [
+        ("compaction_partial_write", false),
+        ("compaction_sync", false),
+        ("compaction_rename", false),
+        ("compaction_directory_sync", true),
+    ] {
+        let mut fixture = Fixture::new();
+        let (retained, _) = retained_and_deleted(&mut fixture);
+        let before = fixture.inspect().expect("inspect");
+        let old = fs::read(ledger_path(&fixture)).expect("ledger");
+
+        let error = crate::replacement::store::compact_with_fault(&fixture.control, fault)
+            .expect_err(fault);
+        assert_eq!(error.code(), "checkpoint_uncertain", "{fault}");
+        // Either ledger reopens with the same retained state.
+        let after = fixture.inspect().expect(fault);
+        assert_eq!(
+            retained_operations(&after),
+            retained_operations(&before),
+            "{fault}"
+        );
+        assert_eq!(after.compacted_from.is_some(), replaced, "{fault}");
+        assert_eq!(
+            fs::read(ledger_path(&fixture)).unwrap() == old,
+            !replaced,
+            "{fault}"
+        );
+        assert_eq!(candidate_path(&fixture).exists(), !replaced, "{fault}");
+
+        // Ordinary work continues beside a stale candidate, which only a
+        // later explicit compaction removes.
+        applied_id(&mut fixture, ORIGINAL, PROPOSED);
+        assert_eq!(candidate_path(&fixture).exists(), !replaced, "{fault}");
+        let result = compact(&mut fixture).expect(fault);
+        assert!(result.compacted, "{fault}");
+        assert!(!candidate_path(&fixture).exists(), "{fault}");
+        assert_payloads(&fixture, retained);
+    }
+}
+
+#[test]
+fn a_full_ledger_is_compacted_before_apply_and_before_deletion() {
+    // The record bound in `replacement::replay`.
+    const MAX_RECORDS: usize = 65_536;
+    let mut fixture = Fixture::new();
+    let (retained, _) = retained_and_deleted(&mut fixture);
+
+    // Apply needs six more records and deletion two.
+    let failed = pad_ledger(&fixture, MAX_RECORDS - 5);
+    let padded = fs::read(ledger_path(&fixture)).expect("padded ledger");
+    assert!((MAX_RECORDS - 5..=MAX_RECORDS).contains(&record_count(&padded)));
+    let inspection = fixture.inspect().expect("a padded ledger is valid");
+    assert!(inspection.operations.len() > 16_000);
+
+    let applied = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let inspection = fixture.inspect().expect("inspect");
+    let compacted_from = inspection.compacted_from.clone().expect("compacted first");
+    assert_eq!(compacted_from.ledger, artifact(&padded));
+    let mut kept = inspection
+        .operations
+        .iter()
+        .map(|entry| entry.operation_id)
+        .collect::<Vec<_>>();
+    kept.sort();
+    let mut expected = vec![retained, applied];
+    expected.extend(failed);
+    expected.sort();
+    assert_eq!(kept, expected);
+    assert!(record_count(&fs::read(ledger_path(&fixture)).unwrap()) < 16);
+
+    pad_ledger(&fixture, MAX_RECORDS - 1);
+    let padded = fs::read(ledger_path(&fixture)).expect("padded ledger");
+    delete(&mut fixture, retained).expect("deletion compacts first");
+    let inspection = fixture.inspect().expect("inspect");
+    assert_eq!(
+        inspection
+            .compacted_from
+            .clone()
+            .expect("compacted again")
+            .ledger,
+        artifact(&padded)
+    );
+    assert_eq!(
+        operation(&inspection, retained).retention,
+        CheckpointRetention::Deleted
+    );
+    assert_eq!(
+        operation(&inspection, applied).retention,
+        CheckpointRetention::Retained
+    );
+    assert!(!fixture.operation_dir(retained).exists());
 }

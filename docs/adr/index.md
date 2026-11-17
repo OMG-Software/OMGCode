@@ -67,3 +67,4 @@ meaningful alternative does not need an ADR.
 | [0050: Interrupt a streamed model request when a turn is cancelled](0050-interrupt-a-streamed-model-request-on-cancellation.md) | Accepted; amended by ADR-0051 | 2026-11-16 |
 | [0051: Cancel every model request and let an interrupt cancel a CLI turn](0051-cancel-every-model-request-and-interrupt-cli-turns.md) | Accepted | 2026-11-17 |
 | [0052: Publish rolling testing builds from main](0052-publish-rolling-testing-builds-from-main.md) | Accepted | 2026-11-17 |
+| [0053: Compact the checkpoint ledger in place](0053-compact-the-checkpoint-ledger-in-place.md) | Accepted | 2026-11-17 |

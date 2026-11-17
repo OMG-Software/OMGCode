@@ -88,6 +88,17 @@ ledger keeps its history. If deletion is interrupted, every file operation is
 refused until the same command is repeated. See the
 [restore and deletion contract](file-access.md#implemented-restore-and-checkpoint-deletion-phase-a4).
 
+Deletion keeps the deleted entry's ledger records until the ledger is
+compacted. Apply, restore, and deletion compact it first when it lacks room.
+To compact it on request, discarding every deleted entry's history:
+
+```text
+omgcode --data-dir /private/omgcode-data file compact-checkpoints --discard-history
+```
+
+Copy `replacement-v1/ledger.jsonl` first if that history is needed. See
+[ledger compaction](file-access.md#implemented-ledger-compaction-phase-a5).
+
 ## Build
 
 Install Rust through rustup and use a native Windows or Linux development
@@ -397,8 +408,8 @@ infer a root, or treat a journal's workspace metadata as a grant. `read`, `list`
 and `diff` require the read preference. `create` and `mkdir` require the write
 preference. `apply` and `restore` require both preferences and a supported
 native mount. Execute remains disabled. The `audit`, `acknowledge`,
-`checkpoints`, `acknowledge-checkpoint`, and `delete-checkpoint` commands require
-existing workspace settings.
+`checkpoints`, `acknowledge-checkpoint`, `delete-checkpoint`, and
+`compact-checkpoints` commands require existing workspace settings.
 They do not require a configured root, workspace registration, or session
 selection. Chat advertises the read/list tools when the session's workspace
 enables `model_tools`, the edit tool when `read` and `write` are also enabled,

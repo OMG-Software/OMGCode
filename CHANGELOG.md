@@ -6,6 +6,49 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.35.0 compacts the checkpoint ledger in place and raises its bounds
+  (Phase A5). See ADR-0053 and
+  [ledger compaction](docs/file-access.md#implemented-ledger-compaction-phase-a5).
+  Until now the ledger held at most 4,096 records and 8 MiB for an
+  installation's lifetime, so about 580 applies with deletion exhausted it.
+  It is on branch `codex/checkpoint-ledger-compaction`, stacked on
+  `codex/plan-baseline-refresh`; it is not merged. It adds no dependency.
+  - **Bounds:** the ledger may hold 65,536 records and 64 MiB, and the store's
+    aggregate quota grows from 64 MiB to 128 MiB. The 64-entry bound and the
+    64 KiB record bound are unchanged.
+  - **Format:** a compacted ledger is the original `created` record, one
+    `compacted` record with the replaced ledger's size, SHA-256, record count,
+    and revision floor, and one `checkpoint_carried` record per retained entry.
+    Replay rebuilds each carried entry through the ordinary transitions and
+    requires it to be resolved. `file checkpoints` reports `compacted_from`.
+    Readers older than 0.35.0 refuse both new record types.
+  - **Triggers:** the trusted `file compact-checkpoints --discard-history`
+    command, and apply, restore, and deletion when the ledger lacks room for
+    their records. Both refuse while an operation is unresolved or a deletion
+    is unfinished, and write nothing when nothing would be dropped.
+  - **Publication:** the store replays the candidate, writes and syncs
+    `ledger.compact`, reads it back, checks the live ledger is unchanged, and
+    replaces `ledger.jsonl` with one handle-relative rename: `renameat` on
+    Linux and a POSIX-semantics replace-if-exists `NtSetInformationFile`
+    rename on Windows. It flushes the directory and reopens and compares the
+    ledger. A failure after the candidate exists is uncertain, poisons the
+    writer, and is not retried. The new `PrivateDirectory::replace_file`
+    performs the rename and checks that the name then refers to the source.
+    Neither the rename nor the flush is power-loss qualified.
+  - **Replay:** an append validates only its own record, and operation IDs are
+    indexed, so a full replay is linear in its records.
+  - **Deleted history:** compaction discards every record of deleted entries.
+    Only the replaced ledger's digest, size, and record count remain.
+  - **Tests:** new core tests cover carried state, refusal of unresolved work,
+    each compaction fault, and compaction at the record cap before apply and
+    before deletion. New replay tests cover the record positions, carried
+    state reachability, and claim bounds. New CLI tests cover the command, and
+    new platform tests cover the native rename on both platforms. The replay
+    cap tests and the aggregate quota test use the new bounds.
+- A [filesystem and power-loss qualification plan](docs/filesystem-qualification.md)
+  defines the release filesystem matrix and the block-level and physical
+  power-cut campaigns for the checkpoint store and trusted publication. None of
+  it has run, and it changes no support claim.
 - A Testing build workflow (`.github/workflows/testing-build.yml`) runs on every
   push to `main`. It calls the Rust and Frontend workflows, builds release
   binaries of `omgcode` and `omgcode-desktop`, and packages them without an

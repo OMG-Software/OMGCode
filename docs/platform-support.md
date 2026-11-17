@@ -78,7 +78,9 @@ is not a supported-distribution matrix.
   publication, security-metadata preservation, and checkpoint/directory
   persistence evidence. Native apply tests exercise one rename and ordered
   syncs on the tested mount. They do not qualify a release filesystem matrix
-  or physical power-loss behavior.
+  or physical power-loss behavior. The
+  [filesystem qualification plan](filesystem-qualification.md) defines that
+  campaign; it has not run.
   Windows uses exact per-user checkpoint ACLs and a failing directory flush.
   Microsoft gives no contract for that flush, so directory-entry durability
   remains unqualified. There is no weaker fallback.

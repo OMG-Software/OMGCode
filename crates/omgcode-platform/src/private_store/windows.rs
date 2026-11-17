@@ -66,8 +66,8 @@ use super::PrivateFileIdentity;
 use crate::broker::invalid_windows_name;
 use crate::broker::windows::{
     DIRECTORY_ACCESS, SHARE_READ_WRITE, create_relative_secured, creation_time, is_dot_entry,
-    is_name_not_found, open_relative, query_directory_batch, query_identity, validate_directory,
-    validate_regular_file,
+    is_name_not_found, open_relative, query_directory_batch, query_identity, rename_onto,
+    validate_directory, validate_regular_file,
 };
 use crate::{DirectoryIdentity, directory_identity};
 
@@ -840,6 +840,64 @@ impl WindowsPrivateDirectory {
         self.require_removed(name)
     }
 
+    /// Atomically replaces one existing private file with another in this
+    /// directory, by handle and without following a reparse point.
+    ///
+    /// Both names must be regular single-link private files on this volume.
+    /// The source handle is renamed over `target` with POSIX semantics, so the
+    /// replaced object leaves the namespace in the same native operation. An
+    /// open handle to `target` that denies delete sharing makes the rename
+    /// fail; callers close their own handles first. Afterwards `target` must
+    /// name the checked source object and `source` must be absent. One attempt
+    /// is made and nothing is retried. The caller flushes this directory, and
+    /// that flush carries no power-loss guarantee (ADR-0023).
+    pub fn replace_file(&self, source: &OsStr, target: &OsStr) -> io::Result<()> {
+        validate_name(source)?;
+        validate_name(target)?;
+        if source == target {
+            return Err(invalid_input("replacement needs two different names"));
+        }
+        self.validate()?;
+        let file = open_relative(
+            &self.file,
+            source,
+            REMOVE_ACCESS,
+            FILE_OPEN,
+            FILE_OPTIONS,
+            SHARE_READ_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+        .map_err(map_missing)?;
+        self.validate_child_file(&file)?;
+        let expected = query_identity(&file)?;
+        // The replaced name must already be one of this store's private files.
+        // This handle closes before the rename so it cannot block it.
+        self.validate_child_file(&self.open_checked(target)?)?;
+        rename_onto(&file, &self.file, target)?;
+        let published = query_identity(&self.open_checked(target)?)?;
+        if published.VolumeSerialNumber != expected.VolumeSerialNumber
+            || published.FileId.Identifier != expected.FileId.Identifier
+        {
+            return Err(invalid_data("replaced name does not refer to the source"));
+        }
+        self.require_removed(source)
+    }
+
+    /// Opens one name for attribute and security queries only, permitting
+    /// every sharing mode so the handle never blocks a later rename.
+    fn open_checked(&self, name: &OsStr) -> io::Result<File> {
+        open_relative(
+            &self.file,
+            name,
+            FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_OPTIONS,
+            SHARE_READ_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+        .map_err(map_missing)
+    }
+
     /// POSIX-semantics deletion unlinks the name when the marked handle closes.
     fn require_removed(&self, name: &OsStr) -> io::Result<()> {
         if self.exists(name)? {
@@ -1372,6 +1430,104 @@ pub(crate) mod tests {
         assert!(fixture.root.remove_file(OsStr::new("junction")).is_err());
         assert!(fixture.path.join("junction").exists());
         assert!(outside.path().exists());
+    }
+
+    fn private_bytes(fixture: &Fixture, name: &str, bytes: &[u8]) {
+        let mut file = fixture.root.create_file(OsStr::new(name)).expect("file");
+        file.write_all(bytes).expect("contents");
+        file.sync_all().expect("sync");
+    }
+
+    #[test]
+    fn replacement_swaps_one_private_file_by_handle_and_refuses_others() {
+        let fixture = fixture();
+        private_bytes(&fixture, "ledger", b"old");
+        private_bytes(&fixture, "candidate", b"new");
+        let source = fixture
+            .root
+            .open_file(OsStr::new("candidate"), false)
+            .expect("source");
+        let expected = query_identity(&source).expect("source identity");
+        drop(source);
+
+        // An open handle without delete sharing blocks the replacement, and
+        // the failed attempt leaves both names unchanged.
+        let held = fixture
+            .root
+            .open_file(OsStr::new("ledger"), true)
+            .expect("held target");
+        assert!(
+            fixture
+                .root
+                .replace_file(OsStr::new("candidate"), OsStr::new("ledger"))
+                .is_err()
+        );
+        assert_eq!(fs::read(fixture.path.join("ledger")).expect("kept"), b"old");
+        assert!(fixture.path.join("candidate").exists());
+        drop(held);
+
+        fixture
+            .root
+            .replace_file(OsStr::new("candidate"), OsStr::new("ledger"))
+            .expect("replace");
+        assert_eq!(fs::read(fixture.path.join("ledger")).expect("new"), b"new");
+        assert!(!fixture.path.join("candidate").exists());
+        let published = fixture
+            .root
+            .open_file(OsStr::new("ledger"), false)
+            .expect("published");
+        assert_eq!(
+            query_identity(&published)
+                .expect("identity")
+                .FileId
+                .Identifier,
+            expected.FileId.Identifier
+        );
+        drop(published);
+
+        // A missing source or target, the same name twice, a hard-linked
+        // source, and a junction are all refused without a rename.
+        for (source, target) in [("missing", "ledger"), ("ledger", "missing")] {
+            assert_eq!(
+                fixture
+                    .root
+                    .replace_file(OsStr::new(source), OsStr::new(target))
+                    .expect_err("missing name")
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+        }
+        assert!(
+            fixture
+                .root
+                .replace_file(OsStr::new("ledger"), OsStr::new("ledger"))
+                .is_err()
+        );
+        private_bytes(&fixture, "linked", b"linked");
+        fs::hard_link(fixture.path.join("linked"), fixture.path.join("alias")).expect("hard link");
+        assert!(
+            fixture
+                .root
+                .replace_file(OsStr::new("linked"), OsStr::new("ledger"))
+                .is_err()
+        );
+        let outside = tempfile::tempdir().expect("outside");
+        create_junction_bounded(&fixture.path.join("junction"), outside.path()).expect("junction");
+        assert!(
+            fixture
+                .root
+                .replace_file(OsStr::new("junction"), OsStr::new("ledger"))
+                .is_err()
+        );
+        assert!(
+            fixture
+                .root
+                .replace_file(OsStr::new("ledger"), OsStr::new("junction"))
+                .is_err()
+        );
+        assert_eq!(fs::read(fixture.path.join("ledger")).expect("kept"), b"new");
+        assert!(fixture.path.join("linked").exists());
+        assert!(fixture.path.join("junction").exists());
     }
 
     #[test]

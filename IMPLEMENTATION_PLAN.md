@@ -235,6 +235,13 @@ Implemented today:
   `file delete-checkpoint --permanent` for one resolved checkpoint, on the same
   filesystems as apply. Neither is power-loss qualified. See
   [ADR-0025](docs/adr/0025-restore-and-delete-checkpoints-explicitly.md).
+- In-place checkpoint ledger compaction (0.35.0, on branch
+  `codex/checkpoint-ledger-compaction`, not merged): 65,536 records and
+  64 MiB for the ledger, 128 MiB for the store, trusted
+  `file compact-checkpoints --discard-history`, and automatic compaction
+  before an apply, restore, or deletion that would not fit. Deleted entries'
+  history is discarded. Not power-loss qualified. See
+  [ADR-0053](docs/adr/0053-compact-the-checkpoint-ledger-in-place.md).
 
 Not implemented:
 
@@ -763,8 +770,15 @@ at that review boundary:
     keeps history and frees a retained slot. Inspection and acknowledgement
     stay read-only. See
     [ADR-0025](docs/adr/0025-restore-and-delete-checkpoints-explicitly.md).
-    Ledger compaction, release qualification, and power-loss evidence remain
-    open.
+    Ledger compaction was left to A5; release qualification and power-loss
+    evidence remain open.
+  - **A5 (branch `codex/checkpoint-ledger-compaction`, not merged):** raise
+    the ledger bounds to 65,536 records and 64 MiB and the store quota to
+    128 MiB, and compact the ledger in place by trusted command or before an
+    operation that would not fit. See
+    [ADR-0053](docs/adr/0053-compact-the-checkpoint-ledger-in-place.md).
+    The [filesystem qualification plan](docs/filesystem-qualification.md)
+    defines the release matrix and power-loss campaign; it has not run.
 
 Contract decisions accepted in A1:
 

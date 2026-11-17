@@ -145,6 +145,16 @@ pub(crate) enum FileCommand {
         #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
         permanent: bool,
     },
+    /// Rewrite the checkpoint ledger in place, keeping only retained entries.
+    ///
+    /// Deleted checkpoints' history is dropped; only the replaced ledger's
+    /// size, digest, and record count remain. No checkpoint entry or
+    /// workspace file is opened or changed.
+    CompactCheckpoints {
+        /// Acknowledge that deleted checkpoints' history is discarded.
+        #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
+        discard_history: bool,
+    },
 }
 
 /// Restore output: the new operation's receipt and the checkpoint it read.
@@ -351,6 +361,11 @@ pub(crate) fn run(command: FileCommand, data_root: &Path) -> Result<(), CliError
         } => print_json(
             &FileBroker::new(&mut control)
                 .checkpoint_delete(operation_id)
+                .map_err(file_error)?,
+        ),
+        FileCommand::CompactCheckpoints { discard_history: _ } => print_json(
+            &FileBroker::new(&mut control)
+                .checkpoint_compact()
                 .map_err(file_error)?,
         ),
     }

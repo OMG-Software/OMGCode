@@ -7,7 +7,8 @@ use super::{FileBroker, FileError, FileOperation, FileOutcome, FileTarget, valid
 use crate::policy::{Operation, PolicyRequest, SessionBinding};
 use crate::replacement::store::{self, Store};
 use crate::replacement::{
-    CheckpointDeletion, CheckpointError, CheckpointInspection, CheckpointReceipt, RecordedArtifact,
+    CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
+    CheckpointReceipt, RecordedArtifact,
 };
 use crate::session::sha256_hex;
 
@@ -21,7 +22,9 @@ impl FileBroker<'_> {
     /// not an apply token. No payload bytes appear in the returned receipt.
     ///
     /// Each payload is at most 1 MiB. Storage retains at most 64 intents and
-    /// 64 MiB of managed file bytes, with capacity reserved before artifacts.
+    /// 128 MiB of managed file bytes, with capacity reserved before artifacts.
+    /// A ledger without room for the operation is compacted in place first,
+    /// which drops deleted entries' history (ADR-0053).
     /// A write or sync error can leave uncertain private evidence. Reopen for
     /// inspection; do not automatically retry or remove that evidence.
     pub fn checkpoint_prepare(
@@ -97,6 +100,20 @@ impl FileBroker<'_> {
         operation_id: Uuid,
     ) -> Result<CheckpointDeletion, FileError> {
         Ok(store::delete(self.control, operation_id)?)
+    }
+
+    /// Rewrite the checkpoint ledger in place, dropping deleted entries' history.
+    ///
+    /// This is a trusted operator action, not a model tool route. It needs no
+    /// workspace binding and opens no workspace file or checkpoint entry.
+    /// Retained entries keep their recorded state as one carried record each;
+    /// only the replaced ledger's size, digest, and record count remain of the
+    /// rest. It is refused while an operation is unresolved or a deletion is
+    /// unfinished, and writes nothing when the ledger would not shrink. A
+    /// failure during the rewrite is uncertain; reopen to inspect, and do not
+    /// retry automatically.
+    pub fn checkpoint_compact(&mut self) -> Result<CheckpointCompaction, FileError> {
+        Ok(store::compact(self.control)?)
     }
 }
 

@@ -11,6 +11,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_WRITE_ATTRIBUTES, FileBasicInfo, READ_CONTROL, SetFileInformationByHandle, WRITE_DAC,
     WRITE_OWNER,
 };
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 struct Fixture {
     workspace: NativeWorkspace,

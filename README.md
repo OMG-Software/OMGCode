@@ -159,7 +159,9 @@ Windows NTFS. Stop independent writers first: a content check and rename cannot
 guarantee no lost updates. Windows makes no power-loss claim. Trusted
 `file restore` writes a retained original back through a new checkpoint after
 an explicit current-content check. Trusted `file delete-checkpoint --permanent`
-removes one resolved checkpoint's files and keeps its ledger history. Neither
+removes one resolved checkpoint's files and keeps its ledger history until
+trusted `file compact-checkpoints --discard-history`, or an apply, restore, or
+deletion that would not fit, compacts the ledger. Neither
 command is power-loss qualified. The model edit tool uses the same
 checkpointed apply after an approved, writers-stopped decision; it cannot
 create, delete, or rename files and does not detect a concurrent writer.

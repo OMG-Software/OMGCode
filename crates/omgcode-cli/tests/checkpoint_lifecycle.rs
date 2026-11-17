@@ -195,3 +195,70 @@ fn deleting_from_unused_storage_creates_nothing() {
         ORIGINAL
     );
 }
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn compaction_drops_deleted_history_through_the_cli() {
+    let fixture = Fixture::new(ORIGINAL);
+    let deleted = fixture.apply_bytes(PROPOSED);
+    let retained = fixture.apply_bytes(ORIGINAL);
+    assert_success(&run_cli(
+        &fixture.data,
+        &["file", "delete-checkpoint", &deleted, "--permanent"],
+    ));
+    let ledger = fixture.data.join("replacement-v1").join("ledger.jsonl");
+    let before = fs::read(&ledger).expect("ledger");
+
+    let output = run_cli(&fixture.data, &["file", "compact-checkpoints"]);
+    assert!(!output.status.success(), "missing acknowledgement accepted");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--discard-history"));
+    assert_eq!(fs::read(&ledger).expect("unchanged ledger"), before);
+
+    let output = run_cli(
+        &fixture.data,
+        &["file", "compact-checkpoints", "--discard-history"],
+    );
+    assert_success(&output);
+    let result = json_output(&output);
+    assert_eq!(result["compacted"], true);
+    assert_eq!(result["carried"], 1);
+    assert_eq!(result["dropped"], 1);
+    assert_eq!(result["previous_bytes"], before.len());
+    assert_eq!(result["records"], 3);
+
+    let output = run_cli(&fixture.data, &["file", "checkpoints"]);
+    assert_success(&output);
+    let view = json_output(&output);
+    let operations = view["operations"].as_array().expect("operations");
+    assert_eq!(operations.len(), 1);
+    assert_eq!(operations[0]["operation_id"], retained.as_str());
+    assert_eq!(operations[0]["retention"], "retained");
+    assert_eq!(
+        view["compacted_from"]["records"],
+        result["previous_records"]
+    );
+    assert_eq!(view["compacted_from"]["ledger"]["bytes"], before.len());
+
+    let output = run_cli(
+        &fixture.data,
+        &["file", "compact-checkpoints", "--discard-history"],
+    );
+    assert_success(&output);
+    assert_eq!(json_output(&output)["compacted"], false);
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("target untouched"),
+        ORIGINAL
+    );
+}
+
+#[test]
+fn compacting_unused_storage_creates_nothing() {
+    let fixture = Fixture::new(ORIGINAL);
+    let output = run_cli(
+        &fixture.data,
+        &["file", "compact-checkpoints", "--discard-history"],
+    );
+    assert_error_code(&output, "checkpoint_unavailable");
+    assert!(!fixture.data.join("replacement-v1").exists());
+    assert!(!fixture.data.join("replacement-init-v1.jsonl").exists());
+}

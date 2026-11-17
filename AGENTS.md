@@ -76,7 +76,10 @@ under the file-access contract. It requires the operator to stop other writers.
 Windows makes no power-loss claim. Trusted CLI restore writes a retained
 original back through the same apply path and a new checkpoint. Trusted CLI
 checkpoint deletion removes one resolved checkpoint and keeps its history.
-Neither is power-loss qualified.
+Neither is power-loss qualified. The ledger is compacted in place, by a trusted
+CLI command or before an operation that would not fit, and that discards
+deleted checkpoints' history ([ADR-0053](docs/adr/0053-compact-the-checkpoint-ledger-in-place.md)).
+A [filesystem qualification plan](docs/filesystem-qualification.md) has not run.
 Repository review and analysis are defined in
 [docs/repository-checks.md](docs/repository-checks.md).
 Do not describe planned features or security controls as implemented. Do not

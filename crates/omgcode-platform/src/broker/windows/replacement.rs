@@ -18,10 +18,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::time::SystemTime;
 
-use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_OPEN, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
-    FileRenameInformationEx, NtSetInformationFile,
-};
+use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
 use windows_sys::Win32::Foundation::{
     HANDLE, NTSTATUS, STATUS_DELETE_PENDING, STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY,
     STATUS_OBJECT_NAME_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION,
@@ -30,13 +27,12 @@ use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_NAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FileNormalizedNameInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
 };
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 use super::{
     DIRECTORY_ACCESS, NativeStatus, NativeWorkspace, RelativePath, SHARE_READ_WRITE, creation_time,
-    encode_component, invalid_data, invalid_input, last_directory, native_error, open_relative,
-    query_attributes, query_basic, query_identity, query_standard, read_bounded,
-    validate_component, validate_directory, validate_regular_file,
+    invalid_data, invalid_input, last_directory, open_relative, query_attributes, query_basic,
+    query_identity, query_standard, read_bounded, rename_onto, validate_component,
+    validate_directory, validate_regular_file,
 };
 use crate::broker::{FileCapture, MAX_FILE_BYTES};
 use crate::directory_identity;
@@ -502,57 +498,6 @@ fn published_matches(target: &ReplacementTarget<'_>, stage: &ReplacementStage) -
         && file_bytes_matches(&published, &stage.proposed)?
         && file_snapshot(&published)? == snapshot
         && stage_metadata(&published)? == stage.metadata)
-}
-
-/// Replace `name` beneath `parent` with the file behind `stage`, by handle.
-#[allow(unsafe_code)]
-fn rename_onto(stage: &File, parent: &File, name: &OsStr) -> io::Result<()> {
-    let units = encode_component(name)?;
-    if units.is_empty() {
-        return Err(invalid_input("replacement requires a target name"));
-    }
-    let name_bytes = units
-        .len()
-        .checked_mul(size_of::<u16>())
-        .ok_or_else(|| invalid_input("replacement name is too long"))?;
-    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
-    // Windows refuses a buffer smaller than the structure with a length mismatch.
-    let total = name_offset
-        .checked_add(name_bytes)
-        .ok_or_else(|| invalid_input("replacement name is too long"))?
-        .max(size_of::<FILE_RENAME_INFORMATION>());
-    let length = u32::try_from(total).map_err(|_| invalid_input("rename buffer is too large"))?;
-    let file_name_length =
-        u32::try_from(name_bytes).map_err(|_| invalid_input("replacement name is too long"))?;
-    let mut storage = vec![0u64; total.div_ceil(size_of::<u64>())];
-    let base = storage.as_mut_ptr().cast::<u8>();
-    let information = base.cast::<FILE_RENAME_INFORMATION>();
-    let mut status_block = IO_STATUS_BLOCK::default();
-    // SAFETY: `storage` is zeroed, aligned for the structure, and holds at least
-    // `total` bytes, so every field and all of `name_bytes` at `name_offset` are
-    // in bounds. `parent` outlives the synchronous call that reads its handle.
-    let status = unsafe {
-        (*information).Anonymous.Flags =
-            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
-        (*information).RootDirectory = parent.as_raw_handle() as HANDLE;
-        (*information).FileNameLength = file_name_length;
-        std::ptr::copy_nonoverlapping(
-            units.as_ptr().cast::<u8>(),
-            base.add(name_offset),
-            name_bytes,
-        );
-        NtSetInformationFile(
-            stage.as_raw_handle() as HANDLE,
-            &mut status_block,
-            information.cast(),
-            length,
-            FileRenameInformationEx,
-        )
-    };
-    if status != 0 {
-        return Err(native_error(status));
-    }
-    Ok(())
 }
 
 fn file_snapshot(file: &File) -> io::Result<FileSnapshot> {
