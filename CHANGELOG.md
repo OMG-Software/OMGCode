@@ -6,6 +6,66 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.34.0 lets a cancel request stop every model request, streamed or
+  not, and the compaction requests, and lets an interrupt cancel a CLI turn
+  (Phase D6). See ADR-0051 and
+  [cancelling every request](docs/provider-authentication.md#cancelling-every-request-0340).
+  Until now a non-streamed request and every compaction request ran to their
+  end or to the thirty-second deadline, a non-streamed text-only turn had no
+  cancel token, and Ctrl-C ended the CLI and left an open turn. It is a
+  prototype on branch `codex/request-cancellation`, stacked on
+  `codex/desktop-interface`; it is not merged. It adds no dependency and
+  removes reqwest's `blocking` feature, which drops `futures-channel` and
+  `futures-sink` from two dependency lists in `Cargo.lock`.
+  - **Adapter:** `complete` and `complete_with_tools` take a `CancelToken`, like
+    the streamed methods. All four methods share one transport: an async client
+    built inside a single-thread runtime created for the request, with the
+    settings and the thirty-second deadline of ADR-0050. The token is checked
+    before the request is sent, while the response head is awaited, and before
+    and while each piece of the body is awaited, every 25 ms. A set token drops
+    the request and returns `ProviderError::Cancelled`; a non-streamed body
+    read in part is discarded. The 1 MiB response bound is applied as pieces
+    arrive. The blocking client is removed. The wire request is unchanged.
+  - **Turn:** every chat turn creates one token after the session checks and
+    before the compaction check, and `ChatHooks::on_cancel_token` receives it
+    on every path, streamed or not. The new `ChatHooks::cancel` lets a front
+    end supply the token, and the new `TurnRuntime::with_cancel_token` hands it
+    to the runtime. A token already set when the turn would start ends it as
+    `cancelled` before the turn marker, recording nothing; the text-only path
+    now matches the runtime here.
+  - **Compaction:** `compact_journal` takes a token. A cancelled compaction
+    fails with the error kind `cancelled` and the message "Compaction was
+    cancelled; nothing was recorded", and the journal is unchanged.
+  - **CLI:** `omgcode chat` and `session compact` install the interrupt handler
+    of the trusted `run` command once the journal is open. Ctrl-C or
+    Ctrl-Break on Windows and `SIGINT` or `SIGTERM` on Linux set the token. The
+    command fails with the code `cancelled`; a chat turn that had started is
+    recorded as cancelled and the error carries the session locator. A handler
+    that cannot be installed fails the command with the new code `interrupt`.
+    `omgcode-platform` gains `watch_interrupt`, which runs a closure once on an
+    interrupt; `cancel_on_interrupt` wraps it. `capabilities` reports
+    `cancellable_adapters: ["lm_studio"]`.
+  - **Desktop:** no command or wire type changes. `chat_cancel` and exit now
+    stop a non-streamed request (`--stream off`) and a pre-turn compaction. A
+    turn cancelled before it handed over its token ends before it is recorded.
+  - **Tests:** core fixtures for a cancel of a non-streamed text and tool
+    request before sending, before the head, and with a body held open, and a
+    slow non-streamed reply under a live token; the runtime's caller token; app
+    tests for cancelled non-streamed text and tool turns, a cancelled pre-turn
+    compaction, a cancelled `compact_journal`, and a token set before the turn;
+    desktop tests for cancelling a non-streamed turn and for the shutdown grace
+    with a turn held in an event sink; Linux CLI tests that deliver `SIGINT`
+    during `chat` and `session compact`; and `watch_interrupt` in the platform
+    interrupt test. Two tests that asserted the old behaviour were rewritten:
+    `a_text_only_turn_..._calls_the_cancel_hook_once` (it skipped the hook) and
+    the desktop `cancelling_a_non_streamed_text_turn_stops_its_request` (it
+    asserted that cancelling changed nothing). Two others were replaced:
+    `a_non_streamed_text_turn_never_calls_the_cancel_hook_and_cannot_be_cancelled`
+    and the desktop shutdown-grace test's use of a held non-streamed reply,
+    which can now be cancelled.
+  - **Still not interruptible:** a read, list, or edit tool call in progress.
+    Not verified: a live LM Studio server, and an interrupt delivered to the
+    CLI on Windows.
 - Version 0.33.0 interrupts a streamed model request when a turn is cancelled
   (Phase D5). See ADR-0050 and
   [cancellation](docs/provider-authentication.md#cancellation-0330). Until now

@@ -1117,3 +1117,205 @@ fn capabilities_report_the_streaming_adapters() {
         json!(["lm_studio"])
     );
 }
+
+#[test]
+fn capabilities_report_the_cancellable_adapters() {
+    let output = run_cli(&["capabilities"]);
+    assert_success(&output);
+    assert_eq!(
+        output_json(&output)["cancellable_adapters"],
+        json!(["lm_studio"])
+    );
+}
+
+// ---- An operator interrupt cancels a chat turn or a compaction (ADR-0051) ----
+
+/// A server that reads one request, announces it, and then holds the
+/// connection open without answering until the client closes it or a bound
+/// passes. The worker returns whether the client closed the connection.
+#[cfg(target_os = "linux")]
+fn holding_server() -> (String, Receiver<()>, JoinHandle<Result<bool, String>>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind private holding server");
+    listener
+        .set_nonblocking(true)
+        .expect("set bounded accept mode");
+    let address = listener.local_addr().expect("read holding server address");
+    let (arrived, arrival) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut stream = accept_with_timeout(&listener)?;
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(MOCK_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        read_http_body(&mut stream)?;
+        // The test may already have failed and stopped listening.
+        arrived.send(()).ok();
+        let mut buffer = [0_u8; 64];
+        match stream.read(&mut buffer) {
+            Ok(0) => Ok(true),
+            Ok(_) => Err("the CLI sent bytes after its request".to_owned()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                Ok(true)
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    });
+    (format!("http://{address}/v1"), arrival, worker)
+}
+
+/// Start `command`, interrupt it with `SIGINT` once the held request has
+/// arrived, and return its output and whether it closed the connection.
+#[cfg(target_os = "linux")]
+fn interrupt_once_the_request_waits(command: &mut Command) -> (Output, bool) {
+    let (endpoint, arrival, server) = holding_server();
+    command
+        .args(["--endpoint", &endpoint])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = spawn_gate::spawn(command).expect("spawn the CLI");
+    arrival
+        .recv_timeout(MOCK_TIMEOUT)
+        .expect("the CLI sends its model request");
+    let started = Instant::now();
+    let status = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    assert!(status.success());
+    let (done, finished) = mpsc::channel();
+    thread::spawn(move || done.send(child.wait_with_output()));
+    let output = finished
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the interrupted CLI exits")
+        .expect("collect the CLI output");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the interrupt took {:?}",
+        started.elapsed()
+    );
+    let closed = server
+        .join()
+        .expect("holding server thread")
+        .expect("holding server exchange");
+    (output, closed)
+}
+
+#[cfg(target_os = "linux")]
+fn error_json(output: &Output) -> Value {
+    serde_json::from_slice(&output.stderr).expect("CLI stderr is one JSON error")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_interrupt_cancels_a_waiting_chat_turn_and_records_it() {
+    // Given a chat whose model request is held unanswered.
+    let temporary = TempDir::new().expect("create private test directory");
+    let data_dir = temporary.path().join("application-data");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create private workspace");
+    let mut command = cli();
+    command.args([
+        "--data-dir",
+        data_dir.to_str().expect("temporary path is Unicode"),
+        "chat",
+        "--workspace",
+        workspace.to_str().expect("temporary path is Unicode"),
+        "--model",
+        "fixture",
+        "--context-tokens",
+        "131072",
+        "--max-output-tokens",
+        "32",
+        "say something",
+    ]);
+
+    // When the operator interrupts the CLI while it waits.
+    let (output, closed) = interrupt_once_the_request_waits(&mut command);
+
+    // Then the request was dropped, the CLI fails with `cancelled` and the
+    // session locator, and the journal records a cancelled turn and no reply.
+    assert!(closed, "the CLI closed the held connection");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "no result document");
+    let error = error_json(&output);
+    assert_eq!(error["error"]["code"], "cancelled");
+    let journal = PathBuf::from(
+        error["error"]["session"]["journal"]
+            .as_str()
+            .expect("the error carries the journal path"),
+    );
+    let events = read_events(&journal);
+    let failure = events.last().expect("a terminal event");
+    assert_eq!(failure["type"], "turn.failed");
+    assert_eq!(failure["payload"]["code"], "cancelled");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["payload"]["role"] != "assistant"),
+        "no assistant message"
+    );
+    assert_eq!(read_snapshot(&journal).active_turn, None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_interrupt_cancels_a_waiting_compaction_and_records_nothing() {
+    // Given a session with two exchanges and a compaction whose summarizer
+    // request is held unanswered.
+    let temporary = TempDir::new().expect("create private test directory");
+    let data_dir = temporary.path().join("application-data");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create private workspace");
+    let journal = create_journal(&data_dir, &workspace, "Compaction fixture");
+    without_child_spawns(|| {
+        let mut session = SessionJournal::open(&journal).expect("reopen fixture journal");
+        for index in 0..2 {
+            let request_id = session.start_turn().expect("start fixture turn");
+            session
+                .record_message(MessageRole::User, &format!("question {index}"))
+                .expect("record fixture question");
+            session
+                .record_message(MessageRole::Assistant, &format!("answer {index}"))
+                .expect("record fixture answer");
+            session
+                .complete_turn(request_id)
+                .expect("complete fixture turn");
+        }
+    });
+    let before = std::fs::read(&journal).expect("read the journal before");
+    let mut command = cli();
+    command.args([
+        "--data-dir",
+        data_dir.to_str().expect("temporary path is Unicode"),
+        "session",
+        "compact",
+        journal.to_str().expect("temporary path is Unicode"),
+        "--model",
+        "fixture",
+        "--context-tokens",
+        "131072",
+        "--summary-tokens",
+        "256",
+    ]);
+
+    // When the operator interrupts the CLI while it waits.
+    let (output, closed) = interrupt_once_the_request_waits(&mut command);
+
+    // Then the request was dropped, the CLI fails with `cancelled`, and the
+    // journal is byte for byte what it was.
+    assert!(closed, "the CLI closed the held connection");
+    assert!(!output.status.success());
+    assert_eq!(error_json(&output)["error"]["code"], "cancelled");
+    assert_eq!(
+        std::fs::read(&journal).expect("read the journal after"),
+        before
+    );
+}

@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.33.0 is a developer CLI prototype with workspace permission
+OMGCode 0.34.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
@@ -581,6 +581,17 @@ journal records only the validated reply. A failed write to standard error stops
 further writes and does not fail the turn. `session compact` has no `--stream`
 flag, and compaction requests are never streamed. See
 [streamed replies](provider-authentication.md#streamed-replies-0320).
+
+Since 0.34.0 an interrupt cancels `chat` and `session compact` (ADR-0051). Once
+the journal is open, Ctrl-C or Ctrl-Break on Windows and `SIGINT` or `SIGTERM`
+on Linux set the command's cancel token instead of ending the process. The
+model or summarizer request in flight stops within about 25 ms, streamed or
+not. The command then fails with the code `cancelled`: a chat turn that had
+started is recorded as cancelled with no assistant message and no open turn,
+and a cancelled compaction leaves the journal unchanged. A read, list, or edit
+tool call already running finishes first. Before the journal is open, an
+interrupt ends the process as before. A handler that cannot be installed fails
+the command with the code `interrupt` before any model request.
 
 ```text
 omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Summarise README.md."

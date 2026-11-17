@@ -1,6 +1,7 @@
 # 0050: Interrupt a streamed model request when a turn is cancelled
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0051](0051-cancel-every-model-request-and-interrupt-cli-turns.md)
 - Date: 2026-11-16
 
 ## Context

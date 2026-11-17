@@ -39,10 +39,8 @@ fn chat_limits() -> TurnLimits {
     }
 }
 
-/// Run one tool-enabled turn through the core runtime.
-///
-/// `hooks.on_cancel_token` is called once, right after the runtime is built
-/// and before the first model request.
+/// Run one tool-enabled turn through the core runtime, which uses the turn's
+/// cancel token for its checkpoints and every model request.
 pub(super) fn run(
     journal: &mut SessionJournal,
     workspace_id: WorkspaceId,
@@ -85,10 +83,10 @@ pub(super) fn run(
     let redact_tool_text = |text: &str| redact_known_secret(text, token);
     let report: TurnReport = TurnRuntime::new(journal, turn.data_root, workspace_id, chat_limits())
         .and_then(|runtime| {
-            if let Some(hook) = hooks.on_cancel_token.as_deref_mut() {
-                hook(runtime.cancel_token());
-            }
-            runtime.with_tool_text_filter(&redact_tool_text).run(
+            runtime
+                .with_cancel_token(turn.cancel.clone())
+                .with_tool_text_filter(&redact_tool_text)
+                .run(
                 &mut model,
                 turn.message,
                 turn.instructions,

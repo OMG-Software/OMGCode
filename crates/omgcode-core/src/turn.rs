@@ -943,6 +943,19 @@ impl<'a> TurnRuntime<'a> {
         self
     }
 
+    /// Use `cancel` as the turn's token instead of the one the runtime made.
+    ///
+    /// A caller whose cancellation must also reach work done before the
+    /// runtime exists, such as compaction before a turn, creates one token
+    /// and hands it here (ADR-0051). A token already set when [`Self::run`]
+    /// starts returns `Cancelled` before the turn marker, so nothing is
+    /// recorded.
+    #[must_use]
+    pub fn with_cancel_token(mut self, cancel: CancelToken) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
     /// Return a token which requests cancellation at the next checkpoint.
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/omgcode-core", "crates/omgcode-cli", "crates/omgcode-platform", "crates/omgcode-app", "crates/omgcode-desktop"]
 
 [workspace.package]
-version = "0.33.0"
+version = "0.34.0"
 edition = "2024"
 rust-version = "1.99.1"
 license = "Apache-2.0"
@@ -17,7 +17,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt", "time", "net", "fs", "io-util"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls"] }
 sha2 = "0.11.1"
 clap = { version = "4.6.7", features = ["derive"] }
 directories = "6"

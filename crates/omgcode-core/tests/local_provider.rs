@@ -211,7 +211,7 @@ fn assert_prompt_rejected_before_connect(messages: &[ModelMessage]) {
         }
     });
 
-    let result = model.complete(messages);
+    let result = model.complete(messages, &CancelToken::new());
     let unexpected_request = join_bounded(monitor, "bounded listener monitor completes");
 
     assert_eq!(result, Err(ProviderError::InvalidConfiguration));
@@ -229,7 +229,9 @@ fn sends_prompt_roles_without_tools_and_parses_plain_reply() {
         Some("local-secret-token".to_owned()),
     );
 
-    let reply = model.complete(&messages()).expect("valid completion");
+    let reply = model
+        .complete(&messages(), &CancelToken::new())
+        .expect("valid completion");
     let (head, body) = fixture.finish();
     let request: serde_json::Value = serde_json::from_slice(&body).expect("request JSON");
 
@@ -269,7 +271,9 @@ fn does_not_leak_token_on_authentication_failure() {
         fixture.address.clone(),
         Some("local-secret-token".to_owned()),
     );
-    let error = model.complete(&messages()).expect_err("401 is an error");
+    let error = model
+        .complete(&messages(), &CancelToken::new())
+        .expect_err("401 is an error");
     let (head, _) = fixture.finish();
 
     assert_eq!(error, ProviderError::HttpStatus(401));
@@ -285,7 +289,7 @@ fn does_not_leak_token_on_authentication_failure() {
 fn rejects_invalid_response_schemas_and_tool_requests() {
     let malformed = Fixture::start("200 OK", br#"{"choices":[]}"#, "");
     let error = client(malformed.address.clone(), None)
-        .complete(&messages())
+        .complete(&messages(), &CancelToken::new())
         .expect_err("empty choices are invalid");
     malformed.finish();
     assert_eq!(error, ProviderError::MalformedResponse);
@@ -296,7 +300,7 @@ fn rejects_invalid_response_schemas_and_tool_requests() {
         "",
     );
     let error = client(tool_call.address.clone(), None)
-        .complete(&messages())
+        .complete(&messages(), &CancelToken::new())
         .expect_err("tool requests are unsupported");
     tool_call.finish();
     assert_eq!(error, ProviderError::UnsupportedToolCall);
@@ -308,7 +312,7 @@ fn accepts_empty_lm_studio_tool_call_array_as_no_action() {
     let fixture = Fixture::start("200 OK", response, "");
     let model = client(fixture.address.clone(), None);
 
-    let result = model.complete(&messages());
+    let result = model.complete(&messages(), &CancelToken::new());
     fixture.finish();
 
     assert_eq!(
@@ -329,7 +333,7 @@ fn accepts_empty_lm_studio_tool_call_array_as_no_action() {
 fn rejects_oversized_response_body() {
     let fixture = Fixture::start("200 OK", &vec![b'x'; 1024 * 1024 + 1], "");
     let error = client(fixture.address.clone(), None)
-        .complete(&messages())
+        .complete(&messages(), &CancelToken::new())
         .expect_err("oversized response is rejected");
     fixture.finish();
     assert_eq!(error, ProviderError::ResponseTooLarge);
@@ -373,7 +377,8 @@ fn null_action_fields_are_absent_but_actual_or_malformed_calls_fail() {
             target.extend(fields.as_object().expect("field object").clone());
             let encoded = serde_json::to_vec(&response).expect("fixture response JSON");
             let fixture = Fixture::start("200 OK", &encoded, "");
-            let result = client(fixture.address.clone(), None).complete(&messages());
+            let result =
+                client(fixture.address.clone(), None).complete(&messages(), &CancelToken::new());
             fixture.finish();
             assert_eq!(result.err(), expected);
         }
@@ -388,7 +393,7 @@ fn does_not_follow_redirects() {
         "Location: http://127.0.0.1:9/v1/chat/completions\r\n",
     );
     let error = client(fixture.address.clone(), None)
-        .complete(&messages())
+        .complete(&messages(), &CancelToken::new())
         .expect_err("redirect response is not followed");
     fixture.finish();
     assert_eq!(error, ProviderError::HttpStatus(302));
@@ -446,7 +451,7 @@ fn context_budget_fails_before_network_request() {
     .expect("valid limits");
 
     assert_eq!(
-        model.complete(&messages()),
+        model.complete(&messages(), &CancelToken::new()),
         Err(ProviderError::ContextLimit)
     );
     assert!(
@@ -505,7 +510,7 @@ fn wire_size_limit_fails_before_network_request() {
     ];
 
     assert_eq!(
-        model.complete(&oversized),
+        model.complete(&oversized, &CancelToken::new()),
         Err(ProviderError::RequestTooLarge)
     );
     assert!(
@@ -534,8 +539,11 @@ const TOOL_CALL_REPLY: &str = r#"{"choices":[{"message":{"role":"assistant","con
 /// Send one tool-enabled request to a fixture serving `body`.
 fn tool_exchange(body: &str) -> (Result<ToolModelReply, ProviderError>, Value) {
     let fixture = Fixture::start("200 OK", body.as_bytes(), "");
-    let result =
-        client(fixture.address.clone(), None).complete_with_tools(&messages(), &tool_definitions());
+    let result = client(fixture.address.clone(), None).complete_with_tools(
+        &messages(),
+        &tool_definitions(),
+        &CancelToken::new(),
+    );
     let (_, request) = fixture.finish();
     (
         result,
@@ -749,7 +757,7 @@ fn non_streaming_requests_still_send_stream_false_and_no_accept_header() {
     // Given the non-streaming text and tool methods.
     let fixture = Fixture::start("200 OK", SUCCESS.as_bytes(), "");
     client(fixture.address.clone(), None)
-        .complete(&messages())
+        .complete(&messages(), &CancelToken::new())
         .expect("reply");
 
     // When their requests are captured.
@@ -1166,7 +1174,9 @@ fn a_token_cancelled_before_the_call_makes_no_connection() {
     cancel.cancel();
     let mut pieces = Vec::new();
 
-    // When each streamed method is called.
+    // When each method, streamed or not, is called.
+    let plain = model.complete(&messages(), &cancel);
+    let plain_tools = model.complete_with_tools(&messages(), &tool_definitions(), &cancel);
     let text = model.complete_streaming(
         &messages(),
         &mut |piece: &str| pieces.push(piece.to_owned()),
@@ -1179,7 +1189,9 @@ fn a_token_cancelled_before_the_call_makes_no_connection() {
         &cancel,
     );
 
-    // Then both are cancelled, nothing was delivered, and nothing connected.
+    // Then all are cancelled, nothing was delivered, and nothing connected.
+    assert_eq!(plain, Err(ProviderError::Cancelled));
+    assert_eq!(plain_tools.err(), Some(ProviderError::Cancelled));
     assert_eq!(text, Err(ProviderError::Cancelled));
     assert_eq!(tools.err(), Some(ProviderError::Cancelled));
     assert!(pieces.is_empty());
@@ -1345,4 +1357,108 @@ fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_stream() {
     // Then the polling did not restart or disturb the request.
     assert_eq!(result.expect("a complete stream").content, "abc");
     assert_eq!(pieces, ["a", "b", "c"]);
+}
+
+// ---- Cancellation of a non-streamed request (ADR-0051) ----
+
+#[test]
+fn cancelling_a_non_streamed_request_while_the_head_is_awaited_stops_it() {
+    // Given a server that accepts each request and never sends a head.
+    // When the token is cancelled once the server has read the request.
+    let text = held_call(None, None, |model, _on_text, cancel| {
+        model.complete(&messages(), cancel)
+    });
+    let tools = held_call(None, None, |model, _on_text, cancel| {
+        model.complete_with_tools(&messages(), &tool_definitions(), cancel)
+    });
+
+    // Then each call is cancelled far inside the 30-second deadline, and its
+    // server saw the connection close.
+    assert_eq!(text.result, Err(ProviderError::Cancelled));
+    assert_eq!(tools.result.err(), Some(ProviderError::Cancelled));
+    for (elapsed, closed) in [(text.elapsed, text.closed), (tools.elapsed, tools.closed)] {
+        assert!(elapsed < CANCEL_BOUND, "cancellation took {elapsed:?}");
+        assert!(closed, "the connection was closed on cancellation");
+    }
+}
+
+#[test]
+fn cancelling_a_non_streamed_request_with_its_body_held_open_discards_the_part_read() {
+    // Given a server that sends a head announcing a longer body, the start
+    // of a valid reply, and then holds the connection open.
+    let partial = r#"{"choices":[{"message":{"role":"assistant","content":"partial"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{partial}",
+        SUCCESS.len()
+    );
+    let (request_read, request_seen) = mpsc::channel::<()>();
+    let (address, server) = holding_server(Some(response.into_bytes()), request_read);
+    let cancel = CancelToken::new();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            request_seen
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the server reads the request before the bound");
+            // The head and the partial body are written right after this
+            // signal. Waiting here makes it likely that the client is reading
+            // the body when it is cancelled; the outcome asserted below is
+            // the same if it is still awaiting the head.
+            thread::sleep(Duration::from_millis(200));
+            cancel.cancel();
+        })
+    };
+
+    // When the token is cancelled while the rest of the body is awaited.
+    let started = Instant::now();
+    let result = client(address, None).complete(&messages(), &cancel);
+    let elapsed = started.elapsed();
+    join_bounded(canceller, "canceller completes");
+    let closed = join_bounded(server, "fixture completes");
+
+    // Then the call is cancelled promptly, nothing of the body is returned,
+    // and the connection was closed.
+    assert_eq!(result, Err(ProviderError::Cancelled));
+    assert!(elapsed < CANCEL_BOUND, "cancellation took {elapsed:?}");
+    assert!(closed, "the connection was closed on cancellation");
+}
+
+#[test]
+fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_non_streamed_reply() {
+    // Given a server that sends its head and body in pieces more than one
+    // poll interval apart.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let address = format!("http://{}/v1", listener.local_addr().expect("address"));
+    let server = thread::spawn(move || {
+        let mut stream = accept_bounded(&listener);
+        stream
+            .set_nonblocking(false)
+            .expect("make accepted fixture stream blocking");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set fixture read timeout");
+        read_request(&mut stream).expect("read bounded request");
+        thread::sleep(Duration::from_millis(80));
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            SUCCESS.len()
+        );
+        stream.write_all(head.as_bytes()).expect("write head");
+        stream.flush().expect("flush head");
+        for piece in SUCCESS.as_bytes().chunks(SUCCESS.len().div_ceil(3)) {
+            thread::sleep(Duration::from_millis(80));
+            stream.write_all(piece).expect("write piece");
+            stream.flush().expect("flush piece");
+        }
+    });
+
+    // When the request runs with a token nobody cancels.
+    let result = client(address, None).complete(&messages(), &CancelToken::new());
+    join_bounded(server, "fixture completes");
+
+    // Then the polling did not restart or disturb the request.
+    let reply = result.expect("a complete reply");
+    assert_eq!(reply.content, "A plain reply.");
+    assert_eq!(reply.finish_reason, "stop");
 }

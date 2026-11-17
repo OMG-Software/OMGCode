@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use omgcode_app::desktop::{
-    ChatState, ChatStatus, DesktopError, DesktopService, SessionStatus, ToolsMode,
+    ChatEvent, ChatState, ChatStatus, DesktopError, DesktopService, SessionStatus, ToolsMode,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -440,7 +440,9 @@ fn cancelling_a_tool_turn_reports_cancelling_then_fails_with_the_core_error() {
 }
 
 #[test]
-fn a_cancel_request_does_not_pretend_to_stop_a_text_only_turn() {
+fn cancelling_a_non_streamed_text_turn_stops_its_request() {
+    // Given a text-only turn whose request is not streamed and whose reply the
+    // server holds until the test ends.
     let (release, hold) = gate();
     let (announce, arrived) = std::sync::mpsc::channel();
     let started = started(
@@ -448,21 +450,40 @@ fn a_cancel_request_does_not_pretend_to_stop_a_text_only_turn() {
         vec![Step::gated(text("late answer"), hold).announcing(announce)],
     );
     let service = &started.service;
-    let session = new_session(service, &started.workspace, "Uncancellable");
+    let session = new_session(service, &started.workspace, "Cancellable");
     send(service, session, "hi", &started.server.endpoint).expect("send");
     wait_arrived(&arrived);
 
+    // When the turn is cancelled while the request waits.
+    let begun = Instant::now();
     let after = service
         .chat_cancel(wire(session_request(session)))
         .expect("cancel");
-    assert_eq!(
-        after.state,
-        ChatState::Running,
-        "no cancellation point exists"
+
+    // Then the turn has a token to act on, its request stops without the
+    // reply, and the cancellation is recorded (ADR-0051).
+    assert_eq!(after.state, ChatState::Cancelling);
+    let done = wait_finished(service, session);
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "cancellation took {:?}",
+        begun.elapsed()
     );
-    assert_eq!(status(service, session).state, ChatState::Running);
-    release.send(()).expect("release the model reply");
-    assert_eq!(wait_finished(service, session).state, ChatState::Completed);
+    assert_eq!(done.state, ChatState::Failed);
+    let error = done.error.expect("an error");
+    assert_eq!(error.code(), "cancelled");
+    let page = service
+        .session_transcript(wire(
+            json!({"session_id": session, "after_seq": null, "limit": 50}),
+        ))
+        .expect("transcript");
+    let entries: Vec<_> = page.entries.iter().map(json_of).collect();
+    let failure = entries
+        .iter()
+        .find(|entry| entry["kind"] == "turn_failed")
+        .expect("a failed turn is recorded");
+    assert_eq!(failure["code"], "cancelled");
+    assert!(!format!("{entries:?}").contains("late answer"));
 
     // Cancelling something that is not running or unknown is idle or unchanged.
     let unknown = service
@@ -474,23 +495,44 @@ fn a_cancel_request_does_not_pretend_to_stop_a_text_only_turn() {
             .chat_cancel(wire(session_request(session)))
             .expect("cancel finished")
             .state,
-        ChatState::Completed
+        ChatState::Failed
     );
+    drop(release);
     assert_eq!(started.server.finish(), 1);
 }
 
 #[test]
 fn shutdown_does_not_wait_past_its_grace_and_later_reports_the_turn_finished() {
+    // Every model request can now be cancelled (ADR-0051), so a turn that
+    // outlasts the grace period must be held in a step that cannot be: here
+    // the turn thread is held inside the event sink when its request starts,
+    // standing in for a tool call in progress.
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    // The cancelled turn never sends its request.
+    let server = common::NoCallServer::start();
+    let service = &fixture.service_streaming(&server.endpoint, common::no_token, true);
     let (release, hold) = gate();
-    let (announce, arrived) = std::sync::mpsc::channel();
-    let started = started(
-        text_only(),
-        vec![Step::gated(text("slow"), hold).announcing(announce)],
-    );
-    let service = &started.service;
-    let session = new_session(service, &started.workspace, "Slow");
-    send(service, session, "hi", &started.server.endpoint).expect("send");
-    wait_arrived(&arrived);
+    let (held, holding) = std::sync::mpsc::channel();
+    let hold = std::sync::Mutex::new(Some((hold, held)));
+    service
+        .chat_subscribe(Box::new(move |event| {
+            if matches!(event, ChatEvent::RequestStarted { .. })
+                && let Some((hold, held)) = hold.lock().ok().and_then(|mut slot| slot.take())
+            {
+                // The test may have failed and stopped listening.
+                held.send(()).ok();
+                // A release and a dropped sender both let the turn go on.
+                hold.recv_timeout(Duration::from_secs(20)).ok();
+            }
+            true
+        }))
+        .expect("subscribe");
+    let session = new_session(service, &workspace, "Slow");
+    send(service, session, "hi", &server.endpoint).expect("send");
+    holding
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the turn reaches its request");
 
     let grace = Duration::from_millis(150);
     let begun = Instant::now();
@@ -502,17 +544,21 @@ fn shutdown_does_not_wait_past_its_grace_and_later_reports_the_turn_finished() {
         elapsed < grace + Duration::from_secs(2),
         "did not block past the grace period: {elapsed:?}"
     );
-    assert_eq!(status(service, session).state, ChatState::Running);
-    let after = send(service, session, "more", &started.server.endpoint)
-        .expect_err("no new turn after shutdown");
+    // The turn holds a token, so it is reported as cancelling.
+    assert_eq!(status(service, session).state, ChatState::Cancelling);
+    let after =
+        send(service, session, "more", &server.endpoint).expect_err("no new turn after shutdown");
     assert_eq!(after.code(), "shutting_down");
 
-    // Once the model answers, the thread ends and shutdown reports it finished.
-    release.send(()).expect("release the model reply");
+    // Once released, the thread sees the cancellation before it sends the
+    // request, ends, and shutdown reports it finished.
+    release.send(()).expect("release the turn");
     let report = service.shutdown(Duration::from_secs(20));
     assert_eq!((report.finished, report.still_running), (1, 0));
-    assert_eq!(status(service, session).state, ChatState::Completed);
-    assert_eq!(started.server.finish(), 1);
+    let done = status(service, session);
+    assert_eq!(done.state, ChatState::Failed);
+    assert_eq!(done.error.expect("an error").code(), "cancelled");
+    server.assert_untouched();
 }
 
 #[test]

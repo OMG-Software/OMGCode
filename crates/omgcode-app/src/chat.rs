@@ -93,21 +93,28 @@ pub enum ChatStreamEvent<'a> {
     Text(&'a str),
 }
 
-/// Optional callbacks a front end can supply to a turn.
+/// Optional callbacks and cancellation source a front end can supply to a turn.
 ///
-/// One hook delivers the cancellation token. Cancellation is cooperative: the
-/// core checks it between rounds and tool calls, and a streamed model request
-/// also watches it and stops within about 25 ms (ADR-0050). A request that is
-/// not streamed cannot be interrupted. The other hook streams provisional
-/// text.
+/// Every turn has one cancel token, created before compaction and before any
+/// model request (ADR-0051). Cancellation is cooperative: the core checks it
+/// between rounds and tool calls, and every model request, streamed or not,
+/// including the compaction requests before a turn, watches it and stops
+/// within about 25 ms (ADR-0050, ADR-0051). A tool call already running is
+/// not interrupted, except a command, whose run is cancelled. One hook
+/// delivers the token, and the other streams provisional text.
 #[derive(Default)]
 pub struct ChatHooks<'a> {
-    /// Called once, before the first model request: on the tool-enabled path
-    /// right after the turn runtime is built, and on a text-only turn only when
-    /// it streams (`on_stream` is set). A text-only turn that does not stream
-    /// never calls it, because a non-streamed request cannot be interrupted.
-    /// The callback runs on the turn's thread and must not block; hand the
-    /// token to another thread and return.
+    /// The token the turn uses. When `None`, the turn creates its own. A front
+    /// end that must be able to cancel before the turn starts, such as an
+    /// interrupt watcher installed beforehand, supplies it here. A token
+    /// already set when the turn starts ends it as cancelled before any model
+    /// request.
+    pub cancel: Option<CancelToken>,
+    /// Called once with a clone of the turn's token, after the session checks
+    /// and before the compaction check and the first model request, on both
+    /// the text-only and the tool-enabled path. The callback runs on the
+    /// turn's thread and must not block; hand the token to another thread and
+    /// return.
     pub on_cancel_token: Option<&'a mut dyn FnMut(CancelToken)>,
     /// When set, every model request of the turn is streamed and this callback
     /// receives [`ChatStreamEvent::RequestStarted`] before each request and
@@ -167,6 +174,8 @@ struct Turn<'a> {
     settings: &'a ChatSettings,
     token: Option<&'a str>,
     data_root: &'a Path,
+    /// The turn's one cancel token, shared by compaction and every request.
+    cancel: &'a CancelToken,
 }
 
 /// Run one chat turn, building the clients from the settings first.
@@ -193,6 +202,11 @@ pub fn run_chat_turn(
 /// provider request or runtime is recorded in the journal where the core can
 /// do so, and an uncertain storage failure is reported, never papered over.
 ///
+/// A cancelled turn returns `cancelled` (ADR-0051). A cancellation during the
+/// compaction before a turn records nothing, because neither the compaction
+/// nor the turn was recorded yet; a cancellation after the turn started is
+/// recorded with the failure reason `cancelled` and leaves no open turn.
+///
 /// The message and instructions are cleaned of the known token before use. The
 /// token is used only for redaction and is never part of any returned error.
 pub fn run_chat_turn_with_clients(
@@ -205,12 +219,14 @@ pub fn run_chat_turn_with_clients(
     let settings = input.settings;
     let message = redact_known_secret(input.message, input.token);
     let instructions = redact_known_secret(&settings.instructions, input.token);
+    let cancel = hooks.cancel.clone().unwrap_or_default();
     let turn = Turn {
         message: &message,
         instructions: &instructions,
         settings,
         token: input.token,
         data_root,
+        cancel: &cancel,
     };
     if journal.snapshot().archived {
         return Err(AppError::new(
@@ -223,6 +239,11 @@ pub fn run_chat_turn_with_clients(
             ErrorKind::Session,
             tools::ACTIVE_TURN_MESSAGE,
         ));
+    }
+    // The front end can cancel from here on, which covers the compaction
+    // requests below as well as the turn's own requests.
+    if let Some(hook) = hooks.on_cancel_token.as_deref_mut() {
+        hook(cancel.clone());
     }
     let mode = select(data_root, journal)?;
     let tools_enabled = matches!(mode, ToolMode::Enabled { .. });

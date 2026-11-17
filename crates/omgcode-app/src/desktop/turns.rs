@@ -40,11 +40,12 @@ const STOPPED_UNEXPECTEDLY: &str = "The chat turn stopped unexpectedly.";
 pub struct ShutdownReport {
     /// Turn threads that were in flight at the start and have finished.
     pub finished: usize,
-    /// Turn threads still running when the grace period ended. A streamed
-    /// request is interrupted by the cancel request, so this is a turn whose
-    /// request is not streamed, or one in a step that cannot be interrupted
-    /// (a tool call, or compaction). Such a thread may still be waiting; its
-    /// journal is left with an open turn.
+    /// Turn threads still running when the grace period ended. Every model
+    /// request, streamed or not, and every compaction request is interrupted
+    /// by the cancel request (ADR-0051), so this is a turn in a step that
+    /// cannot be interrupted, such as a read, list, or edit tool call, or one
+    /// that has not yet handed over its token. Such a thread may still be
+    /// waiting; its journal may be left with an open turn.
     pub still_running: usize,
 }
 
@@ -54,8 +55,8 @@ pub(super) enum SlotState {
     Running {
         /// A cancel was requested (it may have no token to act on yet).
         cancel_requested: bool,
-        /// The turn's cancel token, once it exists. A streamed turn has one; a
-        /// turn whose request is not streamed has none unless it uses tools.
+        /// The turn's cancel token, once the turn has handed it over. Every
+        /// turn hands one over before its first model request (ADR-0051).
         cancel: Option<CancelToken>,
     },
     /// The turn ended.
@@ -408,6 +409,7 @@ fn execute(inner: &Inner, job: &TurnJob) -> Result<ChatOutcome, DesktopError> {
     let mut hand_over = |cancel: CancelToken| inner.hand_over_cancel_token(session_id, cancel);
     let mut forward = |event: ChatStreamEvent<'_>| inner.events_stream(session_id, event);
     let mut hooks = ChatHooks {
+        cancel: None,
         on_cancel_token: Some(&mut hand_over),
         on_stream: if inner.stream {
             Some(&mut forward)

@@ -16,12 +16,14 @@ use std::time::{Duration, Instant};
 mod common;
 
 use omgcode_app::{
-    ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput, create_session,
-    run_chat_turn,
+    ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput, compact_journal,
+    create_session, run_chat_turn,
 };
+use omgcode_core::context::ContextBudget;
 use omgcode_core::control::ControlStore;
 use omgcode_core::policy::PermissionSet;
-use omgcode_core::session::SessionJournal;
+use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
+use omgcode_core::session::{MessageRole, SessionJournal};
 use omgcode_core::turn::CancelToken;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -447,12 +449,15 @@ fn a_transport_failure_is_recorded_and_never_mentions_the_token() {
 }
 
 #[test]
-fn a_text_only_turn_serializes_the_published_object_and_skips_the_cancel_hook() {
+fn a_text_only_turn_serializes_the_published_object_and_calls_the_cancel_hook_once() {
     let fixture = Fixture::new(false);
     let mut journal = fixture.journal();
     let server = SequenceServer::start(vec![text(&format!("pong {SECRET}"))], None);
     let mut calls = 0_usize;
-    let mut on_cancel_token = |_token: CancelToken| calls += 1;
+    let mut on_cancel_token = |token: CancelToken| {
+        assert!(!token.is_cancelled());
+        calls += 1;
+    };
     let output = turn(
         &mut journal,
         &fixture.data,
@@ -460,16 +465,15 @@ fn a_text_only_turn_serializes_the_published_object_and_skips_the_cancel_hook() 
         Some(SECRET),
         &format!("ping {SECRET}"),
         &mut ChatHooks {
+            cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: None,
         },
     )
     .expect("text-only turn");
     assert_eq!(server.finish(), 1);
-    assert_eq!(
-        calls, 0,
-        "a request that is not streamed cannot be interrupted"
-    );
+    // A request that is not streamed can be interrupted too (ADR-0051).
+    assert_eq!(calls, 1);
 
     assert!(!output.tools_enabled());
     assert_eq!(output.disabled_reason(), Some("settings_absent"));
@@ -518,6 +522,7 @@ fn a_tool_turn_calls_the_cancel_hook_once_and_serializes_the_published_object() 
         None,
         "hello",
         &mut ChatHooks {
+            cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: None,
         },
@@ -574,6 +579,7 @@ fn a_cancelled_token_ends_the_tool_turn_with_the_core_cancelled_failure() {
         None,
         "list the files",
         &mut ChatHooks {
+            cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: None,
         },
@@ -921,6 +927,7 @@ fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
         None,
         "say something",
         &mut ChatHooks {
+            cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: Some(&mut on_stream),
         },
@@ -1033,6 +1040,7 @@ fn a_streamed_text_turn_that_is_not_cancelled_hands_over_a_live_token_and_comple
             None,
             "greet me",
             &mut ChatHooks {
+                cancel: None,
                 on_cancel_token: Some(&mut on_cancel_token),
                 on_stream: Some(&mut on_stream),
             },
@@ -1079,6 +1087,7 @@ fn a_cancel_seen_only_after_the_reply_arrived_still_ends_the_turn_as_cancelled()
         None,
         "say it",
         &mut ChatHooks {
+            cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: Some(&mut on_stream),
         },
@@ -1095,34 +1104,278 @@ fn a_cancel_seen_only_after_the_reply_arrived_still_ends_the_turn_as_cancelled()
     assert!(!has_assistant_message(&events));
 }
 
-#[test]
-fn a_non_streamed_text_turn_never_calls_the_cancel_hook_and_cannot_be_cancelled() {
-    // Given a non-streamed text-only turn and a hook that would cancel.
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal();
-    let server = common::MockServer::start(vec![common::Step::reply(common::text("plain"))]);
-    let mut calls = 0_usize;
-    let mut on_cancel_token = |token: CancelToken| {
-        calls += 1;
-        token.cancel();
-    };
+// ---- Cancelling a non-streamed turn and its compaction (ADR-0051) ----
 
-    // When the turn runs.
-    let output = turn(
+/// What a turn did when its token was cancelled while the server held the
+/// reply of its first request.
+struct HeldTurn {
+    error: omgcode_app::AppError,
+    elapsed: Duration,
+    served: usize,
+    has_active_turn: bool,
+    events_before: usize,
+    events: Vec<Value>,
+}
+
+/// Run a non-streamed turn whose token comes from the caller. The server
+/// holds the reply of the first request, which is the compaction request when
+/// `chat` compacts, on a gate nobody opens until the turn has returned; a
+/// helper thread cancels the token once that request has arrived.
+fn cancel_while_a_reply_is_held(
+    tools_enabled: bool,
+    chat: impl FnOnce(&str) -> ChatSettings,
+    prepare: impl FnOnce(&mut SessionJournal),
+) -> HeldTurn {
+    let fixture = Fixture::new(tools_enabled);
+    let mut journal = fixture.journal();
+    prepare(&mut journal);
+    let path = journal.path().to_owned();
+    let events_before = close_and_read(journal).len();
+    let mut journal = SessionJournal::open(&path).expect("reopen the session");
+    let (release, gate) = common::gate();
+    let (arrived, arrival) = mpsc::channel();
+    let server = common::MockServer::start(vec![
+        common::Step::gated(common::text("too late"), gate).announcing(arrived),
+    ]);
+    let cancel = CancelToken::new();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            common::wait_arrived(&arrival);
+            cancel.cancel();
+        })
+    };
+    let started = Instant::now();
+    let result = turn(
         &mut journal,
         &fixture.data,
-        &settings(&server.endpoint),
+        &chat(&server.endpoint),
         None,
         "hello",
         &mut ChatHooks {
-            on_cancel_token: Some(&mut on_cancel_token),
+            cancel: Some(cancel),
+            on_cancel_token: None,
             on_stream: None,
         },
+    );
+    let elapsed = started.elapsed();
+    canceller.join().expect("canceller thread");
+    // Let the server finish; its held reply finds the connection closed.
+    drop(release);
+    let served = server.finish();
+    let has_active_turn = journal.snapshot().active_turn.is_some();
+    HeldTurn {
+        error: result.expect_err("the cancelled turn fails"),
+        elapsed,
+        served,
+        has_active_turn,
+        events_before,
+        events: close_and_read(journal),
+    }
+}
+
+#[test]
+fn a_non_streamed_text_turn_cancelled_while_waiting_is_recorded_as_cancelled() {
+    // Given a non-streamed text-only turn whose server holds the reply.
+    // When the token is cancelled once the request has arrived.
+    let ended = cancel_while_a_reply_is_held(false, settings, |_| {});
+
+    // Then the request stops far inside its 30-second deadline, and the
+    // journal holds a cancelled failure, no reply, and no open turn.
+    assert_eq!(ended.error.code(), "cancelled");
+    assert_eq!(ended.error.message(), "turn was cancelled");
+    assert!(
+        ended.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        ended.elapsed
+    );
+    assert_eq!(ended.served, 1);
+    assert_eq!(
+        last_failure_code(&ended.events).as_deref(),
+        Some("cancelled")
+    );
+    assert!(!has_assistant_message(&ended.events));
+    assert!(!ended.has_active_turn);
+    assert!(!format!("{:?}", ended.events).contains("too late"));
+}
+
+#[test]
+fn a_non_streamed_tool_turn_cancelled_while_waiting_runs_no_tool() {
+    // Given a non-streamed tool-enabled turn whose server holds the reply.
+    // When the token is cancelled once the request has arrived.
+    let ended = cancel_while_a_reply_is_held(true, settings, |_| {});
+
+    // Then the outcome is the one of the text-only path, and no tool ran.
+    assert_eq!(ended.error.code(), "cancelled");
+    assert_eq!(ended.error.message(), "turn was cancelled");
+    assert!(
+        ended.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        ended.elapsed
+    );
+    assert_eq!(
+        last_failure_code(&ended.events).as_deref(),
+        Some("cancelled")
+    );
+    assert!(!has_assistant_message(&ended.events));
+    assert!(!ended.has_active_turn);
+    assert!(
+        ended
+            .events
+            .iter()
+            .all(|event| !event["type"].as_str().unwrap_or("").starts_with("tool.")),
+        "no tool was requested or run"
+    );
+}
+
+/// Two completed exchanges, so that the older one can be compacted.
+fn two_exchanges(journal: &mut SessionJournal) {
+    for index in 0..2 {
+        let request_id = journal.start_turn().expect("turn");
+        journal
+            .record_message(MessageRole::User, &format!("question {index}"))
+            .expect("user message");
+        journal
+            .record_message(MessageRole::Assistant, &format!("answer {index}"))
+            .expect("assistant message");
+        journal.complete_turn(request_id).expect("complete turn");
+    }
+}
+
+/// Settings that compact before every turn.
+fn compacting(endpoint: &str) -> ChatSettings {
+    let mut chat = settings(endpoint);
+    chat.compact_threshold = 1;
+    chat.auto_compact = true;
+    chat
+}
+
+#[test]
+fn cancelling_the_compaction_before_a_turn_records_nothing() {
+    // Given a session over the compaction trigger with auto-compaction, and a
+    // server that holds the summarizer's reply.
+    // When the token is cancelled once the summarizer request has arrived.
+    let ended = cancel_while_a_reply_is_held(false, compacting, two_exchanges);
+
+    // Then the summarizer request stops promptly, and neither a compaction nor
+    // a turn was recorded: the journal is exactly as it was.
+    assert_eq!(ended.error.code(), "cancelled");
+    assert_eq!(
+        ended.error.message(),
+        "Compaction was cancelled; nothing was recorded"
+    );
+    assert!(
+        ended.elapsed < CANCEL_BOUND,
+        "cancellation took {:?}",
+        ended.elapsed
+    );
+    assert_eq!(ended.served, 1);
+    assert!(!ended.has_active_turn);
+    assert_eq!(ended.events.len(), ended.events_before);
+}
+
+#[test]
+fn a_token_set_before_the_turn_records_nothing_and_sends_nothing() {
+    for tools_enabled in [false, true] {
+        // Given a token that is already cancelled and a server that must not
+        // be contacted.
+        let fixture = Fixture::new(tools_enabled);
+        let mut journal = fixture.journal();
+        let server = common::NoCallServer::start();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut handed = 0_usize;
+        let mut on_cancel_token = |token: CancelToken| {
+            assert!(token.is_cancelled(), "the caller's token is handed over");
+            handed += 1;
+        };
+
+        // When the turn runs.
+        let error = turn(
+            &mut journal,
+            &fixture.data,
+            &settings(&server.endpoint),
+            None,
+            "hello",
+            &mut ChatHooks {
+                cancel: Some(cancel),
+                on_cancel_token: Some(&mut on_cancel_token),
+                on_stream: None,
+            },
+        )
+        .expect_err("a cancelled turn fails");
+
+        // Then it is cancelled before it starts: no request and no turn.
+        assert_eq!(error.code(), "cancelled", "tools: {tools_enabled}");
+        assert_eq!(handed, 1);
+        server.assert_untouched();
+        assert!(
+            close_and_read(journal)
+                .iter()
+                .all(|event| event["type"] != "turn.started"),
+            "tools: {tools_enabled}"
+        );
+    }
+}
+
+#[test]
+fn a_cancelled_compaction_through_the_command_path_records_nothing() {
+    // Given a session with two exchanges and a server that holds the summary.
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    two_exchanges(&mut journal);
+    let (release, gate) = common::gate();
+    let (arrived, arrival) = mpsc::channel();
+    let server = common::MockServer::start(vec![
+        common::Step::gated(common::text("summary"), gate).announcing(arrived),
+    ]);
+    let client = LocalModelClient::new(
+        LocalModelConfig {
+            base_url: server.endpoint.clone(),
+            model: "fixture".to_owned(),
+            context_tokens: 131_072,
+            max_output_tokens: 256,
+        },
+        None,
     )
-    .expect("a request that is not streamed is not interrupted");
+    .expect("summary client");
+    let cancel = CancelToken::new();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            common::wait_arrived(&arrival);
+            cancel.cancel();
+        })
+    };
+
+    // When the token is cancelled while the summarizer request waits.
+    let started = Instant::now();
+    let error = compact_journal(
+        &mut journal,
+        &fixture.data,
+        &client,
+        None,
+        ContextBudget {
+            threshold: u64::MAX,
+            context_tokens: 131_072,
+            max_output_tokens: 256,
+        },
+        &cancel,
+    )
+    .expect_err("the cancelled compaction fails");
+    let elapsed = started.elapsed();
+    canceller.join().expect("canceller thread");
+    drop(release);
     server.finish();
 
-    // Then no token was created and the turn completed.
-    assert_eq!(calls, 0);
-    assert_eq!(output.reply(), "plain");
+    // Then it is cancelled promptly and no compaction was recorded.
+    assert_eq!(error.code(), "cancelled");
+    assert!(elapsed < CANCEL_BOUND, "cancellation took {elapsed:?}");
+    assert!(journal.snapshot().compaction.is_none());
+    assert!(
+        close_and_read(journal)
+            .iter()
+            .all(|event| event["type"] != "context.compacted"),
+        "no compaction event"
+    );
 }

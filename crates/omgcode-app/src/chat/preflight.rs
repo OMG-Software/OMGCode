@@ -19,7 +19,8 @@ use crate::tool_mode::tool_replay_allowed;
 /// auto-compaction is a `context` error that names the operator's options.
 /// With auto-compaction, the summary client compacts the journal and the
 /// estimate is recomputed from live settings. No control store is held across
-/// the summarizer requests.
+/// the summarizer requests. The turn's cancel token stops a summarizer
+/// request; a cancelled compaction is `cancelled` and records nothing.
 pub(super) fn preflight_context(
     journal: &mut SessionJournal,
     turn: &Turn<'_>,
@@ -68,7 +69,14 @@ pub(super) fn preflight_context(
                 format!("{reason}. Use session compact or rerun chat with --auto-compact."),
             ));
         }
-        let outcome = compact_journal(journal, data_root, summary_client, token, summary_budget)?;
+        let outcome = compact_journal(
+            journal,
+            data_root,
+            summary_client,
+            token,
+            summary_budget,
+            turn.cancel,
+        )?;
         summarizer_calls = Some(outcome.calls);
         // Settings can change during the summarizer requests, so read the
         // replay authority again for the compacted history.

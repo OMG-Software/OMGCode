@@ -19,7 +19,9 @@ use omgcode_app::{
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
+use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
+use omgcode_core::turn::CancelToken;
 use serde::Serialize;
 use serde_json::json;
 use std::io::{self, Write};
@@ -311,6 +313,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "provider_adapters": false,
             "stored_credential_adapters": ["lm_studio"],
             "streaming_adapters": ["lm_studio"],
+            "cancellable_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),
             "approvals": true,
@@ -445,17 +448,26 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         settings: &settings,
         token: token_text,
     };
+    // From here an interrupt cancels the turn instead of ending the process,
+    // so the journal records the cancellation and keeps no open turn.
+    let cancel = CancelToken::new();
+    let interrupts =
+        cancel_on_interrupt(&cancel).map_err(|error| error.with_session(locator.clone()))?;
     // Provisional text goes to standard error through one printer, which locks
     // standard error only for each write, never across a model request.
     let mut printer = stream_cli::StreamPrinter::new(std::io::stderr());
     let turn = {
         let mut on_stream = |event: ChatStreamEvent<'_>| printer.handle(event);
-        let mut hooks = ChatHooks::default();
+        let mut hooks = ChatHooks {
+            cancel: Some(cancel),
+            ..ChatHooks::default()
+        };
         if args.stream {
             hooks.on_stream = Some(&mut on_stream);
         }
         run_chat_turn_with_clients(&mut journal, &data_root, &input, &clients, &mut hooks)
     };
+    stop_interrupts(interrupts);
     // End the last streamed line, also after a failed turn.
     printer.finish();
     // Every post-open failure, including output failures, carries the locator.
@@ -499,6 +511,10 @@ fn compact_session(
     let data_root = data_root(data_dir)?;
     let path = resolve_journal(locator.journal, locator.journal_native)?;
     let mut journal = SessionJournal::open(&path).map_err(session_error)?;
+    // An interrupt stops the summarizer request in flight; a cancelled
+    // compaction records nothing.
+    let cancel = CancelToken::new();
+    let interrupts = cancel_on_interrupt(&cancel)?;
     // Live settings decide whether saved tool results may reach the summarizer.
     let outcome = compact_journal(
         &mut journal,
@@ -510,7 +526,10 @@ fn compact_session(
             context_tokens,
             max_output_tokens: summary_tokens,
         },
-    )?;
+        &cancel,
+    );
+    stop_interrupts(interrupts);
+    let outcome = outcome?;
     let locator = journal_locator(&journal)?;
     print_json(&JournalOutput {
         locator,
@@ -520,6 +539,31 @@ fn compact_session(
             "summarizer_calls": outcome.calls,
         }),
     })
+}
+
+/// Cancel `cancel` when the operator interrupts the command (ADR-0051).
+///
+/// Ctrl-C and Ctrl-Break on Windows, and `SIGINT` and `SIGTERM` on Linux, are
+/// absorbed from here to the end of the process and set the token instead, so
+/// a model or compaction request stops within about 25 ms and the outcome is
+/// recorded. A command that cannot install the handler stops before any model
+/// request with the code `interrupt`.
+fn cancel_on_interrupt(cancel: &CancelToken) -> Result<InterruptWatch, CliError> {
+    let token = cancel.clone();
+    watch_interrupt(move || token.cancel()).map_err(|error| {
+        CliError::new(
+            "interrupt",
+            format!("Interrupt handling could not be installed: {error}"),
+        )
+    })
+}
+
+/// Stop the interrupt watcher once the turn or compaction has returned.
+fn stop_interrupts(interrupts: InterruptWatch) {
+    // The watcher is joined on every path. Its only failure is a panic in
+    // the watcher thread, which cannot change the outcome that was already
+    // recorded, so it is not reported over the command's result.
+    let _ = interrupts.stop();
 }
 
 /// Obtain the endpoint and server token for `chat` or `session compact`.

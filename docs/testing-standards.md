@@ -216,7 +216,15 @@ the response head, and during the body; the stream parser under arbitrary
 chunking; the turn runtime's cancelled arm; the cancellation of streamed
 text-only and tool-enabled turns; the desktop cancel and shutdown cases; and the
 frontend notice, which is decided by the error code. They used the same kind of
-local fixture. The adapter requires the
+local fixture. The 0.34.0 fixtures (ADR-0051) add a cancel of a non-streamed
+text and tool request before the request, before the response head, and with a
+body held open; a slow non-streamed reply that a live token does not disturb;
+the runtime's use of a caller's token; the cancellation of non-streamed text
+and tool turns, of the compaction before a turn, and of `compact_journal`; a
+token set before a turn; the desktop cancel of a non-streamed turn and the
+shutdown grace with a turn held in an event sink; and, on Linux only, `SIGINT`
+delivered to the CLI during `chat` and `session compact`. The platform
+interrupt test also covers `watch_interrupt`. The adapter requires the
 compiled base prompt and accepts only a literal loopback HTTP endpoint. The
 adapter is not a permission boundary: the CLI selects tool mode from the live
 `model_tools` preference, and the runtime rechecks that preference before each
@@ -232,8 +240,9 @@ own. It passed on Windows 11 build 26300 and WSL 6.6 (Ubuntu 24.04) on
 use a mock that returns the documented OpenAI-compatible tool-call shape; they
 do not establish live LM Studio tool-call compatibility. A single opt-in spot-check
 with LM Studio 0.4.28 and `google/gemma-4-e4b` on Windows is recorded in the implementation plan. Model discovery, streaming
-against a live server, cancellation against a live server, interrupting a
-non-streamed or compaction request, and live model compatibility remain future qualification work. The CLI can inspect
+against a live server, cancellation against a live server, an interrupt
+delivered to the CLI on Windows, and live model compatibility remain future
+qualification work. The CLI can inspect
 and archive sessions, but it does not execute recorded tool actions or resume
 an incomplete turn.
 

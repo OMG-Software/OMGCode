@@ -1,13 +1,13 @@
 //! The text-only chat turn.
 //!
 //! Text-only chat has no model file-read authority. The turn is one provider
-//! request. A streamed request watches a cancel token and can be interrupted; a
-//! request that is not streamed cannot be (ADR-0050).
+//! request, which watches the turn's cancel token and can be interrupted
+//! whether or not it streams (ADR-0050, ADR-0051).
 
 use omgcode_core::prompt::{self, ConversationMessage, ConversationRole};
 use omgcode_core::provider::{LocalModelClient, ProviderError};
 use omgcode_core::session::{MessageRole, RequestManifest, SessionError, SessionJournal};
-use omgcode_core::turn::{CancelToken, replay_active};
+use omgcode_core::turn::replay_active;
 
 use super::output::TextTurnOutput;
 use super::stream::StreamSink;
@@ -47,6 +47,11 @@ pub(super) fn run(
     journal
         .preflight_request(turn.message, &manifest)
         .map_err(AppError::session)?;
+    let cancel = turn.cancel;
+    // As in the runtime, a turn cancelled before it starts records nothing.
+    if cancel.is_cancelled() {
+        return Err(AppError::new(ErrorKind::Cancelled, CANCELLED_MESSAGE));
+    }
     let request_id = journal.start_turn().map_err(AppError::session)?;
     journal
         .record_message(MessageRole::User, turn.message)
@@ -56,30 +61,25 @@ pub(super) fn run(
         .map_err(AppError::session)?;
     // A streamed request shows provisional redacted text. The journal is
     // computed below from the whole reply, exactly as without streaming.
-    let result = match hooks.on_stream.as_deref_mut() {
-        Some(on_stream) => {
-            // Only a streamed request can be interrupted, so only it gets a
-            // token. The front end receives its clone before the request.
-            let cancel = CancelToken::new();
-            if let Some(hook) = hooks.on_cancel_token.as_deref_mut() {
-                hook(cancel.clone());
-            }
-            let mut sink = StreamSink::new(on_stream, token);
+    let mut sink = hooks
+        .on_stream
+        .as_deref_mut()
+        .map(|on_stream| StreamSink::new(on_stream, token));
+    let mut result = match sink.as_mut() {
+        Some(sink) => {
             sink.start_request();
-            let mut result =
-                client.complete_streaming(&messages, &mut |piece: &str| sink.text(piece), &cancel);
-            // As in the runtime, a cancellation seen once the reply has
-            // arrived still ends the turn as cancelled, recording no reply.
-            if result.is_ok() && cancel.is_cancelled() {
-                result = Err(ProviderError::Cancelled);
-            }
-            if result.is_ok() {
-                sink.finish_request();
-            }
-            result
+            client.complete_streaming(&messages, &mut |piece: &str| sink.text(piece), cancel)
         }
-        None => client.complete(&messages),
+        None => client.complete(&messages, cancel),
     };
+    // As in the runtime, a cancellation seen once the reply has arrived still
+    // ends the turn as cancelled, recording no reply.
+    if result.is_ok() && cancel.is_cancelled() {
+        result = Err(ProviderError::Cancelled);
+    }
+    if let (Ok(_), Some(sink)) = (&result, sink.as_mut()) {
+        sink.finish_request();
+    }
     let mut reply = match result {
         Ok(reply) => reply,
         Err(ProviderError::Cancelled) => {

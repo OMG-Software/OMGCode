@@ -44,12 +44,15 @@ merged to `main` at the time of writing):
 - Since version 0.33.0 (Phase D5, ADR-0050), cancelling a streamed turn
   interrupts its model request, and the turn ends as cancelled. Exit cancels
   every running streamed turn within the grace period.
+- Since version 0.34.0 (Phase D6, ADR-0051), cancelling also interrupts a
+  non-streamed request (`--stream off`) and the compaction request before a
+  turn. No command or wire type changed.
 
 Not implemented:
 
 - Installers, signing, and any other packaging. `bundle.active` is `false`.
-- Interrupting a request that is not streamed, the compaction request, or a
-  tool call in progress. Cancelling such a turn waits for the call to end.
+- Interrupting a read, list, or edit tool call in progress. Cancelling such a
+  turn waits for the call to end.
 - A settings interface. Workspace settings change only through the trusted
   CLI ([workspace settings](workspace-permissions.md)). Chat settings are not
   saved between runs.
@@ -376,25 +379,27 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   `running`. With `--stream off` no preview exists, and `finished` is still
   pushed. See
   [streamed replies](provider-authentication.md#streamed-replies-0320).
-- **Cancellation.** Cooperative. A streamed turn, text-only or tool-enabled,
-  hands its cancel token to the service. `chat_cancel` sets it, the state
-  becomes `cancelling`, and the streamed model request stops within about 25 ms
-  (see [streamed replies](provider-authentication.md#cancellation-0330)). The
-  turn ends as `failed` with the error code `cancelled`, and `finished` is
-  pushed. The journal holds a turn-failed record with the reason `cancelled`,
-  no assistant message, and no open turn. The preview text is never recorded.
-  The window shows the plain notice "Turn cancelled." with no error styling. It
-  decides by the error code only. A tool-enabled turn also checks the token
-  between model rounds and tool calls. These are not interrupted: a request
-  that is not streamed (`--stream off`), the compaction request before a turn,
-  and a tool call already in progress. A non-streamed text-only turn has no
-  cancel token, so cancelling it changes nothing. The CLI has no cancel source.
+- **Cancellation.** Cooperative. Every turn, text-only or tool-enabled,
+  streamed or not, hands its cancel token to the service before the
+  compaction check and its first model request (ADR-0051). `chat_cancel` sets
+  it, the state becomes `cancelling`, and the model or compaction request in
+  flight stops within about 25 ms (see
+  [cancellation](provider-authentication.md#cancelling-every-request-0340)).
+  The turn ends as `failed` with the error code `cancelled`, and `finished` is
+  pushed. A turn that had started leaves a turn-failed record with the reason
+  `cancelled`, no assistant message, and no open turn; a turn cancelled during
+  its compaction, or before its token was handed over, records nothing. The
+  preview text is never recorded. The window shows the plain notice "Turn
+  cancelled." with no error styling. It decides by the error code only. A
+  tool-enabled turn also checks the token between model rounds and tool
+  calls. A read, list, or edit tool call already in progress is not
+  interrupted.
 - **Archived or open sessions.** A chat request for an archived session fails
   with `archived`, and for a session with an open turn with `turn_open`.
 - **Exit.** Closing `main` asks every running turn to cancel and waits up to
-  five seconds. A streamed turn ends within that period and leaves no open
-  turn. A turn that cannot be interrupted, one waiting on a non-streamed
-  request, the compaction request, or a tool call, is abandoned if it is still
+  five seconds. A turn waiting on a model or compaction request ends within
+  that period and leaves no open turn. A turn in a step that cannot be
+  interrupted, a read, list, or edit tool call, is abandoned if it is still
   running when the period ends. Its journal keeps an open turn. The tree shows
   it as `turn_open`, and the operator can interrupt it.
 
@@ -578,7 +583,7 @@ What it does not do:
 | Settings store retry | 2 seconds at 20 ms |
 | Index busy timeout | 2 seconds |
 | Shutdown grace | 5 seconds |
-| Streamed request cancel check interval | 25 ms |
+| Model request cancel check interval | 25 ms |
 | Approve button delay | 1 second |
 | Poll and check intervals | chat reconcile 5 seconds, chat fallback poll 750 ms, approvals 3 seconds |
 
@@ -645,7 +650,8 @@ private store refuses, see the notes in
 - **Service.** Tests with a mock provider cover chat, approvals, review
   tokens, shutdown, and the index. `crates/omgcode-app/tests/desktop_events.rs`
   covers the event hub. The desktop chat and event tests also cover cancelling
-  a streamed turn and shutting down while one runs.
+  a streamed turn and shutting down while one runs, and cancelling a turn
+  whose request is not streamed.
 - **End to end.** The real Windows shell was driven over the WebView2 remote
   debugging port with real mouse and text input against a mock local model
   server, on 2026-11-16. A second run on the same day drove streaming and the
@@ -673,18 +679,19 @@ private store refuses, see the notes in
 - Two tests that need file symbolic links print `SKIPPED link assertions` and
   return on a host without the privilege to create them. They did not run on
   the Windows development host; they ran on Linux.
-- Not exercised: shutdown while a non-streamed provider request is in flight;
-  a live call that reaches the Rust `authorize` check.
+- Not exercised: a live call that reaches the Rust `authorize` check. The
+  real shell's windows were not driven again for 0.34.0; the service tests
+  cover cancelling a non-streamed turn.
 - The CI workflow changes for the shell have not run.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no
   live LM Studio server was used. No window has been opened on Linux, so the
   channel is unverified there. A streamed text reply has no usage counters
-  unless the server sends them. Cancellation interrupts only a streamed
-  request. It does not interrupt a non-streamed request, the compaction
-  request, or a tool call in progress, and the cancel path was checked against
-  local fixtures only, with no live server. The thirty-second request deadline
+  unless the server sends them. Cancellation interrupts every model and
+  compaction request but not a read, list, or edit tool call in progress, and
+  the cancel path was checked against local fixtures only, with no live
+  server. The thirty-second request deadline
   covers the whole response, so a long generation fails as before. While a turn runs, the transcript is not
   reloaded, so the message just sent is not shown above the live entry until
   the turn settles.

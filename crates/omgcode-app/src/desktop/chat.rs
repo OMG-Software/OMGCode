@@ -159,14 +159,15 @@ impl DesktopService {
 
     /// Request cooperative cancellation of a running turn.
     ///
-    /// A turn that streams, text-only or tool-enabled, hands its cancel token
-    /// to the slot. The request is then seen at once, the streamed model
-    /// request stops within about 25 ms, and the turn ends as `failed` with the
-    /// error code `cancelled` (ADR-0050). A tool-enabled turn also checks the
-    /// token between model rounds and tool calls. A turn whose request is not
-    /// streamed (`--stream off`) has no cancel token: the request is ignored,
-    /// the status stays `running`, and the request in flight is not
-    /// interrupted. `cancelling` is reported only when a cancel token exists.
+    /// Every turn, text-only or tool-enabled, streamed or not, hands its
+    /// cancel token to the slot before its first model request, including the
+    /// compaction requests before a turn (ADR-0051). A request is then seen at
+    /// once: the model or compaction request in flight stops within about
+    /// 25 ms, and the turn ends as `failed` with the error code `cancelled`
+    /// (ADR-0050). A tool-enabled turn also checks the token between model
+    /// rounds and tool calls. A cancel that arrives before the token is acted
+    /// on when the token is handed over, which ends the turn before it is
+    /// recorded. `cancelling` is reported only once a cancel token exists.
     ///
     /// # Errors
     ///
@@ -203,12 +204,14 @@ impl DesktopService {
     /// Request cancellation of every running turn and wait up to `grace` for
     /// the turn threads to finish, polling for completion.
     ///
-    /// Returns without waiting past `grace`. A streamed request stops within
-    /// about 25 ms, so a streamed turn finishes inside the grace period and
-    /// leaves no open turn. A request that is not streamed cannot be
-    /// interrupted: such a turn is reported in `still_running` and leaves its
-    /// journal with an open turn, which the operator can close later with the
-    /// interrupt command. After shutdown, `chat_send` is refused.
+    /// Returns without waiting past `grace`. Every model and compaction
+    /// request stops within about 25 ms (ADR-0051), so a turn waiting on the
+    /// model finishes inside the grace period and leaves no open turn. A turn
+    /// in a step that cannot be interrupted, such as a read, list, or edit tool
+    /// call, can outlast the grace period: it is reported in `still_running`
+    /// and may leave its journal with an open turn, which the operator can
+    /// close later with the interrupt command. After shutdown, `chat_send` is
+    /// refused.
     pub fn shutdown(&self, grace: Duration) -> ShutdownReport {
         self.inner.shutdown_turns(grace)
     }

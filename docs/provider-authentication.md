@@ -368,8 +368,8 @@ unchanged and remain the default.
   LM Studio server was used. A streamed text reply has no usage counters unless
   the server sends them. A long generation still fails at the thirty-second
   deadline. Preview text can differ from the recorded reply. Since 0.33.0 a
-  cancelled turn interrupts a streamed request, as described below; a
-  non-streamed request still cannot be interrupted.
+  cancelled turn interrupts a streamed request, and since 0.34.0 any request,
+  as described below.
 
 ### Cancellation (0.33.0)
 
@@ -400,11 +400,48 @@ are unchanged.
   runtime records a model error. A streamed text-only turn creates a token and
   ends as cancelled in the same way, including when the cancellation is seen
   after the reply arrived and before it is recorded.
-- **Not interruptible.** The non-streaming methods keep the blocking client. A
-  non-streamed request, the compaction request before a turn, and a tool call
-  in progress are not interrupted. The CLI has no cancel source.
+- **Not interruptible in 0.33.0.** The non-streaming methods kept the blocking
+  client. A non-streamed request, the compaction request before a turn, and a
+  tool call in progress were not interrupted, and the CLI had no cancel source.
+  Version 0.34.0 closes the first, second, and fourth gaps, below.
 - **Limits.** The cancel path was checked against local fixtures only. No live
   LM Studio server was used.
+
+### Cancelling every request (0.34.0)
+
+[ADR-0051](adr/0051-cancel-every-model-request-and-interrupt-cli-turns.md)
+applies the cancel rule above to every request.
+
+- **Transport.** `complete` and `complete_with_tools` take a `CancelToken` too.
+  All four methods share one transport: each request builds its own async
+  client inside a single-thread runtime created for that request, with the
+  settings and the deadline above. The blocking client and reqwest's `blocking`
+  feature are removed. The wire request is unchanged: reqwest's blocking client
+  was the same async client driven from a background thread. A non-streamed
+  body is read piece by piece within the 1 MiB bound; a body read in part when
+  the token is set is discarded.
+- **One token per turn.** Every chat turn creates one token after the session
+  checks and before the compaction check, hands a clone to
+  `ChatHooks::on_cancel_token` on every path, and uses it for the pre-turn
+  compaction requests and for every model request. A front end can supply the
+  token through `ChatHooks::cancel`. A token already set when the turn would
+  start ends it as `cancelled` before the turn marker, recording nothing.
+- **Compaction.** `compact_journal` takes a token. A cancelled compaction
+  returns the error kind `cancelled` ("Compaction was cancelled; nothing was
+  recorded"). The journal is written only after the last summary, so it is
+  unchanged.
+- **CLI.** `omgcode chat` and `session compact` install the interrupt handler
+  of the trusted `run` command once the journal is open. Ctrl-C or Ctrl-Break
+  on Windows and `SIGINT` or `SIGTERM` on Linux then set the token instead of
+  ending the process. The command fails with the code `cancelled`; a chat turn
+  that had started is recorded as cancelled and the error carries the session
+  locator. A handler that cannot be installed fails the command with the code
+  `interrupt` before any model request. `capabilities` reports
+  `cancellable_adapters: ["lm_studio"]`.
+- **Still not interruptible.** A read, list, or edit tool call already in
+  progress. A command tool call is cancelled through its run.
+- **Limits.** Checked against local fixtures only. No live LM Studio server
+  was used, and the CLI interrupt was delivered by a test only on Linux.
 
 LM Studio documents the request fields in
 [Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions)

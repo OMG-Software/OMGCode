@@ -5,15 +5,12 @@ use crate::storage::parse_strict_json;
 use crate::turn::{
     CancelToken, ModelError, ToolDefinition, ToolModel, ToolModelReply, ToolModelRequest,
 };
-use reqwest::StatusCode;
-use reqwest::Url;
-use reqwest::blocking::{Client, Response};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy;
+use reqwest::{Client, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
-use std::io::Read;
 use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
@@ -22,8 +19,8 @@ const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// How often a streamed request looks at its cancel token while it waits.
-/// It is also the longest a cancellation waits for the next wake-up.
+/// How often a request looks at its cancel token while it waits. It is also
+/// the longest a cancellation waits for the next wake-up.
 const CANCEL_POLL: Duration = Duration::from_millis(25);
 const MESSAGE_OVERHEAD_ESTIMATE: u64 = 256;
 const PROMPT_HEADROOM_ESTIMATE: u64 = 512;
@@ -50,8 +47,11 @@ pub struct LocalModelConfig {
 }
 
 /// A validated local LM Studio Chat Completions client.
+///
+/// It holds the validated settings only. Every request builds its own HTTP
+/// client inside a single-thread runtime made for that request (ADR-0050,
+/// ADR-0051), so no pooled connection outlives the runtime that drives it.
 pub struct LocalModelClient {
-    client: Client,
     endpoint: Url,
     model: String,
     context_tokens: u64,
@@ -127,8 +127,8 @@ pub enum ProviderError {
     /// A streamed response ended before its `[DONE]` marker.
     #[error("local model stream ended before completion")]
     IncompleteStream,
-    /// The caller's cancel token stopped a streamed request. Text already
-    /// delivered stays delivered and no reply exists.
+    /// The caller's cancel token stopped a request. Text a streamed request
+    /// already delivered stays delivered, and no reply exists.
     #[error("local model request was cancelled")]
     Cancelled,
 }
@@ -200,17 +200,7 @@ impl LocalModelClient {
             })
             .transpose()?;
 
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(request_timeout)
-            .build()
-            .map_err(|_| ProviderError::Transport)?;
-
         Ok(Self {
-            client,
             endpoint,
             model: config.model,
             context_tokens: config.context_tokens,
@@ -231,9 +221,32 @@ impl LocalModelClient {
     /// `max_tokens`. It never sends tool definitions or hosted execution fields.
     /// Model output remains untrusted plain text and is never interpreted as an
     /// action by this adapter.
-    pub fn complete(&self, messages: &[ModelMessage]) -> Result<ModelReply, ProviderError> {
+    ///
+    /// `cancel` stops the request exactly as it stops
+    /// [`Self::complete_streaming`] (ADR-0051): it is checked before anything
+    /// is sent, while the response head is awaited, and while each piece of
+    /// the body is awaited, at least every 25 ms. A set token drops the
+    /// request, closing the connection, and the result is `Cancelled`; a body
+    /// read in part is discarded. The method must not be called from inside
+    /// another async runtime.
+    ///
+    /// # Errors
+    ///
+    /// A request refused before sending is `InvalidConfiguration`,
+    /// `ContextLimit`, or `RequestTooLarge`. A connection, read, or deadline
+    /// failure is `Transport`, a non-success status is `HttpStatus`, a body
+    /// over 1 MiB is `ResponseTooLarge`, a reply outside the supported schema
+    /// is `MalformedResponse` or `UnsupportedToolCall`, and a set `cancel` is
+    /// `Cancelled`.
+    pub fn complete(
+        &self,
+        messages: &[ModelMessage],
+        cancel: &CancelToken,
+    ) -> Result<ModelReply, ProviderError> {
         let body = self.text_body(messages, false)?;
-        parse_response(self.send(body)?)
+        let bytes =
+            self.on_request_runtime(body.len(), cancel, self.whole_exchange(body, cancel))?;
+        parse_response(&bytes)
     }
 
     /// Send one bounded streaming request and pass assistant text to `on_text`.
@@ -267,7 +280,11 @@ impl LocalModelClient {
         cancel: &CancelToken,
     ) -> Result<ModelReply, ProviderError> {
         let body = self.text_body(messages, true)?;
-        let outcome = self.stream_request(body, stream::StreamMode::Text, on_text, cancel)?;
+        let outcome = self.on_request_runtime(
+            body.len(),
+            cancel,
+            self.stream_exchange(body, stream::StreamMode::Text, on_text, cancel),
+        )?;
         Ok(ModelReply {
             content: outcome.content,
             finish_reason: outcome.finish_reason,
@@ -298,14 +315,18 @@ impl LocalModelClient {
     /// keys, legacy `function_call` output, truncated tool calls, and more than
     /// 64 calls are refused. Returned tool calls stay raw and unvalidated; the
     /// caller must validate each one before any dispatch. This method executes
-    /// nothing and never trusts provider metadata or role labels.
+    /// nothing and never trusts provider metadata or role labels. `cancel`
+    /// stops the request as it does for [`Self::complete`].
     pub fn complete_with_tools(
         &self,
         messages: &[ModelMessage],
         tools: &[ToolDefinition],
+        cancel: &CancelToken,
     ) -> Result<ToolModelReply, ProviderError> {
         let body = self.tool_body(messages, tools, false)?;
-        parse_tool_response(self.send(body)?)
+        let bytes =
+            self.on_request_runtime(body.len(), cancel, self.whole_exchange(body, cancel))?;
+        parse_tool_response(&bytes)
     }
 
     /// Send one bounded streaming request that advertises the supplied tools.
@@ -326,7 +347,11 @@ impl LocalModelClient {
         cancel: &CancelToken,
     ) -> Result<ToolModelReply, ProviderError> {
         let body = self.tool_body(messages, tools, true)?;
-        let outcome = self.stream_request(body, stream::StreamMode::Tools, on_text, cancel)?;
+        let outcome = self.on_request_runtime(
+            body.len(),
+            cancel,
+            self.stream_exchange(body, stream::StreamMode::Tools, on_text, cancel),
+        )?;
         Ok(ToolModelReply {
             content: outcome.content,
             tool_calls: outcome.tool_calls,
@@ -403,43 +428,22 @@ impl LocalModelClient {
         Ok(())
     }
 
-    /// Post one encoded non-streaming request body to the validated loopback
-    /// endpoint with the blocking client.
-    fn send(&self, body: Vec<u8>) -> Result<Response, ProviderError> {
-        if body.len() > MAX_REQUEST_BYTES {
-            return Err(ProviderError::RequestTooLarge);
-        }
-
-        let mut request = self
-            .client
-            .post(self.endpoint.clone())
-            .timeout(self.request_timeout)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
-        if let Some(authorization) = &self.authorization {
-            request = request.header(AUTHORIZATION, authorization.clone());
-        }
-        request
-            .body(body)
-            .send()
-            .map_err(|_| ProviderError::Transport)
-    }
-
-    /// Run one streamed request on a single-thread runtime made for this call.
+    /// Drive one request on a single-thread runtime made for this call.
     ///
-    /// The runtime and the async client are built here and dropped here: a
-    /// pooled connection must not outlive the runtime that drives it, so no
-    /// client is kept. A runtime that cannot be built is `Transport`.
-    fn stream_request(
+    /// The request size is checked first, and nothing is created, let alone
+    /// connected, for a token already set. The runtime is dropped on return;
+    /// the exchange builds its HTTP client inside it, so a pooled connection
+    /// never outlives the runtime that drives it. A runtime that cannot be
+    /// built is `Transport`.
+    fn on_request_runtime<T>(
         &self,
-        body: Vec<u8>,
-        mode: stream::StreamMode,
-        on_text: &mut dyn FnMut(&str),
+        body_len: usize,
         cancel: &CancelToken,
-    ) -> Result<stream::StreamOutcome, ProviderError> {
-        if body.len() > MAX_REQUEST_BYTES {
+        exchange: impl Future<Output = Result<T, ProviderError>>,
+    ) -> Result<T, ProviderError> {
+        if body_len > MAX_REQUEST_BYTES {
             return Err(ProviderError::RequestTooLarge);
         }
-        // Nothing is created, let alone connected, for a turn already cancelled.
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
@@ -448,10 +452,93 @@ impl LocalModelClient {
             .enable_time()
             .build()
             .map_err(|_| ProviderError::Transport)?;
-        runtime.block_on(self.stream_exchange(body, mode, on_text, cancel))
+        runtime.block_on(exchange)
     }
 
-    /// Send the request and feed the response body to the stream parser.
+    /// Build the HTTP client for one request. Call it only inside the
+    /// request's runtime.
+    ///
+    /// No proxy, no redirect, no retry, the connect timeout, and the request
+    /// deadline. The async client's `timeout` is a total deadline from the
+    /// start of the request until the body has finished (reqwest 0.13.5,
+    /// `async_impl/client.rs`).
+    fn http_client(&self) -> Result<Client, ProviderError> {
+        Client::builder()
+            .no_proxy()
+            .redirect(Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(self.request_timeout)
+            .build()
+            .map_err(|_| ProviderError::Transport)
+    }
+
+    /// Post one encoded body to the validated loopback endpoint and wait for
+    /// the response head while watching `cancel`.
+    async fn send(
+        &self,
+        client: &Client,
+        body: Vec<u8>,
+        streaming: bool,
+        cancel: &CancelToken,
+    ) -> Result<Response, ProviderError> {
+        let mut request = client
+            .post(self.endpoint.clone())
+            .timeout(self.request_timeout)
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        if streaming {
+            request = request.header(reqwest::header::ACCEPT, "text/event-stream");
+        }
+        if let Some(authorization) = &self.authorization {
+            request = request.header(AUTHORIZATION, authorization.clone());
+        }
+        until_cancelled(request.body(body).send(), cancel)
+            .await?
+            .map_err(|_| ProviderError::Transport)
+    }
+
+    /// Send a non-streaming request and read its whole body within 1 MiB.
+    ///
+    /// The token is checked before each piece of the body as well as while
+    /// each is awaited. A non-success status is refused before the body is
+    /// read. Dropping the response or the pending request on any return
+    /// closes the connection.
+    async fn whole_exchange(
+        &self,
+        body: Vec<u8>,
+        cancel: &CancelToken,
+    ) -> Result<Vec<u8>, ProviderError> {
+        let client = self.http_client()?;
+        let mut response = self.send(&client, body, false, cancel).await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(ProviderError::HttpStatus(status.as_u16()));
+        }
+        let mut bytes = Vec::new();
+        loop {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let chunk = until_cancelled(response.chunk(), cancel)
+                .await?
+                .map_err(|_| ProviderError::Transport)?;
+            let Some(chunk) = chunk else {
+                return Ok(bytes);
+            };
+            let total = bytes
+                .len()
+                .checked_add(chunk.len())
+                .and_then(|total| u64::try_from(total).ok())
+                .ok_or(ProviderError::ResponseTooLarge)?;
+            if total > MAX_RESPONSE_BYTES {
+                return Err(ProviderError::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+
+    /// Send a streaming request and feed the response body to the stream
+    /// parser.
     ///
     /// Every wait goes through [`until_cancelled`], and the token is also
     /// checked before each piece of the body, so a fast stream cannot starve
@@ -464,29 +551,8 @@ impl LocalModelClient {
         on_text: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<stream::StreamOutcome, ProviderError> {
-        // The settings equal the blocking client's. The async client's
-        // `timeout` is a total deadline from the start of the request until the
-        // body has finished (reqwest 0.13.5, `async_impl/client.rs`).
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(self.request_timeout)
-            .build()
-            .map_err(|_| ProviderError::Transport)?;
-        let mut request = client
-            .post(self.endpoint.clone())
-            .timeout(self.request_timeout)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::ACCEPT, "text/event-stream");
-        if let Some(authorization) = &self.authorization {
-            request = request.header(AUTHORIZATION, authorization.clone());
-        }
-
-        let mut response = until_cancelled(request.body(body).send(), cancel)
-            .await?
-            .map_err(|_| ProviderError::Transport)?;
+        let client = self.http_client()?;
+        let mut response = self.send(&client, body, true, cancel).await?;
         check_streaming_head(response.status(), response.headers())?;
 
         let mut parser = stream::StreamParser::new(mode);
@@ -582,9 +648,10 @@ impl ToolModel for LocalToolModel<'_> {
                 &mut **on_text,
                 request.cancel,
             ),
-            None => self
-                .client
-                .complete_with_tools(request.messages, request.tools),
+            None => {
+                self.client
+                    .complete_with_tools(request.messages, request.tools, request.cancel)
+            }
         };
         result.map_err(|error| {
             self.last_error = Some(error);
@@ -753,34 +820,14 @@ fn check_streaming_head(status: StatusCode, headers: &HeaderMap) -> Result<(), P
     }
 }
 
-/// Read a successful response body within the byte limit.
-fn read_body(response: Response) -> Result<Vec<u8>, ProviderError> {
-    let status = response.status();
-    if !status.is_success() {
-        return Err(ProviderError::HttpStatus(status.as_u16()));
-    }
-
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ProviderError::Transport)?;
-    if u64::try_from(bytes.len()).map_err(|_| ProviderError::ResponseTooLarge)? > MAX_RESPONSE_BYTES
-    {
-        return Err(ProviderError::ResponseTooLarge);
-    }
-    Ok(bytes)
-}
-
 /// Parse one tool-capable reply strictly, leaving each call unvalidated.
 ///
 /// Duplicate keys at any depth are refused before any value is inspected, so a
 /// call cannot carry two names or two argument strings. Content may be `null`
 /// only when the reply contains tool calls. A reply cut short by the token
 /// limit cannot carry tool calls, because their arguments may be truncated.
-fn parse_tool_response(response: Response) -> Result<ToolModelReply, ProviderError> {
-    let bytes = read_body(response)?;
-    let value = parse_strict_json(&bytes).map_err(|_| ProviderError::MalformedResponse)?;
+fn parse_tool_response(bytes: &[u8]) -> Result<ToolModelReply, ProviderError> {
+    let value = parse_strict_json(bytes).map_err(|_| ProviderError::MalformedResponse)?;
     let choices = value
         .get("choices")
         .and_then(Value::as_array)
@@ -828,10 +875,9 @@ fn parse_tool_response(response: Response) -> Result<ToolModelReply, ProviderErr
 }
 
 /// Parse one bounded assistant response; never expose server error bodies.
-fn parse_response(response: Response) -> Result<ModelReply, ProviderError> {
-    let bytes = read_body(response)?;
+fn parse_response(bytes: &[u8]) -> Result<ModelReply, ProviderError> {
     let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| ProviderError::MalformedResponse)?;
+        serde_json::from_slice(bytes).map_err(|_| ProviderError::MalformedResponse)?;
     let choices = value
         .get("choices")
         .and_then(Value::as_array)
@@ -941,7 +987,7 @@ pub(crate) const REFUSED_ENDPOINTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     /// The client refuses every listed destination; the profile record tests
     /// run the same list through `validate_base_url`'s other caller.
@@ -1001,7 +1047,11 @@ mod tests {
         assert_eq!(client.check_messages(&messages, 0), Ok(()));
         assert_eq!(
             client
-                .complete_with_tools(&messages, &crate::turn::tool_definitions())
+                .complete_with_tools(
+                    &messages,
+                    &crate::turn::tool_definitions(),
+                    &CancelToken::new()
+                )
                 .err(),
             Some(ProviderError::ContextLimit)
         );
@@ -1024,7 +1074,9 @@ mod tests {
             Err(ProviderError::RequestTooLarge)
         );
         assert_eq!(
-            roomy.complete_with_tools(&messages, &[]).err(),
+            roomy
+                .complete_with_tools(&messages, &[], &CancelToken::new())
+                .err(),
             Some(ProviderError::InvalidConfiguration)
         );
     }
@@ -1154,7 +1206,7 @@ mod tests {
         let result = if streamed {
             client.complete_streaming(&messages, &mut |_: &str| {}, &CancelToken::new())
         } else {
-            client.complete(&messages)
+            client.complete(&messages, &CancelToken::new())
         };
         let elapsed = started.elapsed();
         // Receiver disconnection also requests cleanup; either outcome is safe.

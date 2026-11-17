@@ -1155,6 +1155,40 @@ fn a_cancelled_model_request_of_a_cancelled_turn_records_cancelled() {
 }
 
 #[test]
+fn a_caller_token_is_the_turn_token_and_a_set_one_records_nothing() {
+    // Given a runtime given a caller's token, and a model that would reply.
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![text_reply("never sent")]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    let caller = CancelToken::new();
+    let mut runtime = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_cancel_token(caller.clone());
+
+    // When the caller cancels its token before the turn runs.
+    let handed = runtime.cancel_token();
+    caller.cancel();
+    let error = runtime
+        .run(&mut model, "read the file", "", manifest())
+        .expect_err("a cancelled turn does not run");
+    drop(runtime);
+
+    // Then the runtime's token is the caller's, the turn ended before its
+    // marker, and the model was never asked.
+    assert!(handed.is_cancelled());
+    assert!(matches!(error, TurnError::Cancelled), "{error:?}");
+    assert!(model.requests.is_empty());
+    assert_eq!(fixture.snapshot().active_turn, None);
+    fixture.close_journal();
+    assert_eq!(fixture.last_failure_code(), None);
+}
+
+#[test]
 fn a_cancelled_model_error_without_a_cancelled_turn_is_a_model_error() {
     // Given a model that reports an interrupted request though nobody cancelled.
     let mut fixture = Fixture::new();

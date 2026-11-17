@@ -12,8 +12,9 @@ use omgcode_core::context::{
     MAX_SUMMARY_BYTES, SummaryReply, compact,
 };
 use omgcode_core::prompt::{self, ConversationMessage};
-use omgcode_core::provider::LocalModelClient;
+use omgcode_core::provider::{LocalModelClient, ProviderError};
 use omgcode_core::session::SessionJournal;
+use omgcode_core::turn::CancelToken;
 use serde::Serialize;
 
 use crate::error::{AppError, ErrorKind};
@@ -36,14 +37,18 @@ pub fn summary_output_tokens(context_tokens: u64) -> u32 {
 /// settings for the session's workspace are read before the summarizer input
 /// is built and again before each request that carries tool-derived content;
 /// a withdrawal stops compaction with a `permission` error and records nothing.
-/// Unreadable settings fail closed: no tool data reaches the summarizer. Other
-/// failures are `context`. `token` is removed from summarizer input and output.
+/// Unreadable settings fail closed: no tool data reaches the summarizer.
+/// `cancel` stops a summarizer request in progress and prevents the next one
+/// (ADR-0051); a cancelled compaction is `cancelled` and records nothing,
+/// because the journal is written only after the last summary. Other failures
+/// are `context`. `token` is removed from summarizer input and output.
 pub fn compact_journal(
     journal: &mut SessionJournal,
     data_root: &Path,
     client: &LocalModelClient,
     token: Option<&str>,
     summary_budget: ContextBudget,
+    cancel: &CancelToken,
 ) -> Result<CompactionOutcome, AppError> {
     let model = client.model().to_owned();
     let workspace = journal.snapshot().workspace_id;
@@ -67,7 +72,9 @@ pub fn compact_journal(
                 .collect();
             let messages = prompt::assemble(COMPACTION_INSTRUCTIONS, &redacted)
                 .map_err(|_| ContextError::TooLarge)?;
-            let reply = client.complete(&messages).map_err(ContextError::Provider)?;
+            let reply = client
+                .complete(&messages, cancel)
+                .map_err(ContextError::Provider)?;
             let usage = reply.usage.as_ref();
             Ok(SummaryReply {
                 text: redact_known_secret(&reply.content, token),
@@ -78,9 +85,16 @@ pub fn compact_journal(
     )
     .map_err(|error| match error {
         ContextError::AuthorityWithdrawn => AppError::new(ErrorKind::Permission, error.to_string()),
+        // Only a set token makes this a cancellation, as in the runtime.
+        ContextError::Provider(ProviderError::Cancelled) if cancel.is_cancelled() => {
+            AppError::new(ErrorKind::Cancelled, COMPACTION_CANCELLED_MESSAGE)
+        }
         error => AppError::new(ErrorKind::Context, error.to_string()),
     })
 }
+
+/// The message of a cancelled compaction, which recorded nothing.
+const COMPACTION_CANCELLED_MESSAGE: &str = "Compaction was cancelled; nothing was recorded";
 
 /// Visible, conservative context accounting for one chat turn.
 #[derive(Clone, Debug, Serialize)]

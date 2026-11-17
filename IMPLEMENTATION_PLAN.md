@@ -1,6 +1,6 @@
 # OMGCode implementation plan
 
-Last verified: 2026-11-16.
+Last verified: 2026-11-17.
 
 This guide is part of `main` after PR #9. Read it before selecting the next
 increment. Checkpoint preparation does not mean native replacement exists.
@@ -99,6 +99,11 @@ This is a resume guide, not a replacement for the owning contracts in
   cancelled (ADR-0050). A cancelled turn is recorded with the failure reason
   `cancelled`, and the desktop exit no longer abandons a streamed turn. It is
   **not merged and has no pull request**.
+- Branch `codex/request-cancellation`, stacked on `codex/desktop-interface`
+  (open PR #33): **Phase D6**, version **0.34.0**, which lets a cancel request
+  stop every model request, streamed or not, and the compaction requests, and
+  lets Ctrl-C cancel a CLI `chat` turn or `session compact` (ADR-0051). It is
+  **not committed, not merged, and has no pull request**.
 
 Implemented today:
 
@@ -234,9 +239,9 @@ Not implemented:
 - Model create, delete, rename, multi-edit, network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
   qualification; and streaming against a live server, discovery, and
-  cancellation of a streamed request against a live provider. A non-streamed
-  request, the compaction request, and a tool call in progress cannot be
-  interrupted.
+  cancellation of any request against a live provider. A read, list, or edit
+  tool call in progress cannot be interrupted, and a CLI interrupt has not been
+  delivered on Windows.
 - A run network destination allowlist, runtime skills, memories, mid-turn and
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
@@ -1063,13 +1068,31 @@ login or entitlement route.
   journal record changes shape. A non-streamed request, the compaction request,
   and a tool call in progress are not interrupted, and the CLI has no cancel
   source. The cancel path was checked against local fixtures only.
+- **D6 (version 0.34.0):** every model request can be cancelled, and an
+  interrupt cancels a CLI turn. See
+  [ADR-0051](docs/adr/0051-cancel-every-model-request-and-interrupt-cli-turns.md).
+  `complete` and `complete_with_tools` take a `CancelToken`; all four adapter
+  methods share the async transport of D5, and reqwest's `blocking` feature is
+  removed. A non-streamed body read in part is discarded. Every chat turn
+  creates one token before the compaction check and hands it to
+  `ChatHooks::on_cancel_token` on every path; `ChatHooks::cancel` lets a front
+  end supply it and `TurnRuntime::with_cancel_token` passes it to the runtime.
+  A token set before the turn starts records nothing. `compact_journal` takes
+  a token, and a cancelled compaction records nothing. `omgcode chat` and
+  `session compact` install the platform interrupt handler through the new
+  `watch_interrupt`; the command fails with the code `cancelled`, and a
+  started chat turn is recorded as cancelled. A handler that cannot be
+  installed fails the command with the code `interrupt`. `capabilities`
+  reports `cancellable_adapters: ["lm_studio"]`. The desktop stops a
+  non-streamed turn and a pre-turn compaction with no command change. Checked
+  against local fixtures; the CLI interrupt was delivered on Linux only.
 
 Still open in Phase D: cloud provider adapters, subscription and API-key
 login, token refresh, account lifecycle, a memory-only session credential,
 endpoint rules for non-loopback providers, HTTPS, and certificates,
 qualification of the stream rules and of cancellation against a live LM Studio
-server, a cancel source for the CLI, interrupting non-streamed and compaction
-requests, and a longer deadline for long
+server, an interrupt delivered to the CLI on Windows, interrupting a read,
+list, or edit tool call in progress, and a longer deadline for long
 generations (the thirty-second deadline covers the whole response). The frontend shows nothing about the credential source beyond the
 endpoint text it already displayed.
 
@@ -1121,6 +1144,8 @@ not merged, and no pull request exists yet.
 - **D5 (ADR-0050):** `chat_cancel` interrupts a streamed turn, the main window
   shows the notice "Turn cancelled." decided by the error code `cancelled`, and
   exit cancels every running turn. No command or wire type changes.
+- **D6 (ADR-0051):** `chat_cancel` and exit also stop a non-streamed turn
+  (`--stream off`) and a pre-turn compaction. No command or wire type changes.
 
 Still open for the desktop:
 

@@ -33,8 +33,10 @@ pub enum ErrorKind {
     ToolLimit,
     /// Any other controlled turn failure, such as a timeout.
     Turn,
-    /// The operator cancelled the turn. The journal records the failure
-    /// reason `cancelled` and no assistant message (ADR-0050).
+    /// The operator cancelled the turn or the compaction. A turn that had
+    /// started records the failure reason `cancelled` and no assistant
+    /// message; a turn or compaction cancelled before it was recorded records
+    /// nothing (ADR-0050, ADR-0051).
     Cancelled,
     /// A selected provider credential could not be used. The message names a
     /// stable cause code and never contains the secret.

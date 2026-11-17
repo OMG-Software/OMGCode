@@ -64,4 +64,5 @@ meaningful alternative does not need an ADR.
 | [0047: Read the local provider token from the credential store](0047-read-the-local-provider-token-from-the-credential-store.md) | Accepted; amended by ADR-0048 | 2026-11-16 |
 | [0048: Bind a stored credential to its profile's endpoint](0048-bind-a-stored-credential-to-its-profile-endpoint.md) | Accepted | 2026-11-16 |
 | [0049: Stream local model replies and push chat events to the main window](0049-stream-local-model-replies-and-push-chat-events.md) | Accepted | 2026-11-16 |
-| [0050: Interrupt a streamed model request when a turn is cancelled](0050-interrupt-a-streamed-model-request-on-cancellation.md) | Accepted | 2026-11-16 |
+| [0050: Interrupt a streamed model request when a turn is cancelled](0050-interrupt-a-streamed-model-request-on-cancellation.md) | Accepted; amended by ADR-0051 | 2026-11-16 |
+| [0051: Cancel every model request and let an interrupt cancel a CLI turn](0051-cancel-every-model-request-and-interrupt-cli-turns.md) | Accepted | 2026-11-17 |

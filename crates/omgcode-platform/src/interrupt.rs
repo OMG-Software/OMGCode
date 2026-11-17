@@ -5,6 +5,8 @@
 //! handler installed here records the interrupt, and a watcher thread raises
 //! the run's [`CancelSignal`]. The runner then terminates the whole tree and
 //! reports `Cancelled`, so the caller can still record the outcome.
+//! [`watch_interrupt`] calls any closure instead, so a CLI chat turn or
+//! compaction can cancel its own token the same way (ADR-0051).
 //!
 //! Linux handles `SIGINT` and `SIGTERM`; Windows handles `CTRL_C_EVENT` and
 //! `CTRL_BREAK_EVENT`. The handler stays installed for the life of the
@@ -35,8 +37,24 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(20);
 /// started and the error is returned; the caller decides whether to run
 /// without interrupt handling.
 pub fn cancel_on_interrupt(cancel: &CancelSignal) -> io::Result<InterruptWatch> {
-    install()?;
     let cancel = cancel.clone();
+    watch_interrupt(move || cancel.cancel())
+}
+
+/// Install the interrupt handler and call `on_interrupt` once when an
+/// interrupt arrives.
+///
+/// This is [`cancel_on_interrupt`] for a caller whose cancellation is not a
+/// [`CancelSignal`], such as a chat turn's cancel token (ADR-0051).
+/// `on_interrupt` runs on the watcher thread, at most once, and must not
+/// block. An interrupt that arrived before this call, while the handler was
+/// already installed, is seen at once, because the recorded interrupt is
+/// never cleared. The returned watch owns the thread and the closure; stop
+/// it as described for [`cancel_on_interrupt`]. If the handler cannot be
+/// installed or the thread cannot be started, `on_interrupt` is dropped
+/// unused and the error is returned.
+pub fn watch_interrupt(on_interrupt: impl FnOnce() + Send + 'static) -> io::Result<InterruptWatch> {
+    install()?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);
     let thread = thread::Builder::new()
@@ -44,7 +62,7 @@ pub fn cancel_on_interrupt(cancel: &CancelSignal) -> io::Result<InterruptWatch> 
         .spawn(move || {
             while !stopped.load(Ordering::SeqCst) {
                 if INTERRUPTED.load(Ordering::SeqCst) {
-                    cancel.cancel();
+                    on_interrupt();
                     return;
                 }
                 thread::sleep(WATCH_INTERVAL);
@@ -175,6 +193,21 @@ mod tests {
         assert!(cancel.is_cancelled(), "the watcher did not cancel the run");
         watch.stop().expect("stop the finished watcher");
         assert!(!idle.is_cancelled(), "a stopped watcher raised its signal");
+
+        // The recorded interrupt is never cleared, so a callback watcher
+        // started afterwards is called at once, exactly once.
+        let (called, calls) = std::sync::mpsc::channel();
+        let watch = watch_interrupt(move || {
+            // The receiver outlives the bounded wait below; a failed send
+            // would show up there as a missing call.
+            let _ignored = called.send(());
+        })
+        .expect("start a callback watcher");
+        calls
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the callback watcher saw the earlier interrupt");
+        watch.stop().expect("stop the callback watcher");
+        assert!(calls.try_recv().is_err(), "the callback ran more than once");
     }
 
     #[cfg(unix)]
