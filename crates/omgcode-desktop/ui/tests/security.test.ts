@@ -16,6 +16,12 @@ const pages = import.meta.glob<string>("../*.html", {
   eager: true,
 });
 
+const tests = import.meta.glob<string>("./*.ts", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+
 const FORBIDDEN: Array<[string, RegExp]> = [
   ["innerHTML", /\binnerHTML\b/],
   ["outerHTML", /\bouterHTML\b/],
@@ -41,6 +47,19 @@ function relative(key: string): string {
 describe("source scan", () => {
   it("scans a plausible number of source files", () => {
     expect(Object.keys(sources).length).toBeGreaterThan(20);
+  });
+
+  it("holds no raw bidirectional control character", () => {
+    // A raw control character can reorder how a line of source is displayed,
+    // so source and tests name these characters with escapes, as this
+    // pattern does.
+    const raw = /[‪-‮⁦-⁩]/;
+    const scanned = { ...sources, ...styles, ...pages, ...tests };
+    expect(Object.keys(tests).length).toBeGreaterThan(5);
+    const offenders = Object.entries(scanned)
+      .filter(([, text]) => raw.test(text))
+      .map(([key]) => key);
+    expect(offenders).toEqual([]);
   });
 
   it.each(FORBIDDEN)("uses no %s", (name, pattern) => {

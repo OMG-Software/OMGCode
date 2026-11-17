@@ -11,7 +11,7 @@ export interface ElOptions {
   attrs?: Readonly<Record<string, string>>;
 }
 
-const BIDI_CONTROLS = /[‪-‮⁦-⁩]/g;
+const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g;
 
 /** Makes bidirectional override characters visible so they cannot reorder displayed text. */
 export function neutralise(value: string): string {

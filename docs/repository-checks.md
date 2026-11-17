@@ -149,6 +149,25 @@ coverage directories at any depth. They do not cover every generated directory;
 review exclusions as the repository grows. Use the Rust workflow for compilation
 and Clippy checks. Coverage reporting is not configured in either workflow.
 
+Test code is declared to Sonar as test code: every `tests` directory, every
+`tests.rs` module, and every `*.test.ts` file. The same patterns are excluded
+from the sources, because a file cannot be both. Sonar then applies its test
+rules to those files and does not count them as code to cover or measure them
+for duplication. Rust unit tests written inside a source file in a
+`#[cfg(test)]` module cannot be separated this way and are still analysed as
+source.
+
+Sonar counts the frontend's TypeScript sources as code to cover. No coverage
+report is produced, so the quality gate's condition on coverage of new code
+fails for any pull request that adds frontend source. Rust is not measured for
+coverage at all. Do not read a passing gate as evidence of Rust test coverage.
+
+Both workflows install the frontend's dependencies with
+`npm ci --ignore-scripts`. The flag repeats what `ui/.npmrc` sets, so no
+package install script runs even if that file changes. Source and tests name
+bidirectional control characters with `\u` escapes, never as raw characters; a
+frontend test scans for raw ones.
+
 Check the current Sonar result and quality gate for each pull request. Do not
 present a missing, empty, or failed analysis as proof that application code
 passed.

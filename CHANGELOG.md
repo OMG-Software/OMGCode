@@ -827,6 +827,19 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Findings from the first Sonar analysis of the desktop frontend:
+  - Both workflows now install the frontend's dependencies with
+    `npm ci --ignore-scripts`. `ui/.npmrc` already set this; the flag makes
+    it hold even if that file changes.
+  - Four lines of frontend source and tests held raw bidirectional control
+    characters, inside the pattern and the test strings that deal with those
+    characters. They are now written as `\u` escapes, which denote the same
+    characters, and a frontend test fails if a raw one is added.
+  - `sonar-project.properties` declares test code as test code. Every
+    duplicated line Sonar reported, and about half the lines it counted as
+    code to cover, were in test files analysed as production code.
+  - Not fixed: Sonar's condition on coverage of new code. It fails because
+    no coverage report is produced for the frontend's TypeScript sources.
 - The CLI test `concurrent_runs_complete_and_are_recorded` no longer depends
   on host speed. On Windows each run spun a fixed loop of 30,000 `cd .`
   iterations before writing its file, and the test allowed 60 seconds for

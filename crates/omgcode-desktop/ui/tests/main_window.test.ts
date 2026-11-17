@@ -220,8 +220,8 @@ describe("search", () => {
 });
 
 describe("long labels", () => {
-  const folder = `${"f".repeat(5000)}‮`;
-  const title = `${"t".repeat(300)}‮`;
+  const folder = `${"f".repeat(5000)}\u202e`;
+  const title = `${"t".repeat(300)}\u202e`;
   const s = session({ session_id: "s-long", title });
 
   it("clamps tree labels and search hits", async () => {

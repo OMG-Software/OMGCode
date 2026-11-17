@@ -74,7 +74,7 @@ describe("createPoller", () => {
 
 describe("neutralise", () => {
   it("makes bidirectional controls visible", () => {
-    expect(neutralise("a‮b")).toBe("a[U+202E]b");
+    expect(neutralise("a\u202eb")).toBe("a[U+202E]b");
     expect(neutralise("plain")).toBe("plain");
   });
 });

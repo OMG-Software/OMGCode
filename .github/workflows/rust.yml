@@ -48,7 +48,7 @@ jobs:
         # must be built before any workspace-wide Cargo step.
         working-directory: crates/omgcode-desktop/ui
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run build
       - name: Check lints and compilation
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

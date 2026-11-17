@@ -34,8 +34,9 @@ jobs:
         with:
           node-version: 24
       - name: Install the locked dependencies
-        # .npmrc sets ignore-scripts, so no package install script runs.
-        run: npm ci
+        # The flag repeats what .npmrc sets, so no package install script runs
+        # even if that file changes.
+        run: npm ci --ignore-scripts
       - name: Check types
         run: npm run check
       - name: Check formatting and lints
