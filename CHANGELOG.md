@@ -29,9 +29,10 @@ Changes are recorded here before a release version is assigned.
   [cancelling every request](docs/provider-authentication.md#cancelling-every-request-0340).
   Until now a non-streamed request and every compaction request ran to their
   end or to the thirty-second deadline, a non-streamed text-only turn had no
-  cancel token, and Ctrl-C ended the CLI and left an open turn. It is a
-  prototype on branch `codex/request-cancellation`, stacked on
-  `codex/desktop-interface`; it is not merged. It adds no dependency and
+  cancel token, and Ctrl-C ended the CLI and left an open turn. It was
+  developed on branch `codex/request-cancellation` (PR #34), stacked on
+  `codex/desktop-interface`, and reached `main` with PR #33 in merge commit
+  `9c9f606` on 2026-11-17. It adds no dependency and
   removes reqwest's `blocking` feature, which drops `futures-channel` and
   `futures-sink` from two dependency lists in `Cargo.lock`.
   - **Adapter:** `complete` and `complete_with_tools` take a `CancelToken`, like
@@ -90,8 +91,8 @@ Changes are recorded here before a release version is assigned.
   cancellation was checked only between model rounds and tool calls, a request
   in flight ran to its end or to the thirty-second deadline, a text-only turn
   had no cancellation point, and on exit the desktop abandoned a turn still
-  waiting on the model, leaving an open turn. It is a prototype on branch
-  `codex/desktop-interface`; it is not merged. It adds no dependency and no
+  waiting on the model, leaving an open turn. It was developed on branch
+  `codex/desktop-interface` and merged by PR #33 on 2026-11-17. It adds no dependency and no
   cargo feature.
   - **Adapter:** `complete_streaming` and `complete_with_tools_streaming` take a
     `CancelToken`. The streamed request runs on an async HTTP client inside a
@@ -146,8 +147,8 @@ Changes are recorded here before a release version is assigned.
   desktop window (Phases D4 and E6). See ADR-0049 and
   [streamed replies](docs/provider-authentication.md#streamed-replies-0320).
   Until now the adapter sent one non-streaming request, and the desktop
-  learned that a turn had ended by calling `chat_status` every 750 ms. It is a
-  prototype on branch `codex/desktop-interface`; it is not merged. It adds no
+  learned that a turn had ended by calling `chat_status` every 750 ms. It was
+  developed on branch `codex/desktop-interface` and merged by PR #33. It adds no
   dependency.
   - **Adapter:** `LocalModelClient::complete_streaming` and
     `complete_with_tools_streaming` send the same body as the non-streaming
@@ -241,9 +242,10 @@ Changes are recorded here before a release version is assigned.
   D3). See ADR-0048 and
   [endpoint binding](docs/provider-authentication.md#endpoint-binding-0310).
   In 0.30.0 a stored token went to whichever literal loopback endpoint the
-  operator named with `--endpoint`. It is a prototype on branch
-  `codex/desktop-interface`; it is not merged. It tightens the 0.30.0
-  behaviour, which was never merged or released, and adds no dependency.
+  operator named with `--endpoint`. It was developed on branch
+  `codex/desktop-interface` and merged by PR #33. It tightens the 0.30.0
+  behaviour, which reached `main` only in the same merge and was never
+  released, and adds no dependency.
   - **Profile endpoint:** `workspace provider-profile-add <name> ... --endpoint
     <url>` records one endpoint on a profile. `provider-profile-show` and
     `status` print `"endpoint"` only when one is recorded; a profile without
@@ -304,8 +306,8 @@ Changes are recorded here before a release version is assigned.
   (Phase D2). See ADR-0047 and
   [stored credential use](docs/provider-authentication.md#stored-credential-use-0300).
   Until now nothing read a stored credential, and the adapter took its optional
-  server token only from `OMGCODE_LM_TOKEN`. It is a prototype on branch
-  `codex/desktop-interface`; it is not merged. It adds no dependency outside
+  server token only from `OMGCODE_LM_TOKEN`. It was developed on branch
+  `codex/desktop-interface` and merged by PR #33. It adds no dependency outside
   the existing workspace set (`omgcode-app` now uses `zeroize`).
   - **Selection:** `omgcode chat --provider-profile <name>` and `omgcode
     session compact --provider-profile <name>` read the token from the
@@ -364,8 +366,8 @@ Changes are recorded here before a release version is assigned.
     account lifecycle exists.
 - Version 0.29.0 adds the desktop interface and session tree (Phase E). See
   ADR-0044, ADR-0045, and ADR-0046, and the
-  [desktop interface guide](docs/desktop-interface.md). It is a prototype on
-  branch `codex/desktop-interface`; it has no installer and has run only on
+  [desktop interface guide](docs/desktop-interface.md). It is a prototype,
+  merged from branch `codex/desktop-interface` by PR #33; it has no installer and has run only on
   Windows. No CLI command changed behaviour: every existing CLI test suite
   passes unmodified, and `model_tools.rs` and `context_cli.rs` moved from
   `omgcode-cli` into the new `omgcode-app` crate.
@@ -886,8 +888,12 @@ Changes are recorded here before a release version is assigned.
   as merged. It had still listed the desktop interface and Phases D2 to D6 as
   unmerged branches with no pull request, and it did not mention the Testing
   build workflow. The plan now notes that the workflow's first runs were still
-  queued on 2026-11-17 and that no `latest` release existed yet.
-  Documentation only.
+  queued on 2026-11-17 and that no `latest` release existed yet. The older
+  unreleased entries for versions 0.29.0 to 0.34.0 no longer call that work
+  unmerged. The plan, the contributor guide, and the platform support table
+  no longer say that every push or merge to `main` is tested and published:
+  while a Testing build run is active, GitHub keeps only the newest waiting
+  run, so an intermediate push can be superseded. Documentation only.
 - Package-network destination enforcement is defined as a contract only in
   ADR-0034. No run accepts a package-network profile, and `--network` remains
   all-or-nothing. An advisory proxy or proxy environment variables are
