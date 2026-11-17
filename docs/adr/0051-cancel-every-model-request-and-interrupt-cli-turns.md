@@ -36,7 +36,8 @@ server. These constraints shape this decision:
   unchanged.
 - **The journal format must not change.** A cancelled turn already has a
   defined record: a turn-failed record with the reason `cancelled` and no
-  assistant message.
+  final assistant reply. An assistant message recorded with the tool calls of
+  an earlier round stays in the journal.
 
 ## Decision
 
@@ -71,7 +72,8 @@ a token too. A cancelled compaction returns the error kind `cancelled` with the
 message "Compaction was cancelled; nothing was recorded", and records nothing.
 
 A token already set when the turn would start ends it as `cancelled` before
-the turn marker, so nothing is recorded. This was already the runtime's
+the turn marker, so the turn records nothing. A compaction that finished
+before the cancellation stays recorded. This was already the runtime's
 behaviour, and the text-only path now matches it. A cancellation after the
 turn started is recorded as before.
 

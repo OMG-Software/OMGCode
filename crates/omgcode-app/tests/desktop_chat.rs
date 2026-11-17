@@ -393,6 +393,16 @@ fn the_server_token_never_reaches_a_response_even_when_the_model_echoes_it() {
     assert_eq!(server.finish(), 1);
 }
 
+/// A cancel was taken by a running turn. The request in flight stops within
+/// about 25 ms (ADR-0051), so the turn may already have ended as failed by the
+/// time its status is read; the caller checks the terminal error separately.
+fn assert_cancel_accepted(state: ChatState) {
+    assert!(
+        matches!(state, ChatState::Cancelling | ChatState::Failed),
+        "a cancel left the turn {state:?}"
+    );
+}
+
 #[test]
 fn cancelling_a_tool_turn_reports_cancelling_then_fails_with_the_core_error() {
     let (release, hold) = gate();
@@ -415,9 +425,10 @@ fn cancelling_a_tool_turn_reports_cancelling_then_fails_with_the_core_error() {
     let cancelling = service
         .chat_cancel(wire(session_request(session)))
         .expect("cancel");
-    assert_eq!(cancelling.state, ChatState::Cancelling);
-    assert_eq!(status(service, session).state, ChatState::Cancelling);
-    release.send(()).expect("release the model reply");
+    assert_cancel_accepted(cancelling.state);
+    assert_cancel_accepted(status(service, session).state);
+    // The turn may already have ended, so nobody may be receiving.
+    let _ignored = release.send(());
 
     let done = wait_finished(service, session);
     assert_eq!(done.state, ChatState::Failed);
@@ -462,7 +473,7 @@ fn cancelling_a_non_streamed_text_turn_stops_its_request() {
 
     // Then the turn has a token to act on, its request stops without the
     // reply, and the cancellation is recorded (ADR-0051).
-    assert_eq!(after.state, ChatState::Cancelling);
+    assert_cancel_accepted(after.state);
     let done = wait_finished(service, session);
     assert!(
         begun.elapsed() < Duration::from_secs(5),

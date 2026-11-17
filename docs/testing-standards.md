@@ -217,8 +217,9 @@ chunking; the turn runtime's cancelled arm; the cancellation of streamed
 text-only and tool-enabled turns; the desktop cancel and shutdown cases; and the
 frontend notice, which is decided by the error code. They used the same kind of
 local fixture. The 0.34.0 fixtures (ADR-0051) add a cancel of a non-streamed
-text and tool request before the request, before the response head, and with a
-body held open; a slow non-streamed reply that a live token does not disturb;
+text and tool request before the request and before the response head; a
+unit test, ordered after the head arrived, that cancels while the rest of a
+held body is awaited; a slow non-streamed reply that a live token does not disturb;
 the runtime's use of a caller's token; the cancellation of non-streamed text
 and tool turns, of the compaction before a turn, and of `compact_journal`; a
 token set before a turn; the desktop cancel of a non-streamed turn and the

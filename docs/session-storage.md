@@ -216,11 +216,13 @@ Streamed model text (ADR-0049) is provisional and is never written to the
 journal: the recorded reply is the validated whole reply, redacted as a whole,
 and the journal does not say whether a reply was streamed. A turn cancelled
 during a model request (ADR-0050, ADR-0051), streamed or not, records a
-`turn.failed` event with the code `cancelled` and no assistant message; its
-partial text is not recorded, and no record changes shape. A turn cancelled
-before its `turn.started` event, including during the compaction before it,
-records nothing, and a cancelled compaction writes no `context.compacted`
-event. The CLI redacts the currently configured LM Studio token from
+`turn.failed` event with the code `cancelled` and no final assistant reply;
+its partial text is not recorded, and no record changes shape. An assistant
+message recorded with the tool calls of an earlier round of the same turn
+stays. A turn cancelled before its `turn.started` event records no turn
+event, and a cancelled compaction writes no `context.compacted` event. A
+compaction that finished before the cancellation keeps its
+`context.compacted` event. The CLI redacts the currently configured LM Studio token from
 new conversation text, preferences, titles, and replies before retention and
 output. It redacts that same token from historical context before inference.
 There is no general secret detector or automatic cleanup of older stored text.

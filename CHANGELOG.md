@@ -49,7 +49,8 @@ Changes are recorded here before a release version is assigned.
     stop a non-streamed request (`--stream off`) and a pre-turn compaction. A
     turn cancelled before it handed over its token ends before it is recorded.
   - **Tests:** core fixtures for a cancel of a non-streamed text and tool
-    request before sending, before the head, and with a body held open, and a
+    request before sending and before the head, a unit test that cancels
+    while the rest of a held body is awaited once the head has arrived, and a
     slow non-streamed reply under a live token; the runtime's caller token; app
     tests for cancelled non-streamed text and tool turns, a cancelled pre-turn
     compaction, a cancelled `compact_journal`, and a token set before the turn;

@@ -499,42 +499,16 @@ impl LocalModelClient {
 
     /// Send a non-streaming request and read its whole body within 1 MiB.
     ///
-    /// The token is checked before each piece of the body as well as while
-    /// each is awaited. A non-success status is refused before the body is
-    /// read. Dropping the response or the pending request on any return
-    /// closes the connection.
+    /// Dropping the response or the pending request on any return closes the
+    /// connection.
     async fn whole_exchange(
         &self,
         body: Vec<u8>,
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, ProviderError> {
         let client = self.http_client()?;
-        let mut response = self.send(&client, body, false, cancel).await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(ProviderError::HttpStatus(status.as_u16()));
-        }
-        let mut bytes = Vec::new();
-        loop {
-            if cancel.is_cancelled() {
-                return Err(ProviderError::Cancelled);
-            }
-            let chunk = until_cancelled(response.chunk(), cancel)
-                .await?
-                .map_err(|_| ProviderError::Transport)?;
-            let Some(chunk) = chunk else {
-                return Ok(bytes);
-            };
-            let total = bytes
-                .len()
-                .checked_add(chunk.len())
-                .and_then(|total| u64::try_from(total).ok())
-                .ok_or(ProviderError::ResponseTooLarge)?;
-            if total > MAX_RESPONSE_BYTES {
-                return Err(ProviderError::ResponseTooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let response = self.send(&client, body, false, cancel).await?;
+        read_whole_body(response, cancel).await
     }
 
     /// Send a streaming request and feed the response body to the stream
@@ -573,6 +547,43 @@ impl LocalModelClient {
                 return parser.finish();
             }
         }
+    }
+}
+
+/// Read the whole body of a non-streaming response within 1 MiB.
+///
+/// A non-success status is refused before the body is read. The token is
+/// checked before each piece of the body as well as while each is awaited; a
+/// cancelled read discards what it read. Dropping the response on any return
+/// closes the connection.
+async fn read_whole_body(
+    mut response: Response,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>, ProviderError> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ProviderError::HttpStatus(status.as_u16()));
+    }
+    let mut bytes = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let chunk = until_cancelled(response.chunk(), cancel)
+            .await?
+            .map_err(|_| ProviderError::Transport)?;
+        let Some(chunk) = chunk else {
+            return Ok(bytes);
+        };
+        let total = bytes
+            .len()
+            .checked_add(chunk.len())
+            .and_then(|total| u64::try_from(total).ok())
+            .ok_or(ProviderError::ResponseTooLarge)?;
+        if total > MAX_RESPONSE_BYTES {
+            return Err(ProviderError::ResponseTooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
     }
 }
 
@@ -1081,6 +1092,57 @@ mod tests {
         );
     }
 
+    /// Accept one connection within `end`, read one whole bounded request,
+    /// and return the stream with 250 ms read and write deadlines.
+    fn accept_fixture_request(listener: &TcpListener, end: Instant) -> std::net::TcpStream {
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < end, "fixture accept deadline");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("fixture accept: {error}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("blocking accepted stream");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("read deadline");
+        stream
+            .set_write_timeout(Some(Duration::from_millis(250)))
+            .expect("write deadline");
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            assert!(
+                bytes.len() <= 256 * 1024 && Instant::now() < end,
+                "bounded request"
+            );
+            if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&bytes[..header_end]).expect("ASCII headers");
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("body length"))
+                    })
+                    .expect("Content-Length");
+                assert!(length <= 256 * 1024, "bounded declared request");
+                if bytes.len() >= header_end + 4 + length {
+                    break;
+                }
+            }
+            let count = stream.read(&mut buffer).expect("request bytes");
+            assert!(count > 0, "request must be complete");
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        stream
+    }
+
     /// Give the server its own deadline and cancellation path, independent of HTTP timeouts.
     fn slow_response(
         drip_body: bool,
@@ -1092,52 +1154,7 @@ mod tests {
         let (cancel, cancelled) = mpsc::channel();
         let task = thread::spawn(move || {
             let end = Instant::now() + Duration::from_secs(2);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < end, "fixture accept deadline");
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(error) => panic!("fixture accept: {error}"),
-                }
-            };
-            stream
-                .set_nonblocking(false)
-                .expect("blocking accepted stream");
-            stream
-                .set_read_timeout(Some(Duration::from_millis(250)))
-                .expect("read deadline");
-            stream
-                .set_write_timeout(Some(Duration::from_millis(250)))
-                .expect("write deadline");
-            let mut bytes = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                assert!(
-                    bytes.len() <= 256 * 1024 && Instant::now() < end,
-                    "bounded request"
-                );
-                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
-                {
-                    let headers = std::str::from_utf8(&bytes[..header_end]).expect("ASCII headers");
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().expect("body length"))
-                        })
-                        .expect("Content-Length");
-                    assert!(length <= 256 * 1024, "bounded declared request");
-                    if bytes.len() >= header_end + 4 + length {
-                        break;
-                    }
-                }
-                let count = stream.read(&mut buffer).expect("request bytes");
-                assert!(count > 0, "request must be complete");
-                bytes.extend_from_slice(&buffer[..count]);
-            }
+            let mut stream = accept_fixture_request(&listener, end);
             if drip_body {
                 let body: &[u8] = if streamed {
                     b"data: {\"choices\":[{\"delta\":{\"content\":\"completed slowly\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
@@ -1247,5 +1264,127 @@ mod tests {
     #[test]
     fn request_deadline_bounds_a_dripping_streamed_body() {
         assert_bounded_transport_failure(true, true);
+    }
+
+    /// A server that answers with a head announcing a longer body and the
+    /// first part of that body, signals once both are written, and then holds
+    /// the connection open. The task returns whether the client closed it.
+    fn partial_body_server() -> (
+        LocalModelClient,
+        mpsc::Receiver<()>,
+        thread::JoinHandle<bool>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("private fixture");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let address = listener.local_addr().expect("address");
+        let (sent, partial_sent) = mpsc::channel();
+        let task = thread::spawn(move || {
+            let end = Instant::now() + Duration::from_secs(2);
+            let mut stream = accept_fixture_request(&listener, end);
+            let partial = br#"{"choices":[{"message":{"role":"assistant","content":"partial"#;
+            let head = format!(
+                "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+",
+                partial.len() * 4
+            );
+            stream.write_all(head.as_bytes()).expect("write head");
+            stream.write_all(partial).expect("write first part");
+            stream.flush().expect("flush first part");
+            // The test may already have failed and stopped listening.
+            let _ignored = sent.send(());
+            stream
+                .set_read_timeout(Some(Duration::from_millis(25)))
+                .expect("poll deadline");
+            let mut buffer = [0_u8; 64];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => return true,
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        if Instant::now() >= end {
+                            return false;
+                        }
+                    }
+                    Err(_) => return true,
+                }
+            }
+        });
+        let client = LocalModelClient::new(
+            LocalModelConfig {
+                base_url: format!("http://{address}/v1"),
+                model: "fixture".to_owned(),
+                context_tokens: 131_072,
+                max_output_tokens: 32,
+            },
+            None,
+        )
+        .expect("client");
+        (client, partial_sent, task)
+    }
+
+    /// The body reader is reached only once the head has arrived, so the
+    /// cancel below is ordered after the head without any fixed sleep
+    /// (ADR-0051).
+    #[test]
+    fn cancelling_while_the_rest_of_a_body_is_awaited_discards_the_part_read() {
+        // Given a response whose head has arrived and whose body is held open
+        // after its first part, with the reader waiting for the rest.
+        let (client, partial_sent, task) = partial_body_server();
+        let cancel = CancelToken::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("request runtime");
+        let (result, elapsed) = runtime.block_on(async {
+            let http = client.http_client().expect("request client");
+            let response = client
+                .send(&http, b"{}".to_vec(), false, &cancel)
+                .await
+                .expect("the head arrives");
+            partial_sent
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the server wrote the first part of the body");
+            let mut read = std::pin::pin!(read_whole_body(response, &cancel));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), read.as_mut())
+                    .await
+                    .is_err(),
+                "the reader is still waiting for the held body"
+            );
+
+            // When the token is set.
+            let started = Instant::now();
+            cancel.cancel();
+            let result = read.await;
+            (result, started.elapsed())
+        });
+        drop(runtime);
+
+        // Then the read is cancelled promptly, nothing of the body is
+        // returned, and the connection was closed.
+        assert_eq!(result, Err(ProviderError::Cancelled));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "cancellation took {elapsed:?}"
+        );
+        let end = Instant::now() + Duration::from_secs(3);
+        while !task.is_finished() {
+            assert!(Instant::now() < end, "fixture cleanup deadline");
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            task.join().expect("fixture thread"),
+            "the connection was closed"
+        );
     }
 }

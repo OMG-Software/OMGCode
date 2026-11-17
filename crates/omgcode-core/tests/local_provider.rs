@@ -1383,47 +1383,6 @@ fn cancelling_a_non_streamed_request_while_the_head_is_awaited_stops_it() {
 }
 
 #[test]
-fn cancelling_a_non_streamed_request_with_its_body_held_open_discards_the_part_read() {
-    // Given a server that sends a head announcing a longer body, the start
-    // of a valid reply, and then holds the connection open.
-    let partial = r#"{"choices":[{"message":{"role":"assistant","content":"partial"#;
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{partial}",
-        SUCCESS.len()
-    );
-    let (request_read, request_seen) = mpsc::channel::<()>();
-    let (address, server) = holding_server(Some(response.into_bytes()), request_read);
-    let cancel = CancelToken::new();
-    let canceller = {
-        let cancel = cancel.clone();
-        thread::spawn(move || {
-            request_seen
-                .recv_timeout(Duration::from_secs(5))
-                .expect("the server reads the request before the bound");
-            // The head and the partial body are written right after this
-            // signal. Waiting here makes it likely that the client is reading
-            // the body when it is cancelled; the outcome asserted below is
-            // the same if it is still awaiting the head.
-            thread::sleep(Duration::from_millis(200));
-            cancel.cancel();
-        })
-    };
-
-    // When the token is cancelled while the rest of the body is awaited.
-    let started = Instant::now();
-    let result = client(address, None).complete(&messages(), &cancel);
-    let elapsed = started.elapsed();
-    join_bounded(canceller, "canceller completes");
-    let closed = join_bounded(server, "fixture completes");
-
-    // Then the call is cancelled promptly, nothing of the body is returned,
-    // and the connection was closed.
-    assert_eq!(result, Err(ProviderError::Cancelled));
-    assert!(elapsed < CANCEL_BOUND, "cancellation took {elapsed:?}");
-    assert!(closed, "the connection was closed on cancellation");
-}
-
-#[test]
 fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_non_streamed_reply() {
     // Given a server that sends its head and body in pieces more than one
     // poll interval apart.

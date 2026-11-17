@@ -587,7 +587,7 @@ the journal is open, Ctrl-C or Ctrl-Break on Windows and `SIGINT` or `SIGTERM`
 on Linux set the command's cancel token instead of ending the process. The
 model or summarizer request in flight stops within about 25 ms, streamed or
 not. The command then fails with the code `cancelled`: a chat turn that had
-started is recorded as cancelled with no assistant message and no open turn,
+started is recorded as cancelled with no final assistant reply and no open turn,
 and a cancelled compaction leaves the journal unchanged. A read, list, or edit
 tool call already running finishes first. Before the journal is open, an
 interrupt ends the process as before. A handler that cannot be installed fails

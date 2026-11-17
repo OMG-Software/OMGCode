@@ -387,8 +387,10 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   [cancellation](provider-authentication.md#cancelling-every-request-0340)).
   The turn ends as `failed` with the error code `cancelled`, and `finished` is
   pushed. A turn that had started leaves a turn-failed record with the reason
-  `cancelled`, no assistant message, and no open turn; a turn cancelled during
-  its compaction, or before its token was handed over, records nothing. The
+  `cancelled`, no final assistant reply, and no open turn; an assistant
+  message recorded with an earlier round's tool calls stays. A turn cancelled
+  during its compaction, or before its token was handed over, records nothing;
+  a compaction that had already finished stays recorded. The
   preview text is never recorded. The window shows the plain notice "Turn
   cancelled." with no error styling. It decides by the error code only. A
   tool-enabled turn also checks the token between model rounds and tool
