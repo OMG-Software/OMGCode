@@ -13,8 +13,11 @@ Changes are recorded here before a release version is assigned.
   (`.tar.gz`), and Fedora 44 x86_64 in a digest-pinned container (`.tar.gz`).
   Each package job checks that both binaries start. After every job passes, a
   publish job, the only one with `contents: write`, replaces the rolling
-  `testing` prerelease and tag with the archives and a `SHA256SUMS` file. The
-  workspace tests do not run on Fedora. The Rust and Frontend workflows no
+  `testing` prerelease and tag with the archives and a `SHA256SUMS` file. It
+  refuses a commit behind the published one, so a re-run of an older run cannot
+  roll the release back, and runs queue per ref, so a manual run on another
+  branch cannot displace a waiting main run. The workspace tests do not run on
+  Fedora. The Rust and Frontend workflows no
   longer trigger on a push to `main`, gain `workflow_call`, and use
   caller-scoped concurrency groups; the Rust workflow takes a `linux-runner`
   input. There is no application change, so the version stays 0.34.0. This

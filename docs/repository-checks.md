@@ -151,9 +151,18 @@ assets, `gh` creates a draft, uploads, and then publishes, so nobody sees a mix
 of old and new archives. Downloads fail for a few seconds between the delete
 and the publish.
 
-Runs share the `testing-build` concurrency group with `cancel-in-progress:
+Runs use the concurrency group `testing-build-<ref>` with `cancel-in-progress:
 false`. A publish is never cancelled part way. GitHub keeps only the newest
-waiting run, so the tag ends at the newest main commit whose tests passed.
+waiting run in a group, so the tag ends at the newest main commit whose tests
+passed. Because the group includes the ref, a manual run on another branch
+cannot replace a waiting main run.
+
+Before deleting anything, the publish job resolves the commit that `testing`
+points to and compares it with the run's commit through the compare API. It
+continues only when the two are the same commit or the run's commit is ahead.
+A re-run of an older main run keeps its original commit, so without this check
+it could roll the release back; with it, the job fails and leaves the newer
+release in place. If the tag is missing, the check is skipped.
 
 The assets have stable names, so links do not change between builds:
 `https://github.com/OMG-Software/OMGCode/releases/download/testing/omgcode-testing-windows-x86_64.zip`,

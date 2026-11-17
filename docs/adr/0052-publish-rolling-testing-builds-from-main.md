@@ -40,9 +40,12 @@ owns the details.
   the archives, writes `SHA256SUMS`, deletes the previous `testing` release and
   tag, and recreates them at the built commit as a prerelease that is never
   marked latest. It does not check out or run repository code.
-- **Ordering.** Runs share one concurrency group and are never cancelled, so a
-  publish cannot stop halfway. GitHub keeps only the newest waiting run, so the
-  tag ends at the newest tested commit.
+- **Ordering.** Runs on a ref share one concurrency group and are never
+  cancelled, so a publish cannot stop halfway. GitHub keeps only the newest
+  waiting run, so the tag ends at the newest tested commit. The group includes
+  the ref, so a manual run on another branch cannot displace a waiting main
+  run. The publish job also refuses a commit that is not the published commit
+  or ahead of it, so re-running an older run cannot roll the release back.
 
 Fedora's archive is built and start-checked only. The workspace tests do not
 run on Fedora, and the release notes and `BUILD-INFO.txt` say so.

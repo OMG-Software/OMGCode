@@ -12,11 +12,13 @@ on:
 permissions:
   contents: read
 
-# One run at a time and never cancelled, so a publish cannot stop halfway
-# through replacing the release. A newer push waits; GitHub keeps only the
-# newest waiting run, so the release ends at the newest main commit.
+# One run per ref at a time and never cancelled, so a publish cannot stop
+# halfway through replacing the release. A newer push waits; GitHub keeps only
+# the newest waiting run, so the release ends at the newest main commit. The
+# group includes the ref, so a manual run on another branch, which cannot
+# publish, never replaces a main run that is waiting.
 concurrency:
-  group: testing-build
+  group: testing-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -276,6 +278,18 @@ jobs:
           Verify downloads against \`SHA256SUMS\`.
           Workflow run: ${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}
           EOF
+          # Never move the tag backwards. A re-run of an older main run keeps
+          # its original GITHUB_SHA, so compare it with the published commit
+          # and refuse anything that is not the same commit or a descendant.
+          if published=$(gh api "repos/${GH_REPO}/commits/refs/tags/testing" --jq .sha 2>/dev/null); then
+            if [ "$published" != "$GITHUB_SHA" ]; then
+              status=$(gh api "repos/${GH_REPO}/compare/${published}...${GITHUB_SHA}" --jq .status)
+              if [ "$status" != "ahead" ]; then
+                echo "::error::testing is at ${published}; ${GITHUB_SHA} is ${status} of it, not ahead. Refusing to replace a newer build."
+                exit 1
+              fi
+            fi
+          fi
           # Delete the previous release and its tag, then recreate both at
           # this commit. With assets, gh creates a draft, uploads, and then
           # publishes, so readers never see a mix of old and new archives.
