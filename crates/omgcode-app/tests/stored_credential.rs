@@ -300,16 +300,29 @@ fn a_rotated_credential_is_used_by_the_next_resolution() {
     assert_eq!(second.expose(), ROTATED);
 }
 
-/// On Windows the native store refuses a data root that is not private, so a
-/// root left with its inherited ACL makes `CredentialStore::open` fail. The
-/// early outcomes are decided from the settings store alone and must still
-/// report their own cause, and a `none` profile must still resolve.
+/// On Windows the native store refuses a data root that grants access to a
+/// principal other than the current user, the system, and administrators, so
+/// such a root makes `CredentialStore::open` fail. The early outcomes are
+/// decided from the settings store alone and must still report their own
+/// cause, and a `none` profile must still resolve.
+///
+/// The test grants the built-in Users group read access itself. Whether a
+/// temporary directory inherits such a grant depends on the host: it does on
+/// some machines and not on others, so the inherited ACL alone proves nothing.
 #[cfg(windows)]
 #[test]
 fn early_outcomes_need_no_native_store() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let data = temporary.path().join("application-data");
-    fs::create_dir(&data).expect("data root with its inherited ACL");
+    fs::create_dir(&data).expect("data root");
+    // S-1-5-32-545 is the built-in Users group, named by its identifier so
+    // the command does not depend on the display language.
+    let granted = std::process::Command::new("icacls")
+        .arg(&data)
+        .args(["/grant", "*S-1-5-32-545:(RX)"])
+        .output()
+        .expect("icacls");
+    assert!(granted.status.success(), "icacls fixture failed");
     let vault = Vault::new(&data);
     vault.add_profile_at("open", "lm_studio", "none", RECORDED);
     vault.add_profile_at("unbound", "lm_studio", "api_key", RECORDED);

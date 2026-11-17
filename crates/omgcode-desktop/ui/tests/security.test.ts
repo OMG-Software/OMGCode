@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+// A glob never matches the file that contains it, so this file reads its
+// own source directly. Without it the scan below would skip this file.
+import ownSource from "./security.test.ts?raw";
 
 const sources = import.meta.glob<string>("../src/**/*.ts", {
   query: "?raw",
@@ -53,8 +56,14 @@ describe("source scan", () => {
     // A raw control character can reorder how a line of source is displayed,
     // so source and tests name these characters with escapes, as this
     // pattern does.
-    const raw = /[‪-‮⁦-⁩]/;
-    const scanned = { ...sources, ...styles, ...pages, ...tests };
+    const raw = /[\u202a-\u202e\u2066-\u2069]/;
+    const scanned = {
+      ...sources,
+      ...styles,
+      ...pages,
+      ...tests,
+      "./security.test.ts": ownSource,
+    };
     expect(Object.keys(tests).length).toBeGreaterThan(5);
     const offenders = Object.entries(scanned)
       .filter(([, text]) => raw.test(text))
