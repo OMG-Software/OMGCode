@@ -1,0 +1,315 @@
+name: Testing build
+
+# Every push to main (a merged pull request) tests, builds, and packages the
+# CLI and desktop binaries, then replaces the rolling `latest` prerelease.
+# See docs/repository-checks.md#testing-build-workflow and ADR-0052.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref at a time and never cancelled, so a publish cannot stop
+# halfway through replacing the release. A newer push waits; GitHub keeps only
+# the newest waiting run, so the release ends at the newest main commit. The
+# group includes the ref, so a manual run on another branch, which cannot
+# publish, never replaces a main run that is waiting.
+concurrency:
+  group: testing-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust:
+    name: Rust tests
+    uses: ./.github/workflows/rust.yml
+    with:
+      # Test on the same Ubuntu image that builds the Ubuntu package.
+      linux-runner: ubuntu-latest
+
+  frontend:
+    name: Frontend tests
+    uses: ./.github/workflows/frontend.yml
+
+  package-windows:
+    name: Package (windows-x86_64)
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Build the desktop frontend
+        working-directory: crates/omgcode-desktop/ui
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Build the release binaries
+        run: cargo build --release --locked -p omgcode-cli -p omgcode-desktop
+      - name: Check that the binaries start
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\target\release\omgcode.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "omgcode --version exited with $LASTEXITCODE" }
+          # An unknown option exits with the usage code (2) before any window
+          # opens. The release build uses the GUI subsystem, so wait explicitly.
+          $p = Start-Process -FilePath .\target\release\omgcode-desktop.exe `
+            -ArgumentList '--unknown-option' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 2) { throw "omgcode-desktop exited with $($p.ExitCode), expected 2" }
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = 'omgcode-windows-x86_64'
+          New-Item -ItemType Directory -Path "dist/$name" | Out-Null
+          Copy-Item target/release/omgcode.exe, target/release/omgcode-desktop.exe, LICENSE, README.md "dist/$name/"
+          $version = (& .\target\release\omgcode.exe --version)
+          $rustc = (& rustc --version)
+          $os = (Get-CimInstance Win32_OperatingSystem)
+          @(
+            'OMGCode testing build (prototype; not release-qualified)'
+            "Version: $version"
+            "Commit: $env:GITHUB_SHA"
+            "Workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            "Built on: $($os.Caption) $($os.Version) (runner image $env:ImageOS $env:ImageVersion)"
+            "Toolchain: $rustc"
+            'Runtime prerequisite: the Microsoft Edge WebView2 runtime for omgcode-desktop.exe.'
+          ) | Set-Content -Encoding utf8 "dist/$name/BUILD-INFO.txt"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: omgcode-windows-x86_64
+          path: dist/omgcode-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  package-ubuntu:
+    name: Package (ubuntu-x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Install the desktop shell's Linux build packages
+        run: |
+          # The Tauri prerequisites for Debian and Ubuntu, as in rust.yml.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Build the desktop frontend
+        working-directory: crates/omgcode-desktop/ui
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Build the release binaries
+        run: cargo build --release --locked -p omgcode-cli -p omgcode-desktop
+      - name: Check that the binaries start
+        run: |
+          target/release/omgcode --version
+          # An unknown option exits with the usage code (2) before any window
+          # opens, after the dynamic loader has resolved WebKitGTK.
+          status=0
+          target/release/omgcode-desktop --unknown-option || status=$?
+          if [ "$status" -ne 2 ]; then
+            echo "omgcode-desktop exited with $status, expected 2" >&2
+            exit 1
+          fi
+      - name: Package
+        env:
+          PACKAGE_NAME: omgcode-ubuntu-x86_64
+          RUNTIME_NOTE: >-
+            Runtime prerequisites for omgcode-desktop: libwebkit2gtk-4.1-0 and its
+            GTK dependencies. The binaries link against this Ubuntu release's glibc.
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/$PACKAGE_NAME"
+          cp target/release/omgcode target/release/omgcode-desktop LICENSE README.md "dist/$PACKAGE_NAME/"
+          . /etc/os-release
+          {
+            echo 'OMGCode testing build (prototype; not release-qualified)'
+            echo "Version: $(target/release/omgcode --version)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Built on: $PRETTY_NAME (runner image ${ImageOS:-unknown} ${ImageVersion:-unknown})"
+            echo "Toolchain: $(rustc --version)"
+            echo "$RUNTIME_NOTE"
+          } > "dist/$PACKAGE_NAME/BUILD-INFO.txt"
+          tar -C dist -czf "dist/$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: omgcode-ubuntu-x86_64
+          path: dist/omgcode-ubuntu-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  package-fedora:
+    name: Package (fedora44-x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      # Fedora 44 image index, pinned by digest on 2026-11-17. Update the
+      # digest deliberately to pick up newer Fedora 44 packages.
+      image: registry.fedoraproject.org/fedora:44@sha256:98b558564d3510363f0f706a44b1ee9de461b030373d741c5729ae3f24d8cb26
+    steps:
+      - name: Install the build packages
+        run: |
+          # Git and the archive tools for checkout and setup-node; a C compiler
+          # for bundled SQLite; rustup from Fedora; the Tauri prerequisites for
+          # Fedora.
+          dnf -y install --setopt=install_weak_deps=False \
+            git tar gzip xz findutils gcc gcc-c++ make pkgconf-pkg-config rustup \
+            webkit2gtk4.1-devel openssl-devel curl wget file \
+            libappindicator-gtk3-devel librsvg2-devel libxdo-devel
+      - name: Install the pinned toolchain
+        run: |
+          rustup-init -y --profile minimal --default-toolchain none --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install 1.99.1 --profile minimal
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Build the desktop frontend
+        working-directory: crates/omgcode-desktop/ui
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Build the release binaries
+        run: cargo build --release --locked -p omgcode-cli -p omgcode-desktop
+      - name: Check that the binaries start
+        run: |
+          target/release/omgcode --version
+          status=0
+          target/release/omgcode-desktop --unknown-option || status=$?
+          if [ "$status" -ne 2 ]; then
+            echo "omgcode-desktop exited with $status, expected 2" >&2
+            exit 1
+          fi
+      - name: Package
+        env:
+          PACKAGE_NAME: omgcode-fedora44-x86_64
+          RUNTIME_NOTE: >-
+            Runtime prerequisites for omgcode-desktop: webkit2gtk4.1 and its GTK
+            dependencies. Built in a Fedora 44 container; the workspace tests did
+            not run on Fedora.
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/$PACKAGE_NAME"
+          cp target/release/omgcode target/release/omgcode-desktop LICENSE README.md "dist/$PACKAGE_NAME/"
+          . /etc/os-release
+          {
+            echo 'OMGCode testing build (prototype; not release-qualified)'
+            echo "Version: $(target/release/omgcode --version)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Built on: $PRETTY_NAME (container; image digest in testing-build.yml at this commit)"
+            echo "Toolchain: $(rustc --version)"
+            echo "$RUNTIME_NOTE"
+          } > "dist/$PACKAGE_NAME/BUILD-INFO.txt"
+          tar -C dist -czf "dist/$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: omgcode-fedora44-x86_64
+          path: dist/omgcode-fedora44-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the latest release
+    # Publish only after every test and package job succeeds, and only from
+    # main; a manual run on another branch builds but does not publish.
+    needs: [rust, frontend, package-windows, package-ubuntu, package-fedora]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The only job with a write token. It never checks out or runs repository
+    # or dependency code; it handles the finished archives only.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: omgcode-*
+          path: assets
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          sha256sum -- omgcode-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Replace the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::12}"
+          cat > notes.md <<EOF
+          Rolling prototype build of \`main\` at ${GITHUB_SHA}.
+
+          This tag moves on every merge to \`main\`. The build is not
+          release-qualified and makes no sandbox, platform, or security claim
+          beyond the [platform support guide](${GITHUB_SERVER_URL}/${GH_REPO}/blob/${GITHUB_SHA}/docs/platform-support.md).
+          There is no installer: each archive holds \`omgcode\`, \`omgcode-desktop\`,
+          the licence, the README, and \`BUILD-INFO.txt\`.
+
+          - Windows x86_64: built on Windows Server 2025; tests ran on the same image.
+          - Ubuntu x86_64: built on \`ubuntu-latest\`; tests ran on the same image.
+          - Fedora 44 x86_64: built in a Fedora 44 container; only a start-up check ran.
+
+          Verify downloads against \`SHA256SUMS\`.
+          Workflow run: ${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          # Never move the tag backwards. A re-run of an older main run keeps
+          # its original GITHUB_SHA, so compare it with the published commit
+          # and refuse anything that is not the same commit or a descendant.
+          # Fail closed: matching-refs returns an empty list (HTTP 200) when
+          # the tag is absent, so any API error stops the job here, under
+          # `set -e`, before anything is deleted. matching-refs matches by
+          # prefix, so keep only the exact ref.
+          tag_count=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/latest" \
+            --jq '[.[] | select(.ref == "refs/tags/latest")] | length')
+          if [ "$tag_count" != 0 ]; then
+            published=$(gh api "repos/${GH_REPO}/commits/refs/tags/latest" --jq .sha)
+            if [ "$published" != "$GITHUB_SHA" ]; then
+              status=$(gh api "repos/${GH_REPO}/compare/${published}...${GITHUB_SHA}" --jq .status)
+              if [ "$status" != "ahead" ]; then
+                echo "::error::latest is at ${published}; ${GITHUB_SHA} is ${status} of it, not ahead. Refusing to replace a newer build."
+                exit 1
+              fi
+            fi
+          fi
+          # Delete the previous release and its tag, then recreate both at
+          # this commit. With assets, gh creates a draft, uploads, and then
+          # publishes, so readers never see a mix of old and new archives.
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --yes --cleanup-tag
+          fi
+          if gh api "repos/${GH_REPO}/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/latest"
+          fi
+          gh release create latest \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --latest=false \
+            --title "Latest testing build (${short_sha})" \
+            --notes-file notes.md \
+            assets/omgcode-* assets/SHA256SUMS

@@ -11,7 +11,7 @@ only for a workspace that enables `model_tools` and each tool's own
 preferences. Model file creation, deletion, and renaming, and Git workflows
 remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
 frontend) browses and searches sessions, runs chat, and decides model-tool
-approvals in a separate window; it is unpackaged and has run only on Windows.
+approvals in a separate window; it has no installer and has run only on Windows.
 The trusted CLI `run` command starts one program for a workspace whose
 `execute` preference is enabled. It uses an operator-declared toolchain
 profile, records each run in a run journal, and confines the process tree with
@@ -138,7 +138,7 @@ chat that runs the same turn as `omgcode chat`, and an approvals window that
 shows an exact reviewed request before it lets the operator decide. The webview
 gets no authority: the Rust side authorizes every command, and no command
 accepts a host path. The webview is still not a trusted computing base. It has
-no packaging, settings interface, development panels, or recovery
+no installer, settings interface, development panels, or recovery
 interface, and it has not been run on Linux. Chat streams the local model's
 reply into the window by default (`--stream off` at launch disables it). The
 text is provisional, and the journal records only the validated reply. The

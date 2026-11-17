@@ -1,17 +1,25 @@
 name: Rust
 
+# Pushes to main run these checks through testing-build.yml, which calls this
+# workflow before it publishes packages.
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      linux-runner:
+        description: Runner label for the Linux leg
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: read
 
+# In a called workflow github.workflow names the caller, so a direct run and a
+# Testing build run on the same ref never cancel each other.
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-rust-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025]
+        os: ["${{ inputs.linux-runner || 'ubuntu-24.04' }}", windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
