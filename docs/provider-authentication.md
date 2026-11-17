@@ -441,7 +441,11 @@ applies the cancel rule above to every request.
 - **Still not interruptible.** A read, list, or edit tool call already in
   progress. A command tool call is cancelled through its run.
 - **Limits.** Checked against local fixtures only. No live LM Studio server
-  was used, and the CLI interrupt was delivered by a test only on Linux.
+  was used, and the CLI interrupt was delivered by a test only on Linux. The
+  fixtures bound the time from the cancel until the turn or compaction
+  returns, recording included, at five seconds. They do not bound the work
+  before the cancel: reading settings and the synced journal appends depend
+  on the host's storage.
 
 LM Studio documents the request fields in
 [Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions)

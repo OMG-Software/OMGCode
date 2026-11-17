@@ -225,7 +225,15 @@ and tool turns, of the compaction before a turn, and of `compact_journal`; a
 token set before a turn; the desktop cancel of a non-streamed turn and the
 shutdown grace with a turn held in an event sink; and, on Linux only, `SIGINT`
 delivered to the CLI during `chat` and `session compact`. The platform
-interrupt test also covers `watch_interrupt`. The adapter requires the
+interrupt test also covers `watch_interrupt`. In `omgcode-app`, these turn and
+desktop tests start the clock at the cancel or shutdown request and require
+the turn or compaction to end within five seconds: six tests in
+`chat_turn.rs`, the non-streamed cancel in `desktop_chat.rs`, and the streamed
+cancel and shutdown in `desktop_events.rs`. The other `omgcode-app`
+cancellation tests are not timed, and the `omgcode-core` adapter tests keep
+their own bounds. In the listed tests, work before the cancel, such as synced
+journal appends, is not timed: a slow Windows runner once spent 5.9 seconds
+there. The adapter requires the
 compiled base prompt and accepts only a literal loopback HTTP endpoint. The
 adapter is not a permission boundary: the CLI selects tool mode from the live
 `model_tools` preference, and the runtime rechecks that preference before each

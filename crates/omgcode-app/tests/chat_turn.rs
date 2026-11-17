@@ -4,7 +4,7 @@
 //! an ephemeral port. No process is spawned on Unix; on Windows the private
 //! data root is prepared with `icacls`, which holds no store handle.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -876,7 +876,14 @@ fn a_turn_without_a_stream_hook_sends_stream_false() {
 
 // ---- Cancelling a streamed turn (ADR-0050) ----
 
-/// The slowest acceptable cancellation. The request deadline is 30 seconds.
+/// The slowest acceptable cancellation, timed from the moment the token is
+/// cancelled until the turn or compaction returns. The request deadline is 30
+/// seconds.
+///
+/// The interval starts at the cancel, as in the desktop cancellation tests.
+/// Before it, a turn reads its settings and makes several synced journal
+/// appends. Their duration depends on the host's storage, not on cancellation:
+/// on a loaded Windows runner they once took 5.9 seconds.
 const CANCEL_BOUND: Duration = Duration::from_secs(5);
 
 /// What a streamed turn did when its token was cancelled by the first piece.
@@ -884,7 +891,8 @@ struct CancelledTurn {
     error: omgcode_app::AppError,
     log: Vec<String>,
     handed: usize,
-    elapsed: Duration,
+    /// From the stream hook's cancel until the turn returned.
+    after_cancel: Duration,
     served: usize,
     has_active_turn: bool,
     events: Vec<Value>,
@@ -903,6 +911,7 @@ fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
         common::sse_text(&["second-piece "]),
     )]);
     let slot: RefCell<Option<CancelToken>> = RefCell::new(None);
+    let cancelled_at: Cell<Option<Instant>> = Cell::new(None);
     let mut handed = 0_usize;
     let mut log = Vec::new();
     let mut on_cancel_token = |token: CancelToken| {
@@ -914,12 +923,15 @@ fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
         ChatStreamEvent::Text(text) => {
             log.push(format!("text:{text}"));
             if let Some(token) = slot.borrow().as_ref() {
+                // The first cancel starts the measured interval.
+                if cancelled_at.get().is_none() {
+                    cancelled_at.set(Some(Instant::now()));
+                }
                 token.cancel();
             }
         }
     };
 
-    let started = Instant::now();
     let result = turn(
         &mut journal,
         &fixture.data,
@@ -932,7 +944,12 @@ fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
             on_stream: Some(&mut on_stream),
         },
     );
-    let elapsed = started.elapsed();
+    let returned = Instant::now();
+    let after_cancel = returned.saturating_duration_since(
+        cancelled_at
+            .get()
+            .expect("the stream hook cancelled the turn's token"),
+    );
     // Let the server finish; it never saw the rest of its body read.
     drop(release);
     let served = server.finish();
@@ -941,7 +958,7 @@ fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
         error: result.expect_err("the cancelled turn fails"),
         log,
         handed,
-        elapsed,
+        after_cancel,
         served,
         has_active_turn,
         events: close_and_read(journal),
@@ -968,9 +985,9 @@ fn a_streamed_text_turn_cancelled_mid_stream_is_recorded_as_cancelled() {
     assert_eq!(ended.handed, 1);
     assert_eq!(ended.log, ["request_started", "text:one "]);
     assert!(
-        ended.elapsed < CANCEL_BOUND,
+        ended.after_cancel < CANCEL_BOUND,
         "cancellation took {:?}",
-        ended.elapsed
+        ended.after_cancel
     );
 
     // And the journal holds a cancelled failure, no reply, and no open turn.
@@ -996,9 +1013,9 @@ fn a_streamed_tool_turn_cancelled_in_its_first_request_runs_no_tool() {
     assert_eq!(ended.log, ["request_started", "text:one "]);
     assert_eq!(ended.served, 1);
     assert!(
-        ended.elapsed < CANCEL_BOUND,
+        ended.after_cancel < CANCEL_BOUND,
         "cancellation took {:?}",
-        ended.elapsed
+        ended.after_cancel
     );
     assert_eq!(
         last_failure_code(&ended.events).as_deref(),
@@ -1110,7 +1127,8 @@ fn a_cancel_seen_only_after_the_reply_arrived_still_ends_the_turn_as_cancelled()
 /// reply of its first request.
 struct HeldTurn {
     error: omgcode_app::AppError,
-    elapsed: Duration,
+    /// From the helper thread's cancel until the turn returned.
+    after_cancel: Duration,
     served: usize,
     has_active_turn: bool,
     events_before: usize,
@@ -1142,10 +1160,11 @@ fn cancel_while_a_reply_is_held(
         let cancel = cancel.clone();
         thread::spawn(move || {
             common::wait_arrived(&arrival);
+            let cancelled_at = Instant::now();
             cancel.cancel();
+            cancelled_at
         })
     };
-    let started = Instant::now();
     let result = turn(
         &mut journal,
         &fixture.data,
@@ -1158,15 +1177,16 @@ fn cancel_while_a_reply_is_held(
             on_stream: None,
         },
     );
-    let elapsed = started.elapsed();
-    canceller.join().expect("canceller thread");
+    let returned = Instant::now();
+    let cancelled_at = canceller.join().expect("canceller thread");
+    let after_cancel = returned.saturating_duration_since(cancelled_at);
     // Let the server finish; its held reply finds the connection closed.
     drop(release);
     let served = server.finish();
     let has_active_turn = journal.snapshot().active_turn.is_some();
     HeldTurn {
         error: result.expect_err("the cancelled turn fails"),
-        elapsed,
+        after_cancel,
         served,
         has_active_turn,
         events_before,
@@ -1185,9 +1205,9 @@ fn a_non_streamed_text_turn_cancelled_while_waiting_is_recorded_as_cancelled() {
     assert_eq!(ended.error.code(), "cancelled");
     assert_eq!(ended.error.message(), "turn was cancelled");
     assert!(
-        ended.elapsed < CANCEL_BOUND,
+        ended.after_cancel < CANCEL_BOUND,
         "cancellation took {:?}",
-        ended.elapsed
+        ended.after_cancel
     );
     assert_eq!(ended.served, 1);
     assert_eq!(
@@ -1209,9 +1229,9 @@ fn a_non_streamed_tool_turn_cancelled_while_waiting_runs_no_tool() {
     assert_eq!(ended.error.code(), "cancelled");
     assert_eq!(ended.error.message(), "turn was cancelled");
     assert!(
-        ended.elapsed < CANCEL_BOUND,
+        ended.after_cancel < CANCEL_BOUND,
         "cancellation took {:?}",
-        ended.elapsed
+        ended.after_cancel
     );
     assert_eq!(
         last_failure_code(&ended.events).as_deref(),
@@ -1265,9 +1285,9 @@ fn cancelling_the_compaction_before_a_turn_records_nothing() {
         "Compaction was cancelled; nothing was recorded"
     );
     assert!(
-        ended.elapsed < CANCEL_BOUND,
+        ended.after_cancel < CANCEL_BOUND,
         "cancellation took {:?}",
-        ended.elapsed
+        ended.after_cancel
     );
     assert_eq!(ended.served, 1);
     assert!(!ended.has_active_turn);
@@ -1344,12 +1364,13 @@ fn a_cancelled_compaction_through_the_command_path_records_nothing() {
         let cancel = cancel.clone();
         thread::spawn(move || {
             common::wait_arrived(&arrival);
+            let cancelled_at = Instant::now();
             cancel.cancel();
+            cancelled_at
         })
     };
 
     // When the token is cancelled while the summarizer request waits.
-    let started = Instant::now();
     let error = compact_journal(
         &mut journal,
         &fixture.data,
@@ -1363,14 +1384,18 @@ fn a_cancelled_compaction_through_the_command_path_records_nothing() {
         &cancel,
     )
     .expect_err("the cancelled compaction fails");
-    let elapsed = started.elapsed();
-    canceller.join().expect("canceller thread");
+    let returned = Instant::now();
+    let cancelled_at = canceller.join().expect("canceller thread");
+    let after_cancel = returned.saturating_duration_since(cancelled_at);
     drop(release);
     server.finish();
 
     // Then it is cancelled promptly and no compaction was recorded.
     assert_eq!(error.code(), "cancelled");
-    assert!(elapsed < CANCEL_BOUND, "cancellation took {elapsed:?}");
+    assert!(
+        after_cancel < CANCEL_BOUND,
+        "cancellation took {after_cancel:?}"
+    );
     assert!(journal.snapshot().compaction.is_none());
     assert!(
         close_and_read(journal)
