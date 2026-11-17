@@ -258,7 +258,9 @@ fn refused_bindings_store_nothing_and_record_nothing() {
 /// bearer without any space, basic with a nonempty user and a colon.
 #[test]
 fn invalid_secrets_are_refused_before_anything_is_stored() {
-    for (auth, bytes) in [
+    // Failure messages name the case index and scheme only: secret bytes and
+    // validation results never reach test output.
+    for (case, (auth, bytes)) in [
         (PackageAuth::Bearer, b"tok\ten".as_slice()),
         (PackageAuth::Bearer, b"tok\ren"),
         (PackageAuth::Bearer, b"tok\nen"),
@@ -274,21 +276,27 @@ fn invalid_secrets_are_refused_before_anything_is_stored() {
         (PackageAuth::Basic, b"alice:pw\n"),
         (PackageAuth::Basic, b"alice:pw "),
         (PackageAuth::Basic, "alice:p\u{e9}".as_bytes()),
-    ] {
-        let result = validate_package_secret(auth, &secret(bytes));
-        assert!(
-            matches!(result, Err(ControlError::PackageProfileRefused(_))),
-            "{auth:?} {bytes:?}: {result:?}"
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = matches!(
+            validate_package_secret(auth, &secret(bytes)),
+            Err(ControlError::PackageProfileRefused(_))
         );
+        assert!(refused, "invalid case {case} ({auth:?}) was not refused");
     }
-    for (auth, bytes) in [
+    for (case, (auth, bytes)) in [
         (PackageAuth::Bearer, b"abc.DEF_123-~+/=".as_slice()),
         (PackageAuth::Basic, b"alice:pass word"),
         (PackageAuth::Basic, b"a:"),
         (PackageAuth::Basic, b"a:b:c"),
-    ] {
-        validate_package_secret(auth, &secret(bytes))
-            .unwrap_or_else(|error| panic!("{auth:?} {bytes:?}: {error}"));
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let accepted = validate_package_secret(auth, &secret(bytes)).is_ok();
+        assert!(accepted, "valid case {case} ({auth:?}) was refused");
     }
     // The largest accepted secret is valid; one more byte is refused by the
     // secret type itself.
