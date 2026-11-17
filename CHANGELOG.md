@@ -888,6 +888,20 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- The five cancellation tests in `crates/omgcode-app/tests/chat_turn.rs` now
+  time the interval from the moment the token is cancelled until the turn or
+  compaction returns, as the desktop cancellation tests already did. They
+  timed the whole turn, which also covers reading settings and the synced
+  journal appends made before the request. On a slow Windows runner,
+  `a_streamed_text_turn_cancelled_mid_stream_is_recorded_as_cancelled`
+  failed with "cancellation took 5.9s". In the same job, two `omgcode-app`
+  unit tests that only open a service on a temporary directory took 4 to 5
+  seconds each, against milliseconds on other runs. Local timing probes put
+  the cancel-to-return step under 1 ms, also under full CPU load and under
+  disk-flush contention. A 6-second delay before the response head
+  reproduced the failure with the old timing and passes with the new one. A
+  slowed-down cancellation (a 6-second poll) still fails the new check. The
+  5-second bound and the adapter are unchanged.
 - Findings from the first Sonar analysis of the desktop frontend:
   - Both workflows now install the frontend's dependencies with
     `npm ci --ignore-scripts`. `ui/.npmrc` already set this; the flag makes

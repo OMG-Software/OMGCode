@@ -225,7 +225,11 @@ and tool turns, of the compaction before a turn, and of `compact_journal`; a
 token set before a turn; the desktop cancel of a non-streamed turn and the
 shutdown grace with a turn held in an event sink; and, on Linux only, `SIGINT`
 delivered to the CLI during `chat` and `session compact`. The platform
-interrupt test also covers `watch_interrupt`. The adapter requires the
+interrupt test also covers `watch_interrupt`. Each cancellation test, in the
+turn tests as in the desktop tests, times the interval from the cancel to the
+return or the `finished` event against a five-second bound. Work before the
+cancel, such as synced journal appends, is not timed: a slow Windows runner
+once spent 5.9 seconds there. The adapter requires the
 compiled base prompt and accepts only a literal loopback HTTP endpoint. The
 adapter is not a permission boundary: the CLI selects tool mode from the live
 `model_tools` preference, and the runtime rechecks that preference before each
