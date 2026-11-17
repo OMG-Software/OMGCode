@@ -595,6 +595,7 @@ Run frontend commands from `crates/omgcode-desktop/ui`:
 | `npm run lint` | `biome check .` |
 | `npm run format` | `biome format --write .` |
 | `npm test` | Vitest with jsdom |
+| `npm run coverage` | The same tests with coverage; writes `coverage/lcov.info` for the Sonar analysis and prints a summary |
 | `npm run test:dist` | Build, then check the built bundles |
 
 Outside Tauri, the Vite dev server serves an in-memory mock backend from

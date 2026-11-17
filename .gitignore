@@ -29,3 +29,4 @@ rustc-ice-*.txt
 # Desktop UI (Node)
 node_modules/
 dist/
+coverage/

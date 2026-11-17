@@ -17,6 +17,7 @@ pinned exactly, `package-lock.json` is committed, and `.npmrc` sets `ignore-scri
 | `npm run lint`      | `biome check .` (lint, format check, import order)                                    |
 | `npm run format`    | `biome format --write .`                                                              |
 | `npm test`          | Vitest. The `dist/` checks run only if `dist/` exists; otherwise they show as skipped |
+| `npm run coverage`  | The same tests with coverage; writes `coverage/lcov.info` and prints a summary        |
 | `npm run test:dist` | Build, then run `tests/dist.test.ts`                                                  |
 | `npm run tauri`     | Tauri CLI, run from `crates/omgcode-desktop` (`cd .. && tauri`)                       |
 

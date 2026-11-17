@@ -808,10 +808,14 @@ Direct dependencies have specific purposes:
 
 The frontend in `crates/omgcode-desktop/ui` has one runtime dependency,
 `@tauri-apps/api` 2.12.5. Its build and test tools are `@tauri-apps/cli`
-2.12.5, `typescript` 7.0.2, `vite` 8.3.8, `vitest` 5.1.0, `jsdom` 31.0.1, and
-`@biomejs/biome` 2.6.8. Versions are exact, `package-lock.json` is committed,
-and `.npmrc` sets `ignore-scripts=true`. `npm audit` reported no
-vulnerabilities on 2026-11-16. See the
+2.12.5, `typescript` 7.0.2, `vite` 8.3.8, `vitest` 5.1.0, `jsdom` 31.0.1,
+`@biomejs/biome` 2.6.8, and `@vitest/coverage-v8` 5.1.0. Versions are exact,
+`package-lock.json` is committed, and `.npmrc` sets `ignore-scripts=true`.
+`@vitest/coverage-v8` is Vitest's own coverage provider, published with each
+Vitest release under the MIT licence. It is a development dependency that
+writes the report the Sonar quality gate needs, and nothing in the built
+bundle uses it. It added 12 packages to the lockfile, none with an install
+script. `npm audit` reported no vulnerabilities on 2026-11-17. See the
 [desktop interface guide](desktop-interface.md#development).
 
 The selected direct crates declare MIT and/or Apache-2.0 licensing and support

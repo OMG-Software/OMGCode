@@ -18,5 +18,14 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["tests/**/*.test.ts"],
+    // Used by `npm run coverage` only. The report feeds the Sonar analysis;
+    // its paths are written relative to the repository root, which is where
+    // that analysis runs.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      reporter: ["text-summary", ["lcovonly", { projectRoot: "../../.." }]],
+      reportsDirectory: "coverage",
+    },
   },
 });

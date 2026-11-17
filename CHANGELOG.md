@@ -838,8 +838,15 @@ Changes are recorded here before a release version is assigned.
   - `sonar-project.properties` declares test code as test code. Every
     duplicated line Sonar reported, and about half the lines it counted as
     code to cover, were in test files analysed as production code.
-  - Not fixed: Sonar's condition on coverage of new code. It fails because
-    no coverage report is produced for the frontend's TypeScript sources.
+  - Sonar's condition on coverage of new code failed because no coverage
+    report existed for the frontend's TypeScript sources. `npm run coverage`
+    now writes one with `@vitest/coverage-v8` 5.1.0, a new development
+    dependency pinned to the Vitest version. The Sonar workflow runs it in a
+    separate job that never references the Sonar credential and passes only
+    the report to the analysis job. Nothing is excluded from the measure. It
+    stood at 85.7% of lines and 76.0% of branches on 2026-11-17, about 82%
+    by Sonar's combined measure against a required 80%. Rust is still not
+    measured for coverage.
 - The CLI test `concurrent_runs_complete_and_are_recorded` no longer depends
   on host speed. On Windows each run spun a fixed loop of 30,000 `cd .`
   iterations before writing its file, and the test allowed 60 seconds for

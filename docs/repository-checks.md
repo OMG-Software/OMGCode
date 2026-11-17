@@ -147,7 +147,7 @@ The source root is the repository, including Rust crates, workflow, and tooling
 files. The explicit exclusions cover .git, target, node_modules, dist, and
 coverage directories at any depth. They do not cover every generated directory;
 review exclusions as the repository grows. Use the Rust workflow for compilation
-and Clippy checks. Coverage reporting is not configured in either workflow.
+and Clippy checks. The Rust workflow reports no coverage.
 
 Test code is declared to Sonar as test code: every `tests` directory, every
 `tests.rs` module, and every `*.test.ts` file. The same patterns are excluded
@@ -157,10 +157,23 @@ for duplication. Rust unit tests written inside a source file in a
 `#[cfg(test)]` module cannot be separated this way and are still analysed as
 source.
 
-Sonar counts the frontend's TypeScript sources as code to cover. No coverage
-report is produced, so the quality gate's condition on coverage of new code
-fails for any pull request that adds frontend source. Rust is not measured for
-coverage at all. Do not read a passing gate as evidence of Rust test coverage.
+Sonar counts the frontend's TypeScript sources as code to cover, so the Sonar
+workflow gives it a coverage report. A first job, `Frontend coverage`, installs
+the locked dependencies, runs `npm run coverage`, and uploads `lcov.info` as an
+artifact kept for one day. The analysis job waits for it and downloads the
+report to `crates/omgcode-desktop/ui/coverage`, where
+`sonar.javascript.lcov.reportPaths` points. The report's paths are relative to
+the repository root. The tests run dependency code, so they run in a job that
+never references the Sonar credential; the analysis job receives only the
+report. Keep it that way.
+
+The coverage provider is `@vitest/coverage-v8`, pinned to the Vitest version.
+The report covers every file under `ui/src`, including the development mock,
+with no exclusion. On 2026-11-17 it measured 85.7% of lines and 76.0% of
+branches, which is about 82% by Sonar's combined measure against a required
+80%. That margin is thin: new frontend code needs tests, or the gate fails.
+Rust is not measured for coverage at all. Do not read a passing gate as
+evidence of Rust test coverage.
 
 Both workflows install the frontend's dependencies with
 `npm ci --ignore-scripts`. The flag repeats what `ui/.npmrc` sets, so no

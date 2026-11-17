@@ -12,6 +12,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "test:dist": "npm run build && vitest run tests/dist.test.ts",
     "tauri": "cd .. && tauri"
   },
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
     "@tauri-apps/cli": "2.12.5",
+    "@vitest/coverage-v8": "5.1.0",
     "jsdom": "31.0.1",
     "typescript": "7.0.2",
     "vite": "8.3.8",
