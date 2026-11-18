@@ -1284,6 +1284,17 @@ auto-compaction for the local LM Studio route.
   identifier, name, and digest; skill text is never journaled, replayed, or
   summarized; a tool-enabled turn ends `skill_withdrawn` when a selected skill
   changes. See [the implemented subset](docs/skills.md#implemented-subset-phase-f1).
+  On 2026-11-18, Windows passed fmt, workspace Clippy, 1218 workspace tests
+  (8 ignored), and the doc test at `5d1f3e1`. A clean WSL Ubuntu 24.04 clone
+  of the same commit passed fmt, Clippy, and the doc test but failed one test:
+  a linked source folder was refused as `source_unreadable` on Linux and
+  `source_invalid` on Windows. The fix maps Linux `ELOOP` and `ENOTDIR` at
+  the source open to `source_invalid`. At `e7ca0cd`, a fresh Linux clone
+  passed fmt, workspace Clippy, every workspace test (1216 summed result
+  lines, which count four nested platform reruns twice; 0 failed, 8 ignored),
+  and the doc test. Windows passed fmt, Clippy, and `skill_packages` (25)
+  after the fix; its full workspace run was not repeated, because the fix is
+  Unix-only.
 
 Mid-turn compaction after tool results, persisted settings, provider-native
 compaction, caches, MCP, and memories remain open. For skills, Git sources,
