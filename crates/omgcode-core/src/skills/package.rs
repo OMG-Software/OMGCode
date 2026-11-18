@@ -498,6 +498,15 @@ fn build_manifest(fields: RawFields) -> Result<SkillManifest, SkillPackageError>
             return Err(SkillPackageError::DuplicateKey(sanitize(&key)));
         }
     }
+    // Check bytes first: they are never fewer than characters, so an
+    // over-long value always reports `allowed_tools_too_long`.
+    if fields
+        .allowed_tools
+        .as_ref()
+        .is_some_and(|text| text.len() > MAX_ALLOWED_TOOLS_BYTES)
+    {
+        return Err(SkillPackageError::AllowedToolsTooLong);
+    }
     let allowed_tools = match optional(
         "allowed-tools",
         fields.allowed_tools,
@@ -506,9 +515,6 @@ fn build_manifest(fields: RawFields) -> Result<SkillManifest, SkillPackageError>
     )? {
         None => Vec::new(),
         Some(text) => {
-            if text.len() > MAX_ALLOWED_TOOLS_BYTES {
-                return Err(SkillPackageError::AllowedToolsTooLong);
-            }
             let entries: Vec<String> = text.split_ascii_whitespace().map(str::to_owned).collect();
             if entries.is_empty() {
                 return Err(SkillPackageError::FieldLength {
@@ -1008,7 +1014,7 @@ mod tests {
                 "name: demo\ndescription: a\nallowed-tools: {}",
                 long(1025)
             )),
-            "field_length"
+            "allowed_tools_too_long"
         );
     }
 
@@ -1091,6 +1097,23 @@ mod tests {
         let text = error.to_string();
         assert!(!text.contains('\u{1b}'));
         assert!(text.len() < 300, "{text}");
+    }
+
+    #[test]
+    fn given_an_ascii_allowed_tools_value_over_the_byte_limit_when_parsed_then_it_is_too_long() {
+        let over = "a".repeat(MAX_ALLOWED_TOOLS_BYTES + 1);
+        let error = parse_skill_md(&skill(
+            &format!("name: demo\ndescription: a\nallowed-tools: {over}"),
+            "B\n",
+        ))
+        .expect_err("1025 ASCII bytes exceed 1024");
+        assert_eq!(error.code(), "allowed_tools_too_long");
+        let at_limit = "a".repeat(MAX_ALLOWED_TOOLS_BYTES);
+        parse_skill_md(&skill(
+            &format!("name: demo\ndescription: a\nallowed-tools: {at_limit}"),
+            "B\n",
+        ))
+        .expect("1024 ASCII bytes are within the limit");
     }
 
     #[test]
