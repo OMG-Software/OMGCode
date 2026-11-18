@@ -120,6 +120,10 @@ disable followed by a re-enable during a request still withdraws the skill.
   its turn is withdrawn. Runs are not attributed to skills, and the runner's
   own admission step does not recheck the selection; the command needed its
   own single-use approval.
+- Each recheck is the admission point for its request or dispatch. A
+  withdrawal after a check passes applies to the next one. Holding the
+  settings lock for a whole model request or command was rejected, because it
+  would block every settings change while the request or command runs.
 - Not implemented: Git sources, updates that keep the old version, session
   overrides, agent selection, resource loading, script execution, desktop
   controls, and cache invalidation beyond the request-only rule.

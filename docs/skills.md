@@ -72,6 +72,9 @@ permission grants or trusted application extensions.
   request-only rule, and observing the end of dependent work: a command that
   is already running keeps running when a skill selected for its turn is
   withdrawn, and the runner's own admission step does not recheck skills.
+  Each recheck is the admission point: a withdrawal after a check passes
+  applies to the next request or dispatch, because the settings lock is not
+  held for a whole model request or command.
 
 ## Bundled source packages
 

@@ -70,7 +70,8 @@ Changes are recorded here before a release version is assigned.
     agent selection, resource loading, script execution, desktop controls, and
     the desktop transcript does not show a request's skills. A command that is
     already running is not stopped when a skill selected for its turn is
-    withdrawn, and the runner's own admission does not recheck skills.
+    withdrawn, and the runner's own admission does not recheck skills. A
+    withdrawal after a recheck passes applies to the next request or dispatch.
 
 - Version 0.38.0 adds two approval-gated model file tools, rename and delete
   (Phase C19). See ADR-0055 and the
