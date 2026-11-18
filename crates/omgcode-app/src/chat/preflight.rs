@@ -141,7 +141,7 @@ fn estimate_with_user(
     )
     .map_err(|error| AppError::new(ErrorKind::Context, error.to_string()))?;
     let assembly_blocked = matches!(
-        prompt::assemble(turn.instructions, &history),
+        prompt::assemble_with_skills(turn.instructions, turn.skills, &history),
         Err(PromptError::TooManyHistoryMessages | PromptError::AssembledPromptTooLarge)
     );
     Ok((estimate, assembly_blocked))

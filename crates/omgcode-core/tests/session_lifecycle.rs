@@ -29,6 +29,7 @@ fn manifest() -> RequestManifest {
         max_output_tokens: 2_000,
         tool_schema_version: None,
         tools: None,
+        skills: Vec::new(),
     }
 }
 
@@ -488,4 +489,41 @@ fn symbolic_link_journal_paths_are_rejected() {
         SessionJournal::open(&alias),
         Err(SessionError::InvalidJournal(_))
     ));
+}
+
+#[test]
+fn given_a_manifest_without_skills_when_serialized_then_the_bytes_have_no_skills_key_and_old_json_parses()
+ {
+    let without = manifest();
+
+    let text = serde_json::to_string(&without).expect("serialize");
+
+    assert!(!text.contains("skills"), "{text}");
+    let parsed: RequestManifest = serde_json::from_str(&text).expect("old-shape JSON parses");
+    assert_eq!(parsed, without);
+    assert_eq!(serde_json::to_string(&parsed).expect("serialize"), text);
+}
+
+#[test]
+fn given_a_manifest_with_skills_when_recorded_then_it_round_trips_and_bad_digests_are_refused() {
+    let (_temp, root, workspace) = setup();
+    let mut journal = create(&root, &workspace);
+    let request_id = journal.start_turn().expect("start turn");
+    let mut with = manifest();
+    with.skills = vec![omgcode_core::session::ManifestSkill {
+        skill_id: Uuid::new_v4(),
+        name: omgcode_core::skills::SkillName::new("demo-skill").expect("name"),
+        skill_md_sha256: "b".repeat(64),
+    }];
+
+    journal
+        .record_manifest(request_id, with.clone())
+        .expect("a valid skills manifest is recorded");
+
+    let mut bad = with.clone();
+    bad.skills[0].skill_md_sha256 = "NOT-A-DIGEST".into();
+    assert!(journal.record_manifest(request_id, bad).is_err());
+    let mut repeated = with.clone();
+    repeated.skills.push(with.skills[0].clone());
+    assert!(journal.record_manifest(request_id, repeated).is_err());
 }

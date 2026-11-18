@@ -545,6 +545,7 @@ fn a_schema_v2_journal_keeps_recording_and_replaying_tool_manifests() {
         max_output_tokens: 2_000,
         tool_schema_version: Some("1".into()),
         tools: Some(vec!["workspace_read_file".into()]),
+        skills: Vec::new(),
     };
 
     let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");

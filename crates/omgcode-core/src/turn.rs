@@ -30,12 +30,12 @@ use crate::files::{FileBroker, FileError, FileListing, FileTarget};
 use crate::policy::{DecisionReason, PermissionSet, SessionBinding, WorkspaceId};
 use crate::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, ModelMessage,
-    PromptError,
+    PromptError, SkillPrompt,
 };
 use crate::replacement::{CheckpointError, RecordedArtifact};
 use crate::session::{
-    MAX_MESSAGE_BYTES, MessageRole, NativePath, RecordedMessage, RequestManifest, SessionError,
-    SessionJournal, ToolOutcome, sha256_hex,
+    MAX_MESSAGE_BYTES, ManifestSkill, MessageRole, NativePath, RecordedMessage, RequestManifest,
+    SessionError, SessionJournal, ToolOutcome, sha256_hex,
 };
 
 mod review;
@@ -1079,6 +1079,10 @@ pub enum TurnError {
     /// The supplied manifest does not describe the compiled prompt actually sent.
     #[error("request manifest does not match the compiled base prompt")]
     ManifestMismatch,
+    /// A selected skill is no longer registered and enabled for the workspace,
+    /// or its recorded digest changed. Nothing further was dispatched.
+    #[error("a selected skill was withdrawn")]
+    SkillWithdrawn,
     /// Current policy or native checks denied the tool operation.
     #[error("tool operation denied: {0}")]
     ToolDenied(#[source] Box<FileError>),
@@ -1210,6 +1214,7 @@ pub struct TurnRuntime<'a> {
     limits: TurnLimits,
     cancel: CancelToken,
     tool_text_filter: Option<&'a dyn Fn(&str) -> String>,
+    skills: Vec<SkillPrompt>,
 }
 
 impl<'a> TurnRuntime<'a> {
@@ -1238,6 +1243,7 @@ impl<'a> TurnRuntime<'a> {
             limits,
             cancel: CancelToken::new(),
             tool_text_filter: None,
+            skills: Vec::new(),
         })
     }
 
@@ -1250,6 +1256,20 @@ impl<'a> TurnRuntime<'a> {
     #[must_use]
     pub fn with_tool_text_filter(mut self, filter: &'a dyn Fn(&str) -> String) -> Self {
         self.tool_text_filter = Some(filter);
+        self
+    }
+
+    /// Send these operator-selected, already verified skills with every model
+    /// request of the turn.
+    ///
+    /// The skill text is untrusted, request-only, and never recorded. The
+    /// runtime records each skill's identity and digest in the manifest and
+    /// rechecks live settings before every later model request and every tool
+    /// dispatch. A skill that is no longer registered, enabled for the
+    /// workspace, and unchanged ends the turn as `skill_withdrawn`.
+    #[must_use]
+    pub fn with_skills(mut self, skills: Vec<SkillPrompt>) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -1311,6 +1331,15 @@ impl<'a> TurnRuntime<'a> {
         }
         // The runtime owns the exact instruction and tool metadata it sends.
         manifest.custom_instructions = custom_instructions.to_owned();
+        manifest.skills = self
+            .skills
+            .iter()
+            .map(|skill| ManifestSkill {
+                skill_id: skill.skill_id,
+                name: skill.name.clone(),
+                skill_md_sha256: skill.skill_md_sha256.clone(),
+            })
+            .collect();
         manifest.tool_schema_version = Some(TOOL_SCHEMA_VERSION.to_owned());
         manifest.tools = Some(
             tools
@@ -1330,7 +1359,12 @@ impl<'a> TurnRuntime<'a> {
         });
 
         // Catch deterministic prompt-size failures before creating a turn.
-        prompt::assemble(custom_instructions, &history)?;
+        prompt::assemble_with_skills(custom_instructions, &self.skills, &history)?;
+        // A skill withdrawn since the caller loaded it ends the turn before
+        // anything is recorded.
+        if !self.skills_current() {
+            return Err(TurnError::SkillWithdrawn);
+        }
         self.journal.preflight_request(user_text, &manifest)?;
         let max_result_bytes =
             u64::try_from(self.limits.max_result_bytes).map_err(|_| TurnError::InvalidLimits)?;
@@ -1360,12 +1394,18 @@ impl<'a> TurnRuntime<'a> {
                 None => return Err(self.abort_for(request_id, TurnError::InvalidLimits)),
             };
 
-            let messages = match prompt::assemble(custom_instructions, &history) {
-                Ok(messages) => messages,
-                Err(error) => {
-                    return Err(self.abort(request_id, "prompt_limit", error.into()));
-                }
-            };
+            // The first request follows the check above; every later request
+            // rechecks live settings before it is built.
+            if rounds > 1 && !self.skills_current() {
+                return Err(self.abort_for(request_id, TurnError::SkillWithdrawn));
+            }
+            let messages =
+                match prompt::assemble_with_skills(custom_instructions, &self.skills, &history) {
+                    Ok(messages) => messages,
+                    Err(error) => {
+                        return Err(self.abort(request_id, "prompt_limit", error.into()));
+                    }
+                };
             let reply = match model.complete(ToolModelRequest {
                 messages: &messages,
                 tools: &tools,
@@ -1470,6 +1510,10 @@ impl<'a> TurnRuntime<'a> {
                 if let Err(error) = self.check_checkpoints(deadline) {
                     return Err(self.abort_for(request_id, error));
                 }
+                // Dispatch nothing once a selected skill is withdrawn.
+                if !self.skills_current() {
+                    return Err(self.abort_for(request_id, TurnError::SkillWithdrawn));
+                }
                 // Reserve the largest possible tool message against the
                 // assembled-prompt budget before recording an intent or
                 // dispatching the operation.
@@ -1477,7 +1521,8 @@ impl<'a> TurnRuntime<'a> {
                     role: ConversationRole::User,
                     content: "x".repeat(self.limits.max_result_bytes),
                 });
-                let prompt_check = prompt::assemble(custom_instructions, &history);
+                let prompt_check =
+                    prompt::assemble_with_skills(custom_instructions, &self.skills, &history);
                 history.pop();
                 if let Err(error) = prompt_check {
                     return Err(self.abort_for(request_id, TurnError::Prompt(error)));
@@ -1603,6 +1648,27 @@ impl<'a> TurnRuntime<'a> {
         }
     }
 
+    /// Report whether every selected skill is still registered, effectively
+    /// enabled for the workspace, and unchanged. Settings are read live and
+    /// the lock is released before returning; any settings failure counts as
+    /// withdrawn. A turn without skills never opens the store.
+    fn skills_current(&self) -> bool {
+        if self.skills.is_empty() {
+            return true;
+        }
+        let Ok(Some(control)) = ControlStore::open_existing(self.data_directory) else {
+            return false;
+        };
+        self.skills.iter().all(|skill| {
+            control
+                .effective_skill(self.workspace_id, &skill.name)
+                .is_some_and(|record| {
+                    record.skill_id() == skill.skill_id
+                        && record.skill_md_sha256() == skill.skill_md_sha256
+                })
+        })
+    }
+
     /// Check cooperative cancellation and the turn deadline.
     fn check_checkpoints(&self, deadline: Instant) -> Result<(), TurnError> {
         if self.cancel.is_cancelled() {
@@ -1634,6 +1700,7 @@ impl<'a> TurnRuntime<'a> {
             TurnError::InvalidToolCall(_) => "invalid_tool_call",
             TurnError::Model(_) => "model_error",
             TurnError::Prompt(_) => "prompt_limit",
+            TurnError::SkillWithdrawn => "skill_withdrawn",
             TurnError::ToolDenied(_) => "tool_denied",
             TurnError::ToolFailed(_) => "tool_failed",
             TurnError::Session(_) => "persistence",
