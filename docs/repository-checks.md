@@ -99,10 +99,10 @@ install script runs.
 `.gitattributes` sets `crates/omgcode-desktop/ui/** text=auto eol=lf` so a CRLF
 checkout on Windows does not fail Biome's format check.
 
-None of these workflow changes has run on GitHub. They run only on a pull
-request, and none exists yet. Treat their behaviour, including the added
-timeout and the Windows legs of the frontend build, as unverified until a run
-completes.
+Both workflows have run on GitHub. In Testing build run 44405313895 (commit
+`3208b03`, 2026-11-18), the Rust and Frontend legs passed on Ubuntu and
+Windows Server 2025. A passing run shows that the exercised checks passed on
+those images, not that the workflows cover every platform behaviour.
 
 On Ubuntu, the Rust workflow enables lingering for the runner user and waits
 for its user service manager before the tests. The run and tree-limit tests
@@ -121,7 +121,7 @@ newest tested commit ([ADR-0052](adr/0052-publish-rolling-testing-builds-from-ma
 | Package (windows-x86_64) | Windows Server 2025 | Release build, start-up check, `.zip` |
 | Package (ubuntu-x86_64) | `ubuntu-latest` | Release build, start-up check, `.tar.gz` |
 | Package (fedora44-x86_64) | Fedora 44 container on Ubuntu 24.04 | Release build, start-up check, `.tar.gz` |
-| Publish the testing release | Ubuntu 24.04 | Checksums and release replacement |
+| Publish the latest release | Ubuntu 24.04 | Checksums, staged draft, and release swap |
 
 Each package job builds the frontend, then runs
 `cargo build --release --locked -p omgcode-cli -p omgcode-desktop` with the
@@ -144,12 +144,31 @@ Secret Service. The release notes and `BUILD-INFO.txt` state this.
 The publish job needs every test and package job and runs only for
 `refs/heads/main`, so a manual run on another branch builds but publishes
 nothing. It is the only job with `contents: write`. It never checks out or runs
-repository or dependency code. It downloads the archives, writes `SHA256SUMS`,
-deletes the previous `latest` release and tag, and runs `gh release create
-latest --target <commit> --prerelease --latest=false` with the assets. With
-assets, `gh` creates a draft, uploads, and then publishes, so nobody sees a mix
-of old and new archives. Downloads fail for a few seconds between the delete
-and the publish.
+repository or dependency code. It downloads the archives and writes
+`SHA256SUMS`. It then stages and swaps the release
+([ADR-0058](adr/0058-stage-the-latest-release-as-a-draft-before-the-swap.md)):
+
+1. It deletes any draft whose tag name starts with `testing-build-staging-`.
+   Such a draft is left by a run that stopped before its cleanup ran. The
+   prefix is reserved for these drafts.
+2. It runs `gh release create testing-build-staging-<run id>-<attempt> --draft
+   --target <commit> --prerelease --latest=false` with the assets. A draft
+   creates no tag, and only users with write access see it. The published
+   `latest` release keeps serving its archives during the upload.
+3. It requires exactly one such draft whose uploaded assets match the local
+   files by name and size.
+4. It deletes the previous `latest` release and tag, then publishes the draft
+   through the release API with `tag_name: latest`, `draft: false`,
+   `prerelease: true`, and `make_latest: "false"`. Publishing creates the tag
+   at the built commit.
+5. It checks that `latest` resolves to the built commit and prints the
+   published assets.
+
+Nobody sees a mix of old and new archives. Downloads fail only between the
+delete and the publish call in step 4, not for the whole upload. An exit trap
+deletes the run's draft if the job fails before the publish call succeeds. If
+the publish call itself fails, no `latest` release exists until a re-run of the
+publish job, which stages again from the same artifacts.
 
 Runs use the concurrency group `testing-build-<ref>` with `cancel-in-progress:
 false`. A publish is never cancelled part way. GitHub keeps only the newest
@@ -180,8 +199,13 @@ those do not point to it. Link to `releases/tag/latest` or
 
 Limits:
 
-- This workflow has not run on GitHub. Inspect the first run on main, the
-  release assets, and the tag target before relying on it.
+- The delete-then-create publish first succeeded in run 44405313895 at
+  `3208b03` on 2026-11-18; earlier main runs failed in the Ubuntu tests. The
+  staged-draft swap has run only against a stub `gh` in local tests. Inspect
+  the first main run after it merges: the release, its assets, the tag target,
+  and that no `testing-build-staging-` draft remains.
+- The swap is not atomic. GitHub cannot replace a published release in one
+  call, so downloads fail briefly between the delete and the publish.
 - `ubuntu-latest` moves when GitHub changes its default image, and the Ubuntu
   archive's glibc and WebKitGTK requirements move with it.
 - Enabling immutable releases would block reusing the `latest` tag. Revisit

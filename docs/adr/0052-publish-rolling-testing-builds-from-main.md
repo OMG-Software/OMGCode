@@ -1,6 +1,7 @@
 # 0052: Publish rolling testing builds from main
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0058](0058-stage-the-latest-release-as-a-draft-before-the-swap.md)
 - Date: 2026-11-17
 
 ## Context
