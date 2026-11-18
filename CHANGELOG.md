@@ -25,16 +25,26 @@ Changes are recorded here before a release version is assigned.
     source folder is never changed.
   - **Format:** one YAML document with the Agent Skills fields as scalars and a
     flat scalar `metadata` mapping. Aliases, anchors, tags, sequences, flow
-    collections, nesting, extra documents, duplicate keys, unknown keys, a byte
-    order mark, and NUL are refused. `allowed-tools` is advisory text only.
+    collections, nesting, extra documents, duplicate keys, unknown keys, YAML
+    directives, a byte order mark anywhere before the body, and NUL are
+    refused. A plain `null`, `Null`, `NULL`, `~`, or empty value means the
+    optional field is absent; quoted text stays literal. `allowed-tools` is
+    advisory text only, at most 1,024 bytes (`allowed_tools_too_long`).
   - **Registry:** the control journal gains `skill_added`, `skill_removed`, and
     `skill_enablement_set`, each revisioned and revalidated on replay. At most
     64 skills, one per name. A new skill is disabled; a workspace override beats
     the application setting. `skills list`, `show`, `enable`, `disable`,
     `inherit`, and `remove` print JSON; `show` prints the body as a JSON string.
     `remove` records the removal before deleting the copy and reports a copy it
-    cannot delete as a `package_orphaned` warning. A control journal with skill
-    records is refused by 0.38.0 and earlier.
+    cannot delete as a `package_orphaned` warning. Each registered skill
+    reserves journal room for its removal, so `skills remove` succeeds when
+    other changes have filled the journal. A registration write whose outcome
+    is uncertain keeps the copied package and reports `registration_uncertain`
+    with its identifier; an import never deletes a package directory it did
+    not create. Replay refuses a package size that its file count cannot hold.
+    `skills list` and `show` refuse an unregistered `--workspace`
+    (`skill_workspace_unknown`). A control journal with skill records is
+    refused by 0.38.0 and earlier.
   - **Loading:** `omgcode chat --skill <name>` (up to four) loads each skill
     only when it is registered and effectively enabled for the session's
     workspace and its stored `SKILL.md` matches the recorded size and digest
@@ -45,16 +55,22 @@ Changes are recorded here before a release version is assigned.
     manifest gains an optional `skills` list of identifier, name, and digest,
     written only when present; a session journal with it is refused by 0.38.0
     and earlier, and no schema version changed. A version 1 or 2 session
-    refuses a skill selection (`skill_session_version`). Skill text is never written to
-    the session, replayed, or sent to the compaction summarizer. A tool-enabled
-    turn rechecks every selected skill before each later model request and each
-    tool dispatch and ends as `skill_withdrawn` when one was removed, disabled,
-    or changed. `chat` JSON lists the loaded skills.
+    refuses a skill selection (`skill_session_version`). The skill message is
+    never written to the session, replayed, or sent to the compaction
+    summarizer; the validated model reply is, and it can repeat skill text.
+    Every turn rechecks the selection after compaction and before its first
+    request. A tool-enabled turn also rechecks before each later model request
+    and, under the settings lock that admits it, before each tool dispatch. A
+    turn ends as `skill_withdrawn` when a selected skill was removed, changed,
+    or disabled, even if it was enabled again. The context estimate counts each
+    skill message's per-message overhead. `chat` JSON lists the loaded skills.
   - **Capabilities:** `capabilities` reports `skills` with `import`,
     `registry`, `chat_loading: ["cli"]`, and `scripts: false`.
   - **Not implemented:** Git sources, versioned updates, session overrides,
     agent selection, resource loading, script execution, desktop controls, and
-    the desktop transcript does not show a request's skills.
+    the desktop transcript does not show a request's skills. A command that is
+    already running is not stopped when a skill selected for its turn is
+    withdrawn, and the runner's own admission does not recheck skills.
 
 - Version 0.38.0 adds two approval-gated model file tools, rename and delete
   (Phase C19). See ADR-0055 and the

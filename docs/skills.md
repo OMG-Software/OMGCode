@@ -31,17 +31,25 @@ permission grants or trusted application extensions.
   `compatibility`, `metadata` (a flat block mapping of scalars, at most 16
   entries), and `allowed-tools`. Aliases, anchors, tags, sequences, flow
   collections, other nesting, extra documents, duplicate keys, unknown keys,
-  a byte order mark, and NUL are refused. Scalars are literal text. A null
-  optional field is absent. `allowed-tools` is stored and shown as advisory
-  text and neither narrows nor widens any tool.
+  YAML directives, a byte order mark anywhere before the body, and NUL are
+  refused. Scalars are literal text. A plain `null`, `Null`, `NULL`, `~`, or
+  empty value makes an optional field absent; quoted text stays literal.
+  `allowed-tools` is at most 1,024 bytes (`allowed_tools_too_long`); the
+  other text limits count characters, as the specification does. It is
+  stored and shown as advisory text and neither narrows nor widens any tool.
 - **Registry.** `skill_added`, `skill_removed`, and `skill_enablement_set`
   records in the control journal, each revisioned and revalidated on replay.
   At most 64 skills, one per name; updating means removing and adding again.
   A new skill is disabled. A workspace override beats the application setting,
   and a skill with neither is disabled. `remove` records the removal first,
   then deletes the managed copy; a copy it cannot delete is reported and is
-  inert. The control journal has no workspace removal, so no override is
-  dropped that way yet.
+  inert. Each registered skill reserves journal room for its removal, so
+  `remove` succeeds even when other changes have filled the journal. When the
+  registration write's outcome is uncertain, `add` keeps the copy and reports
+  `registration_uncertain` with its identifier; `skills list` shows whether
+  it was recorded. An import never deletes a package directory it did not
+  create. `list` and `show` refuse an unregistered `--workspace`. The control
+  journal has no workspace removal, so no override is dropped that way yet.
 - **Loading.** `omgcode chat --skill <name>` selects up to four skills for one
   turn. Each must be registered and effectively enabled for the session's
   workspace, and its stored `SKILL.md` must match the recorded size and
@@ -49,14 +57,21 @@ permission grants or trusted application extensions.
   the base prompt and saved preferences and before the history; the request
   manifest records each skill's identifier, name, and digest. Only a version 3
   session can select skills (`skill_session_version` otherwise). Skill messages
-  are never added to the session history, replayed, or summarized. A
-  tool-enabled turn rechecks every selected skill before each later model
-  request and each tool dispatch and ends with `skill_withdrawn` when one was
-  removed, disabled, or changed.
+  are never added to the session history, replayed, or summarized; the
+  recorded model reply can still repeat their text. Every turn rechecks the
+  selection after compaction and before its first request. A tool-enabled turn
+  also rechecks before each later model request and, under the settings lock
+  that admits the operation, before each tool dispatch. The turn ends with
+  `skill_withdrawn` when a selected skill was removed, changed, or disabled,
+  including a disable followed by a re-enable: each skill's enablement
+  changes are counted and compared with the count at load. The context
+  estimate counts each skill message with its per-message overhead.
 - **Not implemented:** Git sources, updates that keep the old version,
   session overrides, agent selection, resource loading, script execution,
-  desktop controls, a settings page, and cache invalidation beyond the
-  request-only rule.
+  desktop controls, a settings page, cache invalidation beyond the
+  request-only rule, and observing the end of dependent work: a command that
+  is already running keeps running when a skill selected for its turn is
+  withdrawn, and the runner's own admission step does not recheck skills.
 
 ## Bundled source packages
 

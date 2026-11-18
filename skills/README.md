@@ -3,8 +3,9 @@
 This directory contains reviewable source packages for the OMGCode skills
 manager. It is a catalog of source files, not an active skill registry.
 OMGCode does not register, enable, load, or execute these packages on its own.
-An operator can import one with `omgcode skills add <folder>`, which copies it
-into application storage, disabled.
+An operator can import one with `omgcode skills add <folder> --revision N`,
+where `N` is the current `revision` that `omgcode skills list` prints. The
+import copies the folder into application storage, disabled.
 
 | Package | Purpose | Files |
 | --- | --- | --- |

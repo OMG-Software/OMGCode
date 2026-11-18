@@ -44,8 +44,13 @@ changed.
 one document holding a block mapping of the specification's fields, with
 scalar values and a flat scalar `metadata` mapping. Aliases, anchors, tags,
 sequences, other nesting, extra documents, duplicate keys, and unknown keys
-are refused. Scalars are taken as literal text. `allowed-tools` is stored and
-shown as advisory text; in F1 it neither narrows nor widens any tool.
+are refused. YAML directives are refused before parsing, because the root
+mapping style is inferred from the parser's character position, which a
+directive can shift. Scalars are taken as literal text; a plain `null`,
+`Null`, `NULL`, `~`, or empty value makes an optional field absent.
+`allowed-tools` is limited in bytes, by one constant shared by the parser and
+the registry, so a package the parser accepts always registers. It is stored
+and shown as advisory text; in F1 it neither narrows nor widens any tool.
 
 **Registry.** The control journal records `skill_added`, `skill_removed`, and
 `skill_enablement_set`. Each advances the settings revision and needs the
@@ -53,10 +58,16 @@ expected revision. Replay revalidates every field and bound. A name is
 registered at most once; updating a skill means removing and adding it. A new
 skill is disabled. A workspace override (`enabled` or `disabled`; `inherit`
 removes it) takes precedence over the application setting, and a skill with
-neither is disabled. Removing a skill or a workspace drops the settings that
-name it. The journal, not the package directory, authorizes a load; a
-package directory without a record is inert. `skills remove` records the
-removal before it deletes the managed copy.
+neither is disabled. Removing a skill drops the settings that name it; the
+control journal has no workspace removal. The journal, not the package
+directory, authorizes a load; a package directory without a record is inert.
+`skills remove` records the removal before it deletes the managed copy. Each
+registered skill reserves room for one removal event, as outstanding container
+grants reserve room for their revocation, so a full journal can always
+withdraw a skill. When the registration write fails after it began, the
+record may exist, so the copied package is kept and reported as
+`registration_uncertain`; an import never deletes a directory that exclusive
+creation found already present.
 
 **Loading.** `omgcode chat --skill <name>` selects up to four skills for one
 turn. Before the first model request, core requires each to be registered and
@@ -66,10 +77,15 @@ one user-level message, labelled with the skill name and digest as untrusted
 skill text that cannot grant permissions, placed after the base prompt and
 saved preferences and before the history. The request manifest records each
 skill's identifier, name, and digest. Skill messages are not session history:
-later turns, replay, and the compaction summarizer never receive them. In a
-tool-enabled turn, core rechecks every selected skill before each later model
-request and each tool dispatch, and ends the turn with `skill_withdrawn` when
-one was removed, disabled, or changed.
+later turns, replay, and the compaction summarizer never receive them. The
+validated model reply is recorded as usual and can repeat skill text. The
+selection is rechecked after compaction, before the first request. In a
+tool-enabled turn, core also rechecks before each later model request and,
+under the settings lock that admits the operation, before each tool dispatch.
+The turn ends with `skill_withdrawn` when a selected skill was removed,
+changed, or disabled. Core counts each skill's enablement changes on replay,
+without recording the count, and compares it with the count at load, so a
+disable followed by a re-enable during a request still withdraws the skill.
 
 ## Alternatives considered
 
@@ -100,6 +116,10 @@ one was removed, disabled, or changed.
 - Scripts, references, and assets are stored but never loaded or run. Skill
   text loaded into a turn cannot be unseen; core authorization, approvals, and
   live preferences remain the only authority.
+- A command that is already running keeps running when a skill selected for
+  its turn is withdrawn. Runs are not attributed to skills, and the runner's
+  own admission step does not recheck the selection; the command needed its
+  own single-use approval.
 - Not implemented: Git sources, updates that keep the old version, session
   overrides, agent selection, resource loading, script execution, desktop
   controls, and cache invalidation beyond the request-only rule.

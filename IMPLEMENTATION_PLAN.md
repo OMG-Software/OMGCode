@@ -1281,8 +1281,8 @@ auto-compaction for the local LM Studio route.
   `chat --skill <name>` (up to four) loads an effectively enabled skill,
   verified against its recorded digest, as a labelled untrusted user-level
   message after the base prompt and preferences. The request manifest records
-  identifier, name, and digest; skill text is never journaled, replayed, or
-  summarized; a tool-enabled turn ends `skill_withdrawn` when a selected skill
+  identifier, name, and digest; the skill message is never journaled,
+  replayed, or summarized, although a recorded model reply can repeat it; a tool-enabled turn ends `skill_withdrawn` when a selected skill
   changes. See [the implemented subset](docs/skills.md#implemented-subset-phase-f1).
   On 2026-11-18, Windows passed fmt, workspace Clippy, 1218 workspace tests
   (8 ignored), and the doc test at `5d1f3e1`. A clean WSL Ubuntu 24.04 clone

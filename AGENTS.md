@@ -72,8 +72,9 @@ On the CLI, Ctrl-C during `chat` or `session compact` cancels instead of ending
 the process.
 Trusted CLI `skills` commands import a skill folder into private storage,
 disabled, and enable it per application or workspace; `chat --skill` loads an
-enabled skill's verified body into one turn as labelled untrusted text that is
-never journaled, replayed, or summarized
+enabled skill's verified body into one turn as a labelled untrusted message
+that is never journaled, replayed, or summarized (a recorded model reply can
+repeat its text)
 ([ADR-0057](docs/adr/0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md)).
 No skill script runs, and a skill grants no permission.
 The desktop shell has no settings interface, development panels, installer, or

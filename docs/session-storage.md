@@ -94,7 +94,8 @@ when a turn selected a skill, so other journals keep their bytes, and 0.38.0
 and earlier refuse a journal that has it; the schema version did not change.
 A version-1 or version-2 journal refuses the field, and chat refuses a skill
 selection in such a session with `skill_session_version` before any request.
-Skill text is never recorded, so replay and compaction never see it.
+Skill messages are never recorded, so replay and compaction never see them.
+A recorded assistant reply can still repeat skill text.
 
 | Event type | Payload in v3 | State rule |
 | --- | --- | --- |
