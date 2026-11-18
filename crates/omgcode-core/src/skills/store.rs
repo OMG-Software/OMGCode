@@ -180,7 +180,10 @@ fn import_with(
             });
         }
     };
-    if let Err(cause) = write_package(&packages, &package_directory, &package.files, faults) {
+    let written = write_package(&packages, &package_directory, &package.files, faults);
+    // Close the handle first: Windows cannot remove a directory held open.
+    drop(package_directory);
+    if let Err(cause) = written {
         let cause = SkillImportError::Store(cause);
         if faults.skip_cleanup {
             return Err(SkillImportError::Orphaned {
