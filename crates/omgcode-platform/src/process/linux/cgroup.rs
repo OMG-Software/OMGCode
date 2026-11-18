@@ -34,7 +34,7 @@ const REMOVE_POLL: Duration = Duration::from_millis(10);
 
 /// What to tell an operator whose runner is not in a delegated cgroup.
 const NOT_DELEGATED: &str = "tree limits need a delegated cgroup v2; start omgcode in its own \
-     scope with `systemd-run --user --scope -p Delegate=yes`";
+     scope with `systemd-run --user --scope --expand-environment=no -p Delegate=yes`";
 
 /// The prepared delegated cgroup, shared by every run in this process.
 static BASE: Mutex<Option<PathBuf>> = Mutex::new(None);

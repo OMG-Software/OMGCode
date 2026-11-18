@@ -1115,6 +1115,26 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Every Testing build run on `main` failed in the Ubuntu Rust job:
+  `an_abandoned_run_is_pending_until_acknowledged` panicked parsing its start
+  marker. `ubuntu-latest` is now Ubuntu 26.04 with systemd 259, and since
+  systemd 258 `systemd-run --scope` expands `$` in the command's arguments by
+  default. The test's `sh -c '... echo $$ > started.txt ...'` reached the
+  shell as `echo $`, so the marker held `$`. Ubuntu 24.04 (systemd 255), used
+  by the pull-request workflow and the WSL checks, does not expand scope
+  arguments, so it passed there. Forcing `--expand-environment=yes` on
+  systemd 255 reproduced the failure with marker `"$\n"`.
+  - The CLI test helper and the platform tree-limit re-run now pass
+    `--expand-environment=no`, so every argument reaches the CLI literally.
+  - New Linux test `dollar_signs_reach_the_program_verbatim` runs
+    `printf` with `$$`, `$HOME`, `${HOME}`, and `$` and checks the run's
+    stdout. It failed with forced expansion and passes with the fix.
+  - The start-marker parse failure now prints the marker text.
+  - The operator command lines in the [execution](docs/execution.md#linux-delegated-cgroup)
+    and [development](docs/development.md) guides, and the runner's
+    "not delegated" error, now include `--expand-environment=no`. Without it,
+    on systemd 258 and later, a run starts and journals a different command
+    line than the operator typed. The switch needs systemd 254 or later.
 - The six cancellation tests in `crates/omgcode-app/tests/chat_turn.rs` now
   time the interval from the moment the token is cancelled until the turn or
   compaction returns, as the desktop cancellation tests already did. They

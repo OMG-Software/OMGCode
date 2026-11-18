@@ -38,8 +38,11 @@ AppContainer profiles. These tests ran on Windows 11 build 26300.
 
 The 0.16.0 `run_workflow` tests drive `omgcode run` through the real CLI with
 system tools. Since 0.17.0, on Linux they start the CLI through
-`systemd-run --user --scope -p Delegate=yes`, and the platform tree-limit
-tests rerun themselves the same way. They need a user service manager and fail
+`systemd-run --user --scope --expand-environment=no -p Delegate=yes`, and the
+platform tree-limit tests rerun themselves the same way. The switch keeps `$`
+in test commands literal on systemd 258 and later, and
+`dollar_signs_reach_the_program_verbatim` checks it. These tests need a user
+service manager and fail
 without one; they must not be skipped. Each limit test must show that the
 limit ends the whole run as `LimitExceeded`. Since 0.19.0 the disk test writes
 past a 16 MiB limit and expects the `disk` result; the platform tests also
