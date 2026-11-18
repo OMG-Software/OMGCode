@@ -12,6 +12,7 @@ use std::thread;
 use omgcode_app::{
     ChatHooks, ChatSettings, ChatTurnInput, ChatTurnOutput, create_session, run_chat_turn,
 };
+use omgcode_core::context::MESSAGE_OVERHEAD;
 use omgcode_core::control::{ControlStore, SkillScope, SkillSetting};
 use omgcode_core::session::{MessageRole, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -522,12 +523,71 @@ fn given_a_skill_when_the_turn_is_metered_then_the_estimate_includes_its_message
     let without = estimate(&[]);
     let with = estimate(std::slice::from_ref(&skill.name));
 
-    // Then the estimate grows by at least the skill message size.
-    let message_bytes = u64::try_from(skill_message(&skill.sha256).len()).expect("length");
+    // Then the estimate grows by at least the skill message and its
+    // per-message overhead, as the provider counts them.
+    let message_bytes =
+        u64::try_from(skill_message(&skill.sha256).len() + MESSAGE_OVERHEAD).expect("length");
     assert!(
         with >= without + message_bytes,
         "{with} < {without} + {message_bytes}"
     );
+}
+
+#[test]
+fn given_a_skill_disabled_during_compaction_when_a_text_turn_runs_then_no_chat_request_is_sent() {
+    // Given a text-only session whose auto-compaction request is held until
+    // the selected skill is disabled.
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("text", text_only());
+    let skill = install(&fixture, "demo-skill", BODY, true);
+    let mut journal = session(&fixture, &workspace.path);
+    for (question, answer) in [
+        ("q".repeat(5000), "a".repeat(5000)),
+        ("q2".into(), "a2".into()),
+    ] {
+        let request = journal.start_turn().expect("turn");
+        journal
+            .record_message(MessageRole::User, &question)
+            .expect("user");
+        journal
+            .record_message(MessageRole::Assistant, &answer)
+            .expect("assistant");
+        journal.complete_turn(request).expect("complete");
+    }
+    let (release, gated) = gate();
+    let (arrived_sender, arrived) = std::sync::mpsc::channel();
+    let server = MockServer::start(vec![
+        Step::gated(text("a short summary"), gated).announcing(arrived_sender),
+        Step::reply(text("final answer")),
+    ]);
+    let mut chat = settings(&server.endpoint);
+    chat.compact_threshold = 8000;
+    chat.auto_compact = true;
+    let data = fixture.data.clone();
+    let name = skill.name.clone();
+    let disabler = thread::spawn(move || {
+        wait_arrived(&arrived);
+        set_enablement(&data, &name, SkillSetting::Disabled);
+        release.send(()).ok();
+    });
+
+    // When the turn runs.
+    let error = turn(
+        &mut journal,
+        &fixture.data,
+        &chat,
+        "next",
+        std::slice::from_ref(&skill.name),
+    )
+    .expect_err("a withdrawn skill stops the turn");
+    disabler.join().expect("disabler thread");
+
+    // Then only the summary request was served and no chat request carried
+    // the withdrawn skill.
+    assert_eq!(error.code(), "skill_withdrawn");
+    let (served, requests) = server.finish_recorded();
+    assert_eq!(served, 1, "no chat request was sent");
+    assert!(!requests[0].body.contains("UNIQUE-SKILL-BODY-MARKER"));
 }
 
 #[test]

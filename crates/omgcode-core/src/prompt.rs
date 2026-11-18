@@ -38,6 +38,10 @@ pub struct SkillPrompt {
     pub skill_md_sha256: String,
     /// The Markdown body after the frontmatter.
     pub body: String,
+    /// The skill's enablement-change count when it was loaded. A later
+    /// count that differs withdraws the selection, even when the skill was
+    /// disabled and enabled again in between. It is never recorded.
+    pub enablement_changes: u64,
 }
 
 impl SkillPrompt {
@@ -355,6 +359,7 @@ mod tests {
             name: SkillName::new(name).expect("skill name"),
             skill_md_sha256: "a".repeat(64),
             body: body.to_owned(),
+            enablement_changes: 0,
         }
     }
 

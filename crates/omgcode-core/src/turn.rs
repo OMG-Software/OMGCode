@@ -1547,6 +1547,7 @@ impl<'a> TurnRuntime<'a> {
                     session_id: self.journal.snapshot().session_id,
                     workspace_id: self.workspace_id,
                     cancel: self.cancel.clone(),
+                    skills: &self.skills,
                 }
                 .dispatch(call, self.limits.max_result_bytes);
                 if let Some(filter) = self.tool_text_filter {
@@ -1605,6 +1606,9 @@ impl<'a> TurnRuntime<'a> {
                             TurnError::ToolFailed(Box::new(error)),
                         ));
                     }
+                    Some(TerminalToolError::SkillWithdrawn) => {
+                        return Err(self.abort_for(request_id, TurnError::SkillWithdrawn));
+                    }
                     None => {}
                 }
             }
@@ -1659,14 +1663,7 @@ impl<'a> TurnRuntime<'a> {
         let Ok(Some(control)) = ControlStore::open_existing(self.data_directory) else {
             return false;
         };
-        self.skills.iter().all(|skill| {
-            control
-                .effective_skill(self.workspace_id, &skill.name)
-                .is_some_and(|record| {
-                    record.skill_id() == skill.skill_id
-                        && record.skill_md_sha256() == skill.skill_md_sha256
-                })
-        })
+        control.skill_selection_current(self.workspace_id, &self.skills)
     }
 
     /// Check cooperative cancellation and the turn deadline.
@@ -1726,6 +1723,8 @@ const fn command_tool_allowed(permissions: PermissionSet) -> bool {
 enum TerminalToolError {
     Denied(FileError),
     Failed(FileError),
+    /// A selected skill was withdrawn before the operation was admitted.
+    SkillWithdrawn,
 }
 
 /// One bounded tool execution result, including the exact text shown to the model.
@@ -1795,6 +1794,7 @@ struct WorkspaceToolDispatcher<'a> {
     session_id: Uuid,
     workspace_id: WorkspaceId,
     cancel: CancelToken,
+    skills: &'a [SkillPrompt],
 }
 
 impl WorkspaceToolDispatcher<'_> {
@@ -1818,6 +1818,16 @@ impl WorkspaceToolDispatcher<'_> {
                 );
             }
         };
+        // Recheck the selection under the lock that admits this operation, so
+        // a withdrawal recorded after the turn's last check still stops it.
+        if !control.skill_selection_current(self.workspace_id, self.skills) {
+            return ToolExecution {
+                outcome: ToolOutcome::Denied,
+                code: Some("skill_withdrawn"),
+                text: labelled_error(call, "skill_withdrawn"),
+                terminal: Some(TerminalToolError::SkillWithdrawn),
+            };
+        }
         // The persisted model-tool preference is rechecked on every call, so a
         // change made during model I/O stops the next operation.
         let permissions = match control.workspace(self.workspace_id) {
@@ -3666,6 +3676,9 @@ fn validate_relative_path(path: &str, allow_empty: bool) -> Result<(), ToolCallE
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod skill_dispatch_tests;
 
 #[cfg(test)]
 mod summary_tests {

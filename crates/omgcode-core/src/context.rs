@@ -21,7 +21,7 @@ pub const MAX_SUMMARY_DEPTH: usize = 4;
 /// A readable summary is bounded below the 16 KiB session message limit.
 pub const MAX_SUMMARY_BYTES: usize = 8 * 1024;
 /// Estimated per-message overhead in bytes, matching the provider's bound.
-const MESSAGE_OVERHEAD: usize = 256;
+pub const MESSAGE_OVERHEAD: usize = 256;
 /// Allowance for the fixed untrusted-summary label added on replay.
 const SUMMARY_LABEL_ALLOWANCE: usize = 128;
 /// Largest summarizer chunk, independent of a larger configured context.

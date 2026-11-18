@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use omgcode_core::context::MESSAGE_OVERHEAD;
 use omgcode_core::control::{ControlStore, SkillOperationError};
 use omgcode_core::prompt::{MAX_SKILL_BODIES_BYTES, SkillPrompt};
 use omgcode_core::session::SessionJournal;
@@ -104,9 +105,47 @@ pub(super) fn load_selected(
             name: name.clone(),
             skill_md_sha256: enabled.loaded.skill_md_sha256.clone(),
             body: redact_known_secret(&enabled.loaded.body, token),
+            enablement_changes: enabled.enablement_changes,
         });
     }
     Ok(skills)
+}
+
+/// Bytes the selected skill messages add to a request, counted as the
+/// provider counts them: the message text plus a fixed per-message overhead.
+pub(super) fn context_bytes(skills: &[SkillPrompt]) -> usize {
+    skills
+        .iter()
+        .map(|skill| skill.message_text().len().saturating_add(MESSAGE_OVERHEAD))
+        .fold(0, usize::saturating_add)
+}
+
+/// Recheck a loaded selection against current settings before the first
+/// model request. Any difference, or any settings failure, withdraws it.
+pub(super) fn recheck(
+    data_root: &std::path::Path,
+    journal: &SessionJournal,
+    skills: &[SkillPrompt],
+) -> Result<(), AppError> {
+    if skills.is_empty() {
+        return Ok(());
+    }
+    let current = ControlStore::open_existing(data_root)
+        .ok()
+        .flatten()
+        .is_some_and(|control| {
+            control
+                .registered_workspace(journal.snapshot().workspace_id)
+                .is_some_and(|workspace| control.skill_selection_current(workspace.id(), skills))
+        });
+    if current {
+        Ok(())
+    } else {
+        Err(AppError::skill(
+            "skill_withdrawn",
+            "A selected skill was removed, disabled, or changed before the request",
+        ))
+    }
 }
 
 fn unavailable(name: &SkillName) -> AppError {

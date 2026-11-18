@@ -266,10 +266,7 @@ pub fn run_chat_turn_with_clients(
     let loaded_skills = skills::load_selected(data_root, journal, input.skills, input.token)?;
     turn.skills = &loaded_skills;
     let tools_enabled = matches!(mode, ToolMode::Enabled { .. });
-    let skill_extra: usize = loaded_skills
-        .iter()
-        .map(|skill| skill.message_text().len())
-        .sum();
+    let skill_extra = skills::context_bytes(&loaded_skills);
     let tool_extra = skill_extra
         + if tools_enabled {
             TOOL_SCHEMA_ESTIMATE_BYTES
@@ -278,6 +275,9 @@ pub fn run_chat_turn_with_clients(
         };
     let meter =
         preflight::preflight_context(journal, &turn, &clients.summary, tool_extra, tools_enabled)?;
+    // Compaction requests can take long; a selection withdrawn meanwhile
+    // stops the turn before its first request.
+    skills::recheck(data_root, journal, &loaded_skills)?;
     let manifest = RequestManifest {
         base_prompt: BASE_PROMPT.to_owned(),
         prompt_version: BASE_PROMPT_VERSION.to_owned(),

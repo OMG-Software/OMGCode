@@ -3866,6 +3866,7 @@ fn install_skill(fixture: &mut Fixture, name: &str, body: &str) -> SkillPrompt {
         name: skill,
         skill_md_sha256: enabled.loaded.skill_md_sha256,
         body: enabled.loaded.body,
+        enablement_changes: enabled.enablement_changes,
     }
 }
 
@@ -4047,6 +4048,73 @@ fn given_a_skill_disabled_during_the_first_request_when_the_model_calls_a_tool_t
             .all(|event| event["type"] != "tool.requested")
     );
     assert!(fixture.audit_events().is_empty());
+}
+
+/// A model that disables and then re-enables a skill during its request.
+struct TogglingModel {
+    data: PathBuf,
+    reply: Option<Result<ToolModelReply, ModelError>>,
+}
+
+impl ToolModel for TogglingModel {
+    fn complete(&mut self, _request: ToolModelRequest<'_>) -> Result<ToolModelReply, ModelError> {
+        disable_skill(&self.data, "demo-skill");
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control store")
+            .expect("control store exists");
+        control
+            .set_skill_enablement(
+                &SkillName::new("demo-skill").expect("name"),
+                SkillScope::Application,
+                SkillSetting::Enabled,
+                control.revision(),
+            )
+            .expect("enable skill again");
+        self.reply
+            .take()
+            .unwrap_or(Err(ModelError::InvalidResponse))
+    }
+}
+
+#[test]
+fn given_a_skill_disabled_and_enabled_again_during_a_request_when_a_tool_is_called_then_the_turn_is_withdrawn()
+ {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    let mut model = TogglingModel {
+        data: fixture.data.clone(),
+        reply: Some(tool_reply(vec![call(
+            "list-1",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )])),
+    };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let error = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_skills(vec![skill])
+    .run(&mut model, "list", "", manifest())
+    .expect_err("an interrupted enablement withdraws the skill");
+
+    fixture.close_journal();
+    assert!(matches!(error, TurnError::SkillWithdrawn));
+    assert_eq!(
+        fixture.last_failure_code().as_deref(),
+        Some("skill_withdrawn")
+    );
+    assert!(
+        fixture
+            .session_events()
+            .iter()
+            .all(|event| event["type"] != "tool.requested")
+    );
 }
 
 #[test]

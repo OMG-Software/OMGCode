@@ -10,9 +10,11 @@ use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::credential::binding_write_uncertain;
 use super::skill::{MAX_SKILL_SOURCE_BYTES, SkillRecord, SkillRefusal, SkillRegistration};
 use super::{ControlError, ControlStore};
 use crate::policy::WorkspaceId;
+use crate::prompt::SkillPrompt;
 use crate::skills::store::{import_package_in, load_skill_body_in, remove_package_in};
 use crate::skills::{
     ImportedPackage, LoadedSkill, SkillImportError, SkillLoadError, SkillName, SkillStoreError,
@@ -29,10 +31,21 @@ pub enum SkillOperationError {
     Import(#[from] SkillImportError),
     /// The package was copied but the registry refused it. The copy was
     /// removed unless `orphaned_package` names it; a leftover copy is inert.
-    #[error("skill registration failed: {error}")]
+    #[error("skill registration failed: {error}{}", orphan_note(.orphaned_package.as_ref()))]
     Registration {
         error: ControlError,
         orphaned_package: Option<Uuid>,
+    },
+    /// The package was copied, but the registration's journal write or sync
+    /// failed after it began, so the record may or may not exist. The copy is
+    /// kept, so a recorded registration never names a deleted package.
+    #[error(
+        "the registration of skill package {skill_id} may or may not be recorded ({error}); the package was kept. Run `skills list`: if it shows this identifier, keep it or remove it with `skills remove`; otherwise the unregistered copy is inert"
+    )]
+    RegistrationUncertain {
+        #[source]
+        error: ControlError,
+        skill_id: Uuid,
     },
     /// The skill is not registered or not effectively enabled for the
     /// workspace, so it may not be loaded.
@@ -60,10 +73,18 @@ impl SkillOperationError {
                 ..
             } => "package_orphaned",
             Self::Registration { .. } => "control",
+            Self::RegistrationUncertain { .. } => "registration_uncertain",
             Self::Unavailable(_) => "skill_unavailable",
             Self::Load(error) => error.code(),
         }
     }
+}
+
+/// Name a leftover package so the operator can find the inert copy.
+fn orphan_note(orphaned_package: Option<&Uuid>) -> String {
+    orphaned_package.map_or_else(String::new, |skill_id| {
+        format!("; the copied package {skill_id} could not be removed and is inert")
+    })
 }
 
 /// A registered import: the journal record and what was stored.
@@ -86,6 +107,9 @@ pub struct RemovedSkill {
 pub struct EnabledSkill {
     pub record: SkillRecord,
     pub loaded: LoadedSkill,
+    /// The skill's enablement-change count when it was loaded; see
+    /// [`ControlStore::skill_selection_current`].
+    pub enablement_changes: u64,
 }
 
 impl ControlStore {
@@ -134,6 +158,14 @@ impl ControlStore {
         };
         match self.add_skill(&registration, expected_revision) {
             Ok(record) => Ok(ImportedSkill { record, package }),
+            // A complete record may be on disk; deleting the package could
+            // leave a registration without its copy.
+            Err(error) if binding_write_uncertain(&error) => {
+                Err(SkillOperationError::RegistrationUncertain {
+                    error,
+                    skill_id: package.skill_id,
+                })
+            }
             Err(error) => {
                 let orphaned_package = match remove_package_in(&data_directory, package.skill_id) {
                     Ok(()) | Err(SkillStoreError::PackageMissing) => None,
@@ -194,7 +226,35 @@ impl ControlStore {
             record.skill_md_sha256(),
             record.skill_md_bytes(),
         )?;
-        Ok(EnabledSkill { record, loaded })
+        let enablement_changes = self.skill_enablement_changes(record.skill_id());
+        Ok(EnabledSkill {
+            record,
+            loaded,
+            enablement_changes,
+        })
+    }
+
+    /// Whether every selected skill is still the one that was loaded: still
+    /// registered under its name with the same identifier and digest, still
+    /// effectively enabled for `workspace_id`, and with no enablement change
+    /// since it was loaded. Any difference withdraws the whole selection.
+    ///
+    /// Callers check this under the same lock that admits the dependent
+    /// request or operation (ADR-0057).
+    #[must_use]
+    pub fn skill_selection_current(
+        &self,
+        workspace_id: WorkspaceId,
+        selection: &[SkillPrompt],
+    ) -> bool {
+        selection.iter().all(|skill| {
+            self.effective_skill(workspace_id, &skill.name)
+                .is_some_and(|record| {
+                    record.skill_id() == skill.skill_id
+                        && record.skill_md_sha256() == skill.skill_md_sha256
+                        && self.skill_enablement_changes(skill.skill_id) == skill.enablement_changes
+                })
+        })
     }
 
     /// Load the verified body of a registered skill for operator inspection,

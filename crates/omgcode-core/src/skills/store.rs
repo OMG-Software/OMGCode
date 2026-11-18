@@ -153,9 +153,34 @@ fn import_with(
 ) -> Result<ImportedPackage, SkillImportError> {
     let package = read_source(source)?;
     let packages = open_packages(data_root, true)?;
-    let skill_id = Uuid::new_v4();
+    let skill_id = faults.skill_id.unwrap_or_else(Uuid::new_v4);
     let name = skill_id.hyphenated().to_string();
-    if let Err(cause) = write_package(&packages, &name, &package.files, faults) {
+    faults
+        .step("create package directory")
+        .map_err(SkillImportError::Store)?;
+    let package_directory = match packages.create_dir(OsStr::new(&name)) {
+        Ok(directory) => directory,
+        // Exclusive creation found an entry this import did not make, so
+        // nothing here may remove it.
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(SkillImportError::Store(SkillStoreError::Io {
+                operation: "create package directory",
+                source,
+            }));
+        }
+        // The directory may exist with no handle proving this import made
+        // it. Name it rather than delete what might belong to another entry.
+        Err(source) => {
+            return Err(SkillImportError::Orphaned {
+                skill_id,
+                cause: Box::new(SkillImportError::Store(SkillStoreError::Io {
+                    operation: "create package directory",
+                    source,
+                })),
+            });
+        }
+    };
+    if let Err(cause) = write_package(&packages, &package_directory, &package.files, faults) {
         let cause = SkillImportError::Store(cause);
         if faults.skip_cleanup {
             return Err(SkillImportError::Orphaned {
@@ -321,16 +346,13 @@ fn open_or_create(
 }
 
 /// Create the package directory and every file exclusively, then sync.
+/// Fill the package directory this import created exclusively, then sync it.
 fn write_package(
     packages: &PrivateDirectory,
-    name: &str,
+    package: &PrivateDirectory,
     files: &[SourceFile],
     faults: &mut Faults,
 ) -> Result<(), SkillStoreError> {
-    faults.step("create package directory")?;
-    let package = packages
-        .create_dir(OsStr::new(name))
-        .map_err(io_op("create package directory"))?;
     let mut directories: Vec<(String, PrivateDirectory)> = Vec::new();
     for file in files {
         let (parent, leaf) = match file.path.rsplit_once('/') {
@@ -347,7 +369,7 @@ fn write_package(
             if !directories.iter().any(|(path, _)| *path == next) {
                 faults.step("create directory")?;
                 let created = {
-                    let holder = lookup(&package, &directories, &prefix)?;
+                    let holder = lookup(package, &directories, &prefix)?;
                     holder
                         .create_dir(OsStr::new(part))
                         .map_err(io_op("create directory"))?
@@ -357,7 +379,7 @@ fn write_package(
             prefix = next;
         }
         faults.step("create file")?;
-        let holder = lookup(&package, &directories, parent)?;
+        let holder = lookup(package, &directories, parent)?;
         let mut handle = holder
             .create_file(OsStr::new(leaf))
             .map_err(io_op("create file"))?;
@@ -469,6 +491,8 @@ struct Faults {
     /// Leave the partial package in place instead of cleaning it up, as a
     /// process that stopped mid-import would.
     skip_cleanup: bool,
+    /// Use this package identifier instead of a random one.
+    skill_id: Option<Uuid>,
     steps: usize,
 }
 
@@ -485,6 +509,9 @@ impl Faults {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod collision_tests;
 
 #[cfg(test)]
 mod tests {
