@@ -25,6 +25,8 @@ tempfile = "3"
 libc = "0.2.191"
 rustix = { version = "1.1.6", features = ["fs", "process"] }
 zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
+# Event-level YAML parser for skill frontmatter (ADR-0057). No value tree is built.
+saphyr-parser = "0.3.4"
 # Derived session index cache (ADR pending). Bundled SQLite; no extension loading.
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }

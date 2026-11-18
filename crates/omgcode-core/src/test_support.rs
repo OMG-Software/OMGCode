@@ -8,6 +8,11 @@ use std::path::Path;
 /// ACL, as an installed profile has.
 pub(crate) fn private_data_root(data: &Path) {
     fs::create_dir(data).expect("data root");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(data, fs::Permissions::from_mode(0o700)).expect("private mode");
+    }
     #[cfg(windows)]
     {
         use std::process::Command;
