@@ -1,6 +1,6 @@
 # OMGCode implementation plan
 
-Last verified: 2026-11-17.
+Last verified: 2026-11-18.
 
 This guide is part of `main` after PR #9. Read it before selecting the next
 increment. Checkpoint preparation does not mean native replacement exists.
@@ -111,6 +111,21 @@ This is a resume guide, not a replacement for the owning contracts in
 - **PR #37** merged at `4f94774` on 2026-11-17: chat-turn cancellation tests
   in `omgcode-app` measure their timing from the cancel rather than from the
   turn start. Tests and documentation only.
+- **PR #40** merged at `0dfc250` on 2026-11-18, from `codex/model-file-tools`.
+  The merge was verified through GitHub. It carried
+  `codex/checkpoint-ledger-compaction` and `codex/plan-baseline-refresh`,
+  which were merged into it first:
+  - **Phase A5**, version **0.35.0**, in-place checkpoint ledger compaction
+    (ADR-0053).
+  - **Phase C18**, version **0.36.0**, the multi-edit and create model file
+    tools (ADR-0054).
+  - **Phase C20**, version **0.37.0**, registry credentials for the trusted
+    `packages fetch` (ADR-0056).
+  - **Phase C19**, version **0.38.0**, the rename and delete model file tools
+    (ADR-0055).
+- **Phase F1**, version **0.39.0**, on branch `codex/runtime-skills`, not
+  merged: skill import into private storage, a registry with application and
+  workspace enablement, and explicit `chat --skill` loading (ADR-0057).
 
 Implemented today:
 
@@ -235,15 +250,14 @@ Implemented today:
   and calls the checkpointed apply with the live-read expected value.
   `session inspect` lists recorded tool requests for review.
 - The `workspace_multi_edit_file` and `workspace_create_file` model tools
-  (0.36.0, ADR-0054, on branch `codex/model-file-tools`, stacked on
-  `codex/checkpoint-ledger-compaction`, not merged) are offered under the same
+  (0.36.0, ADR-0054, merged in PR #40) are offered under the same
   live `model_tools`, `read`, and `write` preferences, share the `file_write`
   approvals and writers-stopped acknowledgement, and each has its own digest
   domain. Multi-edit applies one to 16 non-overlapping exact replacements
   through one checkpointed apply; create makes one new file through the
   exclusive create without a checkpoint. Tool schema 0.4.0.
 - The `workspace_rename_file` and `workspace_delete_file` model tools (0.38.0,
-  ADR-0055, on branch `codex/model-file-tools`, not merged) are offered under
+  ADR-0055, merged in PR #40) are offered under
   the same live preferences, share the `file_write` approvals and
   writers-stopped acknowledgement, and each has its own digest domain. Rename
   moves one file to a name that does not exist through a no-replace primitive,
@@ -256,8 +270,7 @@ Implemented today:
   `file delete-checkpoint --permanent` for one resolved checkpoint, on the same
   filesystems as apply. Neither is power-loss qualified. See
   [ADR-0025](docs/adr/0025-restore-and-delete-checkpoints-explicitly.md).
-- In-place checkpoint ledger compaction (0.35.0, on branch
-  `codex/checkpoint-ledger-compaction`, not merged): 65,536 records and
+- In-place checkpoint ledger compaction (0.35.0, merged in PR #40): 65,536 records and
   64 MiB for the ledger, 128 MiB for the store, trusted
   `file compact-checkpoints --discard-history`, and automatic compaction
   before an apply, restore, or deletion that would not fit. Deleted entries'
@@ -274,7 +287,8 @@ Not implemented:
   cancellation of any request against a live provider. A read, list, or edit
   tool call in progress cannot be interrupted, and a CLI interrupt has not been
   delivered on Windows.
-- A run network destination allowlist, runtime skills, memories, mid-turn and
+- A run network destination allowlist, most of the skills manager (see
+  Phase F), memories, mid-turn and
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
 - Desktop development panels (terminal tabs, task logs, and diffs), a settings
@@ -304,7 +318,7 @@ Not implemented:
    ```
 
 2. Verify that the preceding phase's PR is merged. Every phase listed in the
-   current baseline is merged as of PR #37. Preserve a feature branch while its
+   current baseline is merged as of PR #40, except Phase F1. Preserve a feature branch while its
    PR is under review.
    Do not merge a PR without the user's authorization.
 3. Re-read the owning contracts for the selected phase. Do not infer authority
@@ -793,7 +807,7 @@ at that review boundary:
     [ADR-0025](docs/adr/0025-restore-and-delete-checkpoints-explicitly.md).
     Ledger compaction was left to A5; release qualification and power-loss
     evidence remain open.
-  - **A5 (branch `codex/checkpoint-ledger-compaction`, not merged):** raise
+  - **A5 (merged in PR #40):** raise
     the ledger bounds to 65,536 records and 64 MiB and the store quota to
     128 MiB, and compact the ledger in place by trusted command or before an
     operation that would not fit. See
@@ -994,9 +1008,7 @@ on Windows, and trusted CLI commands as the first caller. See
   [ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
   Concurrent-writer detection, delete, and rename remain unimplemented.
 - **C18 (version 0.36.0):** the `workspace_multi_edit_file` and
-  `workspace_create_file` model tools (ADR-0054), on branch
-  `codex/model-file-tools`, stacked on `codex/checkpoint-ledger-compaction`
-  and not merged. Both are offered and dispatched under the edit tool's live
+  `workspace_create_file` model tools (ADR-0054), merged in PR #40. Both are offered and dispatched under the edit tool's live
   `model_tools`, `read`, and `write` rule and reuse the `file_write` approval
   operation with its writers-stopped gate, each under its own digest domain
   (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`). Multi-edit matches
@@ -1008,8 +1020,7 @@ on Windows, and trusted CLI commands as the first caller. See
   multi-edit size, there is no multi-file atomicity, and 6 of the 8 tool-name
   slots are used.
 - **C19 (version 0.38.0):** the `workspace_rename_file` and
-  `workspace_delete_file` model tools (ADR-0055), on branch
-  `codex/model-file-tools` and not merged. Both are offered and dispatched under
+  `workspace_delete_file` model tools (ADR-0055), merged in PR #40. Both are offered and dispatched under
   the edit tool's live `model_tools`, `read`, and `write` rule and reuse the
   `file_write` approval operation with its writers-stopped gate, each under its
   own digest domain (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`). Rename
@@ -1256,9 +1267,29 @@ invalidated.
 
 Version 0.26.0 implements the first compaction increment: conservative
 accounting, a visible meter, manual `session compact`, and pre-turn
-auto-compaction for the local LM Studio route. Mid-turn compaction after tool
-results, persisted settings, provider-native compaction, caches, skills, MCP,
-and memories remain open.
+auto-compaction for the local LM Studio route.
+
+- **F1 (version 0.39.0, branch `codex/runtime-skills`, not merged):** the first
+  skills increment (ADR-0057). The user chose import, the registry, and
+  explicit chat loading; a maintained YAML parser (`saphyr-parser`, events
+  only) with OMGCode validation; and copying every package file while never
+  running one. Trusted `omgcode skills add|list|show|enable|disable|inherit|remove`
+  import a folder through the native broker into
+  `<data_root>/skills-v1/packages/<skill_id>/` and record `skill_added`,
+  `skill_removed`, and `skill_enablement_set` in the control journal. A new
+  skill is disabled; a workspace override beats the application setting.
+  `chat --skill <name>` (up to four) loads an effectively enabled skill,
+  verified against its recorded digest, as a labelled untrusted user-level
+  message after the base prompt and preferences. The request manifest records
+  identifier, name, and digest; skill text is never journaled, replayed, or
+  summarized; a tool-enabled turn ends `skill_withdrawn` when a selected skill
+  changes. See [the implemented subset](docs/skills.md#implemented-subset-phase-f1).
+
+Mid-turn compaction after tool results, persisted settings, provider-native
+compaction, caches, MCP, and memories remain open. For skills, Git sources,
+versioned updates, session overrides, agent selection, resource loading,
+script execution, desktop controls, and showing a request's skills in the
+desktop transcript remain open.
 
 ### Phase G: Git, platform qualification, packaging, and release
 
@@ -1272,8 +1303,13 @@ commit as the rolling `latest` prerelease, with no installer
 ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Only
 the newest waiting push is guaranteed a run; a push that arrives while a run is
 active can be superseded by a later one and never be tested or published. The
-workspace tests do not run on Fedora. The workflow had not completed a run
-when this plan was last verified. Signing, installers, Git workflows,
+workspace tests do not run on Fedora. By 2026-11-18 the workflow had
+completed three runs, for `b58f3f7`, `4f94774`, and `0dfc250`. Each failed in
+the Ubuntu Rust job on the same test,
+`run_workflow::an_abandoned_run_is_pending_until_acknowledged`, which panics
+while parsing the run's start marker (`run_workflow.rs:691`). Every other job
+passed, and no `latest` release has been published. The cause has not been
+investigated. Signing, installers, Git workflows,
 platform qualification, and release readiness remain open.
 
 ## Known cautions

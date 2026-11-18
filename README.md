@@ -273,6 +273,7 @@ check the server's configuration before sending sensitive text.
   with scoped storage, invalidation, usage reporting, and clear controls.
 - **Skills settings:** Add, remove, enable, and disable versioned skill packages.
   Skills use the same permission policy and controlled tools as other work.
+  Trusted CLI commands do this today; the settings page is not implemented.
 - **Project and global memories:** Save reusable facts or preferences with an
   explicit This project or Global choice. Review, edit, delete, or disable
   entries and control their use in each session. See [memories](docs/memories.md).
@@ -398,8 +399,10 @@ cannot grant permissions. See [context management](docs/context-management.md) a
 
 Start with the [documentation index](docs/README.md). Contributors and coding
 agents must follow the [coding rules](docs/coding-rules.md) before code or test
-work. The [bundled skill source catalog](skills/README.md) contains packages
-for the planned skills manager; runtime loading and enablement are not implemented.
+work. The [bundled skill source catalog](skills/README.md) contains source
+packages. Version 0.39.0 can import a skill folder, enable it per application
+or workspace, and load it into one chat turn with `chat --skill`; there is no
+settings page, script execution, or automatic selection. See [skills](docs/skills.md).
 
 ## Contributing
 

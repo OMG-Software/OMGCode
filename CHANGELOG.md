@@ -6,12 +6,62 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.39.0 adds the first skills increment (Phase F1): trusted import of
+  a skill folder into private storage, a registry with application and
+  workspace enablement, and loading of an enabled skill into one chat turn on
+  explicit selection. See ADR-0057 and the
+  [implemented subset](docs/skills.md#implemented-subset-phase-f1). It adds
+  one dependency, `saphyr-parser` 0.3.4 (MIT OR Apache-2.0), which brings
+  `arraydeque` 0.5.1; it is used only for YAML events.
+  - **Import:** `omgcode skills add <folder> --revision N` reads the folder
+    through the native broker with a pinned identity and copies every regular
+    file, create-only, into `<data_root>/skills-v1/packages/<skill_id>/`.
+    Links, junctions, reparse points, special and multi-link files, hidden or
+    non-portable names, and case-insensitive collisions refuse the whole import.
+    Bounds: 128 files, 64 directories, depth 4, 128 entries per directory,
+    1 MiB per file, 4 MiB in total, 64 KiB for `SKILL.md`, 8 KiB of
+    frontmatter, and 32 KiB of body. The package digest is SHA-256 over a
+    sorted list of file digests, sizes, and paths. Nothing is executed and the
+    source folder is never changed.
+  - **Format:** one YAML document with the Agent Skills fields as scalars and a
+    flat scalar `metadata` mapping. Aliases, anchors, tags, sequences, flow
+    collections, nesting, extra documents, duplicate keys, unknown keys, a byte
+    order mark, and NUL are refused. `allowed-tools` is advisory text only.
+  - **Registry:** the control journal gains `skill_added`, `skill_removed`, and
+    `skill_enablement_set`, each revisioned and revalidated on replay. At most
+    64 skills, one per name. A new skill is disabled; a workspace override beats
+    the application setting. `skills list`, `show`, `enable`, `disable`,
+    `inherit`, and `remove` print JSON; `show` prints the body as a JSON string.
+    `remove` records the removal before deleting the copy and reports a copy it
+    cannot delete as a `package_orphaned` warning. A control journal with skill
+    records is refused by 0.38.0 and earlier.
+  - **Loading:** `omgcode chat --skill <name>` (up to four) loads each skill
+    only when it is registered and effectively enabled for the session's
+    workspace and its stored `SKILL.md` matches the recorded size and digest
+    (`skill_unavailable`, `package_tampered`, `skills_too_large`). Each body is
+    sent as one labelled, untrusted user-level message after the base prompt and
+    saved preferences and before the history, on both the text-only and
+    tool-enabled paths, and is counted in the context estimate. The request
+    manifest gains an optional `skills` list of identifier, name, and digest,
+    written only when present; a session journal with it is refused by 0.38.0
+    and earlier, and no schema version changed. A version 1 or 2 session
+    refuses a skill selection (`skill_session_version`). Skill text is never written to
+    the session, replayed, or sent to the compaction summarizer. A tool-enabled
+    turn rechecks every selected skill before each later model request and each
+    tool dispatch and ends as `skill_withdrawn` when one was removed, disabled,
+    or changed. `chat` JSON lists the loaded skills.
+  - **Capabilities:** `capabilities` reports `skills` with `import`,
+    `registry`, `chat_loading: ["cli"]`, and `scripts: false`.
+  - **Not implemented:** Git sources, versioned updates, session overrides,
+    agent selection, resource loading, script execution, desktop controls, and
+    the desktop transcript does not show a request's skills.
+
 - Version 0.38.0 adds two approval-gated model file tools, rename and delete
   (Phase C19). See ADR-0055 and the
   [rename and delete routes](docs/file-access.md#model-rename-and-delete-routes-adr-0055).
-  Until now the model could neither move nor remove a file. It is on branch
-  `codex/model-file-tools`, stacked on `codex/checkpoint-ledger-compaction`; it
-  is not merged. It adds no dependency.
+  Until now the model could neither move nor remove a file. It was developed
+  on branch `codex/model-file-tools` and merged to `main` in PR #40. It adds no
+  dependency.
   - **Tools:** `workspace_rename_file` moves one regular file to a name that
     does not exist and never replaces an entry. `workspace_delete_file` removes
     one regular file after a durable checkpoint of its bytes. Both are advertised
@@ -83,10 +133,9 @@ Changes are recorded here before a release version is assigned.
 - Version 0.37.0 adds registry credentials for the trusted `packages fetch`
   (Phase C20). See ADR-0056 and
   [registry credentials](docs/execution.md#registry-credentials). Until now
-  fetch sent no credentials, so a private registry could not be used. It is on
-  branch `codex/model-file-tools`, stacked on
-  `codex/checkpoint-ledger-compaction`; it is not merged. It adds no
-  dependency.
+  fetch sent no credentials, so a private registry could not be used. It was
+  developed on branch `codex/model-file-tools` and merged to `main` in PR #40.
+  It adds no dependency.
   - **Binding:** `workspace package-credential-set <profile> --origin <origin>
     --auth bearer|basic --revision <n>` reads one secret from piped input only
     and binds it to one declared origin of a package-network profile.
@@ -112,8 +161,8 @@ Changes are recorded here before a release version is assigned.
   [multi-edit and create routes](docs/file-access.md#model-multi-edit-and-create-routes-adr-0054).
   Until now the model could change a file only one exact replacement at a time,
   each needing its own approval and checkpoint, and could not create a file.
-  It is on branch `codex/model-file-tools`, stacked on
-  `codex/checkpoint-ledger-compaction`; it is not merged. It adds no dependency.
+  It was developed on branch `codex/model-file-tools` and merged to `main` in
+  PR #40. It adds no dependency.
   - **Tools:** `workspace_multi_edit_file` applies one to 16 exact replacements
     to one existing file under one approval and one checkpointed apply.
     `workspace_create_file` creates one new UTF-8 file through the broker's
@@ -166,8 +215,8 @@ Changes are recorded here before a release version is assigned.
   [ledger compaction](docs/file-access.md#implemented-ledger-compaction-phase-a5).
   Until now the ledger held at most 4,096 records and 8 MiB for an
   installation's lifetime, so about 580 applies with deletion exhausted it.
-  It is on branch `codex/checkpoint-ledger-compaction`, stacked on
-  `codex/plan-baseline-refresh`; it is not merged. It adds no dependency.
+  It was developed on branch `codex/checkpoint-ledger-compaction` and merged
+  to `main` in PR #40. It adds no dependency.
   - **Bounds:** the ledger may hold 65,536 records and 64 MiB, and the store's
     aggregate quota grows from 64 MiB to 128 MiB. The 64-entry bound and the
     64 KiB record bound are unchanged.

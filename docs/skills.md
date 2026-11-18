@@ -1,16 +1,71 @@
 # Skills and settings
 
-This document defines the planned skills manager. No skill loader or settings
-page is implemented yet. Skills are reusable task instructions and resources.
-They are not permission grants or trusted application extensions.
+This document defines the skills manager. Version 0.39.0 implements its first
+increment (Phase F1, [ADR-0057](adr/0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md)):
+trusted CLI import into private storage, a registry in the control journal
+with application and workspace enablement, and loading of an enabled skill
+into one chat turn on explicit `chat --skill` selection. The rest of this
+document remains planned unless the [implemented subset](#implemented-subset-phase-f1)
+names it. Skills are reusable task instructions and resources. They are not
+permission grants or trusted application extensions.
+
+## Implemented subset (Phase F1)
+
+- **Commands.** `omgcode skills add <folder> --revision N`, `list`, `show`,
+  `enable`, `disable`, `inherit`, and `remove`. All are trusted CLI commands
+  that print JSON. `show` prints the manifest, digests, sizes, source, settings,
+  and the `SKILL.md` body as a JSON string. There is no desktop control.
+- **Import.** The folder is read through the native broker with a pinned
+  directory identity. A link, junction, reparse point, special file, multi-link
+  file, hidden or non-portable name (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, no
+  trailing dot, no Windows device name), or a case-insensitive name collision
+  refuses the whole import. The folder's name must equal the skill `name`.
+  Bounds: 128 files, 64 directories, depth 4, 128 entries per directory,
+  1 MiB per file, 4 MiB in total, 64 KiB for `SKILL.md`, 8 KiB of frontmatter,
+  and 32 KiB of body. Each file is read once; the same bytes are hashed and
+  copied create-only into `<data_root>/skills-v1/packages/<skill_id>/`, which
+  needs the same private data root as checkpoint storage. Empty directories
+  are not copied. Nothing is executed and the source folder is never changed.
+- **Format subset.** `saphyr-parser` supplies YAML events; OMGCode accepts one
+  document with a block mapping of `name`, `description`, `license`,
+  `compatibility`, `metadata` (a flat block mapping of scalars, at most 16
+  entries), and `allowed-tools`. Aliases, anchors, tags, sequences, flow
+  collections, other nesting, extra documents, duplicate keys, unknown keys,
+  a byte order mark, and NUL are refused. Scalars are literal text. A null
+  optional field is absent. `allowed-tools` is stored and shown as advisory
+  text and neither narrows nor widens any tool.
+- **Registry.** `skill_added`, `skill_removed`, and `skill_enablement_set`
+  records in the control journal, each revisioned and revalidated on replay.
+  At most 64 skills, one per name; updating means removing and adding again.
+  A new skill is disabled. A workspace override beats the application setting,
+  and a skill with neither is disabled. `remove` records the removal first,
+  then deletes the managed copy; a copy it cannot delete is reported and is
+  inert. The control journal has no workspace removal, so no override is
+  dropped that way yet.
+- **Loading.** `omgcode chat --skill <name>` selects up to four skills for one
+  turn. Each must be registered and effectively enabled for the session's
+  workspace, and its stored `SKILL.md` must match the recorded size and
+  digest. The body is sent as one labelled, untrusted user-level message after
+  the base prompt and saved preferences and before the history; the request
+  manifest records each skill's identifier, name, and digest. Only a version 3
+  session can select skills (`skill_session_version` otherwise). Skill messages
+  are never added to the session history, replayed, or summarized. A
+  tool-enabled turn rechecks every selected skill before each later model
+  request and each tool dispatch and ends with `skill_withdrawn` when one was
+  removed, disabled, or changed.
+- **Not implemented:** Git sources, updates that keep the old version,
+  session overrides, agent selection, resource loading, script execution,
+  desktop controls, a settings page, and cache invalidation beyond the
+  request-only rule.
 
 ## Bundled source packages
 
 The [source catalog](../skills/README.md) includes the user-provided
 [pull-request-review package](../skills/pull-request-review/SKILL.md).
-Its instructions are preserved as package content. It is not registered,
-enabled, or loaded by OMGCode. The catalog records provenance and a content
-digest; it does not replace the future core-owned registry.
+Its instructions are preserved as package content. OMGCode does not register,
+enable, or load it automatically; an operator can import it with
+`skills add`. The catalog records provenance and a content digest; it does not
+replace the core-owned registry.
 
 ## Settings page and scope
 
