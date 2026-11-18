@@ -307,6 +307,34 @@ fn skills_commands_refuse_with_stable_codes() {
 }
 
 #[test]
+fn listing_an_unregistered_workspace_is_refused_while_a_registered_one_falls_back() {
+    // Given a skill enabled for the application.
+    let mut scene = scene();
+    let folder = write_skill(&scene.sources, "demo-skill", SKILL_MD);
+    scene.add(&folder);
+    let revision = scene.revision_arg();
+    scene.ok(&[
+        "enable",
+        "demo-skill",
+        "--application",
+        "--revision",
+        &revision,
+    ]);
+    let unknown = "00000000-0000-4000-8000-000000000000";
+    let workspace = scene.workspace_id.clone();
+
+    // Then an unregistered workspace is refused, as the chat loader refuses it.
+    scene.fails(&["list", "--workspace", unknown], "skill_workspace_unknown");
+    scene.fails(
+        &["show", "demo-skill", "--workspace", unknown],
+        "skill_workspace_unknown",
+    );
+    // And a registered workspace without an override follows the application.
+    let listed = scene.ok(&["list", "--workspace", &workspace]);
+    assert_eq!(find(&listed, "demo-skill")["effective"], Value::Bool(true));
+}
+
+#[test]
 fn skill_text_with_markup_and_control_characters_round_trips_as_json_data() {
     // Given a skill whose description and body hold markup and an escape byte.
     let mut scene = scene();

@@ -18,8 +18,8 @@ pub use import::{
     MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, SkillImportError,
 };
 pub use package::{
-    MAX_ALLOWED_TOOLS_ENTRIES, MAX_BODY_BYTES, MAX_SKILL_MD_BYTES, ParsedSkill, SkillManifest,
-    SkillPackageError, parse_skill_md,
+    MAX_ALLOWED_TOOLS_BYTES, MAX_ALLOWED_TOOLS_ENTRIES, MAX_BODY_BYTES, MAX_SKILL_MD_BYTES,
+    ParsedSkill, SkillManifest, SkillPackageError, parse_skill_md,
 };
 pub use store::{
     ImportedPackage, LoadedSkill, PackageFile, SkillLoadError, SkillStoreError, import_package,
@@ -38,8 +38,9 @@ pub const MAX_SELECTED_SKILLS: usize = 4;
 /// The Agent Skills specification allows 1 to 64 characters from lowercase
 /// ASCII letters, digits, and hyphens, with no leading, trailing, or
 /// consecutive hyphen. The name must also equal the package directory's name.
-/// OMGCode accepts only the ASCII subset, so every valid name is a portable
-/// file name on Windows and Linux.
+/// OMGCode accepts only the ASCII subset. This type validates an identifier
+/// only. It does not check native file-name rules, such as the names Windows
+/// reserves (`nul`, `con`); the import boundary makes those checks.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SkillName(String);
 
