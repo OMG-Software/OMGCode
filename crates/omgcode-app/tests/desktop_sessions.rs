@@ -63,6 +63,7 @@ fn manifest() -> RequestManifest {
         max_output_tokens: 2_000,
         tool_schema_version: Some("1".into()),
         tools: Some(vec!["workspace_read_file".into()]),
+        skills: Vec::new(),
     }
 }
 

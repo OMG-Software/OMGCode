@@ -424,6 +424,7 @@ fn execute(inner: &Inner, job: &TurnJob) -> Result<ChatOutcome, DesktopError> {
             message: &job.message,
             settings: &job.settings,
             token,
+            skills: &[],
         },
         &job.clients,
         &mut hooks,

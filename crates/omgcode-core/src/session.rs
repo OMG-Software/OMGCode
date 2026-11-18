@@ -425,6 +425,12 @@ impl SessionJournal {
         self.schema_version
     }
 
+    /// Report whether this journal may record a request's skill selection.
+    /// Only a version 3 journal may; an older one keeps its own subset.
+    pub const fn supports_skill_manifests(&self) -> bool {
+        self.schema_version >= SCHEMA_VERSION
+    }
+
     /// Return the last fully validated durable snapshot.
     pub fn snapshot(&self) -> &SessionSnapshot {
         &self.snapshot
@@ -1080,6 +1086,24 @@ pub struct RequestManifest {
     /// Exact tool names advertised to the model. Schema version 2 only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// Skills the operator selected for this request, in message order. The
+    /// field is omitted when empty, so journals without skills keep their
+    /// bytes. An older build refuses a journal that contains it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<ManifestSkill>,
+}
+
+/// One skill the operator selected for a request: identity and digest only.
+/// The skill text is never recorded.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestSkill {
+    /// The registry identifier of the loaded package.
+    pub skill_id: Uuid,
+    /// The registered skill name.
+    pub name: crate::skills::SkillName,
+    /// The lowercase SHA-256 of the loaded `SKILL.md`.
+    pub skill_md_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1155,6 +1179,37 @@ fn validate_manifest(manifest: &RequestManifest, schema_version: u32) -> Result<
                 "tool manifest fields require schema version 2 and must be both present or absent",
             ));
         }
+    }
+    // Skill manifests arrived with version 3 journals. An older journal stays
+    // writable only with its own subset, so it cannot record a skill selection.
+    if !manifest.skills.is_empty() && schema_version < SCHEMA_VERSION {
+        return Err(SessionError::InvalidValue(
+            "request manifest skills need a version 3 session",
+        ));
+    }
+    if manifest.skills.len() > crate::skills::MAX_SELECTED_SKILLS {
+        return Err(SessionError::InvalidValue(
+            "request manifest lists more than 4 skills",
+        ));
+    }
+    let mut skill_ids = HashSet::new();
+    for skill in &manifest.skills {
+        let digest = &skill.skill_md_sha256;
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            || !skill_ids.insert(skill.skill_id)
+        {
+            return Err(SessionError::InvalidValue(
+                "request manifest skill is invalid or repeated",
+            ));
+        }
+        total = total
+            .checked_add(skill.name.as_str().len() + 64 + 36)
+            .ok_or(SessionError::InvalidValue(
+                "request manifest exceeds event size limit",
+            ))?;
     }
     if total > MAX_EVENT_BYTES {
         return Err(SessionError::InvalidValue(

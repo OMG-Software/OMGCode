@@ -87,6 +87,16 @@ tools. Version-1 manifests omit both fields.
 Version 3 keeps every version-2 event and adds readable context compaction. A
 version-1 or version-2 journal cannot contain these additions.
 
+Since 0.39.0 a version-3 `request.manifest` may also carry `skills`: one to
+four entries of `skill_id`, `name`, and `skill_md_sha256` for the skills the
+operator selected with `chat --skill` (ADR-0057). The field is written only
+when a turn selected a skill, so other journals keep their bytes, and 0.38.0
+and earlier refuse a journal that has it; the schema version did not change.
+A version-1 or version-2 journal refuses the field, and chat refuses a skill
+selection in such a session with `skill_session_version` before any request.
+Skill messages are never recorded, so replay and compaction never see them.
+A recorded assistant reply can still repeat skill text.
+
 | Event type | Payload in v3 | State rule |
 | --- | --- | --- |
 | `context.compacted` | `summary`, `compacted_messages`, `includes_tool_results`, `summary_sha256`, `model`, optional `prompt_tokens`, optional `completion_tokens` | Requires an idle, unarchived session. The summary is at most 16 KiB minus a fixed untrusted-source label, and the digest is the lowercase SHA-256 of the summary. The boundary is within the message history, later than any prior compaction, and followed by a user message when any message is retained. The original messages remain. |

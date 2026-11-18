@@ -10,6 +10,7 @@ use omgcode_core::session::{MessageRole, RequestManifest, SessionError, SessionJ
 use omgcode_core::turn::replay_active;
 
 use super::output::TextTurnOutput;
+use super::skills::LoadedSkillSummary;
 use super::stream::StreamSink;
 use super::tools::CANCELLED_MESSAGE;
 use super::{ChatHooks, Turn};
@@ -42,7 +43,7 @@ pub(super) fn run(
         role: ConversationRole::User,
         content: turn.message.to_owned(),
     });
-    let messages = prompt::assemble(turn.instructions, &history)
+    let messages = prompt::assemble_with_skills(turn.instructions, turn.skills, &history)
         .map_err(|error| AppError::new(ErrorKind::Prompt, error.to_string()))?;
     journal
         .preflight_request(turn.message, &manifest)
@@ -132,6 +133,7 @@ pub(super) fn run(
         .complete_turn(request_id)
         .map_err(AppError::session)?;
     Ok(TextTurnOutput {
+        skills: LoadedSkillSummary::from_prompts(turn.skills),
         reply,
         reason,
         withheld_tool_results,

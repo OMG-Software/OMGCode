@@ -54,6 +54,11 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
   compaction with a `permission` error before the next request, and nothing is
   recorded.
 
+Selected skills (`chat --skill`, ADR-0057) are request-only user-level
+messages after the saved preferences. The context estimate counts them, but
+they are not history: compaction never summarizes them and later turns never
+replay them.
+
 Not implemented: mid-turn compaction after tool results, persisted workspace
 settings, provider-native opaque compaction, caches, and memories. The desktop
 shell shows the context meter line after each turn (estimated tokens, context

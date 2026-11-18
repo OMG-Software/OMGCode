@@ -8,6 +8,7 @@
 
 mod output;
 mod preflight;
+mod skills;
 mod stream;
 mod text;
 mod tools;
@@ -15,12 +16,14 @@ mod tools;
 use std::path::Path;
 
 use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
-use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
+use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, SkillPrompt};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
-use omgcode_core::session::{RequestManifest, SessionJournal};
+use omgcode_core::session::{ManifestSkill, RequestManifest, SessionJournal};
+use omgcode_core::skills::SkillName;
 use omgcode_core::turn::CancelToken;
 
 pub use self::output::ChatTurnOutput;
+pub use self::skills::{LoadedSkillSummary, validate_selection as validate_skill_selection};
 use crate::context::summary_output_tokens;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
@@ -75,6 +78,12 @@ pub struct ChatTurnInput<'a> {
     /// removing the same text from everything recorded or sent. It is borrowed
     /// for the call and never stored, logged, or serialized.
     pub token: Option<&'a str>,
+    /// Skills the operator selected for this turn only, at most four and none
+    /// repeated. Each must be registered and enabled for the session's
+    /// workspace, or the turn is refused before any model request. A skill is
+    /// untrusted text: it grants no permission and is never recorded in the
+    /// session history, replayed, or compacted. Pass `&[]` for none.
+    pub skills: &'a [SkillName],
 }
 
 /// One provisional event of a streamed model request (ADR-0049).
@@ -176,6 +185,8 @@ struct Turn<'a> {
     data_root: &'a Path,
     /// The turn's one cancel token, shared by compaction and every request.
     cancel: &'a CancelToken,
+    /// The verified skills sent with this turn's requests only.
+    skills: &'a [SkillPrompt],
 }
 
 /// Run one chat turn, building the clients from the settings first.
@@ -220,13 +231,17 @@ pub fn run_chat_turn_with_clients(
     let message = redact_known_secret(input.message, input.token);
     let instructions = redact_known_secret(&settings.instructions, input.token);
     let cancel = hooks.cancel.clone().unwrap_or_default();
-    let turn = Turn {
+    // Selection shape errors precede every other check, so nothing is
+    // recorded or requested for a malformed selection.
+    skills::validate_selection(input.skills)?;
+    let mut turn = Turn {
         message: &message,
         instructions: &instructions,
         settings,
         token: input.token,
         data_root,
         cancel: &cancel,
+        skills: &[],
     };
     if journal.snapshot().archived {
         return Err(AppError::new(
@@ -246,14 +261,23 @@ pub fn run_chat_turn_with_clients(
         hook(cancel.clone());
     }
     let mode = select(data_root, journal)?;
+    // Loading precedes the compaction check and every model request. A skill
+    // that is unavailable or changed refuses the turn with nothing recorded.
+    let loaded_skills = skills::load_selected(data_root, journal, input.skills, input.token)?;
+    turn.skills = &loaded_skills;
     let tools_enabled = matches!(mode, ToolMode::Enabled { .. });
-    let tool_extra = if tools_enabled {
-        TOOL_SCHEMA_ESTIMATE_BYTES
-    } else {
-        0
-    };
+    let skill_extra = skills::context_bytes(&loaded_skills);
+    let tool_extra = skill_extra
+        + if tools_enabled {
+            TOOL_SCHEMA_ESTIMATE_BYTES
+        } else {
+            0
+        };
     let meter =
         preflight::preflight_context(journal, &turn, &clients.summary, tool_extra, tools_enabled)?;
+    // Compaction requests can take long; a selection withdrawn meanwhile
+    // stops the turn before its first request.
+    skills::recheck(data_root, journal, &loaded_skills)?;
     let manifest = RequestManifest {
         base_prompt: BASE_PROMPT.to_owned(),
         prompt_version: BASE_PROMPT_VERSION.to_owned(),
@@ -265,6 +289,14 @@ pub fn run_chat_turn_with_clients(
         max_output_tokens: settings.max_output_tokens,
         tool_schema_version: None,
         tools: None,
+        skills: loaded_skills
+            .iter()
+            .map(|skill| ManifestSkill {
+                skill_id: skill.skill_id,
+                name: skill.name.clone(),
+                skill_md_sha256: skill.skill_md_sha256.clone(),
+            })
+            .collect(),
     };
     // Live settings decide whether this turn offers the workspace tools.
     match mode {

@@ -1,8 +1,11 @@
 # Bundled skill source packages
 
-This directory contains reviewable source packages for the planned OMGCode
-skills manager. It is a catalog of source files, not an active skill registry.
-OMGCode does not yet load, register, enable, or execute these packages.
+This directory contains reviewable source packages for the OMGCode skills
+manager. It is a catalog of source files, not an active skill registry.
+OMGCode does not register, enable, load, or execute these packages on its own.
+An operator can import one with `omgcode skills add <folder> --revision N`,
+where `N` is the current `revision` that `omgcode skills list` prints. The
+import copies the folder into application storage, disabled.
 
 | Package | Purpose | Files |
 | --- | --- | --- |
@@ -29,7 +32,8 @@ requirements for a compatible future runtime. They do not establish that
 OMGCode implements those features.
 
 Adding this source does not enable the skill or authorize a review, a code
-change, a command, or an external post. Future import must validate and copy it
-into application-managed storage outside the task workspace, initially disabled.
-Enablement must remain a separate trusted user action. Follow the owning
+change, a command, or an external post. Import validates it and copies it
+into application-managed storage outside the task workspace, disabled.
+Enablement remains a separate trusted user action, and a loaded skill is
+untrusted text that grants nothing. Follow the owning
 [skills contract](../docs/skills.md) for loading, permissions, and lifecycle.

@@ -28,6 +28,8 @@ mod credential;
 mod package;
 mod profile;
 mod provider;
+mod skill;
+mod skill_package;
 
 pub use approval::{
     ApprovalBinding, ApprovalDecision, ApprovalDeclaration, ApprovalOperation, ApprovalRequest,
@@ -67,6 +69,15 @@ pub use provider::{
     ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
 };
 
+pub use skill::{
+    MAX_SKILL_ALLOWED_TOOLS, MAX_SKILL_ALLOWED_TOOLS_BYTES, MAX_SKILL_COMPATIBILITY_CHARS,
+    MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_FILES, MAX_SKILL_LICENSE_CHARS, MAX_SKILL_MD_BYTES,
+    MAX_SKILL_METADATA_ENTRIES, MAX_SKILL_METADATA_KEY_CHARS, MAX_SKILL_METADATA_VALUE_CHARS,
+    MAX_SKILL_PACKAGE_BYTES, MAX_SKILL_SOURCE_BYTES, SkillEnablement, SkillRecord, SkillRefusal,
+    SkillRegistration, SkillScope, SkillSetting, SkillStatus, SkillWorkspaceOverride,
+};
+pub use skill_package::{EnabledSkill, ImportedSkill, RemovedSkill, SkillOperationError};
+
 const FILE_NAME: &str = "control-v1.jsonl";
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
@@ -75,6 +86,10 @@ const MAX_WORKSPACES: usize = 256;
 // Permission events have fixed IDs, timestamps, and four boolean preferences.
 // Leave a conservative budget for that bounded record before admitting file I/O.
 const PERMISSION_EVENT_RESERVE_BYTES: usize = 2048;
+// A `skill_removed` event holds three UUIDs, a timestamp, and two integers.
+// Each registered skill keeps one such event free, so a full journal can
+// always withdraw it (`skill_reserve_tests` checks the bound).
+const SKILL_REMOVAL_RESERVE_BYTES: usize = 512;
 
 /// A settings, validation, locking, or durability failure.
 #[derive(Debug, Error)]
@@ -147,6 +162,9 @@ pub enum ControlError {
     /// The requested provider profile is invalid.
     #[error("provider profile refused: {0}")]
     ProviderRefused(&'static str),
+    /// A skill registry request was refused. See [`SkillRefusal::code`].
+    #[error("skill refused: {0}")]
+    Skill(SkillRefusal),
     /// No retained approval has this identifier.
     #[error("approval is not recorded")]
     UnknownApproval,
@@ -242,6 +260,12 @@ pub struct ControlSnapshot {
     package_cache_roots: Vec<PackageCacheRootStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     provider_profiles: Vec<ProviderProfileStatus>,
+    /// Imported skills. A record is configuration, never authority.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skills: Vec<SkillRecord>,
+    /// Skill enablement settings; an absent entry means inherit or disabled.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skill_enablement: Vec<SkillEnablement>,
     /// Trusted per-call approval records. Operational state, not settings.
     #[serde(skip)]
     approvals: Vec<approval::ApprovalRecord>,
@@ -255,6 +279,11 @@ pub struct ControlSnapshot {
     /// compare it with the count when their run started.
     #[serde(skip)]
     model_tool_revocations: BTreeMap<WorkspaceId, u64>,
+    /// Enablement changes per skill, in any scope, since the journal was
+    /// created. Derived on replay and never serialized; a turn compares it
+    /// with the count when it loaded the skill.
+    #[serde(skip)]
+    skill_enablement_changes: BTreeMap<Uuid, u64>,
 }
 
 /// One workspace's selected fetched-package cache root.
@@ -421,6 +450,15 @@ enum Action {
         profile_id: Uuid,
         #[serde(with = "credential::id_text")]
         credential_id: CredentialId,
+    },
+    SkillAdded(SkillRecord),
+    SkillRemoved {
+        skill_id: Uuid,
+    },
+    SkillEnablementSet {
+        skill_id: Uuid,
+        scope: SkillScope,
+        setting: SkillSetting,
     },
     ApprovalRequested {
         request: ApprovalRequest,
@@ -604,9 +642,12 @@ impl ControlStore {
                 package_profiles: Vec::new(),
                 package_cache_roots: Vec::new(),
                 provider_profiles: Vec::new(),
+                skills: Vec::new(),
+                skill_enablement: Vec::new(),
                 approvals: Vec::new(),
                 grant_revocations: BTreeMap::new(),
                 model_tool_revocations: BTreeMap::new(),
+                skill_enablement_changes: BTreeMap::new(),
             },
             entries: Vec::new(),
             bytes: 0,
@@ -631,6 +672,16 @@ impl ControlStore {
         self.snapshot
             .model_tool_revocations
             .get(&workspace_id)
+            .copied()
+            .unwrap_or(0)
+    }
+    /// How many enablement changes this skill has recorded in any scope. A
+    /// turn compares this with the count when it loaded the skill, so a
+    /// disable followed by a re-enable still withdraws it.
+    pub(crate) fn skill_enablement_changes(&self, skill_id: Uuid) -> u64 {
+        self.snapshot
+            .skill_enablement_changes
+            .get(&skill_id)
             .copied()
             .unwrap_or(0)
     }
@@ -989,16 +1040,31 @@ impl ControlStore {
         // operator cannot revoke. Keep a conservative bounded permission-event
         // budget available before admitting target I/O; actual changes still
         // pass the ordinary exact append preflight.
-        if decision.configured_allowed()
-            && (self.entries.len() >= MAX_EVENTS
-                || self
-                    .bytes
-                    .checked_add(PERMISSION_EVENT_RESERVE_BYTES)
-                    .is_none_or(|size| size > MAX_BYTES))
-        {
+        if decision.configured_allowed() && !self.permission_change_fits() {
             return Err(ControlError::LimitReached);
         }
         Ok(decision)
+    }
+
+    /// Whether a permission-narrowing event still fits beside the reserves
+    /// `append` keeps for outstanding grants and registered skills.
+    fn permission_change_fits(&self) -> bool {
+        let (grant_events, grant_bytes) = Self::grant_reserve(&self.snapshot);
+        let skill_events = self.snapshot.skills.len();
+        let skill_bytes = skill_events.saturating_mul(SKILL_REMOVAL_RESERVE_BYTES);
+        let events = self
+            .entries
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(grant_events))
+            .and_then(|count| count.checked_add(skill_events));
+        let bytes = self
+            .bytes
+            .checked_add(PERMISSION_EVENT_RESERVE_BYTES)
+            .and_then(|size| size.checked_add(grant_bytes))
+            .and_then(|size| size.checked_add(skill_bytes));
+        events.is_some_and(|count| count <= MAX_EVENTS)
+            && bytes.is_some_and(|size| size <= MAX_BYTES)
     }
 
     /// Validate an explicitly selected archive directory outside development data.
@@ -1124,20 +1190,31 @@ impl ControlStore {
             return Err(ControlError::LimitReached);
         }
         // Keep room for every outstanding grant to reach a confirmed
-        // revocation, so a full journal never strands container access.
-        if !container::uses_grant_reserve(&entry.action) {
-            let (events, reserve) = Self::grant_reserve(&next);
-            let events_after = self
-                .entries
-                .len()
-                .checked_add(1)
-                .and_then(|count| count.checked_add(events));
-            let bytes_after = bytes.checked_add(reserve);
-            if events_after.is_none_or(|count| count > MAX_EVENTS)
-                || bytes_after.is_none_or(|size| size > MAX_BYTES)
-            {
-                return Err(ControlError::LimitReached);
-            }
+        // revocation, so a full journal never strands container access. Grant
+        // actions may use that reserve.
+        let (grant_events, grant_bytes) = if container::uses_grant_reserve(&entry.action) {
+            (0, 0)
+        } else {
+            Self::grant_reserve(&next)
+        };
+        // Keep room to remove every skill the next state registers, so a full
+        // journal never leaves a skill that cannot be withdrawn. A removal
+        // drops its own skill from `next` and so uses its reserved slot.
+        let skill_events = next.skills.len();
+        let skill_bytes = skill_events.saturating_mul(SKILL_REMOVAL_RESERVE_BYTES);
+        let events_after = self
+            .entries
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(grant_events))
+            .and_then(|count| count.checked_add(skill_events));
+        let bytes_after = bytes
+            .checked_add(grant_bytes)
+            .and_then(|size| size.checked_add(skill_bytes));
+        if events_after.is_none_or(|count| count > MAX_EVENTS)
+            || bytes_after.is_none_or(|size| size > MAX_BYTES)
+        {
+            return Err(ControlError::LimitReached);
         }
         let result = self
             .file
@@ -1338,6 +1415,14 @@ impl ControlStore {
             Action::ProviderCredentialBound { .. } | Action::ProviderCredentialRemoved { .. } => {
                 credential::apply(state, &entry.action)?;
             }
+            Action::SkillAdded(_) | Action::SkillRemoved { .. } => {
+                skill::apply(state, &entry.action)?;
+            }
+            Action::SkillEnablementSet { skill_id, .. } => {
+                skill::apply(state, &entry.action)?;
+                let changes = state.skill_enablement_changes.entry(*skill_id).or_insert(0);
+                *changes = changes.saturating_add(1);
+            }
             Action::ApprovalRequested { .. }
             | Action::ApprovalDecided { .. }
             | Action::ApprovalConsumed { .. } => {
@@ -1353,6 +1438,9 @@ impl ControlStore {
 fn valid_uuid(value: Uuid) -> bool {
     !value.is_nil() && value.get_version() == Some(Version::Random)
 }
+
+#[cfg(test)]
+mod skill_reserve_tests;
 
 #[cfg(test)]
 mod tests {

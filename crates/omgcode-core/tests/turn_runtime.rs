@@ -3,10 +3,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use omgcode_core::control::{ApprovalOperation, ApprovalState, ControlStore, now_unix};
+use omgcode_core::control::{
+    ApprovalOperation, ApprovalState, ControlStore, SkillScope, SkillSetting, now_unix,
+};
 use omgcode_core::policy::{PermissionSet, WorkspaceId};
-use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole};
+use omgcode_core::prompt::{
+    self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, SkillPrompt,
+};
 use omgcode_core::session::{MessageRole, RequestManifest, SessionJournal};
+use omgcode_core::skills::SkillName;
 use omgcode_core::turn::{
     CancelToken, MAX_EDIT_FILE_BYTES, ModelError, TOOL_SCHEMA_VERSION, ToolArguments, ToolCall,
     ToolCallError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimit, TurnLimits,
@@ -221,6 +226,7 @@ fn manifest() -> RequestManifest {
         max_output_tokens: 1_000,
         tool_schema_version: None,
         tools: None,
+        skills: Vec::new(),
     }
 }
 
@@ -2456,6 +2462,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
                 RequestManifest {
                     tool_schema_version: Some(version.into()),
                     tools: Some(tools.iter().map(|name| (*name).to_owned()).collect()),
+                    skills: Vec::new(),
                     ..manifest()
                 },
             )
@@ -3825,4 +3832,354 @@ fn deleting_a_read_only_file_is_a_recoverable_refusal() {
     fs::set_permissions(&target, permissions).expect("make it removable again");
     fixture.close_journal();
     assert_eq!(fixture.last_tool_code().as_deref(), Some("invalid_request"));
+}
+
+/// Import `name` and enable it for the application, then return it as the
+/// caller would after loading it.
+fn install_skill(fixture: &mut Fixture, name: &str, body: &str) -> SkillPrompt {
+    let source = fixture._temporary.path().join("skill-source").join(name);
+    fs::create_dir_all(&source).expect("skill source");
+    fs::write(
+        source.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Test skill.\n---\n{body}\n"),
+    )
+    .expect("SKILL.md");
+    let workspace_id = fixture.workspace_id;
+    let control = fixture.control_mut();
+    control
+        .import_skill(&source, control.revision())
+        .expect("import skill");
+    let skill = SkillName::new(name).expect("name");
+    control
+        .set_skill_enablement(
+            &skill,
+            SkillScope::Application,
+            SkillSetting::Enabled,
+            control.revision(),
+        )
+        .expect("enable skill");
+    let enabled = control
+        .load_enabled_skill(workspace_id, &skill)
+        .expect("load skill");
+    SkillPrompt {
+        skill_id: enabled.record.skill_id(),
+        name: skill,
+        skill_md_sha256: enabled.loaded.skill_md_sha256,
+        body: enabled.loaded.body,
+        enablement_changes: enabled.enablement_changes,
+    }
+}
+
+fn disable_skill(data: &Path, name: &str) {
+    let mut control = ControlStore::open_existing(data)
+        .expect("open control store")
+        .expect("control store exists");
+    control
+        .set_skill_enablement(
+            &SkillName::new(name).expect("name"),
+            SkillScope::Application,
+            SkillSetting::Disabled,
+            control.revision(),
+        )
+        .expect("disable skill");
+}
+
+#[test]
+fn given_a_selected_skill_when_the_turn_runs_then_every_request_carries_it_after_the_preferences_and_the_manifest_records_it()
+ {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "list-1",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )]),
+        text_reply("done"),
+    ]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let report = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_skills(vec![skill.clone()])
+    .run(&mut model, "list the files", "prefer short", manifest())
+    .expect("turn completes");
+
+    assert_eq!(model.requests.len(), 2);
+    for request in &model.requests {
+        assert_eq!(
+            request.messages[1].content,
+            "Saved user preferences:\nprefer short"
+        );
+        assert_eq!(request.messages[2].content, skill.message_text());
+        assert_eq!(request.messages[2].role, ModelRole::User);
+        assert_eq!(request.messages[3].content, "list the files");
+    }
+    assert_eq!(report.manifest.skills.len(), 1);
+    assert_eq!(report.manifest.skills[0].skill_id, skill.skill_id);
+    assert_eq!(
+        report.manifest.skills[0].skill_md_sha256,
+        skill.skill_md_sha256
+    );
+    fixture.close_journal();
+    let journal_text = fs::read_to_string(&fixture.journal_path).expect("journal");
+    assert!(!journal_text.contains("Follow the demo."));
+    assert!(journal_text.contains(&skill.skill_md_sha256));
+}
+
+#[test]
+fn given_a_caller_manifest_with_skills_when_no_skill_is_selected_then_the_runtime_clears_them() {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    let mut forged = manifest();
+    forged.skills = vec![omgcode_core::session::ManifestSkill {
+        skill_id: skill.skill_id,
+        name: skill.name.clone(),
+        skill_md_sha256: skill.skill_md_sha256.clone(),
+    }];
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let report = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .run(&mut model, "hello", "", forged)
+    .expect("turn completes");
+
+    assert!(report.manifest.skills.is_empty());
+    assert_eq!(model.requests[0].messages.len(), 2);
+}
+
+#[test]
+fn given_a_skill_disabled_before_the_turn_starts_when_it_runs_then_nothing_is_recorded_or_sent() {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    disable_skill(&fixture.data, "demo-skill");
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let error = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_skills(vec![skill])
+    .run(&mut model, "hello", "", manifest())
+    .expect_err("a withdrawn skill refuses the turn");
+
+    assert!(matches!(error, TurnError::SkillWithdrawn));
+    assert!(model.requests.is_empty());
+    fixture.close_journal();
+    assert_eq!(fixture.last_failure_code(), None);
+    assert!(
+        fixture
+            .session_events()
+            .iter()
+            .all(|event| event["type"] != "turn.started")
+    );
+}
+
+/// A model that disables a skill while its first request is in flight.
+struct DisablingModel {
+    data: PathBuf,
+    reply: Option<Result<ToolModelReply, ModelError>>,
+}
+
+impl ToolModel for DisablingModel {
+    fn complete(&mut self, _request: ToolModelRequest<'_>) -> Result<ToolModelReply, ModelError> {
+        disable_skill(&self.data, "demo-skill");
+        self.reply
+            .take()
+            .unwrap_or(Err(ModelError::InvalidResponse))
+    }
+}
+
+#[test]
+fn given_a_skill_disabled_during_the_first_request_when_the_model_calls_a_tool_then_nothing_is_dispatched()
+ {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    let mut model = DisablingModel {
+        data: fixture.data.clone(),
+        reply: Some(tool_reply(vec![call(
+            "list-1",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )])),
+    };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let error = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_skills(vec![skill])
+    .run(&mut model, "list", "", manifest())
+    .expect_err("a withdrawn skill ends the turn");
+
+    fixture.close_journal();
+    assert!(matches!(error, TurnError::SkillWithdrawn));
+    assert_eq!(
+        fixture.last_failure_code().as_deref(),
+        Some("skill_withdrawn")
+    );
+    assert!(
+        fixture
+            .session_events()
+            .iter()
+            .all(|event| event["type"] != "tool.requested")
+    );
+    assert!(fixture.audit_events().is_empty());
+}
+
+/// A model that disables and then re-enables a skill during its request.
+struct TogglingModel {
+    data: PathBuf,
+    reply: Option<Result<ToolModelReply, ModelError>>,
+}
+
+impl ToolModel for TogglingModel {
+    fn complete(&mut self, _request: ToolModelRequest<'_>) -> Result<ToolModelReply, ModelError> {
+        disable_skill(&self.data, "demo-skill");
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control store")
+            .expect("control store exists");
+        control
+            .set_skill_enablement(
+                &SkillName::new("demo-skill").expect("name"),
+                SkillScope::Application,
+                SkillSetting::Enabled,
+                control.revision(),
+            )
+            .expect("enable skill again");
+        self.reply
+            .take()
+            .unwrap_or(Err(ModelError::InvalidResponse))
+    }
+}
+
+#[test]
+fn given_a_skill_disabled_and_enabled_again_during_a_request_when_a_tool_is_called_then_the_turn_is_withdrawn()
+ {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    let mut model = TogglingModel {
+        data: fixture.data.clone(),
+        reply: Some(tool_reply(vec![call(
+            "list-1",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )])),
+    };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let error = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_skills(vec![skill])
+    .run(&mut model, "list", "", manifest())
+    .expect_err("an interrupted enablement withdraws the skill");
+
+    fixture.close_journal();
+    assert!(matches!(error, TurnError::SkillWithdrawn));
+    assert_eq!(
+        fixture.last_failure_code().as_deref(),
+        Some("skill_withdrawn")
+    );
+    assert!(
+        fixture
+            .session_events()
+            .iter()
+            .all(|event| event["type"] != "tool.requested")
+    );
+}
+
+#[test]
+fn given_a_skill_disabled_between_rounds_when_the_next_request_is_due_then_the_turn_ends_without_it()
+ {
+    let mut fixture = Fixture::new();
+    let skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "list-1",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )]),
+        text_reply("never requested"),
+    ]);
+    // The filter runs after the tool result and before the second request.
+    let data = fixture.data.clone();
+    let disable = move |text: &str| {
+        disable_skill(&data, "demo-skill");
+        text.to_owned()
+    };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let error = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_tool_text_filter(&disable)
+    .with_skills(vec![skill])
+    .run(&mut model, "list", "", manifest())
+    .expect_err("a withdrawn skill ends the turn");
+
+    assert!(matches!(error, TurnError::SkillWithdrawn));
+    assert_eq!(model.requests.len(), 1, "no second request is sent");
+    assert_eq!(fixture.snapshot().active_turn, None);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.last_failure_code().as_deref(),
+        Some("skill_withdrawn")
+    );
+}
+
+#[test]
+fn given_a_changed_skill_digest_when_the_turn_starts_then_it_is_refused_as_withdrawn() {
+    let mut fixture = Fixture::new();
+    let mut skill = install_skill(&mut fixture, "demo-skill", "Follow the demo.");
+    fixture.release_control();
+    skill.skill_md_sha256 = "0".repeat(64);
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let journal = fixture.journal.as_mut().expect("journal is open");
+
+    let error = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime")
+    .with_skills(vec![skill])
+    .run(&mut model, "hello", "", manifest())
+    .expect_err("a different digest is not the loaded skill");
+
+    assert!(matches!(error, TurnError::SkillWithdrawn));
 }

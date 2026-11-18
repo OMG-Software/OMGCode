@@ -213,7 +213,7 @@ fn encode_system_time(value: SystemTime) -> (bool, u64, u32) {
 }
 
 /// Open a directory without following its final link or blocking on special files.
-fn open_directory(path: &Path) -> io::Result<File> {
+pub(crate) fn open_directory(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -249,7 +249,7 @@ fn open_directory(path: &Path) -> io::Result<File> {
 /// Require an ordinary directory and reject a Windows reparse-point handle.
 ///
 /// The check describes the opened object. It does not secure its parent path.
-fn validate_directory_metadata(metadata: &fs::Metadata) -> io::Result<()> {
+pub(crate) fn validate_directory_metadata(metadata: &fs::Metadata) -> io::Result<()> {
     if !metadata.is_dir() {
         return Err(invalid_input("workspace path is not a directory"));
     }

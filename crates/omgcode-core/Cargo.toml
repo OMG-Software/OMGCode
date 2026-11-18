@@ -17,6 +17,7 @@ reqwest.workspace = true
 tokio.workspace = true
 sha2.workspace = true
 rusqlite.workspace = true
+saphyr-parser.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

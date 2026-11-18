@@ -41,6 +41,9 @@ pub enum ErrorKind {
     /// A selected provider credential could not be used. The message names a
     /// stable cause code and never contains the secret.
     Credential,
+    /// A selected skill could not be loaded or was refused. The error's own
+    /// code names the cause, such as `skill_unavailable` or `package_tampered`.
+    Skill,
 }
 
 impl ErrorKind {
@@ -60,6 +63,7 @@ impl ErrorKind {
             Self::Turn => "turn",
             Self::Cancelled => "cancelled",
             Self::Credential => "credential",
+            Self::Skill => "skill",
         }
     }
 }
@@ -71,6 +75,8 @@ impl ErrorKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppError {
     kind: ErrorKind,
+    /// A more specific stable code than the category's, when one exists.
+    detail: Option<&'static str>,
     message: String,
 }
 
@@ -79,6 +85,17 @@ impl AppError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
+            detail: None,
+            message: message.into(),
+        }
+    }
+
+    /// Build a `skill` category error whose stable code is `code`, such as
+    /// `skill_unavailable`. `message` must not contain skill text.
+    pub fn skill(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: ErrorKind::Skill,
+            detail: Some(code),
             message: message.into(),
         }
     }
@@ -98,9 +115,13 @@ impl AppError {
         self.kind
     }
 
-    /// The stable machine-readable code for the category.
+    /// The stable machine-readable code: the specific code when the error has
+    /// one, otherwise the category's.
     pub const fn code(&self) -> &'static str {
-        self.kind.code()
+        match self.detail {
+            Some(code) => code,
+            None => self.kind.code(),
+        }
     }
 
     /// The human-readable message.
@@ -142,10 +163,18 @@ mod tests {
             (ErrorKind::Turn, "turn"),
             (ErrorKind::Cancelled, "cancelled"),
             (ErrorKind::Credential, "credential"),
+            (ErrorKind::Skill, "skill"),
         ];
         for (kind, code) in codes {
             assert_eq!(AppError::new(kind, "m").code(), code);
         }
+    }
+
+    #[test]
+    fn a_skill_error_reports_its_specific_code_and_the_skill_category() {
+        let error = AppError::skill("skill_unavailable", "m");
+        assert_eq!(error.kind(), ErrorKind::Skill);
+        assert_eq!(error.code(), "skill_unavailable");
     }
 
     #[test]

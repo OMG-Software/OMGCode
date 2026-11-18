@@ -70,6 +70,13 @@ edit tool call in progress is not interruptible
 [ADR-0051](docs/adr/0051-cancel-every-model-request-and-interrupt-cli-turns.md)).
 On the CLI, Ctrl-C during `chat` or `session compact` cancels instead of ending
 the process.
+Trusted CLI `skills` commands import a skill folder into private storage,
+disabled, and enable it per application or workspace; `chat --skill` loads an
+enabled skill's verified body into one turn as a labelled untrusted message
+that is never journaled, replayed, or summarized (a recorded model reply can
+repeat its text)
+([ADR-0057](docs/adr/0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md)).
+No skill script runs, and a skill grants no permission.
 The desktop shell has no settings interface, development panels, installer, or
 recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
