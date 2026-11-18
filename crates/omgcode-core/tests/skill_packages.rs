@@ -358,6 +358,17 @@ fn given_a_data_root_that_is_not_private_when_importing_then_the_store_refuses()
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).expect("mode");
     }
+    // An inherited temporary-directory ACL can already be owner-only (as on
+    // CI runners), so grant Everyone read explicitly to make the root shared.
+    #[cfg(windows)]
+    {
+        let granted = std::process::Command::new("icacls")
+            .arg(&data)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output()
+            .expect("icacls");
+        assert!(granted.status.success(), "icacls fixture failed");
+    }
     let source = temporary.path().join("demo");
     write(&source.join("SKILL.md"), SKILL_MD);
 
