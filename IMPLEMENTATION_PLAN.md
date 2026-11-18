@@ -1294,7 +1294,13 @@ auto-compaction for the local LM Studio route.
   lines, which count four nested platform reruns twice; 0 failed, 8 ignored),
   and the doc test. Windows passed fmt, Clippy, and `skill_packages` (25)
   after the fix; its full workspace run was not repeated, because the fix is
-  Unix-only.
+  Unix-only. The PR #42 review fixes were then checked at `705c0ee`: a fresh
+  Linux clone passed fmt, Clippy, every workspace test (1235 summed, 0
+  failed, 8 ignored), and the doc test. Windows passed fmt, Clippy, and the
+  doc test but failed one store test, because a failed import kept its new
+  package handle open during cleanup; `00c426f` closes it first, after which
+  the core unit tests passed (383). The full Windows workspace run was not
+  repeated after that fix.
 
 Mid-turn compaction after tool results, persisted settings, provider-native
 compaction, caches, MCP, and memories remain open. For skills, Git sources,
