@@ -89,13 +89,19 @@ impl Fixture {
 
     /// Names of the stored package directories, or none before the first import.
     fn stored_names(&self) -> Vec<String> {
-        fs::read_dir(self.packages())
-            .map(|entries| {
-                entries
-                    .map(|entry| entry.expect("entry").file_name().to_string_lossy().into())
-                    .collect()
-            })
-            .unwrap_or_default()
+        match fs::read_dir(self.packages()) {
+            Ok(entries) => entries
+                .map(|entry| {
+                    entry
+                        .expect("a package directory entry can be read")
+                        .file_name()
+                        .to_string_lossy()
+                        .into()
+                })
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("package directory could not be inspected: {error}"),
+        }
     }
 }
 
@@ -135,6 +141,17 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>) {
         fs::create_dir_all(parent).expect("parent directories");
     }
     fs::write(path, bytes).expect("write file");
+}
+
+/// Whether a write error means the host rejects the name itself, rather than
+/// a failure the test should not hide.
+fn name_is_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidFilename
+            | std::io::ErrorKind::Unsupported
+    )
 }
 
 fn report_skip(what: &str, error: &std::io::Error) -> bool {
@@ -452,11 +469,19 @@ fn given_hidden_or_unsafe_entry_names_when_importing_then_each_is_refused() {
     ] {
         let fixture = Fixture::new();
         let path = fixture.source.join(name);
-        let created = fs::write(&path, "x").is_ok()
-            && fs::read_dir(&fixture.source)
-                .expect("read")
-                .any(|entry| entry.expect("entry").file_name() == name);
-        if !created {
+        match fs::write(&path, "x") {
+            Ok(()) => {}
+            Err(error) if name_is_unsupported(&error) => {
+                eprintln!("SKIPPED name {name:?}: this host rejects that name: {error}");
+                continue;
+            }
+            Err(error) => panic!("unexpected failure writing {name:?}: {error}"),
+        }
+        let kept = fs::read_dir(&fixture.source)
+            .expect("the source directory can be read")
+            .map(|entry| entry.expect("a source entry can be read").file_name())
+            .any(|entry| entry == name);
+        if !kept {
             eprintln!("SKIPPED name {name:?}: this host does not keep that exact name");
             continue;
         }
@@ -472,12 +497,22 @@ fn given_hidden_or_unsafe_entry_names_when_importing_then_each_is_refused() {
 fn given_entries_differing_only_in_case_when_importing_then_the_collision_is_refused() {
     let fixture = Fixture::new();
     write(&fixture.source.join("Guide.md"), "one");
-    if fs::write(fixture.source.join("guide.md"), "two").is_err()
-        || fs::read_dir(&fixture.source).expect("read").count() != 3
-    {
+    fs::write(fixture.source.join("guide.md"), "two")
+        .expect("the second spelling can be written on any host");
+    let names: Vec<_> = fs::read_dir(&fixture.source)
+        .expect("the source directory can be read")
+        .map(|entry| entry.expect("a source entry can be read").file_name())
+        .collect();
+    // On a case-insensitive filesystem the second write reached the first file.
+    if fs::read(fixture.source.join("Guide.md")).expect("first spelling") == b"two" {
         eprintln!("SKIPPED case-collision assertions: this host's directory is case-insensitive");
         return;
     }
+    assert_eq!(
+        names.len(),
+        3,
+        "both spellings exist as separate entries: {names:?}"
+    );
 
     assert_eq!(fixture.import_code(), "entry_name_collision");
 }

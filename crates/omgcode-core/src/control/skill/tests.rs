@@ -7,11 +7,13 @@ use crate::control::{ControlError, ControlStore, FILE_NAME};
 const DIGEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DIGEST_B: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+/// Fields drop in declaration order: the store holds the journal open, so it
+/// must drop before the directory that contains the journal.
 struct Fixture {
-    _directory: tempfile::TempDir,
+    store: ControlStore,
     data: PathBuf,
     root: PathBuf,
-    store: ControlStore,
+    _directory: tempfile::TempDir,
 }
 
 fn fixture() -> Fixture {
@@ -21,10 +23,10 @@ fn fixture() -> Fixture {
     fs::create_dir(&root).expect("root");
     let store = ControlStore::open(&data).expect("store");
     Fixture {
-        _directory: directory,
+        store,
         data,
         root,
-        store,
+        _directory: directory,
     }
 }
 
@@ -240,6 +242,21 @@ fn given_every_action_kind_when_the_journal_is_reopened_then_state_is_replayed()
     assert!(store.skill(&skill_name("planner")).is_none());
     assert!(store.effective_skill(ids[0], &name).is_none());
     assert!(store.effective_skill(ids[1], &name).is_some());
+    // Workspace 1 was set back to `Inherit`, so replay must hold no override
+    // for it; only the explicit workspace 0 disable remains.
+    let status = store
+        .skill_statuses(None)
+        .into_iter()
+        .find(|status| status.skill.name() == &name)
+        .expect("reviewer status");
+    assert_eq!(status.application, Some(true));
+    assert_eq!(
+        status.workspace_overrides,
+        vec![SkillWorkspaceOverride {
+            workspace_id: ids[0],
+            enabled: false,
+        }]
+    );
 }
 
 /// A stale revision is refused and records nothing.
