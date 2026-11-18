@@ -28,6 +28,7 @@ mod credential;
 mod package;
 mod profile;
 mod provider;
+mod skill;
 
 pub use approval::{
     ApprovalBinding, ApprovalDecision, ApprovalDeclaration, ApprovalOperation, ApprovalRequest,
@@ -65,6 +66,14 @@ pub use profile::{
 pub use provider::{
     MAX_PROVIDER_ENDPOINT_BYTES, MAX_PROVIDER_PROFILES, ProviderAuth, ProviderEndpoint,
     ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
+};
+
+pub use skill::{
+    MAX_SKILL_ALLOWED_TOOLS, MAX_SKILL_ALLOWED_TOOLS_BYTES, MAX_SKILL_COMPATIBILITY_CHARS,
+    MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_FILES, MAX_SKILL_LICENSE_CHARS, MAX_SKILL_MD_BYTES,
+    MAX_SKILL_METADATA_ENTRIES, MAX_SKILL_METADATA_KEY_CHARS, MAX_SKILL_METADATA_VALUE_CHARS,
+    MAX_SKILL_PACKAGE_BYTES, MAX_SKILL_SOURCE_BYTES, SkillEnablement, SkillRecord, SkillRefusal,
+    SkillRegistration, SkillScope, SkillSetting, SkillStatus, SkillWorkspaceOverride,
 };
 
 const FILE_NAME: &str = "control-v1.jsonl";
@@ -147,6 +156,9 @@ pub enum ControlError {
     /// The requested provider profile is invalid.
     #[error("provider profile refused: {0}")]
     ProviderRefused(&'static str),
+    /// A skill registry request was refused. See [`SkillRefusal::code`].
+    #[error("skill refused: {0}")]
+    Skill(SkillRefusal),
     /// No retained approval has this identifier.
     #[error("approval is not recorded")]
     UnknownApproval,
@@ -242,6 +254,12 @@ pub struct ControlSnapshot {
     package_cache_roots: Vec<PackageCacheRootStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     provider_profiles: Vec<ProviderProfileStatus>,
+    /// Imported skills. A record is configuration, never authority.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skills: Vec<SkillRecord>,
+    /// Skill enablement settings; an absent entry means inherit or disabled.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skill_enablement: Vec<SkillEnablement>,
     /// Trusted per-call approval records. Operational state, not settings.
     #[serde(skip)]
     approvals: Vec<approval::ApprovalRecord>,
@@ -421,6 +439,15 @@ enum Action {
         profile_id: Uuid,
         #[serde(with = "credential::id_text")]
         credential_id: CredentialId,
+    },
+    SkillAdded(SkillRecord),
+    SkillRemoved {
+        skill_id: Uuid,
+    },
+    SkillEnablementSet {
+        skill_id: Uuid,
+        scope: SkillScope,
+        setting: SkillSetting,
     },
     ApprovalRequested {
         request: ApprovalRequest,
@@ -604,6 +631,8 @@ impl ControlStore {
                 package_profiles: Vec::new(),
                 package_cache_roots: Vec::new(),
                 provider_profiles: Vec::new(),
+                skills: Vec::new(),
+                skill_enablement: Vec::new(),
                 approvals: Vec::new(),
                 grant_revocations: BTreeMap::new(),
                 model_tool_revocations: BTreeMap::new(),
@@ -1338,6 +1367,9 @@ impl ControlStore {
             Action::ProviderCredentialBound { .. } | Action::ProviderCredentialRemoved { .. } => {
                 credential::apply(state, &entry.action)?;
             }
+            Action::SkillAdded(_)
+            | Action::SkillRemoved { .. }
+            | Action::SkillEnablementSet { .. } => skill::apply(state, &entry.action)?,
             Action::ApprovalRequested { .. }
             | Action::ApprovalDecided { .. }
             | Action::ApprovalConsumed { .. } => {
