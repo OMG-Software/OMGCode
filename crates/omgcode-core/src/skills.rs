@@ -7,7 +7,24 @@
 
 use std::fmt;
 
+mod import;
+mod package;
+mod store;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+pub use import::{
+    MAX_DIRECTORY_ENTRIES, MAX_PACKAGE_BYTES, MAX_PACKAGE_DEPTH, MAX_PACKAGE_DIRECTORIES,
+    MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, SkillImportError,
+};
+pub use package::{
+    MAX_ALLOWED_TOOLS_ENTRIES, MAX_BODY_BYTES, MAX_SKILL_MD_BYTES, ParsedSkill, SkillManifest,
+    SkillPackageError, parse_skill_md,
+};
+pub use store::{
+    ImportedPackage, LoadedSkill, PackageFile, SkillLoadError, SkillStoreError, import_package,
+    load_skill_body, remove_package,
+};
 
 /// Maximum length of a skill name in bytes (Agent Skills specification).
 pub const MAX_NAME_BYTES: usize = 64;
