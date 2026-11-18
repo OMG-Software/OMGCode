@@ -23,6 +23,7 @@ use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
+use omgcode_core::skills::SkillName;
 use omgcode_core::turn::CancelToken;
 use serde::Serialize;
 use serde_json::json;
@@ -198,8 +199,18 @@ struct ChatArgs {
     /// one JSON result, and the journal records only the validated reply.
     #[arg(long)]
     stream: bool,
+    /// Load this registered, enabled skill for this turn only (repeatable, at
+    /// most four, none repeated). Skill text is untrusted, grants no
+    /// permission, and is not recorded in the session history.
+    #[arg(long = "skill", value_name = "NAME", value_parser = parse_skill_name)]
+    skills: Vec<SkillName>,
     /// Current user request. Quote it as one shell argument.
     message: String,
+}
+
+/// Parse a skill name, so an invalid one is a usage error before anything runs.
+fn parse_skill_name(value: &str) -> Result<SkillName, String> {
+    SkillName::new(value).map_err(|error| format!("invalid skill name: {}", error.code()))
 }
 
 /// Reject an empty profile name. Core validates it against recorded profiles.
@@ -413,6 +424,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
 
 /// Validate the provider before opening storage, then attach recovery information.
 fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
+    // A malformed skill selection stops the command before any storage use.
+    omgcode_app::validate_skill_selection(&args.skills)?;
     // The connection comes first, so an unreadable selected credential or a
     // profile with no endpoint stops the command before the endpoint is
     // checked and before any journal exists. With a profile, its recorded
@@ -457,6 +470,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         message: &args.message,
         settings: &settings,
         token: token_text,
+        skills: &args.skills,
     };
     // From here an interrupt cancels the turn instead of ending the process,
     // so the journal records the cancellation and keeps no open turn.

@@ -279,6 +279,7 @@ fn turn(
             message,
             settings,
             token,
+            skills: &[],
         },
         hooks,
     )

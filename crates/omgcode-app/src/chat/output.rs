@@ -5,6 +5,7 @@ use serde::ser::Error as _;
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value, to_value};
 
+use super::skills::LoadedSkillSummary;
 use crate::context::ContextMeter;
 
 /// Assistant text from a tool-enabled turn. It remains untrusted model output.
@@ -29,6 +30,9 @@ pub(crate) struct ToolTurnSummary {
 /// Summary of one completed tool-enabled turn.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ToolTurnOutput {
+    /// Skills loaded for the turn, listed only when any were selected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) skills: Vec<LoadedSkillSummary>,
     pub(crate) reply: ToolTurnReply,
     pub(crate) model_tools: ToolTurnSummary,
     pub(crate) context: ContextMeter,
@@ -37,6 +41,7 @@ pub(crate) struct ToolTurnOutput {
 /// Summary of one completed text-only turn.
 #[derive(Clone, Debug)]
 pub(crate) struct TextTurnOutput {
+    pub(crate) skills: Vec<LoadedSkillSummary>,
     pub(crate) reply: ModelReply,
     pub(crate) reason: &'static str,
     pub(crate) withheld_tool_results: usize,
@@ -63,6 +68,12 @@ impl Serialize for TextTurnOutput {
             "context".to_owned(),
             to_value(&self.context).map_err(S::Error::custom)?,
         );
+        if !self.skills.is_empty() {
+            object.insert(
+                "skills".to_owned(),
+                to_value(&self.skills).map_err(S::Error::custom)?,
+            );
+        }
         Value::Object(object).serialize(serializer)
     }
 }
@@ -163,6 +174,14 @@ impl ChatTurnOutput {
         match &self.shape {
             Shape::Tools(output) => output.model_tools.withheld_tool_results,
             Shape::Text(output) => output.withheld_tool_results,
+        }
+    }
+
+    /// The skills loaded for this turn, in message order.
+    pub fn skills(&self) -> &[LoadedSkillSummary] {
+        match &self.shape {
+            Shape::Tools(output) => &output.skills,
+            Shape::Text(output) => &output.skills,
         }
     }
 

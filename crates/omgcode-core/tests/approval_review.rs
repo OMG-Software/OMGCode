@@ -242,6 +242,7 @@ fn manifest() -> RequestManifest {
         max_output_tokens: 1_000,
         tool_schema_version: None,
         tools: None,
+        skills: Vec::new(),
     }
 }
 

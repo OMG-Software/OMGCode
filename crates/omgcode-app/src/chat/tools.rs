@@ -19,6 +19,7 @@ use omgcode_core::turn::{
 use serde_json::Value;
 
 use super::output::{ToolTurnOutput, ToolTurnReply, ToolTurnSummary};
+use super::skills::LoadedSkillSummary;
 use super::stream::StreamSink;
 use super::{ChatHooks, Turn};
 use crate::context::ContextMeter;
@@ -86,6 +87,7 @@ pub(super) fn run(
             runtime
                 .with_cancel_token(turn.cancel.clone())
                 .with_tool_text_filter(&redact_tool_text)
+                .with_skills(turn.skills.to_vec())
                 .run(
                 &mut model,
                 turn.message,
@@ -103,6 +105,7 @@ pub(super) fn run(
             turn_error(error, model.inner.last_error())
         })?;
     Ok(ToolTurnOutput {
+        skills: LoadedSkillSummary::from_prompts(turn.skills),
         reply: ToolTurnReply {
             content: report.reply,
             finish_reason: report.finish_reason,
@@ -226,6 +229,10 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> AppError {
         ),
         TurnError::ActiveTurn => AppError::new(ErrorKind::Session, ACTIVE_TURN_MESSAGE),
         TurnError::Cancelled => AppError::new(ErrorKind::Cancelled, CANCELLED_MESSAGE),
+        TurnError::SkillWithdrawn => AppError::skill(
+            "skill_withdrawn",
+            "A selected skill was disabled, removed, or changed during the turn; the turn ended",
+        ),
         other => AppError::new(ErrorKind::Turn, other.to_string()),
     }
 }

@@ -207,6 +207,7 @@ fn the_stored_token_is_sent_as_the_bearer_and_recorded_nowhere() {
             message: &format!("please use {STORED} here"),
             settings: &settings,
             token: token.as_ref().map(LmToken::expose),
+            skills: &[],
         },
         &mut ChatHooks::default(),
     )
@@ -268,6 +269,7 @@ fn a_turn_with_a_profile_sends_to_the_profile_endpoint_and_nowhere_else() {
             message: "hello",
             settings: &settings,
             token: connection.token.as_ref().map(LmToken::expose),
+            skills: &[],
         },
         &mut ChatHooks::default(),
     )
@@ -401,6 +403,7 @@ fn a_tool_call_containing_the_stored_token_is_refused() {
             message: "read it",
             settings: &settings,
             token: token.as_ref().map(LmToken::expose),
+            skills: &[],
         },
         &mut ChatHooks::default(),
     );
