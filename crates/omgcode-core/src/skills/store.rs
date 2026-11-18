@@ -527,13 +527,14 @@ mod tests {
             Ok(entries) => entries
                 .map(|entry| {
                     entry
-                        .expect("directory entry")
+                        .expect("a package directory entry can be read")
                         .file_name()
                         .to_string_lossy()
                         .into_owned()
                 })
                 .collect(),
-            Err(_) => Vec::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("package directory could not be inspected: {error}"),
         }
     }
 
@@ -558,7 +559,8 @@ mod tests {
     }
 
     #[test]
-    fn given_an_interrupted_import_when_cleanup_cannot_run_then_an_inert_directory_remains() {
+    fn given_an_interrupted_import_when_cleanup_cannot_run_then_the_orphan_remains_and_a_wrong_size_is_refused()
+     {
         let fixture = fixture();
         let mut faults = Faults {
             fail_at: Some(3),
@@ -575,10 +577,11 @@ mod tests {
             package_names(&fixture),
             vec![skill_id.hyphenated().to_string()]
         );
-        // Nothing registered the directory, so no digest the registry could hold
-        // authorizes a load of it, and removal still works.
+        // A caller-supplied size that does not match the stored SKILL.md is
+        // refused. The registry decision is tested through
+        // `ControlStore::load_enabled_skill` in `control::skill_package`.
         let load = load_skill_body_in(&fixture.record, skill_id, &sha256_hex(b"x"), 1)
-            .expect_err("an unregistered package does not load");
+            .expect_err("a mismatched size does not load");
         assert_eq!(load.code(), "package_tampered");
         remove_package_in(&fixture.record, skill_id).expect("orphan removal");
         assert_eq!(package_names(&fixture), Vec::<String>::new());

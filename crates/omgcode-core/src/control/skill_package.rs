@@ -248,12 +248,14 @@ mod tests {
     use crate::control::{SkillScope, SkillSetting};
     use crate::test_support::private_data_root;
 
+    /// Fields drop in declaration order: the store holds the journal open, so
+    /// it must drop before the directory that contains the journal.
     struct Fixture {
-        _directory: tempfile::TempDir,
+        store: ControlStore,
         data: PathBuf,
         source: PathBuf,
-        store: ControlStore,
         workspace: WorkspaceId,
+        _directory: tempfile::TempDir,
     }
 
     fn fixture() -> Fixture {
@@ -280,11 +282,11 @@ mod tests {
             .expect("workspace")
             .id();
         Fixture {
-            _directory: directory,
+            store,
             data,
             source,
-            store,
             workspace,
+            _directory: directory,
         }
     }
 
@@ -297,13 +299,14 @@ mod tests {
             Ok(entries) => entries
                 .map(|entry| {
                     entry
-                        .expect("entry")
+                        .expect("a package directory entry can be read")
                         .file_name()
                         .to_string_lossy()
                         .into_owned()
                 })
                 .collect(),
-            Err(_) => Vec::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("package directory could not be inspected: {error}"),
         }
     }
 
@@ -470,5 +473,65 @@ mod tests {
         assert!(package_directories(&fixture).is_empty());
         assert!(fixture.source.join("SKILL.md").is_file());
         assert!(fixture.source.join("references").join("notes.md").is_file());
+    }
+
+    #[test]
+    fn given_a_removed_skill_whose_copy_remains_when_loaded_then_it_is_unavailable() {
+        let mut fixture = fixture();
+        let revision = fixture.store.revision();
+        let imported = fixture
+            .store
+            .import_skill(&fixture.source, revision)
+            .expect("import");
+        let revision = fixture.store.revision();
+        fixture
+            .store
+            .set_skill_enablement(
+                &name(),
+                SkillScope::Workspace {
+                    workspace_id: fixture.workspace,
+                },
+                SkillSetting::Enabled,
+                revision,
+            )
+            .expect("enable");
+        fixture
+            .store
+            .load_enabled_skill(fixture.workspace, &name())
+            .expect("loadable while registered");
+        let revision = fixture.store.revision();
+        fixture
+            .store
+            .remove_skill(&name(), revision)
+            .expect("registry removal only");
+        // The copy stays on disk, but no record names it any more.
+        assert_eq!(
+            package_directories(&fixture),
+            vec![imported.record.skill_id().hyphenated().to_string()]
+        );
+        let error = fixture
+            .store
+            .load_enabled_skill(fixture.workspace, &name())
+            .expect_err("an unregistered copy is not loadable");
+        assert_eq!(error.code(), "skill_unavailable");
+    }
+
+    #[test]
+    fn given_a_copy_on_disk_that_was_never_registered_when_loaded_then_it_is_unavailable() {
+        let fixture = fixture();
+        // Place a well-formed copy by hand; the registry never saw it.
+        let stray = fixture
+            .data
+            .join("skills-v1")
+            .join("packages")
+            .join(Uuid::new_v4().hyphenated().to_string());
+        fs::create_dir_all(&stray).expect("stray package directory");
+        fs::copy(fixture.source.join("SKILL.md"), stray.join("SKILL.md")).expect("stray SKILL.md");
+        assert_eq!(package_directories(&fixture).len(), 1);
+        let error = fixture
+            .store
+            .load_enabled_skill(fixture.workspace, &name())
+            .expect_err("an unregistered copy is not loadable");
+        assert_eq!(error.code(), "skill_unavailable");
     }
 }

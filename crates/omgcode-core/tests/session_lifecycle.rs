@@ -509,9 +509,10 @@ fn given_a_manifest_with_skills_when_recorded_then_it_round_trips_and_bad_digest
     let (_temp, root, workspace) = setup();
     let mut journal = create(&root, &workspace);
     let request_id = journal.start_turn().expect("start turn");
+    let skill_id = Uuid::new_v4();
     let mut with = manifest();
     with.skills = vec![omgcode_core::session::ManifestSkill {
-        skill_id: Uuid::new_v4(),
+        skill_id,
         name: omgcode_core::skills::SkillName::new("demo-skill").expect("name"),
         skill_md_sha256: "b".repeat(64),
     }];
@@ -526,4 +527,29 @@ fn given_a_manifest_with_skills_when_recorded_then_it_round_trips_and_bad_digest
     let mut repeated = with.clone();
     repeated.skills.push(with.skills[0].clone());
     assert!(journal.record_manifest(request_id, repeated).is_err());
+
+    let events_recorded = journal.snapshot().event_count;
+    let path = journal.path().to_path_buf();
+    drop(journal);
+
+    // The refused records left no trace; the accepted one is persisted exactly.
+    let bytes = fs::read(&path).expect("journal bytes");
+    let text = String::from_utf8(bytes).expect("journal text");
+    let manifests: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event JSON"))
+        .filter(|event| event["type"] == "request.manifest")
+        .collect();
+    assert_eq!(manifests.len(), 1, "only the valid manifest is recorded");
+    let recorded = &manifests[0]["payload"]["manifest"]["skills"];
+    assert_eq!(recorded.as_array().map(Vec::len), Some(1));
+    assert_eq!(recorded[0]["skill_id"], skill_id.to_string());
+    assert_eq!(recorded[0]["name"], "demo-skill");
+    assert_eq!(recorded[0]["skill_md_sha256"], "b".repeat(64));
+
+    // Replay accepts the manifest and does not alter the journal.
+    let reopened = SessionJournal::open(&path).expect("replay accepts the skills manifest");
+    assert_eq!(reopened.snapshot().event_count, events_recorded);
+    drop(reopened);
+    assert_eq!(fs::read(&path).expect("journal bytes"), text.as_bytes());
 }
