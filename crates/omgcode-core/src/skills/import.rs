@@ -134,7 +134,7 @@ pub(crate) struct SourcePackage {
 /// pinned directory only.
 pub(crate) fn read_source(source: &Path) -> Result<SourcePackage, SkillImportError> {
     let directory_name = directory_name(source)?;
-    let handle = open_directory(source).map_err(|error| unreadable(source, error))?;
+    let handle = open_directory(source).map_err(|error| open_error(source, error))?;
     let metadata = handle
         .metadata()
         .map_err(|error| unreadable(source, error))?;
@@ -316,6 +316,29 @@ fn display_path(path: &str) -> String {
     } else {
         path.to_owned()
     }
+}
+
+/// Classify a failed open of the source folder.
+///
+/// Linux refuses a final link (`ELOOP`) or a non-directory (`ENOTDIR`) at
+/// open time, while Windows opens the object and the metadata check refuses
+/// it. Both report `source_invalid`, so the code does not depend on the host.
+fn open_error(source: &Path, error: io::Error) -> SkillImportError {
+    if is_not_ordinary_directory(&error) {
+        SkillImportError::SourceInvalid("source is not an ordinary directory")
+    } else {
+        unreadable(source, error)
+    }
+}
+
+#[cfg(unix)]
+fn is_not_ordinary_directory(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR))
+}
+
+#[cfg(not(unix))]
+const fn is_not_ordinary_directory(_error: &io::Error) -> bool {
+    false
 }
 
 fn unreadable(source: &Path, error: io::Error) -> SkillImportError {

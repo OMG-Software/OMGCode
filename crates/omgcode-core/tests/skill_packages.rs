@@ -383,12 +383,9 @@ fn given_a_relative_or_missing_source_when_importing_then_it_is_refused() {
         .expect_err("missing");
     assert_eq!(missing.code(), "source_unreadable");
     let file = import_package(&fixture.data, &fixture.source.join("SKILL.md")).expect_err("file");
-    // Linux fails the directory open; Windows opens the file and refuses its kind.
-    assert!(
-        ["source_unreadable", "source_invalid"].contains(&file.code()),
-        "{}",
-        file.code()
-    );
+    // Linux fails the directory open; Windows opens the file and refuses its
+    // kind. Both report the same code.
+    assert_eq!(file.code(), "source_invalid");
     assert_eq!(fixture.stored_names(), Vec::<String>::new());
 }
 
