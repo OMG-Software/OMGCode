@@ -425,6 +425,12 @@ impl SessionJournal {
         self.schema_version
     }
 
+    /// Report whether this journal may record a request's skill selection.
+    /// Only a version 3 journal may; an older one keeps its own subset.
+    pub const fn supports_skill_manifests(&self) -> bool {
+        self.schema_version >= SCHEMA_VERSION
+    }
+
     /// Return the last fully validated durable snapshot.
     pub fn snapshot(&self) -> &SessionSnapshot {
         &self.snapshot
@@ -1173,6 +1179,13 @@ fn validate_manifest(manifest: &RequestManifest, schema_version: u32) -> Result<
                 "tool manifest fields require schema version 2 and must be both present or absent",
             ));
         }
+    }
+    // Skill manifests arrived with version 3 journals. An older journal stays
+    // writable only with its own subset, so it cannot record a skill selection.
+    if !manifest.skills.is_empty() && schema_version < SCHEMA_VERSION {
+        return Err(SessionError::InvalidValue(
+            "request manifest skills need a version 3 session",
+        ));
     }
     if manifest.skills.len() > crate::skills::MAX_SELECTED_SKILLS {
         return Err(SessionError::InvalidValue(

@@ -71,6 +71,12 @@ pub(super) fn load_selected(
     if names.is_empty() {
         return Ok(Vec::new());
     }
+    if !journal.supports_skill_manifests() {
+        return Err(AppError::skill(
+            "skill_session_version",
+            "Skills can be selected only in a version 3 session",
+        ));
+    }
     let control = ControlStore::open_existing(data_root)
         .map_err(|error| AppError::skill("control", error.to_string()))?
         .ok_or_else(|| unavailable(&names[0]))?;

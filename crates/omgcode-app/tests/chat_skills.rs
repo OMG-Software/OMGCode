@@ -606,3 +606,47 @@ fn given_an_older_session_without_skills_when_a_turn_runs_then_its_journal_bytes
             .all(|event| event["payload"]["manifest"].get("skills").is_none())
     );
 }
+
+#[test]
+fn given_a_version_2_session_when_a_skill_is_selected_then_the_turn_is_refused_before_any_request()
+{
+    // Given an enabled skill and a session journal written at schema version 2,
+    // which stays writable only with its own subset.
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("text", text_only());
+    let skill = install(&fixture, "demo-skill", BODY, true);
+    let journal = session(&fixture, &workspace.path);
+    let path: PathBuf = journal.path().to_owned();
+    drop(journal);
+    let rewritten: String = fs::read_to_string(&path)
+        .expect("journal file")
+        .lines()
+        .map(|line| {
+            let mut event: Value = serde_json::from_str(line).expect("journal event");
+            event["schema_version"] = json!(2);
+            serde_json::to_string(&event).expect("event JSON") + "\n"
+        })
+        .collect();
+    fs::write(&path, rewritten).expect("rewrite journal");
+    let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");
+    let server = NoCallServer::start();
+
+    // When the turn selects the skill.
+    let error = turn(
+        &mut journal,
+        &fixture.data,
+        &settings(&server.endpoint),
+        "do the task",
+        std::slice::from_ref(&skill.name),
+    )
+    .expect_err("a version 2 session cannot record a skill selection");
+
+    // Then nothing was sent and nothing was recorded.
+    assert_eq!(error.code(), "skill_session_version");
+    server.assert_untouched();
+    assert!(
+        close_and_read(journal)
+            .iter()
+            .all(|event| event["type"] != "turn.started" && event["type"] != "request.manifest")
+    );
+}
