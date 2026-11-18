@@ -196,6 +196,32 @@ impl ControlStore {
         )?;
         Ok(EnabledSkill { record, loaded })
     }
+
+    /// Load the verified body of a registered skill for operator inspection,
+    /// whatever its enablement. This is a trusted operator read, never a model
+    /// load: use [`Self::load_enabled_skill`] for anything sent to a model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SkillOperationError::Control`] for an unregistered name and
+    /// [`SkillOperationError::Load`] for a missing or changed copy.
+    pub fn inspect_skill(
+        &self,
+        name: &SkillName,
+    ) -> Result<(SkillRecord, LoadedSkill), SkillOperationError> {
+        let record = self
+            .skill(name)
+            .ok_or(ControlError::Skill(SkillRefusal::NotFound))?
+            .clone();
+        let (data_directory, _) = self.replacement_context()?;
+        let loaded = load_skill_body_in(
+            &data_directory,
+            record.skill_id(),
+            record.skill_md_sha256(),
+            record.skill_md_bytes(),
+        )?;
+        Ok((record, loaded))
+    }
 }
 
 /// The source folder as journal text: lossy display text, bounded, with no
@@ -366,6 +392,32 @@ mod tests {
             .load_enabled_skill(fixture.workspace, &name())
             .expect_err("tampered copy");
         assert_eq!(error.code(), "package_tampered");
+    }
+
+    #[test]
+    fn given_a_disabled_skill_when_inspected_then_the_verified_body_is_returned() {
+        let mut fixture = fixture();
+        let revision = fixture.store.revision();
+        fixture
+            .store
+            .import_skill(&fixture.source, revision)
+            .expect("import");
+        let (record, loaded) = fixture.store.inspect_skill(&name()).expect("inspect");
+        assert_eq!(
+            loaded.body,
+            "Follow the steps.
+"
+        );
+        assert_eq!(loaded.skill_md_sha256, record.skill_md_sha256());
+        let unknown = SkillName::new("other-skill").expect("name");
+        assert_eq!(
+            fixture
+                .store
+                .inspect_skill(&unknown)
+                .expect_err("unknown")
+                .code(),
+            "skill_not_found"
+        );
     }
 
     #[test]

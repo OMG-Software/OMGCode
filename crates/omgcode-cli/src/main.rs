@@ -1,5 +1,6 @@
 //! Developer CLI for the first OMGCode core prototype.
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 
 mod approvals_cli;
 mod control_cli;
@@ -7,6 +8,7 @@ mod credential_cli;
 mod file_cli;
 mod packages_cli;
 mod run_cli;
+mod skills_cli;
 mod stream_cli;
 
 use clap::{Args, Parser, Subcommand};
@@ -76,6 +78,11 @@ enum Command {
     Packages {
         #[command(subcommand)]
         action: packages_cli::PackagesCommand,
+    },
+    /// Import, register, enable, inspect, and remove operator-selected skills.
+    Skills {
+        #[command(subcommand)]
+        action: skills_cli::SkillsCommand,
     },
     /// Inspect, decide, or consume trusted per-call approvals.
     Approvals {
@@ -323,6 +330,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             } else {
                 serde_json::Value::Bool(false)
             },
+            "skills": skills_cli::capability(),
             "mcp": false,
             "memories": false,
             "sandbox_backend": if cfg!(target_os = "linux") {
@@ -398,6 +406,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Run(args) => run_cli::run(args, &data_root(cli.data_dir)?),
         Command::Runs { action } => run_cli::runs(action, &data_root(cli.data_dir)?),
         Command::Packages { action } => packages_cli::run(action, &data_root(cli.data_dir)?),
+        Command::Skills { action } => skills_cli::run(action, &data_root(cli.data_dir)?),
         Command::Approvals { action } => approvals_cli::run(action, &data_root(cli.data_dir)?),
     }
 }

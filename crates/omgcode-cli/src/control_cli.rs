@@ -663,7 +663,7 @@ fn open(data_root: &Path) -> Result<ControlStore, CliError> {
     waiting(|| ControlStore::open(data_root))
 }
 
-fn open_existing(data_root: &Path) -> Result<Option<ControlStore>, CliError> {
+pub(crate) fn open_existing(data_root: &Path) -> Result<Option<ControlStore>, CliError> {
     waiting(|| ControlStore::open_existing(data_root))
 }
 

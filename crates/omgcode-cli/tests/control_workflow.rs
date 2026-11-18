@@ -456,6 +456,8 @@ fn capabilities_report_configuration_only_policy_and_trusted_runs_only() {
     assert_eq!(capabilities["provider_profiles"], true);
     assert_eq!(capabilities["provider_adapters"], false);
     assert_eq!(capabilities["approvals"], true);
+    assert_eq!(capabilities["skills"]["registry"], true);
+    assert_eq!(capabilities["skills"]["scripts"], false);
     if runs {
         assert_eq!(capabilities["process_execution"], "trusted_cli_only");
     } else {
