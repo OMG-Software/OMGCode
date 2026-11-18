@@ -427,8 +427,12 @@ on Windows.
 On Linux, start `run` in a delegated cgroup of its own, or it is refused:
 
 ```text
-systemd-run --user --scope -p Delegate=yes -- omgcode --data-dir ~/omgcode-data run <workspace-id> --profile system -- cargo test
+systemd-run --user --scope --expand-environment=no -p Delegate=yes -- omgcode --data-dir ~/omgcode-data run <workspace-id> --profile system -- cargo test
 ```
+
+`--expand-environment=no` keeps `$` in the arguments literal; systemd 258 and
+later expand it in scopes by default
+([delegated cgroup](execution.md#linux-delegated-cgroup)).
 
 The scope must hold only that command, so do not start a shell inside it and
 run several commands there.

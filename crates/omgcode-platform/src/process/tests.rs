@@ -250,11 +250,21 @@ const DELEGATED_ENV: &str = "OMGCODE_DELEGATED_TEST";
 /// cgroup; unless this process already runs in one, the test re-runs itself
 /// under `systemd-run --user --scope -p Delegate=yes`. It needs a user service
 /// manager, and a missing manager fails the test rather than skipping it.
+/// `--expand-environment=no` keeps the arguments literal on systemd 258 and
+/// later, which otherwise expand `$` in scope arguments.
 fn in_limit_scope(test: &str, body: impl FnOnce()) {
     #[cfg(target_os = "linux")]
     if env::var_os(DELEGATED_ENV).is_none() {
         let status = Command::new("systemd-run")
-            .args(["--user", "--scope", "--quiet", "-p", "Delegate=yes", "--"])
+            .args([
+                "--user",
+                "--scope",
+                "--quiet",
+                "--expand-environment=no",
+                "-p",
+                "Delegate=yes",
+                "--",
+            ])
             .arg(env::current_exe().expect("test executable"))
             .args(["--exact", test, "--nocapture", "--test-threads=1", "-q"])
             .env(DELEGATED_ENV, "1")

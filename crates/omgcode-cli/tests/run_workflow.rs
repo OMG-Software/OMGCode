@@ -510,6 +510,25 @@ fn concurrent_runs_complete_and_are_recorded() {
     scene.close();
 }
 
+/// Dollar signs in the run's command reach the program unchanged. systemd 258
+/// and later expand `$` in `systemd-run --scope` arguments by default, which
+/// turned `$$` into `$` before the CLI saw it; the operator command line and
+/// `run_command` pass `--expand-environment=no` to keep them literal.
+#[cfg(target_os = "linux")]
+#[test]
+fn dollar_signs_reach_the_program_verbatim() {
+    let scene = Scene::new();
+    assert_success(&scene.add_profile("system", &[]));
+    let words = ["$$", "$HOME", "${HOME}", "$"];
+    let mut command = vec!["printf", "%s\\n"];
+    command.extend(words);
+    let run = run_json(&scene.run("system", &[], &command));
+    assert_eq!(run["finish"]["result"]["code"], 0);
+    let expected = format!("{}\n", words.join("\n"));
+    assert_eq!(run["stdout"]["text"].as_str(), Some(expected.as_str()));
+    scene.close();
+}
+
 /// A program inside the workspace can run.
 #[test]
 fn workspace_programs_run() {
@@ -688,7 +707,11 @@ fn wait_for_start(scene: &Scene) -> String {
 #[cfg(target_os = "linux")]
 fn stop_group(scene: &Scene) {
     let marker = fs::read_to_string(scene.workspace.join("started.txt")).expect("start marker");
-    let group = format!("-{}", marker.trim().parse::<u32>().expect("process group"));
+    let group = marker
+        .trim()
+        .parse::<u32>()
+        .unwrap_or_else(|error| panic!("start marker {marker:?} is not a process group: {error}"));
+    let group = format!("-{group}");
     // The group may already be gone; the probe below decides.
     let _ = Command::new("kill")
         .args(["-s", "KILL", "--", &group])
