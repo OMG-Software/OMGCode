@@ -9,7 +9,7 @@ use std::fmt;
 
 mod import;
 mod package;
-mod store;
+pub(crate) mod store;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

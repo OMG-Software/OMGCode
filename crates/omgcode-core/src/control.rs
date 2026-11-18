@@ -29,6 +29,7 @@ mod package;
 mod profile;
 mod provider;
 mod skill;
+mod skill_package;
 
 pub use approval::{
     ApprovalBinding, ApprovalDecision, ApprovalDeclaration, ApprovalOperation, ApprovalRequest,
@@ -75,6 +76,7 @@ pub use skill::{
     MAX_SKILL_PACKAGE_BYTES, MAX_SKILL_SOURCE_BYTES, SkillEnablement, SkillRecord, SkillRefusal,
     SkillRegistration, SkillScope, SkillSetting, SkillStatus, SkillWorkspaceOverride,
 };
+pub use skill_package::{EnabledSkill, ImportedSkill, RemovedSkill, SkillOperationError};
 
 const FILE_NAME: &str = "control-v1.jsonl";
 const MAX_BYTES: usize = 8 * 1024 * 1024;
