@@ -288,15 +288,25 @@ impl Scene {
 
 /// A CLI `run` command as an operator starts it. On Linux, tree limits need
 /// a delegated cgroup, so the CLI starts in a scope of its own through
-/// `systemd-run --user --scope -p Delegate=yes`. In scope mode `systemd-run`
-/// replaces itself with the CLI, so the child's process ID, signals, standard
-/// streams, and exit status are the CLI's own.
+/// `systemd-run --user --scope --expand-environment=no -p Delegate=yes`. In
+/// scope mode `systemd-run` replaces itself with the CLI, so the child's
+/// process ID, signals, standard streams, and exit status are the CLI's own.
+/// systemd 258 and later expand `$` in scope arguments by default (`$$`
+/// becomes `$`), so `--expand-environment=no` keeps every argument literal.
 pub(crate) fn run_command(data_root: &Path, args: &[&str]) -> Command {
     #[cfg(target_os = "linux")]
     {
         let mut command = Command::new("systemd-run");
         command
-            .args(["--user", "--scope", "--quiet", "-p", "Delegate=yes", "--"])
+            .args([
+                "--user",
+                "--scope",
+                "--quiet",
+                "--expand-environment=no",
+                "-p",
+                "Delegate=yes",
+                "--",
+            ])
             .arg(env!("CARGO_BIN_EXE_omgcode"))
             .env_remove("OMGCODE_LM_TOKEN")
             .env_remove(super::HANG_FIXTURE_ENV)

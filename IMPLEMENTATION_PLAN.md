@@ -1320,14 +1320,16 @@ commit as the rolling `latest` prerelease, with no installer
 ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Only
 the newest waiting push is guaranteed a run; a push that arrives while a run is
 active can be superseded by a later one and never be tested or published. The
-workspace tests do not run on Fedora. By 2026-11-18 the workflow had
-completed three runs, for `b58f3f7`, `4f94774`, and `0dfc250`. Each failed in
-the Ubuntu Rust job on the same test,
-`run_workflow::an_abandoned_run_is_pending_until_acknowledged`, which panics
-while parsing the run's start marker (`run_workflow.rs:691`). Every other job
-passed, and no `latest` release has been published. The cause has not been
-investigated. Signing, installers, Git workflows,
-platform qualification, and release readiness remain open.
+workspace tests do not run on Fedora. Its first three runs on `main`
+(`b58f3f7`, `4f94774`, `0dfc250`) failed in the Ubuntu Rust job, so no
+`latest` release was published. `ubuntu-latest` had become Ubuntu 26.04 with
+systemd 259, whose `systemd-run --scope` expands `$` in arguments by default;
+`an_abandoned_run_is_pending_until_acknowledged` read `$` instead of its
+process group. Merged PR #43 (`codex/systemd-run-literal-arguments`) passes
+`--expand-environment=no` in the test helpers and the operator command lines
+and adds a regression test. A passing Testing build on `main` has not been
+observed. Signing, installers, Git workflows, platform qualification, and
+release readiness remain open.
 
 ## Known cautions
 

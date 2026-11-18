@@ -661,11 +661,17 @@ Linux needs the runner itself in a cgroup v2 that is delegated to its user.
 Start the CLI in a scope of its own:
 
 ```text
-systemd-run --user --scope -p Delegate=yes -- omgcode run <workspace-id> ...
+systemd-run --user --scope --expand-environment=no -p Delegate=yes -- omgcode run <workspace-id> ...
 ```
 
 In scope mode `systemd-run` replaces itself with `omgcode`, so the standard
-streams, exit status, and signals are the CLI's own. Before recording a run,
+streams, exit status, and signals are the CLI's own. Since systemd 258,
+`systemd-run --scope` expands `$VARIABLE`, `${VARIABLE}`, and `$$` in the
+command's arguments by default, before `omgcode` sees them. Without
+`--expand-environment=no`, a run would start, and its journal would record, a
+different command line than the one typed: `sh -c 'echo $$'` becomes
+`sh -c 'echo $'`. The switch exists since systemd 254; older versions reject
+it and never expand scope arguments. Before recording a run,
 the CLI checks:
 
 - `/proc/self/cgroup` names one unified v2 cgroup, and `/sys/fs/cgroup` is the

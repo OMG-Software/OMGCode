@@ -134,8 +134,11 @@ is not a supported-distribution matrix.
 
 The workflow matrix in `.github/workflows/rust.yml` runs Rust checks on Ubuntu
 24.04 and Windows Server 2025, and on `ubuntu-latest` instead of Ubuntu 24.04
-when the testing build calls it. These CI hosts and the testing archives are not
-the release support matrix.
+when the testing build calls it. In November 2026 `ubuntu-latest` was Ubuntu
+26.04 with systemd 259, so it differs from Ubuntu 24.04 (systemd 255) in more
+than packages: since systemd 258, `systemd-run --scope` expands `$` in
+arguments unless `--expand-environment=no` is given. These CI hosts and the
+testing archives are not the release support matrix.
 Native filesystem, sandbox, process-tree, networking, and toolchain behavior
 remain unqualified for release. Windows workspaces inherit directory ACLs, and
 directory entry power-loss durability is not qualified there. Linux broker behavior
