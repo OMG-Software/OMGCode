@@ -171,8 +171,13 @@ Phase A2b adds Linux private checkpoint storage and existing-only recovery.
 Phase A2c adds trusted native apply on Linux ext4. Phase A3b adds Windows NTFS
 storage and apply. Phase A4 adds explicit restore and checkpoint deletion on both.
 Since 0.28.0 the approval-gated model edit tool reaches the same apply; see
-[Model edit route](#model-edit-route-adr-0043). No model tool creates, deletes,
-renames, restores, or manages checkpoints.
+[Model edit route](#model-edit-route-adr-0043). Since 0.36.0 the model
+multi-edit tool reaches it too, and the model create tool reaches the exclusive
+create; see [Model multi-edit and create routes](#model-multi-edit-and-create-routes-adr-0054).
+Since 0.38.0 the model delete tool reaches a checkpointed removal and the
+model rename tool a no-replace rename; see
+[Model rename and delete routes](#model-rename-and-delete-routes-adr-0055). No
+model tool restores or manages checkpoints.
 
 ### Implemented record inspection (Phase A2a)
 
@@ -198,7 +203,8 @@ optionally by `ready`, with unchanged identities. The first record alone returns
 an incomplete initialization snapshot. A `ready` record is a recorded claim,
 not evidence that files or directory entries are durable.
 
-Ledger input has the 8 MiB, 4,096-record, and 64 KiB-per-record bounds below.
+Ledger input has the 64 MiB, 65,536-record, and 64 KiB-per-record bounds
+below; 0.34.0 and earlier used 8 MiB and 4,096 records.
 It retains at most 64 operation intents, including failed and acknowledged
 intents that might have no artifact directory yet. This conservative count
 does not infer freed capacity from absent files. The first record is `created`.
@@ -206,12 +212,15 @@ The remaining action sequence is:
 
 | Action type | Payload and replay rule |
 | --- | --- |
-| `replacement_started` | A unique operation ID, valid session/workspace IDs, nondecreasing policy `revision`, `target`, `expected`, `proposed`, and `artifacts`. No other operation may be unresolved. |
+| `replacement_started` | A unique operation ID, valid session/workspace IDs, nondecreasing policy `revision`, `target`, `expected`, `proposed`, and `artifacts`, and optionally `kind`: `replace` (the default, never written) or `remove`. A `remove` proposes exactly the empty artifact. No other operation may be unresolved. |
 | `checkpoint_prepared` | Matching `operation_id` and exact `manifest` descriptor. Requires the intent phase. |
-| `stage_prepared` | Matching `operation_id`, native `identity`, and `content` descriptor equal to the intent's proposed bytes/digest. Requires checkpoint preparation. |
-| `commit_intended` | Matching `operation_id`. Requires stage preparation. |
+| `stage_prepared` | Matching `operation_id`, native `identity`, and `content` descriptor equal to the intent's proposed bytes/digest. Requires checkpoint preparation. Invalid for a `remove`, which has no stage. |
+| `commit_intended` | Matching `operation_id`. Requires stage preparation, or for a `remove` the prepared checkpoint. |
 | `replacement_finished` | Matching `operation_id`, `outcome`, and bounded non-success `code`. Success requires commit intent. Clean failure/conflict is accepted only before commit intent. Uncertainty remains unresolved. |
 | `replacement_acknowledged` | Matching unresolved `operation_id`. Clears only the recorded blocker; retains progress and outcome and never creates a success result. |
+| `checkpoint_deletion_started`, `checkpoint_deleted` | One resolved retained entry's deletion; see [Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). |
+| `compacted` | Only as the second record. The replaced ledger's `previous` descriptor (nonempty, at most 64 MiB), `previous_records` (1 to 65,536), and the optional `revision_floor` that later starts must not go below. |
+| `checkpoint_carried` | Only directly after `compacted` or another carried record. One retained entry's whole recorded state, including its `kind` (never a `remove` with a stage identity). Replay rebuilds it through the ordinary transitions above, so only a reachable state is accepted, and it must be resolved. Carried revisions are nondecreasing and at most the floor. See [ledger compaction](#implemented-ledger-compaction-phase-a5). |
 
 Artifact descriptors have `bytes` and lowercase hexadecimal `sha256`. File
 payload claims are at most 1 MiB; a manifest claim is nonempty and at most
@@ -277,7 +286,7 @@ capacity before creating operation artifacts. It counts every retained intent,
 including acknowledged attempts, and all managed file lengths. A bounded
 inventory rejects unknown entries, unsafe objects, missing required files,
 changed manifests, and corrupt payloads. It revalidates existing payload bytes
-on every ready-store admission and inspection. This can read up to the 64 MiB
+on every ready-store admission and inspection. This can read up to the 128 MiB
 store bound per request; this deliberate cost avoids trusting cached evidence.
 
 Standalone preparation stops at `checkpoint_prepared`. It returns
@@ -481,6 +490,158 @@ recorded request and a live read of the file; otherwise it offers Deny only. See
 the [desktop interface guide](desktop-interface.md#approvals). Restore and
 checkpoint management stay trusted CLI commands.
 
+### Model multi-edit and create routes (ADR-0054)
+
+Both tools are advertised and dispatched only under the same live
+`model_tools`, `read`, and `write` preferences as `workspace_edit_file`, with
+the same per-call recheck and `edit_disabled` denial. Both use
+`file_write` approvals with the 900-second lifetime and the writers-stopped
+acknowledgement, and the same lookup filters (session, workspace, operation,
+exact digest, current settings revision). Each has its own digest domain tag,
+so a record for one tool, including `workspace_edit_file`, can never be
+consumed by another.
+
+`workspace_multi_edit_file` takes a path and one to 16 `old_text`/`new_text`
+pairs. It reads the live file through the audited broker (at most 1 MiB, UTF-8)
+and matches every `old_text` against that original content: each must occur
+exactly once (`edit_no_match`, `edit_ambiguous`, naming the 1-based edit index),
+and the matched ranges must not overlap (`edit_overlap`). It applies the
+replacements in ascending offset order into one proposed buffer, which must
+differ from the file (`edit_unchanged`) and fit 1 MiB (`edit_too_large`). The
+digest, under `omgcode-file-multi-edit-v1`, covers the session, workspace,
+normalized path, and the size and SHA-256 of the current and proposed bytes.
+After approval, the handler checks the success report fits, consumes the
+record, and calls `apply_replacement` with the captured size and digest, like
+the single edit. One approval and one checkpoint cover the whole call.
+
+`workspace_create_file` takes a path and complete UTF-8 content (empty
+allowed), bounded by the 4 KiB argument limit. Before recording any approval, a
+live audited read must find the path absent (an existing entry returns
+`file_exists`) and a one-entry listing must find its parent directory (a missing
+parent returns `not_found`); nothing is recorded in either case. The digest,
+under `omgcode-file-create-v1`, covers the session, workspace, normalized path,
+and the size and SHA-256 of the content. After approval, the handler checks the
+success report fits, consumes the record, and calls the broker's exclusive
+`create_file`. The write is not checkpointed: nothing existed before, and the
+exclusive create refuses an existing entry. If another writer creates the path
+between the check and the create, the create returns `file_exists`, replaces
+nothing, and the approval stays spent. An uncertain outcome is a terminal
+failure that leaves the file-operation journal's pending record for the trusted
+acknowledgement; nothing is retried or deleted. A success reports the path,
+size, SHA-256, and operation ID, never the content.
+
+Neither tool detects a concurrent writer, and neither is power-loss qualified.
+The desktop approvals window reproduces the digest from a recorded request of
+any of the file-write tools before it shows fields. A create request also
+becomes stale once its path exists.
+
+### Model rename and delete routes (ADR-0055)
+
+Both tools are advertised and dispatched only under the same live
+`model_tools`, `read`, and `write` preferences as `workspace_edit_file`, with
+the same per-call recheck and `edit_disabled` denial, in the order read, list,
+edit, multi-edit, create, rename, delete, command (eight names, the existing
+cap). Both use `file_write` approvals with the 900-second lifetime and the
+writers-stopped acknowledgement, and the same lookup filters. Each has its own
+digest domain tag (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`), so a
+record for one tool, including the three earlier file-write tools, can never be
+consumed by another. Both read the live source through the audited broker
+first, at most 1 MiB; a larger source is the recoverable `edit_too_large`, so
+the model cannot rename or delete a file over 1 MiB. The bytes are not
+interpreted, so a non-UTF-8 source is accepted.
+
+`workspace_rename_file` takes `from` and `to`. The names must differ after
+normalization (`invalid_request`). Before an approval is recorded, `from` must
+read (`not_found`), `to` must be absent (`file_exists`), and its parent must
+list (`not_found`). The digest covers the session, workspace, both normalized
+names, and the source's size and SHA-256, and the summary is `rename {from} ->
+{to}: {n} bytes, sha256 {12}`. After approval, the handler checks the success
+report fits, consumes the record, and calls `FileBroker::rename_file`. That
+call requires both preferences from the live binding and no unresolved
+checkpoint operation, records a `rename_file` intent that names the source and
+the destination in the file-operation journal, and calls the platform's
+`rename_no_replace`. A changed source is `checkpoint_conflict`, an existing
+destination is `file_exists`, and an error after the native call may have
+happened is uncertain: the audit record stays pending for the trusted
+acknowledgement, and nothing is retried. Rename is not checkpointed: no content
+is destroyed, and renaming back reverses it. A success reports both names, the
+size, the SHA-256, and the operation ID.
+
+The native rename, on both platforms, opens both parents handle-relative
+beneath the workspace without links or mount crossings, pins the source as a
+regular single-link file, reads it through the pinned handle, and requires the
+size and SHA-256 to match. Directories, links, junctions, reparse points,
+hard-linked files, devices, and a source on another filesystem are refused before
+any rename. Linux (a source owned by the effective user) re-stats the source name
+against the pinned inode immediately before `renameat2` with
+`RENAME_NOREPLACE`, requires the destination name to resolve to the pinned inode
+afterwards, and flushes both parents. Windows opens the source with DELETE access
+and sharing that denies every other writer and deleter, so the name cannot be
+swapped or removed while the handle is held, and renames with
+`FileRenameInformationEx` using POSIX semantics and no replace flag, so an
+existing name fails with a collision status. It reopens the destination to
+compare file IDs and flushes both parents; the flush carries the ADR-0023
+limitation. There is no filesystem qualification gate beyond the broker's
+existing checks, as for create.
+
+`workspace_delete_file` takes `path`. The digest covers the session, workspace,
+normalized path, and the file's size and SHA-256, and the summary is `delete
+{path}: {n} bytes, sha256 {12}`. After approval, the handler checks the success
+report fits, consumes the record, and calls `FileBroker::apply_removal`. It
+runs the checkpointed apply's sequence without a stage: the live binding, both
+preferences, checkpoint admission, the qualified filesystem (Linux ext4,
+Windows NTFS), a capture whose size and SHA-256 must match, a durable checkpoint
+of the original bytes under a `remove` record, a recheck that the target is
+still the captured object, commit intent, one native removal attempt, and a
+success record. A change before commit intent is `checkpoint_conflict` and
+records a conflict. Any later error is uncertain: the operation stays
+unresolved for the trusted acknowledgement, and nothing is retried, restored,
+or cleaned up. The success message names the checkpoint's operation ID.
+
+The native removal is a sibling of the replacement commit. On Linux it
+rechecks that the name still resolves to the pinned inode, then calls
+`unlinkat` by name and requires the pinned inode's link count to be zero. The
+call is by name, so a swap between the recheck and the call cannot be
+prevented: a different file may then have been removed, and the check reports
+it as uncertain. On Windows it opens the name with DELETE access, verifies that
+same handle (file ID, volume, exact name, security, and every byte), and marks
+that handle for POSIX-semantics deletion, so exactly the verified file is
+deleted. It then requires the name to stop resolving and flushes the parent
+(ADR-0023 limitation).
+
+**Ledger.** Each operation record has a `kind` of `replace` or `remove`. It is
+omitted for `replace`, so every earlier ledger, carried record, and manifest
+stays byte-identical and replays unchanged. For `remove`, the `proposed`
+artifact must be exactly the empty artifact (0 bytes, the SHA-256 of the empty
+string) and the empty `proposed` file keeps the fixed entry layout; there is no
+stage, so a `stage_prepared` record is invalid and `commit_intended` follows
+`checkpoint_prepared` directly; success still requires commit intent. A carried
+`remove` with a stage identity or the stage step is refused, and compaction
+carries `kind`. A `remove` entry holding a `stage` file fails inspection. A
+`remove` entry's original need not be UTF-8, because nothing interprets it;
+a `replace` entry's must be. Older binaries refuse a ledger that holds a
+`remove` record, because they reject the unknown `kind` field. Acknowledgement
+and checkpoint deletion work on `remove` entries unchanged.
+
+**Restore.** A `remove` checkpoint is restored by `FileBroker::restore_removed_file`
+and the trusted `file restore --removed`, not by the apply path. The target must
+not exist: the retained original is reread and compared with its record, then
+written through the audited exclusive create, so an existing entry is
+`checkpoint_conflict` and is never replaced. No operation is recorded, because
+nothing is destroyed. Mode, owner, access list, and timestamps are not restored:
+the new file gets the broker's default creation metadata. The checkpoint must be
+for the same workspace and exact target. `file restore` of a replacement
+checkpoint and `--removed` of a removal checkpoint are each refused as
+`checkpoint_unavailable`.
+
+Neither tool detects a concurrent writer, and neither primitive is power-loss
+qualified. The desktop approvals window reproduces the digest from a recorded
+request of any of the five file-write tools (at most eight distinct candidates,
+newest first) before it shows fields: `From`, `To`, `Size`, and `SHA-256` for
+a rename, and `File`, `Size`, and `SHA-256` for a delete. A rename review is
+stale once its source changed or its destination exists, and a delete review is
+stale once the file changed or is gone.
+
 ### Private checkpoints, quota, and retention
 
 Use `<data-dir>/replacement-v1/`, outside the development root and workspace.
@@ -503,11 +664,12 @@ objects, and unavailable controls. Native parent/entry checks must protect both
 creation and reopening. Existing journal helpers alone do not establish that
 protection.
 
-Replacement storage has at most 64 operation entries and 64 MiB of managed file
-bytes, including manifests, the replacement ledger, and the initialization
-journal described below. Each manifest is at most 64 KiB. Reserve the worst-case
-original, proposed, and staging payloads
-(1 MiB each), manifest, and terminal ledger space before preparation. Count
+Replacement storage has at most 64 operation entries and 128 MiB of managed
+file bytes, including manifests, the replacement ledger, and the initialization
+journal described below. The bound was 64 MiB before 0.35.0; it grew by the
+64 MiB that the ledger may now use. Each manifest is at most 64 KiB. Reserve
+the worst-case original, proposed, and staging payloads (1 MiB each), manifest,
+and terminal ledger space before preparation. Count
 incomplete entries and staging data inside this store against the limits.
 Bound enumeration and refuse an unknown layout; do not recursively scan an
 arbitrary tree or ignore unknown files to make capacity available. Only one
@@ -520,11 +682,13 @@ is durable only when the backend's reviewed persistence requirements succeed.
 Any preparation, quota, validation, or sync failure must prevent replacement.
 Partial preparation remains evidence and can require explicit acknowledgement.
 
-Keep completed, conflicted, and uncertain entries. There is no automatic
-expiration, eviction, export, or pruning. At the quota, refuse further
-replacements while preserving inspection and permission changes. Only an
+Keep completed, conflicted, and uncertain entries. No checkpoint entry is
+expired, evicted, exported, or pruned automatically. At the quota, refuse
+further replacements while preserving inspection and permission changes. Only an
 explicit trusted deletion of one resolved entry frees capacity; see
-[Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). Export needs a
+[Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). Ledger
+compaction drops the history of deleted entries only; see
+[Phase A5](#implemented-ledger-compaction-phase-a5). Export needs a
 later reviewed lifecycle; journal rotation must not discard referenced
 checkpoints. Checkpoints contain source bytes and can
 contain secrets. They are private recovery data, never ordinary model context,
@@ -569,8 +733,8 @@ Use a separate versioned replacement ledger in the private store. Do not add
 replacement variants to strict `file-operations-v1.jsonl` or rewrite control-v1
 settings or session journals. The new ledger must strictly validate bounded
 records, store identity, unique operation IDs, contiguous sequence numbers,
-state transitions, and exact manifest references. Limit it to 4,096 events,
-8 MiB total, and 64 KiB per event, also within the store's aggregate quota.
+state transitions, and exact manifest references. Limit it to 65,536 events,
+64 MiB total, and 64 KiB per event, also within the store's aggregate quota.
 Reserve terminal outcome and acknowledgement capacity before admission.
 
 Required ordering:
@@ -742,6 +906,14 @@ and create no operation. A missing target is refused. The output adds
 `restored_from` to the apply receipt. The ledger does not link the two
 operations, so a restore stays readable by 0.10.0.
 
+Since 0.38.0, `file restore --removed` (without the current digest and size)
+restores the checkpoint of a file that the model's approved deletion removed.
+The target must not exist, and the retained original is written through the
+broker's audited exclusive create instead of apply; an existing entry is
+`checkpoint_conflict`. No operation is recorded, mode and access list are not
+restored, and the output has `restored_from` and the creation receipt. See
+[Model rename and delete routes](#model-rename-and-delete-routes-adr-0055).
+
 `file delete-checkpoint` removes one resolved entry: an unresolved operation
 must be acknowledged first. It needs no workspace binding and opens no
 workspace file. It appends a synced `checkpoint_deletion_started` record. Then
@@ -751,7 +923,7 @@ directory, and flushes the store directory. Last, it appends
 `checkpoint_deleted`. The intent reserves space for that completion record.
 The ledger keeps the operation's progress, outcome, and acknowledgement, and
 marks its `retention` as `deleted`. A deleted entry no longer counts toward the
-64-entry or 64 MiB caps.
+64-entry or 128 MiB caps.
 
 Removal never recurses. Linux pins each name with `openat2`, checks a local
 regular single-link file, calls `unlinkat`, and then requires the pinned inode
@@ -773,11 +945,73 @@ an explicit operator request, not an automatic retry. A partial deletion record
 fails inspection closed, as other partial ledger records do.
 
 New deletion records make a ledger unreadable to 0.10.0, which refuses it as an
-unknown record. History is never evicted, so the 4,096-record ledger cap still
-bounds an installation's lifetime operation count. A successful apply uses five
-records and its deletion two. Ledger compaction or rotation is future work.
-Deletion is not power-loss qualified on either platform. Windows directory
-flushes keep the ADR-0023 limitation.
+unknown record. A successful apply uses five records and its deletion two.
+Before 0.35.0 history was never evicted, so the 4,096-record cap bounded an
+installation's lifetime operation count. Deletion is not power-loss qualified on
+either platform. Windows directory flushes keep the ADR-0023 limitation.
+
+## Implemented ledger compaction (Phase A5)
+
+Version 0.35.0 raises the ledger bounds to 65,536 records and 64 MiB, raises the
+store's aggregate bound to 128 MiB, and compacts the ledger in place. See
+[ADR-0053](adr/0053-compact-the-checkpoint-ledger-in-place.md).
+
+A compacted ledger is the original `created` record byte for byte, one
+`compacted` record, and one `checkpoint_carried` record for each retained entry,
+in their recorded order. The `compacted` record holds the replaced ledger's size,
+SHA-256, and record count, and the revision of the last started operation. Every
+record of deleted entries' history is dropped; nothing else keeps it, and the
+digest alone cannot reproduce or verify it. `file checkpoints` reports the claim
+as `compacted_from`. A later compaction replaces the claim with one for the
+ledger it replaced, so the digests form a chain only if an operator kept each
+replaced ledger.
+
+Compaction runs in two ways:
+
+- `file compact-checkpoints --discard-history` is a trusted operator command. It
+  needs no workspace binding and opens no workspace file or checkpoint entry.
+- Apply, restore, and deletion compact first when the ledger lacks room for
+  their records: six for an apply or restore and two for a deletion. They do
+  not compact for the aggregate byte quota.
+
+Both refuse while an operation is unresolved or a deletion is unfinished; there
+is nothing to carry for those states. Both write nothing when the ledger is
+already its header, one compaction record, and one record per retained entry,
+or when the rewrite would be larger.
+
+The store builds the candidate in memory and replays it. It must hold exactly
+the retained entries' recorded state before anything is written. It writes the
+candidate to `replacement-v1/ledger.compact` with an exclusive private create,
+syncs it, reads it back, checks that the open ledger still holds the validated
+bytes, and closes that handle. Windows refuses to replace a name while a handle
+that denies delete sharing is open. One native rename then replaces
+`ledger.jsonl`: `renameat` on Linux, and a handle-relative POSIX-semantics
+replace-if-exists rename on Windows. Both check that the name refers to the
+source afterwards. The store flushes the directory, reopens the ledger, and
+compares its bytes with the candidate. The anchor lock is held throughout.
+
+A failure after the candidate is created poisons the writer and is uncertain.
+Either ledger reopens with the same retained state, because the rename is
+atomic and both ledgers describe the same entries. A left `ledger.compact` is a
+derived copy, never evidence. Inventory counts its bytes against the quota and
+otherwise ignores it; ordinary work continues. Only the next compaction removes
+it, before writing a new candidate. Nothing is retried automatically.
+
+Replay is incremental. An append validates its one record against the replayed
+state instead of parsing the whole ledger again, and the result equals a full
+replay. Operation IDs are indexed, so replay of a full ledger is linear in its
+records. A full open still reads and parses the whole ledger, which can be
+64 MiB.
+
+Limits:
+
+- Deleted entries' history is gone after compaction. An operator who needs it
+  must copy `ledger.jsonl` before compacting.
+- Operation-ID reuse is checked only against the history the ledger still holds.
+  IDs are random version-4 UUIDs created by the store.
+- Readers older than 0.35.0 refuse a compacted ledger as an unknown record.
+- Neither the rename nor the directory flush is power-loss qualified. On
+  Windows the flush keeps the ADR-0023 limitation.
 
 ## Private operation journal and recovery
 

@@ -101,7 +101,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     approval(
       "a2",
       "file_write",
-      `Replace 1 occurrence in src/lib.rs ${HOSTILE.script}`,
+      `multi-edit src/lib.rs (2 edits): 120 -> 118 bytes ${HOSTILE.script}`,
       300,
       1,
       "Refactor the session index",
@@ -402,8 +402,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           ]
         : [
             { label: "File", value: "src/lib.rs", multiline: false },
-            { label: "Old text", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
-            { label: "New text", value: "fn new() {}", multiline: true },
+            { label: "Edits", value: "2", multiline: false },
+            { label: "Old text 1", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
+            { label: "New text 1", value: "fn new() {}", multiline: true },
+            { label: "Old text 2", value: "const A: u8 = 1;", multiline: true },
+            { label: "New text 2", value: "const A: u8 = 2;", multiline: true },
           ];
     return clone({
       approval: view,
@@ -412,7 +415,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         ? null
         : view.operation === "command"
           ? "workspace_run_command"
-          : "workspace_edit_file",
+          : "workspace_multi_edit_file",
       fields: stale ? [] : fields,
       review_token: token,
     });

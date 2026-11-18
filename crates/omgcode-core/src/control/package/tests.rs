@@ -59,7 +59,10 @@ fn package_profiles_are_recorded_replayed_and_removed() {
         Err(ControlError::PackageProfileRefused(_))
     ));
     assert_eq!(
-        store.remove_package_profile("crates", 2).expect("remove"),
+        store
+            .remove_package_profile("crates", 2)
+            .expect("remove")
+            .profile_id,
         profile.id()
     );
     assert_eq!(store.revision(), 3);
@@ -196,9 +199,10 @@ fn package_profile_bounds_are_enforced() {
     ));
 
     let revision = store.revision();
-    store
+    let _freed = store
         .remove_package_profile("p0", revision)
-        .expect("free a profile slot");
+        .expect("free a profile slot")
+        .profile_id;
     let host = format!("{}{}", "a".repeat(200), "b".repeat(52));
     let path = format!("/{}/", "c".repeat(1000));
     let origins: Vec<String> = (0..MAX_PACKAGE_ORIGINS)

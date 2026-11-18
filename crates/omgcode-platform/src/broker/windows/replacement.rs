@@ -18,32 +18,28 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::time::SystemTime;
 
-use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_OPEN, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
-    FileRenameInformationEx, NtSetInformationFile,
-};
+use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
 use windows_sys::Win32::Foundation::{
     HANDLE, NTSTATUS, STATUS_DELETE_PENDING, STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY,
     STATUS_OBJECT_NAME_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ADD_FILE, FILE_NAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FileNormalizedNameInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
+    DELETE, FILE_ADD_FILE, FILE_NAME_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FileNormalizedNameInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
 };
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 use super::{
     DIRECTORY_ACCESS, NativeStatus, NativeWorkspace, RelativePath, SHARE_READ_WRITE, creation_time,
-    encode_component, invalid_data, invalid_input, last_directory, native_error, open_relative,
-    query_attributes, query_basic, query_identity, query_standard, read_bounded,
+    invalid_data, invalid_input, is_name_not_found, last_directory, open_relative,
+    query_attributes, query_basic, query_identity, query_standard, read_bounded, rename_onto,
     validate_component, validate_directory, validate_regular_file,
 };
 use crate::broker::{FileCapture, MAX_FILE_BYTES};
 use crate::directory_identity;
 use crate::private_store::windows::{
     DIRECTORY_OPTIONS, FILE_OPTIONS, FILE_READ_ACCESS, STAGE_NAME, apply_security, is_private_file,
-    read_native_security, require_ntfs, set_content_indexing, split_native_security,
-    validate_file_metadata,
+    mark_for_deletion, read_native_security, require_ntfs, set_content_indexing,
+    split_native_security, validate_file_metadata,
 };
 use crate::private_store::{
     NativeSecurity, PrivateDirectory, PrivateFileIdentity, StageMetadata, stage_metadata,
@@ -90,6 +86,8 @@ enum TestPoint {
     SourceParentSync,
     TargetParentSync,
     RestorePrivacy,
+    Delete,
+    Deleted,
 }
 
 /// One object and version. Access time is excluded because reads change it.
@@ -402,6 +400,77 @@ impl ReplacementTarget<'_> {
         self.parent.sync_all()
     }
 
+    /// Recheck the retained target before a removal without changing it.
+    ///
+    /// `false` means the name no longer resolves to the object whose bytes,
+    /// version, and security were captured. A read-only source was already
+    /// refused at capture.
+    pub fn recheck_removal(&self) -> io::Result<bool> {
+        self.target_matches_current()
+    }
+
+    /// Make one native removal attempt of the verified file.
+    ///
+    /// The target is consumed, so one retained target allows one attempt. The
+    /// name is opened with DELETE access, and that same handle is verified
+    /// (object, name, security, and every byte) and then marked for
+    /// POSIX-semantics deletion, so exactly the verified file is deleted even
+    /// if the name is swapped after the recheck. Every error is an uncertain
+    /// result and must never be retried. Windows makes no power-loss claim for
+    /// the parent flush (ADR-0023).
+    pub fn remove(self, before_attempt: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        if !self.recheck_removal()? {
+            return Err(changed_during_operation());
+        }
+        #[cfg(test)]
+        self.run_hook(TestPoint::AfterFinalCheck)?;
+        before_attempt()?;
+        #[cfg(test)]
+        self.run_hook(TestPoint::Delete)?;
+        let directory = last_directory(&self.handles)?;
+        let doomed = open_relative(
+            directory,
+            &self.name,
+            FILE_READ_ACCESS | DELETE,
+            FILE_OPEN,
+            FILE_OPTIONS,
+            FILE_SHARE_READ,
+            0,
+        )?;
+        let verified = file_snapshot(&doomed)? == self.source_snapshot
+            && has_exact_name(&doomed, &self.name)?
+            && security_matches(&doomed, &self.capture.security)?
+            && file_bytes_matches(&doomed, &self.capture.bytes)?
+            && file_snapshot(&doomed)? == self.source_snapshot;
+        if !verified {
+            return Err(changed_during_operation());
+        }
+        mark_for_deletion(&doomed, false)?;
+        drop(doomed);
+        #[cfg(test)]
+        self.run_hook(TestPoint::Deleted)?;
+        match open_relative(
+            directory,
+            &self.name,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_OPTIONS,
+            SHARE_ALL,
+            0,
+        ) {
+            Err(error) if is_name_not_found(&error) => {}
+            Ok(_) => {
+                return Err(invalid_data(
+                    "the removed name still resolves after deletion",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        #[cfg(test)]
+        self.run_hook(TestPoint::TargetParentSync)?;
+        self.parent.sync_all()
+    }
+
     /// Give the verified private stage the captured source security and
     /// indexing opt-out, flush it, and read the result back exactly.
     ///
@@ -502,57 +571,6 @@ fn published_matches(target: &ReplacementTarget<'_>, stage: &ReplacementStage) -
         && file_bytes_matches(&published, &stage.proposed)?
         && file_snapshot(&published)? == snapshot
         && stage_metadata(&published)? == stage.metadata)
-}
-
-/// Replace `name` beneath `parent` with the file behind `stage`, by handle.
-#[allow(unsafe_code)]
-fn rename_onto(stage: &File, parent: &File, name: &OsStr) -> io::Result<()> {
-    let units = encode_component(name)?;
-    if units.is_empty() {
-        return Err(invalid_input("replacement requires a target name"));
-    }
-    let name_bytes = units
-        .len()
-        .checked_mul(size_of::<u16>())
-        .ok_or_else(|| invalid_input("replacement name is too long"))?;
-    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
-    // Windows refuses a buffer smaller than the structure with a length mismatch.
-    let total = name_offset
-        .checked_add(name_bytes)
-        .ok_or_else(|| invalid_input("replacement name is too long"))?
-        .max(size_of::<FILE_RENAME_INFORMATION>());
-    let length = u32::try_from(total).map_err(|_| invalid_input("rename buffer is too large"))?;
-    let file_name_length =
-        u32::try_from(name_bytes).map_err(|_| invalid_input("replacement name is too long"))?;
-    let mut storage = vec![0u64; total.div_ceil(size_of::<u64>())];
-    let base = storage.as_mut_ptr().cast::<u8>();
-    let information = base.cast::<FILE_RENAME_INFORMATION>();
-    let mut status_block = IO_STATUS_BLOCK::default();
-    // SAFETY: `storage` is zeroed, aligned for the structure, and holds at least
-    // `total` bytes, so every field and all of `name_bytes` at `name_offset` are
-    // in bounds. `parent` outlives the synchronous call that reads its handle.
-    let status = unsafe {
-        (*information).Anonymous.Flags =
-            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
-        (*information).RootDirectory = parent.as_raw_handle() as HANDLE;
-        (*information).FileNameLength = file_name_length;
-        std::ptr::copy_nonoverlapping(
-            units.as_ptr().cast::<u8>(),
-            base.add(name_offset),
-            name_bytes,
-        );
-        NtSetInformationFile(
-            stage.as_raw_handle() as HANDLE,
-            &mut status_block,
-            information.cast(),
-            length,
-            FileRenameInformationEx,
-        )
-    };
-    if status != 0 {
-        return Err(native_error(status));
-    }
-    Ok(())
 }
 
 fn file_snapshot(file: &File) -> io::Result<FileSnapshot> {

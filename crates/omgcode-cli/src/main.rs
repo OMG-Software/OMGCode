@@ -315,6 +315,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "streaming_adapters": ["lm_studio"],
             "cancellable_adapters": ["lm_studio"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
+            "package_registry_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),
             "approvals": true,
             "process_execution": if RUN_SUPPORTED {
@@ -332,7 +333,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 "unavailable"
             },
             "tool_policy": if cfg!(any(target_os = "linux", target_os = "windows")) {
-                "read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval"
+                "read_list_when_workspace_model_tools_enabled_edit_multi_edit_create_rename_delete_and_command_require_approval"
             } else {
                 "reject all model-requested tools"
             },

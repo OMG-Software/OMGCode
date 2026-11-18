@@ -7,8 +7,9 @@ use super::*;
 use crate::control::ControlStore;
 use crate::policy::{PermissionSet, SessionBinding, WorkspaceId};
 use crate::replacement::{
-    CheckpointDeletion, CheckpointError, CheckpointInspection, CheckpointRetention,
-    RecordedArtifact, ReplacementOutcome, ReplacementProgress,
+    CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
+    CheckpointRetention, RecordedArtifact, RecordedReplacement, ReplacementKind,
+    ReplacementOutcome, ReplacementProgress,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -1017,4 +1018,672 @@ fn deletion_never_removes_an_unknown_name() {
     );
     assert_eq!(fs::read(&unexpected).unwrap(), b"operator data");
     assert!(fixture.inspect().is_err());
+}
+
+fn compact(fixture: &mut Fixture) -> Result<CheckpointCompaction, FileError> {
+    FileBroker::new(&mut fixture.control).checkpoint_compact()
+}
+
+fn ledger_path(fixture: &Fixture) -> PathBuf {
+    fixture.data.join("replacement-v1").join("ledger.jsonl")
+}
+
+fn candidate_path(fixture: &Fixture) -> PathBuf {
+    fixture.data.join("replacement-v1").join("ledger.compact")
+}
+
+fn record_count(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|byte| **byte == b'\n').count()
+}
+
+fn retained_operations(inspection: &CheckpointInspection) -> Vec<RecordedReplacement> {
+    inspection
+        .operations
+        .iter()
+        .filter(|operation| operation.retention == CheckpointRetention::Retained)
+        .cloned()
+        .collect()
+}
+
+/// Leave one retained entry and one deleted entry's history. The source ends
+/// with its original bytes.
+fn retained_and_deleted(fixture: &mut Fixture) -> (Uuid, Uuid) {
+    let retained = applied_id(fixture, ORIGINAL, PROPOSED);
+    let deleted = applied_id(fixture, PROPOSED, ORIGINAL);
+    delete(fixture, deleted).expect("delete one entry");
+    (retained, deleted)
+}
+
+/// Writes synthesized ledger records with the store's scope and sequence.
+struct Padding {
+    header: serde_json::Value,
+    revision: u64,
+    workspace_id: Uuid,
+    bytes: Vec<u8>,
+    /// Records in `bytes`, counted as they are pushed.
+    records: usize,
+}
+
+impl Padding {
+    fn push(&mut self, kind: &str, payload: serde_json::Value) {
+        let record = serde_json::json!({
+            "schema_version": 1,
+            "control_store_id": self.header["control_store_id"],
+            "replacement_store_id": self.header["replacement_store_id"],
+            "event_id": Uuid::new_v4(),
+            "sequence": self.records,
+            "timestamp": "2026-11-17T12:00:00Z",
+            "action": {"type": kind, "payload": payload},
+        });
+        serde_json::to_writer(&mut self.bytes, &record).expect("record JSON");
+        self.bytes.push(b'\n');
+        self.records += 1;
+    }
+
+    /// Record one operation that failed before preparing an entry.
+    fn failed(&mut self) -> Uuid {
+        let operation_id = Uuid::new_v4();
+        self.push(
+            "replacement_started",
+            serde_json::json!({
+                "operation_id": operation_id,
+                "session_id": Uuid::new_v4(),
+                "workspace_id": self.workspace_id,
+                "revision": self.revision,
+                "target": crate::session::NativePath::from_path(Path::new("padding.txt"))
+                    .expect("native target"),
+                "expected": {"bytes": 1, "sha256": "a".repeat(64)},
+                "proposed": {"bytes": 1, "sha256": "b".repeat(64)},
+                "artifacts": {
+                    "original": "original", "proposed": "proposed",
+                    "manifest": "manifest.json", "stage": "stage"
+                }
+            }),
+        );
+        self.push(
+            "replacement_finished",
+            serde_json::json!({
+                "operation_id": operation_id, "outcome": "failed", "code": "padding"
+            }),
+        );
+        operation_id
+    }
+}
+
+/// Append deleted operations, four records each, then at most one failed
+/// operation without an entry, until the ledger holds at least `minimum`
+/// records. Real failures and deletions write these same records. Returns the
+/// failed operation, which stays retained and is carried by compaction.
+fn pad_ledger(fixture: &Fixture, minimum: usize) -> Option<Uuid> {
+    let path = ledger_path(fixture);
+    let bytes = fs::read(&path).expect("ledger");
+    let header = serde_json::from_slice(
+        bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .next()
+            .expect("header record"),
+    )
+    .expect("header JSON");
+    let mut padding = Padding {
+        header,
+        revision: fixture.control.revision(),
+        workspace_id: *fixture.workspace_id.as_uuid(),
+        records: record_count(&bytes),
+        bytes,
+    };
+    while padding.records + 4 <= minimum {
+        let operation_id = padding.failed();
+        padding.push(
+            "checkpoint_deletion_started",
+            serde_json::json!({"operation_id": operation_id}),
+        );
+        padding.push(
+            "checkpoint_deleted",
+            serde_json::json!({"operation_id": operation_id}),
+        );
+    }
+    let failed = (padding.records < minimum).then(|| padding.failed());
+    fs::write(&path, padding.bytes).expect("write padded ledger");
+    failed
+}
+
+#[test]
+fn compaction_carries_retained_state_and_drops_deleted_history() {
+    let mut fixture = Fixture::new();
+    let (retained, deleted) = retained_and_deleted(&mut fixture);
+    let before = fixture.inspect().expect("inspect");
+    let old = fs::read(ledger_path(&fixture)).expect("ledger");
+    let header = old
+        .split_inclusive(|byte| *byte == b'\n')
+        .next()
+        .expect("header")
+        .to_vec();
+
+    let result = compact(&mut fixture).expect("compact");
+    assert!(result.compacted);
+    assert_eq!((result.carried, result.dropped), (1, 1));
+    assert_eq!(result.previous_records, record_count(&old));
+    assert_eq!(result.previous_bytes, old.len());
+    let new = fs::read(ledger_path(&fixture)).expect("compacted ledger");
+    assert_eq!(result.records, 3);
+    assert_eq!(record_count(&new), 3);
+    assert_eq!(result.bytes, new.len());
+    assert!(new.len() < old.len());
+    assert!(
+        new.starts_with(&header),
+        "the header record is kept exactly"
+    );
+    assert!(!candidate_path(&fixture).exists());
+
+    let after = fixture.inspect().expect("inspect compacted ledger");
+    assert_eq!(after.operations, retained_operations(&before));
+    assert!(
+        after
+            .operations
+            .iter()
+            .all(|entry| entry.operation_id != deleted)
+    );
+    let compacted_from = after.compacted_from.clone().expect("compaction recorded");
+    assert_eq!(compacted_from.ledger, artifact(&old));
+    assert_eq!(
+        compacted_from.records,
+        u64::try_from(record_count(&old)).unwrap()
+    );
+    assert_eq!(after.managed_bytes, result.managed_bytes);
+    assert_payloads(&fixture, retained);
+
+    // Nothing is left to drop, so a second request writes nothing.
+    let again = compact(&mut fixture).expect("compact again");
+    assert!(!again.compacted);
+    assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), new);
+
+    // New work appends after the carried record, and a carried entry
+    // restores and deletes like any other.
+    let target = fixture.workspace.join("source.txt");
+    let applied = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    restore(&mut fixture, retained, PROPOSED).expect("restore a carried entry");
+    assert_eq!(fs::read(&target).unwrap(), ORIGINAL);
+    delete(&mut fixture, retained).expect("delete a carried entry");
+    let chained_from = fs::read(ledger_path(&fixture)).expect("ledger");
+    let chained = compact(&mut fixture).expect("compact a compacted ledger");
+    assert!(chained.compacted);
+    assert_eq!(chained.dropped, 1);
+    let inspection = fixture.inspect().expect("inspect");
+    assert_eq!(
+        inspection.compacted_from.clone().expect("chained").ledger,
+        artifact(&chained_from)
+    );
+    assert_eq!(
+        operation(&inspection, applied).retention,
+        CheckpointRetention::Retained
+    );
+    assert_eq!(inspection.operations.len(), 2);
+}
+
+#[test]
+fn compaction_is_refused_while_an_operation_or_deletion_is_unresolved() {
+    let mut fixture = Fixture::new();
+    let binding = fixture.binding();
+    let pending = uncertain_id(fixture.apply(&binding, |store| {
+        store.inject_publication_fault("commit_intent_sync");
+    }));
+    let ledger = fs::read(ledger_path(&fixture)).expect("ledger");
+    assert_eq!(
+        checkpoint_error(compact(&mut fixture)).code(),
+        "checkpoint_pending"
+    );
+    assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), ledger);
+    FileBroker::new(&mut fixture.control)
+        .checkpoint_acknowledge(pending)
+        .expect("acknowledge");
+
+    let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    crate::replacement::store::delete_with_fault(&fixture.control, id, "deletion_artifact")
+        .expect_err("interrupted deletion");
+    let ledger = fs::read(ledger_path(&fixture)).expect("ledger");
+    assert_eq!(
+        checkpoint_error(compact(&mut fixture)).code(),
+        "checkpoint_deletion_pending"
+    );
+    assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), ledger);
+    assert!(!candidate_path(&fixture).exists());
+}
+
+#[test]
+fn compaction_faults_keep_a_valid_ledger_and_are_not_retried() {
+    for (fault, replaced) in [
+        ("compaction_partial_write", false),
+        ("compaction_sync", false),
+        ("compaction_rename", false),
+        ("compaction_directory_sync", true),
+    ] {
+        let mut fixture = Fixture::new();
+        let (retained, _) = retained_and_deleted(&mut fixture);
+        let before = fixture.inspect().expect("inspect");
+        let old = fs::read(ledger_path(&fixture)).expect("ledger");
+
+        let error = crate::replacement::store::compact_with_fault(&fixture.control, fault)
+            .expect_err(fault);
+        assert_eq!(error.code(), "checkpoint_uncertain", "{fault}");
+        // Either ledger reopens with the same retained state.
+        let after = fixture.inspect().expect(fault);
+        assert_eq!(
+            retained_operations(&after),
+            retained_operations(&before),
+            "{fault}"
+        );
+        assert_eq!(after.compacted_from.is_some(), replaced, "{fault}");
+        assert_eq!(
+            fs::read(ledger_path(&fixture)).unwrap() == old,
+            !replaced,
+            "{fault}"
+        );
+        assert_eq!(candidate_path(&fixture).exists(), !replaced, "{fault}");
+
+        // Ordinary work continues beside a stale candidate, which only a
+        // later explicit compaction removes.
+        applied_id(&mut fixture, ORIGINAL, PROPOSED);
+        assert_eq!(candidate_path(&fixture).exists(), !replaced, "{fault}");
+        let result = compact(&mut fixture).expect(fault);
+        assert!(result.compacted, "{fault}");
+        assert!(!candidate_path(&fixture).exists(), "{fault}");
+        assert_payloads(&fixture, retained);
+    }
+}
+
+#[test]
+fn a_full_ledger_is_compacted_before_apply_and_before_deletion() {
+    // The record bound in `replacement::replay`.
+    const MAX_RECORDS: usize = 65_536;
+    let mut fixture = Fixture::new();
+    let (retained, _) = retained_and_deleted(&mut fixture);
+
+    // Apply needs six more records and deletion two.
+    let failed = pad_ledger(&fixture, MAX_RECORDS - 5);
+    let padded = fs::read(ledger_path(&fixture)).expect("padded ledger");
+    assert!((MAX_RECORDS - 5..=MAX_RECORDS).contains(&record_count(&padded)));
+    let inspection = fixture.inspect().expect("a padded ledger is valid");
+    assert!(inspection.operations.len() > 16_000);
+
+    let applied = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let inspection = fixture.inspect().expect("inspect");
+    let compacted_from = inspection.compacted_from.clone().expect("compacted first");
+    assert_eq!(compacted_from.ledger, artifact(&padded));
+    let mut kept = inspection
+        .operations
+        .iter()
+        .map(|entry| entry.operation_id)
+        .collect::<Vec<_>>();
+    kept.sort();
+    let mut expected = vec![retained, applied];
+    expected.extend(failed);
+    expected.sort();
+    assert_eq!(kept, expected);
+    assert!(record_count(&fs::read(ledger_path(&fixture)).unwrap()) < 16);
+
+    pad_ledger(&fixture, MAX_RECORDS - 1);
+    let padded = fs::read(ledger_path(&fixture)).expect("padded ledger");
+    delete(&mut fixture, retained).expect("deletion compacts first");
+    let inspection = fixture.inspect().expect("inspect");
+    assert_eq!(
+        inspection
+            .compacted_from
+            .clone()
+            .expect("compacted again")
+            .ledger,
+        artifact(&padded)
+    );
+    assert_eq!(
+        operation(&inspection, retained).retention,
+        CheckpointRetention::Deleted
+    );
+    assert_eq!(
+        operation(&inspection, applied).retention,
+        CheckpointRetention::Retained
+    );
+    assert!(!fixture.operation_dir(retained).exists());
+}
+
+// ---------------------------------------------------------------------------
+// Checkpointed removal and restore of a removed file (ADR-0055)
+// ---------------------------------------------------------------------------
+
+fn remove_hooked(
+    fixture: &mut Fixture,
+    expected: &[u8],
+    hook: impl FnOnce(&mut Store),
+) -> Result<ReplacementReceipt, FileError> {
+    let binding = fixture.binding();
+    let target = fixture.target();
+    FileBroker::new(&mut fixture.control).removal_with_preparation_hook(
+        &binding,
+        &target,
+        &artifact(expected),
+        hook,
+    )
+}
+
+fn remove(fixture: &mut Fixture, expected: &[u8]) -> Result<ReplacementReceipt, FileError> {
+    remove_hooked(fixture, expected, |_| {})
+}
+
+fn restore_removed(
+    fixture: &mut Fixture,
+    checkpoint: Uuid,
+) -> Result<crate::files::FileCreated, FileError> {
+    let binding = fixture.binding();
+    let target = fixture.target();
+    FileBroker::new(&mut fixture.control).restore_removed_file(&binding, &target, checkpoint)
+}
+
+fn removed_id(fixture: &mut Fixture, expected: &[u8]) -> Uuid {
+    remove(fixture, expected)
+        .expect("removal")
+        .operation_id
+        .expect("a removal creates an operation")
+}
+
+#[test]
+fn removal_checkpoints_the_original_and_removes_only_the_file() {
+    let mut fixture = Fixture::new();
+    let bystander = fixture.workspace.join("bystander.txt");
+    fs::write(&bystander, b"keep").expect("bystander");
+    let target = fixture.workspace.join("source.txt");
+
+    let receipt = remove(&mut fixture, ORIGINAL).expect("removal");
+    assert!(receipt.changed && receipt.applied);
+    assert_eq!(receipt.original, artifact(ORIGINAL));
+    assert_eq!(receipt.proposed, artifact(b""));
+    let id = receipt.operation_id.expect("operation");
+    assert!(!target.exists());
+    assert_eq!(fs::read(&bystander).unwrap(), b"keep");
+
+    // The private entry keeps the original and the empty proposal, and has no stage.
+    let directory = fixture.operation_dir(id);
+    assert_eq!(fs::read(directory.join("original")).unwrap(), ORIGINAL);
+    assert_eq!(fs::read(directory.join("proposed")).unwrap(), b"");
+    assert!(directory.join("manifest.json").exists());
+    assert!(!directory.join("stage").exists());
+    let inspection = fixture.inspect().expect("inspect removal");
+    assert_eq!(inspection.pending, None);
+    let record = operation(&inspection, id);
+    assert_eq!(record.kind, ReplacementKind::Remove);
+    assert_eq!(record.progress, ReplacementProgress::CommitIntended);
+    assert_eq!(record.outcome, Some(ReplacementOutcome::Succeeded));
+    assert!(record.stage_identity.is_none());
+    assert_eq!(record.proposed, artifact(b""));
+    assert_eq!(record.retention, CheckpointRetention::Retained);
+}
+
+#[test]
+fn removal_refuses_a_wrong_precondition_a_missing_target_and_denied_preferences() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("source.txt");
+    // A different size or digest is a conflict before any private evidence.
+    assert!(matches!(
+        checkpoint_error(remove(&mut fixture, b"other bytes")),
+        CheckpointError::Conflict
+    ));
+    assert!(target.exists());
+    assert!(fixture.inspect().expect("inspect").operations.is_empty());
+
+    // Current preferences still apply.
+    fixture
+        .control
+        .set_permissions(
+            fixture.workspace_id,
+            PermissionSet {
+                read: true,
+                write: false,
+                ..PermissionSet::default()
+            },
+            fixture.control.revision(),
+        )
+        .expect("deny write");
+    assert!(matches!(
+        checkpoint_error(remove(&mut fixture, ORIGINAL)),
+        CheckpointError::Denied(_)
+    ));
+    assert!(target.exists());
+    fixture
+        .control
+        .set_permissions(
+            fixture.workspace_id,
+            PermissionSet {
+                read: true,
+                write: true,
+                ..PermissionSet::default()
+            },
+            fixture.control.revision(),
+        )
+        .expect("restore preferences");
+
+    // There is nothing to remove from a missing target.
+    fs::remove_file(&target).expect("remove target");
+    assert!(remove(&mut fixture, ORIGINAL).is_err());
+    assert!(fixture.inspect().expect("inspect").operations.is_empty());
+}
+
+#[test]
+fn a_target_replaced_after_the_checkpoint_conflicts_and_is_not_removed() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("source.txt");
+    let workspace = fixture.workspace.clone();
+    let result = remove_hooked(&mut fixture, ORIGINAL, |_store| {
+        let replacement = workspace.join("independent.txt");
+        fs::write(&replacement, ORIGINAL).expect("independent inode, equal bytes");
+        set_source_security(&replacement);
+        fs::rename(replacement, &target).expect("replace target inode");
+    });
+    assert!(matches!(
+        result,
+        Err(FileError::Checkpoint(CheckpointError::Conflict))
+    ));
+    assert_eq!(
+        fs::read(fixture.workspace.join("source.txt")).unwrap(),
+        ORIGINAL
+    );
+    let inspection = fixture.inspect().expect("inspect conflict");
+    assert_eq!(inspection.pending, None);
+    let record = &inspection.operations[0];
+    assert_eq!(record.kind, ReplacementKind::Remove);
+    assert_eq!(record.progress, ReplacementProgress::CheckpointPrepared);
+    assert_eq!(record.outcome, Some(ReplacementOutcome::Conflict));
+    assert!(
+        !fixture
+            .operation_dir(record.operation_id)
+            .join("stage")
+            .exists()
+    );
+}
+
+#[test]
+fn removal_faults_leave_exact_unresolved_evidence_and_are_not_retried() {
+    for (fault, removed) in [
+        ("commit_intent_sync", false),
+        ("before_native_commit", false),
+        ("after_native_commit", true),
+        ("publication_outcome_sync", true),
+    ] {
+        let mut fixture = Fixture::new();
+        let target = fixture.workspace.join("source.txt");
+        let result = remove_hooked(&mut fixture, ORIGINAL, |store| {
+            store.inject_publication_fault(fault);
+        });
+        let id = uncertain_id(result);
+        assert_eq!(target.exists(), !removed, "{fault}");
+        assert_eq!(
+            fs::read(fixture.operation_dir(id).join("original")).unwrap(),
+            ORIGINAL,
+            "{fault}"
+        );
+        let inspection = fixture.inspect().expect("reopen exact evidence");
+        let record = operation(&inspection, id);
+        assert_eq!(record.kind, ReplacementKind::Remove, "{fault}");
+        assert_eq!(
+            record.progress,
+            ReplacementProgress::CommitIntended,
+            "{fault}"
+        );
+        let outcome_recorded = fault == "publication_outcome_sync";
+        assert_eq!(record.outcome.is_some(), outcome_recorded, "{fault}");
+        assert_eq!(
+            inspection.pending,
+            (!outcome_recorded).then_some(id),
+            "{fault}"
+        );
+        // Nothing is retried while the operation is unresolved.
+        if !outcome_recorded {
+            assert!(remove(&mut fixture, ORIGINAL).is_err(), "{fault}");
+            FileBroker::new(&mut fixture.control)
+                .checkpoint_acknowledge(id)
+                .expect("acknowledge without claiming success");
+            assert_eq!(fixture.inspect().expect("inspect").pending, None);
+        }
+    }
+}
+
+#[test]
+fn restoring_a_removal_recreates_the_exact_bytes_and_never_replaces() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("source.txt");
+    let id = removed_id(&mut fixture, ORIGINAL);
+    assert!(!target.exists());
+
+    let created = restore_removed(&mut fixture, id).expect("restore the removed file");
+    assert_eq!(created.bytes_written, ORIGINAL.len());
+    assert_eq!(fs::read(&target).unwrap(), ORIGINAL);
+    // Nothing is destroyed by a restore, so no checkpoint operation is added.
+    let inspection = fixture.inspect().expect("inspect");
+    assert_eq!(inspection.operations.len(), 1);
+    assert_eq!(inspection.pending, None);
+
+    // The name is taken now, whatever it holds.
+    fs::write(&target, b"someone else").expect("another writer");
+    assert!(matches!(
+        checkpoint_error(restore_removed(&mut fixture, id)),
+        CheckpointError::Conflict
+    ));
+    assert_eq!(fs::read(&target).unwrap(), b"someone else");
+}
+
+#[test]
+fn a_removed_non_utf8_file_is_checkpointed_and_restored_exactly() {
+    let mut fixture = Fixture::new();
+    let bytes: &[u8] = &[0xff, 0xfe, 0x00, 0x80, 0x01];
+    let target = fixture.workspace.join("source.txt");
+    fs::write(&target, bytes).expect("binary source");
+    set_source_security(&target);
+    let id = removed_id(&mut fixture, bytes);
+    assert_eq!(
+        fs::read(fixture.operation_dir(id).join("original")).unwrap(),
+        bytes
+    );
+    // Reopening validates the entry again without interpreting its bytes.
+    assert_eq!(fixture.inspect().expect("inspect").operations.len(), 1);
+    restore_removed(&mut fixture, id).expect("restore");
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+}
+
+#[test]
+fn the_two_restore_routes_refuse_the_other_kind_and_foreign_targets() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("source.txt");
+    let applied = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    // A replacement checkpoint cannot be restored as a removal.
+    fs::remove_file(&target).expect("remove target");
+    assert!(matches!(
+        checkpoint_error(restore_removed(&mut fixture, applied)),
+        CheckpointError::Unavailable
+    ));
+    assert!(!target.exists());
+    fs::write(&target, PROPOSED).expect("recreate target");
+
+    let removed = removed_id(&mut fixture, PROPOSED);
+    // A removal checkpoint cannot be restored over a file.
+    fs::write(&target, b"current").expect("current file");
+    assert!(matches!(
+        checkpoint_error(restore(&mut fixture, removed, b"current")),
+        CheckpointError::Unavailable
+    ));
+    assert_eq!(fs::read(&target).unwrap(), b"current");
+    fs::remove_file(&target).expect("clear the name");
+
+    // It restores only its recorded workspace and exact target.
+    let binding = fixture.binding();
+    let other = FileTarget {
+        path: PathBuf::from("other.txt"),
+        ..fixture.target()
+    };
+    assert!(matches!(
+        checkpoint_error(
+            FileBroker::new(&mut fixture.control).restore_removed_file(&binding, &other, removed)
+        ),
+        CheckpointError::TargetMismatch
+    ));
+    assert!(!fixture.workspace.join("other.txt").exists());
+    assert!(matches!(
+        checkpoint_error(restore_removed(&mut fixture, Uuid::new_v4())),
+        CheckpointError::Unavailable
+    ));
+}
+
+#[test]
+fn a_removal_checkpoint_can_be_deleted_and_then_cannot_restore() {
+    let mut fixture = Fixture::new();
+    let id = removed_id(&mut fixture, ORIGINAL);
+    let deletion = delete(&mut fixture, id).expect("delete the checkpoint");
+    assert!(!deletion.resumed);
+    assert!(!fixture.operation_dir(id).exists());
+    let inspection = fixture.inspect().expect("history stays");
+    let record = operation(&inspection, id);
+    assert_eq!(record.kind, ReplacementKind::Remove);
+    assert_eq!(record.retention, CheckpointRetention::Deleted);
+    assert!(matches!(
+        checkpoint_error(restore_removed(&mut fixture, id)),
+        CheckpointError::Unavailable
+    ));
+}
+
+#[test]
+fn compaction_carries_a_removal_and_it_restores_afterwards() {
+    let mut fixture = Fixture::new();
+    // One deleted entry makes the ledger shrinkable.
+    let applied = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    delete(&mut fixture, applied).expect("delete a replacement checkpoint");
+    let removed = removed_id(&mut fixture, PROPOSED);
+    let before = fixture.inspect().expect("inspect");
+    let result = compact(&mut fixture).expect("compact");
+    assert!(result.compacted);
+    assert_eq!((result.carried, result.dropped), (1, 1));
+    let after = fixture.inspect().expect("inspect compacted ledger");
+    assert_eq!(after.operations, retained_operations(&before));
+    assert_eq!(operation(&after, removed).kind, ReplacementKind::Remove);
+    let ledger = fs::read_to_string(ledger_path(&fixture)).expect("ledger");
+    assert!(ledger.contains("\"kind\":\"remove\""), "{ledger}");
+
+    restore_removed(&mut fixture, removed).expect("restore after compaction");
+    assert_eq!(
+        fs::read(fixture.workspace.join("source.txt")).unwrap(),
+        PROPOSED
+    );
+}
+
+#[test]
+fn a_replacement_record_stays_byte_identical_without_a_kind() {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let ledger = fs::read_to_string(ledger_path(&fixture)).expect("ledger");
+    assert!(!ledger.contains("\"kind\""), "{ledger}");
+}
+
+#[test]
+fn a_stage_file_in_a_removal_entry_is_refused_on_reopen() {
+    let mut fixture = Fixture::new();
+    let id = removed_id(&mut fixture, ORIGINAL);
+    fs::write(fixture.operation_dir(id).join("stage"), b"unexpected").expect("planted stage");
+    assert!(matches!(
+        fixture.inspect(),
+        Err(FileError::Checkpoint(CheckpointError::Invalid(_)))
+    ));
 }

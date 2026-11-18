@@ -3,15 +3,17 @@
 use std::path::Path;
 
 use omgcode_core::replacement::{
-    CheckpointRetention, InitializationPhase, ReplacementError, ReplacementOutcome,
-    ReplacementProgress, ReplacementScope, inspect_initialization, inspect_ledger,
+    CheckpointRetention, InitializationPhase, ReplacementError, ReplacementKind,
+    ReplacementOutcome, ReplacementProgress, ReplacementScope, inspect_initialization,
+    inspect_ledger,
 };
 use omgcode_core::session::NativePath;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 const MAX_RECORD: usize = 64 * 1024;
-const MAX_LEDGER: usize = 8 * 1024 * 1024;
+const MAX_LEDGER: usize = 64 * 1024 * 1024;
+const MAX_LEDGER_RECORDS: usize = 65_536;
 
 struct Fixture {
     control: Uuid,
@@ -124,6 +126,40 @@ impl Fixture {
             "checkpoint_deleted",
             Some(json!({"operation_id": self.operation})),
         );
+    }
+
+    fn compacted(&mut self, floor: Option<u64>) {
+        self.push(
+            "compacted",
+            Some(json!({
+                "previous": {"bytes": 4096, "sha256": "d".repeat(64)},
+                "previous_records": 12,
+                "revision_floor": floor
+            })),
+        );
+    }
+
+    /// One carried operation that succeeded, the state a full apply reaches.
+    fn carried_payload(&self) -> Value {
+        json!({
+            "operation_id": self.operation,
+            "session_id": Uuid::new_v4(),
+            "workspace_id": Uuid::new_v4(),
+            "revision": 3,
+            "target": NativePath::from_path(Path::new("src/file.txt")).expect("native target"),
+            "expected": {"bytes": 4, "sha256": "a".repeat(64)},
+            "proposed": {"bytes": 5, "sha256": "b".repeat(64)},
+            "manifest": {"bytes": 512, "sha256": "c".repeat(64)},
+            "stage_identity": {"volume": 7, "file_id": vec![9; 16]},
+            "progress": "commit_intended",
+            "outcome": "succeeded",
+            "code": null,
+            "acknowledged": false
+        })
+    }
+
+    fn carried(&mut self, payload: Value) {
+        self.push("checkpoint_carried", Some(payload));
     }
 
     fn bytes(&self) -> Vec<u8> {
@@ -562,7 +598,7 @@ fn ledger_record_and_retained_operation_caps_do_not_evict_history() {
         Err(ReplacementError::Limit(_))
     ));
     let header = ledger();
-    let many_records = header.bytes().repeat(4097);
+    let many_records = header.bytes().repeat(MAX_LEDGER_RECORDS + 1);
     assert!(matches!(
         inspect_ledger(&many_records, header.scope()),
         Err(ReplacementError::Limit(_))
@@ -731,11 +767,15 @@ fn native_encoding_policy_preserves_local_units_and_rejects_foreign_encoding() {
 
 #[test]
 fn exact_ledger_byte_cap_is_accepted_and_one_more_byte_is_refused() {
+    // Deleted operations do not count toward the 64 retained entries, so
+    // enough records exist to pad each to 64 KiB and reach 64 MiB.
     let mut fixture = ledger();
-    for _ in 0..64 {
+    for _ in 0..300 {
         fixture.operation = Uuid::new_v4();
         fixture.start();
         fixture.finish("failed");
+        fixture.delete_started();
+        fixture.deleted();
     }
     let raw = fixture.bytes();
     let mut remaining = MAX_LEDGER - raw.len();
@@ -754,7 +794,7 @@ fn exact_ledger_byte_cap_is_accepted_and_one_more_byte_is_refused() {
             .expect("exact total bound")
             .operations
             .len(),
-        64
+        300
     );
     padded.insert(padded.len() - 1, b' ');
     assert!(matches!(
@@ -947,4 +987,468 @@ fn unit_actions_reject_object_payloads_and_stage_identity_rejects_duplicate_keys
     let original = String::from_utf8(fixture.bytes()).expect("stage JSON");
     let duplicate = original.replacen("\"volume\":7", "\"volume\":7,\"volume\":7", 1);
     assert!(inspect_ledger(duplicate.as_bytes(), fixture.scope()).is_err());
+}
+
+#[test]
+fn a_compacted_ledger_replays_carried_state_and_keeps_the_revision_floor() {
+    let mut fixture = ledger();
+    fixture.compacted(Some(5));
+    let carried = fixture.operation;
+    fixture.carried(fixture.carried_payload());
+    let snapshot = inspect_ledger(&fixture.bytes(), fixture.scope()).expect("compacted ledger");
+    assert_eq!(snapshot.event_count, 3);
+    assert_eq!(snapshot.pending(), None);
+    let compaction = snapshot.compaction.as_ref().expect("compaction claim");
+    assert_eq!(compaction.records, 12);
+    assert_eq!(compaction.ledger.bytes, 4096);
+    let operation = &snapshot.operations[0];
+    assert_eq!(operation.operation_id, carried);
+    assert_eq!(operation.progress, ReplacementProgress::CommitIntended);
+    assert_eq!(operation.outcome, Some(ReplacementOutcome::Succeeded));
+    assert_eq!(operation.retention, CheckpointRetention::Retained);
+    assert!(operation.manifest.is_some() && operation.stage_identity.is_some());
+
+    // A later start may not fall below the carried floor of 5.
+    fixture.operation = Uuid::new_v4();
+    fixture.start();
+    fixture.events[3]["action"]["payload"]["revision"] = json!(4);
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    fixture.events[3]["action"]["payload"]["revision"] = json!(5);
+    assert_eq!(
+        inspect_ledger(&fixture.bytes(), fixture.scope())
+            .expect("start at the floor")
+            .pending()
+            .map(|operation| operation.operation_id),
+        Some(fixture.operation)
+    );
+
+    // The carried entry can be deleted, and a compaction with no entries is valid.
+    fixture.events.truncate(3);
+    fixture.operation = carried;
+    fixture.delete_started();
+    fixture.deleted();
+    let snapshot = inspect_ledger(&fixture.bytes(), fixture.scope()).expect("deleted carried");
+    assert_eq!(
+        snapshot.operations[0].retention,
+        CheckpointRetention::Deleted
+    );
+    let mut empty = ledger();
+    empty.compacted(None);
+    assert!(inspect_ledger(&empty.bytes(), empty.scope()).is_ok());
+}
+
+#[test]
+fn compaction_and_carried_records_have_fixed_positions() {
+    // A compaction record anywhere but second is refused.
+    let mut fixture = ledger();
+    fixture.start();
+    fixture.finish("failed");
+    fixture.compacted(Some(3));
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+
+    // A carried record needs a directly preceding compaction or carried record.
+    let mut fixture = ledger();
+    fixture.carried(fixture.carried_payload());
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    let mut fixture = ledger();
+    fixture.compacted(Some(3));
+    fixture.operation = Uuid::new_v4();
+    fixture.start();
+    fixture.finish("failed");
+    fixture.operation = Uuid::new_v4();
+    fixture.carried(fixture.carried_payload());
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+
+    // Two compaction records, or a carried ID used twice, are refused.
+    let mut fixture = ledger();
+    fixture.compacted(Some(3));
+    fixture.compacted(Some(3));
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    let mut fixture = ledger();
+    fixture.compacted(Some(3));
+    fixture.carried(fixture.carried_payload());
+    fixture.carried(fixture.carried_payload());
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+}
+
+#[test]
+fn carried_state_must_be_resolved_and_reachable() {
+    let check = |change: &dyn Fn(&mut Value), valid: bool| {
+        let mut fixture = ledger();
+        fixture.compacted(Some(3));
+        let mut payload = fixture.carried_payload();
+        change(&mut payload);
+        fixture.carried(payload);
+        assert_eq!(
+            inspect_ledger(&fixture.bytes(), fixture.scope()).is_ok(),
+            valid,
+            "{}",
+            fixture.events[2]["action"]["payload"]
+        );
+    };
+    check(&|_| {}, true);
+    // Unresolved: no outcome and no acknowledgement, or uncertain without one.
+    check(&|payload| payload["outcome"] = Value::Null, false);
+    check(
+        &|payload| {
+            payload["outcome"] = json!("uncertain");
+            payload["code"] = json!("sync_failed");
+        },
+        false,
+    );
+    check(
+        &|payload| {
+            payload["outcome"] = json!("uncertain");
+            payload["code"] = json!("sync_failed");
+            payload["acknowledged"] = json!(true);
+        },
+        true,
+    );
+    check(
+        &|payload| {
+            payload["outcome"] = Value::Null;
+            payload["acknowledged"] = json!(true);
+        },
+        true,
+    );
+    // Acknowledgement of an operation that finished cleanly never happens.
+    check(&|payload| payload["acknowledged"] = json!(true), false);
+    // Success requires commit intent, and failure forbids it.
+    check(
+        &|payload| payload["progress"] = json!("stage_prepared"),
+        false,
+    );
+    check(
+        &|payload| {
+            payload["outcome"] = json!("failed");
+            payload["code"] = json!("conflict");
+        },
+        false,
+    );
+    // Manifest and stage must match the recorded progress.
+    check(
+        &|payload| {
+            payload["progress"] = json!("intent");
+            payload["outcome"] = json!("failed");
+            payload["code"] = json!("conflict");
+            payload["manifest"] = Value::Null;
+            payload["stage_identity"] = Value::Null;
+        },
+        true,
+    );
+    check(
+        &|payload| {
+            payload["progress"] = json!("intent");
+            payload["outcome"] = json!("failed");
+            payload["code"] = json!("conflict");
+            payload["stage_identity"] = Value::Null;
+        },
+        false,
+    );
+    check(&|payload| payload["stage_identity"] = Value::Null, false);
+    check(&|payload| payload["manifest"] = Value::Null, false);
+    // A code without an outcome, a revision above the floor, and unknown
+    // fields are refused.
+    check(
+        &|payload| {
+            payload["outcome"] = Value::Null;
+            payload["acknowledged"] = json!(true);
+            payload["code"] = json!("orphan");
+        },
+        false,
+    );
+    check(&|payload| payload["revision"] = json!(4), false);
+    check(&|payload| payload["retention"] = json!("retained"), false);
+
+    // Carried revisions keep their order and need a floor.
+    let mut fixture = ledger();
+    fixture.compacted(None);
+    fixture.carried(fixture.carried_payload());
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    let mut fixture = ledger();
+    fixture.compacted(Some(3));
+    let mut first = fixture.carried_payload();
+    first["revision"] = json!(3);
+    fixture.carried(first);
+    fixture.operation = Uuid::new_v4();
+    let mut second = fixture.carried_payload();
+    second["revision"] = json!(2);
+    fixture.carried(second);
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+}
+
+#[test]
+fn compaction_claims_have_strict_bounds() {
+    for (field, value) in [
+        ("previous_records", json!(0)),
+        ("previous_records", json!(MAX_LEDGER_RECORDS + 1)),
+        ("previous", json!({"bytes": 0, "sha256": "d".repeat(64)})),
+        (
+            "previous",
+            json!({"bytes": MAX_LEDGER + 1, "sha256": "d".repeat(64)}),
+        ),
+        ("previous", json!({"bytes": 4096, "sha256": "D".repeat(64)})),
+    ] {
+        let mut fixture = ledger();
+        fixture.compacted(Some(3));
+        fixture.events[1]["action"]["payload"][field] = value;
+        assert!(
+            inspect_ledger(&fixture.bytes(), fixture.scope()).is_err(),
+            "{field}"
+        );
+    }
+    let mut fixture = ledger();
+    fixture.compacted(Some(3));
+    fixture.events[1]["action"]["payload"]["extra"] = json!(true);
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Removal records (ADR-0055)
+// ---------------------------------------------------------------------------
+
+/// SHA-256 of the empty byte string, the proposed artifact of every removal.
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+impl Fixture {
+    /// Start a removal: kind `remove` and the empty proposed artifact.
+    fn start_removal(&mut self) {
+        self.start();
+        let payload = &mut self.events.last_mut().expect("started")["action"]["payload"];
+        payload["kind"] = json!("remove");
+        payload["proposed"] = json!({"bytes": 0, "sha256": EMPTY_SHA256});
+    }
+
+    /// A carried removal that succeeded: no stage, commit intent recorded.
+    fn carried_removal_payload(&self) -> Value {
+        let mut payload = self.carried_payload();
+        payload["kind"] = json!("remove");
+        payload["proposed"] = json!({"bytes": 0, "sha256": EMPTY_SHA256});
+        payload["stage_identity"] = Value::Null;
+        payload
+    }
+}
+
+#[test]
+fn the_empty_digest_constant_is_the_digest_of_nothing() {
+    use sha2::{Digest, Sha256};
+    let digest: String = Sha256::digest(b"")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(digest, EMPTY_SHA256);
+}
+
+#[test]
+fn a_removal_replays_without_a_stage_and_a_replacement_keeps_its_kind() {
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.commit();
+    fixture.finish("succeeded");
+    let snapshot = inspect_ledger(&fixture.bytes(), fixture.scope()).expect("removal lifecycle");
+    assert!(snapshot.pending().is_none());
+    let record = &snapshot.operations[0];
+    assert_eq!(record.kind, ReplacementKind::Remove);
+    assert_eq!(record.progress, ReplacementProgress::CommitIntended);
+    assert_eq!(record.outcome, Some(ReplacementOutcome::Succeeded));
+    assert_eq!(record.proposed.bytes, 0);
+    assert!(record.stage_identity.is_none());
+    assert_eq!(
+        serde_json::to_value(record).expect("serialized record")["kind"],
+        json!("remove")
+    );
+
+    // An earlier record without a kind is a replacement and serializes none.
+    let mut fixture = ledger();
+    fixture.start();
+    fixture.prepared();
+    fixture.staged();
+    fixture.commit();
+    fixture.finish("succeeded");
+    assert!(fixture.events[1]["action"]["payload"]["kind"].is_null());
+    let snapshot = inspect_ledger(&fixture.bytes(), fixture.scope()).expect("replacement");
+    assert_eq!(snapshot.operations[0].kind, ReplacementKind::Replace);
+    assert!(
+        serde_json::to_value(&snapshot.operations[0]).expect("serialized record")["kind"].is_null()
+    );
+}
+
+#[test]
+fn a_removal_may_conflict_fail_or_stay_uncertain_before_or_after_intent() {
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.finish("conflict");
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_ok());
+
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.commit();
+    fixture.finish("uncertain");
+    let snapshot = inspect_ledger(&fixture.bytes(), fixture.scope()).expect("uncertain removal");
+    assert_eq!(
+        snapshot.pending().map(|operation| operation.operation_id),
+        Some(fixture.operation)
+    );
+    // Success needs commit intent, as for a replacement.
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.finish("succeeded");
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    // Failure forbids it.
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.commit();
+    fixture.finish("failed");
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+}
+
+#[test]
+fn a_removal_proposes_exactly_the_empty_artifact() {
+    for proposed in [
+        json!({"bytes": 5, "sha256": "b".repeat(64)}),
+        json!({"bytes": 0, "sha256": "b".repeat(64)}),
+        json!({"bytes": 5, "sha256": EMPTY_SHA256}),
+    ] {
+        let mut fixture = ledger();
+        fixture.start_removal();
+        fixture.events[1]["action"]["payload"]["proposed"] = proposed.clone();
+        assert!(
+            inspect_ledger(&fixture.bytes(), fixture.scope()).is_err(),
+            "{proposed}"
+        );
+    }
+    // A replacement may propose an empty file with any digest rules it had.
+    let mut fixture = ledger();
+    fixture.start();
+    fixture.events[1]["action"]["payload"]["proposed"] =
+        json!({"bytes": 0, "sha256": EMPTY_SHA256});
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_ok());
+}
+
+#[test]
+fn a_removal_has_no_stage_and_commit_intent_follows_the_checkpoint() {
+    // A stage record is refused for a removal.
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.push(
+        "stage_prepared",
+        Some(json!({
+            "operation_id": fixture.operation,
+            "identity": {"volume": 7, "file_id": vec![9; 16]},
+            "content": {"bytes": 0, "sha256": EMPTY_SHA256}
+        })),
+    );
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    // Commit intent before the checkpoint is prepared is refused.
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.commit();
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+    // A replacement still needs its stage before commit intent.
+    let mut fixture = ledger();
+    fixture.start();
+    fixture.prepared();
+    fixture.commit();
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_err());
+}
+
+#[test]
+fn an_unknown_operation_kind_is_refused() {
+    for kind in [json!("delete"), json!(""), json!(1), json!(null)] {
+        let mut fixture = ledger();
+        fixture.start();
+        fixture.events[1]["action"]["payload"]["kind"] = kind.clone();
+        assert!(
+            inspect_ledger(&fixture.bytes(), fixture.scope()).is_err(),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_carried_removal_is_resolved_stage_free_and_empty_proposed() {
+    let check = |change: &dyn Fn(&mut Value), valid: bool| {
+        let mut fixture = ledger();
+        fixture.compacted(Some(3));
+        let mut payload = fixture.carried_removal_payload();
+        change(&mut payload);
+        fixture.carried(payload);
+        assert_eq!(
+            inspect_ledger(&fixture.bytes(), fixture.scope()).is_ok(),
+            valid,
+            "{}",
+            fixture.events[2]["action"]["payload"]
+        );
+    };
+    check(&|_| {}, true);
+    let snapshot = {
+        let mut fixture = ledger();
+        fixture.compacted(Some(3));
+        fixture.carried(fixture.carried_removal_payload());
+        inspect_ledger(&fixture.bytes(), fixture.scope()).expect("carried removal")
+    };
+    assert_eq!(snapshot.operations[0].kind, ReplacementKind::Remove);
+    assert!(snapshot.operations[0].stage_identity.is_none());
+    // A carried removal with a stage identity is refused.
+    check(
+        &|payload| payload["stage_identity"] = json!({"volume": 7, "file_id": vec![9; 16]}),
+        false,
+    );
+    // So is one that claims the stage step, or a non-empty proposed artifact.
+    check(
+        &|payload| {
+            payload["progress"] = json!("stage_prepared");
+            payload["outcome"] = json!("failed");
+            payload["code"] = json!("conflict");
+        },
+        false,
+    );
+    check(
+        &|payload| payload["proposed"] = json!({"bytes": 5, "sha256": "b".repeat(64)}),
+        false,
+    );
+    // A removal that stopped before commit intent is a resolved failure.
+    check(
+        &|payload| {
+            payload["progress"] = json!("checkpoint_prepared");
+            payload["outcome"] = json!("conflict");
+            payload["code"] = json!("target_changed");
+        },
+        true,
+    );
+    // Success still requires commit intent.
+    check(
+        &|payload| payload["progress"] = json!("checkpoint_prepared"),
+        false,
+    );
+    // A carried replacement keeps its stage rules.
+    let mut fixture = ledger();
+    fixture.compacted(Some(3));
+    let mut payload = fixture.carried_payload();
+    payload["kind"] = json!("replace");
+    fixture.carried(payload);
+    assert!(inspect_ledger(&fixture.bytes(), fixture.scope()).is_ok());
+}
+
+#[test]
+fn a_removal_entry_can_be_deleted_like_any_other() {
+    let mut fixture = ledger();
+    fixture.start_removal();
+    fixture.prepared();
+    fixture.commit();
+    fixture.finish("succeeded");
+    fixture.delete_started();
+    fixture.deleted();
+    let snapshot = inspect_ledger(&fixture.bytes(), fixture.scope()).expect("deleted removal");
+    assert_eq!(
+        snapshot.operations[0].retention,
+        CheckpointRetention::Deleted
+    );
+    assert_eq!(snapshot.operations[0].kind, ReplacementKind::Remove);
 }

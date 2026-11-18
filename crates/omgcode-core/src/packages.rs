@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use reqwest::Url;
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::redirect::Policy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -28,12 +29,15 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::control::{
-    ControlError, ControlStore, PackageFetchFailure, PackageFetchFinish, PackageFetchOutcome,
-    PackageFetchStart, PackageProfile, valid_output_name,
+    ControlError, ControlStore, CredentialError, CredentialStore, PackageCredentialUseError,
+    PackageFetchFailure, PackageFetchFinish, PackageFetchOutcome, PackageFetchStart, PackageOrigin,
+    PackageProfile, valid_output_name,
 };
 use crate::policy::WorkspaceId;
 use crate::session::NativePath;
 use crate::storage;
+
+mod authorization;
 
 /// Default greatest response body accepted.
 pub const DEFAULT_MAX_FETCH_BYTES: u64 = 64 * 1024 * 1024;
@@ -78,6 +82,10 @@ pub struct FetchReport {
     pub profile_revision: u64,
     /// SHA-256 of the request URL.
     pub url_sha256: String,
+    /// The credential sent with the request, when the matched origin has a
+    /// binding. Its opaque identifier only, never the secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
     /// The private cache file.
     pub output: NativePath,
     /// Bytes written.
@@ -100,6 +108,14 @@ pub enum FetchError {
     /// The request could not be sent or the connection failed.
     #[error("the registry request failed: {0}")]
     Transport(#[source] reqwest::Error),
+    /// The profile binds a credential to the matched origin, and it could not
+    /// be read. Nothing was sent: the fetch never falls back to an
+    /// unauthenticated request or to another credential.
+    #[error("the registry credential could not be used: {0}")]
+    Credential(#[source] PackageCredentialUseError),
+    /// The native credential store could not be opened for a bound credential.
+    #[error("the credential store could not be opened: {0}")]
+    CredentialStore(#[source] CredentialError),
     /// The response body could not be read.
     #[error("the response body could not be read: {0}")]
     Body(#[source] io::Error),
@@ -169,7 +185,27 @@ pub fn fetch(data_root: &Path, request: &FetchRequest) -> Result<FetchReport, Fe
     let profile_revision = status.revision();
     let url =
         Url::parse(&request.url).map_err(|_| FetchError::Refused("the URL must be absolute"))?;
-    matching_origin(profile, &url)?;
+    let origin = matching_origin(profile, &url)?;
+    // A binding for the matched origin means the request must carry its
+    // credential. Any failure to read it refuses the fetch before a start
+    // record, like every other pre-request refusal, and nothing is sent.
+    let authorization = match status.credential_for(origin) {
+        None => None,
+        Some(_) => {
+            let credentials =
+                CredentialStore::open(data_root).map_err(FetchError::CredentialStore)?;
+            let loaded = control
+                .load_package_credential(&credentials, profile.id(), origin)
+                .map_err(FetchError::Credential)?
+                .ok_or(FetchError::Refused(
+                    "the bound registry credential disappeared",
+                ))?;
+            let value = authorization::header_value(loaded.auth(), loaded.secret()).ok_or(
+                FetchError::Refused("the registry credential is not a valid header value"),
+            )?;
+            Some((loaded.credential_id().clone(), value))
+        }
+    };
     let cache = match control.package_cache_root(request.workspace_id) {
         Some(root) => {
             if !root.is_current().unwrap_or(false) {
@@ -213,6 +249,7 @@ pub fn fetch(data_root: &Path, request: &FetchRequest) -> Result<FetchReport, Fe
         profile_revision,
         url_sha256: hex(&Sha256::digest(request.url.as_bytes())),
         output_name: request.name.clone(),
+        credential_id: authorization.as_ref().map(|(id, _)| id.clone()),
         max_bytes: request.max_bytes,
         timeout_ms: millis(request.timeout),
     };
@@ -221,7 +258,8 @@ pub fn fetch(data_root: &Path, request: &FetchRequest) -> Result<FetchReport, Fe
     drop(control);
 
     let fetch_id = start.fetch_id;
-    match perform(&start, &url, &cache, &final_path) {
+    let authorization = authorization.map(|(_, value)| value);
+    match perform(&start, &url, authorization, &cache, &final_path) {
         Ok((report, http_status)) => {
             let finish = PackageFetchFinish {
                 fetch_id,
@@ -284,8 +322,13 @@ fn validate_request(request: &FetchRequest) -> Result<(), FetchError> {
 }
 
 /// Require the URL to match a declared origin and path prefix, with no
-/// credentials, query, or fragment.
-fn matching_origin(profile: &PackageProfile, url: &Url) -> Result<(), FetchError> {
+/// credentials, query, or fragment, and return the origin it matched. When
+/// several origins match, the longest path prefix wins, so a credential bound
+/// to a broad origin is never sent to a path another origin claims.
+fn matching_origin<'a>(
+    profile: &'a PackageProfile,
+    url: &Url,
+) -> Result<&'a PackageOrigin, FetchError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(FetchError::Refused("the URL must not contain credentials"));
     }
@@ -302,18 +345,19 @@ fn matching_origin(profile: &PackageProfile, url: &Url) -> Result<(), FetchError
         .port_or_known_default()
         .ok_or(FetchError::Refused("the URL needs a port"))?;
     let path = url.path();
-    let matched = profile.origins().iter().any(|origin| {
-        origin.scheme().as_str() == url.scheme()
-            && origin.host().eq_ignore_ascii_case(host)
-            && origin.port() == port
-            && path.starts_with(origin.path_prefix())
-    });
-    if !matched {
-        return Err(FetchError::Refused(
+    profile
+        .origins()
+        .iter()
+        .filter(|origin| {
+            origin.scheme().as_str() == url.scheme()
+                && origin.host().eq_ignore_ascii_case(host)
+                && origin.port() == port
+                && path.starts_with(origin.path_prefix())
+        })
+        .max_by_key(|origin| origin.path_prefix().len())
+        .ok_or(FetchError::Refused(
             "the URL is not under a declared registry origin and path",
-        ));
-    }
-    Ok(())
+        ))
 }
 
 /// Publish a completed private partial under a new cache name without
@@ -340,6 +384,7 @@ async fn publish_cache_file(
 fn perform(
     start: &PackageFetchStart,
     url: &Url,
+    authorization: Option<HeaderValue>,
     cache: &Path,
     final_path: &Path,
 ) -> Result<(FetchReport, u16), FailedFetch> {
@@ -369,18 +414,23 @@ fn perform(
                 status: None,
             })?;
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let mut response =
-            match tokio::time::timeout(remaining, client.get(url.as_str()).send()).await {
-                Ok(Ok(response)) => response,
-                Ok(Err(error)) => {
-                    return Err(FailedFetch {
-                        error: FetchError::Transport(error),
-                        reason: PackageFetchFailure::Transport,
-                        status: None,
-                    });
-                }
-                Err(_) => return Err(deadline_failure(None)),
-            };
+        let mut request = client.get(url.as_str());
+        if let Some(value) = authorization {
+            // The value is already marked sensitive. Redirects are refused,
+            // so the credential cannot follow one to another origin.
+            request = request.header(AUTHORIZATION, value);
+        }
+        let mut response = match tokio::time::timeout(remaining, request.send()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                return Err(FailedFetch {
+                    error: FetchError::Transport(error),
+                    reason: PackageFetchFailure::Transport,
+                    status: None,
+                });
+            }
+            Err(_) => return Err(deadline_failure(None)),
+        };
         let http_status = response.status().as_u16();
         if !response.status().is_success() {
             return Err(FailedFetch {
@@ -506,6 +556,10 @@ fn perform(
                 profile_name: start.profile_name.clone(),
                 profile_revision: start.profile_revision,
                 url_sha256: start.url_sha256.clone(),
+                credential_id: start
+                    .credential_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_owned()),
                 output: NativePath::from_path(final_path).map_err(|error| FailedFetch {
                     error: FetchError::Cache(io::Error::other(error.to_string())),
                     reason: PackageFetchFailure::Cache,

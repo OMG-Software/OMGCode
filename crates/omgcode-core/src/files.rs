@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::control::{ControlError, ControlStore};
 use crate::file_audit::{FileAudit, FileAuditError, FileOperation, FileOutcome};
 use crate::policy::{DecisionReason, Operation, PolicyRequest, SessionBinding, WorkspaceId};
+use crate::replacement::RecordedArtifact;
 use crate::session::{NativePath, SessionError};
 
 /// Explicit request scope. IDs and path arguments do not establish authority.
@@ -158,6 +159,21 @@ pub struct FileCreated {
     pub target: NativePath,
     /// Bytes supplied for a new file; zero for a new directory.
     pub bytes_written: usize,
+}
+
+/// A successfully audited no-replace rename. It does not promise power-loss durability.
+#[derive(Debug, Serialize)]
+pub struct FileRenamed {
+    /// Durable operation identifier.
+    pub operation_id: Uuid,
+    /// Workspace from the verified request scope.
+    pub workspace_id: WorkspaceId,
+    /// Relative source name, which no longer exists.
+    pub from: NativePath,
+    /// Relative new name of the same file.
+    pub to: NativePath,
+    /// Exact byte count of the renamed file.
+    pub bytes: u64,
 }
 
 /// Metadata for trusted inspection. An unresolved intent never triggers action replay.
@@ -305,6 +321,84 @@ impl<'a> FileBroker<'a> {
         })
     }
 
+    /// Rename one regular file to a name that does not exist (ADR-0055).
+    ///
+    /// `expected` is the exact size and SHA-256 of the live source from a
+    /// trusted read. Both names must be distinct workspace-relative files
+    /// names in this binding's workspace. The live binding must allow read and
+    /// write, and the checkpoint store must have no unresolved operation. The
+    /// operation is audited with both names. The native step pins the source,
+    /// reads its bytes through the pinned handle, and renames it with the
+    /// kernel's no-replace primitive, so an existing entry is never replaced.
+    /// Nothing is checkpointed: no content is destroyed, and renaming back
+    /// reverses it. The caller must stop other writers; this is not
+    /// compare-and-swap. A failure after the native call may have happened is
+    /// uncertain, leaves the audit record pending for trusted acknowledgement,
+    /// and is never retried.
+    pub fn rename_file(
+        &mut self,
+        binding: &SessionBinding,
+        from: &FileTarget,
+        to: &FileTarget,
+        expected: &RecordedArtifact,
+    ) -> Result<FileRenamed, FileError> {
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            if from.session_id != to.session_id || from.workspace_id != to.workspace_id {
+                return Err(FileError::Invalid("rename names must share one scope"));
+            }
+            if expected.bytes > u64::try_from(broker::MAX_FILE_BYTES).unwrap_or(0)
+                || expected.sha256.len() != 64
+                || !expected
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(FileError::Invalid(
+                    "rename requires a bounded exact SHA-256/size precondition",
+                ));
+            }
+            let from_path = validate_target(from, false)?;
+            let to_path = validate_target(to, false)?;
+            if from_path == to_path {
+                return Err(FileError::Invalid("rename names must differ"));
+            }
+            // Both preferences from this live binding, as for every file write.
+            checkpoint::check_permissions(self.control, binding, from)?;
+            let from_native = NativePath::from_path(&from_path.to_path_buf())?;
+            let to_native = NativePath::from_path(&to_path.to_path_buf())?;
+            let (workspace, mut audit, operation_id) = self.begin_with_destination(
+                binding,
+                from,
+                &from_path,
+                FileOperation::RenameFile,
+                Operation::Write,
+                Some(to_native.clone()),
+            )?;
+            let sha256 = expected.sha256.as_str();
+            let result =
+                workspace.rename_no_replace(&from_path, &to_path, expected.bytes, &|bytes| {
+                    crate::session::sha256_hex(bytes) == sha256
+                });
+            complete_rename(&mut audit, operation_id, result)?;
+            Ok(FileRenamed {
+                operation_id,
+                workspace_id: from.workspace_id,
+                from: from_native,
+                to: to_native,
+                bytes: expected.bytes,
+            })
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let _ = (binding, from, to, expected);
+            Err(FileError::Native(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native rename is not qualified on this platform",
+            )))
+        }
+    }
+
     /// Create one new directory with an existing, independently opened parent.
     pub fn create_directory(
         &mut self,
@@ -406,6 +500,19 @@ impl<'a> FileBroker<'a> {
         operation: FileOperation,
         permission: Operation,
     ) -> Result<(Workspace, FileAudit, Uuid), FileError> {
+        self.begin_with_destination(binding, target, path, operation, permission, None)
+    }
+
+    /// Like [`Self::begin`], recording the destination name of a rename.
+    fn begin_with_destination(
+        &mut self,
+        binding: &SessionBinding,
+        target: &FileTarget,
+        path: &RelativePath,
+        operation: FileOperation,
+        permission: Operation,
+        destination: Option<NativePath>,
+    ) -> Result<(Workspace, FileAudit, Uuid), FileError> {
         let decision = self.control.check_file_policy(
             binding,
             &PolicyRequest {
@@ -444,13 +551,23 @@ impl<'a> FileBroker<'a> {
         }
         let (data_root, store_id) = self.control.file_audit_context()?;
         let mut audit = FileAudit::open(&data_root, store_id)?;
-        let operation_id = audit.start(
-            target.session_id,
-            target.workspace_id,
-            self.control.revision(),
-            operation,
-            NativePath::from_path(&path.to_path_buf())?,
-        )?;
+        let source = NativePath::from_path(&path.to_path_buf())?;
+        let operation_id = match destination {
+            Some(destination) => audit.start_rename(
+                target.session_id,
+                target.workspace_id,
+                self.control.revision(),
+                source,
+                destination,
+            )?,
+            None => audit.start(
+                target.session_id,
+                target.workspace_id,
+                self.control.revision(),
+                operation,
+                source,
+            )?,
+        };
         // Native setup and audit sync can take time. Recheck the live lease
         // immediately before admitting the target operation; no persisted
         // policy result is reused as an executor permit.
@@ -492,6 +609,48 @@ fn validate_target(target: &FileTarget, allow_root: bool) -> Result<RelativePath
         return Err(FileError::Invalid("target entry is required"));
     }
     Ok(path)
+}
+
+/// Keep an uncertain rename pending and never report success before durable
+/// audit. A definite refusal is recorded as failed.
+#[cfg(any(target_os = "linux", windows))]
+fn complete_rename(
+    audit: &mut FileAudit,
+    operation_id: Uuid,
+    result: Result<(), broker::RenameError>,
+) -> Result<(), FileError> {
+    match result {
+        Ok(()) => audit
+            .finish(operation_id, FileOutcome::Succeeded)
+            .map_err(|source| FileError::Uncertain {
+                operation_id,
+                source: Box::new(source),
+            }),
+        Err(broker::RenameError::Uncertain(error)) => {
+            if let Err(source) = audit.finish(operation_id, FileOutcome::Uncertain) {
+                return Err(FileError::Uncertain {
+                    operation_id,
+                    source: Box::new(source),
+                });
+            }
+            Err(FileError::Uncertain {
+                operation_id,
+                source: Box::new(error),
+            })
+        }
+        Err(refusal) => {
+            audit.finish(operation_id, FileOutcome::Failed)?;
+            Err(match refusal {
+                broker::RenameError::TargetExists => FileError::Conflict,
+                broker::RenameError::SourceChanged => {
+                    crate::replacement::CheckpointError::Conflict.into()
+                }
+                broker::RenameError::Refused(error) | broker::RenameError::Uncertain(error) => {
+                    FileError::Native(error)
+                }
+            })
+        }
+    }
 }
 
 /// Keep uncertain mutations pending and never report success before durable audit.
@@ -665,5 +824,173 @@ mod tests {
                 .bytes,
             b"partial"
         );
+    }
+
+    fn artifact_of(bytes: &[u8]) -> RecordedArtifact {
+        RecordedArtifact {
+            bytes: u64::try_from(bytes.len()).expect("small fixture"),
+            sha256: crate::session::sha256_hex(bytes),
+        }
+    }
+
+    fn named(target: &FileTarget, path: &str) -> FileTarget {
+        FileTarget {
+            session_id: target.session_id,
+            workspace_id: target.workspace_id,
+            path: PathBuf::from(path),
+        }
+    }
+
+    /// A rename moves exactly the expected file, never replaces, and audits
+    /// both names; a refusal leaves both files and no pending record.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn rename_moves_the_expected_file_without_replacing_and_audits_both_names() {
+        let (_temporary, mut control, binding, target, root) = fixture();
+        fs::write(root.join("entry.txt"), b"moved bytes").expect("source");
+        fs::write(root.join("present.txt"), b"keep").expect("existing destination");
+        fs::create_dir(root.join("sub")).expect("destination parent");
+        let expected = artifact_of(b"moved bytes");
+        let mut broker = FileBroker::new(&mut control);
+
+        // An existing destination is a conflict, and both files survive.
+        assert!(matches!(
+            broker.rename_file(&binding, &target, &named(&target, "present.txt"), &expected),
+            Err(FileError::Conflict)
+        ));
+        assert_eq!(fs::read(root.join("entry.txt")).unwrap(), b"moved bytes");
+        assert_eq!(fs::read(root.join("present.txt")).unwrap(), b"keep");
+        assert_eq!(broker.audit(100).expect("audit").pending, None);
+
+        // A different size or digest is a conflict before anything moves.
+        for wrong in [artifact_of(b"other"), artifact_of(b"moved byteX")] {
+            assert!(matches!(
+                broker.rename_file(&binding, &target, &named(&target, "sub/new.txt"), &wrong),
+                Err(FileError::Checkpoint(
+                    crate::replacement::CheckpointError::Conflict
+                ))
+            ));
+        }
+        assert!(root.join("entry.txt").exists() && !root.join("sub/new.txt").exists());
+
+        // The same name, or malformed expectations, are refused outright.
+        assert!(matches!(
+            broker.rename_file(&binding, &target, &target, &expected),
+            Err(FileError::Invalid(_))
+        ));
+        let malformed = RecordedArtifact {
+            bytes: expected.bytes,
+            sha256: "ABC".to_owned(),
+        };
+        assert!(matches!(
+            broker.rename_file(
+                &binding,
+                &target,
+                &named(&target, "sub/new.txt"),
+                &malformed
+            ),
+            Err(FileError::Invalid(_))
+        ));
+
+        let renamed = broker
+            .rename_file(&binding, &target, &named(&target, "sub/new.txt"), &expected)
+            .expect("rename");
+        assert_eq!(renamed.bytes, 11);
+        assert_eq!(renamed.workspace_id, target.workspace_id);
+        assert!(!root.join("entry.txt").exists());
+        assert_eq!(fs::read(root.join("sub/new.txt")).unwrap(), b"moved bytes");
+        let view = broker.audit(100).expect("audit");
+        assert_eq!(view.pending, None);
+        let finished = view.entries.iter().any(|entry| {
+            entry["action"]["type"] == "operation_started"
+                && entry["action"]["payload"]["operation_id"] == renamed.operation_id.to_string()
+                && entry["action"]["payload"]["operation"] == "rename_file"
+                && entry["action"]["payload"]["destination"].is_object()
+        });
+        assert!(finished, "{view:?}");
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn rename_refuses_directories_and_denied_writes_and_missing_sources() {
+        let (_temporary, mut control, binding, target, root) = fixture();
+        fs::create_dir(root.join("dir")).expect("directory");
+        let expected = artifact_of(b"");
+        let mut broker = FileBroker::new(&mut control);
+        assert!(
+            broker
+                .rename_file(
+                    &binding,
+                    &named(&target, "dir"),
+                    &named(&target, "moved"),
+                    &expected,
+                )
+                .is_err()
+        );
+        assert!(root.join("dir").is_dir() && !root.join("moved").exists());
+        assert!(
+            broker
+                .rename_file(
+                    &binding,
+                    &named(&target, "missing.txt"),
+                    &named(&target, "moved"),
+                    &expected,
+                )
+                .is_err()
+        );
+        assert_eq!(broker.audit(100).expect("audit").pending, None);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn rename_needs_both_preferences_from_the_live_binding() {
+        let (_temporary, mut control, _stale, target, root) = fixture();
+        fs::write(root.join("entry.txt"), b"bytes").expect("source");
+        let workspace = target.workspace_id;
+        let revision = control.revision();
+        control
+            .set_permissions(
+                workspace,
+                crate::policy::PermissionSet {
+                    read: true,
+                    write: false,
+                    ..crate::policy::PermissionSet::default()
+                },
+                revision,
+            )
+            .expect("deny write");
+        let binding = control
+            .bind_session(target.session_id, workspace)
+            .expect("a current binding under the new preferences");
+        let mut broker = FileBroker::new(&mut control);
+        let result = broker.rename_file(
+            &binding,
+            &target,
+            &named(&target, "moved.txt"),
+            &artifact_of(b"bytes"),
+        );
+        assert!(result.is_err(), "{result:?}");
+        assert!(root.join("entry.txt").exists() && !root.join("moved.txt").exists());
+    }
+
+    /// A completed rename stays an uncertain caller outcome if audit sync fails.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn a_rename_with_a_failed_audit_sync_never_returns_success() {
+        let (_temporary, mut control, binding, target, root) = fixture();
+        fs::write(root.join("entry.txt"), b"bytes").expect("source");
+        let mut broker = FileBroker::new(&mut control);
+        broker.fail_outcome_sync = true;
+        assert!(matches!(
+            broker.rename_file(
+                &binding,
+                &target,
+                &named(&target, "moved.txt"),
+                &artifact_of(b"bytes"),
+            ),
+            Err(FileError::Uncertain { .. })
+        ));
+        assert!(!root.join("entry.txt").exists());
+        assert_eq!(fs::read(root.join("moved.txt")).unwrap(), b"bytes");
     }
 }

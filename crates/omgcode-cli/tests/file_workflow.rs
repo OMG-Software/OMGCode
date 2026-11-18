@@ -263,7 +263,7 @@ fn cli_creates_lists_reads_and_audits_files_without_recording_contents() {
     assert_eq!(
         capabilities["tool_policy"],
         if cfg!(any(target_os = "linux", target_os = "windows")) {
-            "read_list_when_workspace_model_tools_enabled_edit_and_command_require_approval"
+            "read_list_when_workspace_model_tools_enabled_edit_multi_edit_create_rename_delete_and_command_require_approval"
         } else {
             "reject all model-requested tools"
         }

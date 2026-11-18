@@ -152,9 +152,10 @@ the next model request, and records tool intents and results as untrusted
 evidence.
 Its checks do not isolate hostile same-user processes or provide process
 containment. Since 0.12.0, chat drives this runtime when the session's
-workspace enables `model_tools`. Since 0.28.0 the only model write is the
-approval-gated exact edit (ADR-0043). Model create, delete, rename, and
-general file tools remain disabled; capability output keeps
+workspace enables `model_tools`. Since 0.28.0 the model writes only through
+approval-gated tools: the exact edit (ADR-0043), since 0.36.0 the multi-edit
+and create tools (ADR-0054), and since 0.38.0 the rename and delete tools
+(ADR-0055). General file tools remain disabled; capability output keeps
 `workspace_file_tools` false. For model tools:
 
 - Check the live `model_tools` preference before each call, then let the broker
@@ -277,6 +278,34 @@ crate.
   consuming a `file_write` approval, consume it before the apply, and use only
   the checkpointed apply. Do not claim concurrent-writer detection. See
   ADR-0043.
+- The `workspace_multi_edit_file` and `workspace_create_file` model tools follow
+  the same advertisement, live-recheck, approval, and writers-stopped rules as
+  `workspace_edit_file`, each under its own digest domain tag
+  (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`) so no approval can be
+  consumed by another tool. A multi-edit matches every `old_text` against the
+  original live bytes, refuses ambiguous, missing, overlapping, unchanged, or
+  oversized results before recording an approval, and uses only the checkpointed
+  apply. A creation must find the path absent and its parent present through
+  audited broker calls before recording an approval, and uses only the broker's
+  exclusive create after consuming the approval; it never replaces, retries, or
+  deletes, and leaves an uncertain outcome's pending record for the trusted
+  acknowledgement. Keep file text out of summaries and results. See ADR-0054.
+- The `workspace_rename_file` and `workspace_delete_file` model tools follow the
+  same advertisement, live-recheck, approval, and writers-stopped rules, under
+  their own digest domain tags (`omgcode-file-rename-v1`,
+  `omgcode-file-delete-v1`). Each reads its source live through the audited
+  broker (at most 1 MiB, bytes not interpreted) before recording an approval,
+  and binds the approval to that size and SHA-256 and to the normalized names.
+  A rename must find its destination absent and its parent present before an
+  approval, never replaces an entry, and is not checkpointed. A delete uses only
+  `FileBroker::apply_removal`, which checkpoints the original bytes first and
+  follows the checkpointed apply's gates, recheck, and uncertain-outcome rules.
+  The native rename must pin the source, verify its bytes through the pinned
+  handle, and use a no-replace primitive; the native removal must verify the
+  object it removes (a verified handle on Windows, the pinned inode's link count
+  afterwards on Linux). Neither retries, repairs, or deletes after an uncertain
+  outcome, and neither reports concurrent-writer detection. Keep file text and
+  full paths out of results. See ADR-0055.
 - The `workspace_run_command` model tool may be advertised only under live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; only a later exact call may consume an
@@ -293,8 +322,15 @@ crate.
   loopback, and alternate socket families. See ADR-0034.
 - A trusted `packages fetch` is an operator action, never a model tool. It may
   contact only a declared origin and path prefix, must disable redirects and
-  proxy variables, send no credentials, cap and hash the response, and write
-  only the private per-workspace cache. Record the intent and outcome without
+  proxy variables, cap and hash the response, and write only the private
+  per-workspace cache. It sends no credential unless the operator bound one to
+  the matched origin (ADR-0056): then it sends only that origin's credential,
+  read through core's load under the open control store, as one sensitive
+  `Authorization` header, and never to another origin. A bound credential that
+  cannot be read stops the fetch before any request; it never falls back to no
+  credential or another credential. Never put it in a URL, run environment,
+  journal, report, error text, or model context, and record only its opaque
+  identifier. Record the intent and outcome without
   the URL text. A run may read only the selected per-workspace cache root; do
   not expose its parent, journals, settings, or another workspace's root. On
   Windows the root needs a read-execute container grant, and overlapping cache

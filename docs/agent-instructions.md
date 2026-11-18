@@ -32,9 +32,10 @@ skill/tool/memory selections, or an account profile.
 
 The core turn/tool runtime records the exact tool schema version and tool names
 in a schema-version-2 request manifest. Its read/list results are appended as
-source-labelled user-level tool messages and are never system messages. Edit
-and command results follow the same rule and remain untrusted. Chat runs this
-runtime when the workspace enables `model_tools`; the edit tool also needs
+source-labelled user-level tool messages and are never system messages. Edit,
+multi-edit, create, rename, delete, and command results follow the same rule
+and remain untrusted. Chat runs this runtime when the workspace enables
+`model_tools`; the edit, multi-edit, create, rename, and delete tools also need
 `read` and `write`, the command tool also needs `execute`, `read`, and `write`,
 and each runs only after a trusted approval.
 Otherwise chat sends no tool definitions and rejects any provider tool call.
@@ -44,10 +45,11 @@ KiB, history to 128 messages, and the assembled UTF-8 text to 256 KiB. The
 adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
 prototype has no settings UI, application/workspace/session preference store,
-preview UI, exact token-count display, skills, memories, model create,
-delete, rename, network, Git, or MCP tools, or provider-specific subscription routes.
-Its only model tools are read, list, the approval-gated exact edit, and the
-approval-gated command tool. The current
+preview UI, exact token-count display, skills, memories, model
+network, Git, or MCP tools, or provider-specific subscription routes.
+Its only model tools are read, list, the approval-gated exact edit,
+multi-edit, create, rename, and delete tools, and the approval-gated command
+tool. The current
 `--instructions` value is
 per invocation, not a saved preference with scope or revision history.
 
@@ -173,8 +175,17 @@ must contain no secrets or control characters, and is for the operator.
 
 The `workspace_run_command` tool creates the request and consumes an approved
 record immediately before calling the trusted runner. The `workspace_edit_file`
-tool creates a `file_write` request bound to the live file and consumes an
-approved record immediately before the checkpointed apply. Each first call
+and `workspace_multi_edit_file` tools create a `file_write` request bound to
+the live file and consume an approved record immediately before the
+checkpointed apply. The `workspace_create_file` tool creates a `file_write`
+request bound to the path and exact content, and consumes an approved record
+immediately before the exclusive create. The `workspace_rename_file` tool
+creates one bound to both names and the source's size and SHA-256, and
+consumes an approved record immediately before the no-replace rename. The
+`workspace_delete_file` tool creates one bound to the file's size and SHA-256,
+and consumes an approved record immediately before the checkpointed removal.
+Each tool has its own digest domain,
+so a record for one tool never authorizes another. Each first call
 returns `approval_required`; the operator approves between turns, and the model
 retries the same call. Approving a `file_write` record needs
 `approvals approve <id> --writers-stopped`; the decision records that

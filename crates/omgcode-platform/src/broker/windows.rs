@@ -19,8 +19,9 @@ use std::time::{Duration, SystemTime};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_ID_BOTH_DIR_INFORMATION, FILE_NON_DIRECTORY_FILE,
-    FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-    FileIdBothDirectoryInformation, NtCreateFile, NtQueryDirectoryFile,
+    FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT, FileIdBothDirectoryInformation,
+    FileRenameInformationEx, NtCreateFile, NtQueryDirectoryFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, STATUS_NO_MORE_FILES,
@@ -41,6 +42,7 @@ use crate::{DirectoryIdentity, directory_identity};
 
 use super::{CreateError, DirectoryEntry, EntryKind, Listing, RelativePath};
 
+pub(super) mod rename;
 pub(super) mod replacement;
 
 const WINDOWS_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
@@ -582,6 +584,85 @@ fn encode_component(name: &OsStr) -> io::Result<Vec<u16>> {
     Ok(units)
 }
 
+/// Atomically replace `name` beneath `parent` with the object behind `source`.
+///
+/// The rename is by handle, with POSIX semantics and replace-if-exists. The
+/// source handle needs DELETE access, and every open handle to the replaced
+/// object must permit delete sharing or the call fails. One attempt is made;
+/// an error is never retried here. The caller flushes the parent.
+pub(crate) fn rename_onto(source: &File, parent: &File, name: &OsStr) -> io::Result<()> {
+    rename_by_handle(
+        source,
+        parent,
+        name,
+        FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,
+    )
+}
+
+/// Move the object behind `source` to `name` beneath `parent` and never
+/// replace an existing entry (ADR-0055).
+///
+/// The rename is by handle with POSIX semantics and without the
+/// replace-if-exists flag, so an existing name fails with
+/// `STATUS_OBJECT_NAME_COLLISION`, which is reported as
+/// `ErrorKind::AlreadyExists`. The source handle needs DELETE access and
+/// `parent` needs FILE_ADD_FILE. One attempt is made; an error is never
+/// retried here. The caller flushes both parents.
+pub(crate) fn rename_no_replace_onto(source: &File, parent: &File, name: &OsStr) -> io::Result<()> {
+    rename_by_handle(source, parent, name, FILE_RENAME_POSIX_SEMANTICS)
+}
+
+/// Build one `FILE_RENAME_INFORMATION` for `name` beneath `parent` and apply
+/// it to `source` with the given extended flags.
+#[allow(unsafe_code)]
+fn rename_by_handle(source: &File, parent: &File, name: &OsStr, flags: u32) -> io::Result<()> {
+    let units = encode_component(name)?;
+    if units.is_empty() {
+        return Err(invalid_input("replacement requires a target name"));
+    }
+    let name_bytes = units
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| invalid_input("replacement name is too long"))?;
+    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
+    // Windows refuses a buffer smaller than the structure with a length mismatch.
+    let total = name_offset
+        .checked_add(name_bytes)
+        .ok_or_else(|| invalid_input("replacement name is too long"))?
+        .max(size_of::<FILE_RENAME_INFORMATION>());
+    let length = u32::try_from(total).map_err(|_| invalid_input("rename buffer is too large"))?;
+    let file_name_length =
+        u32::try_from(name_bytes).map_err(|_| invalid_input("replacement name is too long"))?;
+    let mut storage = vec![0u64; total.div_ceil(size_of::<u64>())];
+    let base = storage.as_mut_ptr().cast::<u8>();
+    let information = base.cast::<FILE_RENAME_INFORMATION>();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: `storage` is zeroed, aligned for the structure, and holds at least
+    // `total` bytes, so every field and all of `name_bytes` at `name_offset` are
+    // in bounds. `parent` outlives the synchronous call that reads its handle.
+    let status = unsafe {
+        (*information).Anonymous.Flags = flags;
+        (*information).RootDirectory = parent.as_raw_handle() as HANDLE;
+        (*information).FileNameLength = file_name_length;
+        std::ptr::copy_nonoverlapping(
+            units.as_ptr().cast::<u8>(),
+            base.add(name_offset),
+            name_bytes,
+        );
+        NtSetInformationFile(
+            source.as_raw_handle() as HANDLE,
+            &mut status_block,
+            information.cast(),
+            length,
+            FileRenameInformationEx,
+        )
+    };
+    if status != 0 {
+        return Err(native_error(status));
+    }
+    Ok(())
+}
+
 fn require_directory_identity(
     file: &File,
     expected: DirectoryIdentity,
@@ -639,7 +720,9 @@ fn require_file_size(file: &File, max_bytes: usize) -> io::Result<()> {
     let limit =
         u64::try_from(max_bytes).map_err(|_| invalid_input("file read limit is too large"))?;
     if size > limit {
-        return Err(invalid_data("file exceeds the requested read limit"));
+        return Err(super::oversize_file(
+            "file exceeds the requested read limit",
+        ));
     }
     Ok(())
 }
@@ -652,7 +735,9 @@ fn read_bounded(reader: impl Read, max_bytes: usize) -> io::Result<Vec<u8>> {
     let mut data = Vec::new();
     reader.take(read_limit).read_to_end(&mut data)?;
     if data.len() > max_bytes {
-        return Err(invalid_data("file exceeds the requested read limit"));
+        return Err(super::oversize_file(
+            "file exceeds the requested read limit",
+        ));
     }
     Ok(data)
 }

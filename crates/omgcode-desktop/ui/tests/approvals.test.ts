@@ -151,7 +151,7 @@ describe("approvals window", () => {
     await start();
     const rows = Array.from(root.querySelectorAll(".approval"));
     expect(rows.map((r) => r.classList.contains("pending"))).toEqual([true, true, false]);
-    expect(rows[0]?.textContent).toContain("File edit");
+    expect(rows[0]?.textContent).toContain("File change");
     expect(rows[0]?.textContent).toContain("first");
     expect(rows[0]?.textContent).toContain("Session title");
     expect(rows[2]?.textContent).toContain("denied");
@@ -191,7 +191,93 @@ describe("approvals window", () => {
     expect(approve.disabled).toBe(false);
   });
 
-  it("requires the writers-stopped acknowledgement for a file edit", async () => {
+  it("renders the fields of the multi-edit and create tools as plain text", async () => {
+    approvals = [view({ operation: "file_write" })];
+    current = detail(
+      {
+        tool: "workspace_multi_edit_file",
+        fields: [
+          { label: "File", value: "src/lib.rs", multiline: false },
+          { label: "Edits", value: "2", multiline: false },
+          { label: "Old text 1", value: `a\n${HOSTILE_IMG}`, multiline: true },
+          { label: "New text 1", value: "b", multiline: true },
+          { label: "Old text 2", value: "c", multiline: true },
+          { label: "New text 2", value: "d", multiline: true },
+        ],
+      },
+      { operation: "file_write" },
+    );
+    await start();
+    await select();
+    let review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_multi_edit_file");
+    expect(review.textContent).toContain("Old text 2");
+    expect(review.textContent).toContain("New text 2");
+    expect(review.querySelector("img")).toBeNull();
+    expect(review.querySelector("pre")?.textContent).toBe(`a\n${HOSTILE_IMG}`);
+
+    current = detail(
+      {
+        tool: "workspace_create_file",
+        fields: [
+          { label: "File", value: "new.txt", multiline: false },
+          { label: "Size", value: "12 bytes", multiline: false },
+          { label: "SHA-256", value: "e".repeat(64), multiline: false },
+          { label: "Content", value: `hello\n${HOSTILE_IMG}`, multiline: true },
+        ],
+      },
+      { operation: "file_write" },
+    );
+    await select();
+    review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_create_file");
+    expect(review.textContent).toContain("Content");
+    expect(review.querySelector("img")).toBeNull();
+    expect(review.querySelector("pre")?.textContent).toBe(`hello\n${HOSTILE_IMG}`);
+  });
+
+  it("renders the fields of the rename and delete tools as plain text", async () => {
+    approvals = [view({ operation: "file_write" })];
+    current = detail(
+      {
+        tool: "workspace_rename_file",
+        fields: [
+          { label: "From", value: "src/old.rs", multiline: false },
+          { label: "To", value: `src/new${HOSTILE_IMG}.rs`, multiline: false },
+          { label: "Size", value: "11 bytes", multiline: false },
+          { label: "SHA-256", value: "e".repeat(64), multiline: false },
+        ],
+      },
+      { operation: "file_write" },
+    );
+    await start();
+    await select();
+    let review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_rename_file");
+    expect(review.textContent).toContain("From");
+    expect(review.textContent).toContain("To");
+    expect(review.textContent).toContain(`src/new${HOSTILE_IMG}.rs`);
+    expect(review.querySelector("img")).toBeNull();
+
+    current = detail(
+      {
+        tool: "workspace_delete_file",
+        fields: [
+          { label: "File", value: `old${HOSTILE_IMG}.txt`, multiline: false },
+          { label: "Size", value: "11 bytes", multiline: false },
+          { label: "SHA-256", value: "f".repeat(64), multiline: false },
+        ],
+      },
+      { operation: "file_write" },
+    );
+    await select();
+    review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_delete_file");
+    expect(review.textContent).toContain(`old${HOSTILE_IMG}.txt`);
+    expect(review.querySelector("img")).toBeNull();
+  });
+
+  it("requires the writers-stopped acknowledgement for a file change", async () => {
     approvals = [view({ operation: "file_write" })];
     current = detail({ tool: "workspace_edit_file" }, { operation: "file_write" });
     await start();

@@ -8,8 +8,8 @@ use crate::broker::{FileCapture, MAX_FILE_BYTES};
 use crate::directory_identity;
 use crate::private_store::{NativeSecurity, PrivateDirectory, PrivateFileIdentity, StageMetadata};
 use rustix::fs::{
-    AtFlags, Mode, OFlags, RenameFlags, ResolveFlags, StatxFlags, fchmod, fchown, fsync, openat2,
-    renameat_with, statx,
+    AtFlags, Mode, OFlags, RenameFlags, ResolveFlags, StatxFlags, fchmod, fchown, fstat, fsync,
+    openat2, renameat_with, statx, unlinkat,
 };
 use rustix::process::{Gid, Uid};
 use std::ffi::{OsStr, OsString};
@@ -56,6 +56,8 @@ enum TestPoint {
     StageSync,
     SourceParentSync,
     TargetParentSync,
+    Unlink,
+    Unlinked,
 }
 
 impl NativeWorkspace {
@@ -323,6 +325,45 @@ impl ReplacementTarget<'_> {
         #[cfg(test)]
         self.run_hook(TestPoint::SourceParentSync)?;
         stage.directory.sync()?;
+        #[cfg(test)]
+        self.run_hook(TestPoint::TargetParentSync)?;
+        fsync(&self.parent)?;
+        Ok(())
+    }
+
+    /// Recheck the retained target before a removal without changing it.
+    ///
+    /// `false` means the name no longer resolves to the object whose bytes were
+    /// captured, so a caller can record a conflict before any removal intent.
+    pub fn recheck_removal(&self) -> io::Result<bool> {
+        self.target_matches_current()
+    }
+
+    /// Make one native removal attempt of the verified name.
+    ///
+    /// The target is consumed, so one retained target allows one attempt. The
+    /// name is rechecked, then removed with `unlinkat`. That call is by name,
+    /// so a swap between the recheck and the call cannot be prevented here.
+    /// It is detected afterwards: the pinned file's link count must be zero,
+    /// otherwise a different entry was removed and the result is an error.
+    /// Every error is an uncertain result and must never be retried.
+    pub fn remove(self, before_attempt: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        if !self.target_matches_current()? {
+            return Err(changed_during_operation());
+        }
+        #[cfg(test)]
+        self.run_hook(TestPoint::AfterFinalCheck)?;
+        before_attempt()?;
+        #[cfg(test)]
+        self.run_hook(TestPoint::Unlink)?;
+        unlinkat(&self.parent, &self.name, AtFlags::empty())?;
+        #[cfg(test)]
+        self.run_hook(TestPoint::Unlinked)?;
+        if fstat(&self.source)?.st_nlink != 0 {
+            return Err(invalid_data(
+                "the removed name was not the verified file; a different entry may be gone",
+            ));
+        }
         #[cfg(test)]
         self.run_hook(TestPoint::TargetParentSync)?;
         fsync(&self.parent)?;
@@ -1014,5 +1055,119 @@ mod tests {
             mount_id_from_statx(StatxFlags::MNT_ID.bits(), 42).expect("present ID"),
             42
         );
+    }
+
+    #[test]
+    fn removal_deletes_only_the_verified_name_after_ordered_checks() {
+        let (root, workspace, _storage) = fixture();
+        let source_path = root.path().join("workspace/file");
+        fs::write(&source_path, b"before").expect("source");
+        fs::write(root.path().join("workspace/other"), b"keep").expect("bystander");
+        let mut target = target(&workspace);
+        assert!(target.recheck_removal().expect("recheck"));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&events);
+        target.hook = Some(Arc::new(move |point| {
+            recorded.lock().expect("event lock").push(point);
+            Ok(())
+        }));
+        target.remove(|| Ok(())).expect("remove");
+        assert!(!source_path.exists());
+        assert_eq!(
+            fs::read(root.path().join("workspace/other")).expect("bystander"),
+            b"keep"
+        );
+        assert_eq!(
+            *events.lock().expect("events"),
+            vec![
+                TestPoint::AfterFinalCheck,
+                TestPoint::Unlink,
+                TestPoint::Unlinked,
+                TestPoint::TargetParentSync,
+            ]
+        );
+    }
+
+    #[test]
+    fn removal_recheck_fails_for_changed_bytes_and_a_swapped_inode() {
+        let (root, workspace, _storage) = fixture();
+        let source_path = root.path().join("workspace/file");
+        fs::write(&source_path, b"before").expect("source");
+        let target = target(&workspace);
+        fs::write(&source_path, b"changed").expect("content change");
+        assert!(!target.recheck_removal().expect("recheck"));
+        assert!(target.remove(|| Ok(())).is_err());
+        assert!(source_path.exists(), "a changed file is never removed");
+    }
+
+    #[test]
+    fn a_name_swapped_before_unlink_is_reported_and_the_pinned_file_survives() {
+        let (root, workspace, _storage) = fixture();
+        let source_path = root.path().join("workspace/file");
+        fs::write(&source_path, b"before").expect("source");
+        let mut target = target(&workspace);
+        let moved = root.path().join("workspace/moved");
+        let swapped = source_path.clone();
+        let moved_to = moved.clone();
+        target.hook = Some(Arc::new(move |point| {
+            if point == TestPoint::Unlink {
+                // Keep the verified inode linked under another name, then put a
+                // different file at the verified name.
+                fs::rename(&swapped, &moved_to)?;
+                fs::write(&swapped, b"impostor")?;
+            }
+            Ok(())
+        }));
+        let error = target
+            .remove(|| Ok(()))
+            .expect_err("a swapped name is detected after the unlink");
+        assert!(
+            error.to_string().contains("not the verified file"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&moved).expect("verified file kept"), b"before");
+    }
+
+    #[test]
+    fn removal_faults_before_and_after_the_call_are_single_attempts() {
+        let (root, workspace, _storage) = fixture();
+        let source_path = root.path().join("workspace/file");
+        fs::write(&source_path, b"before").expect("source");
+        let mut before = target(&workspace);
+        before.hook = Some(Arc::new(|point| {
+            if point == TestPoint::Unlink {
+                return Err(io::Error::other("injected fault before unlink"));
+            }
+            Ok(())
+        }));
+        assert!(before.remove(|| Ok(())).is_err());
+        assert!(source_path.exists(), "nothing was removed");
+
+        let mut after = target(&workspace);
+        after.hook = Some(Arc::new(|point| {
+            if point == TestPoint::Unlinked {
+                return Err(io::Error::other("injected fault after unlink"));
+            }
+            Ok(())
+        }));
+        assert!(after.remove(|| Ok(())).is_err());
+        assert!(
+            !source_path.exists(),
+            "the removal happened and is reported as an error"
+        );
+    }
+
+    #[test]
+    fn a_refusal_from_the_last_moment_check_removes_nothing() {
+        let (root, workspace, _storage) = fixture();
+        let source_path = root.path().join("workspace/file");
+        fs::write(&source_path, b"before").expect("source");
+        let target = target(&workspace);
+        assert!(
+            target
+                .remove(|| Err(io::Error::other("authorization refused")))
+                .is_err()
+        );
+        assert!(source_path.exists());
     }
 }

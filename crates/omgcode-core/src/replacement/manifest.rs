@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::store::CheckpointError;
-use super::{RecordedArtifact, RecordedFileIdentity, RecordedReplacement, ReplacementScope};
+use super::{
+    RecordedArtifact, RecordedFileIdentity, RecordedReplacement, ReplacementKind, ReplacementScope,
+};
 use crate::files::FileTarget;
 use crate::session::{NativePath, sha256_hex};
 use crate::storage::parse_strict_json;
@@ -21,6 +23,9 @@ pub(super) struct Manifest {
     control_store_id: Uuid,
     replacement_store_id: Uuid,
     operation_id: Uuid,
+    /// Absent for a replacement, so earlier manifests stay byte-identical.
+    #[serde(default, skip_serializing_if = "ReplacementKind::is_replace")]
+    kind: ReplacementKind,
     session_id: Uuid,
     workspace_id: Uuid,
     revision: u64,
@@ -125,6 +130,7 @@ impl Manifest {
     pub(super) fn encode(
         scope: ReplacementScope,
         operation_id: Uuid,
+        kind: ReplacementKind,
         target: &FileTarget,
         revision: u64,
         capture: &FileCapture,
@@ -135,6 +141,7 @@ impl Manifest {
             control_store_id: scope.control_store_id(),
             replacement_store_id: scope.replacement_store_id(),
             operation_id,
+            kind,
             session_id: target.session_id,
             workspace_id: *target.workspace_id.as_uuid(),
             revision,
@@ -174,6 +181,7 @@ impl Manifest {
             || manifest.control_store_id != scope.control_store_id()
             || manifest.replacement_store_id != scope.replacement_store_id()
             || manifest.operation_id != operation.operation_id
+            || manifest.kind != operation.kind
             || manifest.session_id != operation.session_id
             || manifest.workspace_id != *operation.workspace_id.as_uuid()
             || manifest.revision != operation.revision

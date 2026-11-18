@@ -6,7 +6,7 @@ export const WRITERS_STOPPED_TEXT =
 
 const OPERATION_LABELS: Record<ApprovalOperation, string> = {
   command: "Command",
-  file_write: "File edit",
+  file_write: "File change",
   git_push: "Git push",
   network: "Network",
 };

@@ -6,6 +6,204 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.38.0 adds two approval-gated model file tools, rename and delete
+  (Phase C19). See ADR-0055 and the
+  [rename and delete routes](docs/file-access.md#model-rename-and-delete-routes-adr-0055).
+  Until now the model could neither move nor remove a file. It is on branch
+  `codex/model-file-tools`, stacked on `codex/checkpoint-ledger-compaction`; it
+  is not merged. It adds no dependency.
+  - **Tools:** `workspace_rename_file` moves one regular file to a name that
+    does not exist and never replaces an entry. `workspace_delete_file` removes
+    one regular file after a durable checkpoint of its bytes. Both are advertised
+    and dispatched only under live `model_tools`, `read`, and `write`, with the
+    edit tool's per-call recheck and `edit_disabled` denial, in the order read,
+    list, edit, multi-edit, create, rename, delete, command. Tool schema 0.5.0;
+    0.2.0 to 0.4.0 sessions still replay. Eight of eight tool-name slots are used,
+    and no cap rose.
+  - **Approvals:** both reuse the `file_write` operation, so the
+    writers-stopped acknowledgement is required and no enum, wire type, or
+    TypeScript union changed. Each has its own digest domain tag
+    (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`), so an approval for any
+    of the five file-write tools is never consumed by another. Before an
+    approval is recorded, a live audited read supplies the source's exact size
+    and SHA-256; a source over 1 MiB is the recoverable `edit_too_large`, and
+    non-UTF-8 content is accepted. A rename also needs an absent destination
+    (`file_exists`) and an existing parent (`not_found`).
+  - **Rename:** a new `FileBroker::rename_file` records a `rename_file`
+    file-operation intent that names both the source and the destination, then
+    calls the platform's `rename_no_replace`. The source is pinned, its bytes
+    are verified through the pinned handle, and directories, links, junctions,
+    hard-linked files, and other filesystems are refused. Linux uses
+    `renameat2` with `RENAME_NOREPLACE` and compares the name with the pinned
+    inode before and after. Windows holds a DELETE handle that denies other
+    writers and deleters and renames with POSIX semantics and no replace flag.
+    An error after the native call is uncertain, leaves the audit record pending,
+    and is never retried. Rename is not checkpointed.
+  - **Delete:** a new `FileBroker::apply_removal` follows the checkpointed
+    apply without a stage: the same binding, permission, admission, and
+    qualified-filesystem gates, a durable checkpoint, a recheck, commit intent,
+    one native removal, and the same uncertain-outcome recovery. Linux unlinks by
+    name and reports a swapped name as uncertain from the pinned inode's link
+    count; Windows deletes through the verified handle. Neither is power-loss
+    qualified.
+  - **Ledger:** operation records gain an optional `kind` of `replace` or
+    `remove`, omitted for `replace` so every earlier ledger, carried record, and
+    manifest stays byte-identical. A `remove` proposes exactly the empty artifact,
+    has no stage, and goes from `checkpoint_prepared` to `commit_intended`.
+    Replay refuses a `remove` that proposes bytes, has a stage record, or carries
+    a stage identity; compaction carries `kind`. Older binaries refuse a ledger
+    that holds a `remove` record. A `remove` entry's original need not be UTF-8.
+  - **Restore:** trusted `file restore --removed` (and
+    `FileBroker::restore_removed_file`) recreates a deleted file through the
+    audited exclusive create when its name is free, records no new operation, and
+    does not restore its mode, owner, access list, or timestamps. A replacement
+    checkpoint and a removal checkpoint each refuse the other route.
+  - **Review:** the desktop approvals window reproduces the digest from any of the
+    five file-write tools (at most eight distinct candidates) and shows `From`,
+    `To`, `Size`, and `SHA-256` for a rename and `File`, `Size`, and `SHA-256`
+    for a delete. A rename review is stale once its source changed or its
+    destination exists; a delete review is stale once the file changed or is gone.
+  - **Limits:** neither tool detects a concurrent writer, and neither is
+    power-loss qualified. The context estimate for tool definitions rises from
+    5 KiB to 6 KiB (the eight definitions serialize to 5,968 bytes). The Linux
+    paths are not qualified on a Linux host. A bounded read that exceeds its
+    limit now carries a typed marker, `is_oversize_entry`, so a source over
+    1 MiB is told from other invalid objects; the error kind is unchanged.
+  - **Tests:** new platform tests cover the no-replace rename (existing target,
+    directories, junctions, hard links, changed source, a swap the sharing mode
+    prevents, and faults before and after the call) and the verified-handle
+    removal (swapped name refused, single attempt, faults). New core tests cover
+    the `remove` ledger rules and refusals, removal and restore through the
+    broker, the audit record, strict parsing, the approval flow, cross-tool
+    non-consumption, refusals, live-permission gating, output-fit refusal, schema
+    0.4.0 replay, the eight-tool list, and review fields and staleness. New app,
+    CLI, and frontend tests drive both tools through the desktop service, the
+    operator flow, and `file restore --removed`.
+
+- Version 0.37.0 adds registry credentials for the trusted `packages fetch`
+  (Phase C20). See ADR-0056 and
+  [registry credentials](docs/execution.md#registry-credentials). Until now
+  fetch sent no credentials, so a private registry could not be used. It is on
+  branch `codex/model-file-tools`, stacked on
+  `codex/checkpoint-ledger-compaction`; it is not merged. It adds no
+  dependency.
+  - **Binding:** `workspace package-credential-set <profile> --origin <origin>
+    --auth bearer|basic --revision <n>` reads one secret from piped input only
+    and binds it to one declared origin of a package-network profile.
+    `package-credential-remove` unbinds and deletes it, and removing the
+    profile unbinds every credential in the same event. Secrets are stored
+    through the existing DPAPI or Secret Service store; the control journal
+    records only the opaque ID and backend. Bearer secrets are visible ASCII
+    without spaces; Basic secrets need a non-empty user before the first `:`.
+  - **Fetch:** the request carries a sensitive `Authorization` header only when
+    the matched origin, chosen by the longest path prefix, has a binding.
+    Redirects stay refused, so the header cannot follow one. A bound secret
+    that cannot be read refuses the fetch before a start record, and nothing is
+    sent. The start record and report carry an optional `credential_id`.
+  - **Limits:** the secret still crosses the network to the declared origin,
+    which may log it. A journal with the new events cannot be read by an older
+    version. Only loopback HTTP is tested; live HTTPS registries are not.
+  - **Tests:** header shape for both schemes, no header on an unbound origin,
+    no request when the secret is missing, no credential on a refused
+    redirect, journal replay and refusals, store ordering, base64 vectors, and
+    a CLI workflow that scans every data file and output for the secret.
+- Version 0.36.0 adds two approval-gated model file tools, multi-edit and create
+  (Phase C18). See ADR-0054 and the
+  [multi-edit and create routes](docs/file-access.md#model-multi-edit-and-create-routes-adr-0054).
+  Until now the model could change a file only one exact replacement at a time,
+  each needing its own approval and checkpoint, and could not create a file.
+  It is on branch `codex/model-file-tools`, stacked on
+  `codex/checkpoint-ledger-compaction`; it is not merged. It adds no dependency.
+  - **Tools:** `workspace_multi_edit_file` applies one to 16 exact replacements
+    to one existing file under one approval and one checkpointed apply.
+    `workspace_create_file` creates one new UTF-8 file through the broker's
+    exclusive create. Both are advertised and dispatched only under live
+    `model_tools`, `read`, and `write`, with the edit tool's per-call recheck
+    and `edit_disabled` denial. Tool schema 0.4.0; 0.2.0 and 0.3.0 sessions
+    still replay. Six of the eight tool-name slots are used, and no cap rose.
+  - **Approvals:** both reuse the `file_write` operation, so the
+    writers-stopped acknowledgement is required and no enum, wire type, or
+    TypeScript union changed. Each has its own digest domain tag
+    (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`), so an approval for
+    `workspace_edit_file`, multi-edit, or create is never consumed by another
+    tool. The approval flow itself is one shared gate; the edit tool's digest,
+    codes, and messages are unchanged.
+  - **Multi-edit rules:** every `old_text` must occur exactly once in the
+    original live bytes and the matches may not overlap (`edit_overlap`);
+    touching matches are allowed. The messages name the 1-based edit index and
+    never file text. The result must differ and fit 1 MiB.
+  - **Create rules:** before an approval is recorded, a live audited read must
+    find the path absent (`file_exists`) and a listing must find the parent
+    (`not_found`). A file that another writer creates after approval is never
+    replaced; the call returns `file_exists` and the approval stays spent.
+    Creation is not checkpointed. An uncertain creation is a terminal failure
+    that leaves the pending file-operation record for the trusted
+    acknowledgement.
+  - **Review:** the desktop approvals window reproduces the digest from any of
+    the three tools (at most eight distinct candidates in total) and shows
+    numbered `Old text N` and `New text N` fields for a multi-edit and
+    `File`, `Size`, `SHA-256`, and `Content` for a create. A create review is
+    stale once its path exists. The approvals label reads "File change".
+  - **Limits:** the 4 KiB argument cap bounds create content and multi-edit
+    size. There is no multi-file atomicity and no concurrent-writer detection,
+    and neither tool is power-loss qualified. No model delete or rename tool
+    exists. The schema estimate for context accounting rises from 4 KiB to
+    5 KiB (the six definitions serialize to 4,546 bytes).
+  - **Windows missing paths:** the platform now exports `is_missing_entry`,
+    which recognises the native not-found status Windows keeps inside an
+    `ErrorKind::Other` error. A missing path in a read, list, edit, or create
+    call is now the recoverable `not_found` on Windows, as it already was on
+    Linux, instead of a terminal `native_error`.
+  - **Tests:** new core tests cover strict argument parsing, the approval flow,
+    cross-tool non-consumption, refusals, live-permission gating, output-fit
+    refusal, summaries, and schema 0.3.0 replay. New review tests cover exact
+    fields, staleness, the shared candidate bound, and hostile text. New app
+    and CLI tests drive both tools through the desktop service and the operator
+    flow. New frontend tests cover the review fields and the mock detail.
+
+- Version 0.35.0 compacts the checkpoint ledger in place and raises its bounds
+  (Phase A5). See ADR-0053 and
+  [ledger compaction](docs/file-access.md#implemented-ledger-compaction-phase-a5).
+  Until now the ledger held at most 4,096 records and 8 MiB for an
+  installation's lifetime, so about 580 applies with deletion exhausted it.
+  It is on branch `codex/checkpoint-ledger-compaction`, stacked on
+  `codex/plan-baseline-refresh`; it is not merged. It adds no dependency.
+  - **Bounds:** the ledger may hold 65,536 records and 64 MiB, and the store's
+    aggregate quota grows from 64 MiB to 128 MiB. The 64-entry bound and the
+    64 KiB record bound are unchanged.
+  - **Format:** a compacted ledger is the original `created` record, one
+    `compacted` record with the replaced ledger's size, SHA-256, record count,
+    and revision floor, and one `checkpoint_carried` record per retained entry.
+    Replay rebuilds each carried entry through the ordinary transitions and
+    requires it to be resolved. `file checkpoints` reports `compacted_from`.
+    Readers older than 0.35.0 refuse both new record types.
+  - **Triggers:** the trusted `file compact-checkpoints --discard-history`
+    command, and apply, restore, and deletion when the ledger lacks room for
+    their records. Both refuse while an operation is unresolved or a deletion
+    is unfinished, and write nothing when nothing would be dropped.
+  - **Publication:** the store replays the candidate, writes and syncs
+    `ledger.compact`, reads it back, checks the live ledger is unchanged, and
+    replaces `ledger.jsonl` with one handle-relative rename: `renameat` on
+    Linux and a POSIX-semantics replace-if-exists `NtSetInformationFile`
+    rename on Windows. It flushes the directory and reopens and compares the
+    ledger. A failure after the candidate exists is uncertain, poisons the
+    writer, and is not retried. The new `PrivateDirectory::replace_file`
+    performs the rename and checks that the name then refers to the source.
+    Neither the rename nor the flush is power-loss qualified.
+  - **Replay:** an append validates only its own record, and operation IDs are
+    indexed, so a full replay is linear in its records.
+  - **Deleted history:** compaction discards every record of deleted entries.
+    Only the replaced ledger's digest, size, and record count remain.
+  - **Tests:** new core tests cover carried state, refusal of unresolved work,
+    each compaction fault, and compaction at the record cap before apply and
+    before deletion. New replay tests cover the record positions, carried
+    state reachability, and claim bounds. New CLI tests cover the command, and
+    new platform tests cover the native rename on both platforms. The replay
+    cap tests and the aggregate quota test use the new bounds.
+- A [filesystem and power-loss qualification plan](docs/filesystem-qualification.md)
+  defines the release filesystem matrix and the block-level and physical
+  power-cut campaigns for the checkpoint store and trusted publication. None of
+  it has run, and it changes no support claim.
 - A Testing build workflow (`.github/workflows/testing-build.yml`) runs on every
   push to `main`. It calls the Rust and Frontend workflows, builds release
   binaries of `omgcode` and `omgcode-desktop`, and packages them without an
@@ -29,9 +227,10 @@ Changes are recorded here before a release version is assigned.
   [cancelling every request](docs/provider-authentication.md#cancelling-every-request-0340).
   Until now a non-streamed request and every compaction request ran to their
   end or to the thirty-second deadline, a non-streamed text-only turn had no
-  cancel token, and Ctrl-C ended the CLI and left an open turn. It is a
-  prototype on branch `codex/request-cancellation`, stacked on
-  `codex/desktop-interface`; it is not merged. It adds no dependency and
+  cancel token, and Ctrl-C ended the CLI and left an open turn. It was
+  developed on branch `codex/request-cancellation` (PR #34), stacked on
+  `codex/desktop-interface`, and reached `main` with PR #33 in merge commit
+  `9c9f606` on 2026-11-17. It adds no dependency and
   removes reqwest's `blocking` feature, which drops `futures-channel` and
   `futures-sink` from two dependency lists in `Cargo.lock`.
   - **Adapter:** `complete` and `complete_with_tools` take a `CancelToken`, like
@@ -90,8 +289,8 @@ Changes are recorded here before a release version is assigned.
   cancellation was checked only between model rounds and tool calls, a request
   in flight ran to its end or to the thirty-second deadline, a text-only turn
   had no cancellation point, and on exit the desktop abandoned a turn still
-  waiting on the model, leaving an open turn. It is a prototype on branch
-  `codex/desktop-interface`; it is not merged. It adds no dependency and no
+  waiting on the model, leaving an open turn. It was developed on branch
+  `codex/desktop-interface` and merged by PR #33 on 2026-11-17. It adds no dependency and no
   cargo feature.
   - **Adapter:** `complete_streaming` and `complete_with_tools_streaming` take a
     `CancelToken`. The streamed request runs on an async HTTP client inside a
@@ -146,8 +345,8 @@ Changes are recorded here before a release version is assigned.
   desktop window (Phases D4 and E6). See ADR-0049 and
   [streamed replies](docs/provider-authentication.md#streamed-replies-0320).
   Until now the adapter sent one non-streaming request, and the desktop
-  learned that a turn had ended by calling `chat_status` every 750 ms. It is a
-  prototype on branch `codex/desktop-interface`; it is not merged. It adds no
+  learned that a turn had ended by calling `chat_status` every 750 ms. It was
+  developed on branch `codex/desktop-interface` and merged by PR #33. It adds no
   dependency.
   - **Adapter:** `LocalModelClient::complete_streaming` and
     `complete_with_tools_streaming` send the same body as the non-streaming
@@ -241,9 +440,10 @@ Changes are recorded here before a release version is assigned.
   D3). See ADR-0048 and
   [endpoint binding](docs/provider-authentication.md#endpoint-binding-0310).
   In 0.30.0 a stored token went to whichever literal loopback endpoint the
-  operator named with `--endpoint`. It is a prototype on branch
-  `codex/desktop-interface`; it is not merged. It tightens the 0.30.0
-  behaviour, which was never merged or released, and adds no dependency.
+  operator named with `--endpoint`. It was developed on branch
+  `codex/desktop-interface` and merged by PR #33. It tightens the 0.30.0
+  behaviour, which reached `main` only in the same merge and was never
+  released, and adds no dependency.
   - **Profile endpoint:** `workspace provider-profile-add <name> ... --endpoint
     <url>` records one endpoint on a profile. `provider-profile-show` and
     `status` print `"endpoint"` only when one is recorded; a profile without
@@ -304,8 +504,8 @@ Changes are recorded here before a release version is assigned.
   (Phase D2). See ADR-0047 and
   [stored credential use](docs/provider-authentication.md#stored-credential-use-0300).
   Until now nothing read a stored credential, and the adapter took its optional
-  server token only from `OMGCODE_LM_TOKEN`. It is a prototype on branch
-  `codex/desktop-interface`; it is not merged. It adds no dependency outside
+  server token only from `OMGCODE_LM_TOKEN`. It was developed on branch
+  `codex/desktop-interface` and merged by PR #33. It adds no dependency outside
   the existing workspace set (`omgcode-app` now uses `zeroize`).
   - **Selection:** `omgcode chat --provider-profile <name>` and `omgcode
     session compact --provider-profile <name>` read the token from the
@@ -364,8 +564,8 @@ Changes are recorded here before a release version is assigned.
     account lifecycle exists.
 - Version 0.29.0 adds the desktop interface and session tree (Phase E). See
   ADR-0044, ADR-0045, and ADR-0046, and the
-  [desktop interface guide](docs/desktop-interface.md). It is a prototype on
-  branch `codex/desktop-interface`; it has no installer and has run only on
+  [desktop interface guide](docs/desktop-interface.md). It is a prototype,
+  merged from branch `codex/desktop-interface` by PR #33; it has no installer and has run only on
   Windows. No CLI command changed behaviour: every existing CLI test suite
   passes unmodified, and `model_tools.rs` and `context_cli.rs` moved from
   `omgcode-cli` into the new `omgcode-app` crate.
@@ -882,6 +1082,16 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- The implementation plan's baseline now records PRs #33, #34, #36, and #37
+  as merged. It had still listed the desktop interface and Phases D2 to D6 as
+  unmerged branches with no pull request, and it did not mention the Testing
+  build workflow. The plan now notes that the workflow's first runs were still
+  queued on 2026-11-17 and that no `latest` release existed yet. The older
+  unreleased entries for versions 0.29.0 to 0.34.0 no longer call that work
+  unmerged. The plan, the contributor guide, and the platform support table
+  no longer say that every push or merge to `main` is tested and published:
+  while a Testing build run is active, GitHub keeps only the newest waiting
+  run, so an intermediate push can be superseded. Documentation only.
 - Package-network destination enforcement is defined as a contract only in
   ADR-0034. No run accepts a package-network profile, and `--network` remains
   all-or-nothing. An advisory proxy or proxy environment variables are

@@ -82,9 +82,41 @@ pub(crate) enum WorkspaceCommand {
     PackageProfileAdd(PackageProfileAddArgs),
     /// Show one recorded package-network profile.
     PackageProfileShow { name: String },
-    /// Remove a package-network profile.
+    /// Remove a package-network profile. Credentials bound to its origins are
+    /// unbound by the same recorded event and then deleted from the native store.
     PackageProfileRemove {
         name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Store a registry credential and bind it to one declared origin of a
+    /// package-network profile. Only `packages fetch` reads it, and it sends it
+    /// to that origin alone.
+    ///
+    /// The secret is read from standard input only, up to 16 KiB; one trailing
+    /// newline is removed. It must be visible ASCII without control characters
+    /// or surrounding whitespace. `basic` needs `user:password`. A previously
+    /// bound credential is deleted after the new binding is recorded.
+    PackageCredentialSet {
+        /// The package-network profile name.
+        name: String,
+        /// One of the profile's declared origins, such as
+        /// https://registry.example.com/api/.
+        #[arg(long)]
+        origin: String,
+        /// How the secret is sent: `bearer` or `basic`.
+        #[arg(long)]
+        auth: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Unbind a registry credential from one origin, then delete it natively.
+    PackageCredentialRemove {
+        /// The package-network profile name.
+        name: String,
+        /// The origin the credential is bound to.
+        #[arg(long)]
+        origin: String,
         #[arg(long)]
         revision: u64,
     },
@@ -348,16 +380,35 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::PackageProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            let profile_id = store
-                .remove_package_profile(&name, revision)
-                .map_err(control_error)?;
-            let output = json!({
-                "removed_package_profile_id": profile_id,
-                "snapshot": store.snapshot(),
-            });
+            let output =
+                credential_cli::remove_package_profile(&mut store, data_root, &name, revision)?;
             drop(store);
             stop_withdrawn_runs(data_root, &[])?;
             print_json(&output)
+        }
+        WorkspaceCommand::PackageCredentialSet {
+            name,
+            origin,
+            auth,
+            revision,
+        } => {
+            // As for provider credentials: read the secret before the control
+            // store is opened, so its lock is never held while input is awaited.
+            let secret = credential_cli::read_secret()?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            credential_cli::set_package(
+                &mut store, data_root, &name, &origin, &auth, secret, revision,
+            )
+        }
+        WorkspaceCommand::PackageCredentialRemove {
+            name,
+            origin,
+            revision,
+        } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            credential_cli::remove_package(&mut store, data_root, &name, &origin, revision)
         }
         WorkspaceCommand::ProviderProfileAdd(args) => provider_profile_add(args, data_root),
         WorkspaceCommand::ProviderProfileShow { name } => {

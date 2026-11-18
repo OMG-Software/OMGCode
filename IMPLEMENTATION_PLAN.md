@@ -77,39 +77,45 @@ This is a resume guide, not a replacement for the owning contracts in
   - **Phase C17**, version **0.28.0**, the approval-gated model edit tool
     (ADR-0043). It writes only through the checkpointed apply after an
     approved, writers-stopped decision.
-- Branch `codex/desktop-interface`: **Phase E**, version **0.29.0**, the
-  desktop interface and session tree (ADR-0044, ADR-0045, ADR-0046). Unlike
-  the entries above, it is **not merged and has no pull request yet**. It is a
-  prototype whose windows have run only on Windows; on Linux it builds and its
-  tests pass. See [the desktop interface guide](docs/desktop-interface.md).
-- Same branch, after the Phase E commit `cbbec85`: **Phase D2**, version
-  **0.30.0**, which lets the local LM Studio adapter read its token from a
-  stored credential through an operator-selected profile (ADR-0047). It is
-  **not merged and has no pull request**.
-- Same branch, after the Phase D2 commit `b9f7d11`: **Phase D3**, version
-  **0.31.0**, which binds a stored credential to its profile's endpoint
-  (ADR-0048). A profile can record a loopback endpoint, and a selected profile
-  supplies both the endpoint and the token. It is **not merged and has no pull
-  request**.
-- Same branch, after the Phase D3 commit `19b3747`: **Phase D4 and E6**, version
-  **0.32.0**, which streams the local model's reply and pushes chat events to
-  the desktop window (ADR-0049). It is **not merged and has no pull request**.
-- Same branch, after the Phase D4 and E6 commit `02221e9`: **Phase D5**, version
-  **0.33.0**, which interrupts a streamed model request when a turn is
-  cancelled (ADR-0050). A cancelled turn is recorded with the failure reason
-  `cancelled`, and the desktop exit no longer abandons a streamed turn. It is
-  **not merged and has no pull request**.
-- Branch `codex/request-cancellation`, stacked on `codex/desktop-interface`
-  (open PR #33): **Phase D6**, version **0.34.0**, which lets a cancel request
-  stop every model request, streamed or not, and the compaction requests, and
-  lets Ctrl-C cancel a CLI `chat` turn or `session compact` (ADR-0051). It is
-  **not committed, not merged, and has no pull request**.
+- **PR #33** merged at `9c9f606` on 2026-11-17, from
+  `codex/desktop-interface`. **PR #34**, from `codex/request-cancellation`,
+  was stacked on it and merged into that branch first, so both landed in the
+  same merge commit. The merges were verified through GitHub. Together they
+  carried:
+  - **Phase E**, version **0.29.0**, the prototype desktop interface and
+    session tree (ADR-0044, ADR-0045, ADR-0046). Its windows have run only on
+    Windows; on Linux it builds and its tests pass. See
+    [the desktop interface guide](docs/desktop-interface.md).
+  - **Phase D2**, version **0.30.0**: the local LM Studio adapter reads its
+    token from a stored credential through an operator-selected profile
+    (ADR-0047).
+  - **Phase D3**, version **0.31.0**: a stored credential is bound to its
+    profile's loopback endpoint, and a selected profile supplies both the
+    endpoint and the token (ADR-0048).
+  - **Phases D4 and E6**, version **0.32.0**: the local model's reply streams,
+    and chat events are pushed to the desktop window (ADR-0049).
+  - **Phase D5**, version **0.33.0**: a cancelled turn interrupts a streamed
+    request and is recorded with the failure reason `cancelled` (ADR-0050).
+  - **Phase D6**, version **0.34.0** (PR #34): a cancel request stops every
+    model request, streamed or not, and the compaction requests, and Ctrl-C
+    cancels a CLI `chat` turn or `session compact` (ADR-0051).
+- **PR #36** merged at `b58f3f7` on 2026-11-17, from `codex/testing-builds`:
+  the Testing build workflow, which runs on pushes to `main`, tests the
+  commit, packages unsigned Windows, Ubuntu, and Fedora 44 archives with no
+  installer, and publishes them as the rolling `latest` prerelease
+  (ADR-0052). While a run is active, GitHub keeps only the newest waiting
+  run, so a push that a later push supersedes is never tested or published. No
+  application change; the version stays 0.34.0. On 2026-11-17 its first two
+  runs, for `b58f3f7` and `4f94774`, were still queued and no `latest`
+  release existed, so the workflow has not yet completed on GitHub.
+- **PR #37** merged at `4f94774` on 2026-11-17: chat-turn cancellation tests
+  in `omgcode-app` measure their timing from the cancel rather than from the
+  turn start. Tests and documentation only.
 
 Implemented today:
 
 - Pinned Rust 1.99.1 workspace with `omgcode-core`, `omgcode-cli`,
-  `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`. The last two exist
-  only on the unmerged Phase E branch.
+  `omgcode-platform`, `omgcode-app`, and `omgcode-desktop`.
 - Compiled, versioned base prompt `0.1.4` with a visible digest.
 - Workspace settings, native directory identity, process-local bindings, and a
   separate settings/audit journal.
@@ -122,8 +128,8 @@ Implemented today:
 - Conservative context accounting, manual `session compact`, and pre-turn
   auto-compaction for the local LM Studio route. Summaries are labelled
   untrusted evidence and follow the live tool-result replay rule (ADR-0041).
-- Core turn/tool runtime for read/list, the approval-gated exact edit, and the
-  approval-gated command through a caller-supplied model interface. It has strict tool-call parsing, round/call/byte/prompt limits,
+- Core turn/tool runtime for read/list, the approval-gated exact edit,
+  multi-edit, create, rename, and delete, and the approval-gated command through a caller-supplied model interface. It has strict tool-call parsing, round/call/byte/prompt limits,
   cooperative cancellation, source-labelled messages, and fresh per-operation
   policy bindings. Chat dispatches it through the LM Studio adapter for a
   workspace that enables `model_tools`.
@@ -134,8 +140,10 @@ Implemented today:
   `chat --stream` and the desktop shell stream the reply as provisional text
   (ADR-0049). It is text-only
   unless the session's workspace enables `model_tools`; then it offers the read
-  and list tools, the approval-gated edit tool when `read` and `write` also
-  allow it, and the approval-gated command tool when `execute`, `read`, and
+  and list tools, the approval-gated edit, multi-edit, create, rename, and
+  delete tools when `read` and `write` also allow it, and the approval-gated
+  command tool when
+  `execute`, `read`, and
   `write` also allow it. See
   [ADR-0026](docs/adr/0026-offer-read-list-tools-through-a-workspace-preference.md),
   [ADR-0040](docs/adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md),
@@ -200,8 +208,8 @@ Implemented today:
   (ADR-0038). Trusted approval records bind a future model-tool call to a
   session, workspace, operation, request digest, and settings revision, expire,
   and are consumed once (ADR-0039). Provider profiles enable no connection; the
-  command and edit tools are the only model tools that consume an approval
-  record.
+  command, edit, multi-edit, create, rename, and delete tools are the only model
+  tools that consume an approval record.
 - Provider credentials in protected OS storage (ADR-0042): DPAPI files with
   verified private DACLs on Windows and Secret Service items in the default
   collection on Linux, with no plaintext fallback. Trusted
@@ -225,18 +233,42 @@ Implemented today:
   The first call records a pending `file_write` approval with no file text;
   approval needs `--writers-stopped`, and an identical later call consumes it
   and calls the checkpointed apply with the live-read expected value.
-  `session inspect` lists recorded tool requests for review. No model create,
-  delete, rename, network, Git, or MCP tool exists.
+  `session inspect` lists recorded tool requests for review.
+- The `workspace_multi_edit_file` and `workspace_create_file` model tools
+  (0.36.0, ADR-0054, on branch `codex/model-file-tools`, stacked on
+  `codex/checkpoint-ledger-compaction`, not merged) are offered under the same
+  live `model_tools`, `read`, and `write` preferences, share the `file_write`
+  approvals and writers-stopped acknowledgement, and each has its own digest
+  domain. Multi-edit applies one to 16 non-overlapping exact replacements
+  through one checkpointed apply; create makes one new file through the
+  exclusive create without a checkpoint. Tool schema 0.4.0.
+- The `workspace_rename_file` and `workspace_delete_file` model tools (0.38.0,
+  ADR-0055, on branch `codex/model-file-tools`, not merged) are offered under
+  the same live preferences, share the `file_write` approvals and
+  writers-stopped acknowledgement, and each has its own digest domain. Rename
+  moves one file to a name that does not exist through a no-replace primitive,
+  without a checkpoint; delete removes one file after a durable checkpoint of
+  its bytes, under a new `remove` kind of checkpoint record. Both refuse a
+  source over 1 MiB. The trusted `file restore --removed` recreates a deleted
+  file without its former mode or access list. Tool schema 0.5.0; no model
+  network, Git, or MCP tool exists.
 - Trusted `file restore` through a new checkpoint and
   `file delete-checkpoint --permanent` for one resolved checkpoint, on the same
   filesystems as apply. Neither is power-loss qualified. See
   [ADR-0025](docs/adr/0025-restore-and-delete-checkpoints-explicitly.md).
+- In-place checkpoint ledger compaction (0.35.0, on branch
+  `codex/checkpoint-ledger-compaction`, not merged): 65,536 records and
+  64 MiB for the ledger, 128 MiB for the store, trusted
+  `file compact-checkpoints --discard-history`, and automatic compaction
+  before an apply, restore, or deletion that would not fit. Deleted entries'
+  history is discarded. Not power-loss qualified. See
+  [ADR-0053](docs/adr/0053-compact-the-checkpoint-ledger-in-place.md).
 
 Not implemented:
 
-- Apply or restore on other filesystems, workspace file deletion, ledger
-  compaction, and standalone CLI checkpoint preparation.
-- Model create, delete, rename, multi-edit, network, Git, and MCP tools;
+- Apply or restore on other filesystems, standalone CLI checkpoint
+  preparation, and a trusted CLI workspace-file delete.
+- Model network, Git, and MCP tools;
   concurrent-writer detection for any apply route; live provider tool-call
   qualification; and streaming against a live server, discovery, and
   cancellation of any request against a live provider. A read, list, or edit
@@ -246,9 +278,10 @@ Not implemented:
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
 - Desktop development panels (terminal tabs, task logs, and diffs), a settings
-  interface, a recovery interface, packaging and installers, and a
+  interface, a recovery interface, signed packages and installers, and a
   Linux run of the desktop shell's windows. The prototype shell, session tree,
-  search, chat, and approvals window exist on the Phase E branch only.
+  search, chat, and approvals window are on `main`. The only packaging is the
+  unsigned rolling testing archives (ADR-0052).
 - Cloud provider adapters and subscription/API-key login. Only the local LM
   Studio adapter reads a stored credential, and only at the loopback endpoint
   recorded with its profile. No endpoint rule exists for a non-loopback
@@ -270,9 +303,9 @@ Not implemented:
    git status --porcelain
    ```
 
-2. Verify that the preceding phase's PR is merged. A2b and its review fixes
-   are merged as PRs #13 and #14. Verify the A2c PR before starting another
-   increment. Preserve its feature branch while it is under review.
+2. Verify that the preceding phase's PR is merged. Every phase listed in the
+   current baseline is merged as of PR #37. Preserve a feature branch while its
+   PR is under review.
    Do not merge a PR without the user's authorization.
 3. Re-read the owning contracts for the selected phase. Do not infer authority
    from this plan, prompts, journals, or model output.
@@ -758,8 +791,15 @@ at that review boundary:
     keeps history and frees a retained slot. Inspection and acknowledgement
     stay read-only. See
     [ADR-0025](docs/adr/0025-restore-and-delete-checkpoints-explicitly.md).
-    Ledger compaction, release qualification, and power-loss evidence remain
-    open.
+    Ledger compaction was left to A5; release qualification and power-loss
+    evidence remain open.
+  - **A5 (branch `codex/checkpoint-ledger-compaction`, not merged):** raise
+    the ledger bounds to 65,536 records and 64 MiB and the store quota to
+    128 MiB, and compact the ledger in place by trusted command or before an
+    operation that would not fit. See
+    [ADR-0053](docs/adr/0053-compact-the-checkpoint-ledger-in-place.md).
+    The [filesystem qualification plan](docs/filesystem-qualification.md)
+    defines the release matrix and power-loss campaign; it has not run.
 
 Contract decisions accepted in A1:
 
@@ -952,8 +992,48 @@ on Windows, and trusted CLI commands as the first caller. See
   unsupported filesystems are recoverable results. Tool schema 0.3.0;
   0.2.0 sessions still replay. See
   [ADR-0043](docs/adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md).
-  Concurrent-writer detection, multi-edit, create, delete, and rename remain
-  unimplemented.
+  Concurrent-writer detection, delete, and rename remain unimplemented.
+- **C18 (version 0.36.0):** the `workspace_multi_edit_file` and
+  `workspace_create_file` model tools (ADR-0054), on branch
+  `codex/model-file-tools`, stacked on `codex/checkpoint-ledger-compaction`
+  and not merged. Both are offered and dispatched under the edit tool's live
+  `model_tools`, `read`, and `write` rule and reuse the `file_write` approval
+  operation with its writers-stopped gate, each under its own digest domain
+  (`omgcode-file-multi-edit-v1`, `omgcode-file-create-v1`). Multi-edit matches
+  one to 16 `old_text` values against the original live bytes (each exactly
+  once, no overlap) and uses one checkpointed apply. Create requires an absent
+  path and an existing parent before any approval is recorded, and uses the
+  exclusive create without a checkpoint. Tool schema 0.4.0; 0.2.0 and 0.3.0
+  sessions still replay. The 4 KiB argument cap bounds create content and
+  multi-edit size, there is no multi-file atomicity, and 6 of the 8 tool-name
+  slots are used.
+- **C19 (version 0.38.0):** the `workspace_rename_file` and
+  `workspace_delete_file` model tools (ADR-0055), on branch
+  `codex/model-file-tools` and not merged. Both are offered and dispatched under
+  the edit tool's live `model_tools`, `read`, and `write` rule and reuse the
+  `file_write` approval operation with its writers-stopped gate, each under its
+  own digest domain (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`). Rename
+  requires an existing source of at most 1 MiB, an absent destination, and an
+  existing parent before any approval is recorded, then uses a native no-replace
+  rename (Linux `renameat2`, Windows POSIX-semantics rename) with a new
+  `rename_file` file-operation audit record naming both names; it is not
+  checkpointed. Delete uses `FileBroker::apply_removal`, a sibling of the
+  checkpointed apply with a native removal (Linux `unlinkat` with a link-count
+  check afterwards, Windows deletion through the verified handle) and a
+  `remove` kind on the checkpoint ledger, which older binaries refuse. Restoring
+  a deleted file is a trusted `file restore --removed` through the exclusive
+  create. Tool schema 0.5.0; 0.2.0 to 0.4.0 sessions still replay. All 8
+  tool-name slots are used, and the context estimate rises to 6 KiB. The Linux
+  paths are not yet qualified on a Linux host.
+- **C20 (version 0.37.0):** registry credentials for the trusted
+  `packages fetch`. `workspace package-credential-set` and
+  `package-credential-remove` bind one stored secret, `bearer` or `basic`, to
+  one declared origin of a package-network profile. Fetch sends it as a
+  sensitive `Authorization` header only when that origin is the longest
+  matching one, refuses the fetch when a bound secret cannot be read, and
+  records only the opaque credential ID. No run, model, or journal receives
+  the secret. See
+  [ADR-0056](docs/adr/0056-send-registry-credentials-to-one-declared-origin.md).
 - **Run network destination allowlist: deferred (2026-11-16).** No
   unprivileged mechanism passes the ADR-0034 gate on both hosts. The only
   candidate is a Linux user and network namespace with a trusted relay, which
@@ -968,9 +1048,8 @@ Next decisions, not yet scheduled:
   endpoint rules for non-loopback providers, HTTPS, and certificates (one
   adapter, the local LM Studio route, now reads a stored credential, only at
   its profile's loopback endpoint);
-- model create, delete, rename, and multi-edit tools, and network, Git, and
-  MCP tools;
-- registry credentials and development-server networking.
+- model network, Git, and MCP tools;
+- development-server networking.
 
 ### Phase D: additional providers, streaming, and account lifecycle
 
@@ -1103,8 +1182,8 @@ credentials, or unrestricted host capabilities. Follow the session, permission,
 context, and security contracts. Follow the
 [desktop interface guide](docs/desktop-interface.md).
 
-Version 0.29.0 builds a prototype on branch `codex/desktop-interface`. It is
-not merged, and no pull request exists yet.
+Version 0.29.0 built the prototype on branch `codex/desktop-interface`. It
+merged to `main` in PR #33 with Phases D2 to D6.
 
 - **E1 (ADR-0044):** lock-free journal inspection. `SessionInspection::inspect`
   reads one journal with no lock call, no link following, and the writer's
@@ -1162,7 +1241,8 @@ Still open for the desktop:
 - Git, MCP, skills, and memory interfaces;
 - a native confirmation dialog for approvals, which would remove the webview
   from the final decision;
-- packaging, signing, and installers (Phase G);
+- signing and installers (Phase G); the unsigned testing archives of
+  ADR-0052 are the only packaging;
 - automatic repair of a corrupt index behind a valid header, and a protection
   against two versions sharing one data root and rebuilding each other's index.
 
@@ -1185,6 +1265,16 @@ and memories remain open.
 Mediated Git workflows need controlled credentials, hooks/helpers, network
 policy, and push approval. Platform qualification, security testing, and
 release readiness remain separate gates.
+
+PR #36 added the first packaging step: a Testing build workflow publishes
+unsigned Windows, Ubuntu, and Fedora 44 archives of the newest tested `main`
+commit as the rolling `latest` prerelease, with no installer
+([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Only
+the newest waiting push is guaranteed a run; a push that arrives while a run is
+active can be superseded by a later one and never be tested or published. The
+workspace tests do not run on Fedora. The workflow had not completed a run
+when this plan was last verified. Signing, installers, Git workflows,
+platform qualification, and release readiness remain open.
 
 ## Known cautions
 

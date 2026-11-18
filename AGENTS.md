@@ -13,12 +13,18 @@ without an installer, has run only on Windows, and gives the webview no authorit
 Rust side authorizes every command and the trusted CLI remains. Follow the
 [desktop interface](docs/desktop-interface.md) contract.
 Chat offers the local LM Studio model read and list tools; when the workspace
-also enables `read` and `write`, one exact-edit tool; and, when it also enables
-`execute`, `read`, and `write`, one command tool. The edit and command tools
-each require a trusted single-use approval. The edit tool replaces one exact
-text occurrence in an existing file through checkpointed apply and needs the
-operator's writers-stopped acknowledgement. No model create, delete, rename,
-network, Git, or MCP tool exists. Chat offers tools only for a
+also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
+create, rename, and delete); and, when it also enables `execute`, `read`, and
+`write`, one command tool. The file-write and command tools each require a
+trusted single-use approval. The edit tool replaces one exact text occurrence
+in an existing file, and the multi-edit tool several exact occurrences in one
+existing file, each through checkpointed apply. The create tool makes one new
+file through the exclusive create, without a checkpoint. The rename tool moves
+one regular file to a name that does not exist and never replaces an entry,
+without a checkpoint. The delete tool removes one regular file of at most 1 MiB
+after a durable checkpoint of its bytes, which the trusted CLI can restore. All
+five need the operator's writers-stopped acknowledgement. No model network,
+Git, or MCP tool exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. There are no unapproved
 model writes, other provider adapters, or unreviewed model-callable process
 execution. The
@@ -65,8 +71,8 @@ edit tool call in progress is not interruptible
 On the CLI, Ctrl-C during `chat` or `session compact` cancels instead of ending
 the process.
 The desktop shell has no settings interface, development panels, installer, or
-recovery interface. CI publishes unsigned archives of each merge to `main` under
-the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
+recovery interface. CI publishes unsigned archives of the newest tested merge to
+`main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides
@@ -76,7 +82,10 @@ under the file-access contract. It requires the operator to stop other writers.
 Windows makes no power-loss claim. Trusted CLI restore writes a retained
 original back through the same apply path and a new checkpoint. Trusted CLI
 checkpoint deletion removes one resolved checkpoint and keeps its history.
-Neither is power-loss qualified.
+Neither is power-loss qualified. The ledger is compacted in place, by a trusted
+CLI command or before an operation that would not fit, and that discards
+deleted checkpoints' history ([ADR-0053](docs/adr/0053-compact-the-checkpoint-ledger-in-place.md)).
+A [filesystem qualification plan](docs/filesystem-qualification.md) has not run.
 Repository review and analysis are defined in
 [docs/repository-checks.md](docs/repository-checks.md).
 Do not describe planned features or security controls as implemented. Do not

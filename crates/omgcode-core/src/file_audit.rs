@@ -44,6 +44,9 @@ pub(crate) enum FileOperation {
     CreateFile,
     /// Create one directory.
     CreateDirectory,
+    /// Rename one regular file without replacing an entry. The record names
+    /// both the source (`target`) and the `destination`. Older readers refuse it.
+    RenameFile,
 }
 
 /// The observed result of one file operation.
@@ -92,6 +95,10 @@ pub(crate) enum FileAuditAction {
         revision: u64,
         operation: FileOperation,
         target: NativePath,
+        /// The new name of a rename; absent for every other operation, so
+        /// earlier records stay byte-identical.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<NativePath>,
     },
     /// Record the result for the one active intent.
     OperationFinished {
@@ -352,6 +359,40 @@ impl FileAudit {
         operation: FileOperation,
         target: NativePath,
     ) -> Result<Uuid, FileAuditError> {
+        self.start_with(session_id, workspace_id, revision, operation, target, None)
+    }
+
+    /// Durably record the intent to rename `target` to `destination`.
+    ///
+    /// Both names are validated as native workspace-relative paths, neither may
+    /// be the root, and they must differ. Everything else matches [`Self::start`].
+    pub(crate) fn start_rename(
+        &mut self,
+        session_id: Uuid,
+        workspace_id: WorkspaceId,
+        revision: u64,
+        target: NativePath,
+        destination: NativePath,
+    ) -> Result<Uuid, FileAuditError> {
+        self.start_with(
+            session_id,
+            workspace_id,
+            revision,
+            FileOperation::RenameFile,
+            target,
+            Some(destination),
+        )
+    }
+
+    fn start_with(
+        &mut self,
+        session_id: Uuid,
+        workspace_id: WorkspaceId,
+        revision: u64,
+        operation: FileOperation,
+        target: NativePath,
+        destination: Option<NativePath>,
+    ) -> Result<Uuid, FileAuditError> {
         self.ensure_healthy()?;
         if let Some(pending) = self.state.pending {
             return Err(FileAuditError::PendingOperation(pending.id));
@@ -362,6 +403,7 @@ impl FileAudit {
             ));
         }
         validate_target(operation, &target)?;
+        validate_destination(operation, &target, destination.as_ref())?;
         let operation_id = Uuid::new_v4();
         let action = FileAuditAction::OperationStarted {
             operation_id,
@@ -370,6 +412,7 @@ impl FileAudit {
             revision,
             operation,
             target,
+            destination,
         };
         self.append_with_reserve(action, 2, COMPLETION_AND_ACK_RESERVE_BYTES)?;
         Ok(operation_id)
@@ -645,6 +688,7 @@ impl FileAudit {
                 revision,
                 operation,
                 target,
+                destination,
             } => {
                 if expected_sequence == 0
                     || state.pending.is_some()
@@ -659,6 +703,7 @@ impl FileAudit {
                     ));
                 }
                 validate_target(*operation, target)?;
+                validate_destination(*operation, target, destination.as_ref())?;
                 state.operation_ids.insert(*operation_id);
                 state.last_revision = Some(*revision);
                 state.pending = Some(PendingOperation {
@@ -761,6 +806,32 @@ fn validate_target(operation: FileOperation, target: &NativePath) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+/// A rename records a second, distinct, non-root name; no other operation does.
+fn validate_destination(
+    operation: FileOperation,
+    target: &NativePath,
+    destination: Option<&NativePath>,
+) -> Result<(), FileAuditError> {
+    match (operation, destination) {
+        (FileOperation::RenameFile, Some(destination)) => {
+            validate_target(FileOperation::RenameFile, destination)?;
+            if destination == target {
+                return Err(FileAuditError::Invalid(
+                    "rename source and destination are the same",
+                ));
+            }
+            Ok(())
+        }
+        (FileOperation::RenameFile, None) => {
+            Err(FileAuditError::Invalid("a rename needs a destination"))
+        }
+        (_, Some(_)) => Err(FileAuditError::Invalid(
+            "only a rename records a destination",
+        )),
+        (_, None) => Ok(()),
+    }
 }
 
 /// Encode exactly one JSON event and its terminating newline.
@@ -1123,6 +1194,7 @@ mod tests {
             revision: 1,
             operation: FileOperation::Read,
             target: valid_target(),
+            destination: None,
         });
         add(FileAuditAction::OperationFinished {
             operation_id: first,
@@ -1140,6 +1212,7 @@ mod tests {
                 revision: 1,
                 operation: FileOperation::Read,
                 target: valid_target(),
+                destination: None,
             });
             add(FileAuditAction::OperationFinished {
                 operation_id: id,
@@ -1653,5 +1726,127 @@ mod tests {
             Err(FileAuditError::Invalid(_))
         ));
         assert_eq!(audit.bytes, bytes);
+    }
+
+    #[test]
+    fn a_rename_records_both_names_and_other_operations_record_none() {
+        let directory = tempfile::tempdir().expect("temporary data directory");
+        let store_id = Uuid::new_v4();
+        let (session_id, workspace_id) = scope();
+        let mut audit = FileAudit::open(directory.path(), store_id).expect("open audit");
+        let renamed = audit
+            .start_rename(
+                session_id,
+                workspace_id,
+                1,
+                native_target(Path::new("a.txt")),
+                native_target(Path::new("sub/b.txt")),
+            )
+            .expect("rename intent");
+        audit
+            .finish(renamed, FileOutcome::Succeeded)
+            .expect("rename outcome");
+        let read = audit
+            .start(
+                session_id,
+                workspace_id,
+                1,
+                FileOperation::Read,
+                valid_target(),
+            )
+            .expect("read intent");
+        audit
+            .finish(read, FileOutcome::Succeeded)
+            .expect("read outcome");
+        let entries: Vec<serde_json::Value> = audit
+            .entries(10)
+            .expect("entries")
+            .iter()
+            .map(|entry| serde_json::to_value(entry).expect("entry JSON"))
+            .collect();
+        let started: Vec<&serde_json::Value> = entries
+            .iter()
+            .filter(|entry| entry["action"]["type"] == "operation_started")
+            .collect();
+        assert_eq!(started[0]["action"]["payload"]["operation"], "rename_file");
+        assert!(started[0]["action"]["payload"]["destination"].is_object());
+        assert!(
+            started[1]["action"]["payload"].get("destination").is_none(),
+            "an earlier-shaped record has no destination field"
+        );
+        drop(audit);
+        FileAudit::open(directory.path(), store_id).expect("the log replays");
+    }
+
+    #[test]
+    fn a_rename_needs_two_distinct_non_root_names_and_only_a_rename_has_two() {
+        let directory = tempfile::tempdir().expect("temporary data directory");
+        let (session_id, workspace_id) = scope();
+        let mut audit = FileAudit::open(directory.path(), Uuid::new_v4()).expect("open audit");
+        let refused = [
+            audit.start_rename(session_id, workspace_id, 1, valid_target(), valid_target()),
+            audit.start_rename(
+                session_id,
+                workspace_id,
+                1,
+                valid_target(),
+                native_target(Path::new("")),
+            ),
+            audit.start_rename(
+                session_id,
+                workspace_id,
+                1,
+                valid_target(),
+                native_target(Path::new("../outside")),
+            ),
+            audit.start(
+                session_id,
+                workspace_id,
+                1,
+                FileOperation::RenameFile,
+                valid_target(),
+            ),
+            audit.start_with(
+                session_id,
+                workspace_id,
+                1,
+                FileOperation::Read,
+                valid_target(),
+                Some(native_target(Path::new("other.txt"))),
+            ),
+        ];
+        for result in refused {
+            assert!(
+                matches!(result, Err(FileAuditError::Invalid(_))),
+                "{result:?}"
+            );
+        }
+        assert_eq!(audit.pending(), None, "nothing was started");
+    }
+
+    #[test]
+    fn a_tampered_rename_record_is_refused_on_reopen() {
+        let directory = tempfile::tempdir().expect("temporary data directory");
+        let store_id = Uuid::new_v4();
+        let (session_id, workspace_id) = scope();
+        let mut audit = FileAudit::open(directory.path(), store_id).expect("open audit");
+        let id = audit
+            .start_rename(
+                session_id,
+                workspace_id,
+                1,
+                valid_target(),
+                native_target(Path::new("moved.txt")),
+            )
+            .expect("rename intent");
+        audit.finish(id, FileOutcome::Succeeded).expect("outcome");
+        drop(audit);
+        let path = directory.path().join(FILE_NAME);
+        let text = fs::read_to_string(&path).expect("log");
+        fs::write(&path, text.replace("rename_file", "create_file")).expect("tamper");
+        assert!(matches!(
+            FileAudit::open(directory.path(), store_id),
+            Err(FileAuditError::Invalid(_))
+        ));
     }
 }

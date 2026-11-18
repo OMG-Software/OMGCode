@@ -549,7 +549,11 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
         Some(vec![
             "workspace_read_file".to_owned(),
             "workspace_list_directory".to_owned(),
-            "workspace_edit_file".to_owned()
+            "workspace_edit_file".to_owned(),
+            "workspace_multi_edit_file".to_owned(),
+            "workspace_create_file".to_owned(),
+            "workspace_rename_file".to_owned(),
+            "workspace_delete_file".to_owned()
         ])
     );
 
@@ -594,7 +598,11 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
         vec![
             "workspace_read_file",
             "workspace_list_directory",
-            "workspace_edit_file"
+            "workspace_edit_file",
+            "workspace_multi_edit_file",
+            "workspace_create_file",
+            "workspace_rename_file",
+            "workspace_delete_file"
         ]
     );
 
@@ -661,7 +669,11 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
         json!([
             "workspace_read_file",
             "workspace_list_directory",
-            "workspace_edit_file"
+            "workspace_edit_file",
+            "workspace_multi_edit_file",
+            "workspace_create_file",
+            "workspace_rename_file",
+            "workspace_delete_file"
         ])
     );
 }
@@ -774,7 +786,7 @@ fn revocation_during_model_io_takes_effect_at_the_next_broker_call() {
 fn unknown_malformed_and_duplicate_calls_fail_before_dispatch() {
     let cases = [
         (
-            call("unknown", "workspace_delete_file", json!({})),
+            call("unknown", "workspace_move_file", json!({})),
             ToolCallError::UnsupportedTool,
         ),
         (
@@ -1508,7 +1520,11 @@ fn runtime_owns_custom_instruction_and_tool_manifest_fields() {
         Some(vec![
             "workspace_read_file".to_owned(),
             "workspace_list_directory".to_owned(),
-            "workspace_edit_file".to_owned()
+            "workspace_edit_file".to_owned(),
+            "workspace_multi_edit_file".to_owned(),
+            "workspace_create_file".to_owned(),
+            "workspace_rename_file".to_owned(),
+            "workspace_delete_file".to_owned()
         ])
     );
     fixture.close_journal();
@@ -2424,10 +2440,9 @@ fn a_pending_checkpoint_operation_is_a_recoverable_edit_result() {
     );
 }
 
-/// A session whose earlier turn advertised tool schema 0.2.0 still replays and
-/// accepts a new turn, which records the current schema version.
-#[test]
-fn a_tool_schema_0_2_0_session_replays_and_accepts_a_new_turn() {
+/// A session whose earlier turn advertised an older tool schema still replays
+/// and accepts a new turn, which records the current schema version.
+fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: &[&str]) {
     let mut fixture = Fixture::new();
     {
         let journal = fixture.journal.as_mut().expect("journal is open");
@@ -2439,16 +2454,12 @@ fn a_tool_schema_0_2_0_session_replays_and_accepts_a_new_turn() {
             .record_manifest(
                 request_id,
                 RequestManifest {
-                    tool_schema_version: Some("0.2.0".into()),
-                    tools: Some(vec![
-                        "workspace_read_file".into(),
-                        "workspace_list_directory".into(),
-                        "workspace_run_command".into(),
-                    ]),
+                    tool_schema_version: Some(version.into()),
+                    tools: Some(tools.iter().map(|name| (*name).to_owned()).collect()),
                     ..manifest()
                 },
             )
-            .expect("schema 0.2.0 manifest");
+            .expect("older schema manifest");
         journal
             .record_message(MessageRole::Assistant, "earlier reply")
             .expect("assistant message");
@@ -2460,7 +2471,7 @@ fn a_tool_schema_0_2_0_session_replays_and_accepts_a_new_turn() {
     let mut model = ScriptedModel::new(vec![text_reply("current reply")]);
     fixture
         .run(&mut model, TurnLimits::default())
-        .expect("a new turn after a 0.2.0 turn");
+        .expect("a new turn after an older schema turn");
     assert!(request_contains(&model.requests[0], "earlier reply"));
     fixture.close_journal();
     let versions: Vec<Value> = fixture
@@ -2469,6 +2480,1349 @@ fn a_tool_schema_0_2_0_session_replays_and_accepts_a_new_turn() {
         .filter(|event| event["type"] == "request.manifest")
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
-    assert_eq!(versions, [json!("0.2.0"), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.3.0");
+    assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.5.0");
+}
+
+/// A session whose earlier turn advertised tool schema 0.2.0 still replays and
+/// accepts a new turn, which records the current schema version.
+#[test]
+fn a_tool_schema_0_2_0_session_replays_and_accepts_a_new_turn() {
+    an_older_schema_session_replays_and_accepts_a_new_turn(
+        "0.2.0",
+        &[
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_run_command",
+        ],
+    );
+}
+
+/// The same holds for a session recorded under schema 0.3.0, which offered the
+/// single exact-edit tool but not multi-edit or create.
+#[test]
+fn a_tool_schema_0_3_0_session_replays_and_accepts_a_new_turn() {
+    an_older_schema_session_replays_and_accepts_a_new_turn(
+        "0.3.0",
+        &[
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_edit_file",
+            "workspace_run_command",
+        ],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-edit and create tools (ADR-0054)
+// ---------------------------------------------------------------------------
+
+fn multi_call(id: &str, path: &str, edits: &[(&str, &str)]) -> Value {
+    let edits: Vec<Value> = edits
+        .iter()
+        .map(|(old, new)| json!({"old_text": old, "new_text": new}))
+        .collect();
+    call(
+        id,
+        "workspace_multi_edit_file",
+        json!({"path": path, "edits": edits}),
+    )
+}
+
+fn create_call(id: &str, path: &str, content: &str) -> Value {
+    call(
+        id,
+        "workspace_create_file",
+        json!({"path": path, "content": content}),
+    )
+}
+
+impl Fixture {
+    /// The text of every recorded tool message, read back from the journal file.
+    fn tool_messages_after_close(&self) -> Vec<String> {
+        SessionJournal::open(&self.journal_path)
+            .expect("replay")
+            .snapshot()
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Tool)
+            .map(|message| message.text.clone())
+            .collect()
+    }
+}
+
+#[test]
+fn multi_edit_tool_arguments_are_strictly_validated() {
+    let parsed = ToolCall::parse(&multi_call(
+        "m-1",
+        "src/lib.rs",
+        &[("old", ""), ("two", "2")],
+    ))
+    .expect("valid multi-edit");
+    assert_eq!(parsed.path(), "src/lib.rs");
+    assert!(matches!(
+        parsed.arguments,
+        ToolArguments::MultiEditFile { ref edits, .. } if edits.len() == 2
+    ));
+
+    let sixteen: Vec<Value> = (0..16)
+        .map(|index| json!({"old_text": format!("o{index}"), "new_text": "n"}))
+        .collect();
+    assert!(
+        ToolCall::parse(&call(
+            "m-1",
+            "workspace_multi_edit_file",
+            json!({"path": "a.txt", "edits": sixteen})
+        ))
+        .is_ok(),
+        "sixteen edits are the accepted maximum"
+    );
+    let seventeen: Vec<Value> = (0..17)
+        .map(|index| json!({"old_text": format!("o{index}"), "new_text": "n"}))
+        .collect();
+    for arguments in [
+        json!({"path": "a.txt", "edits": []}),
+        json!({"path": "a.txt", "edits": seventeen}),
+        json!({"path": "a.txt"}),
+        json!({"edits": [{"old_text": "x", "new_text": "y"}]}),
+        json!({"path": "a.txt", "edits": [{"old_text": "", "new_text": "y"}]}),
+        json!({"path": "a.txt", "edits": [{"old_text": "x"}]}),
+        json!({"path": "a.txt", "edits": [{"new_text": "y"}]}),
+        json!({"path": "a.txt", "edits": [{"old_text": "x", "new_text": "y", "extra": "z"}]}),
+        json!({"path": "a.txt", "edits": [{"old_text": 1, "new_text": "y"}]}),
+        json!({"path": "a.txt", "edits": ["x"]}),
+        json!({"path": "a.txt", "edits": {"old_text": "x", "new_text": "y"}}),
+        json!({"path": 7, "edits": [{"old_text": "x", "new_text": "y"}]}),
+        json!({"path": "a.txt", "edits": [{"old_text": "x", "new_text": "y"}], "mode": "all"}),
+    ] {
+        assert!(
+            matches!(
+                ToolCall::parse(&call("m-1", "workspace_multi_edit_file", arguments.clone())),
+                Err(ToolCallError::InvalidArguments)
+            ),
+            "{arguments} was accepted"
+        );
+    }
+    assert!(matches!(
+        ToolCall::parse(&multi_call("m-1", "../outside.txt", &[("x", "y")])),
+        Err(ToolCallError::InvalidPath)
+    ));
+    // Duplicate keys at either level are refused before typed parsing.
+    for raw in [
+        r#"{"path":"a.txt","path":"b.txt","edits":[{"old_text":"x","new_text":"y"}]}"#,
+        r#"{"path":"a.txt","edits":[{"old_text":"x","new_text":"y","new_text":"z"}]}"#,
+        r#"{"path":"a.txt","edits":[{"old_text":"x","new_text":"y"}],"edits":[]}"#,
+    ] {
+        assert!(matches!(
+            ToolCall::parse(&raw_call("m-1", "workspace_multi_edit_file", raw)),
+            Err(ToolCallError::InvalidArguments)
+        ));
+    }
+    // The whole arguments stay within the 4 KiB bound.
+    let large = "x".repeat(4 * 1024);
+    assert!(matches!(
+        ToolCall::parse(&multi_call("m-1", "a.txt", &[(&large, "y")])),
+        Err(ToolCallError::InvalidArguments)
+    ));
+}
+
+#[test]
+fn create_tool_arguments_are_strictly_validated() {
+    let parsed = ToolCall::parse(&create_call("c-1", "src/new.rs", "")).expect("empty content");
+    assert_eq!(
+        parsed.arguments,
+        ToolArguments::CreateFile {
+            path: "src/new.rs".into(),
+            content: String::new(),
+        }
+    );
+    for arguments in [
+        json!({"path": "a.txt"}),
+        json!({"content": "x"}),
+        json!({"path": "a.txt", "content": 1}),
+        json!({"path": 1, "content": "x"}),
+        json!({"path": "a.txt", "content": "x", "mode": "0600"}),
+    ] {
+        assert!(
+            matches!(
+                ToolCall::parse(&call("c-1", "workspace_create_file", arguments.clone())),
+                Err(ToolCallError::InvalidArguments)
+            ),
+            "{arguments} was accepted"
+        );
+    }
+    for path in ["", "../outside.txt", "sub/../../x", "./a.txt"] {
+        assert!(
+            matches!(
+                ToolCall::parse(&create_call("c-1", path, "x")),
+                Err(ToolCallError::InvalidPath)
+            ),
+            "{path:?} was accepted"
+        );
+    }
+    assert!(matches!(
+        ToolCall::parse(&raw_call(
+            "c-1",
+            "workspace_create_file",
+            r#"{"path":"a.txt","content":"x","content":"y"}"#
+        )),
+        Err(ToolCallError::InvalidArguments)
+    ));
+    let large = "x".repeat(4 * 1024);
+    assert!(matches!(
+        ToolCall::parse(&create_call("c-1", "a.txt", &large)),
+        Err(ToolCallError::InvalidArguments)
+    ));
+}
+
+/// Every replacement matches the original text, the replacements apply in
+/// offset order whatever order the model lists them in, and one approval and
+/// one checkpoint cover the whole call.
+#[test]
+fn an_approved_multi_edit_applies_once_through_one_checkpoint() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha beta gamma\nab\n").expect("write workspace file");
+    let session_id = fixture.snapshot().session_id;
+    // Listed out of offset order on purpose.
+    let edits = [("gamma", "G"), ("alpha", "A"), ("ab\n", "xy\n")];
+
+    let (_, model) = fixture.edit_turn(vec![multi_call("m-1", "notes.txt", &edits)]);
+    assert_eq!(
+        model.requests[0].tools,
+        [
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_edit_file",
+            "workspace_multi_edit_file",
+            "workspace_create_file",
+            "workspace_rename_file",
+            "workspace_delete_file",
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(&target).expect("read"),
+        "alpha beta gamma\nab\n"
+    );
+    let message = fixture.last_tool_message();
+    assert!(message.contains("approval_required"), "{message}");
+    assert!(!message.contains("alpha"), "{message}");
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].session_id, session_id);
+    assert_eq!(approvals[0].state, ApprovalState::Pending);
+    assert_eq!(
+        approvals[0].summary,
+        format!(
+            "multi-edit notes.txt (3 edits): 20 -> 12 bytes, sha256 {} -> {}",
+            &sha256(b"alpha beta gamma\nab\n")[..12],
+            &sha256(b"A beta G\nxy\n")[..12]
+        )
+    );
+    assert!(!approvals[0].summary.contains("alpha"));
+    assert_eq!(fixture.checkpoint_operations(), 0);
+
+    // A repeat while pending records nothing new.
+    fixture.edit_turn(vec![multi_call("m-2", "notes.txt", &edits)]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![multi_call("m-3", "notes.txt", &edits)]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "A beta G\nxy\n");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 1);
+    let message = fixture.last_tool_message();
+    assert!(message.contains("\"status\":\"applied\""), "{message}");
+    assert!(message.contains("\"tool\":\"workspace_multi_edit_file\""));
+    assert!(message.contains("\"edits\":3"), "{message}");
+    assert!(message.contains(&sha256(b"A beta G\nxy\n")), "{message}");
+    assert!(!message.contains("beta"), "the result holds no file text");
+
+    // The consumed record cannot apply a second time: the old texts are gone.
+    fixture.edit_turn(vec![multi_call("m-4", "notes.txt", &edits)]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "A beta G\nxy\n");
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            Some("approval_required"),
+            Some("approval_required"),
+            None,
+            Some("edit_no_match")
+        ]
+        .map(|code| code.map(str::to_owned))
+    );
+}
+
+/// Touching matches are allowed: they do not share a byte.
+#[test]
+fn touching_multi_edit_matches_apply_together() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("pair.txt");
+    fs::write(&target, "ab").expect("write workspace file");
+    let edits = [("a", "1"), ("b", "2")];
+    fixture.edit_turn(vec![multi_call("m-1", "pair.txt", &edits)]);
+    fixture.approve_pending_edit();
+    fixture.edit_turn(vec![multi_call("m-2", "pair.txt", &edits)]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "12");
+}
+
+#[test]
+fn a_multi_edit_approval_does_not_cover_a_changed_file_or_another_request() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "one two three").expect("write workspace file");
+    let edits = [("one", "1"), ("two", "2")];
+    fixture.edit_turn(vec![multi_call("m-1", "notes.txt", &edits)]);
+    let approval = fixture.approve_pending_edit();
+
+    // A different replacement of the same file records a new request.
+    fixture.edit_turn(vec![multi_call(
+        "m-2",
+        "notes.txt",
+        &[("one", "1"), ("two", "3")],
+    )]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "one two three");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert_eq!(fixture.file_write_approvals().len(), 2);
+
+    // A changed file changes the digest.
+    fs::write(&target, "one two three!").expect("change the file");
+    fixture.edit_turn(vec![multi_call("m-3", "notes.txt", &edits)]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "one two three!");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert_eq!(fixture.file_write_approvals().len(), 3);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+}
+
+/// Each file-write tool has its own digest domain, so an approval recorded for
+/// one tool is never consumed by an equivalent call of another.
+#[test]
+fn an_edit_approval_cannot_be_consumed_by_an_equivalent_multi_edit_and_the_reverse() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha beta\n").expect("write workspace file");
+    fixture.edit_turn(vec![edit_call("e-1", "notes.txt", "beta", "gamma")]);
+    let edit_approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![multi_call("m-1", "notes.txt", &[("beta", "gamma")])]);
+    assert_eq!(
+        fs::read_to_string(&target).expect("read"),
+        "alpha beta\n",
+        "the equivalent multi-edit did not apply"
+    );
+    assert_eq!(
+        fixture.approval_state(edit_approval),
+        ApprovalState::Approved
+    );
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(approvals[1].state, ApprovalState::Pending);
+    assert_ne!(approvals[0].request_sha256, approvals[1].request_sha256);
+    assert!(fixture.last_tool_message().contains("approval_required"));
+
+    // Reverse: an approved multi-edit does not apply the equivalent edit.
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha beta\n").expect("write workspace file");
+    fixture.edit_turn(vec![multi_call("m-1", "notes.txt", &[("beta", "gamma")])]);
+    let multi_approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![edit_call("e-1", "notes.txt", "beta", "gamma")]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha beta\n");
+    assert_eq!(
+        fixture.approval_state(multi_approval),
+        ApprovalState::Approved
+    );
+    assert_eq!(fixture.file_write_approvals().len(), 2);
+}
+
+#[test]
+fn a_denied_multi_edit_writes_nothing_and_the_turn_continues() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "alpha beta\n").expect("write workspace file");
+    let edits = [("alpha", "a"), ("beta", "b")];
+    fixture.edit_turn(vec![multi_call("m-1", "notes.txt", &edits)]);
+    let pending = fixture.file_write_approvals()[0].id;
+    ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store")
+        .decide_approval(pending, false, now_unix())
+        .expect("deny");
+    let (report, _) = fixture.edit_turn(vec![multi_call("m-2", "notes.txt", &edits)]);
+    assert_eq!(report.reply, "reported");
+    assert_eq!(fs::read_to_string(&target).expect("read"), "alpha beta\n");
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("approval_denied"));
+}
+
+#[test]
+fn multi_edit_refusals_are_recoverable_and_write_nothing() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "one two two three\n").expect("notes");
+    fs::write(fixture.workspace.join("binary.dat"), [0xff_u8, 0xfe, b'x']).expect("binary");
+    let mut near_limit = "a".repeat(MAX_EDIT_FILE_BYTES - 4);
+    near_limit.push_str("MARK");
+    fs::write(fixture.workspace.join("full.txt"), &near_limit).expect("near limit");
+
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            // The second edit does not match.
+            multi_call("m-1", "notes.txt", &[("one", "1"), ("four", "4")]),
+            // The second edit is ambiguous.
+            multi_call("m-2", "notes.txt", &[("one", "1"), ("two", "2")]),
+            // The same text twice shares one range.
+            multi_call("m-3", "notes.txt", &[("one", "1"), ("one", "uno")]),
+            // Different but overlapping ranges.
+            multi_call("m-4", "notes.txt", &[("one two", "x"), ("two two", "y")]),
+            // Every edit replaces text with itself.
+            multi_call("m-5", "notes.txt", &[("one", "one"), ("three", "three")]),
+        ]),
+        tool_reply(vec![
+            multi_call("m-6", "binary.dat", &[("x", "y")]),
+            multi_call("m-7", "full.txt", &[("MARK", "MARKS")]),
+            multi_call("m-8", "missing.txt", &[("x", "y")]),
+        ]),
+        text_reply("all refused"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("recoverable refusals keep the turn going");
+    assert_eq!(report.reply, "all refused");
+    assert!(fixture.file_write_approvals().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("notes.txt")).expect("read"),
+        "one two two three\n"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("full.txt")).expect("read"),
+        near_limit.as_bytes()
+    );
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            "edit_no_match",
+            "edit_ambiguous",
+            "edit_overlap",
+            "edit_overlap",
+            "edit_unchanged",
+            "non_utf8",
+            "edit_too_large",
+            "not_found",
+        ]
+        .map(|code| Some(code.to_owned()))
+    );
+    // The messages name the 1-based edit index, never file or model text.
+    let messages = fixture.tool_messages_after_close();
+    assert!(messages[0].contains("edit 2"), "{}", messages[0]);
+    assert!(messages[1].contains("edit 2"), "{}", messages[1]);
+    assert!(messages[2].contains("edits 1 and 2"), "{}", messages[2]);
+    assert!(!messages[0].contains("four"), "{}", messages[0]);
+}
+
+#[test]
+fn a_multi_edit_whose_report_cannot_fit_keeps_its_approval() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("notes.txt");
+    fs::write(&target, "old1 old2").expect("write workspace file");
+    let edits = [("old1", "new1"), ("old2", "new2")];
+    fixture.edit_turn(vec![multi_call("m-1", "notes.txt", &edits)]);
+    let approval = fixture.approve_pending_edit();
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![multi_call("m-2", "notes.txt", &edits)]),
+        text_reply("reported"),
+    ]);
+    let limits = TurnLimits {
+        max_result_bytes: 200,
+        ..TurnLimits::default()
+    };
+    fixture.run(&mut model, limits).expect("recoverable");
+    assert_eq!(fs::read_to_string(&target).expect("read"), "old1 old2");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert!(fixture.last_tool_message().contains("output_too_large"));
+    fixture.edit_turn(vec![multi_call("m-3", "notes.txt", &edits)]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), "new1 new2");
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+}
+
+/// An approved creation writes a new file once and spends its approval. It is
+/// not checkpointed: nothing existed before.
+#[test]
+fn an_approved_create_makes_the_file_once_without_a_checkpoint() {
+    let mut fixture = Fixture::new();
+    fs::create_dir(fixture.workspace.join("sub")).expect("parent");
+    let target = fixture.workspace.join("sub").join("new.txt");
+    let content = "hello\nworld\n";
+
+    let (_, model) = fixture.edit_turn(vec![create_call("c-1", "sub/new.txt", content)]);
+    assert!(
+        model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_create_file")
+    );
+    assert!(!target.exists());
+    let message = fixture.last_tool_message();
+    assert!(message.contains("approval_required"), "{message}");
+    assert!(!message.contains("hello"), "{message}");
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].state, ApprovalState::Pending);
+    assert_eq!(
+        approvals[0].summary,
+        format!(
+            "create sub/new.txt: 12 bytes, sha256 {}",
+            &sha256(content.as_bytes())[..12]
+        )
+    );
+    assert!(!approvals[0].summary.contains("hello"));
+
+    // A repeat while pending records nothing new.
+    fixture.edit_turn(vec![create_call("c-2", "sub/new.txt", content)]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![create_call("c-3", "sub/new.txt", content)]);
+    assert_eq!(fs::read_to_string(&target).expect("read"), content);
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    let message = fixture.last_tool_message();
+    assert!(message.contains("\"status\":\"created\""), "{message}");
+    assert!(message.contains("\"bytes\":12"), "{message}");
+    assert!(message.contains(&sha256(content.as_bytes())), "{message}");
+    assert!(message.contains("\"operation_id\":\""), "{message}");
+    assert!(!message.contains("hello"), "the result holds no file text");
+
+    // The file now exists: a repeat is refused and records no approval.
+    fixture.edit_turn(vec![create_call("c-4", "sub/new.txt", content)]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    assert_eq!(fs::read_to_string(&target).expect("read"), content);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            Some("approval_required"),
+            Some("approval_required"),
+            None,
+            Some("file_exists")
+        ]
+        .map(|code| code.map(str::to_owned))
+    );
+}
+
+#[test]
+fn an_empty_file_can_be_created() {
+    let mut fixture = Fixture::new();
+    fixture.edit_turn(vec![create_call("c-1", "empty.txt", "")]);
+    fixture.approve_pending_edit();
+    fixture.edit_turn(vec![create_call("c-2", "empty.txt", "")]);
+    assert_eq!(
+        fs::read(fixture.workspace.join("empty.txt")).expect("read"),
+        Vec::<u8>::new()
+    );
+}
+
+#[test]
+fn a_create_approval_does_not_cover_other_content_or_path() {
+    let mut fixture = Fixture::new();
+    fixture.edit_turn(vec![create_call("c-1", "a.txt", "one")]);
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![create_call("c-2", "a.txt", "two")]);
+    fixture.edit_turn(vec![create_call("c-3", "b.txt", "one")]);
+    assert!(!fixture.workspace.join("a.txt").exists());
+    assert!(!fixture.workspace.join("b.txt").exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert_eq!(fixture.file_write_approvals().len(), 3);
+}
+
+/// An approved creation cannot edit a file, and its digest is not an edit's.
+#[test]
+fn a_create_approval_does_not_authorize_edits() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "alpha").expect("notes");
+    fixture.edit_turn(vec![create_call("c-1", "new.txt", "alpha")]);
+    let create_approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![
+        edit_call("e-1", "notes.txt", "alpha", "beta"),
+        multi_call("m-1", "notes.txt", &[("alpha", "beta")]),
+    ]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("notes.txt")).expect("read"),
+        "alpha"
+    );
+    assert_eq!(
+        fixture.approval_state(create_approval),
+        ApprovalState::Approved
+    );
+    assert!(!fixture.workspace.join("new.txt").exists());
+    assert_eq!(fixture.file_write_approvals().len(), 3);
+}
+
+#[test]
+fn a_denied_create_writes_nothing_and_the_turn_continues() {
+    let mut fixture = Fixture::new();
+    fixture.edit_turn(vec![create_call("c-1", "new.txt", "x")]);
+    let pending = fixture.file_write_approvals()[0].id;
+    ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store")
+        .decide_approval(pending, false, now_unix())
+        .expect("deny");
+    let (report, _) = fixture.edit_turn(vec![create_call("c-2", "new.txt", "x")]);
+    assert_eq!(report.reply, "reported");
+    assert!(!fixture.workspace.join("new.txt").exists());
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("approval_denied"));
+}
+
+#[test]
+fn create_refusals_are_recoverable_and_record_no_approval() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("present.txt"), "keep").expect("present");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            create_call("c-1", "present.txt", "replace"),
+            create_call("c-2", "no-such/new.txt", "x"),
+        ]),
+        text_reply("all refused"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("recoverable refusals keep the turn going");
+    assert_eq!(report.reply, "all refused");
+    assert!(fixture.file_write_approvals().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("present.txt")).expect("read"),
+        "keep"
+    );
+    assert!(!fixture.workspace.join("no-such").exists());
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [Some("file_exists".to_owned()), Some("not_found".to_owned())]
+    );
+}
+
+/// If another writer creates the file after approval, the retry's live check
+/// refuses it before the approval is consumed, and nothing is replaced.
+#[test]
+fn a_file_created_after_approval_is_never_replaced() {
+    let mut fixture = Fixture::new();
+    fixture.edit_turn(vec![create_call("c-1", "race.txt", "mine")]);
+    let approval = fixture.approve_pending_edit();
+    fs::write(fixture.workspace.join("race.txt"), "theirs").expect("other writer");
+    fixture.edit_turn(vec![create_call("c-2", "race.txt", "mine")]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("race.txt")).expect("read"),
+        "theirs"
+    );
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("file_exists"));
+}
+
+#[test]
+fn a_create_whose_report_cannot_fit_keeps_its_approval() {
+    let mut fixture = Fixture::new();
+    fixture.edit_turn(vec![create_call("c-1", "new.txt", "x")]);
+    let approval = fixture.approve_pending_edit();
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![create_call("c-2", "new.txt", "x")]),
+        text_reply("reported"),
+    ]);
+    let limits = TurnLimits {
+        max_result_bytes: 200,
+        ..TurnLimits::default()
+    };
+    fixture.run(&mut model, limits).expect("recoverable");
+    assert!(!fixture.workspace.join("new.txt").exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert!(fixture.last_tool_message().contains("output_too_large"));
+    fixture.edit_turn(vec![create_call("c-3", "new.txt", "x")]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("new.txt")).expect("read"),
+        "x"
+    );
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+}
+
+/// Without live `read` and `write`, neither new tool is offered, and a call
+/// made anyway is denied before any file access or approval.
+#[test]
+fn the_new_file_tools_require_live_read_and_write() {
+    for (read, write) in [(true, false), (false, true)] {
+        for name in ["workspace_multi_edit_file", "workspace_create_file"] {
+            let mut fixture = Fixture::new();
+            fs::write(fixture.workspace.join("notes.txt"), "alpha beta\n").expect("notes");
+            let workspace_id = fixture.workspace_id;
+            let control = fixture.control_mut();
+            control
+                .set_permissions(
+                    workspace_id,
+                    PermissionSet {
+                        model_tools: true,
+                        read,
+                        write,
+                        ..PermissionSet::default()
+                    },
+                    control.revision(),
+                )
+                .expect("change preferences");
+            let attempt = if name == "workspace_create_file" {
+                create_call("n-1", "new.txt", "x")
+            } else {
+                multi_call("n-1", "notes.txt", &[("beta", "gamma")])
+            };
+            let mut model = ScriptedModel::new(vec![tool_reply(vec![attempt])]);
+            let error = fixture
+                .run(&mut model, TurnLimits::default())
+                .expect_err("the call is denied");
+            assert!(matches!(error, TurnError::ToolDenied(_)), "{error:?}");
+            assert!(
+                !model.requests[0].tools.iter().any(|tool| tool == name),
+                "{name} was offered with read={read} write={write}"
+            );
+            assert!(!fixture.workspace.join("new.txt").exists());
+            assert!(fixture.file_write_approvals().is_empty());
+            assert!(fixture.audit_events().is_empty(), "no broker operation ran");
+            fixture.close_journal();
+            assert_eq!(fixture.last_tool_code().as_deref(), Some("edit_disabled"));
+        }
+    }
+}
+
+/// A session recorded under schema 0.4.0 offered multi-edit and create but
+/// neither rename nor delete.
+#[test]
+fn a_tool_schema_0_4_0_session_replays_and_accepts_a_new_turn() {
+    an_older_schema_session_replays_and_accepts_a_new_turn(
+        "0.4.0",
+        &[
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_edit_file",
+            "workspace_multi_edit_file",
+            "workspace_create_file",
+            "workspace_run_command",
+        ],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rename and delete tools (ADR-0055)
+// ---------------------------------------------------------------------------
+
+fn rename_call(id: &str, from: &str, to: &str) -> Value {
+    call(id, "workspace_rename_file", json!({"from": from, "to": to}))
+}
+
+fn delete_call(id: &str, path: &str) -> Value {
+    call(id, "workspace_delete_file", json!({"path": path}))
+}
+
+impl Fixture {
+    /// The retained checkpoint operations, with their recorded kind.
+    fn checkpoint_kinds(&self) -> Vec<omgcode_core::replacement::ReplacementKind> {
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store");
+        omgcode_core::files::FileBroker::new(&mut control)
+            .checkpoint_inspect()
+            .expect("inspect checkpoints")
+            .operations
+            .into_iter()
+            .map(|operation| operation.kind)
+            .collect()
+    }
+}
+
+#[test]
+fn rename_and_delete_arguments_are_strictly_validated() {
+    let parsed = ToolCall::parse(&rename_call("r-1", "a.txt", "sub/b.txt")).expect("valid rename");
+    assert_eq!(
+        parsed.arguments,
+        ToolArguments::RenameFile {
+            from: "a.txt".to_owned(),
+            to: "sub/b.txt".to_owned(),
+        }
+    );
+    assert_eq!(parsed.path(), "a.txt");
+    let parsed = ToolCall::parse(&delete_call("d-1", "sub/old.txt")).expect("valid delete");
+    assert_eq!(
+        parsed.arguments,
+        ToolArguments::DeleteFile {
+            path: "sub/old.txt".to_owned(),
+        }
+    );
+    assert_eq!(parsed.path(), "sub/old.txt");
+
+    for arguments in [
+        json!({}),
+        json!({"from": "a"}),
+        json!({"to": "b"}),
+        json!({"from": "a", "to": "b", "extra": 1}),
+        json!({"from": 1, "to": "b"}),
+        json!({"from": "a", "to": null}),
+        json!({"from": "/absolute", "to": "b"}),
+        json!({"from": "a", "to": "../escape"}),
+        json!({"from": "", "to": "b"}),
+        json!({"from": "a", "to": ""}),
+        json!({"path": "a"}),
+    ] {
+        assert!(
+            ToolCall::parse(&call("r", "workspace_rename_file", arguments.clone())).is_err(),
+            "{arguments}"
+        );
+    }
+    for arguments in [
+        json!({}),
+        json!({"path": 1}),
+        json!({"path": "a", "extra": 1}),
+        json!({"path": "../a"}),
+        json!({"path": ""}),
+        json!({"path": "/abs"}),
+        json!({"from": "a"}),
+    ] {
+        assert!(
+            ToolCall::parse(&call("d", "workspace_delete_file", arguments.clone())).is_err(),
+            "{arguments}"
+        );
+    }
+}
+
+#[test]
+fn an_approved_rename_moves_the_file_once_without_a_checkpoint() {
+    let mut fixture = Fixture::new();
+    fs::create_dir(fixture.workspace.join("sub")).expect("destination parent");
+    let content = "alpha\nbeta\n";
+    let source = fixture.workspace.join("a.txt");
+    let destination = fixture.workspace.join("sub").join("b.txt");
+    fs::write(&source, content).expect("source");
+
+    let (_, model) = fixture.edit_turn(vec![rename_call("r-1", "a.txt", "sub/b.txt")]);
+    assert!(
+        model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_rename_file")
+    );
+    assert!(source.exists() && !destination.exists());
+    let message = fixture.last_tool_message();
+    assert!(message.contains("approval_required"), "{message}");
+    assert!(!message.contains("alpha"), "{message}");
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].state, ApprovalState::Pending);
+    assert_eq!(
+        approvals[0].summary,
+        format!(
+            "rename a.txt -> sub/b.txt: 11 bytes, sha256 {}",
+            &sha256(content.as_bytes())[..12]
+        )
+    );
+
+    // A repeat while pending records nothing new.
+    fixture.edit_turn(vec![rename_call("r-2", "a.txt", "sub/b.txt")]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![rename_call("r-3", "a.txt", "sub/b.txt")]);
+    assert!(!source.exists());
+    assert_eq!(fs::read_to_string(&destination).expect("read"), content);
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(
+        fixture.checkpoint_operations(),
+        0,
+        "rename is not checkpointed"
+    );
+    let message = fixture.last_tool_message();
+    assert!(message.contains("\"status\":\"renamed\""), "{message}");
+    assert!(message.contains("\"from\":\"a.txt\""), "{message}");
+    assert!(message.contains("\"to\":\"sub/b.txt\""), "{message}");
+    assert!(message.contains("\"bytes\":11"), "{message}");
+    assert!(message.contains(&sha256(content.as_bytes())), "{message}");
+    assert!(message.contains("\"operation_id\":\""), "{message}");
+    assert!(!message.contains("alpha"), "the result holds no file text");
+
+    // The source is gone: a repeat is refused and records no approval.
+    fixture.edit_turn(vec![rename_call("r-4", "a.txt", "sub/b.txt")]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            Some("approval_required"),
+            Some("approval_required"),
+            None,
+            Some("not_found")
+        ]
+        .map(|code| code.map(str::to_owned))
+    );
+    // The audit journal names both the source and the destination.
+    let started: Vec<Value> = fixture
+        .audit_events()
+        .into_iter()
+        .filter(|event| {
+            event["action"]["type"] == "operation_started"
+                && event["action"]["payload"]["operation"] == "rename_file"
+        })
+        .collect();
+    assert_eq!(started.len(), 1, "{started:?}");
+    let payload = &started[0]["action"]["payload"];
+    assert!(payload["destination"].is_object(), "{payload}");
+    assert_ne!(payload["destination"], payload["target"]);
+}
+
+#[test]
+fn a_rename_of_a_non_utf8_file_keeps_its_bytes() {
+    let mut fixture = Fixture::new();
+    let bytes = [0xff_u8, 0xfe, 0x00, 0x01];
+    fs::write(fixture.workspace.join("blob.bin"), bytes).expect("binary source");
+    fixture.edit_turn(vec![rename_call("r-1", "blob.bin", "moved.bin")]);
+    fixture.approve_pending_edit();
+    fixture.edit_turn(vec![rename_call("r-2", "blob.bin", "moved.bin")]);
+    assert!(!fixture.workspace.join("blob.bin").exists());
+    assert_eq!(
+        fs::read(fixture.workspace.join("moved.bin")).expect("read"),
+        bytes
+    );
+}
+
+#[test]
+fn a_rename_approval_does_not_cover_a_changed_source_or_another_request() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+    fixture.edit_turn(vec![rename_call("r-1", "a.txt", "b.txt")]);
+    let approval = fixture.approve_pending_edit();
+
+    // A different destination is a different request.
+    fixture.edit_turn(vec![rename_call("r-2", "a.txt", "c.txt")]);
+    assert!(fixture.workspace.join("a.txt").exists());
+    assert!(!fixture.workspace.join("c.txt").exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+
+    // Another writer changes the source after approval.
+    fs::write(fixture.workspace.join("a.txt"), "alpha changed").expect("other writer");
+    fixture.edit_turn(vec![rename_call("r-3", "a.txt", "b.txt")]);
+    assert!(fixture.workspace.join("a.txt").exists());
+    assert!(!fixture.workspace.join("b.txt").exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert_eq!(fixture.file_write_approvals().len(), 3);
+}
+
+/// An approval records which tool's digest it covers: a delete or an edit of
+/// the same file never authorizes the rename, and the reverse.
+#[test]
+fn rename_and_delete_approvals_cannot_be_consumed_by_other_tools() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+    fixture.edit_turn(vec![delete_call("d-1", "a.txt")]);
+    let delete_approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![
+        rename_call("r-1", "a.txt", "b.txt"),
+        edit_call("e-1", "a.txt", "alpha", "beta"),
+        multi_call("m-1", "a.txt", &[("alpha", "beta")]),
+        create_call("c-1", "b.txt", "alpha"),
+    ]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("a.txt")).expect("read"),
+        "alpha"
+    );
+    assert!(!fixture.workspace.join("b.txt").exists());
+    assert_eq!(
+        fixture.approval_state(delete_approval),
+        ApprovalState::Approved
+    );
+    assert_eq!(fixture.file_write_approvals().len(), 5);
+
+    // The reverse: an approved rename does not delete.
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+    fixture.edit_turn(vec![rename_call("r-1", "a.txt", "b.txt")]);
+    let rename_approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![delete_call("d-1", "a.txt")]);
+    assert!(fixture.workspace.join("a.txt").exists());
+    assert_eq!(
+        fixture.approval_state(rename_approval),
+        ApprovalState::Approved
+    );
+    assert_eq!(fixture.checkpoint_operations(), 0);
+}
+
+#[test]
+fn a_denied_rename_or_delete_writes_nothing_and_the_turn_continues() {
+    for delete in [false, true] {
+        let mut fixture = Fixture::new();
+        fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+        let make = |id: &str| {
+            if delete {
+                delete_call(id, "a.txt")
+            } else {
+                rename_call(id, "a.txt", "b.txt")
+            }
+        };
+        fixture.edit_turn(vec![make("x-1")]);
+        let pending = fixture.file_write_approvals()[0].id;
+        ControlStore::open_existing(&fixture.data)
+            .expect("open control")
+            .expect("control store")
+            .decide_approval(pending, false, now_unix())
+            .expect("deny");
+        let (report, _) = fixture.edit_turn(vec![make("x-2")]);
+        assert_eq!(report.reply, "reported");
+        assert!(fixture.workspace.join("a.txt").exists());
+        assert!(!fixture.workspace.join("b.txt").exists());
+        assert_eq!(fixture.file_write_approvals().len(), 1);
+        assert_eq!(fixture.checkpoint_operations(), 0);
+        fixture.close_journal();
+        assert_eq!(fixture.last_tool_code().as_deref(), Some("approval_denied"));
+    }
+}
+
+#[test]
+fn rename_refusals_are_recoverable_and_record_no_approval() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+    fs::write(fixture.workspace.join("present.txt"), "keep").expect("present");
+    fs::write(
+        fixture.workspace.join("big.txt"),
+        vec![b'x'; MAX_EDIT_FILE_BYTES + 1],
+    )
+    .expect("oversize source");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            rename_call("r-1", "missing.txt", "b.txt"),
+            rename_call("r-2", "a.txt", "present.txt"),
+            rename_call("r-3", "a.txt", "no-such/b.txt"),
+            rename_call("r-4", "big.txt", "huge.txt"),
+            rename_call("r-5", "a.txt", "a.txt"),
+        ]),
+        text_reply("all refused"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("recoverable refusals keep the turn going");
+    assert_eq!(report.reply, "all refused");
+    assert!(fixture.file_write_approvals().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("a.txt")).expect("read"),
+        "alpha"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("present.txt")).expect("read"),
+        "keep"
+    );
+    assert!(!fixture.workspace.join("no-such").exists());
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            "not_found",
+            "file_exists",
+            "not_found",
+            "edit_too_large",
+            "invalid_request"
+        ]
+        .map(|code| Some(code.to_owned()))
+    );
+}
+
+/// If another writer creates the destination after approval, the retry's live
+/// check refuses it before the approval is consumed, and nothing is replaced.
+#[test]
+fn a_destination_created_after_approval_is_never_replaced() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+    fixture.edit_turn(vec![rename_call("r-1", "a.txt", "b.txt")]);
+    let approval = fixture.approve_pending_edit();
+    fs::write(fixture.workspace.join("b.txt"), "theirs").expect("other writer");
+    fixture.edit_turn(vec![rename_call("r-2", "a.txt", "b.txt")]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("b.txt")).expect("read"),
+        "theirs"
+    );
+    assert!(fixture.workspace.join("a.txt").exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("file_exists"));
+}
+
+#[test]
+fn a_rename_or_delete_whose_report_cannot_fit_keeps_its_approval() {
+    for delete in [false, true] {
+        let mut fixture = Fixture::new();
+        fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+        let make = |id: &str| {
+            if delete {
+                delete_call(id, "a.txt")
+            } else {
+                rename_call(id, "a.txt", "b.txt")
+            }
+        };
+        fixture.edit_turn(vec![make("x-1")]);
+        let approval = fixture.approve_pending_edit();
+        let mut model =
+            ScriptedModel::new(vec![tool_reply(vec![make("x-2")]), text_reply("reported")]);
+        let limits = TurnLimits {
+            max_result_bytes: 200,
+            ..TurnLimits::default()
+        };
+        fixture.run(&mut model, limits).expect("recoverable");
+        assert!(fixture.workspace.join("a.txt").exists());
+        assert!(!fixture.workspace.join("b.txt").exists());
+        assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+        assert!(fixture.last_tool_message().contains("output_too_large"));
+        fixture.edit_turn(vec![make("x-3")]);
+        assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+        assert!(!fixture.workspace.join("a.txt").exists());
+        assert_eq!(fixture.workspace.join("b.txt").exists(), !delete);
+    }
+}
+
+#[test]
+fn an_approved_delete_removes_the_file_once_after_a_checkpoint() {
+    use omgcode_core::replacement::ReplacementKind;
+
+    let mut fixture = Fixture::new();
+    let content = "alpha\nbeta\n";
+    let target = fixture.workspace.join("old.txt");
+    fs::write(&target, content).expect("source");
+
+    let (_, model) = fixture.edit_turn(vec![delete_call("d-1", "old.txt")]);
+    assert!(
+        model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_delete_file")
+    );
+    assert!(target.exists());
+    let message = fixture.last_tool_message();
+    assert!(message.contains("approval_required"), "{message}");
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(
+        approvals[0].summary,
+        format!(
+            "delete old.txt: 11 bytes, sha256 {}",
+            &sha256(content.as_bytes())[..12]
+        )
+    );
+
+    fixture.edit_turn(vec![delete_call("d-2", "old.txt")]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    assert!(target.exists());
+
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![delete_call("d-3", "old.txt")]);
+    assert!(!target.exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_kinds(), [ReplacementKind::Remove]);
+    let message = fixture.last_tool_message();
+    assert!(message.contains("\"status\":\"deleted\""), "{message}");
+    assert!(message.contains("\"path\":\"old.txt\""), "{message}");
+    assert!(message.contains("\"bytes\":11"), "{message}");
+    assert!(message.contains(&sha256(content.as_bytes())), "{message}");
+    assert!(!message.contains("alpha"), "the result holds no file text");
+
+    // The operation ID names the checkpoint that restores the file.
+    let operation = {
+        let mut control = ControlStore::open_existing(&fixture.data)
+            .expect("open control")
+            .expect("control store");
+        omgcode_core::files::FileBroker::new(&mut control)
+            .checkpoint_inspect()
+            .expect("inspect")
+            .operations[0]
+            .operation_id
+    };
+    assert!(message.contains(&operation.to_string()), "{message}");
+
+    // The file is gone: a repeat is refused and records no approval.
+    fixture.edit_turn(vec![delete_call("d-4", "old.txt")]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            Some("approval_required"),
+            Some("approval_required"),
+            None,
+            Some("not_found")
+        ]
+        .map(|code| code.map(str::to_owned))
+    );
+}
+
+#[test]
+fn a_non_utf8_file_can_be_deleted_and_is_checkpointed_exactly() {
+    let mut fixture = Fixture::new();
+    let bytes = [0xff_u8, 0xfe, 0x00, 0x01, 0x80];
+    fs::write(fixture.workspace.join("blob.bin"), bytes).expect("binary source");
+    fixture.edit_turn(vec![delete_call("d-1", "blob.bin")]);
+    fixture.approve_pending_edit();
+    fixture.edit_turn(vec![delete_call("d-2", "blob.bin")]);
+    assert!(!fixture.workspace.join("blob.bin").exists());
+    assert_eq!(fixture.checkpoint_operations(), 1);
+}
+
+#[test]
+fn a_delete_approval_does_not_cover_a_changed_file() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+    fixture.edit_turn(vec![delete_call("d-1", "a.txt")]);
+    let approval = fixture.approve_pending_edit();
+    fs::write(fixture.workspace.join("a.txt"), "alpha changed").expect("other writer");
+    fixture.edit_turn(vec![delete_call("d-2", "a.txt")]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("a.txt")).expect("read"),
+        "alpha changed"
+    );
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+    assert_eq!(fixture.file_write_approvals().len(), 2);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+}
+
+#[test]
+fn delete_refusals_are_recoverable_and_record_no_approval() {
+    let mut fixture = Fixture::new();
+    fs::write(
+        fixture.workspace.join("big.txt"),
+        vec![b'x'; MAX_EDIT_FILE_BYTES + 1],
+    )
+    .expect("oversize source");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            delete_call("d-1", "missing.txt"),
+            delete_call("d-2", "big.txt"),
+        ]),
+        text_reply("all refused"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("recoverable refusals keep the turn going");
+    assert_eq!(report.reply, "all refused");
+    assert!(fixture.file_write_approvals().is_empty());
+    assert!(fixture.workspace.join("big.txt").exists());
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        ["not_found", "edit_too_large"].map(|code| Some(code.to_owned()))
+    );
+}
+
+/// Without live `read` and `write`, neither tool is offered, and a call made
+/// anyway is denied before any file access or approval.
+#[test]
+fn the_rename_and_delete_tools_require_live_read_and_write() {
+    for (read, write) in [(true, false), (false, true)] {
+        for name in ["workspace_rename_file", "workspace_delete_file"] {
+            let mut fixture = Fixture::new();
+            fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
+            let workspace_id = fixture.workspace_id;
+            let control = fixture.control_mut();
+            control
+                .set_permissions(
+                    workspace_id,
+                    PermissionSet {
+                        model_tools: true,
+                        read,
+                        write,
+                        ..PermissionSet::default()
+                    },
+                    control.revision(),
+                )
+                .expect("change preferences");
+            let attempt = if name == "workspace_rename_file" {
+                rename_call("n-1", "a.txt", "b.txt")
+            } else {
+                delete_call("n-1", "a.txt")
+            };
+            let mut model = ScriptedModel::new(vec![tool_reply(vec![attempt])]);
+            let error = fixture
+                .run(&mut model, TurnLimits::default())
+                .expect_err("the call is denied");
+            assert!(matches!(error, TurnError::ToolDenied(_)), "{error:?}");
+            assert!(
+                !model.requests[0].tools.iter().any(|tool| tool == name),
+                "{name} was offered with read={read} write={write}"
+            );
+            assert!(fixture.workspace.join("a.txt").exists());
+            assert!(fixture.file_write_approvals().is_empty());
+            assert!(fixture.audit_events().is_empty(), "no broker operation ran");
+            fixture.close_journal();
+            assert_eq!(fixture.last_tool_code().as_deref(), Some("edit_disabled"));
+        }
+    }
+}
+
+/// With `execute` also enabled, all eight tool slots are used, in the
+/// documented order, and the manifest records the same list.
+#[test]
+fn all_eight_tools_are_advertised_in_order_with_execute_enabled() {
+    let mut fixture = Fixture::new();
+    let workspace_id = fixture.workspace_id;
+    let control = fixture.control_mut();
+    control
+        .set_permissions(
+            workspace_id,
+            PermissionSet {
+                model_tools: true,
+                execute: true,
+                ..PermissionSet::default()
+            },
+            control.revision(),
+        )
+        .expect("enable execute");
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("turn completes");
+    let expected = [
+        "workspace_read_file",
+        "workspace_list_directory",
+        "workspace_edit_file",
+        "workspace_multi_edit_file",
+        "workspace_create_file",
+        "workspace_rename_file",
+        "workspace_delete_file",
+        "workspace_run_command",
+    ];
+    assert_eq!(model.requests[0].tools, expected);
+    assert_eq!(
+        report.manifest.tools,
+        Some(expected.map(str::to_owned).to_vec())
+    );
+}
+
+/// A file that the checkpoint cannot capture is refused as a recoverable result
+/// after the approval is spent, and nothing is removed or recorded.
+#[cfg(windows)]
+#[test]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "Windows only: this clears the read-only attribute, not a Unix mode"
+)]
+fn deleting_a_read_only_file_is_a_recoverable_refusal() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("locked.txt");
+    fs::write(&target, "alpha").expect("source");
+    let mut permissions = fs::metadata(&target).expect("metadata").permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&target, permissions).expect("read-only");
+    fixture.edit_turn(vec![delete_call("d-1", "locked.txt")]);
+    let approval = fixture.approve_pending_edit();
+    let (report, _) = fixture.edit_turn(vec![delete_call("d-2", "locked.txt")]);
+    assert_eq!(report.reply, "reported");
+    assert!(target.exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    let mut permissions = fs::metadata(&target).expect("metadata").permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&target, permissions).expect("make it removable again");
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("invalid_request"));
 }

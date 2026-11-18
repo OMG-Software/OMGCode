@@ -805,8 +805,8 @@ fn sixty_four_acknowledged_checkpoints_are_retained_and_refuse_the_sixty_fifth()
 #[cfg(target_os = "linux")]
 #[test]
 /// Fills storage with full payload pairs, then compares reported bytes with
-/// every actual managed file length at the quota boundary.
-fn aggregate_checkpoint_storage_refuses_before_exceeding_sixty_four_mib() {
+/// every actual managed file length at the 128 MiB quota boundary.
+fn aggregate_checkpoint_storage_refuses_before_exceeding_one_hundred_twenty_eight_mib() {
     const PAYLOAD_BYTES: usize = 1024 * 1024;
     const MEBIBYTE: u64 = 1024 * 1024;
 
@@ -825,7 +825,7 @@ fn aggregate_checkpoint_storage_refuses_before_exceeding_sixty_four_mib() {
     let mut successes = 0;
     let mut refused = false;
 
-    for _ in 0..34 {
+    for _ in 0..66 {
         let ledger_before = ledger_path
             .exists()
             .then(|| fs::read(&ledger_path).expect("snapshot existing ledger before attempt"));
@@ -858,12 +858,14 @@ fn aggregate_checkpoint_storage_refuses_before_exceeding_sixty_four_mib() {
         }
     }
 
-    assert!(refused, "quota did not refuse within 34 attempts");
+    // Each pair is 2 MiB and the next reservation about 3 MiB, so the quota,
+    // not the 64-entry bound, refuses first.
+    assert!(refused, "quota did not refuse within 66 attempts");
     assert!(
-        successes >= 30,
-        "expected at least 30 whole checkpoints, got {successes}"
+        successes >= 62,
+        "expected at least 62 whole checkpoints, got {successes}"
     );
-    assert!(successes < 32, "32 full checkpoint pairs must exceed quota");
+    assert!(successes < 64, "64 full checkpoint pairs must exceed quota");
     assert_eq!(entry_paths(&store_path).len(), successes + 1);
 
     let inspection = FileBroker::new(&mut fixture.control)
@@ -871,8 +873,8 @@ fn aggregate_checkpoint_storage_refuses_before_exceeding_sixty_four_mib() {
         .expect("inspect full retained checkpoint store");
     assert_eq!(inspection.operations.len(), successes);
     assert_eq!(inspection.pending, None);
-    assert!(inspection.managed_bytes >= 60 * MEBIBYTE);
-    assert!(inspection.managed_bytes <= 64 * MEBIBYTE);
+    assert!(inspection.managed_bytes >= 124 * MEBIBYTE);
+    assert!(inspection.managed_bytes <= 128 * MEBIBYTE);
     assert_eq!(
         inspection.managed_bytes,
         managed_file_bytes(&fixture, successes),

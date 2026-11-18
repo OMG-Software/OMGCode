@@ -170,6 +170,10 @@ impl PrivateDirectory {
     pub fn remove_dir(&self, _name: &OsStr) -> io::Result<()> {
         Err(unsupported())
     }
+    /// Refuse unsupported private file replacement.
+    pub fn replace_file(&self, _source: &OsStr, _target: &OsStr) -> io::Result<()> {
+        Err(unsupported())
+    }
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]

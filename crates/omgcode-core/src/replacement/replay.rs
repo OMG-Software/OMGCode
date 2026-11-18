@@ -1,6 +1,6 @@
 //! Strict bounded decoding and historical state transitions; no filesystem I/O.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use omgcode_platform::broker::RelativePath;
 use serde::de::DeserializeOwned;
@@ -11,19 +11,25 @@ use uuid::{Uuid, Variant, Version};
 
 use super::{
     CheckpointRetention, InitializationPhase, InitializationSnapshot, RecordedArtifact,
-    RecordedFileIdentity, RecordedReplacement, ReplacementError, ReplacementOutcome,
-    ReplacementProgress, ReplacementScope, ReplacementSnapshot,
+    RecordedCompaction, RecordedFileIdentity, RecordedReplacement, ReplacementError,
+    ReplacementKind, ReplacementOutcome, ReplacementProgress, ReplacementScope,
+    ReplacementSnapshot,
 };
 use crate::policy::WorkspaceId;
 use crate::session::NativePath;
 use crate::storage::parse_strict_json;
 
-const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
-const MAX_RECORD_BYTES: usize = 64 * 1024;
-const MAX_LEDGER_RECORDS: usize = 4096;
-const MAX_OPERATIONS: usize = 64;
+/// Whole-ledger byte bound. Raised from 8 MiB in 0.35.0 (ADR-0053).
+pub(super) const MAX_LEDGER_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_RECORD_BYTES: usize = 64 * 1024;
+/// Whole-ledger record bound. Raised from 4,096 in 0.35.0 (ADR-0053).
+pub(super) const MAX_LEDGER_RECORDS: usize = 65_536;
+pub(super) const MAX_OPERATIONS: usize = 64;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+/// SHA-256 of the empty byte string: the proposed artifact of every removal.
+pub(super) const EMPTY_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -69,6 +75,10 @@ pub(super) enum LedgerAction {
     Created,
     ReplacementStarted {
         operation_id: Uuid,
+        /// Absent for a replacement, so earlier records stay byte-identical.
+        /// Older readers refuse a record that carries it.
+        #[serde(default, skip_serializing_if = "ReplacementKind::is_replace")]
+        kind: ReplacementKind,
         session_id: Uuid,
         workspace_id: Uuid,
         revision: u64,
@@ -105,6 +115,45 @@ pub(super) enum LedgerAction {
     CheckpointDeleted {
         operation_id: Uuid,
     },
+    /// The ledger was rewritten in place. Only the second record may be one.
+    /// Older readers refuse it.
+    Compacted {
+        previous: RecordedArtifact,
+        previous_records: u64,
+        revision_floor: Option<u64>,
+    },
+    /// One retained, resolved operation's whole recorded state, carried by a
+    /// compaction. It follows the compaction record or another carried record.
+    CheckpointCarried {
+        operation_id: Uuid,
+        /// Absent for a replacement, like the started record.
+        #[serde(default, skip_serializing_if = "ReplacementKind::is_replace")]
+        kind: ReplacementKind,
+        session_id: Uuid,
+        workspace_id: Uuid,
+        revision: u64,
+        target: NativePath,
+        expected: RecordedArtifact,
+        proposed: RecordedArtifact,
+        manifest: Option<RecordedArtifact>,
+        stage_identity: Option<RecordedFileIdentity>,
+        progress: ReplacementProgress,
+        outcome: Option<ReplacementOutcome>,
+        code: Option<String>,
+        acknowledged: bool,
+    },
+}
+
+/// The recorded fields that start an operation, whether new or carried.
+struct Started {
+    operation_id: Uuid,
+    kind: ReplacementKind,
+    session_id: Uuid,
+    workspace_id: Uuid,
+    revision: u64,
+    target: NativePath,
+    expected: RecordedArtifact,
+    proposed: RecordedArtifact,
 }
 
 /// Check framing and all byte/count bounds before parsing or allocating JSON.
@@ -225,34 +274,101 @@ pub(super) fn ledger(
     let mut snapshot = ReplacementSnapshot {
         scope,
         operations: Vec::new(),
+        compaction: None,
         event_count: 0,
-        encoded_bytes: bytes.len(),
+        encoded_bytes: 0,
         pending_operation_id: None,
         pending_deletion_id: None,
+        revision_floor: None,
+        carried_revision: None,
+        carrying: false,
+        event_ids: HashSet::new(),
+        positions: HashMap::new(),
+        not_deleted: 0,
     };
-    let mut event_ids = HashSet::new();
-    for (index, line) in records(
+    for line in records(
         bytes,
         MAX_LEDGER_BYTES,
         MAX_LEDGER_RECORDS,
         MAX_RECORD_BYTES,
-    )?
-    .enumerate()
-    {
-        let entry: Envelope<LedgerAction> = decode(line)?;
-        validate_envelope(&entry, index, scope)?;
-        if !event_ids.insert(entry.event_id) {
-            return Err(ReplacementError::Invalid("duplicate event ID"));
-        }
-        if (index == 0) != matches!(entry.action, LedgerAction::Created) {
-            return Err(ReplacementError::Invalid(
-                "created record must occur exactly first",
-            ));
-        }
-        apply(&mut snapshot, entry.action)?;
-        snapshot.event_count = index + 1;
+    )? {
+        push(&mut snapshot, line)?;
     }
     Ok(snapshot)
+}
+
+/// Validate one more record against a validated ledger, leaving it unchanged.
+///
+/// The result equals replaying the whole ledger with `line` appended: the
+/// same framing, bounds, and transitions apply, without parsing earlier
+/// records again.
+pub(super) fn extend(
+    snapshot: &ReplacementSnapshot,
+    line: &[u8],
+) -> Result<ReplacementSnapshot, ReplacementError> {
+    if snapshot
+        .encoded_bytes
+        .checked_add(line.len())
+        .is_none_or(|total| total > MAX_LEDGER_BYTES)
+    {
+        return Err(ReplacementError::Limit("total bytes"));
+    }
+    if snapshot.event_count >= MAX_LEDGER_RECORDS {
+        return Err(ReplacementError::Limit("record count"));
+    }
+    if line.len() > MAX_RECORD_BYTES {
+        return Err(ReplacementError::Limit("record bytes"));
+    }
+    match line.split_last() {
+        Some((b'\n', body)) if !body.contains(&b'\n') => {}
+        _ => {
+            return Err(ReplacementError::Invalid(
+                "record is not one complete JSONL line",
+            ));
+        }
+    }
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Err(ReplacementError::Invalid("blank JSONL record"));
+    }
+    let mut next = snapshot.clone();
+    push(&mut next, line)?;
+    Ok(next)
+}
+
+/// Decode one framed record and apply it at the next sequence number.
+fn push(snapshot: &mut ReplacementSnapshot, line: &[u8]) -> Result<(), ReplacementError> {
+    let index = snapshot.event_count;
+    let entry: Envelope<LedgerAction> = decode(line)?;
+    validate_envelope(&entry, index, snapshot.scope)?;
+    if !snapshot.event_ids.insert(entry.event_id) {
+        return Err(ReplacementError::Invalid("duplicate event ID"));
+    }
+    if (index == 0) != matches!(entry.action, LedgerAction::Created) {
+        return Err(ReplacementError::Invalid(
+            "created record must occur exactly first",
+        ));
+    }
+    if index != 1 && matches!(entry.action, LedgerAction::Compacted { .. }) {
+        return Err(ReplacementError::Invalid(
+            "a compaction record must be the second record",
+        ));
+    }
+    if matches!(entry.action, LedgerAction::CheckpointCarried { .. }) {
+        if !snapshot.carrying {
+            return Err(ReplacementError::Invalid(
+                "a carried operation must follow the compaction record",
+            ));
+        }
+    } else {
+        snapshot.carrying = false;
+    }
+    apply(snapshot, entry.action)?;
+    snapshot.event_count = index + 1;
+    snapshot.encoded_bytes = snapshot
+        .encoded_bytes
+        .checked_add(line.len())
+        .ok_or(ReplacementError::Limit("total bytes"))?;
+    Ok(())
 }
 
 fn validate_artifact(
@@ -313,6 +429,7 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
         LedgerAction::Created => {}
         LedgerAction::ReplacementStarted {
             operation_id,
+            kind,
             session_id,
             workspace_id,
             revision,
@@ -321,37 +438,6 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
             proposed,
             artifacts,
         } => {
-            validate_uuid(operation_id)?;
-            validate_uuid(session_id)?;
-            validate_uuid(workspace_id)?;
-            if snapshot.pending_operation_id.is_some()
-                || snapshot.pending_deletion_id.is_some()
-                || snapshot
-                    .operations
-                    .iter()
-                    .any(|operation| operation.operation_id == operation_id)
-            {
-                return Err(ReplacementError::Invalid("parallel or reused operation ID"));
-            }
-            if snapshot
-                .operations
-                .iter()
-                .filter(|operation| operation.retention != CheckpointRetention::Deleted)
-                .count()
-                >= MAX_OPERATIONS
-            {
-                return Err(ReplacementError::Limit("retained operations"));
-            }
-            if snapshot
-                .operations
-                .last()
-                .is_some_and(|operation| revision < operation.revision)
-            {
-                return Err(ReplacementError::Invalid("policy revision moved backwards"));
-            }
-            validate_target(&target)?;
-            validate_artifact(&expected, MAX_PAYLOAD_BYTES, true)?;
-            validate_artifact(&proposed, MAX_PAYLOAD_BYTES, true)?;
             if artifacts.original != "original"
                 || artifacts.proposed != "proposed"
                 || artifacts.manifest != "manifest.json"
@@ -361,25 +447,20 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
                     "artifact names do not match the fixed private layout",
                 ));
             }
-            let workspace_id = WorkspaceId::from_uuid(workspace_id)
-                .map_err(|_| ReplacementError::Invalid("invalid workspace ID"))?;
-            snapshot.operations.push(RecordedReplacement {
-                operation_id,
-                session_id,
-                workspace_id,
-                revision,
-                target,
-                expected,
-                proposed,
-                manifest: None,
-                stage_identity: None,
-                progress: ReplacementProgress::Intent,
-                outcome: None,
-                code: None,
-                acknowledged: false,
-                retention: CheckpointRetention::Retained,
-            });
-            snapshot.pending_operation_id = Some(operation_id);
+            start(
+                snapshot,
+                Started {
+                    operation_id,
+                    kind,
+                    session_id,
+                    workspace_id,
+                    revision,
+                    target,
+                    expected,
+                    proposed,
+                },
+                false,
+            )?;
         }
         LedgerAction::CheckpointPrepared {
             operation_id,
@@ -401,6 +482,9 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
             content,
         } => {
             let operation = pending(snapshot, operation_id)?;
+            if operation.kind == ReplacementKind::Remove {
+                return Err(ReplacementError::Invalid("a removal has no stage"));
+            }
             if operation.progress != ReplacementProgress::CheckpointPrepared
                 || operation.outcome.is_some()
                 || content != operation.proposed
@@ -414,9 +498,12 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
         }
         LedgerAction::CommitIntended { operation_id } => {
             let operation = pending(snapshot, operation_id)?;
-            if operation.progress != ReplacementProgress::StagePrepared
-                || operation.outcome.is_some()
-            {
+            // A removal has no stage, so its intent follows the checkpoint.
+            let required = match operation.kind {
+                ReplacementKind::Replace => ReplacementProgress::StagePrepared,
+                ReplacementKind::Remove => ReplacementProgress::CheckpointPrepared,
+            };
+            if operation.progress != required || operation.outcome.is_some() {
                 return Err(ReplacementError::Invalid("commit intent is out of order"));
             }
             operation.progress = ReplacementProgress::CommitIntended;
@@ -474,9 +561,8 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
                 ));
             }
             let operation = snapshot
-                .operations
-                .iter_mut()
-                .find(|operation| operation.operation_id == operation_id)
+                .position(operation_id)
+                .and_then(|index| snapshot.operations.get_mut(index))
                 .ok_or(ReplacementError::Invalid(
                     "deletion names no recorded operation",
                 ))?;
@@ -495,13 +581,267 @@ fn apply(snapshot: &mut ReplacementSnapshot, action: LedgerAction) -> Result<(),
                 ));
             }
             let operation = snapshot
-                .operations
-                .iter_mut()
-                .find(|operation| operation.operation_id == operation_id)
+                .position(operation_id)
+                .and_then(|index| snapshot.operations.get_mut(index))
                 .ok_or(ReplacementError::Invalid("missing deleted operation"))?;
             operation.retention = CheckpointRetention::Deleted;
             snapshot.pending_deletion_id = None;
+            snapshot.not_deleted = snapshot
+                .not_deleted
+                .checked_sub(1)
+                .ok_or(ReplacementError::Invalid("deleted count exceeds history"))?;
         }
+        LedgerAction::Compacted {
+            previous,
+            previous_records,
+            revision_floor,
+        } => {
+            let maximum = u64::try_from(MAX_LEDGER_BYTES)
+                .map_err(|_| ReplacementError::Limit("total bytes"))?;
+            validate_artifact(&previous, maximum, false)?;
+            if previous_records == 0
+                || usize::try_from(previous_records)
+                    .map_or(true, |count| count > MAX_LEDGER_RECORDS)
+            {
+                return Err(ReplacementError::Invalid(
+                    "compacted record count is outside its bound",
+                ));
+            }
+            snapshot.compaction = Some(RecordedCompaction {
+                ledger: previous,
+                records: previous_records,
+            });
+            snapshot.revision_floor = revision_floor;
+            snapshot.carrying = true;
+        }
+        LedgerAction::CheckpointCarried {
+            operation_id,
+            kind,
+            session_id,
+            workspace_id,
+            revision,
+            target,
+            expected,
+            proposed,
+            manifest,
+            stage_identity,
+            progress,
+            outcome,
+            code,
+            acknowledged,
+        } => carry(
+            snapshot,
+            Started {
+                operation_id,
+                kind,
+                session_id,
+                workspace_id,
+                revision,
+                target,
+                expected,
+                proposed,
+            },
+            Carried {
+                manifest,
+                stage_identity,
+                progress,
+                outcome,
+                code,
+                acknowledged,
+            },
+        )?,
+    }
+    Ok(())
+}
+
+/// The recorded state a carried operation reached after it started.
+struct Carried {
+    manifest: Option<RecordedArtifact>,
+    stage_identity: Option<RecordedFileIdentity>,
+    progress: ReplacementProgress,
+    outcome: Option<ReplacementOutcome>,
+    code: Option<String>,
+    acknowledged: bool,
+}
+
+/// Rebuild one carried operation through the same transitions that its
+/// original records made, so a carried state can only be one those records
+/// could reach. The result must be resolved. Carried revisions keep their
+/// recorded order and never exceed the compaction's floor.
+fn carry(
+    snapshot: &mut ReplacementSnapshot,
+    started: Started,
+    carried: Carried,
+) -> Result<(), ReplacementError> {
+    let operation_id = started.operation_id;
+    let revision = started.revision;
+    if snapshot.revision_floor.is_none_or(|floor| revision > floor)
+        || snapshot
+            .carried_revision
+            .is_some_and(|last| revision < last)
+    {
+        return Err(ReplacementError::Invalid(
+            "carried revision is out of order or above the floor",
+        ));
+    }
+    let content = started.proposed.clone();
+    let kind = started.kind;
+    start(snapshot, started, true)?;
+    let Carried {
+        manifest,
+        stage_identity,
+        progress,
+        outcome,
+        code,
+        acknowledged,
+    } = carried;
+    let prepared = progress != ReplacementProgress::Intent;
+    if kind == ReplacementKind::Remove && progress == ReplacementProgress::StagePrepared {
+        return Err(ReplacementError::Invalid("a removal has no stage"));
+    }
+    let staged = kind == ReplacementKind::Replace
+        && matches!(
+            progress,
+            ReplacementProgress::StagePrepared | ReplacementProgress::CommitIntended
+        );
+    match (prepared, manifest) {
+        (true, Some(manifest)) => apply(
+            snapshot,
+            LedgerAction::CheckpointPrepared {
+                operation_id,
+                manifest,
+            },
+        )?,
+        (false, None) => {}
+        _ => {
+            return Err(ReplacementError::Invalid(
+                "carried manifest does not match its progress",
+            ));
+        }
+    }
+    match (staged, stage_identity) {
+        (true, Some(identity)) => apply(
+            snapshot,
+            LedgerAction::StagePrepared {
+                operation_id,
+                identity,
+                content,
+            },
+        )?,
+        (false, None) => {}
+        _ => {
+            return Err(ReplacementError::Invalid(
+                "carried stage does not match its progress",
+            ));
+        }
+    }
+    if progress == ReplacementProgress::CommitIntended {
+        apply(snapshot, LedgerAction::CommitIntended { operation_id })?;
+    }
+    match outcome {
+        Some(outcome) => apply(
+            snapshot,
+            LedgerAction::ReplacementFinished {
+                operation_id,
+                outcome,
+                code,
+            },
+        )?,
+        None if code.is_none() => {}
+        None => {
+            return Err(ReplacementError::Invalid(
+                "carried machine code has no outcome",
+            ));
+        }
+    }
+    if acknowledged {
+        apply(
+            snapshot,
+            LedgerAction::ReplacementAcknowledged { operation_id },
+        )?;
+    }
+    if snapshot.pending_operation_id.is_some() {
+        return Err(ReplacementError::Invalid(
+            "a carried operation must be resolved",
+        ));
+    }
+    snapshot.carried_revision = Some(revision);
+    Ok(())
+}
+
+/// Record a new or carried operation. A new start must not lower the
+/// revision floor and raises it; carried revisions follow their own rule.
+fn start(
+    snapshot: &mut ReplacementSnapshot,
+    started: Started,
+    carried: bool,
+) -> Result<(), ReplacementError> {
+    let Started {
+        operation_id,
+        kind,
+        session_id,
+        workspace_id,
+        revision,
+        target,
+        expected,
+        proposed,
+    } = started;
+    validate_uuid(operation_id)?;
+    validate_uuid(session_id)?;
+    validate_uuid(workspace_id)?;
+    if snapshot.pending_operation_id.is_some()
+        || snapshot.pending_deletion_id.is_some()
+        || snapshot.positions.contains_key(&operation_id)
+    {
+        return Err(ReplacementError::Invalid("parallel or reused operation ID"));
+    }
+    if snapshot.not_deleted >= MAX_OPERATIONS {
+        return Err(ReplacementError::Limit("retained operations"));
+    }
+    if !carried
+        && snapshot
+            .revision_floor
+            .is_some_and(|floor| revision < floor)
+    {
+        return Err(ReplacementError::Invalid("policy revision moved backwards"));
+    }
+    validate_target(&target)?;
+    validate_artifact(&expected, MAX_PAYLOAD_BYTES, true)?;
+    validate_artifact(&proposed, MAX_PAYLOAD_BYTES, true)?;
+    if kind == ReplacementKind::Remove && (proposed.bytes != 0 || proposed.sha256 != EMPTY_SHA256) {
+        return Err(ReplacementError::Invalid(
+            "a removal proposes the empty artifact",
+        ));
+    }
+    let workspace_id = WorkspaceId::from_uuid(workspace_id)
+        .map_err(|_| ReplacementError::Invalid("invalid workspace ID"))?;
+    snapshot
+        .positions
+        .insert(operation_id, snapshot.operations.len());
+    snapshot.not_deleted = snapshot
+        .not_deleted
+        .checked_add(1)
+        .ok_or(ReplacementError::Limit("retained operations"))?;
+    snapshot.operations.push(RecordedReplacement {
+        operation_id,
+        kind,
+        session_id,
+        workspace_id,
+        revision,
+        target,
+        expected,
+        proposed,
+        manifest: None,
+        stage_identity: None,
+        progress: ReplacementProgress::Intent,
+        outcome: None,
+        code: None,
+        acknowledged: false,
+        retention: CheckpointRetention::Retained,
+    });
+    snapshot.pending_operation_id = Some(operation_id);
+    if !carried {
+        snapshot.revision_floor = Some(revision);
     }
     Ok(())
 }

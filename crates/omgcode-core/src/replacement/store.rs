@@ -18,11 +18,14 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use super::manifest::{MAX_MANIFEST, Manifest, SecurityMetadata, descriptor};
-use super::replay::{ArtifactNames, Envelope, InitializationAction, LedgerAction};
+use super::replay::{
+    self, ArtifactNames, Envelope, InitializationAction, LedgerAction, MAX_LEDGER_BYTES,
+    MAX_LEDGER_RECORDS, MAX_OPERATIONS, MAX_RECORD_BYTES,
+};
 use super::{
-    CheckpointRetention, InitializationPhase, RecordedArtifact, RecordedReplacement,
-    ReplacementProgress, ReplacementScope, ReplacementSnapshot, inspect_initialization,
-    inspect_ledger,
+    CheckpointRetention, InitializationPhase, RecordedArtifact, RecordedCompaction,
+    RecordedReplacement, ReplacementKind, ReplacementProgress, ReplacementScope,
+    ReplacementSnapshot, inspect_initialization, inspect_ledger,
 };
 use crate::control::{ControlError, ControlStore};
 use crate::files::FileTarget;
@@ -35,16 +38,21 @@ pub use publication::ReplacementReceipt;
 const ANCHOR: &str = "replacement-init-v1.jsonl";
 const DIRECTORY: &str = "replacement-v1";
 const LEDGER: &str = "ledger.jsonl";
-const MAX_LEDGER: usize = 8 * 1024 * 1024;
-const MAX_RECORD: usize = 64 * 1024;
-const MAX_EVENTS: usize = 4096;
+/// A compacted ledger before it replaces `LEDGER`. Left behind only by an
+/// interrupted compaction; it is a derived copy, never evidence.
+const COMPACTION: &str = "ledger.compact";
+const MAX_LEDGER: usize = MAX_LEDGER_BYTES;
+const MAX_RECORD: usize = MAX_RECORD_BYTES;
+const MAX_EVENTS: usize = MAX_LEDGER_RECORDS;
 const MAX_PAYLOAD: usize = 1024 * 1024;
-const MAX_STORAGE: u64 = 64 * 1024 * 1024;
+/// The 64 MiB ledger bound plus the 64 MiB that the whole store had before
+/// 0.35.0, so a full ledger leaves checkpoint files their earlier room.
+const MAX_STORAGE: u64 = 128 * 1024 * 1024;
 // Each remaining v1 stage, commit, finish, or acknowledgement record fits 1 KiB.
 const TAIL_RECORD_BYTES: usize = 1024;
 const RECOVERY_BYTES: usize = 4 * TAIL_RECORD_BYTES;
 const FUTURE_STAGE_BYTES: u64 = 1024 * 1024;
-const MAX_RETAINED: usize = 64;
+const MAX_RETAINED: usize = MAX_OPERATIONS;
 /// Fixed entry artifact names, in deletion order: unpublished and private
 /// bytes first, then the manifest that describes them.
 const ENTRY_ARTIFACTS: [&str; 4] = ["stage", "proposed", "original", "manifest.json"];
@@ -104,7 +112,8 @@ pub enum CheckpointError {
     /// Private evidence may exist. Reopen for inspection; do not retry or delete.
     #[error("checkpoint operation is uncertain for operation {operation_id:?}: {source}")]
     Uncertain {
-        /// None denotes initialization, before an operation was admitted.
+        /// None denotes initialization or a ledger compaction, neither of
+        /// which belongs to one operation.
         operation_id: Option<Uuid>,
         /// The original failure, retained without automatic recovery.
         #[source]
@@ -162,6 +171,29 @@ pub struct CheckpointDeletion {
     pub managed_bytes: u64,
 }
 
+/// Outcome of one ledger compaction. No checkpoint entry or workspace file is
+/// opened, changed, or removed.
+#[derive(Debug, Serialize)]
+pub struct CheckpointCompaction {
+    /// Whether the ledger was rewritten. False when compaction would not
+    /// shrink it; nothing is written then.
+    pub compacted: bool,
+    /// Records in the ledger before this request.
+    pub previous_records: usize,
+    /// Bytes in the ledger before this request.
+    pub previous_bytes: usize,
+    /// Records in the ledger after this request.
+    pub records: usize,
+    /// Bytes in the ledger after this request.
+    pub bytes: usize,
+    /// Retained operations carried into the ledger, one record each.
+    pub carried: usize,
+    /// Deleted operations whose history the rewrite dropped.
+    pub dropped: usize,
+    /// Observed managed file bytes after the request.
+    pub managed_bytes: u64,
+}
+
 /// Observed protected-storage phase. No variant grants authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -187,9 +219,11 @@ pub struct CheckpointInspection {
     pub pending: Option<Uuid>,
     /// One recorded, unfinished deletion, if any.
     pub pending_deletion: Option<Uuid>,
-    /// All recorded operation metadata, including deleted entries' history.
-    /// At most 64 operations are not deleted.
+    /// Recorded operation metadata, including deleted entries' history since
+    /// the last compaction. At most 64 operations are not deleted.
     pub operations: Vec<RecordedReplacement>,
+    /// The ledger that the last compaction replaced, if there was one.
+    pub compacted_from: Option<RecordedCompaction>,
     /// Observed managed file bytes including anchor, ledger, and partial files.
     pub managed_bytes: u64,
 }
@@ -256,6 +290,7 @@ pub(crate) fn inspect(control: &ControlStore) -> Result<CheckpointInspection, Ch
             pending: None,
             pending_deletion: None,
             operations: Vec::new(),
+            compacted_from: None,
             managed_bytes: 0,
         });
     }
@@ -292,6 +327,7 @@ pub(crate) fn inspect(control: &ControlStore) -> Result<CheckpointInspection, Ch
             pending: None,
             pending_deletion: None,
             operations: Vec::new(),
+            compacted_from: None,
             managed_bytes: used,
         });
     }
@@ -346,15 +382,50 @@ fn delete_with(
     store.delete_entry(operation_id)
 }
 
+/// Rewrite the ledger in place, keeping only retained entries' state.
+///
+/// Deleted entries' history is dropped; only the replaced ledger's size,
+/// digest, and record count remain. Refused while an operation is unresolved
+/// or a deletion is unfinished. No checkpoint entry or workspace file is
+/// opened. Nothing is written when compaction would not shrink the ledger.
+pub(crate) fn compact(control: &ControlStore) -> Result<CheckpointCompaction, CheckpointError> {
+    compact_with(control, Faults::default())
+}
+
+/// Compact with one instance-local test fault at a named persistence boundary.
+#[cfg(test)]
+pub(crate) fn compact_with_fault(
+    control: &ControlStore,
+    point: &'static str,
+) -> Result<CheckpointCompaction, CheckpointError> {
+    compact_with(control, Faults { at: Some(point) })
+}
+
+fn compact_with(
+    control: &ControlStore,
+    faults: Faults,
+) -> Result<CheckpointCompaction, CheckpointError> {
+    let (expected, control_id) = context(control)?;
+    if !state_present(&expected.live_path()?)? {
+        return Err(CheckpointError::Unavailable);
+    }
+    let mut store = Store::open_ready(open_root(&expected)?, control_id, true)?;
+    store.faults = faults;
+    store.compact_ledger()
+}
+
 /// Return one retained checkpoint's original bytes for an explicit restore.
 ///
-/// The entry must be prepared and recorded for the same workspace and native
-/// target path. Its bytes are reread and compared with the recorded digest.
-/// The store is opened read-only and closed before the caller applies them.
+/// The entry must be prepared, of the requested kind, and recorded for the
+/// same workspace and native target path. Its bytes are reread and compared
+/// with the recorded digest. A replacement checkpoint's original must be
+/// UTF-8; a removal checkpoint's need not be, because nothing interprets it.
+/// The store is opened read-only and closed before the caller restores them.
 pub(crate) fn read_original(
     control: &ControlStore,
     operation_id: Uuid,
     target: &FileTarget,
+    kind: ReplacementKind,
 ) -> Result<Vec<u8>, CheckpointError> {
     let (expected, control_id) = context(control)?;
     if !state_present(&expected.live_path()?)? {
@@ -373,6 +444,7 @@ pub(crate) fn read_original(
         .iter()
         .find(|operation| {
             operation.operation_id == operation_id
+                && operation.kind == kind
                 && operation.retention == CheckpointRetention::Retained
                 && operation.manifest.is_some()
         })
@@ -387,7 +459,9 @@ pub(crate) fn read_original(
         .open_dir(OsStr::new(&operation_id.to_string()))?;
     let mut file = entry.open_file(OsStr::new("original"), false)?;
     let bytes = read_bounded(&mut file, MAX_PAYLOAD)?;
-    if descriptor(&bytes)? != operation.expected || std::str::from_utf8(&bytes).is_err() {
+    if descriptor(&bytes)? != operation.expected
+        || (kind == ReplacementKind::Replace && std::str::from_utf8(&bytes).is_err())
+    {
         return Err(CheckpointError::Invalid(
             "checkpoint payload differs or is not UTF-8",
         ));
@@ -426,7 +500,9 @@ fn record_acknowledgement(store: &mut Store, operation_id: Uuid) -> Result<(), C
 pub(crate) struct Store {
     root: PrivateDirectory,
     directory: PrivateDirectory,
-    ledger: File,
+    /// Absent only while a compaction replaces the ledger name, which Windows
+    /// refuses while this handle is open; the writer is poisoned until reopen.
+    ledger: Option<File>,
     bytes: Vec<u8>,
     snapshot: ReplacementSnapshot,
     used: u64,
@@ -472,6 +548,7 @@ impl Faults {
                 "ack_sync" => "ack_partial_write",
                 "deletion_intent_sync" => "deletion_intent_partial_write",
                 "deletion_outcome_sync" => "deletion_outcome_partial_write",
+                "compaction_sync" => "compaction_partial_write",
                 _ => "unselected_partial_write",
             };
             if self.at == Some(partial) {
@@ -570,7 +647,7 @@ impl Store {
             root,
             _anchor: anchor,
             directory,
-            ledger,
+            ledger: Some(ledger),
             bytes,
             snapshot,
             used,
@@ -616,7 +693,7 @@ impl Store {
             root,
             _anchor: anchor,
             directory,
-            ledger,
+            ledger: Some(ledger),
             bytes,
             snapshot,
             used,
@@ -639,8 +716,22 @@ impl Store {
                 .pending_deletion()
                 .map(|operation| operation.operation_id),
             operations: self.snapshot.operations.clone(),
+            compacted_from: self.snapshot.compaction.clone(),
             managed_bytes: self.used,
         }
+    }
+
+    /// Whether `events` more records and `bytes` more ledger bytes fit.
+    fn ledger_fits(&self, events: usize, bytes: usize) -> bool {
+        self.snapshot
+            .event_count
+            .checked_add(events)
+            .is_some_and(|count| count <= MAX_EVENTS)
+            && self
+                .bytes
+                .len()
+                .checked_add(bytes)
+                .is_some_and(|size| size <= MAX_LEDGER)
     }
 
     /// Reserve the full future storage tail before recording intent and artifacts.
@@ -653,8 +744,29 @@ impl Store {
         capture: &FileCapture,
         proposed: &[u8],
     ) -> Result<CheckpointReceipt, CheckpointError> {
+        self.prepare_kind(
+            ReplacementKind::Replace,
+            target,
+            revision,
+            capture,
+            proposed,
+        )
+    }
+
+    /// Prepare a checkpoint of either kind. A removal proposes no bytes.
+    pub(crate) fn prepare_kind(
+        &mut self,
+        kind: ReplacementKind,
+        target: &FileTarget,
+        revision: u64,
+        capture: &FileCapture,
+        proposed: &[u8],
+    ) -> Result<CheckpointReceipt, CheckpointError> {
         if self.poisoned {
             return Err(CheckpointError::Poisoned);
+        }
+        if kind == ReplacementKind::Remove && !proposed.is_empty() {
+            return Err(CheckpointError::Invalid("a removal proposes no bytes"));
         }
         if let Some(operation) = self.snapshot.pending() {
             return Err(CheckpointError::Pending(operation.operation_id));
@@ -678,6 +790,7 @@ impl Store {
         let manifest = Manifest::encode(
             self.snapshot.scope,
             operation_id,
+            kind,
             target,
             revision,
             capture,
@@ -685,6 +798,7 @@ impl Store {
         )?;
         let start = LedgerAction::ReplacementStarted {
             operation_id,
+            kind,
             session_id: target.session_id,
             workspace_id: *target.workspace_id.as_uuid(),
             revision,
@@ -699,7 +813,17 @@ impl Store {
                 stage: "stage".to_owned(),
             },
         };
-        let intent = encode(self.snapshot.scope, self.snapshot.event_count, &start)?;
+        let mut intent = encode(self.snapshot.scope, self.snapshot.event_count, &start)?;
+        // A full ledger is compacted in place first. Only a rewrite that
+        // keeps every retained entry's state can make this room.
+        let tail = intent
+            .len()
+            .checked_add(RECOVERY_BYTES + 1024)
+            .ok_or(CheckpointError::Limit)?;
+        if !self.ledger_fits(6, tail) {
+            self.compact_ledger()?;
+            intent = encode(self.snapshot.scope, self.snapshot.event_count, &start)?;
+        }
         // Reserve maximum originals/proposal/stage, manifest, and all journal tail
         // capacity before making any artifact. No eviction makes capacity appear.
         let reserve = 3u64
@@ -710,18 +834,11 @@ impl Store {
             .and_then(|size| size.checked_add(u64::try_from(intent.len()).ok()?))
             .ok_or(CheckpointError::Limit)?;
         ensure_budget(self.used, reserve)?;
-        if self
-            .snapshot
-            .event_count
-            .checked_add(6)
-            .is_none_or(|size| size > MAX_EVENTS)
-            || self
-                .bytes
-                .len()
-                .checked_add(intent.len())
-                .and_then(|size| size.checked_add(RECOVERY_BYTES + 1024))
-                .is_none_or(|size| size > MAX_LEDGER)
-        {
+        let tail = intent
+            .len()
+            .checked_add(RECOVERY_BYTES + 1024)
+            .ok_or(CheckpointError::Limit)?;
+        if !self.ledger_fits(6, tail) {
             return Err(CheckpointError::Limit);
         }
         let result = (|| {
@@ -804,6 +921,11 @@ impl Store {
                 }) {
                     return Err(CheckpointError::Unavailable);
                 }
+                // The intent and its completion need two records. A full
+                // ledger is compacted first; the entry stays retained.
+                if !self.ledger_fits(2, 2 * TAIL_RECORD_BYTES) {
+                    self.compact_ledger()?;
+                }
                 false
             }
         };
@@ -875,6 +997,192 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite the ledger as its original header, one compaction record, and
+    /// one carried record per retained entry, then replace it by name.
+    ///
+    /// The candidate is replayed and must hold exactly the retained entries'
+    /// state before anything is written. It is written to `COMPACTION`,
+    /// synced, read back, and renamed over the ledger, so a crash leaves
+    /// either ledger and both describe the same retained state. A candidate
+    /// left by an interrupted compaction is removed first; it is a derived
+    /// copy, never evidence. Any failure after that poisons this writer and is
+    /// uncertain; reopen to inspect. Nothing is retried.
+    fn compact_ledger(&mut self) -> Result<CheckpointCompaction, CheckpointError> {
+        if self.poisoned {
+            return Err(CheckpointError::Poisoned);
+        }
+        if let Some(operation) = self.snapshot.pending() {
+            return Err(CheckpointError::Pending(operation.operation_id));
+        }
+        if let Some(operation) = self.snapshot.pending_deletion() {
+            return Err(CheckpointError::DeletionPending(operation.operation_id));
+        }
+        let retained = |snapshot: &ReplacementSnapshot| {
+            snapshot
+                .operations
+                .iter()
+                .filter(|operation| operation.retention == CheckpointRetention::Retained)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let current = retained(&self.snapshot);
+        let previous_records = self.snapshot.event_count;
+        let previous_bytes = self.bytes.len();
+        let unchanged = CheckpointCompaction {
+            compacted: false,
+            previous_records,
+            previous_bytes,
+            records: previous_records,
+            bytes: previous_bytes,
+            carried: current.len(),
+            dropped: 0,
+            managed_bytes: self.used,
+        };
+        // A ledger that is already its header, one compaction record, and one
+        // record per retained entry has nothing to drop.
+        let minimal = current.len().checked_add(2).ok_or(CheckpointError::Limit)?;
+        if previous_records <= minimal {
+            return Ok(unchanged);
+        }
+        let candidate = self.compacted_bytes()?;
+        let snapshot = inspect_ledger(&candidate, self.snapshot.scope)?;
+        let carried = retained(&snapshot);
+        if carried != current || snapshot.operations.len() != carried.len() {
+            return Err(CheckpointError::Invalid(
+                "compaction would change retained checkpoint state",
+            ));
+        }
+        if candidate.len() > previous_bytes {
+            return Ok(unchanged);
+        }
+        let dropped = self
+            .snapshot
+            .operations
+            .len()
+            .checked_sub(carried.len())
+            .ok_or(CheckpointError::Invalid("retained count exceeds history"))?;
+        let result = (|| {
+            if self.directory.exists(OsStr::new(COMPACTION))? {
+                self.directory.remove_file(OsStr::new(COMPACTION))?;
+                self.directory.sync()?;
+                self.refresh_usage()?;
+            }
+            ensure_budget(
+                self.used,
+                u64::try_from(candidate.len()).map_err(|_| CheckpointError::Limit)?,
+            )?;
+            {
+                let mut file = self.directory.create_file(OsStr::new(COMPACTION))?;
+                self.faults
+                    .write(&mut file, &candidate, "compaction_sync")?;
+                self.faults.check("compaction_sync")?;
+                file.sync_all()?;
+            }
+            let mut written = self.directory.open_file(OsStr::new(COMPACTION), false)?;
+            if read_bounded(&mut written, MAX_LEDGER)? != candidate {
+                return Err(CheckpointError::Invalid(
+                    "compacted ledger differs from its candidate",
+                ));
+            }
+            drop(written);
+            let mut ledger = self.ledger.take().ok_or(CheckpointError::Poisoned)?;
+            self.require_unchanged(&mut ledger)?;
+            // Windows refuses to replace a name while this handle, which
+            // denies delete sharing, is open. The anchor lock stays held.
+            drop(ledger);
+            self.faults.check("compaction_rename")?;
+            self.directory
+                .replace_file(OsStr::new(COMPACTION), OsStr::new(LEDGER))?;
+            self.faults.check("compaction_directory_sync")?;
+            self.directory.sync()?;
+            let mut ledger = self.directory.open_file(OsStr::new(LEDGER), true)?;
+            if read_bounded(&mut ledger, MAX_LEDGER)? != candidate {
+                return Err(CheckpointError::Invalid(
+                    "replaced ledger differs from its candidate",
+                ));
+            }
+            self.ledger = Some(ledger);
+            self.bytes = candidate;
+            self.snapshot = snapshot;
+            self.refresh_usage()?;
+            Ok(CheckpointCompaction {
+                compacted: true,
+                previous_records,
+                previous_bytes,
+                records: self.snapshot.event_count,
+                bytes: self.bytes.len(),
+                carried: carried.len(),
+                dropped,
+                managed_bytes: self.used,
+            })
+        })();
+        result.map_err(|source: CheckpointError| {
+            self.poisoned = true;
+            CheckpointError::Uncertain {
+                operation_id: None,
+                source: Box::new(source),
+            }
+        })
+    }
+
+    /// Encode the compacted form of the current ledger without writing it.
+    /// The original header record is kept byte for byte.
+    fn compacted_bytes(&self) -> Result<Vec<u8>, CheckpointError> {
+        let header = self
+            .bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .next()
+            .ok_or(CheckpointError::Invalid("ledger has no header record"))?;
+        let mut bytes = header.to_vec();
+        let previous = descriptor(&self.bytes)?;
+        let compacted = LedgerAction::Compacted {
+            previous,
+            previous_records: u64::try_from(self.snapshot.event_count)
+                .map_err(|_| CheckpointError::Limit)?,
+            revision_floor: self.snapshot.revision_floor,
+        };
+        bytes.extend_from_slice(&encode(self.snapshot.scope, 1, compacted)?);
+        let retained = self
+            .snapshot
+            .operations
+            .iter()
+            .filter(|operation| operation.retention == CheckpointRetention::Retained);
+        for (offset, operation) in retained.enumerate() {
+            let carried = LedgerAction::CheckpointCarried {
+                operation_id: operation.operation_id,
+                kind: operation.kind,
+                session_id: operation.session_id,
+                workspace_id: *operation.workspace_id.as_uuid(),
+                revision: operation.revision,
+                target: operation.target.clone(),
+                expected: operation.expected.clone(),
+                proposed: operation.proposed.clone(),
+                manifest: operation.manifest.clone(),
+                stage_identity: operation.stage_identity.clone(),
+                progress: operation.progress,
+                outcome: operation.outcome,
+                code: operation.code.clone(),
+                acknowledged: operation.acknowledged,
+            };
+            let sequence = offset.checked_add(2).ok_or(CheckpointError::Limit)?;
+            bytes.extend_from_slice(&encode(self.snapshot.scope, sequence, carried)?);
+        }
+        Ok(bytes)
+    }
+
+    /// Require the open ledger to still hold exactly the validated bytes.
+    fn require_unchanged(&self, ledger: &mut File) -> Result<(), CheckpointError> {
+        let expected_length =
+            u64::try_from(self.bytes.len()).map_err(|_| CheckpointError::Limit)?;
+        if ledger.metadata()?.len() != expected_length {
+            return Err(CheckpointError::Invalid("ledger changed while open"));
+        }
+        if read_bounded(ledger, MAX_LEDGER)? != self.bytes {
+            return Err(CheckpointError::Invalid("ledger bytes changed while open"));
+        }
+        Ok(())
+    }
+
     fn refresh_usage(&mut self) -> Result<(), CheckpointError> {
         let anchor_bytes =
             usize::try_from(self._anchor.metadata()?.len()).map_err(|_| CheckpointError::Limit)?;
@@ -942,34 +1250,30 @@ impl Store {
         )
         .map_err(|_| CheckpointError::Limit)?;
         ensure_budget(self.used, growth)?;
-        let mut candidate = Vec::with_capacity(size);
-        candidate.extend_from_slice(&self.bytes);
-        candidate.extend_from_slice(&encoded);
-        let snapshot = inspect_ledger(&candidate, self.snapshot.scope)?;
-        let expected_length =
-            u64::try_from(self.bytes.len()).map_err(|_| CheckpointError::Limit)?;
-        if self.ledger.metadata()?.len() != expected_length {
-            return Err(CheckpointError::Invalid("ledger changed while open"));
-        }
-        if read_bounded(&mut self.ledger, MAX_LEDGER)? != self.bytes {
-            return Err(CheckpointError::Invalid("ledger bytes changed while open"));
-        }
-        let result = (|| {
-            self.ledger.seek(SeekFrom::End(0))?;
-            self.faults.write(&mut self.ledger, &encoded, sync_point)?;
-            // Publication of memory follows acknowledged sync, never write alone.
-            self.faults.check(sync_point)?;
-            self.ledger.sync_all()
-        })();
-        if let Err(error) = result {
-            self.poisoned = true;
-            return Err(error.into());
-        }
+        // Validating the one new record against the replayed state equals
+        // replaying the whole candidate ledger, without parsing it again.
+        let snapshot = replay::extend(&self.snapshot, &encoded)?;
+        let mut ledger = self.ledger.take().ok_or(CheckpointError::Poisoned)?;
+        let result = self.require_unchanged(&mut ledger).and_then(|()| {
+            let written = (|| {
+                ledger.seek(SeekFrom::End(0))?;
+                self.faults.write(&mut ledger, &encoded, sync_point)?;
+                // Publication of memory follows acknowledged sync, never write alone.
+                self.faults.check(sync_point)?;
+                ledger.sync_all()
+            })();
+            written.map_err(|error| {
+                self.poisoned = true;
+                CheckpointError::from(error)
+            })
+        });
+        self.ledger = Some(ledger);
+        result?;
         self.used = self
             .used
             .checked_add(u64::try_from(encoded.len()).map_err(|_| CheckpointError::Limit)?)
             .ok_or(CheckpointError::Limit)?;
-        self.bytes = candidate;
+        self.bytes.extend_from_slice(&encoded);
         self.snapshot = snapshot;
         Ok(())
     }
@@ -1053,12 +1357,24 @@ fn inventory(
         &mut used,
         u64::try_from(snapshot.encoded_bytes).map_err(|_| CheckpointError::Limit)?,
     )?;
-    let names = directory.names(65)?;
+    // The ledger, one possible compaction candidate, and 64 entries.
+    let names = directory.names(66)?;
     let mut saw_ledger = false;
     let mut seen = Vec::new();
     for name in names {
         if name == OsStr::new(LEDGER) {
             saw_ledger = true;
+            continue;
+        }
+        if name == OsStr::new(COMPACTION) {
+            // An interrupted compaction's candidate. The ledger stays
+            // authoritative; count the bytes until a compaction removes it.
+            let file = directory.open_file(&name, false)?;
+            let length = file.metadata()?.len();
+            if length > u64::try_from(MAX_LEDGER).map_err(|_| CheckpointError::Limit)? {
+                return Err(CheckpointError::Limit);
+            }
+            add_usage(&mut used, length)?;
             continue;
         }
         let id = name
@@ -1090,6 +1406,14 @@ fn inventory(
             } else {
                 return Err(CheckpointError::Invalid("unknown checkpoint artifact"));
             };
+            if filename == OsStr::new("stage")
+                && operation.kind == ReplacementKind::Remove
+                && operation.retention != CheckpointRetention::Deleting
+            {
+                return Err(CheckpointError::Invalid(
+                    "a removal checkpoint has no stage",
+                ));
+            }
             let file = if filename == OsStr::new("stage") {
                 entry.open_stage()?
             } else {
@@ -1177,7 +1501,12 @@ fn validate_prepared(
     ] {
         let mut file = entry.open_file(OsStr::new(name), false)?;
         let bytes = read_bounded(&mut file, MAX_PAYLOAD)?;
-        if descriptor(&bytes)? != *expected || std::str::from_utf8(&bytes).is_err() {
+        // A removal keeps its original bytes only to restore them, so they
+        // are not interpreted as text.
+        let text_required = name == "proposed" || operation.kind == ReplacementKind::Replace;
+        if descriptor(&bytes)? != *expected
+            || (text_required && std::str::from_utf8(&bytes).is_err())
+        {
             return Err(CheckpointError::Invalid(
                 "checkpoint payload differs or is not UTF-8",
             ));

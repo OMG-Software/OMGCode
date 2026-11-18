@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 pub use omgcode_platform::credentials::{
     CredentialBackend, CredentialError, CredentialId, CredentialStore, CredentialStoreStatus,
-    MAX_SECRET_BYTES, Secret, probe as probe_credential_store,
+    MAX_SECRET_BYTES, Secret, Zeroizing, probe as probe_credential_store,
 };
 
 use super::{
@@ -41,6 +41,11 @@ pub struct CredentialBinding {
 }
 
 impl CredentialBinding {
+    /// A binding for an item this process just stored.
+    pub(crate) const fn new(id: CredentialId, backend: CredentialBackend) -> Self {
+        Self { id, backend }
+    }
+
     /// The opaque credential identifier. It is not secret.
     pub const fn id(&self) -> &CredentialId {
         &self.id
@@ -122,6 +127,31 @@ pub(super) mod optional_id_text {
         Option::<String>::deserialize(deserializer)?
             .map(|text| CredentialId::parse(&text).map_err(serde::de::Error::custom))
             .transpose()
+    }
+}
+
+/// Serde helpers for a list of recorded credential identifiers.
+pub(super) mod id_list_text {
+    use super::CredentialId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(
+        ids: &[CredentialId],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        ids.iter()
+            .map(CredentialId::as_str)
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<CredentialId>, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .iter()
+            .map(|text| CredentialId::parse(text).map_err(serde::de::Error::custom))
+            .collect()
     }
 }
 
@@ -752,7 +782,7 @@ pub fn delete_unbound_credential(
 /// Report a failed native store. When the failure may have left an item for
 /// `id`, delete it; an item that cannot be deleted or confirmed absent is
 /// reported with its identifier so it is never lost.
-fn store_failure(
+pub(super) fn store_failure(
     credentials: &CredentialStore,
     id: CredentialId,
     error: CredentialError,
@@ -812,7 +842,7 @@ fn store_may_leave_item(error: &CredentialError) -> bool {
 /// complete event on disk that replay accepts. A failed seek writes nothing,
 /// but it shares that variant, so it is treated as uncertain too. Listing
 /// every variant makes a new one choose its category explicitly.
-fn binding_write_uncertain(error: &ControlError) -> bool {
+pub(super) fn binding_write_uncertain(error: &ControlError) -> bool {
     match error {
         ControlError::Io(_) => true,
         ControlError::Invalid(_)
@@ -870,6 +900,15 @@ pub(super) fn apply(state: &mut ControlSnapshot, action: &Action) -> Result<(), 
             }) {
                 return Err(ControlError::Invalid(
                     "a credential is bound to more than one provider profile",
+                ));
+            }
+            if state
+                .package_profiles
+                .iter()
+                .any(|status| status.binds_credential(binding.id()))
+            {
+                return Err(ControlError::Invalid(
+                    "a credential is bound to both a provider profile and a package origin",
                 ));
             }
             let status = state

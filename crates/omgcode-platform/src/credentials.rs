@@ -15,7 +15,7 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::Path;
 
-use zeroize::Zeroizing;
+pub use zeroize::Zeroizing;
 
 #[cfg(target_os = "linux")]
 mod linux;
