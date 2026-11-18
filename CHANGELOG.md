@@ -38,7 +38,9 @@ Changes are recorded here before a release version is assigned.
     `remove` records the removal before deleting the copy and reports a copy it
     cannot delete as a `package_orphaned` warning. Each registered skill
     reserves journal room for its removal, so `skills remove` succeeds when
-    other changes have filled the journal. A registration write whose outcome
+    other changes have filled the journal. File reads and writes are refused
+    once a permission withdrawal would no longer fit beside the grant and
+    skill reserves, so the operator can always narrow file access. A registration write whose outcome
     is uncertain keeps the copied package and reports `registration_uncertain`
     with its identifier; an import never deletes a package directory it did
     not create. Replay refuses a package size that its file count cannot hold.
@@ -61,9 +63,12 @@ Changes are recorded here before a release version is assigned.
     Every turn rechecks the selection after compaction and before its first
     request. A tool-enabled turn also rechecks before each later model request
     and, under the settings lock that admits it, before each tool dispatch. A
-    turn ends as `skill_withdrawn` when a selected skill was removed, changed,
-    or disabled, even if it was enabled again. The context estimate counts each
-    skill message's per-message overhead. `chat` JSON lists the loaded skills.
+    turn ends as `skill_withdrawn` when a selected skill's registry record was
+    removed or replaced, its recorded digest changed, or it was disabled, even
+    if it was enabled again. The recheck reads the registry, not the stored
+    copy, so a deleted or edited stored `SKILL.md` affects later loads only.
+    The context estimate counts each skill message's per-message overhead.
+    `chat` JSON lists the loaded skills.
   - **Capabilities:** `capabilities` reports `skills` with `import`,
     `registry`, `chat_loading: ["cli"]`, and `scripts: false`.
   - **Not implemented:** Git sources, versioned updates, session overrides,

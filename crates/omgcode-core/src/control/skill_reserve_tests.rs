@@ -98,6 +98,54 @@ fn given_a_journal_filled_to_the_reserve_when_settings_change_then_only_removal_
     assert!(store.skills().is_empty());
 }
 
+#[test]
+fn given_a_registered_skill_when_file_work_is_admitted_then_a_permission_withdrawal_still_fits() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = directory.path().join("projects");
+    fs::create_dir(&root).expect("development root");
+    let mut store = ControlStore::open(&directory.path().join("data")).expect("store");
+    store.set_development_root(&root, 0).expect("root");
+    let workspace = store.register_workspace(&root, 1).expect("workspace");
+    let readable = PermissionSet {
+        read: true,
+        ..PermissionSet::default()
+    };
+    store
+        .set_permissions(workspace.id(), readable, store.revision())
+        .expect("read");
+    store
+        .add_skill(&registration("demo-skill"), store.revision())
+        .expect("add");
+    let session_id = Uuid::new_v4();
+    let binding = store
+        .bind_session(session_id, workspace.id())
+        .expect("binding");
+    let request = PolicyRequest {
+        session_id,
+        workspace_id: workspace.id(),
+        operation: Operation::Read,
+    };
+    let admitted = |store: &ControlStore| store.check_file_policy(&binding, &request);
+
+    // Bytes: a permission event plus the skill's removal reserve must fit.
+    let bytes = store.bytes;
+    store.bytes = MAX_BYTES - PERMISSION_EVENT_RESERVE_BYTES - SKILL_REMOVAL_RESERVE_BYTES + 1;
+    assert!(matches!(admitted(&store), Err(ControlError::LimitReached)));
+    store.bytes -= 1;
+    assert!(admitted(&store).expect("admitted").configured_allowed());
+    store.bytes = bytes;
+
+    // Events: one slot for the permission event and one for the removal.
+    let filler = store.entries[0].clone();
+    store.entries.resize(MAX_EVENTS - 1, filler);
+    assert!(matches!(admitted(&store), Err(ControlError::LimitReached)));
+    store.entries.truncate(MAX_EVENTS - 2);
+    assert!(admitted(&store).expect("admitted").configured_allowed());
+    store
+        .set_permissions(workspace.id(), PermissionSet::default(), store.revision())
+        .expect("the withdrawal fits whenever file work is admitted");
+}
+
 struct ImportScene {
     _directory: tempfile::TempDir,
     data: PathBuf,

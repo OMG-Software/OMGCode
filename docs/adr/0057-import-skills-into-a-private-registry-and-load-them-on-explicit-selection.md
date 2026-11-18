@@ -82,8 +82,11 @@ validated model reply is recorded as usual and can repeat skill text. The
 selection is rechecked after compaction, before the first request. In a
 tool-enabled turn, core also rechecks before each later model request and,
 under the settings lock that admits the operation, before each tool dispatch.
-The turn ends with `skill_withdrawn` when a selected skill was removed,
-changed, or disabled. Core counts each skill's enablement changes on replay,
+The turn ends with `skill_withdrawn` when a selected skill's registry record
+was removed or replaced, its recorded digest changed, or it was disabled. The
+recheck reads the registry, not the stored copy: the turn keeps the body it
+verified at load, so a deleted or edited stored `SKILL.md` affects later loads
+only. Core counts each skill's enablement changes on replay,
 without recording the count, and compares it with the count at load, so a
 disable followed by a re-enable during a request still withdraws the skill.
 

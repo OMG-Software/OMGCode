@@ -111,7 +111,12 @@ fn given_a_current_selection_when_dispatching_then_the_operation_runs() {
     let execution = dispatch(&scene, &skills);
 
     assert!(execution.terminal.is_none(), "{:?}", execution.code);
-    assert_ne!(execution.code, Some("skill_withdrawn"));
+    assert!(
+        matches!(execution.outcome, ToolOutcome::Succeeded),
+        "{:?}",
+        execution.code
+    );
+    assert_eq!(execution.code, None);
 }
 
 #[test]

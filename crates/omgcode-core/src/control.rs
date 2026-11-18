@@ -1040,16 +1040,31 @@ impl ControlStore {
         // operator cannot revoke. Keep a conservative bounded permission-event
         // budget available before admitting target I/O; actual changes still
         // pass the ordinary exact append preflight.
-        if decision.configured_allowed()
-            && (self.entries.len() >= MAX_EVENTS
-                || self
-                    .bytes
-                    .checked_add(PERMISSION_EVENT_RESERVE_BYTES)
-                    .is_none_or(|size| size > MAX_BYTES))
-        {
+        if decision.configured_allowed() && !self.permission_change_fits() {
             return Err(ControlError::LimitReached);
         }
         Ok(decision)
+    }
+
+    /// Whether a permission-narrowing event still fits beside the reserves
+    /// `append` keeps for outstanding grants and registered skills.
+    fn permission_change_fits(&self) -> bool {
+        let (grant_events, grant_bytes) = Self::grant_reserve(&self.snapshot);
+        let skill_events = self.snapshot.skills.len();
+        let skill_bytes = skill_events.saturating_mul(SKILL_REMOVAL_RESERVE_BYTES);
+        let events = self
+            .entries
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(grant_events))
+            .and_then(|count| count.checked_add(skill_events));
+        let bytes = self
+            .bytes
+            .checked_add(PERMISSION_EVENT_RESERVE_BYTES)
+            .and_then(|size| size.checked_add(grant_bytes))
+            .and_then(|size| size.checked_add(skill_bytes));
+        events.is_some_and(|count| count <= MAX_EVENTS)
+            && bytes.is_some_and(|size| size <= MAX_BYTES)
     }
 
     /// Validate an explicitly selected archive directory outside development data.

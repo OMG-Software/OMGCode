@@ -44,7 +44,9 @@ permission grants or trusted application extensions.
   and a skill with neither is disabled. `remove` records the removal first,
   then deletes the managed copy; a copy it cannot delete is reported and is
   inert. Each registered skill reserves journal room for its removal, so
-  `remove` succeeds even when other changes have filled the journal. When the
+  `remove` succeeds even when other changes have filled the journal. File
+  reads and writes are refused once a permission withdrawal would no longer
+  fit beside the grant and skill reserves. When the
   registration write's outcome is uncertain, `add` keeps the copy and reports
   `registration_uncertain` with its identifier; `skills list` shows whether
   it was recorded. An import never deletes a package directory it did not
@@ -62,10 +64,14 @@ permission grants or trusted application extensions.
   selection after compaction and before its first request. A tool-enabled turn
   also rechecks before each later model request and, under the settings lock
   that admits the operation, before each tool dispatch. The turn ends with
-  `skill_withdrawn` when a selected skill was removed, changed, or disabled,
-  including a disable followed by a re-enable: each skill's enablement
-  changes are counted and compared with the count at load. The context
-  estimate counts each skill message with its per-message overhead.
+  `skill_withdrawn` when a selected skill's registry record was removed or
+  replaced, its recorded digest changed, or it was disabled, including a
+  disable followed by a re-enable: each skill's enablement changes are
+  counted and compared with the count at load. The recheck reads the
+  registry, not the stored copy. The turn keeps the body it verified at
+  load, so deleting or editing the stored `SKILL.md` affects later loads
+  only. The context estimate counts each skill message with its per-message
+  overhead.
 - **Not implemented:** Git sources, updates that keep the old version,
   session overrides, agent selection, resource loading, script execution,
   desktop controls, a settings page, cache invalidation beyond the
