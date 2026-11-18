@@ -23,7 +23,7 @@ use super::{
     Action, ControlError, ControlSnapshot, ControlStore, deserialize_workspace_id, valid_uuid,
 };
 use crate::policy::WorkspaceId;
-use crate::skills::{MAX_REGISTERED_SKILLS, SkillName};
+use crate::skills::{MAX_PACKAGE_FILE_BYTES, MAX_REGISTERED_SKILLS, SkillName};
 
 /// Most characters of a skill description.
 pub const MAX_SKILL_DESCRIPTION_CHARS: usize = 1024;
@@ -40,7 +40,7 @@ pub const MAX_SKILL_METADATA_VALUE_CHARS: usize = 256;
 /// Most advisory allowed-tool entries.
 pub const MAX_SKILL_ALLOWED_TOOLS: usize = 32;
 /// Most total bytes of the advisory allowed-tool entries.
-pub const MAX_SKILL_ALLOWED_TOOLS_BYTES: usize = 1024;
+pub const MAX_SKILL_ALLOWED_TOOLS_BYTES: usize = crate::skills::MAX_ALLOWED_TOOLS_BYTES;
 /// Most bytes of the recorded `SKILL.md`.
 pub const MAX_SKILL_MD_BYTES: u64 = 64 * 1024;
 /// Most files in a package.
@@ -675,6 +675,16 @@ fn validate_record(record: &SkillRecord) -> Result<(), SkillRefusal> {
     if record.total_bytes < record.skill_md_bytes || record.total_bytes > MAX_SKILL_PACKAGE_BYTES {
         return Err(bad(
             "a package totals at least its SKILL.md and at most 4194304 bytes",
+        ));
+    }
+    // Every file other than SKILL.md is at most the per-file import bound.
+    let other_bytes = record.total_bytes - record.skill_md_bytes;
+    let other_files = u64::from(record.file_count - 1);
+    let per_file = u64::try_from(MAX_PACKAGE_FILE_BYTES).unwrap_or(u64::MAX);
+    let room = other_files.checked_mul(per_file);
+    if (record.file_count == 1 && other_bytes != 0) || room.is_none_or(|room| other_bytes > room) {
+        return Err(bad(
+            "the package size does not fit its file count and the per-file bound",
         ));
     }
     if record.source.is_empty()

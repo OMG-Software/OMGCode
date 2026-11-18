@@ -20,6 +20,12 @@ pub const MAX_FRONTMATTER_BYTES: usize = 8 * 1024;
 /// Maximum size of the Markdown body in bytes. This is also the load bound.
 pub const MAX_BODY_BYTES: usize = 32 * 1024;
 /// Maximum `description` length in characters.
+///
+/// The Agent Skills specification states its text limits in characters
+/// (description 1 to 1024, compatibility 1 to 500). OMGCode counts the
+/// `description`, `license`, `compatibility`, and `metadata` limits in
+/// characters here and in the registry. It counts `allowed-tools` in bytes
+/// ([`MAX_ALLOWED_TOOLS_BYTES`]), which is stricter for non-ASCII text.
 pub const MAX_DESCRIPTION_CHARS: usize = 1024;
 /// Maximum `license` length in characters.
 pub const MAX_LICENSE_CHARS: usize = 256;
@@ -31,8 +37,12 @@ pub const MAX_METADATA_ENTRIES: usize = 16;
 pub const MAX_METADATA_KEY_CHARS: usize = 64;
 /// Maximum `metadata` value length in characters.
 pub const MAX_METADATA_VALUE_CHARS: usize = 256;
-/// Maximum `allowed-tools` length in characters.
-pub const MAX_ALLOWED_TOOLS_CHARS: usize = 1024;
+/// Maximum `allowed-tools` length in bytes.
+///
+/// The specification allows 1024 characters. OMGCode counts bytes, which is
+/// stricter for non-ASCII text. The registry enforces the same constant on
+/// the entries' bytes, so a package the parser accepts always registers.
+pub const MAX_ALLOWED_TOOLS_BYTES: usize = 1024;
 /// Maximum number of whitespace-separated `allowed-tools` entries.
 pub const MAX_ALLOWED_TOOLS_ENTRIES: usize = 32;
 
@@ -102,6 +112,8 @@ pub enum SkillPackageError {
     TooManyMetadataEntries,
     #[error("SKILL.md allowed-tools has more than {MAX_ALLOWED_TOOLS_ENTRIES} entries")]
     TooManyAllowedTools,
+    #[error("SKILL.md allowed-tools is longer than {MAX_ALLOWED_TOOLS_BYTES} bytes")]
+    AllowedToolsTooLong,
 }
 
 impl SkillPackageError {
@@ -137,6 +149,7 @@ impl SkillPackageError {
             Self::InvalidName(error) => error.code(),
             Self::TooManyMetadataEntries => "metadata_too_many_entries",
             Self::TooManyAllowedTools => "allowed_tools_too_many_entries",
+            Self::AllowedToolsTooLong => "allowed_tools_too_long",
         }
     }
 }
@@ -184,6 +197,14 @@ pub fn parse_skill_md(bytes: &[u8]) -> Result<ParsedSkill, SkillPackageError> {
         return Err(SkillPackageError::NulCharacter);
     }
     let (frontmatter, body_offset) = split_frontmatter(text)?;
+    if frontmatter.contains('\u{feff}') {
+        return Err(SkillPackageError::ByteOrderMark);
+    }
+    if frontmatter.lines().any(|line| line.starts_with('%')) {
+        return Err(SkillPackageError::YamlSyntax(
+            "YAML directives are not allowed".to_owned(),
+        ));
+    }
     let body = text
         .get(body_offset..)
         .ok_or(SkillPackageError::EmptyBody)?;
@@ -260,9 +281,10 @@ struct Scalar {
 }
 
 impl Scalar {
-    /// A plain empty scalar, `~`, or `null` is YAML null: the value is absent.
+    /// A plain empty scalar, `~`, `null`, `Null`, or `NULL` is YAML null (core
+    /// schema): the value is absent. A quoted scalar is always literal text.
     fn is_null(&self) -> bool {
-        self.plain && matches!(self.text.as_str(), "" | "~" | "null")
+        self.plain && matches!(self.text.as_str(), "" | "~" | "null" | "Null" | "NULL")
     }
 }
 
@@ -480,16 +502,19 @@ fn build_manifest(fields: RawFields) -> Result<SkillManifest, SkillPackageError>
         "allowed-tools",
         fields.allowed_tools,
         1,
-        MAX_ALLOWED_TOOLS_CHARS,
+        MAX_ALLOWED_TOOLS_BYTES,
     )? {
         None => Vec::new(),
         Some(text) => {
+            if text.len() > MAX_ALLOWED_TOOLS_BYTES {
+                return Err(SkillPackageError::AllowedToolsTooLong);
+            }
             let entries: Vec<String> = text.split_ascii_whitespace().map(str::to_owned).collect();
             if entries.is_empty() {
                 return Err(SkillPackageError::FieldLength {
                     field: "allowed-tools",
                     min: 1,
-                    max: MAX_ALLOWED_TOOLS_CHARS,
+                    max: MAX_ALLOWED_TOOLS_BYTES,
                 });
             }
             if entries.len() > MAX_ALLOWED_TOOLS_ENTRIES {
@@ -1066,5 +1091,97 @@ mod tests {
         let text = error.to_string();
         assert!(!text.contains('\u{1b}'));
         assert!(text.len() < 300, "{text}");
+    }
+
+    #[test]
+    fn given_a_multibyte_allowed_tools_token_over_the_byte_limit_when_parsed_then_it_is_refused() {
+        // 600 characters pass a character limit, but are 1200 bytes.
+        let token = "\u{e9}".repeat(600);
+        let bytes = skill(
+            &format!("name: demo\ndescription: a\nallowed-tools: {token}"),
+            "B\n",
+        );
+        let error = parse_skill_md(&bytes).expect_err("1200 bytes exceed 1024");
+        assert_eq!(error, SkillPackageError::AllowedToolsTooLong);
+        assert_eq!(error.code(), "allowed_tools_too_long");
+        let at_limit = "\u{e9}".repeat(512);
+        parse_skill_md(&skill(
+            &format!("name: demo\ndescription: a\nallowed-tools: {at_limit}"),
+            "B\n",
+        ))
+        .expect("1024 bytes are allowed");
+    }
+
+    #[test]
+    fn given_a_byte_order_mark_inside_the_frontmatter_when_parsed_then_it_is_refused() {
+        assert_eq!(
+            refusal_code("\u{feff}name: demo\ndescription: a"),
+            "skill_md_byte_order_mark"
+        );
+        assert_eq!(
+            refusal_code("name: demo\ndescription: a\u{feff}b"),
+            "skill_md_byte_order_mark"
+        );
+    }
+
+    #[test]
+    fn given_plain_null_spellings_when_parsed_then_optional_fields_are_absent() {
+        for value in ["null", "Null", "NULL", "~", ""] {
+            let parsed = parse_skill_md(&skill(
+                &format!("{MINIMAL}\nlicense: {value}\ncompatibility: {value}\nmetadata: {value}\nallowed-tools: {value}"),
+                "B\n",
+            ))
+            .unwrap_or_else(|error| panic!("{value:?}: {error}"));
+            assert_eq!(parsed.manifest.license, None, "{value:?}");
+            assert_eq!(parsed.manifest.compatibility, None, "{value:?}");
+            assert!(parsed.manifest.metadata.is_empty(), "{value:?}");
+            assert!(parsed.manifest.allowed_tools.is_empty(), "{value:?}");
+        }
+        for value in ["Null", "NULL"] {
+            assert_eq!(
+                refusal(&skill(&format!("name: demo\ndescription: {value}"), "B\n")),
+                SkillPackageError::MissingField("description"),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn given_quoted_null_spellings_when_parsed_then_they_stay_literal_text() {
+        for value in ["NULL", "Null", "null", "~"] {
+            for quote in ['"', '\''] {
+                let parsed = parse_skill_md(&skill(
+                    &format!("{MINIMAL}\nlicense: {quote}{value}{quote}"),
+                    "B\n",
+                ))
+                .expect("quoted text is literal");
+                assert_eq!(parsed.manifest.license.as_deref(), Some(value));
+            }
+        }
+    }
+
+    #[test]
+    fn given_a_directive_before_a_flow_mapping_when_parsed_then_it_is_refused() {
+        let error = refusal(&skill(
+            "%TAG ! \u{e9}\u{e9}\u{e9}\u{e9}\n{name: demo, description: a}",
+            "B\n",
+        ));
+        assert_eq!(error.code(), "frontmatter_yaml_syntax");
+        assert!(error.to_string().contains("directive"), "{error}");
+        assert_eq!(
+            refusal_code("%YAML 1.2\nname: demo\ndescription: a"),
+            "frontmatter_yaml_syntax"
+        );
+    }
+
+    #[test]
+    fn given_unicode_text_in_a_block_mapping_when_parsed_then_it_is_accepted() {
+        let parsed = parse_skill_md(&skill(
+            "name: demo\ndescription: caf\u{e9} \u{65e5}\u{672c} 100% sure\nlicense: \u{65e5}\u{672c}",
+            "B\n",
+        ))
+        .expect("an ordinary Unicode block mapping");
+        assert!(parsed.manifest.description.contains('\u{e9}'));
+        assert_eq!(parsed.manifest.license.as_deref(), Some("\u{65e5}\u{672c}"));
     }
 }

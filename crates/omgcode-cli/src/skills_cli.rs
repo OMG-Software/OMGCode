@@ -7,7 +7,7 @@
 
 use clap::{Args, Subcommand};
 use omgcode_core::control::{
-    ControlError, ControlStore, SkillOperationError, SkillScope, SkillSetting,
+    ControlError, ControlStore, SkillOperationError, SkillRefusal, SkillScope, SkillSetting,
 };
 use omgcode_core::policy::WorkspaceId;
 use omgcode_core::skills::SkillName;
@@ -149,6 +149,21 @@ fn registry_error(error: ControlError) -> CliError {
     }
 }
 
+/// Refuse a workspace the registry does not hold, as the chat loader does.
+/// The check reads the same store snapshot as the listing that follows.
+fn require_registered(
+    store: &ControlStore,
+    workspace: Option<WorkspaceId>,
+) -> Result<(), CliError> {
+    match workspace {
+        Some(id) if store.workspace(id).is_none() => {
+            let refusal = SkillRefusal::UnknownWorkspace;
+            Err(CliError::new(refusal.code(), refusal.to_string()))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn operation_error(error: &SkillOperationError) -> CliError {
     CliError::new(error.code(), error.to_string())
 }
@@ -178,6 +193,7 @@ fn add(folder: &Path, revision: u64, data_root: &Path) -> Result<(), CliError> {
 fn list(workspace: Option<&str>, data_root: &Path) -> Result<(), CliError> {
     let workspace = optional_workspace(workspace)?;
     let store = open_store(data_root)?;
+    require_registered(&store, workspace)?;
     print_json(&json!({
         "skills": store.skill_statuses(workspace),
         "revision": store.revision(),
@@ -188,6 +204,7 @@ fn show(name: &str, workspace: Option<&str>, data_root: &Path) -> Result<(), Cli
     let name = skill_name(name)?;
     let workspace = optional_workspace(workspace)?;
     let store = open_store(data_root)?;
+    require_registered(&store, workspace)?;
     // Inspection is a trusted operator read, so it needs no enablement. The
     // file list is omitted: the record's file count, total size, and package
     // digest identify the stored package without a second private-store walk.

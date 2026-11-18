@@ -666,3 +666,73 @@ fn given_a_refused_import_when_the_store_is_inspected_then_nothing_was_created()
         "a refused source never touches the store"
     );
 }
+
+fn registration_with_sizes(
+    name: &str,
+    skill_md_bytes: u64,
+    file_count: u32,
+    total_bytes: u64,
+) -> omgcode_core::control::SkillRegistration {
+    omgcode_core::control::SkillRegistration {
+        skill_id: Uuid::new_v4(),
+        name: omgcode_core::skills::SkillName::new(name).expect("name"),
+        description: "A demo skill.".to_owned(),
+        license: None,
+        compatibility: None,
+        metadata: std::collections::BTreeMap::new(),
+        allowed_tools: Vec::new(),
+        package_sha256: "a".repeat(64),
+        skill_md_sha256: "b".repeat(64),
+        skill_md_bytes,
+        file_count,
+        total_bytes,
+        source: "source".to_owned(),
+    }
+}
+
+#[test]
+fn given_impossible_package_sizes_when_registering_then_the_registry_refuses_them() {
+    use omgcode_core::control::{ControlError, ControlStore, SkillRefusal};
+
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut store = ControlStore::open(&temporary.path().join("data")).expect("store");
+    let mebibyte = 1024_u64 * 1024;
+    let refused = [
+        // One file cannot total more than its SKILL.md.
+        ("one-file-extra", 100, 1, 200),
+        // Two files hold at most SKILL.md plus one 1 MiB file.
+        ("one-byte-over", 100, 2, 100 + mebibyte + 1),
+        ("three-files", 100, 3, 100 + 2 * mebibyte + 1),
+    ];
+    for (name, skill_md, files, total) in refused {
+        let revision = store.revision();
+        let result = store.add_skill(
+            &registration_with_sizes(name, skill_md, files, total),
+            revision,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ControlError::Skill(SkillRefusal::InvalidField(_)))
+            ),
+            "{name}: {result:?}"
+        );
+        assert_eq!(store.revision(), revision, "{name} changed the revision");
+    }
+
+    let accepted = [
+        ("one-file", 100, 1, 100),
+        ("two-files", 100, 2, 100 + mebibyte),
+        ("small-pair", 100, 2, 101),
+        ("three-files", 100, 3, 100 + 2 * mebibyte),
+    ];
+    for (name, skill_md, files, total) in accepted {
+        let revision = store.revision();
+        store
+            .add_skill(
+                &registration_with_sizes(name, skill_md, files, total),
+                revision,
+            )
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+    }
+}
