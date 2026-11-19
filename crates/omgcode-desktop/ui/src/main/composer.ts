@@ -3,6 +3,7 @@ import { utf8Length } from "../format";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { ChatDefaults, ChatPreferences, ChatSettings } from "../ipc/types";
+import { createPopover } from "../ui/popover";
 import {
   type ComposerState,
   isSendKey,
@@ -17,6 +18,9 @@ export const SKILLS_PER_TURN = 4;
 /** Message box hints for each "Enter to send" choice. */
 export const PLACEHOLDER_ENTER = "Message (Enter to send, Shift+Enter for a new line)";
 export const PLACEHOLDER_CTRL_ENTER = "Message (Ctrl+Enter to send)";
+
+/** The counter appears once the message uses more than this share of the byte limit. */
+export const COUNTER_SHOW_RATIO = 0.8;
 
 export interface ComposerHandlers {
   /** `skills` are the names selected for this turn only. */
@@ -39,6 +43,8 @@ export interface Composer {
    * the operator's values, since a new provider may need a different model.
    */
   refreshEndpoint(): Promise<void>;
+  /** Removes the listeners the two menus put on the document. */
+  dispose(): void;
 }
 
 function labelled(label: string, input: HTMLElement): HTMLElement {
@@ -61,6 +67,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     attrs: { rows: "3", "aria-label": "Message", placeholder: PLACEHOLDER_ENTER },
   });
   const counter = el("span", { class: "counter" });
+  counter.hidden = true;
   const reason = el("p", { class: "note composer-note" });
   const problem = el("p", { class: "error composer-error" });
   const sendButton = button("Send", submit, { class: "primary" });
@@ -84,10 +91,9 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   const preferencesNote = el("span", { class: "muted", attrs: { role: "status" } });
   const saveDefaultsButton = button("Save as defaults", () => void saveDefaults());
 
-  const settingsPanel = el(
-    "details",
-    { class: "settings" },
-    el("summary", { text: "Chat settings" }),
+  const settingsMenu = createPopover(
+    "Chat settings",
+    { class: "open-up settings", label: "Chat settings" },
     el(
       "div",
       { class: "settings-grid" },
@@ -121,15 +127,17 @@ export function createComposer(handlers: ComposerHandlers): Composer {
       el("div", { class: "field preferences-row" }, saveDefaultsButton, preferencesNote),
     ),
   );
+  settingsMenu.panel.classList.add("composer-panel");
 
   const skillsList = el("div", { class: "skill-choices" });
-  const skillsPanel = el(
-    "fieldset",
-    { class: "skills" },
-    el("legend", { text: `Skills for this turn (at most ${SKILLS_PER_TURN})` }),
+  const skillsMenu = createPopover(
+    "Skills (0)",
+    { class: "open-up skills", label: "Skills for this turn" },
+    el("p", { class: "popover-title", text: `Skills for this turn (at most ${SKILLS_PER_TURN})` }),
     skillsList,
   );
-  skillsPanel.hidden = true;
+  skillsMenu.panel.classList.add("composer-panel");
+  skillsMenu.element.hidden = true;
   let skillBoxes: Array<[string, HTMLInputElement]> = [];
 
   let state: ComposerState = { visible: false, enabled: false, reason: null };
@@ -166,7 +174,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
         el("label", { class: "field-check skill-choice" }, box, el("span", { text: name })),
       ),
     );
-    skillsPanel.hidden = skillBoxes.length === 0;
+    skillsMenu.element.hidden = skillBoxes.length === 0;
+    if (skillBoxes.length === 0) {
+      skillsMenu.close();
+    }
     refresh();
   }
 
@@ -234,6 +245,9 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     const bytes = utf8Length(box.value);
     counter.textContent = `${bytes} / ${MESSAGE_MAX_BYTES} bytes`;
     counter.classList.toggle("over", bytes > MESSAGE_MAX_BYTES);
+    // Only near the limit, or over it, so a short message shows no number.
+    counter.hidden = bytes <= MESSAGE_MAX_BYTES * COUNTER_SHOW_RATIO;
+    replaceChildren(skillsMenu.summary, `Skills (${selectedSkills().length})`);
     const issue = currentProblem();
     element.hidden = !state.visible;
     box.disabled = !state.enabled;
@@ -296,10 +310,13 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   const element = el(
     "section",
     { class: "composer", attrs: { "aria-label": "Compose a message" } },
-    settingsPanel,
-    skillsPanel,
     box,
-    el("div", { class: "composer-row" }, counter, runningLabel, cancelButton, sendButton),
+    el(
+      "div",
+      { class: "composer-row" },
+      el("div", { class: "composer-tools" }, skillsMenu.element, settingsMenu.element),
+      el("div", { class: "composer-send" }, counter, runningLabel, cancelButton, sendButton),
+    ),
     reason,
     problem,
   );
@@ -332,6 +349,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     },
     readSettings,
     setSkills,
+    dispose() {
+      settingsMenu.dispose();
+      skillsMenu.dispose();
+    },
     async refreshEndpoint() {
       const defaults = await api.chatDefaults();
       fixedEndpoint = defaults.settings.endpoint;

@@ -640,83 +640,89 @@ describe("chat lifecycle", () => {
   });
 });
 
-describe("approvals nudge and new session", () => {
-  it("nudges when the pending count rises and opens the approvals window", async () => {
+describe("approvals segment and new session", () => {
+  function segment(): HTMLElement {
+    return root.querySelector(".status-approvals") as HTMLElement;
+  }
+
+  it("shows the waiting count in the status bar and opens the approvals window", async () => {
     let pending = 0;
     await start({ approvals_summary: () => ({ pending }) });
-    expect((root.querySelector(".statusbar") as HTMLElement).hidden).toBe(true);
+    expect(segment().hidden).toBe(true);
     pending = 1;
     await settle(3000);
-    const bar = root.querySelector(".statusbar") as HTMLElement;
-    expect(bar.hidden).toBe(false);
-    expect(bar.textContent).toContain("An approval is waiting");
+    expect(segment().hidden).toBe(false);
+    expect(segment().textContent).toContain("1 approval waiting");
     expect(root.querySelector(".badge")?.textContent).toBe("1");
-    buttonByText(bar, "Open approvals").click();
+    // The old banner above the status bar is gone; only errors use it.
+    expect((root.querySelector(".statusbar") as HTMLElement).hidden).toBe(true);
+    buttonByText(segment(), "Review").click();
     await settle();
     expect(ipc.callsTo("approvals_show_window")).toHaveLength(1);
   });
 
-  describe("notice lifecycle", () => {
-    function bar(): HTMLElement {
-      return root.querySelector(".statusbar") as HTMLElement;
-    }
-
+  describe("approvals segment lifecycle", () => {
     it("shows nothing while the count stays at zero", async () => {
       await start({ approvals_summary: () => ({ pending: 0 }) });
       await settle(3000);
       await settle(3000);
-      expect(bar().hidden).toBe(true);
-      expect(bar().textContent).toBe("");
+      expect(segment().hidden).toBe(true);
+      expect((root.querySelector(".statusbar") as HTMLElement).textContent).toBe("");
     });
 
-    it("shows the notice for an approval already waiting at the first poll", async () => {
+    it("shows an approval already waiting at the first poll", async () => {
       await start({ approvals_summary: () => ({ pending: 1 }) });
-      expect(bar().hidden).toBe(false);
-      expect(bar().textContent).toContain("An approval is waiting");
-      expect(hasButton(bar(), "Open approvals")).toBe(true);
+      expect(segment().hidden).toBe(false);
+      expect(segment().textContent).toContain("1 approval waiting");
+      expect(hasButton(segment(), "Review")).toBe(true);
       expect(root.querySelector(".badge")?.textContent).toBe("1");
     });
 
-    it("keeps the notice while the count stays above zero and removes it at zero", async () => {
+    it("keeps the segment while the count stays above zero and hides it at zero", async () => {
       let pending = 0;
       await start({ approvals_summary: () => ({ pending }) });
       pending = 1;
       await settle(3000);
-      expect(bar().hidden).toBe(false);
-      expect(bar().textContent).toContain("An approval is waiting");
+      expect(segment().hidden).toBe(false);
       await settle(3000);
-      expect(bar().hidden).toBe(false);
-      expect(bar().textContent).toContain("An approval is waiting");
+      expect(segment().hidden).toBe(false);
       pending = 0;
       await settle(3000);
-      expect(bar().hidden).toBe(true);
-      expect(bar().textContent).toBe("");
-      expect(hasButton(root, "Open approvals")).toBe(false);
+      expect(segment().hidden).toBe(true);
       expect((root.querySelector(".badge") as HTMLElement).hidden).toBe(true);
       await settle(3000);
-      expect(bar().hidden).toBe(true);
+      expect(segment().hidden).toBe(true);
     });
 
-    it("keeps the notice when the count rises from one to two", async () => {
+    it("updates the count when it rises from one to two", async () => {
       let pending = 1;
       await start({ approvals_summary: () => ({ pending }) });
       pending = 2;
       await settle(3000);
-      expect(bar().hidden).toBe(false);
-      expect(bar().textContent).toContain("An approval is waiting");
-      expect(hasButton(bar(), "Open approvals")).toBe(true);
+      expect(segment().hidden).toBe(false);
+      expect(segment().textContent).toContain("2 approvals waiting");
       expect(root.querySelector(".badge")?.textContent).toBe("2");
     });
 
-    it("shows the notice again when a new approval arrives after zero", async () => {
+    it("shows the segment again when a new approval arrives after zero", async () => {
       let pending = 1;
       await start({ approvals_summary: () => ({ pending }) });
       pending = 0;
       await settle(3000);
-      expect(bar().hidden).toBe(true);
+      expect(segment().hidden).toBe(true);
       pending = 1;
       await settle(3000);
-      expect(bar().hidden).toBe(false);
+      expect(segment().hidden).toBe(false);
+    });
+
+    it("opens the approvals window from the sidebar row too, and decides nothing", async () => {
+      await start({ approvals_summary: () => ({ pending: 1 }) });
+      buttonByText(root.querySelector(".sidebar-footer") as HTMLElement, "Approvals").click();
+      await settle();
+      expect(ipc.callsTo("approvals_show_window")).toHaveLength(1);
+      expect(
+        ipc.calls.map((call) => call.command).filter((c) => c.startsWith("approval_")),
+      ).toEqual([]);
     });
   });
 

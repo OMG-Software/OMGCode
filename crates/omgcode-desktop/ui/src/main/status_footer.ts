@@ -1,4 +1,4 @@
-import { el, neutralise, replaceChildren } from "../dom";
+import { button, el, neutralise, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
 import type { BranchView, ConnectionStatus, SessionSummary } from "../ipc/types";
@@ -13,12 +13,16 @@ export const CONNECTION_UNCHANGED = "The model provider was not changed.";
 export interface StatusFooterDeps {
   /** Called after the connection changed here, so the composer reads the new endpoint. */
   onConnectionChanged(): void;
+  /** Called when the operator chooses Review in the approvals segment. */
+  onShowApprovals(): void;
 }
 
 export interface StatusFooter {
   element: HTMLElement;
   /** Shows the session's workspace folder and reads its Git branch. */
   showSession(session: SessionSummary, folder: string): void;
+  /** Shows how many approvals wait; the segment is hidden at zero. */
+  setPending(count: number): void;
   /** Reads the connection and, with a session open, the branch again. */
   refresh(): void;
   dispose(): void;
@@ -50,6 +54,15 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
   const workspace = el("span", { class: "status-segment", text: "No session open" });
   const registration = el("span", { class: "status-segment muted" });
   const branch = el("span", { class: "status-segment muted" });
+  const approvalsText = el("span");
+  const approvals = el(
+    "span",
+    { class: "status-segment status-approvals" },
+    approvalsText,
+    el("span", { class: "status-dot", text: "·", attrs: { "aria-hidden": "true" } }),
+    button("Review", deps.onShowApprovals, { class: "status-link" }),
+  );
+  approvals.hidden = true;
   const provider = el("select", {
     class: "status-provider",
     attrs: { "aria-label": "Model provider" },
@@ -62,6 +75,7 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
     workspace,
     registration,
     branch,
+    approvals,
     el("span", { class: "status-spacer" }),
     message,
     el("label", { class: "status-segment" }, el("span", { text: "Model" }), provider),
@@ -178,6 +192,13 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
       replaceChildren(workspace, neutralise(`Workspace: ${folder}`));
       replaceChildren(registration);
       void readBranch();
+    },
+    setPending(count) {
+      approvals.hidden = count <= 0;
+      replaceChildren(
+        approvalsText,
+        count === 1 ? "1 approval waiting" : `${count} approvals waiting`,
+      );
     },
     refresh() {
       if (!choosing) {
