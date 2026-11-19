@@ -1,6 +1,7 @@
 //! Core contracts for the OMGCode coding-assistant prototype.
 #![forbid(unsafe_code)]
 
+pub mod action_journal;
 pub mod context;
 pub mod control;
 pub mod edit;
