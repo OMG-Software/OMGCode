@@ -4,8 +4,12 @@
 - Date: 2026-11-18
 - Implemented: phase S1 in version 0.40.0; phase S2 in version 0.41.0
   ([ADR-0060](0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md),
-  which uses `rfd` instead of the dialog plugin named in decision 4). Phases
-  S3 to S5 are not implemented.
+  which uses `rfd` instead of the dialog plugin named in decision 4); the
+  active connection and local provider profiles of phase S3 in version
+  0.44.0 ([ADR-0064](0064-choose-the-model-connection-in-settings-and-add-ollama-local.md),
+  which extends decision 7 to `ollama_local` profiles and lets the window
+  supply a new profile's loopback endpoint). API-key entry, the rest of S3,
+  and phases S4 and S5 are not implemented.
 
 ## Context
 

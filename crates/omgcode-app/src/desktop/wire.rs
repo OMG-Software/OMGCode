@@ -874,23 +874,33 @@ pub struct PermissionsChangeRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionSourceView {
-    /// The launch endpoint (or its default) and `OMGCODE_LM_TOKEN`.
+    /// The `--endpoint` launch argument and `OMGCODE_LM_TOKEN`.
     Environment,
     /// A provider profile selected with `--provider-profile` at launch.
     Profile,
+    /// The active connection chosen in `settings`, or the default endpoint
+    /// and `OMGCODE_LM_TOKEN` while none is chosen (ADR-0064).
+    Active,
     /// A token supplier injected by an embedder or a test.
     Injected,
 }
 
-/// The model connection of this process, for the `settings` window only.
+/// The model connection of this process. The `settings` window and, since
+/// ADR-0064, the `main` window's status bar receive it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConnectionView {
-    /// The endpoint every turn uses.
+    /// The endpoint the next turn uses.
     pub endpoint: String,
     /// Where the endpoint and token come from.
     pub source: ConnectionSourceView,
-    /// The selected profile name when `source` is `profile`.
+    /// The profile in use: the launch profile when `source` is `profile`, the
+    /// active one when `source` is `active`, and `null` for the default.
     pub profile: Option<String>,
+    /// That profile's provider kind, as the CLI names it, or `null`.
+    pub kind: Option<&'static str>,
+    /// Whether the `settings` window may choose the active connection: only
+    /// when no launch argument fixed it.
+    pub selectable: bool,
 }
 
 /// One recorded provider profile. It never carries a secret.
@@ -907,6 +917,127 @@ pub struct ProviderProfileView {
     /// Whether a stored credential is bound. The credential itself is never
     /// read for this view.
     pub credential_bound: bool,
+    /// Whether the profile can be the active connection: a local kind
+    /// (`lm_studio` or `ollama_local`) with a recorded endpoint.
+    pub selectable: bool,
+    /// Whether it is the recorded active connection.
+    pub active: bool,
+}
+
+/// The `main` window's status bar view of the model connection (ADR-0064).
+///
+/// It names connections only: a profile's name, provider kind, and endpoint,
+/// all display-safe. It never carries a credential or says whether one is
+/// stored.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ConnectionStatus {
+    /// The connection the next turn uses.
+    pub connection: ConnectionView,
+    /// The local profiles with an endpoint that can be chosen, in recorded
+    /// order. Empty when a launch argument fixed the connection.
+    pub choices: Vec<ConnectionChoice>,
+}
+
+/// One connection the status bar may offer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ConnectionChoice {
+    /// The profile name.
+    pub name: String,
+    /// `lm_studio` or `ollama_local`.
+    pub kind: &'static str,
+    /// The recorded loopback endpoint.
+    pub endpoint: String,
+    /// Whether it is the recorded active connection.
+    pub active: bool,
+}
+
+/// Arguments of `connection_select`, from the `main` window. It names a
+/// profile only; Rust reads the revision and asks for a native confirmation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionChooseRequest {
+    /// A recorded profile name, or `null` for the default endpoint.
+    pub profile: Option<String>,
+}
+
+/// What the status bar shows about a session's workspace (ADR-0064).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionContext {
+    /// Whether the session's recorded workspace is registered here.
+    pub workspace_registered: bool,
+    /// The Git branch that workspace has checked out.
+    pub branch: BranchView,
+}
+
+/// A workspace's Git branch, read from `HEAD` for display only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BranchView {
+    /// What `HEAD` says.
+    pub state: BranchState,
+    /// The branch name, or the abbreviated commit when detached. Display-safe.
+    pub name: Option<String>,
+    /// A fixed reason when `state` is `unavailable`. Never file content.
+    pub note: Option<String>,
+}
+
+/// The kinds of [`BranchView`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchState {
+    /// A branch is checked out.
+    Branch,
+    /// A commit is checked out without a branch.
+    Detached,
+    /// The workspace is not the top folder of a Git repository, or is not
+    /// registered.
+    None,
+    /// A `.git` entry exists but the branch cannot be shown.
+    Unavailable,
+}
+
+/// A local provider the `settings` window may add (ADR-0064).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalProviderKind {
+    /// LM Studio's local server.
+    LmStudio,
+    /// Ollama on this computer.
+    OllamaLocal,
+}
+
+/// Arguments of `settings_select_connection`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionSelectRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// A recorded profile name, or `null` for the default endpoint.
+    pub profile: Option<String>,
+}
+
+/// Arguments of `settings_add_local_connection`. Core validates every value
+/// with the rule the CLI's `provider-profile-add` uses.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalConnectionAddRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// The new profile name.
+    pub name: String,
+    /// The local provider.
+    pub kind: LocalProviderKind,
+    /// A loopback `http://<IP>:<port>/v1` endpoint.
+    pub endpoint: String,
+}
+
+/// Arguments of `settings_remove_connection`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionRemoveRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// A recorded profile name.
+    pub name: String,
 }
 
 /// One recorded toolchain profile. Variable values are not shown.

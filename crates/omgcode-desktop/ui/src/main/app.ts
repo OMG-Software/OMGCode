@@ -4,6 +4,7 @@ import { createPoller } from "../poll";
 import { createConversation } from "./conversation";
 import { createNewSessionDialog } from "./new_session";
 import { createSidebar } from "./sidebar";
+import { createStatusFooter } from "./status_footer";
 
 export const APPROVALS_POLL_MS = 3000;
 
@@ -64,15 +65,29 @@ export function startMain(root: HTMLElement): MainApp {
     }
   }
 
-  const conversation = createConversation({ onTreeChanged: () => void sidebar.refresh() });
+  const footer = createStatusFooter({
+    // The composer shows the endpoint the next turn uses; read it again after a switch.
+    onConnectionChanged: () => void conversation.refreshEndpoint().catch(() => undefined),
+  });
+  const conversation = createConversation({
+    onTreeChanged: () => {
+      void sidebar.refresh();
+      footer.refresh();
+    },
+    onConnectionChanged: () => footer.refresh(),
+  });
   const sidebar = createSidebar({
-    onOpen: (session, folder, seq) => void conversation.open(session, folder, seq),
+    onOpen: (session, folder, seq) => {
+      footer.showSession(session, folder);
+      void conversation.open(session, folder, seq);
+    },
     onNewSession: () => void newSession.show(),
     onShowApprovals: () => void showApprovals(),
     onShowSettings: () => void showSettings(),
   });
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);
+    footer.showSession(session, folder);
     void conversation.open(session, folder, null);
     void sidebar.refresh();
   });
@@ -81,6 +96,7 @@ export function startMain(root: HTMLElement): MainApp {
     root,
     el("div", { class: "shell" }, sidebar.element, conversation.element),
     statusBar,
+    footer.element,
     newSession.element,
   );
 
@@ -106,6 +122,7 @@ export function startMain(root: HTMLElement): MainApp {
       approvalsPoller.stop();
       conversation.dispose();
       sidebar.dispose();
+      footer.dispose();
     },
   };
 }

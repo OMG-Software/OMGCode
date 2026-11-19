@@ -70,6 +70,21 @@ export function mainHandlers(overrides: Record<string, Handler> = {}): Record<st
     settings_show_window: () => null,
     approvals_summary: () => ({ pending: 0 }),
     approvals_show_window: () => null,
+    // The status bar (ADR-0064): the default connection, nothing else to choose.
+    connection_status: () => ({
+      connection: {
+        endpoint: SETTINGS.endpoint,
+        source: "active",
+        profile: null,
+        kind: null,
+        selectable: true,
+      },
+      choices: [],
+    }),
+    session_context: () => ({
+      workspace_registered: true,
+      branch: { state: "branch", name: "main", note: null },
+    }),
     ...overrides,
   };
 }

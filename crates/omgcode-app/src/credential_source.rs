@@ -10,11 +10,20 @@
 //!   endpoint is the one given (the command line or its default) and the token
 //!   is the `OMGCODE_LM_TOKEN` variable, through [`read_lm_token`].
 //! - [`ConnectionSource::Profile`] reads the endpoint recorded with a
-//!   recorded `lm_studio` provider profile and the credential bound to it from
-//!   protected OS storage. The environment variable is not read at all, and
-//!   every failure ends the turn with a `credential` error. There is no
-//!   fallback to no token, to another token, or to another endpoint. A profile
-//!   that records no endpoint is refused with `endpoint_not_recorded`.
+//!   recorded local provider profile (`lm_studio` or `ollama_local`,
+//!   ADR-0064) and the credential bound to it from protected OS storage. The
+//!   environment variable is not read at all, and every failure ends the turn
+//!   with a `credential` error. There is no fallback to no token, to another
+//!   token, or to another endpoint. A profile that records no endpoint is
+//!   refused with `endpoint_not_recorded`. An `ollama_local` profile is always
+//!   `none`, so it never reads native storage.
+//! - [`ConnectionSource::Active`] is the desktop default when no connection
+//!   argument was given (ADR-0059 decision 7, ADR-0064). Each turn reads the
+//!   active connection recorded in the settings store. When one is selected it
+//!   is resolved exactly as [`ConnectionSource::Profile`], within the same
+//!   open store, so the selection and the profile it names are read together.
+//!   When none is selected, or no settings store exists, the default endpoint
+//!   and the environment token apply, as for [`ConnectionSource::Environment`].
 //!
 //! Order of operations for a profile, with the settings store open throughout so
 //! a rotation cannot delete the item between the binding lookup and the load:
@@ -43,8 +52,9 @@ use zeroize::Zeroizing;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::read_lm_token;
 
-/// Where a desktop process gets the optional local server token. The endpoint
-/// of a desktop process is fixed at launch and held beside this value.
+/// Where a desktop process gets the optional local server token. The launch
+/// endpoint is held beside this value; it is the endpoint itself for
+/// `Environment`, and the default for `Active`.
 ///
 /// A profile name is an operator-chosen label, not a secret, so this type has
 /// ordinary `Debug` output.
@@ -55,19 +65,33 @@ pub enum TokenSource {
     /// The credential bound to the named recorded provider profile, whose own
     /// recorded endpoint is the only endpoint it can use.
     Profile(String),
+    /// The active connection recorded in the settings store, read again for
+    /// each turn, or the launch endpoint and `OMGCODE_LM_TOKEN` when none is
+    /// selected (ADR-0064).
+    Active,
 }
 
 impl TokenSource {
     /// The connection source for one turn, given the endpoint this process was
     /// started with. A profile source ignores `launch_endpoint`: the profile's
-    /// recorded endpoint is the only one it can use.
+    /// recorded endpoint is the only one it can use. An active source uses it
+    /// only when no connection is selected.
     pub fn connection(&self, launch_endpoint: &str) -> ConnectionSource {
         match self {
             Self::Environment => ConnectionSource::Environment {
                 endpoint: launch_endpoint.to_owned(),
             },
             Self::Profile(name) => ConnectionSource::Profile(name.clone()),
+            Self::Active => ConnectionSource::Active {
+                default_endpoint: launch_endpoint.to_owned(),
+            },
         }
+    }
+
+    /// Whether the endpoint is fixed for the process. Only an active source
+    /// can change between turns.
+    pub const fn is_fixed(&self) -> bool {
+        !matches!(self, Self::Active)
     }
 }
 
@@ -86,6 +110,25 @@ pub enum ConnectionSource {
     /// The endpoint and the credential recorded for the named provider
     /// profile. Nothing else supplies either.
     Profile(String),
+    /// The active connection recorded in the settings store, or
+    /// `default_endpoint` with the environment token when none is selected.
+    Active {
+        /// The endpoint used when no connection is selected.
+        default_endpoint: String,
+    },
+}
+
+/// The provider and endpoint a turn would use, without its token.
+///
+/// It is shown to the operator and compared with what a window sent. Neither
+/// value is a secret.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalEndpoint {
+    /// The endpoint.
+    pub endpoint: String,
+    /// The selected profile's name and kind, or `None` for the launch or
+    /// default endpoint.
+    pub profile: Option<(String, ProviderKind)>,
 }
 
 /// The local server token, held only while one turn needs it.
@@ -126,6 +169,58 @@ pub struct LocalConnection {
     pub token: Option<LmToken>,
 }
 
+/// The profile kind the local adapter reads `name` as. A profile of another
+/// kind is read as `lm_studio`, so core refuses it as a different provider.
+fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
+    control
+        .provider_profile(name)
+        .map(|status| status.profile().kind())
+        .filter(|kind| kind.is_local())
+        .unwrap_or(ProviderKind::LmStudio)
+}
+
+/// The endpoint a turn from `source` would use and the profile it comes from,
+/// without reading any credential or environment token.
+///
+/// # Errors
+///
+/// For a profile or an active selection, a `credential` error with core's
+/// cause code, as [`resolve_local_connection`] reports it. An environment
+/// source never fails.
+pub fn resolve_local_endpoint(
+    data_root: &Path,
+    source: &ConnectionSource,
+) -> Result<LocalEndpoint, AppError> {
+    let launch = |endpoint: &str| LocalEndpoint {
+        endpoint: endpoint.to_owned(),
+        profile: None,
+    };
+    let (control, name) = match source {
+        ConnectionSource::Environment { endpoint } => return Ok(launch(endpoint)),
+        ConnectionSource::Profile(name) => (open_settings(data_root, name)?, name.clone()),
+        ConnectionSource::Active { default_endpoint } => {
+            let Some(control) = open_settings_if_any(data_root)? else {
+                return Ok(launch(default_endpoint));
+            };
+            let Some(name) = control
+                .active_provider_profile()
+                .map(|status| status.profile().name().to_owned())
+            else {
+                return Ok(launch(default_endpoint));
+            };
+            (control, name)
+        }
+    };
+    let kind = local_adapter(&control, &name);
+    let connection = control
+        .provider_credential_binding(&name, kind)
+        .map_err(|error| credential_error(format!("{}: {error}", error.code())))?;
+    Ok(LocalEndpoint {
+        endpoint: connection.endpoint().as_str().to_owned(),
+        profile: Some((name, kind)),
+    })
+}
+
 /// Obtain the endpoint and token for one turn from `source`.
 ///
 /// `data_root` locates the settings store and the credential store; it is not
@@ -150,43 +245,89 @@ pub fn resolve_local_connection(
             token: read_lm_token()?.map(LmToken::new),
         }),
         ConnectionSource::Profile(name) => {
-            let (endpoint, secret) = load_profile_connection(data_root, name)?;
-            let token = match secret {
-                Some(secret) => Some(token_from_secret(&secret)?),
-                None => None,
-            };
-            Ok(LocalConnection { endpoint, token })
+            let control = open_settings(data_root, name)?;
+            profile_connection(control, data_root, name)
         }
+        ConnectionSource::Active { default_endpoint } => {
+            let Some(control) = open_settings_if_any(data_root)? else {
+                return resolve_local_connection(
+                    data_root,
+                    &ConnectionSource::Environment {
+                        endpoint: default_endpoint.clone(),
+                    },
+                );
+            };
+            // The selection and the profile it names are read from one open
+            // store, so a change in between cannot pair them wrongly.
+            let selected = control
+                .active_provider_profile()
+                .map(|status| status.profile().name().to_owned());
+            match selected {
+                Some(name) => profile_connection(control, data_root, &name),
+                None => {
+                    drop(control);
+                    resolve_local_connection(
+                        data_root,
+                        &ConnectionSource::Environment {
+                            endpoint: default_endpoint.clone(),
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Resolve one profile's endpoint and token from an open settings store.
+fn profile_connection(
+    control: ControlStore,
+    data_root: &Path,
+    name: &str,
+) -> Result<LocalConnection, AppError> {
+    let (endpoint, secret) = load_profile_connection(control, data_root, name)?;
+    let token = match secret {
+        Some(secret) => Some(token_from_secret(&secret)?),
+        None => None,
+    };
+    Ok(LocalConnection { endpoint, token })
+}
+
+/// Open the existing settings store for a named profile. A missing store is a
+/// `credential` error, because the profile cannot exist.
+fn open_settings(data_root: &Path, name: &str) -> Result<ControlStore, AppError> {
+    open_settings_if_any(data_root)?.ok_or_else(|| {
+        credential_error(format!(
+            "no settings store exists, so provider profile {name} cannot be used"
+        ))
+    })
+}
+
+/// Open the existing settings store, or `None` when none exists. Another
+/// holder is waited for briefly ([`ControlStore::open_existing_waiting`]), and
+/// refused if it still holds the store after that.
+fn open_settings_if_any(data_root: &Path) -> Result<Option<ControlStore>, AppError> {
+    match ControlStore::open_existing_waiting(data_root) {
+        Ok(control) => Ok(control),
+        Err(ControlError::Busy) => Err(credential_error(
+            "the settings store is in use by another process; try again".to_owned(),
+        )),
+        Err(error) => Err(credential_error(format!(
+            "settings_unusable: the settings store could not be opened: {error}"
+        ))),
     }
 }
 
 /// Load the profile's endpoint and secret while the settings store is open,
 /// then close both stores.
 fn load_profile_connection(
+    control: ControlStore,
     data_root: &Path,
     name: &str,
 ) -> Result<(String, Option<Secret>), AppError> {
-    let control = match ControlStore::open_existing_waiting(data_root) {
-        Ok(Some(control)) => control,
-        Ok(None) => {
-            return Err(credential_error(format!(
-                "no settings store exists, so provider profile {name} cannot be used"
-            )));
-        }
-        Err(ControlError::Busy) => {
-            return Err(credential_error(
-                "the settings store is in use by another process; try again".to_owned(),
-            ));
-        }
-        Err(error) => {
-            return Err(credential_error(format!(
-                "settings_unusable: the settings store could not be opened: {error}"
-            )));
-        }
-    };
+    let adapter = local_adapter(&control, name);
     // Every refusal and the `none` profile are decided here, with no native
     // store access, so they report their own cause on any host.
-    let keyless_endpoint = match control.provider_credential_binding(name, ProviderKind::LmStudio) {
+    let keyless_endpoint = match control.provider_credential_binding(name, adapter) {
         Ok(connection) if connection.binding().is_none() => {
             Some(connection.endpoint().as_str().to_owned())
         }
@@ -206,7 +347,7 @@ fn load_profile_connection(
                 ProviderCredentialUseError::native_code(&error)
             ))
         })?;
-        control.load_provider_credential(&credentials, name, ProviderKind::LmStudio)
+        control.load_provider_credential(&credentials, name, adapter)
     };
     drop(control);
     loaded
@@ -265,6 +406,21 @@ mod tests {
         let error = token_from_secret(&secret).expect_err("refused");
         assert_eq!(error.code(), "credential");
         assert!(error.message().starts_with("credential_invalid"));
+    }
+
+    /// Only an active source can change between turns, and it carries the
+    /// launch endpoint only as its default.
+    #[test]
+    fn an_active_source_is_not_fixed_and_keeps_the_launch_endpoint_as_its_default() {
+        assert!(TokenSource::Environment.is_fixed());
+        assert!(TokenSource::Profile("lms".to_owned()).is_fixed());
+        assert!(!TokenSource::Active.is_fixed());
+        assert_eq!(
+            TokenSource::Active.connection("http://127.0.0.1:1/v1"),
+            ConnectionSource::Active {
+                default_endpoint: "http://127.0.0.1:1/v1".to_owned()
+            }
+        );
     }
 
     #[test]

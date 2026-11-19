@@ -5,8 +5,10 @@
 //! credential. Its status can name the opaque identifier of a credential bound
 //! through `credential`, never the secret.
 //!
-//! An `lm_studio` profile may record the endpoint its adapter uses. The text
-//! must pass the same rule the local adapter applies to every request
+//! An `lm_studio` or `ollama_local` profile may record the endpoint the local
+//! adapter uses. Both servers speak the same OpenAI-compatible Chat
+//! Completions API, so one adapter and one rule serve both (ADR-0064). The
+//! text must pass the rule the local adapter applies to every request
 //! (`provider::validate_base_url`), is stored exactly as validated, and is
 //! fixed for the life of the profile: no operation changes it, so a bound
 //! credential cannot be moved to another destination. Every other kind refuses
@@ -14,6 +16,13 @@
 //! validation. The local adapter reads a selected profile only through
 //! `ControlStore::provider_credential_binding` (ADR-0047, ADR-0048). See
 //! `docs/provider-authentication.md`, ADR-0038, and ADR-0042.
+//!
+//! The store also records which local profile is the *active* connection: the
+//! one a desktop process started without a connection argument uses for each
+//! turn (ADR-0059 decision 7, ADR-0064). Only a local profile that records an
+//! endpoint can be selected. Removing the selected profile clears the
+//! selection in the same event, so the selection never names a missing
+//! profile.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -72,6 +81,12 @@ impl ProviderKind {
             Self::OpenRouter => "open_router",
             Self::LmStudio => "lm_studio",
         }
+    }
+
+    /// Whether the local OpenAI-compatible adapter serves this kind: LM Studio
+    /// and Ollama on this computer (ADR-0064).
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::LmStudio | Self::OllamaLocal)
     }
 
     /// Parse a stored or command-line spelling, case-insensitively.
@@ -199,8 +214,9 @@ pub struct ProviderProfileDeclaration {
     pub kind: String,
     /// `subscription`, `api_key`, or `none`.
     pub auth: String,
-    /// The endpoint to record. Only `lm_studio` accepts one for now, and it
-    /// must pass the local adapter's rule. It is stored exactly as given.
+    /// The endpoint to record. Only `lm_studio` and `ollama_local` accept one
+    /// for now, and it must pass the local adapter's rule. It is stored
+    /// exactly as given.
     pub endpoint: Option<String>,
 }
 
@@ -258,11 +274,67 @@ impl ControlStore {
         Ok(profile)
     }
 
+    /// The active local connection, if one is selected (ADR-0064). It always
+    /// names a recorded local profile with an endpoint.
+    pub fn active_provider_profile(&self) -> Option<&ProviderProfileStatus> {
+        let id = self.snapshot.active_provider?;
+        self.snapshot
+            .provider_profiles
+            .iter()
+            .find(|status| status.profile.id == id)
+    }
+
+    /// Select the active local connection by profile name, or return to the
+    /// default endpoint with `None`. This advances the settings revision.
+    ///
+    /// The profile must be an `lm_studio` or `ollama_local` profile that
+    /// records an endpoint. Selecting grants nothing by itself: each turn
+    /// still resolves the endpoint and any credential from that one profile
+    /// (ADR-0048). Selecting the current choice again is refused, so every
+    /// recorded event is a change.
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` for a stale revision, `UnknownProvider` for an unknown
+    /// name, `ProviderRefused` for a profile that cannot be selected or an
+    /// unchanged selection, and the append errors.
+    pub fn select_active_provider(
+        &mut self,
+        name: Option<&str>,
+        expected_revision: u64,
+    ) -> Result<(), ControlError> {
+        self.check_revision(expected_revision)?;
+        let profile_id = match name {
+            None => None,
+            Some(name) => {
+                let status = self
+                    .provider_profile(name)
+                    .ok_or(ControlError::UnknownProvider)?;
+                if !selectable(&status.profile) {
+                    return Err(ControlError::ProviderRefused(
+                        "only an lm_studio or ollama_local profile with a recorded endpoint can be the active connection",
+                    ));
+                }
+                Some(status.profile.id)
+            }
+        };
+        if profile_id == self.snapshot.active_provider {
+            return Err(ControlError::ProviderRefused(
+                "this is already the active connection",
+            ));
+        }
+        self.append(
+            Action::ActiveProviderSelected { profile_id },
+            self.next_revision()?,
+        )
+    }
+
     /// Remove a provider profile by name. This advances the settings revision.
     ///
     /// A bound credential's binding is removed by the same recorded event,
     /// which names its identifier. The caller then deletes the native item
-    /// with [`credential::delete_unbound_credential`].
+    /// with [`credential::delete_unbound_credential`]. Removing the active
+    /// connection's profile returns the selection to the default endpoint.
     pub fn remove_provider_profile(
         &mut self,
         name: &str,
@@ -338,10 +410,39 @@ pub(super) fn apply(
                 ));
             }
             state.provider_profiles.remove(index);
+            if state.active_provider == Some(*profile_id) {
+                state.active_provider = None;
+            }
+        }
+        Action::ActiveProviderSelected { profile_id } => {
+            if let Some(profile_id) = profile_id {
+                let selectable = state
+                    .provider_profiles
+                    .iter()
+                    .find(|status| status.profile.id == *profile_id)
+                    .is_some_and(|status| selectable(&status.profile));
+                if !selectable {
+                    return Err(ControlError::Invalid(
+                        "the active connection names no selectable provider profile",
+                    ));
+                }
+            }
+            if state.active_provider == *profile_id {
+                return Err(ControlError::Invalid(
+                    "the active connection selection changes nothing",
+                ));
+            }
+            state.active_provider = *profile_id;
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Whether a profile can be the active connection: a local kind that records
+/// the endpoint its turns use.
+fn selectable(profile: &ProviderProfile) -> bool {
+    profile.kind.is_local() && profile.endpoint.is_some()
 }
 
 /// Check a profile name and the provider/authentication pairing.
@@ -366,7 +467,7 @@ fn validate_profile(profile: &ProviderProfile) -> Result<(), ControlError> {
 /// no parser sees an unbounded string.
 fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError> {
     match kind {
-        ProviderKind::LmStudio => {
+        ProviderKind::LmStudio | ProviderKind::OllamaLocal => {
             if text.len() > MAX_PROVIDER_ENDPOINT_BYTES {
                 return Err(ControlError::ProviderRefused(
                     "the provider endpoint is longer than 256 bytes",
@@ -374,13 +475,12 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
             }
             validate_base_url(text).map(|_| ()).map_err(|_| {
                 ControlError::ProviderRefused(
-                    "an lm_studio endpoint must be http://<loopback IP>:<port>/v1 with no user information, query, or fragment",
+                    "a local provider endpoint must be http://<loopback IP>:<port>/v1 with no user information, query, or fragment",
                 )
             })
         }
         ProviderKind::OpenAi
         | ProviderKind::Anthropic
-        | ProviderKind::OllamaLocal
         | ProviderKind::OllamaCloud
         | ProviderKind::OpenRouter => Err(ControlError::ProviderRefused(
             "this provider kind does not accept an endpoint yet",

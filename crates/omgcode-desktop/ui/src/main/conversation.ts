@@ -1,7 +1,7 @@
 import { append, button, el, replaceChildren } from "../dom";
 import { formatUpdated } from "../format";
 import { api } from "../ipc/client";
-import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
+import { CANCELLED_CODE, CONNECTION_CHANGED_CODE, toIpcError } from "../ipc/errors";
 import type {
   ChatSettings,
   ChatStatus,
@@ -27,6 +27,8 @@ const SCROLL_END_SLACK_PX = 8;
 export interface ConversationDeps {
   /** Called when the session list should be reloaded (status, title or archive changes). */
   onTreeChanged(): void;
+  /** Called when a send found that another window chose a different model connection. */
+  onConnectionChanged?(): void;
 }
 
 export interface Conversation {
@@ -34,6 +36,8 @@ export interface Conversation {
   /** Opens a session and, when `seq` is on a loaded page, scrolls to that entry. */
   open(session: SessionSummary, folder: string, seq: number | null): Promise<void>;
   currentId(): string | null;
+  /** Reads the endpoint the next turn uses again, after the connection was changed. */
+  refreshEndpoint(): Promise<void>;
   dispose(): void;
 }
 
@@ -406,6 +410,13 @@ export function createConversation(deps: ConversationDeps): Conversation {
     } catch (reason) {
       const error = toIpcError(reason);
       setNotice({ text: `${error.message} (${error.code})`, error: true });
+      if (error.code === CONNECTION_CHANGED_CODE) {
+        // The settings window chose another connection after this window read
+        // its endpoint. Show the new one so the operator can check the model
+        // and send again; the draft is kept.
+        await composer.refreshEndpoint().catch(() => undefined);
+        deps.onConnectionChanged?.();
+      }
     }
   }
 
@@ -490,6 +501,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     element,
     open,
     currentId: () => session?.session_id ?? null,
+    refreshEndpoint: () => composer.refreshEndpoint(),
     dispose: () => {
       if (frame !== null && typeof cancelAnimationFrame === "function") {
         cancelAnimationFrame(frame);

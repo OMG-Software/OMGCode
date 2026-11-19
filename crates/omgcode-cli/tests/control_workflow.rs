@@ -1089,3 +1089,111 @@ fn file_write_approvals_require_the_writers_stopped_acknowledgement() {
     assert_success(&output);
     assert_eq!(json_output(&output)["approval"]["writers_stopped"], false);
 }
+
+/// The trusted CLI chooses the connection a desktop shell without a connection
+/// argument uses, among local profiles with an endpoint (ADR-0064).
+#[test]
+fn provider_profile_select_records_and_clears_the_active_connection() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let data_root = temporary.path().join("application-data");
+    let development_root = temporary.path().join("development");
+    fs::create_dir_all(&development_root).expect("development root");
+    let mut revision = set_root(&data_root, &development_root)["revision"]
+        .as_u64()
+        .expect("revision");
+    for (name, kind, auth, endpoint) in [
+        (
+            "ollama",
+            "ollama_local",
+            "none",
+            Some("http://127.0.0.1:11434/v1"),
+        ),
+        ("cloud", "openai", "api_key", None),
+    ] {
+        let revision_text = revision.to_string();
+        let mut args = vec![
+            "workspace",
+            "provider-profile-add",
+            name,
+            "--kind",
+            kind,
+            "--auth",
+            auth,
+            "--revision",
+            &revision_text,
+        ];
+        if let Some(endpoint) = endpoint {
+            args.extend(["--endpoint", endpoint]);
+        }
+        let output = run_cli(&data_root, &args);
+        assert_success(&output);
+        revision = json_output(&output)["snapshot"]["revision"]
+            .as_u64()
+            .expect("revision after add");
+    }
+
+    // A profile without a local adapter and endpoint cannot be chosen.
+    let output = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "provider-profile-select",
+            "cloud",
+            "--revision",
+            &revision.to_string(),
+        ],
+    );
+    assert_control_error(&output);
+    // A name and --default together are a usage error.
+    let output = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "provider-profile-select",
+            "ollama",
+            "--default",
+            "--revision",
+            &revision.to_string(),
+        ],
+    );
+    assert!(!output.status.success());
+
+    let output = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "provider-profile-select",
+            "OLLAMA",
+            "--revision",
+            &revision.to_string(),
+        ],
+    );
+    assert_success(&output);
+    let selected = json_output(&output);
+    let ollama_id = selected["snapshot"]["provider_profiles"]
+        .as_array()
+        .expect("profiles")
+        .iter()
+        .find(|status| status["name"] == "ollama")
+        .expect("ollama profile")["id"]
+        .clone();
+    assert_eq!(selected["snapshot"]["active_provider"], ollama_id);
+    revision = selected["snapshot"]["revision"].as_u64().expect("revision");
+
+    let output = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "provider-profile-select",
+            "--default",
+            "--revision",
+            &revision.to_string(),
+        ],
+    );
+    assert_success(&output);
+    assert!(
+        json_output(&output)["snapshot"]
+            .get("active_provider")
+            .is_none()
+    );
+}

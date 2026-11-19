@@ -497,13 +497,60 @@ describe("chat lifecycle", () => {
     await settle();
     const settings = root.querySelector(".settings") as HTMLElement;
     expect(settings.textContent).toContain(endpoint);
-    expect(settings.textContent).toContain("Set when OMGCode starts.");
+    expect(settings.textContent).toContain(
+      "Chosen in the Settings window, or fixed when OMGCode starts.",
+    );
     const editable = Array.from(settings.querySelectorAll<HTMLInputElement>("input, textarea"));
     expect(editable.some((field) => field.value === endpoint)).toBe(false);
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
     buttonByText(root, "Send").click();
     await settle();
     expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ settings: { endpoint } });
+  });
+
+  it("picks up a connection chosen in settings and keeps the draft and model", async () => {
+    const before = "http://127.0.0.1:1234/v1";
+    const after = "http://127.0.0.1:11434/v1";
+    let current = before;
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, [userMessage(1, "hi")]),
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, endpoint: current },
+        preferences: "defaults",
+      }),
+      chat_send: (args) =>
+        (args.settings as { endpoint: string }).endpoint === current
+          ? running
+          : rejection("connection_changed", "The model connection changed in settings."),
+    });
+    itemFor("s-chat").click();
+    await settle();
+    // The settings window switches to Ollama after this window read its endpoint.
+    current = after;
+    const model = Array.from(root.querySelectorAll(".settings label.field"))
+      .find((label) => label.querySelector("span")?.textContent === "Model")
+      ?.querySelector("input") as HTMLInputElement;
+    type(model, "lfm2.5:latest");
+    const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+    type(box, "hello");
+    buttonByText(root, "Send").click();
+    await settle();
+    const notice = root.querySelector(".notice") as HTMLElement;
+    expect(notice.textContent).toContain("connection_changed");
+    expect(notice.classList.contains("error")).toBe(true);
+    const settings = root.querySelector(".settings") as HTMLElement;
+    expect(settings.textContent).toContain(after);
+    expect(settings.textContent).not.toContain(before);
+    expect(box.value).toBe("hello");
+
+    // The next send carries the new endpoint and the operator's own inputs.
+    buttonByText(root, "Send").click();
+    await settle();
+    const sent = ipc.callsTo("chat_send");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.args).toMatchObject({ settings: { endpoint: after } });
+    expect(sent[1]?.args).toMatchObject({ settings: { model: "lfm2.5:latest" } });
   });
 
   it("cancels a running turn", async () => {
@@ -1091,5 +1138,288 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       expect(skillNames()).not.toContain("stale");
       expect(skillBoxes()[0]?.checked).toBe(true);
     });
+  });
+});
+
+describe("status bar", () => {
+  const s = session({ session_id: "s-foot", title: "Footer" });
+  const LMS = "http://127.0.0.1:1234/v1";
+  const OLLAMA = "http://127.0.0.1:11434/v1";
+
+  function footer(): HTMLElement {
+    return root.querySelector(".status-footer") as HTMLElement;
+  }
+
+  function provider(): HTMLSelectElement {
+    return footer().querySelector('select[aria-label="Model provider"]') as HTMLSelectElement;
+  }
+
+  function optionTexts(): string[] {
+    return Array.from(provider().options).map((option) => option.textContent ?? "");
+  }
+
+  function choose(value: string): void {
+    provider().value = value;
+    provider().dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  /** A status with the local profiles `lms` and `ollama`, `active` being the active one. */
+  function status(active: string | null, selectable = true): unknown {
+    const endpoint = active === "ollama" ? OLLAMA : LMS;
+    let kind: string | null = null;
+    if (active !== null) {
+      kind = active === "ollama" ? "ollama_local" : "lm_studio";
+    }
+    return {
+      connection: {
+        endpoint,
+        source: selectable ? "active" : "profile",
+        profile: active,
+        kind,
+        selectable,
+      },
+      choices: selectable
+        ? [
+            { name: "lms", kind: "lm_studio", endpoint: LMS, active: active === "lms" },
+            { name: "ollama", kind: "ollama_local", endpoint: OLLAMA, active: active === "ollama" },
+          ]
+        : [],
+    };
+  }
+
+  it("sits below the conversation and starts with no session open", async () => {
+    await start();
+    expect(footer()).not.toBeNull();
+    expect(footer().previousElementSibling?.classList.contains("statusbar")).toBe(true);
+    expect(footer().textContent).toContain("No session open");
+    expect(ipc.callsTo("session_context")).toHaveLength(0);
+  });
+
+  it("lists the default and each local connection and marks the active one", async () => {
+    await start({ connection_status: () => status("ollama") });
+    expect(optionTexts()).toEqual([
+      `LM Studio: default (${LMS})`,
+      `LM Studio: lms (${LMS})`,
+      `Ollama: ollama (${OLLAMA})`,
+    ]);
+    expect(provider().value).toBe("ollama");
+    expect(provider().disabled).toBe(false);
+    // Like the rest of the main window, the footer uses no tooltips.
+    expect(footer().querySelectorAll("[title]")).toHaveLength(0);
+  });
+
+  it("asks Rust to switch, then shows the new endpoint in the composer", async () => {
+    let active: string | null = null;
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, [userMessage(1, "hi")]),
+      connection_status: () => status(active),
+      connection_select: (args) => {
+        active = args.profile as string | null;
+        return status(active);
+      },
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, endpoint: active === "ollama" ? OLLAMA : LMS },
+        preferences: "defaults",
+      }),
+    });
+    itemFor("s-foot").click();
+    await settle();
+    const settings = root.querySelector(".settings") as HTMLElement;
+    expect(settings.textContent).toContain(LMS);
+
+    choose("ollama");
+    await settle();
+    expect(ipc.callsTo("connection_select").map((call) => call.args)).toEqual([
+      { profile: "ollama" },
+    ]);
+    expect(provider().value).toBe("ollama");
+    expect(settings.textContent).toContain(OLLAMA);
+
+    choose("");
+    await settle();
+    expect(ipc.callsTo("connection_select")[1]?.args).toEqual({ profile: null });
+    expect(provider().value).toBe("");
+  });
+
+  it("changes nothing when the operator answers No", async () => {
+    await start({
+      connection_status: () => status("lms"),
+      connection_select: () => rejection("cancelled", "The change was not confirmed."),
+    });
+    const reads = ipc.callsTo("connection_status").length;
+    choose("ollama");
+    await settle();
+    expect(footer().textContent).toContain("The model provider was not changed.");
+    // The recorded choice is read again, so the dropdown shows what is really active.
+    expect(ipc.callsTo("connection_status").length).toBeGreaterThan(reads);
+    expect(provider().value).toBe("lms");
+    expect(provider().disabled).toBe(false);
+  });
+
+  it("shows the core error and code when a switch fails", async () => {
+    await start({
+      connection_status: () => status(null),
+      connection_select: () => rejection("busy", "Another settings change is in progress."),
+    });
+    choose("lms");
+    await settle();
+    expect(footer().textContent).toContain("Another settings change is in progress. (busy)");
+    expect(provider().value).toBe("");
+  });
+
+  it("disables the choice when a launch argument fixed the connection", async () => {
+    await start({ connection_status: () => status("lms", false) });
+    expect(provider().disabled).toBe(true);
+    expect(optionTexts()).toEqual([`Set at launch: LM Studio (${LMS})`]);
+  });
+
+  it("says when the connection cannot be read", async () => {
+    await start({
+      connection_status: () => rejection("control", "The settings store is unhealthy."),
+    });
+    expect(footer().textContent).toContain("The settings store is unhealthy. (control)");
+    expect(provider().disabled).toBe(true);
+  });
+
+  it("shows the open session's workspace and branch", async () => {
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
+      session_context: () => ({
+        workspace_registered: true,
+        branch: { state: "branch", name: "codex/ollama-provider", note: null },
+      }),
+    });
+    itemFor("s-foot").click();
+    await settle();
+    expect(ipc.callsTo("session_context")[0]?.args).toEqual({ session_id: "s-foot" });
+    expect(footer().textContent).toContain("Workspace: C:\\work\\one");
+    expect(footer().textContent).toContain("Branch: codex/ollama-provider");
+  });
+
+  it.each([
+    [{ state: "detached", name: "5ba2e8a", note: null }, "Detached at 5ba2e8a"],
+    [{ state: "none", name: null, note: null }, "Not a Git repository"],
+    [{ state: "unavailable", name: null, note: null }, "Branch unavailable"],
+    [
+      { state: "unavailable", name: null, note: "HEAD has an unknown form" },
+      "Branch unavailable: HEAD has an unknown form",
+    ],
+  ])("shows the head %o as %s", async (branch, text) => {
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
+      session_context: () => ({ workspace_registered: true, branch }),
+    });
+    itemFor("s-foot").click();
+    await settle();
+    const segment = Array.from(footer().querySelectorAll<HTMLElement>(".status-segment")).find(
+      (node) => node.textContent === text,
+    );
+    expect(segment).toBeDefined();
+  });
+
+  it("notes an unregistered workspace and survives a failed branch read", async () => {
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
+      session_context: () => ({
+        workspace_registered: false,
+        branch: { state: "none", name: null, note: null },
+      }),
+    });
+    itemFor("s-foot").click();
+    await settle();
+    expect(footer().textContent).toContain("(workspace not registered here)");
+
+    ipc.on("session_context", () => rejection("busy", "busy"));
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+    expect(footer().textContent).toContain("Branch unavailable");
+  });
+
+  it("renders a hostile branch name as inert text", async () => {
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
+      session_context: () => ({
+        workspace_registered: true,
+        branch: { state: "branch", name: HOSTILE, note: null },
+      }),
+    });
+    itemFor("s-foot").click();
+    await settle();
+    expect(footer().querySelector("img")).toBeNull();
+    expect(footer().textContent).toContain(neutralise(`Branch: ${HOSTILE}`));
+  });
+
+  it("reads the connection and branch again on focus, and stops once disposed", async () => {
+    await start({ session_tree: treeOf(s), session_transcript: () => page(s, []) });
+    itemFor("s-foot").click();
+    await settle();
+    const status0 = ipc.callsTo("connection_status").length;
+    const context0 = ipc.callsTo("session_context").length;
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+    expect(ipc.callsTo("connection_status").length).toBe(status0 + 1);
+    expect(ipc.callsTo("session_context").length).toBe(context0 + 1);
+
+    app?.dispose();
+    app = null;
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+    expect(ipc.callsTo("connection_status").length).toBe(status0 + 1);
+  });
+
+  it("reads the connection again when a send finds it changed elsewhere", async () => {
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, [userMessage(1, "hi")]),
+      chat_send: () => rejection("connection_changed", "The model connection changed."),
+    });
+    itemFor("s-foot").click();
+    await settle();
+    const before = ipc.callsTo("connection_status").length;
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(ipc.callsTo("connection_status").length).toBeGreaterThan(before);
+  });
+
+  it("drops a branch read that a newer session open overtook", async () => {
+    const other = session({ session_id: "s-other", title: "Other" });
+    let finishFirst: (value: unknown) => void = () => undefined;
+    await start({
+      session_tree: () =>
+        tree([
+          { id: "g1", folder: "C:\\work\\one", sessions: [s] },
+          { id: "g2", folder: "C:\\work\\two", sessions: [other] },
+        ]),
+      session_transcript: (args) => page(args.session_id === "s-foot" ? s : other, []),
+      session_context: (args) => {
+        if (args.session_id !== "s-foot") {
+          return {
+            workspace_registered: true,
+            branch: { state: "branch", name: "two", note: null },
+          };
+        }
+        return new Promise((resolve) => {
+          finishFirst = resolve;
+        });
+      },
+    });
+    itemFor("s-foot").click();
+    await settle();
+    itemFor("s-other").click();
+    await settle();
+    finishFirst({
+      workspace_registered: true,
+      branch: { state: "branch", name: "one", note: null },
+    });
+    await settle();
+    expect(footer().textContent).toContain("Workspace: C:\\work\\two");
+    expect(footer().textContent).toContain("Branch: two");
+    expect(footer().textContent).not.toContain("Branch: one");
   });
 });

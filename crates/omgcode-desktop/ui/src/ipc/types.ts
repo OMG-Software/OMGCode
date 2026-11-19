@@ -294,12 +294,50 @@ export interface PermissionFlags {
   write_tools: WriteToolAccess;
 }
 
-export type ConnectionSource = "environment" | "profile" | "injected";
+export type ConnectionSource = "environment" | "profile" | "active" | "injected";
 
 export interface ConnectionView {
+  /** The endpoint the next chat turn uses. */
   endpoint: string;
   source: ConnectionSource;
+  /** The profile in use, or `null` for the launch or default endpoint. */
   profile: string | null;
+  /** That profile's provider kind, as the CLI names it. */
+  kind: string | null;
+  /** Whether this window may choose the active connection (no launch argument fixed it). */
+  selectable: boolean;
+}
+
+/** One connection the main window's status bar may offer (ADR-0064). Never a credential. */
+export interface ConnectionChoice {
+  name: string;
+  /** `lm_studio` or `ollama_local`. */
+  kind: string;
+  endpoint: string;
+  active: boolean;
+}
+
+/** The status bar's view of the model connection. `choices` is empty when a launch argument fixed it. */
+export interface ConnectionStatus {
+  connection: ConnectionView;
+  choices: ConnectionChoice[];
+}
+
+export type BranchState = "branch" | "detached" | "none" | "unavailable";
+
+/** A workspace's Git branch, read from `HEAD` for display only. */
+export interface BranchView {
+  state: BranchState;
+  /** The branch name, or the abbreviated commit when detached. */
+  name: string | null;
+  /** A fixed reason when `state` is `unavailable`. */
+  note: string | null;
+}
+
+/** What the status bar shows about a session's workspace. */
+export interface SessionContext {
+  workspace_registered: boolean;
+  branch: BranchView;
 }
 
 export interface ProviderProfileView {
@@ -308,7 +346,14 @@ export interface ProviderProfileView {
   auth: string;
   endpoint: string | null;
   credential_bound: boolean;
+  /** A local LM Studio or Ollama profile with a recorded endpoint (ADR-0064). */
+  selectable: boolean;
+  /** Whether it is the active connection. */
+  active: boolean;
 }
+
+/** A local provider the settings window may record (ADR-0064). */
+export type LocalProviderKind = "lm_studio" | "ollama_local";
 
 export interface ToolchainProfileView {
   name: string;

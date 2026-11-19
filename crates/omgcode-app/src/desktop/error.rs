@@ -185,6 +185,33 @@ impl DesktopError {
         )
     }
 
+    /// The active model connection changed in `settings` since the window read
+    /// it (ADR-0064). Nothing was sent.
+    pub(crate) fn connection_changed() -> Self {
+        Self::new(
+            "connection_changed",
+            "The model connection changed in settings. Check the model name, then send again.",
+        )
+    }
+
+    /// The model connection was fixed by a launch argument, so it cannot be
+    /// chosen in `settings`.
+    pub(crate) fn connection_fixed() -> Self {
+        Self::new(
+            "connection_fixed",
+            "The model connection was set when the application started. Restart without --endpoint or --provider-profile to choose it here.",
+        )
+    }
+
+    /// The profile has a stored credential, whose removal stays with the
+    /// trusted CLI.
+    pub(crate) fn credential_bound() -> Self {
+        Self::new(
+            "credential_bound",
+            "This connection has a stored credential. Remove it with the trusted CLI `provider-profile-remove`.",
+        )
+    }
+
     /// The application is shutting down.
     pub(crate) fn shutting_down() -> Self {
         Self::new("shutting_down", "The application is shutting down.")

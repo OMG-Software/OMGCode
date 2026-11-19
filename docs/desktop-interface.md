@@ -39,6 +39,13 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
+- Since version 0.44.0 (ADR-0064), the `settings` window and a status bar at
+  the bottom of the `main` window choose the model connection from a
+  dropdown: the default LM Studio endpoint or a recorded `lm_studio` or
+  `ollama_local` profile, after a native confirmation. The `settings` window
+  can also add and remove local connections without a credential. The status
+  bar also shows the open session's workspace and its Git branch. A launch
+  argument still fixes the connection for the process.
 - Since version 0.32.0 (Phase D4 and E6, ADR-0049), a chat turn streams the
   local model's reply and the shell pushes chat events to the `main` window
   through one caller-scoped channel. The window shows the provisional text
@@ -75,20 +82,20 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing language-model connections, credentials, toolchain profiles,
-  container grants, package-network profiles, and skills in the desktop
-  application. They change only through the trusted CLI. Phases S3 to S5 of
+- Changing credentials, toolchain profiles, container grants,
+  package-network profiles, and skills in the desktop application, and
+  adding a profile with a credential or a cloud provider kind. They change
+  only through the trusted CLI. The rest of phase S3 and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: the write-only API key field, choosing the active
-  connection, execution setup, and skill management.
+  are not implemented: the write-only API key field, execution setup, and
+  skill management.
 - Development panels: terminal tabs, task logs, diffs, and a file browser.
 - Git, MCP, and memory interfaces, and skill management. The `main` window
   can only select an already enabled skill for one turn.
 - A recovery interface for damaged journals or an incomplete tail.
-- A provider other than the local LM Studio server. Stored API keys are used
-  only for that server's token, through `--provider-profile`. The frontend
-  shows nothing about the credential source beyond the endpoint text it
-  already displayed.
+- A provider other than a local LM Studio or Ollama server. Stored API keys
+  are used only for an LM Studio server's token. The `main` window shows
+  nothing about the credential source beyond the endpoint text.
 - A native operating-system confirmation dialog for approvals.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
@@ -157,14 +164,13 @@ omgcode-desktop [--data-dir <path>] [--endpoint <url> | --provider-profile <name
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `--data-dir <path>` | The per-user OMGCode data directory | The application data root, the same one the CLI uses |
-| `--endpoint <url>` | `http://127.0.0.1:1234/v1` | The loopback model endpoint, fixed for the process. Not allowed with `--provider-profile` |
-| `--provider-profile <name>` | None: the endpoint is `--endpoint` or its default, and the token comes from `OMGCODE_LM_TOKEN` | A recorded `lm_studio` provider profile that supplies both the endpoint and the stored credential used as the server token, fixed for the process. Not allowed with `--endpoint` |
+| `--endpoint <url>` | None: the connection chosen in the `settings` window, else `http://127.0.0.1:1234/v1` | The loopback model endpoint, fixed for the process. Not allowed with `--provider-profile` |
+| `--provider-profile <name>` | None: as for `--endpoint`, with the token from `OMGCODE_LM_TOKEN` for the default endpoint | A recorded `lm_studio` or `ollama_local` provider profile that supplies the endpoint and, for `lm_studio`, the stored credential used as the server token, fixed for the process. Not allowed with `--endpoint` |
 | `--stream <on\|off>` | `on` | Whether chat turns send streamed model requests and push their text to the window. `off` sends non-streaming requests. The `finished` event is still pushed |
 
 An unknown argument, a missing value, a repeated flag, an empty value, a value
 that starts with `--`, a `--stream` value other than `on` or `off`, or both
-`--endpoint` and `--provider-profile` prints the usage text to stderr and exits with status 2. The default value of
-`--endpoint` does not count as giving it. An invalid endpoint, an unusable data
+`--endpoint` and `--provider-profile` prints the usage text to stderr and exits with status 2. An invalid endpoint, an unusable data
 root, or a service that cannot open prints `omgcode-desktop: <message>` to
 stderr and exits with status 1.
 With `--provider-profile`, the shell resolves the profile once at launch. The
@@ -175,15 +181,23 @@ unreadable credential prints `omgcode-desktop: credential: <cause>: <text>` and
 exits with status 1. Both kinds of failure happen before any window opens. A
 normal close exits with status 0.
 
-The command line is the only configuration. The shell reads no environment
-variable and no configuration file for these values. The one exception is the
-local server token, which has two sources. Without `--provider-profile`, if
-`OMGCODE_LM_TOKEN` is set, the service reads it for each chat turn. With it, the
-service reads the credential bound to that profile from protected OS storage
-for each chat turn and never reads the variable. The flag carries a profile
-name, not a secret. The endpoint has the same two sources: `--endpoint` or its
-default without a profile, and the profile's recorded endpoint with one. The webview never receives the token, and cannot choose or
-see the profile. The service caches nothing, so a rotated credential is used by
+With neither `--endpoint` nor `--provider-profile`, the connection is not
+fixed. Each chat turn resolves the active connection recorded in the
+settings store when it starts: a profile chosen in the `settings` window
+(ADR-0064), or, with none chosen, `http://127.0.0.1:1234/v1` and
+`OMGCODE_LM_TOKEN`. An unusable selection fails the turn, not the launch, so
+the `settings` window stays reachable to change it.
+
+The command line and that recorded selection are the only configuration. The
+shell reads no other environment variable and no configuration file for these
+values. The local server token has two sources. For the default endpoint or
+`--endpoint`, if `OMGCODE_LM_TOKEN` is set, the service reads it for each chat
+turn. For a profile, from `--provider-profile` or chosen in settings, the
+service reads the credential bound to it from protected OS storage for each
+chat turn and never reads the variable; an `ollama_local` profile has no
+credential and sends no token. The flag carries a profile name, not a secret.
+The endpoint comes from the same source as the token. No webview receives the
+token. The `main` window cannot choose or see the profile. The service caches nothing, so a rotated credential is used by
 the next turn. An unreadable credential makes `chat_send` fail at once with a
 `credential` error, and no turn thread starts. See
 [stored credential use](provider-authentication.md#stored-credential-use-0300)
@@ -203,7 +217,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 28 commands. No other command exists.
+The shell has three webview windows and 34 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -218,9 +232,12 @@ their registered identifier, and approvals by identifier.
 | `session_interrupt` | main | Close a session's unfinished turn as `operator_interrupted` |
 | `workspace_list` | main | List the registered workspaces a session can be created in |
 | `session_create` | main | Create a session in a registered workspace |
-| `chat_defaults` | main | Return the fixed endpoint and the saved or built-in chat preferences |
+| `chat_defaults` | main | Return the endpoint the next turn uses and the saved or built-in chat preferences |
 | `chat_preferences_save` | main | Save the chat preferences the composer starts from |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
+| `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
+| `connection_status` | main | Return the connection the next turn uses and the local connections the status bar may offer |
+| `connection_select` | main | Request the default or a recorded local profile as the model connection; Rust shows a native confirmation |
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
@@ -237,6 +254,9 @@ their registered identifier, and approvals by identifier.
 | `settings_set_permissions` | settings | Set one workspace's preferences and per-tool write limits; widening any needs a native confirmation |
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
+| `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
+| `settings_add_local_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential |
+| `settings_remove_connection` | settings | Remove a provider profile that has no bound credential; removing the active one needs a native confirmation |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -413,17 +433,25 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   that is no longer enabled fails the turn before any model request. A
   selected skill reaches only that turn's first request, as a labelled
   untrusted message, and is never journaled. The window shows names only.
-- **Endpoint.** Fixed at launch. With a profile, the launch value is the
-  profile's recorded endpoint. A request whose endpoint is not byte for byte
-  the launch endpoint is refused with `invalid_request`. Each turn also
-  resolves the profile again. If its recorded endpoint no longer equals the
+- **Endpoint.** `chat_defaults` returns the endpoint the next turn would
+  use, and the composer shows it as text, not as an input. A launch argument
+  fixes it. A request whose endpoint is not byte for byte the launch endpoint
+  is then refused with `invalid_request`. Without a launch argument, each
+  turn resolves the active connection, and a request whose endpoint differs
+  from it is refused with `connection_changed`: the `settings` window chose
+  another connection after `main` read the endpoint. No turn starts. The
+  composer then reads the endpoint again and keeps the draft and the model
+  name, so the operator can check the model before sending again
+  (ADR-0064). With `--provider-profile`, each turn also resolves the profile
+  again. If its recorded endpoint no longer equals the
   launch value, because the profile was removed and added again, `chat_send`
   fails at once with a `credential` error that starts `endpoint_changed:` and
   tells the operator to restart the application. No turn starts. A profile
   replaced with the same endpoint and a new credential is accepted, and the
   turn uses the new credential.
-- **Token.** Resolved for each turn from the launch-time source: the stored
-  credential of `--provider-profile`, or else `OMGCODE_LM_TOKEN`. It is held in
+- **Token.** Resolved for each turn from the same source as the endpoint:
+  the stored credential of the profile, none for an `ollama_local` profile,
+  or else `OMGCODE_LM_TOKEN`. It is held in
   a zeroing type with a redacted `Debug` and no serializer, and removed from any
   recorded or returned text. The provider clients' header copies are not
   zeroed. With a profile selected, a failure to read the credential ends the
@@ -510,10 +538,16 @@ store exists from the first launch. It shows:
   ADR-0063), and its package cache root with **Choose…** and, when one is set,
   **Clear**; and **Register workspace…**, which is disabled until a root is
   set. A preference at Allow is shown filled and one at Prompt outlined;
-- the connection this process uses: the endpoint, and whether the token comes
-  from `OMGCODE_LM_TOKEN` or from a named provider profile set at launch;
-- provider profiles with their kind, authentication, endpoint, and whether a
-  credential is bound;
+- the connection the next turn uses, with a **Model provider** dropdown. It
+  lists the default LM Studio endpoint and every `lm_studio` or
+  `ollama_local` profile with an endpoint. When a launch argument fixed the
+  connection, the dropdown is disabled and says so;
+- provider profiles with their provider, authentication, endpoint, whether a
+  credential is bound, whether they are active, and **Remove** for a profile
+  without a credential;
+- **Add a local connection**: a provider (`Ollama` or `LM Studio`), a name,
+  and a loopback endpoint, prefilled with the provider's usual address
+  (`http://127.0.0.1:11434/v1` or `http://127.0.0.1:1234/v1`);
 - toolchain profiles with their platform, read-only roots, path entries, and
   environment variable names, without values;
 - package-network profiles with their origins and how many credentials are
@@ -521,12 +555,44 @@ store exists from the first launch. It shows:
 - container grants with their folder, access, and state;
 - each imported skill's name, its application setting, and its workspace
   overrides, with the workspace shown by its folder.
+- **Status bar.** A footer along the bottom of `main` shows the open
+  session's workspace folder, its Git branch, and the model provider
+  (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
+  local profile with a recorded endpoint, from `connection_status`, labelled
+  with provider, profile name, and endpoint. Choosing one calls
+  `connection_select` with the profile name only. Rust applies the same
+  checks and native Yes/No dialog as `settings_select_connection`; the
+  footer then shows the recorded choice and the composer reads the endpoint
+  again. A declined dialog shows "The model provider was not changed.". When
+  a launch argument fixed the connection, the dropdown is disabled and shows
+  "Set at launch". The branch comes from `session_context`, which reads only
+  `HEAD` through the anchored broker (see "Git branch display"). The footer
+  reads both again when the window regains focus, when a session opens, and
+  after a turn settles. Like the rest of `main`, it uses no `title`
+  tooltips; the reason a branch is unavailable is shown as text.
+- **Git branch display.** `session_context` opens the session's registered
+  workspace by its recorded root and workspace identities and reads
+  `.git/HEAD`, at most 4096 bytes, without following a link. No Git program
+  runs, and no Git configuration, ref, or object is read. When `.git` is a
+  file of the form `gitdir: <path>`, the named directory's `HEAD` is read
+  only when it lies inside the development root, from the root's own handle.
+  The check compares names with the recorded root, so a pointer that spells
+  the root another way (an 8.3 short name, a junction, or a `subst` drive)
+  shows "Branch unavailable".
+  `ref: refs/heads/<name>` shows the name, another ref shows in full, and a
+  40- or 64-digit commit shows as "Detached at" its first seven digits. A
+  missing `.git` shows "Not a Git repository". Anything else, a name over
+  255 bytes, or a name with whitespace or a control character shows "Branch
+  unavailable" with a fixed reason. The name is display-safe text and is
+  never sent to the model.
 
 Only this window receives the configuration view. The `main` window receives
 only the workspace summaries of `workspace_list` (each registered
 workspace's identifier, folder display text, and `model_tools`, `read`,
-`write`, and `execute` states), the fixed endpoint text of
-`chat_defaults`, and the enabled skill names of `session_skills`.
+`write`, and `execute` states), the endpoint text of
+`chat_defaults`, the enabled skill names of `session_skills`, the branch
+display of `session_context`, and the connection view and local profile
+names, kinds, and endpoints of `connection_status`.
 
 The view reads the settings store through the same core functions as the
 trusted CLI and releases it before returning. It reads no stored secret and
@@ -579,6 +645,44 @@ A closed dialog or a No answer returns `cancelled`. The window shows "No
 change was made." and reads the configuration again, so every control shows
 the recorded value. Any other failure is shown with its code and is followed
 by the same re-read.
+
+### Choosing the model connection
+
+The `main` window's `connection_select` runs the same checks and dialog as
+`settings_select_connection`, below, reading the revision itself; it takes
+only a profile name or none. The three `settings` connection commands call
+the same `ControlStore` functions as the
+CLI's `workspace provider-profile-select`, `provider-profile-add`, and
+`provider-profile-remove`, with the same revision check and validation
+(ADR-0064).
+
+- **Selecting needs a native confirmation.** `settings_select_connection`
+  takes the revision and a profile name, or none for the default. The
+  service refuses an unknown profile, a profile that is not `lm_studio` or
+  `ollama_local`, a profile without an endpoint, and an unchanged choice
+  before any dialog. It then asks "Send new chat turns to Ollama through the
+  connection `<name>`?" (or LM Studio, or the default), with the endpoint,
+  and records the choice only on Yes. It applies to turns that start
+  afterwards. When a launch argument fixed the connection, the command is
+  refused with `connection_fixed`.
+- **Adding needs no dialog.** `settings_add_local_connection` takes a name of
+  at most 256 bytes, the kind `lm_studio` or `ollama_local`, and an endpoint.
+  It records a profile with authentication `none`. Core refuses an endpoint
+  that is not `http://<loopback IP>:<port>/v1`. A new profile is not used
+  until it is selected.
+- **Removing the active connection is confirmed.**
+  `settings_remove_connection` removes a profile without a bound credential.
+  Removing an inactive profile shows no dialog. Removing the selected
+  profile returns new turns to the default endpoint, which receives
+  `OMGCODE_LM_TOKEN` when it is set, so Rust first asks "Remove the
+  connection `<name>` and send new chat turns to the default connection?"
+  with the default endpoint, unless a launch argument fixed the connection.
+  No keeps the profile and its selection. A profile with a stored credential is
+  refused with `credential_bound`; remove it with the trusted CLI, which also
+  deletes the credential.
+- **Ollama context length.** OMGCode cannot set Ollama's context length over
+  this API. Set it in Ollama, for example with `OLLAMA_CONTEXT_LENGTH`, and
+  give the composer the same context size.
 
 ## Approvals
 
@@ -705,10 +809,13 @@ What the design does:
   roots and path entries, package cache roots, and grant folders, all as
   display-safe text. No command takes any of them back as input. A settings
   change gets its folder from a native dialog that Rust opens.
-- **Fixed endpoint and token.** The webview cannot choose the provider, choose
-  the credential source, or read the token. The profile and its endpoint are
-  fixed at launch. A stored credential goes only to the endpoint recorded with
-  its profile (ADR-0048). The wire contract is unchanged.
+- **Endpoint and token outside `main`.** The `main` webview cannot supply an
+  endpoint, choose the credential source, or read the token. It may only
+  request a recorded local profile, or the default, with `connection_select`;
+  Rust switches only after the operator confirms a native dialog, and not at
+  all when a launch argument fixed the connection (ADR-0064). The `settings`
+  window chooses through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
+  recorded with its profile (ADR-0048).
 - **Channel, no `core:` permission.** `chat_subscribe` takes a Tauri IPC
   channel that the `main` webview creates. It needs no capability beyond the
   command's own permission. Tauri events would need a `core:event` permission,

@@ -187,7 +187,7 @@ fn every_endpoint_the_adapter_refuses_is_refused_at_add_time() {
             store.add_provider_profile(&with_endpoint("bad", "lm_studio", "none", Some(text)), 0),
         );
         assert!(
-            message.contains("lm_studio endpoint"),
+            message.contains("local provider endpoint"),
             "{text:?}: {message}"
         );
     }
@@ -231,7 +231,6 @@ fn other_provider_kinds_refuse_an_endpoint() {
     for (kind, auth) in [
         ("openai", "api_key"),
         ("anthropic", "subscription"),
-        ("ollama_local", "none"),
         ("ollama_cloud", "api_key"),
         ("open_router", "api_key"),
     ] {
@@ -350,6 +349,225 @@ fn replay_rejects_invalid_endpoints_and_unknown_fields() {
         assert!(
             matches!(result, Err(ControlError::Invalid(_))),
             "{to}: {:?}",
+            result.err()
+        );
+    }
+}
+
+const OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434/v1";
+
+/// An `ollama_local` profile records an endpoint under the same loopback rule
+/// as `lm_studio` (ADR-0064), and is refused exactly where `lm_studio` is.
+#[test]
+fn an_ollama_local_profile_records_a_loopback_endpoint_under_the_shared_rule() {
+    let (_directory, data, mut store) = store();
+    let profile = store
+        .add_provider_profile(
+            &with_endpoint("ollama", "ollama_local", "none", Some(OLLAMA_ENDPOINT)),
+            0,
+        )
+        .expect("profile");
+    assert_eq!(
+        profile.endpoint().map(ProviderEndpoint::as_str),
+        Some(OLLAMA_ENDPOINT)
+    );
+    assert!(profile.kind().is_local());
+    for text in crate::provider::REFUSED_ENDPOINTS {
+        let message = refusal(
+            store
+                .add_provider_profile(&with_endpoint("bad", "ollama_local", "none", Some(text)), 1),
+        );
+        assert!(
+            message.contains("local provider endpoint"),
+            "{text:?}: {message}"
+        );
+    }
+    // Ollama has no credential: `api_key` stays refused with an endpoint too.
+    let _ = refusal(store.add_provider_profile(
+        &with_endpoint("keyed", "ollama_local", "api_key", Some(OLLAMA_ENDPOINT)),
+        1,
+    ));
+    assert_eq!(store.revision(), 1);
+    drop(store);
+    let store = ControlStore::open(&data).expect("replay");
+    assert_eq!(
+        store
+            .provider_profile("ollama")
+            .and_then(|status| status.profile().endpoint())
+            .map(ProviderEndpoint::as_str),
+        Some(OLLAMA_ENDPOINT)
+    );
+}
+
+/// Only the two local kinds are served by the local adapter.
+#[test]
+fn only_lm_studio_and_ollama_local_are_local_kinds() {
+    for kind in [
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
+        ProviderKind::OllamaCloud,
+        ProviderKind::OpenRouter,
+    ] {
+        assert!(!kind.is_local(), "{kind:?}");
+    }
+    assert!(ProviderKind::LmStudio.is_local());
+    assert!(ProviderKind::OllamaLocal.is_local());
+}
+
+/// The active connection is recorded, survives replay, and returns to the
+/// default endpoint when cleared or when its profile is removed.
+#[test]
+fn the_active_connection_is_selected_replayed_and_cleared() {
+    let (_directory, data, mut store) = store();
+    store
+        .add_provider_profile(
+            &with_endpoint("lms", "lm_studio", "none", Some(ENDPOINT)),
+            0,
+        )
+        .expect("lm studio");
+    store
+        .add_provider_profile(
+            &with_endpoint("ollama", "ollama_local", "none", Some(OLLAMA_ENDPOINT)),
+            1,
+        )
+        .expect("ollama");
+    assert!(store.active_provider_profile().is_none());
+    store
+        .select_active_provider(Some("OLLAMA"), 2)
+        .expect("select ollama");
+    assert_eq!(store.revision(), 3);
+    assert_eq!(
+        store
+            .active_provider_profile()
+            .map(|status| status.profile().name()),
+        Some("ollama")
+    );
+    let encoded = serde_json::to_value(store.snapshot()).expect("snapshot");
+    assert!(encoded.get("active_provider").is_some(), "{encoded}");
+    drop(store);
+
+    let mut store = ControlStore::open(&data).expect("replay");
+    assert_eq!(
+        store
+            .active_provider_profile()
+            .map(|status| status.profile().name()),
+        Some("ollama")
+    );
+    store
+        .select_active_provider(Some("lms"), 3)
+        .expect("switch to lm studio");
+    store.select_active_provider(None, 4).expect("clear");
+    assert!(store.active_provider_profile().is_none());
+    let encoded = serde_json::to_value(store.snapshot()).expect("snapshot");
+    assert!(encoded.get("active_provider").is_none(), "{encoded}");
+
+    // Removing the selected profile clears the selection in the same event.
+    store
+        .select_active_provider(Some("ollama"), 5)
+        .expect("select again");
+    let removal = store.remove_provider_profile("ollama", 6).expect("remove");
+    assert!(removal.credential.is_none());
+    assert!(store.active_provider_profile().is_none());
+    drop(store);
+    let store = ControlStore::open(&data).expect("replay after removal");
+    assert!(store.active_provider_profile().is_none());
+    assert_eq!(store.revision(), 7);
+}
+
+/// A profile that is not local, records no endpoint, or is unknown cannot be
+/// selected, an unchanged selection is refused, and none of these records
+/// anything.
+#[test]
+fn an_unselectable_or_unchanged_connection_is_refused_without_a_record() {
+    let (_directory, data, mut store) = store();
+    store
+        .add_provider_profile(&declaration("cloud", "openai", "api_key"), 0)
+        .expect("cloud");
+    store
+        .add_provider_profile(&declaration("bare", "lm_studio", "none"), 1)
+        .expect("no endpoint");
+    store
+        .add_provider_profile(
+            &with_endpoint("ollama", "ollama_local", "none", Some(OLLAMA_ENDPOINT)),
+            2,
+        )
+        .expect("ollama");
+    for name in ["cloud", "bare"] {
+        assert!(
+            matches!(
+                store.select_active_provider(Some(name), 3),
+                Err(ControlError::ProviderRefused(_))
+            ),
+            "{name}"
+        );
+    }
+    assert!(matches!(
+        store.select_active_provider(Some("missing"), 3),
+        Err(ControlError::UnknownProvider)
+    ));
+    assert!(matches!(
+        store.select_active_provider(None, 3),
+        Err(ControlError::ProviderRefused(_))
+    ));
+    assert!(matches!(
+        store.select_active_provider(Some("ollama"), 2),
+        Err(ControlError::Conflict { .. })
+    ));
+    store
+        .select_active_provider(Some("ollama"), 3)
+        .expect("select");
+    assert!(matches!(
+        store.select_active_provider(Some("ollama"), 4),
+        Err(ControlError::ProviderRefused(_))
+    ));
+    assert_eq!(store.revision(), 4);
+    drop(store);
+    let text = fs::read_to_string(data.join(FILE_NAME)).expect("journal text");
+    assert_eq!(
+        text.matches("active_provider_selected").count(),
+        1,
+        "{text}"
+    );
+}
+
+/// Replay refuses a selection that names a missing or unselectable profile,
+/// or that changes nothing.
+#[test]
+fn replay_rejects_an_invalid_active_connection() {
+    let (_directory, data, mut store) = store();
+    let cloud = store
+        .add_provider_profile(&declaration("cloud", "openai", "api_key"), 0)
+        .expect("cloud");
+    let ollama = store
+        .add_provider_profile(
+            &with_endpoint("ollama", "ollama_local", "none", Some(OLLAMA_ENDPOINT)),
+            1,
+        )
+        .expect("ollama");
+    store
+        .select_active_provider(Some("ollama"), 2)
+        .expect("select");
+    drop(store);
+    let original = fs::read_to_string(data.join(FILE_NAME)).expect("journal");
+    // Only the selection event names a profile with "profile_id"; the
+    // profile events use "id".
+    let selected = format!(r#""profile_id":"{}""#, ollama.id());
+    assert_eq!(original.matches(&selected).count(), 1, "{original}");
+    let cases = [
+        format!(r#""profile_id":"{}""#, cloud.id()),
+        format!(r#""profile_id":"{}""#, Uuid::new_v4()),
+        r#""profile_id":null"#.to_owned(),
+    ];
+    for replacement in cases {
+        let edited = original.replacen(&selected, &replacement, 1);
+        let directory = tempfile::tempdir().expect("copy");
+        let path = directory.path().join("data");
+        drop(ControlStore::open(&path).expect("directory"));
+        fs::write(path.join(FILE_NAME), edited).expect("edited fixture");
+        let result = ControlStore::open(&path);
+        assert!(
+            matches!(result, Err(ControlError::Invalid(_))),
+            "{replacement}: {:?}",
             result.err()
         );
     }

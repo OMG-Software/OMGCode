@@ -8,6 +8,8 @@
 //! The data root, and either the model endpoint with the environment token or a
 //! provider profile (whose recorded endpoint and stored credential are used
 //! instead), come from the process command line ([`launch`]) and nowhere else.
+//! With neither, each turn uses the active connection chosen in the `settings`
+//! window, or the default endpoint while none is chosen (ADR-0064).
 
 pub mod commands;
 pub mod dialogs;
@@ -64,16 +66,30 @@ pub fn run() -> ExitCode {
 
 /// Validates the endpoint and opens the one service for this process.
 fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
-    let (data_root, endpoint, token_source) = match args.provider_profile {
-        None => {
+    let (data_root, endpoint, token_source) = match (args.provider_profile, args.endpoint) {
+        (None, Some(endpoint)) => {
             // Validate the endpoint the way a chat turn would, so a malformed
             // or non-loopback endpoint fails now, with the provider's message.
-            check_endpoint(&args.endpoint)?;
+            check_endpoint(&endpoint)?;
             let data_root =
                 omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
-            (data_root, args.endpoint, TokenSource::Environment)
+            (data_root, endpoint, TokenSource::Environment)
         }
-        Some(name) => {
+        (None, None) => {
+            // No connection argument: each turn reads the active connection
+            // chosen in settings, and uses the default while none is chosen.
+            // An unusable selection is reported by the turn, not here, so the
+            // settings window stays reachable to change it.
+            check_endpoint(launch::DEFAULT_ENDPOINT)?;
+            let data_root =
+                omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
+            (
+                data_root,
+                launch::DEFAULT_ENDPOINT.to_owned(),
+                TokenSource::Active,
+            )
+        }
+        (Some(name), _) => {
             // A selected profile is the only source of the endpoint, and the
             // launch default in `args.endpoint` is not used (ADR-0048). The
             // profile is resolved once now, so an unknown profile, a profile
@@ -142,12 +158,18 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings_show_window,
             commands::chat::chat_preferences_save,
             commands::chat::session_skills,
+            commands::chat::session_context,
+            commands::chat::connection_status,
+            commands::chat::connection_select,
             commands::settings::settings_overview,
             commands::settings::settings_choose_root,
             commands::settings::settings_register_workspace,
             commands::settings::settings_set_permissions,
             commands::settings::settings_choose_package_cache,
-            commands::settings::settings_clear_package_cache
+            commands::settings::settings_clear_package_cache,
+            commands::settings::settings_select_connection,
+            commands::settings::settings_add_local_connection,
+            commands::settings::settings_remove_connection
         ])
         .build(tauri::generate_context!());
     match built {
@@ -188,7 +210,7 @@ mod tests {
         ));
         let failure = open_service(LaunchArgs {
             data_dir: Some(root.clone()),
-            endpoint: launch::DEFAULT_ENDPOINT.to_owned(),
+            endpoint: None,
             provider_profile: Some("lms".to_owned()),
             stream: true,
         })
@@ -207,7 +229,7 @@ mod tests {
     fn a_bad_endpoint_without_a_profile_is_refused() {
         let failure = open_service(LaunchArgs {
             data_dir: Some(std::env::temp_dir().join("omgcode-desktop-never-created")),
-            endpoint: "http://example.com:1234/v1".to_owned(),
+            endpoint: Some("http://example.com:1234/v1".to_owned()),
             provider_profile: None,
             stream: true,
         })
@@ -224,7 +246,7 @@ mod tests {
         let root = std::env::temp_dir().join("omgcode-desktop-never-created-2");
         let failure = open_service(LaunchArgs {
             data_dir: Some(root.clone()),
-            endpoint: "http://example.com:1234/v1".to_owned(),
+            endpoint: Some("http://example.com:1234/v1".to_owned()),
             provider_profile: Some("lms".to_owned()),
             stream: true,
         })

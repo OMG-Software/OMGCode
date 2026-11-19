@@ -260,6 +260,11 @@ pub struct ControlSnapshot {
     package_cache_roots: Vec<PackageCacheRootStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     provider_profiles: Vec<ProviderProfileStatus>,
+    /// The recorded local provider profile a desktop process started without
+    /// a connection argument uses (ADR-0064). `None` means the default
+    /// endpoint. It always names a profile in `provider_profiles`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_provider: Option<Uuid>,
     /// Imported skills. A record is configuration, never authority.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skills: Vec<SkillRecord>,
@@ -444,6 +449,11 @@ enum Action {
             with = "credential::optional_id_text"
         )]
         credential_id: Option<CredentialId>,
+    },
+    /// The active local connection changed (ADR-0064). `None` returns to the
+    /// default endpoint.
+    ActiveProviderSelected {
+        profile_id: Option<Uuid>,
     },
     ProviderCredentialBound {
         profile_id: Uuid,
@@ -701,6 +711,7 @@ impl ControlStore {
                 package_profiles: Vec::new(),
                 package_cache_roots: Vec::new(),
                 provider_profiles: Vec::new(),
+                active_provider: None,
                 skills: Vec::new(),
                 skill_enablement: Vec::new(),
                 approvals: Vec::new(),
@@ -1498,7 +1509,9 @@ impl ControlStore {
                     ))?;
                 state.package_cache_roots.remove(index);
             }
-            Action::ProviderProfileAdded { .. } | Action::ProviderProfileRemoved { .. } => {
+            Action::ProviderProfileAdded { .. }
+            | Action::ProviderProfileRemoved { .. }
+            | Action::ActiveProviderSelected { .. } => {
                 provider::apply(state, &entry.action, revision)?;
             }
             Action::ProviderCredentialBound { .. } | Action::ProviderCredentialRemoved { .. } => {

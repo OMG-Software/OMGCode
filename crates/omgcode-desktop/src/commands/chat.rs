@@ -1,14 +1,17 @@
-//! `main`-window handlers for chat settings, turns, status, and cancellation.
+//! `main`-window handlers for chat settings, turns, status, and cancellation,
+//! and for the status bar's workspace branch and model connection (ADR-0064).
 
 use omgcode_app::desktop::{
     ChatDefaults, ChatEvent, ChatEventSink, ChatPreferencesDto, ChatPreferencesSaveRequest,
-    ChatSendRequest, ChatSettingsDto, ChatStatus, SessionRequest, SessionSkills,
+    ChatSendRequest, ChatSettingsDto, ChatStatus, ConnectionChooseRequest, ConnectionStatus,
+    SessionContext, SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
 use uuid::Uuid;
 
 use super::{Service, blocking};
+use crate::dialogs::NativePrompt;
 use crate::error::CommandError;
 use crate::policy::{Command, authorize};
 
@@ -63,6 +66,62 @@ pub async fn session_skills(
     authorize(Command::SessionSkills, webview.label())?;
     let request = SessionRequest { session_id };
     blocking(&state, move |service| service.session_skills(request)).await
+}
+
+/// `main` only. Whether the session's workspace is registered here, and the
+/// Git branch it has checked out, read from `HEAD` for display (ADR-0064).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn session_context(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+) -> Result<SessionContext, CommandError> {
+    authorize(Command::SessionContext, webview.label())?;
+    let request = SessionRequest { session_id };
+    blocking(&state, move |service| service.session_context(request)).await
+}
+
+/// `main` only. The connection the next turn uses and the local connections
+/// the status bar may offer. Names and endpoints only, never a credential.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn connection_status(
+    webview: Webview,
+    state: Service<'_>,
+) -> Result<ConnectionStatus, CommandError> {
+    authorize(Command::ConnectionStatus, webview.label())?;
+    blocking(&state, |service| service.connection_status()).await
+}
+
+/// `main` only. Asks to make a recorded local profile (or the default, for a
+/// `null` profile) the model connection. Rust shows a native Yes/No dialog,
+/// modal to the main window, naming the provider and endpoint, and records the
+/// choice only on Yes (ADR-0064).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`connection_fixed`,
+/// `cancelled`, `control`, `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn connection_select(
+    webview: Webview,
+    state: Service<'_>,
+    profile: Option<String>,
+) -> Result<ConnectionStatus, CommandError> {
+    authorize(Command::ConnectionSelect, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ConnectionChooseRequest { profile };
+    blocking(&state, move |service| {
+        service.connection_select(request, &prompt)
+    })
+    .await
 }
 
 /// `main` only. Starts one chat turn on a service thread and returns at once.

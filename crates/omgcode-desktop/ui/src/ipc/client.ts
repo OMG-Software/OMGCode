@@ -6,7 +6,9 @@ import type {
   ChatPreferences,
   ChatSettings,
   ChatStatus,
+  ConnectionStatus,
   SearchResult,
+  SessionContext,
   SessionSkills,
   SessionSummary,
   SessionTree,
@@ -107,6 +109,12 @@ export const api = {
     invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings, skills }),
   sessionSkills: (sessionId: string) =>
     invokeCommand<SessionSkills>("session_skills", { session_id: sessionId }),
+  sessionContext: (sessionId: string) =>
+    invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
+  connectionStatus: () => invokeCommand<ConnectionStatus>("connection_status", {}),
+  /** Names a profile, or `null` for the default; Rust asks for a native confirmation first. */
+  connectionSelect: (profile: string | null) =>
+    invokeCommand<ConnectionStatus>("connection_select", { profile }),
   chatStatus: (sessionId: string) =>
     invokeCommand<ChatStatus>("chat_status", { session_id: sessionId }),
   chatCancel: (sessionId: string) =>

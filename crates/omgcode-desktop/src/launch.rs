@@ -14,8 +14,11 @@
 //! provider profile instead and never reads the variable (ADR-0047). The flag
 //! carries only a profile name, not a secret. A selected profile also supplies
 //! the endpoint: `--endpoint` and `--provider-profile` together are a
-//! [`UsageError`], and with a profile [`LaunchArgs::endpoint`] holds only the
-//! default and is not used (ADR-0048).
+//! [`UsageError`] (ADR-0048).
+//!
+//! With neither flag the connection is not fixed: each turn uses the active
+//! connection chosen in the `settings` window, or [`DEFAULT_ENDPOINT`] with
+//! `OMGCODE_LM_TOKEN` while none is chosen (ADR-0059 decision 7, ADR-0064).
 //!
 //! `--stream` chooses whether chat turns send streamed model requests and push
 //! their text to the window (`on`, the default) or send non-streaming requests
@@ -35,8 +38,8 @@ pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 /// The fixed message printed to stderr for a usage error.
 pub const USAGE: &str = "usage: omgcode-desktop [--data-dir <path>] [--endpoint <url>] [--provider-profile <name>] [--stream <on|off>]\n  \
 --data-dir <path>           application data root (default: the per-user OMGCode data directory)\n  \
---endpoint <url>            local model endpoint, a loopback http URL (default: http://127.0.0.1:1234/v1)\n  \
---provider-profile <name>   use this lm_studio provider profile's recorded endpoint and stored credential\n                              (default: --endpoint and the OMGCODE_LM_TOKEN environment variable)\n                              cannot be combined with --endpoint\n  \
+--endpoint <url>            local model endpoint, a loopback http URL, fixed for the process\n                              (default: the connection chosen in settings, else http://127.0.0.1:1234/v1)\n  \
+--provider-profile <name>   use this lm_studio or ollama_local provider profile's recorded endpoint and\n                              stored credential, fixed for the process\n                              cannot be combined with --endpoint\n  \
 --stream <on|off>           stream model replies into the window as they arrive (default: on); off sends non-streaming requests";
 
 /// What the command line asked for.
@@ -44,9 +47,10 @@ pub const USAGE: &str = "usage: omgcode-desktop [--data-dir <path>] [--endpoint 
 pub struct LaunchArgs {
     /// The data root override, or `None` for the per-user default.
     pub data_dir: Option<PathBuf>,
-    /// The chat endpoint for the whole process. With a provider profile this is
-    /// the default and is not used: the profile's recorded endpoint is.
-    pub endpoint: String,
+    /// The `--endpoint` value, which fixes the chat endpoint for the whole
+    /// process. `None` when absent: then a provider profile supplies it, or,
+    /// with neither flag, the connection chosen in settings does.
+    pub endpoint: Option<String>,
     /// The recorded provider profile whose stored credential is the server
     /// token, or `None` to use the `OMGCODE_LM_TOKEN` variable.
     pub provider_profile: Option<String>,
@@ -108,7 +112,7 @@ where
     }
     Ok(LaunchArgs {
         data_dir,
-        endpoint: endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned()),
+        endpoint,
         provider_profile,
         stream: stream.unwrap_or(true),
     })
@@ -128,7 +132,7 @@ mod tests {
             parse(&[]),
             Ok(LaunchArgs {
                 data_dir: None,
-                endpoint: DEFAULT_ENDPOINT.to_owned(),
+                endpoint: None,
                 provider_profile: None,
                 stream: true,
             })
@@ -139,7 +143,7 @@ mod tests {
     fn each_flag_sets_its_value_in_either_order() {
         let both = LaunchArgs {
             data_dir: Some(PathBuf::from("data")),
-            endpoint: "http://127.0.0.1:9/v1".to_owned(),
+            endpoint: Some("http://127.0.0.1:9/v1".to_owned()),
             provider_profile: None,
             stream: true,
         };
@@ -219,10 +223,10 @@ mod tests {
 
     #[test]
     fn the_provider_profile_flag_takes_one_name_in_any_order() {
-        // The endpoint is the default and unused: the profile supplies it.
+        // No endpoint is given: the profile supplies it.
         let expected = LaunchArgs {
             data_dir: Some(PathBuf::from("data")),
-            endpoint: DEFAULT_ENDPOINT.to_owned(),
+            endpoint: None,
             provider_profile: Some("lms".to_owned()),
             stream: true,
         };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
-import { createMockBackend } from "../src/mock/backend";
+import { createMockBackend, isLocalEndpoint } from "../src/mock/backend";
 import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 
 interface Detail {
@@ -107,10 +107,104 @@ describe("mock backend", () => {
         skills: [],
       });
     await expect(send("http://127.0.0.1:9/v1")).rejects.toEqual({
-      code: "invalid_request",
-      message: "The endpoint is fixed by the application.",
+      code: "connection_changed",
+      message: "The model connection changed in settings. Check the model name, then send again.",
     });
     await expect(send(defaults.endpoint)).resolves.toMatchObject({ state: "running" });
+  });
+
+  it("moves the chat endpoint to the connection chosen in settings, like core", async () => {
+    const { invoke } = createMockBackend();
+    const overview = (await invoke("settings_overview", {})) as { revision: number };
+    await invoke("settings_select_connection", {
+      revision: overview.revision,
+      profile: "ollama",
+    });
+    const { settings } = (await invoke("chat_defaults", {})) as {
+      settings: { endpoint: string };
+    };
+    expect(settings.endpoint).toBe("http://127.0.0.1:11434/v1");
+    await expect(
+      invoke("settings_select_connection", { revision: overview.revision, profile: null }),
+    ).rejects.toMatchObject({ code: "stale_revision" });
+  });
+
+  it("serves the status bar's connection choice and branch, like core", async () => {
+    const { invoke } = createMockBackend();
+    const before = (await invoke("connection_status", {})) as {
+      connection: { profile: string | null };
+      choices: Array<{ name: string; active: boolean }>;
+    };
+    expect(before.connection.profile).toBeNull();
+    expect(before.choices.map((choice) => choice.name)).toContain("ollama");
+    expect(before.choices.every((choice) => !choice.active)).toBe(true);
+
+    const after = (await invoke("connection_select", { profile: "ollama" })) as typeof before;
+    expect(after.connection.profile).toBe("ollama");
+    expect(after.choices.find((choice) => choice.active)?.name).toBe("ollama");
+    const { settings } = (await invoke("chat_defaults", {})) as {
+      settings: { endpoint: string };
+    };
+    expect(settings.endpoint).toBe("http://127.0.0.1:11434/v1");
+    await expect(invoke("connection_select", { profile: "missing" })).rejects.toMatchObject({
+      code: "control",
+    });
+    // The settings window's revision moves on, as a change through core would.
+    const overview = (await invoke("settings_overview", {})) as { revision: number };
+    expect(overview.revision).toBeGreaterThan(12);
+
+    await expect(
+      invoke("session_context", { session_id: "00000000-0000-4000-8000-000000000001" }),
+    ).resolves.toMatchObject({ branch: { state: "branch", name: "main" } });
+  });
+
+  // The cases core's `validate_base_url` decides (crates/omgcode-core/src/provider.rs tests).
+  it.each([
+    ["http://127.0.0.1:1234/v1", true],
+    ["http://127.0.0.1:11434/v1/", true],
+    ["http://127.9.8.7:65535/v1", true],
+    ["http://[::1]:1234/v1", true],
+    ["http://[0:0:0:0:0:0:0:1]:1234/v1/", true],
+    ["http://[0::1]:1234/v1", true],
+    ["http://127.0.0.1:0/v1", false],
+    ["http://127.0.0.1:65536/v1", false],
+    ["http://127.0.0.01:1234/v1", false],
+    ["http://128.0.0.1:1234/v1", false],
+    ["http://localhost:1234/v1", false],
+    ["http://[::2]:1234/v1", false],
+    ["http://[::ffff:127.0.0.1]:1234/v1", false],
+    ["http://[1::2::1]:1234/v1", false],
+    ["http://127.0.0.1/v1", false],
+    ["https://127.0.0.1:1234/v1", false],
+    ["http://user@127.0.0.1:1234/v1", false],
+    ["http://127.0.0.1:1234/v1?x=1", false],
+    ["http://127.0.0.1:1234/v1#x", false],
+    ["http://127.0.0.1:1234/v2", false],
+    [`http://127.0.0.1:1234/v1${String.fromCharCode(10)}`, false],
+    [`http://127.0.0.1:1234/v1/${"a".repeat(240)}`, false],
+  ])("decides the local endpoint %s as core does", (endpoint, accepted) => {
+    expect(isLocalEndpoint(endpoint)).toBe(accepted);
+  });
+
+  it("records an IPv6 loopback connection and refuses port 0", async () => {
+    const { invoke } = createMockBackend();
+    let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    const added = (await invoke("settings_add_local_connection", {
+      revision,
+      name: "v6",
+      kind: "ollama_local",
+      endpoint: "http://[::1]:11434/v1/",
+    })) as SettingsOverview;
+    expect(added.provider_profiles.some((p) => p.name === "v6")).toBe(true);
+    revision = added.revision;
+    await expect(
+      invoke("settings_add_local_connection", {
+        revision,
+        name: "zero",
+        kind: "lm_studio",
+        endpoint: "http://127.0.0.1:0/v1",
+      }),
+    ).rejects.toMatchObject({ code: "control" });
   });
 
   it("refuses a chat request without a skills list, like the Rust command", async () => {
@@ -286,6 +380,66 @@ describe("mock backend", () => {
       ).rejects.toMatchObject({ code: "unknown_workspace" });
       const after = (await invoke("settings_overview", {})) as SettingsOverview;
       expect(after.revision).toBe(revision);
+    });
+
+    it("adds, chooses, and removes local connections with core's refusals", async () => {
+      const { invoke } = createMockBackend();
+      let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+      const add = (fields: Record<string, unknown>) =>
+        invoke("settings_add_local_connection", {
+          revision,
+          name: "box",
+          kind: "ollama_local",
+          endpoint: "http://127.0.0.1:11500/v1",
+          ...fields,
+        });
+      await expect(add({ kind: "openai" })).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(add({ endpoint: "http://example.com:11434/v1" })).rejects.toMatchObject({
+        code: "control",
+      });
+      await expect(add({ name: "ollama" })).rejects.toMatchObject({ code: "control" });
+
+      const added = (await add({})) as SettingsOverview;
+      expect(added.revision).toBe(revision + 1);
+      expect(added.provider_profiles.at(-1)).toEqual({
+        name: "box",
+        kind: "ollama_local",
+        auth: "none",
+        endpoint: "http://127.0.0.1:11500/v1",
+        credential_bound: false,
+        selectable: true,
+        active: false,
+      });
+      revision = added.revision;
+
+      await expect(
+        invoke("settings_select_connection", { revision, profile: 7 }),
+      ).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(
+        invoke("settings_select_connection", { revision, profile: "missing" }),
+      ).rejects.toMatchObject({ code: "control" });
+      const chosen = (await invoke("settings_select_connection", {
+        revision,
+        profile: "box",
+      })) as SettingsOverview;
+      expect(chosen.connection).toMatchObject({ profile: "box", kind: "ollama_local" });
+      revision = chosen.revision;
+
+      await expect(
+        invoke("settings_remove_connection", { revision, name: "missing" }),
+      ).rejects.toMatchObject({ code: "control" });
+      await expect(
+        invoke("settings_remove_connection", { revision, name: "lms" }),
+      ).rejects.toMatchObject({ code: "credential_bound" });
+      // Removing the active connection returns to the default, as core's event does.
+      const removed = (await invoke("settings_remove_connection", {
+        revision,
+        name: "box",
+      })) as SettingsOverview;
+      expect(removed.provider_profiles.map((p) => p.name)).toEqual(["lms", "ollama"]);
+      expect(removed.connection).toMatchObject({ profile: null, kind: null, source: "active" });
+      const defaults = (await invoke("chat_defaults", {})) as { settings: { endpoint: string } };
+      expect(defaults.settings.endpoint).toBe(removed.connection.endpoint);
     });
 
     it("lists a registered workspace for a new session", async () => {

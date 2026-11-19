@@ -12,7 +12,7 @@ session tree, full-text search, chat, and an isolated approvals window. It is
 without an installer, has run only on Windows, and gives the webview no authority: the
 Rust side authorizes every command and the trusted CLI remains. Follow the
 [desktop interface](docs/desktop-interface.md) contract.
-Chat offers the local LM Studio model read and list tools; when the workspace
+Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
 also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and
 `write`, one command tool. Each workspace preference except `model_tools` is
@@ -49,10 +49,12 @@ Linux and Windows; Windows needs a read-execute container grant, and Linux
 falls back to application storage. Provider profiles record connection shapes
 without credentials. Trusted CLI commands can store API keys in protected OS
 storage (DPAPI on Windows, the Secret Service on Linux) and bind them to
-`api_key` profiles. An `lm_studio` profile can record a loopback endpoint.
-Only the local LM Studio adapter reads a credential, through an
-operator-selected profile that supplies both the endpoint and the token
-(ADR-0047, ADR-0048); no cloud adapter or login exists. Trusted
+`api_key` profiles. An `lm_studio` or `ollama_local` profile can record a
+loopback endpoint, and one local adapter serves both through the OpenAI-compatible
+`/v1` API. Only the local adapter reads a credential, for an operator-selected
+`lm_studio` profile that supplies both the endpoint and the token
+(ADR-0047, ADR-0048); an `ollama_local` profile has none. No cloud adapter or
+login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
 in the same turn; on the CLI only a later identical call may consume an
@@ -94,8 +96,15 @@ workspace preferences, and package cache roots. Rust opens a native folder
 dialog for each folder and a native confirmation before each change that
 widens access, and creates an empty settings store on first use
 ([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
-Connections, credentials, execution setup, and skills still change only
-through the trusted CLI. The desktop shell has no development
+It also chooses the model connection from a dropdown, after a native
+confirmation, unless a launch argument fixed it, and adds or removes local
+connections without a credential. A status bar at the bottom of the `main`
+window shows the open session's workspace and Git branch, read from `HEAD`
+without a Git process, and offers the same connection choice through the same
+native confirmation
+([ADR-0064](docs/adr/0064-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
+Credentials, execution setup, and skills still change only through the
+trusted CLI. The desktop shell has no development
 panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.

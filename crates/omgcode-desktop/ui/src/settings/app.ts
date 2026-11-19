@@ -4,12 +4,15 @@ import { settingsApi } from "../ipc/settings_client";
 import type {
   Access,
   ConnectionView,
+  LocalProviderKind,
   PermissionFlags,
+  ProviderProfileView,
   SettingsOverview,
   SkillSettingView,
   WorkspaceSettingsView,
   WriteToolAccess,
 } from "../ipc/types";
+import { DEFAULT_ENDPOINTS, providerName } from "../providers";
 
 export interface SettingsApp {
   /** Reads the configuration again. */
@@ -18,14 +21,22 @@ export interface SettingsApp {
 }
 
 /**
- * What this window changes, and what still needs the trusted CLI (ADR-0059 phase S2). Folders
- * are chosen in a system dialog, and every change that allows more access is confirmed there.
+ * What this window changes, and what still needs the trusted CLI (ADR-0059 phase S2, ADR-0064).
+ * Folders are chosen in a system dialog, and every change that allows more access, or chooses
+ * where chat is sent, is confirmed there.
  */
 export const INTRO =
-  "Choose folders in a system dialog. Changes that allow more access ask you to confirm in a " +
-  "system dialog first. Language-model connections, toolchain profiles, container grants, and " +
-  "skills are still changed with the trusted CLI: omgcode workspace, omgcode skills, and " +
-  "--provider-profile at launch.";
+  "Choose folders in a system dialog. Changes that allow more access, and the choice of model " +
+  "connection, ask you to confirm in a system dialog first. Stored API keys, toolchain profiles, " +
+  "container grants, and skills are still changed with the trusted CLI: omgcode workspace and " +
+  "omgcode skills.";
+
+export { PROVIDER_NAMES } from "../providers";
+
+/** The value of the dropdown entry that chooses the default endpoint. */
+export const DEFAULT_CHOICE = "";
+
+export { DEFAULT_ENDPOINTS } from "../providers";
 
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";
@@ -92,9 +103,115 @@ function connectionSource(connection: ConnectionView): string {
       return `Provider profile ${connection.profile ?? "(unnamed)"}, set at launch`;
     case "environment":
       return "Launch endpoint, token from OMGCODE_LM_TOKEN";
+    case "active":
+      return connection.profile === null
+        ? "Default endpoint, token from OMGCODE_LM_TOKEN"
+        : `Provider profile ${connection.profile}, chosen here`;
     case "injected":
       return "Supplied by the embedding application";
   }
+}
+
+/** The dropdown label of one selectable profile: its provider, name, and endpoint. */
+export function choiceLabel(profile: ProviderProfileView): string {
+  return `${providerName(profile.kind)}: ${profile.name} (${profile.endpoint ?? "no endpoint"})`;
+}
+
+/**
+ * The provider dropdown. It lists the default endpoint and every selectable recorded profile;
+ * choosing one asks the core to switch, and the core asks for a system confirmation first. When
+ * a launch argument fixed the connection the dropdown is shown but disabled.
+ */
+function connectionPicker(
+  overview: SettingsOverview,
+  submit: (change: Change) => void,
+): HTMLElement {
+  const { connection } = overview;
+  const picker = el("select", { attrs: { id: "provider-picker", "aria-label": "Model provider" } });
+  const fixedAtLaunch = !connection.selectable;
+  const defaultLabel = fixedAtLaunch
+    ? `Set at launch (${connection.endpoint})`
+    : `LM Studio: default (${DEFAULT_ENDPOINTS.lm_studio})`;
+  picker.append(el("option", { text: defaultLabel, attrs: { value: DEFAULT_CHOICE } }));
+  for (const profile of overview.provider_profiles.filter((p) => p.selectable)) {
+    picker.append(el("option", { text: choiceLabel(profile), attrs: { value: profile.name } }));
+  }
+  const chosen = fixedAtLaunch ? null : connection.profile;
+  picker.value = chosen ?? DEFAULT_CHOICE;
+  picker.disabled = fixedAtLaunch;
+  picker.addEventListener("change", () => {
+    const profile = picker.value === DEFAULT_CHOICE ? null : picker.value;
+    submit((revision) => settingsApi.selectConnection(revision, profile));
+  });
+  return el(
+    "div",
+    { class: "row-actions" },
+    el("label", { class: "muted", text: "Provider", attrs: { for: "provider-picker" } }),
+    picker,
+    fixedAtLaunch
+      ? el("span", {
+          class: "muted",
+          text: "Fixed by --endpoint or --provider-profile at launch.",
+        })
+      : null,
+  );
+}
+
+/**
+ * A small form that records a local LM Studio or Ollama connection without a credential. The
+ * endpoint field starts at the chosen provider's usual address; the core validates every value.
+ */
+function addConnectionForm(submit: (change: Change) => void): HTMLElement {
+  const kind = el("select", { attrs: { "aria-label": "New connection provider" } });
+  kind.append(
+    el("option", { text: "Ollama", attrs: { value: "ollama_local" } }),
+    el("option", { text: "LM Studio", attrs: { value: "lm_studio" } }),
+  );
+  const name = el("input", {
+    attrs: { type: "text", "aria-label": "New connection name", placeholder: "name" },
+  });
+  name.value = "ollama";
+  const endpoint = el("input", {
+    attrs: { type: "text", "aria-label": "New connection endpoint", spellcheck: "false" },
+  });
+  endpoint.value = DEFAULT_ENDPOINTS.ollama_local;
+  kind.addEventListener("change", () => {
+    const chosen = kind.value as LocalProviderKind;
+    // Only replace values the operator has not edited.
+    if (Object.values(DEFAULT_ENDPOINTS).includes(endpoint.value)) {
+      endpoint.value = DEFAULT_ENDPOINTS[chosen];
+    }
+    if (name.value === "ollama" || name.value === "lmstudio") {
+      name.value = chosen === "ollama_local" ? "ollama" : "lmstudio";
+    }
+  });
+  const add = button("Add connection", () => {
+    const chosen = kind.value as LocalProviderKind;
+    const wantedName = name.value.trim();
+    const wantedEndpoint = endpoint.value.trim();
+    submit((revision) =>
+      settingsApi.addLocalConnection(revision, wantedName, chosen, wantedEndpoint),
+    );
+  });
+  return el("div", { class: "row-actions add-connection" }, kind, name, endpoint, add);
+}
+
+function profileCard(profile: ProviderProfileView, submit: (change: Change) => void): HTMLElement {
+  const remove = button("Remove", () =>
+    submit((revision) => settingsApi.removeConnection(revision, profile.name)),
+  );
+  // A stored credential is deleted with the profile only by the trusted CLI.
+  remove.disabled = profile.credential_bound;
+  return card(
+    profile.active ? `${profile.name} (active)` : profile.name,
+    facts([
+      ["Provider", providerName(profile.kind)],
+      ["Authentication", profile.auth],
+      ["Endpoint", profile.endpoint ?? "none recorded"],
+      ["Credential", profile.credential_bound ? "stored (remove with the trusted CLI)" : "none"],
+    ]),
+    el("div", { class: "row-actions" }, remove),
+  );
 }
 
 function flagsOf(workspace: WorkspaceSettingsView): PermissionFlags {
@@ -247,10 +364,16 @@ export function renderOverview(
   register.disabled = !rootSet;
   return [
     el("h2", { text: "Model connection" }),
+    connectionPicker(overview, submit),
     facts([
+      ["Provider", providerName(overview.connection.kind)],
       ["Endpoint", overview.connection.endpoint],
       ["Source", connectionSource(overview.connection)],
     ]),
+    el("p", {
+      class: "empty",
+      text: "The chat window uses the new connection for its next message. Set the model name there to one the server has.",
+    }),
     el("h2", { text: "Development root" }),
     el(
       "div",
@@ -276,18 +399,9 @@ export function renderOverview(
       "No workspace is registered.",
     ),
     el("h2", { text: "Language-model connections" }),
+    addConnectionForm(submit),
     cards(
-      overview.provider_profiles.map((profile) =>
-        card(
-          profile.name,
-          facts([
-            ["Provider", profile.kind],
-            ["Authentication", profile.auth],
-            ["Endpoint", profile.endpoint ?? "none recorded"],
-            ["Credential", profile.credential_bound ? "stored" : "none"],
-          ]),
-        ),
-      ),
+      overview.provider_profiles.map((profile) => profileCard(profile, submit)),
       "No provider profile is recorded.",
     ),
     el("h2", { text: "Toolchain profiles" }),

@@ -9,6 +9,7 @@ import type {
   ChatPreferences,
   ChatSettings,
   ChatStatus,
+  ConnectionStatus,
   PermissionFlags,
   SearchHit,
   SessionSummary,
@@ -329,8 +330,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     if (item.summary.status !== "idle" || item.summary.archived) {
       fail("session_not_idle", "The session cannot take a message now.");
     }
-    if (settings.endpoint !== MOCK_ENDPOINT) {
-      fail("invalid_request", "The endpoint is fixed by the application.");
+    if (settings.endpoint !== currentEndpoint()) {
+      fail(
+        "connection_changed",
+        "The model connection changed in settings. Check the model name, then send again.",
+      );
     }
     if (message.trim() === "" || settings.model.trim() === "") {
       fail("invalid_argument", "A message and a model are required.");
@@ -584,6 +588,73 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         return changeSettings(args, () => {
           mockWorkspace(args).package_cache_root = null;
         });
+      // Like core: only a local profile with an endpoint can be chosen, and the confirmation
+      // (a native dialog in the application) is accepted here.
+      case "settings_select_connection":
+        return changeSettings(args, () => selectConnection(args.profile));
+      // The main window's status bar (ADR-0064). The mock's workspace is on a fixed branch.
+      case "session_context":
+        str(args, "session_id");
+        return {
+          workspace_registered: true,
+          branch: { state: "branch", name: "main", note: null },
+        };
+      case "connection_status":
+        return connectionStatus();
+      case "connection_select": {
+        if (!settings.connection.selectable) {
+          fail("connection_fixed", "The connection was set when OMGCode started.");
+        }
+        selectConnection(args.profile ?? null);
+        settings.revision += 1;
+        return connectionStatus();
+      }
+      case "settings_add_local_connection":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const kind = str(args, "kind");
+          const endpoint = str(args, "endpoint");
+          if (kind !== "lm_studio" && kind !== "ollama_local") {
+            fail("invalid_argument", "Bad kind.");
+          }
+          if (!isLocalEndpoint(endpoint)) {
+            fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
+          }
+          if (settings.provider_profiles.some((p) => p.name === name)) {
+            fail("control", "a provider profile with this name already exists; remove it first");
+          }
+          settings.provider_profiles.push({
+            name,
+            kind,
+            auth: "none",
+            endpoint,
+            credential_bound: false,
+            selectable: true,
+            active: false,
+          });
+        });
+      case "settings_remove_connection":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const index = settings.provider_profiles.findIndex((p) => p.name === name);
+          const profile = settings.provider_profiles[index];
+          if (profile === undefined) {
+            fail("control", "unknown provider profile");
+          }
+          if (profile.credential_bound) {
+            fail("credential_bound", "This connection has a stored credential.");
+          }
+          settings.provider_profiles.splice(index, 1);
+          if (profile.active) {
+            settings.connection = {
+              endpoint: MOCK_ENDPOINT,
+              source: "active",
+              profile: null,
+              kind: null,
+              selectable: true,
+            };
+          }
+        });
       case "chat_send":
         // Like the Rust command: `skills` is required, even when empty.
         if (!Array.isArray(args.skills) || !args.skills.every((name) => typeof name === "string")) {
@@ -632,10 +703,52 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     // A request saved by an older window may lack the field; core reads that as on.
     const { enter_to_send = true, ...turnSettings } = clone(preferences);
     return {
-      settings: { endpoint: MOCK_ENDPOINT, ...turnSettings } satisfies ChatSettings,
+      settings: { endpoint: currentEndpoint(), ...turnSettings } satisfies ChatSettings,
       preferences: savedPreferences === null ? "defaults" : "saved",
       enter_to_send,
     };
+  }
+
+  /** The endpoint the next mock turn uses: the active connection's, or the default. */
+  function currentEndpoint(): string {
+    return settings.connection.endpoint;
+  }
+
+  /** Makes `wanted` (a profile name, or `null` for the default) the active connection. */
+  function selectConnection(wanted: unknown): void {
+    if (wanted !== null && typeof wanted !== "string") {
+      fail("invalid_argument", "Bad profile.");
+    }
+    const profile =
+      wanted === null ? null : settings.provider_profiles.find((p) => p.name === wanted);
+    if (profile === undefined || (profile !== null && !profile.selectable)) {
+      fail("control", "only a local profile with a recorded endpoint can be chosen");
+    }
+    for (const each of settings.provider_profiles) {
+      each.active = each === profile;
+    }
+    settings.connection = {
+      endpoint: profile?.endpoint ?? MOCK_ENDPOINT,
+      source: "active",
+      profile: profile?.name ?? null,
+      kind: profile?.kind ?? null,
+      selectable: true,
+    };
+  }
+
+  /** What the status bar reads: the connection and, when it may change, the local choices. */
+  function connectionStatus(): ConnectionStatus {
+    const choices = settings.connection.selectable
+      ? settings.provider_profiles
+          .filter((profile) => profile.selectable && profile.endpoint !== null)
+          .map((profile) => ({
+            name: profile.name,
+            kind: profile.kind,
+            endpoint: profile.endpoint ?? "",
+            active: profile.active,
+          }))
+      : [];
+    return clone({ connection: settings.connection, choices });
   }
 
   /** Applies one mock settings change after the same revision check as core. */
@@ -700,7 +813,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           package_cache_root: null,
         },
       ],
-      connection: { endpoint: MOCK_ENDPOINT, source: "environment", profile: null },
+      connection: {
+        endpoint: MOCK_ENDPOINT,
+        source: "active",
+        profile: null,
+        kind: null,
+        selectable: true,
+      },
       provider_profiles: [
         {
           name: "lms",
@@ -708,6 +827,17 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           auth: "api_key",
           endpoint: MOCK_ENDPOINT,
           credential_bound: true,
+          selectable: true,
+          active: false,
+        },
+        {
+          name: "ollama",
+          kind: "ollama_local",
+          auth: "none",
+          endpoint: "http://127.0.0.1:11434/v1",
+          credential_bound: false,
+          selectable: true,
+          active: false,
         },
       ],
       toolchain_profiles: [
@@ -735,3 +865,63 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
 }
 
 export const mockInvoke: Invoker = createMockBackend().invoke;
+
+/** The most bytes a recorded provider endpoint may have, as in core. */
+const MAX_ENDPOINT_BYTES = 256;
+
+/**
+ * The mock's copy of core's local endpoint rule (`validate_base_url` with the profile length bound):
+ * `http://<loopback IP>:<port>/v1`, with an optional trailing slash, a port from 1 to 65535, and no
+ * user information, query, or fragment. Core remains the authority; this keeps the development mock
+ * from accepting or refusing what the application would not.
+ */
+export function isLocalEndpoint(endpoint: string): boolean {
+  if (new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES) {
+    return false;
+  }
+  if (Array.from(endpoint).some((c) => /\p{Cc}/u.test(c))) {
+    return false;
+  }
+  const match = /^http:\/\/(?:\[([0-9A-Fa-f:]+)\]|([0-9.]+)):(\d+)\/v1\/?$/.exec(endpoint);
+  if (match === null) {
+    return false;
+  }
+  const [, v6, v4, port] = match;
+  const portNumber = Number(port);
+  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+    return false;
+  }
+  return v6 === undefined ? isIpv4Loopback(v4 ?? "") : isIpv6Loopback(v6);
+}
+
+/** `127.0.0.0/8` in strict dotted decimal: four parts, no leading zero. */
+function isIpv4Loopback(host: string): boolean {
+  const parts = host.split(".");
+  return (
+    parts.length === 4 &&
+    parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255) &&
+    parts[0] === "127"
+  );
+}
+
+/** Only `::1`, in any spelling of eight groups; no embedded IPv4 form. */
+function isIpv6Loopback(host: string): boolean {
+  const halves = host.split("::");
+  if (halves.length > 2) {
+    return false;
+  }
+  const groups = (half: string | undefined): string[] =>
+    half === undefined || half === "" ? [] : half.split(":");
+  const head = groups(halves[0]);
+  const tail = groups(halves[1]);
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) {
+    return false;
+  }
+  const all = [...head, ...Array<string>(halves.length === 1 ? 0 : missing).fill("0"), ...tail];
+  if (!all.every((group) => /^[0-9A-Fa-f]{1,4}$/.test(group))) {
+    return false;
+  }
+  const values = all.map((group) => Number.parseInt(group, 16));
+  return values.slice(0, 7).every((value) => value === 0) && values[7] === 1;
+}
