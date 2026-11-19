@@ -723,6 +723,18 @@ pub struct ChatPreferencesDto {
     pub compact_threshold: u64,
     /// Whether auto-compaction starts enabled.
     pub auto_compact: bool,
+    /// Whether Enter sends the message and Shift+Enter adds a newline. When
+    /// `false`, Ctrl+Enter (Cmd+Enter on macOS) sends and Enter adds a
+    /// newline. A keyboard choice of the composer only (ADR-0062). A file or
+    /// request saved before the field existed reads as `true`.
+    #[serde(default = "enter_to_send_default")]
+    pub enter_to_send: bool,
+}
+
+/// The built-in "Enter to send" choice, also used for a file that predates it.
+#[must_use]
+pub const fn enter_to_send_default() -> bool {
+    true
 }
 
 /// Arguments of `chat_preferences_save`.
@@ -753,6 +765,9 @@ pub struct ChatDefaults {
     pub settings: ChatSettingsDto,
     /// Where `settings` came from.
     pub preferences: PreferencesSource,
+    /// Whether Enter sends the message (ADR-0062). It is not a turn setting,
+    /// so it is not part of `settings`.
+    pub enter_to_send: bool,
 }
 
 /// The `session_skills` response: skills the operator may select for one turn

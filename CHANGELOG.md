@@ -6,6 +6,21 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.42.0 makes Enter send the desktop composer's message and
+  Shift+Enter add a newline (ADR-0062, accepted). Before this, only
+  Ctrl+Enter sent.
+  - **Enter to send:** a check box in the composer's settings panel, on by
+    default. Turning it off makes Enter add a newline again. Ctrl+Enter
+    (Cmd+Enter) sends in both modes. An Enter that confirms an input-method
+    composition never sends. The message box hint names the current send key.
+  - **Saved with the chat preferences:** **Save as defaults** stores the choice
+    as `enter_to_send` in `chat-preferences.json`, and `chat_defaults` returns
+    it beside the turn settings. A file or request without the field reads it
+    as on, so files saved by version 0.41.0 keep working. An older build
+    reports a file with the field as unreadable and uses its built-in values.
+  - The panel is renamed from **Model settings** to **Chat settings**.
+  - No command, permission, or capability changed. The choice grants nothing
+    and never reaches a turn.
 - Version 0.41.0 lets the desktop `settings` window change workspace settings
   (Phase S2 of ADR-0059; ADR-0060, accepted). Before this, the window was
   read-only and asked the operator to run `omgcode workspace status` first.

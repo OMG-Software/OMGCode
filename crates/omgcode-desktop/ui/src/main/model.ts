@@ -91,6 +91,34 @@ export function messageProblem(message: string): string | null {
   return null;
 }
 
+/** The parts of a `keydown` event that decide whether the composer sends. */
+export interface SendKey {
+  key: string;
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  isComposing: boolean;
+  keyCode: number;
+}
+
+/**
+ * Whether a key press in the message box sends the message (ADR-0062). Ctrl+Enter (Cmd+Enter)
+ * always sends. With `enterToSend`, a plain Enter sends too, and Shift+Enter or Alt+Enter keeps
+ * the textarea's newline. An Enter that confirms an input-method composition never sends:
+ * `isComposing` covers most engines, and `keyCode` 229 covers WebKit, which can report the
+ * confirming Enter after the composition has ended.
+ */
+export function isSendKey(event: SendKey, enterToSend: boolean): boolean {
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) {
+    return false;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    return true;
+  }
+  return enterToSend && !event.shiftKey && !event.altKey;
+}
+
 /** Returns a problem with a session title, or null when it is acceptable. */
 export function titleProblem(title: string): string | null {
   if (title.trim() === "") {

@@ -60,6 +60,9 @@ merged to `main` at the time of writing):
   every folder and a native confirmation before every change that widens
   access. The settings store is created empty the first time the window
   reads it, so no CLI command is needed first.
+- Since version 0.42.0 (ADR-0062), Enter sends the composer's message and
+  Shift+Enter adds a newline. An **Enter to send** chat preference, on by
+  default, can be turned off to restore Ctrl+Enter. See [chat](#chat).
 
 Not implemented:
 
@@ -362,9 +365,21 @@ server, and the context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
+- **Send key.** With **Enter to send** on, the default, Enter sends the
+  message and Shift+Enter or Alt+Enter adds a newline. With it off, Enter
+  adds a newline. Ctrl+Enter (Cmd+Enter) sends in both modes. An Enter that
+  confirms an input-method composition never sends. A send key never adds a
+  newline, so Enter on an empty message shows why it cannot be sent. The
+  check box is in **Chat settings** and applies at once; **Save as defaults**
+  keeps it for the next run. `chat_defaults` returns it as `enter_to_send`,
+  outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Saved preferences.** **Save as defaults** sends the model name, context
-  size, output reserve, custom instructions, compaction threshold, and the
-  automatic compaction switch to `chat_preferences_save`. They carry no
+  size, output reserve, custom instructions, compaction threshold, the
+  automatic compaction switch, and the **Enter to send** choice to
+  `chat_preferences_save`. A file or request without `enter_to_send`, such
+  as a file saved before version 0.42.0, reads it as on. An older build
+  refuses a file that has the field as unknown, reports it as `unreadable`,
+  and uses its built-in values until the next save. They carry no
   endpoint and grant nothing. The request refuses an unknown field, so an
   endpoint cannot be saved. A model name over 256 bytes or with a control
   character, and instructions over 64 KiB, are refused with
@@ -821,8 +836,9 @@ private store refuses, see the notes in
   `ui/tests/live_preview.test.ts` (the live entry and its bounds), and
   `ui/tests/client.test.ts` (the channel wrapper) cover the streaming frontend.
   The main window tests also cover the cancelled notice, which is decided by
-  the error code only, saving preferences, the unreadable note, and the
-  skill choice and its limit. `ui/tests/settings_window.test.ts` covers the
+  the error code only, saving preferences, the unreadable note, the send
+  keys with **Enter to send** on and off, and the skill choice and its
+  limit. `ui/tests/settings_window.test.ts` covers the
   read-only view, hostile recorded text, errors, and refresh. The scans
   also confine the settings command to the settings client and keep the
   settings window free of main, approvals, and chat code.
@@ -880,6 +896,10 @@ private store refuses, see the notes in
   development server against the mock backend. The native dialogs and the
   real shell's settings window were not driven by automation. The Linux
   dialog path has never run.
+- 0.42.0 (ADR-0062): the send keys were checked by unit, main window, and
+  service tests and in the Vite development server against the mock backend.
+  The real shell's window was not driven, and no input method was used, so
+  the composition guard is checked against synthetic events only.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no

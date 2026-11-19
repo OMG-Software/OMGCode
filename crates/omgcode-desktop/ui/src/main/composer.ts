@@ -3,10 +3,20 @@ import { utf8Length } from "../format";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { ChatDefaults, ChatPreferences, ChatSettings } from "../ipc/types";
-import { type ComposerState, MESSAGE_MAX_BYTES, messageProblem, settingsValid } from "./model";
+import {
+  type ComposerState,
+  isSendKey,
+  MESSAGE_MAX_BYTES,
+  messageProblem,
+  settingsValid,
+} from "./model";
 
 /** The most skills one turn may load; the core enforces the same bound (ADR-0057). */
 export const SKILLS_PER_TURN = 4;
+
+/** Message box hints for each "Enter to send" choice. */
+export const PLACEHOLDER_ENTER = "Message (Enter to send, Shift+Enter for a new line)";
+export const PLACEHOLDER_CTRL_ENTER = "Message (Ctrl+Enter to send)";
 
 export interface ComposerHandlers {
   /** `skills` are the names selected for this turn only. */
@@ -36,13 +46,13 @@ function numberInput(label: string, value: number, min: number): [HTMLElement, H
 }
 
 /**
- * Builds the composer. Model settings are kept in this closure for the app run and are
+ * Builds the composer. Chat settings are kept in this closure for the app run and are
  * filled from `chat_defaults` the first time they are available.
  */
 export function createComposer(handlers: ComposerHandlers): Composer {
   const box = el("textarea", {
     class: "message-box",
-    attrs: { rows: "3", "aria-label": "Message", placeholder: "Message (Ctrl+Enter to send)" },
+    attrs: { rows: "3", "aria-label": "Message", placeholder: PLACEHOLDER_ENTER },
   });
   const counter = el("span", { class: "counter" });
   const reason = el("p", { class: "note composer-note" });
@@ -60,13 +70,16 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
   const autoCompact = el("input", { attrs: { type: "checkbox" } });
   const instructions = el("textarea", { attrs: { rows: "3" } });
+  // On until `chat_defaults` says otherwise, so it is on even when they cannot be read.
+  const enterToSend = el("input", { attrs: { type: "checkbox" } });
+  enterToSend.checked = true;
   const preferencesNote = el("span", { class: "muted", attrs: { role: "status" } });
   const saveDefaultsButton = button("Save as defaults", () => void saveDefaults());
 
   const settingsPanel = el(
     "details",
     { class: "settings" },
-    el("summary", { text: "Model settings" }),
+    el("summary", { text: "Chat settings" }),
     el(
       "div",
       { class: "settings-grid" },
@@ -88,6 +101,12 @@ export function createComposer(handlers: ComposerHandlers): Composer {
         el("span", { text: "Auto-compact" }),
       ),
       labelled("Custom instructions", instructions),
+      el(
+        "label",
+        { class: "field field-check" },
+        enterToSend,
+        el("span", { text: "Enter to send" }),
+      ),
       el("div", { class: "field preferences-row" }, saveDefaultsButton, preferencesNote),
     ),
   );
@@ -148,11 +167,14 @@ export function createComposer(handlers: ComposerHandlers): Composer {
       instructions: settings.instructions,
       compact_threshold: settings.compact_threshold,
       auto_compact: settings.auto_compact,
+      enter_to_send: enterToSend.checked,
     };
   }
 
   function applyDefaults(defaults: ChatDefaults): void {
     writeSettings(defaults.settings);
+    enterToSend.checked = defaults.enter_to_send;
+    showSendKey();
     replaceChildren(
       preferencesNote,
       defaults.preferences === "unreadable"
@@ -190,7 +212,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
 
   function currentProblem(): string | null {
     if (!settingsValid(readSettings())) {
-      return "Set a model and a positive context size in Model settings.";
+      return "Set a model and a positive context size in Chat settings.";
     }
     return messageProblem(box.value);
   }
@@ -240,8 +262,16 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   for (const input of [model, contextTokens]) {
     input.addEventListener("input", refresh);
   }
+  /** Shows the send key in the message box hint. */
+  function showSendKey(): void {
+    box.placeholder = enterToSend.checked ? PLACEHOLDER_ENTER : PLACEHOLDER_CTRL_ENTER;
+  }
+
+  enterToSend.addEventListener("change", showSendKey);
   box.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    // A send key never inserts a newline, even when the message cannot be sent yet;
+    // `submit` then shows why.
+    if (isSendKey(event, enterToSend.checked)) {
       event.preventDefault();
       submit();
     }
