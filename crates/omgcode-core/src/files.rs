@@ -692,6 +692,7 @@ fn complete_creation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::Access;
     use std::fs;
     use std::path::Path;
 
@@ -952,8 +953,8 @@ mod tests {
             .set_permissions(
                 workspace,
                 crate::policy::PermissionSet {
-                    read: true,
-                    write: false,
+                    read: Access::Allow,
+                    write: Access::Deny,
                     ..crate::policy::PermissionSet::default()
                 },
                 revision,

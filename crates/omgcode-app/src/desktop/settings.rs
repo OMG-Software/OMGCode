@@ -63,6 +63,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                 execute: permissions.execute,
                 task_network: permissions.task_network,
                 host_services: permissions.host_services,
+                write_tools: permissions.write_tools,
                 package_cache_root: store.package_cache_root_display(workspace.id()),
             }
         })

@@ -16,8 +16,8 @@ use time::{OffsetDateTime, UtcOffset};
 use uuid::{Uuid, Version};
 
 use crate::policy::{
-    self, DecisionReason, Operation, PermissionSet, PolicyDecision, PolicyRequest, SessionBinding,
-    WorkspaceId,
+    self, Access, DecisionReason, Operation, PermissionSet, PolicyDecision, PolicyRequest,
+    SessionBinding, WorkspaceId, WriteToolAccess,
 };
 use crate::storage::{self, StorageError};
 use crate::workspace::DirectoryRecord;
@@ -261,7 +261,7 @@ pub struct ControlSnapshot {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     provider_profiles: Vec<ProviderProfileStatus>,
     /// The recorded local provider profile a desktop process started without
-    /// a connection argument uses (ADR-0063). `None` means the default
+    /// a connection argument uses (ADR-0064). `None` means the default
     /// endpoint. It always names a profile in `provider_profiles`.
     #[serde(skip_serializing_if = "Option::is_none")]
     active_provider: Option<Uuid>,
@@ -310,15 +310,17 @@ struct WorkspaceView<'a> {
     permissions: PermissionView,
 }
 
-/// All preference flags, including disabled optional ones.
+/// Every preference, including denied optional ones and unrestricted
+/// per-tool write limits.
 #[derive(Serialize)]
 struct PermissionView {
-    read: bool,
-    write: bool,
-    execute: bool,
-    task_network: bool,
+    read: Access,
+    write: Access,
+    execute: Access,
+    task_network: Access,
     model_tools: bool,
-    host_services: bool,
+    host_services: Access,
+    write_tools: WriteToolAccess,
 }
 
 fn serialize_workspace_views<S: serde::Serializer>(
@@ -337,6 +339,7 @@ fn serialize_workspace_views<S: serde::Serializer>(
                 task_network: permissions.task_network,
                 model_tools: permissions.model_tools,
                 host_services: permissions.host_services,
+                write_tools: permissions.write_tools,
             },
         }
     }))
@@ -447,7 +450,7 @@ enum Action {
         )]
         credential_id: Option<CredentialId>,
     },
-    /// The active local connection changed (ADR-0063). `None` returns to the
+    /// The active local connection changed (ADR-0064). `None` returns to the
     /// default endpoint.
     ActiveProviderSelected {
         profile_id: Option<Uuid>,
@@ -521,6 +524,10 @@ pub(crate) struct FileScope {
     pub(crate) workspace: DirectoryRecord,
 }
 
+/// How long [`ControlStore::open_existing_waiting`] waits for another holder.
+pub const CONTROL_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const CONTROL_BUSY_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
 impl ControlStore {
     /// Get current records after configuration checks; this does not mint a permit.
     pub(crate) fn file_scope(&self, workspace_id: WorkspaceId) -> Result<FileScope, ControlError> {
@@ -589,6 +596,25 @@ impl ControlStore {
     /// Open existing state without creating directories or files. Only absence is `None`.
     pub fn open_existing(data_directory: &Path) -> Result<Option<Self>, ControlError> {
         Ok(Self::open_existing_since(data_directory, usize::MAX)?.map(|(store, _)| store))
+    }
+
+    /// Open existing state like [`Self::open_existing`], waiting up to
+    /// [`CONTROL_BUSY_WAIT`] while another holder releases the lock.
+    ///
+    /// Concurrent turns, a turn waiting on an approval (ADR-0063), and the
+    /// approvals window each hold the store only briefly, so a short wait
+    /// avoids failing an operation for contention alone. Every other error,
+    /// and `Busy` after the wait, is returned as is.
+    pub fn open_existing_waiting(data_directory: &Path) -> Result<Option<Self>, ControlError> {
+        let started = std::time::Instant::now();
+        loop {
+            match Self::open_existing(data_directory) {
+                Err(ControlError::Busy) if started.elapsed() < CONTROL_BUSY_WAIT => {
+                    std::thread::sleep(CONTROL_BUSY_POLL);
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Open existing settings like [`Self::open_existing`], and also return
@@ -1776,7 +1802,11 @@ mod tests {
         let before = store.workspace(id).expect("registered").permissions();
         let from = store.event_count();
         let changed = PermissionSet {
-            execute: !before.execute,
+            execute: if before.execute.permits() {
+                Access::Deny
+            } else {
+                Access::Prompt
+            },
             ..before
         };
         store
@@ -1790,7 +1820,7 @@ mod tests {
             .expect("replay")
             .expect("settings exist");
         assert_eq!(store.event_count(), from + 2);
-        let seen: Vec<bool> = history
+        let seen: Vec<Access> = history
             .into_iter()
             .map(|state| {
                 store.as_of(state, |control| {
@@ -1802,7 +1832,7 @@ mod tests {
                 })
             })
             .collect();
-        assert_eq!(seen, [!before.execute, before.execute]);
+        assert_eq!(seen, [changed.execute, before.execute]);
         let live = store.workspace(id).expect("registered").permissions();
         assert_eq!(live.execute, before.execute, "the live state is restored");
         let count = store.event_count();

@@ -5,9 +5,11 @@ import type {
   ProviderProfileView,
   SettingsOverview,
   WorkspaceSettingsView,
+  WriteToolAccess,
 } from "../src/ipc/types";
 import { HOSTILE } from "../src/mock/fixtures";
 import {
+  ACCESS_HELP,
   DEFAULT_CHOICE,
   DEFAULT_ENDPOINTS,
   INTRO,
@@ -15,6 +17,7 @@ import {
   PERMISSION_LABELS,
   type SettingsApp,
   startSettings,
+  WRITE_TOOL_LABELS,
 } from "../src/settings/app";
 import {
   buttonByText,
@@ -26,17 +29,25 @@ import {
 } from "./helpers";
 
 const WORKSPACE = "77777777-7777-4777-8777-777777777777";
+const ALL_TOOLS: WriteToolAccess = {
+  edit: "allow",
+  multi_edit: "allow",
+  create: "allow",
+  rename: "allow",
+  delete: "allow",
+};
 
 function workspace(overrides: Partial<WorkspaceSettingsView> = {}): WorkspaceSettingsView {
   return {
     workspace_id: WORKSPACE,
     folder_display: "/home/dev/project",
     model_tools: true,
-    read: true,
-    write: false,
-    execute: false,
-    task_network: false,
-    host_services: false,
+    read: "allow",
+    write: "prompt",
+    execute: "deny",
+    task_network: "deny",
+    host_services: "deny",
+    write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
     ...overrides,
   };
@@ -127,6 +138,21 @@ function checkbox(label: string): HTMLInputElement {
   return found;
 }
 
+function selector(label: string): HTMLSelectElement {
+  const found = root.querySelector(`select[aria-label="${label}"]`);
+  if (!(found instanceof HTMLSelectElement)) {
+    throw new Error(`No selector ${label}`);
+  }
+  return found;
+}
+
+/** Choose `value` in a selector as the operator would. */
+function choose(label: string, value: string): void {
+  const select = selector(label);
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
+}
+
 function workspaceCard(): HTMLElement {
   const found = root.querySelector(".card");
   if (!(found instanceof HTMLElement)) {
@@ -192,15 +218,27 @@ describe("settings window", () => {
     await start(() => overview());
     expect(root.textContent).toContain(INTRO);
     // No control takes a typed path: folders come only from the system dialog. The only typed
-    // values are a new connection's name and loopback URL, and the only dropdowns choose a
-    // provider (ADR-0063).
+    // values are a new connection's name and loopback URL (ADR-0064).
     expect(root.querySelectorAll("textarea")).toHaveLength(0);
-    const selects = Array.from(root.querySelectorAll("select")).map((s) => s.ariaLabel);
-    expect(selects).toEqual(["Model provider", "New connection provider"]);
     const typed = Array.from(root.querySelectorAll("input"))
       .filter((input) => input.type !== "checkbox")
       .map((input) => input.getAttribute("aria-label"));
     expect(typed).toEqual(["New connection name", "New connection endpoint"]);
+    // Two dropdowns choose a provider; every other one offers exactly the three access states.
+    const providerLabels = ["Model provider", "New connection provider"];
+    const selects = Array.from(root.querySelectorAll("select"));
+    const providers = selects.filter((s) => providerLabels.includes(s.ariaLabel ?? ""));
+    expect(providers.map((s) => s.ariaLabel)).toEqual(providerLabels);
+    const access = selects.filter((s) => !providers.includes(s));
+    expect(access).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length);
+    for (const select of access) {
+      expect(Array.from(select.options).map((option) => option.value)).toEqual([
+        "deny",
+        "prompt",
+        "allow",
+      ]);
+    }
+    expect(root.textContent).toContain(ACCESS_HELP);
   });
 
   it("shows each group of the configuration", async () => {
@@ -215,14 +253,21 @@ describe("settings window", () => {
     expect(text).toContain("RUSTUP_HOME");
     expect(text).toContain("No package-network profile is recorded.");
     expect(text).toContain("No container grant is recorded.");
-    // Each preference is a checkbox showing the recorded value.
-    expect(PERMISSION_LABELS.map(([, label]) => checkbox(label).checked)).toEqual([
-      true,
-      true,
-      false,
-      false,
-      false,
-      false,
+    // Model tools is a checkbox; each other preference is a selector showing the recorded state.
+    expect(checkbox("model tools").checked).toBe(true);
+    expect(PERMISSION_LABELS.map(([, label]) => selector(label).value)).toEqual([
+      "allow",
+      "prompt",
+      "deny",
+      "deny",
+      "deny",
+    ]);
+    expect(WRITE_TOOL_LABELS.map(([, label]) => selector(label).value)).toEqual([
+      "allow",
+      "allow",
+      "allow",
+      "allow",
+      "allow",
     ]);
     // A skill override names the workspace by its folder.
     const skill = Array.from(root.querySelectorAll(".card")).find((card) =>
@@ -266,14 +311,12 @@ describe("settings window", () => {
     expect(root.textContent).toContain("/home/dev/b");
   });
 
-  it("sends the complete preference set with one flag changed", async () => {
+  it("sends the complete preference set with one state changed", async () => {
     await start(() => overview(), {
       settings_set_permissions: () =>
-        overview({ revision: 8, workspaces: [workspace({ execute: true })] }),
+        overview({ revision: 8, workspaces: [workspace({ execute: "prompt" })] }),
     });
-    const execute = checkbox("execute");
-    execute.checked = true;
-    execute.dispatchEvent(new Event("change"));
+    choose("execute", "prompt");
     await settle();
 
     expect(ipc.callsTo("settings_set_permissions")[0]?.args).toEqual({
@@ -281,32 +324,73 @@ describe("settings window", () => {
       revision: 7,
       permissions: {
         model_tools: true,
-        read: true,
-        write: false,
-        execute: true,
-        task_network: false,
-        host_services: false,
+        read: "allow",
+        write: "prompt",
+        execute: "prompt",
+        task_network: "deny",
+        host_services: "deny",
+        write_tools: ALL_TOOLS,
       },
     });
-    expect(checkbox("execute").checked).toBe(true);
+    expect(selector("execute").value).toBe("prompt");
+  });
+
+  it("sends a tool limit inside the complete preference set", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () =>
+        overview({
+          revision: 8,
+          workspaces: [workspace({ write_tools: { ...ALL_TOOLS, delete: "deny" } })],
+        }),
+    });
+    choose("delete tool", "deny");
+    await settle();
+
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toEqual({
+      workspace_id: WORKSPACE,
+      revision: 7,
+      permissions: {
+        model_tools: true,
+        read: "allow",
+        write: "prompt",
+        execute: "deny",
+        task_network: "deny",
+        host_services: "deny",
+        write_tools: { ...ALL_TOOLS, delete: "deny" },
+      },
+    });
+    expect(selector("delete tool").value).toBe("deny");
+    expect(selector("edit tool").value).toBe("allow");
+  });
+
+  it("sends the model tools checkbox with every state unchanged", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () =>
+        overview({ revision: 8, workspaces: [workspace({ model_tools: false })] }),
+    });
+    const tools = checkbox("model tools");
+    tools.checked = false;
+    tools.dispatchEvent(new Event("change"));
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({
+      permissions: { model_tools: false, read: "allow", write: "prompt", write_tools: ALL_TOOLS },
+    });
   });
 
   it("shows a declined dialog as no change and restores the recorded value", async () => {
     await start(() => overview(), {
       settings_set_permissions: () => rejection("cancelled", "No change was made."),
     });
-    const write = checkbox("write");
-    write.checked = true;
-    write.dispatchEvent(new Event("change"));
+    choose("write", "allow");
     await settle();
 
     const notice = root.querySelector("[role=status]") as HTMLElement;
     expect(notice.hidden).toBe(false);
     expect(notice.textContent).toBe(NOTHING_CHANGED);
     expect((root.querySelector("[role=alert]") as HTMLElement).hidden).toBe(true);
-    // The window read the configuration again, so the box shows what is recorded.
+    // The window read the configuration again, so the selector shows what is recorded.
     expect(ipc.callsTo("settings_overview")).toHaveLength(2);
-    expect(checkbox("write").checked).toBe(false);
+    expect(selector("write").value).toBe("prompt");
   });
 
   it("restores the last read value when reading again after a declined dialog fails", async () => {
@@ -314,14 +398,12 @@ describe("settings window", () => {
       settings_set_permissions: () => rejection("cancelled", "No change was made."),
     });
     ipc.on("settings_overview", () => rejection("io", "The settings could not be read."));
-    const write = checkbox("write");
-    write.checked = true;
-    write.dispatchEvent(new Event("change"));
+    choose("write", "allow");
     await settle();
 
     expect(ipc.callsTo("settings_overview")).toHaveLength(2);
-    // The box shows the recorded value again, not what the operator asked for.
-    expect(checkbox("write").checked).toBe(false);
+    // The selector shows the recorded state again, not what the operator asked for.
+    expect(selector("write").value).toBe("prompt");
     expect((root.querySelector("[role=status]") as HTMLElement).textContent).toBe(NOTHING_CHANGED);
     const alert = root.querySelector("[role=alert]") as HTMLElement;
     expect(alert.hidden).toBe(false);
@@ -360,7 +442,7 @@ describe("settings window", () => {
     expect(buttonByText(root, "Refresh").disabled).toBe(true);
 
     // A second click while the first waits sends nothing.
-    checkbox("write").dispatchEvent(new Event("change"));
+    choose("write", "allow");
     await settle();
     expect(ipc.callsTo("settings_set_permissions")).toHaveLength(0);
 
@@ -406,7 +488,7 @@ describe("settings window", () => {
           workspace({
             folder_display: HOSTILE.rtl,
             model_tools: false,
-            read: false,
+            read: "deny",
             package_cache_root: HOSTILE.script,
           }),
         ],

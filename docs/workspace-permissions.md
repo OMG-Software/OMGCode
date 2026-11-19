@@ -28,8 +28,10 @@ cannot set a development root, change permissions, or recreate a binding.
 
 Select an existing development root explicitly. Register an existing workspace
 beneath it, including the root itself. Each workspace gets a random UUIDv4.
-Read and write preferences default to enabled; process execution, task
-network access, host services, and model tools default to disabled. Provider
+Since 0.43.0 each preference except `model_tools` is `deny`, `prompt`, or
+`allow`; see [deny, prompt, or allow](#deny-prompt-or-allow-adr-0063). A new
+workspace starts with `read` allow and `write` prompt; process execution, task
+network access, and host services are `deny`, and model tools are off. Provider
 connections remain separate from task networking. No operation class executes
 a tool by itself. The separate `model_tools` and `host_services` preferences
 are described under [model tools](#model-readlist-and-command-tools) and
@@ -248,7 +250,7 @@ authentication matrix. A control journal written by 0.24.0 cannot be read by
 0.23.0.
 
 Since 0.31.0, `provider-profile-add` accepts `--endpoint <url>` for an
-`lm_studio` profile, and since 0.43.0 for an `ollama_local` profile, and
+`lm_studio` profile, and since 0.44.0 for an `ollama_local` profile, and
 refuses it for every other kind. The endpoint is
 validated when recorded and again on replay, and it cannot be changed without
 removing the profile. `provider_profile_added` carries an `endpoint` field
@@ -257,16 +259,16 @@ journal that records an endpoint cannot be read by 0.30.0. The
 [provider authentication guide](provider-authentication.md#endpoint-binding-0310)
 owns the rules.
 
-Since 0.43.0, `provider-profile-select <name> --revision <n>` records
+Since 0.44.0, `provider-profile-select <name> --revision <n>` records
 `active_provider_selected` with the profile's identifier, and `--default`
 records it without one. Only an `lm_studio` or `ollama_local` profile with an
 endpoint can be selected, and an unchanged selection is refused. Replay
 checks each selection again. `workspace status` shows `active_provider` only
 while one is selected, so a journal without a selection is unchanged; a
-control journal that records one cannot be read by 0.42.0. The selection is
+control journal that records one cannot be read by 0.43.0. The selection is
 read only by a desktop shell started without `--endpoint` or
 `--provider-profile`
-([ADR-0063](adr/0063-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
+([ADR-0064](adr/0064-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
 
 Since 0.27.0, `provider-credential-set <name> --revision <n>` and
 `provider-credential-remove <name> --revision <n>` bind and unbind a credential
@@ -288,7 +290,9 @@ exact request digest, summary, settings revision, and expiry. The events
 settings revision. A decision or consumption is refused after expiry,
 mismatch, reuse, or any settings change. The `workspace_run_command` model tool
 consumes an approval; the CLI consume command marks a record used but executes
-nothing. The
+nothing. Since 0.43.0 a `prompt` model read records a `file_read` approval,
+which needs no writers-stopped acknowledgement, and the desktop shell waits
+in the turn for each decision (ADR-0063). The
 [agent instructions guide](agent-instructions.md#approval-records) owns the
 tool-side contract. See
 [ADR-0039](adr/0039-gate-future-model-tools-with-bound-single-use-approval-records.md)
@@ -320,7 +324,105 @@ log. Host-service access exposes every Unix socket the user can reach,
 including the Docker daemon; see
 [Unix-domain sockets](execution.md#unix-domain-sockets).
 
+## Deny, prompt, or allow (ADR-0063)
+
+Since 0.43.0, `read`, `write`, `execute`, `task_network`, and `host_services`
+each hold one of three states. `model_tools` stays on or off.
+
+| State | Trusted operator command | Model tool call |
+| --- | --- | --- |
+| `deny` | Refused | Tool not offered; a call is refused |
+| `prompt` | Permitted | Each call needs a trusted single-use approval |
+| `allow` | Permitted | Runs without an approval |
+
+`workspace permissions <id> --revision <n>` takes `--read`, `--write`,
+`--execute`, `--task-network`, and `--host-services` with `deny`, `prompt`, or
+`allow`. The earlier `true` and `false` are still accepted: `false` is `deny`,
+and `true` is `allow` for `--read` and `prompt` for the others, which is what
+`true` meant before. The desktop `settings` window shows a selector for each
+preference and confirms any change towards `allow` (ADR-0060).
+
+**Per-tool write limits.** `--edit-tool`, `--multi-edit-tool`, `--create-tool`,
+`--rename-tool`, and `--delete-tool` set a limit for one model file-write tool.
+Each defaults to `allow`. A limit can only narrow `write`: the tool's state is
+the more restrictive of the two, and a `deny` limit removes the tool. For
+example, `--write allow --delete-tool prompt` lets the model edit, create, and
+rename files freely but still asks before each delete. `workspace status`
+reports the limits as `write_tools`.
+
+**What a model tool call uses.** With `model_tools` off, every model tool is
+denied. Otherwise:
+
+- `workspace_read_file` and `workspace_list_directory` use `read`. Under
+  `prompt` each call records a `file_read` approval for the exact path and
+  limit, and nothing is read until it is approved. A read approval needs no
+  writers-stopped acknowledgement.
+- The five file-write tools use `write` and their own limit. They are denied
+  unless `read` permits, because each reads the file first. A `prompt` read
+  adds no prompt here: that read returns no file text to the model.
+- `workspace_run_command` uses the most restrictive of `execute`, `read`, and
+  `write`. The per-tool limits do not reach it: a permitted command can still
+  create, change, or delete any file in the workspace.
+
+`task_network` and `host_services` have no model tool. For them `prompt` and
+`allow` mean the same today; `prompt` keeps any future model tool for them
+gated.
+
+**Waiting in the turn.** In the desktop shell, a call that needs an approval
+waits in the turn. The operator decides in the approvals window, and an
+approved call completes in the same turn. The call is dispatched again
+first, so every live check and digest is repeated before the approval is
+consumed. A denied call ends with `approval_denied`, an expired one with
+`approval_expired`, and cancelling the turn ends the wait. A call waits at
+most three times, and the wait does not count against the turn deadline. The
+CLI `chat` command does not wait: it returns `approval_required`, and a later
+identical call consumes the approved record.
+
+**Stored form.** Settings keep their earlier bytes. A stored `false` is
+`deny` and a stored `true` keeps its earlier meaning; a string is written only
+for a state a boolean cannot express, such as `"allow"` for `write`.
+`write_tools` is omitted while every limit is `allow`. A settings log that uses
+a new state cannot be read by version 0.42.0 or earlier. A non-canonical value,
+such as the string `"deny"`, is refused.
+
+## Model action journal
+
+Every model tool call is recorded in `<data-dir>/model-actions-v1.jsonl`,
+whether it ran or was refused (ADR-0063). The file operation, run, and
+session journals keep their own records; this journal is the one place that
+lists every call with its authorisation.
+
+| Event | Written | Holds |
+| --- | --- | --- |
+| `action_started` | Before the call acts; synced first | Session, workspace, call ID, tool, targets, request digest, and authorisation |
+| `action_finished` | After the call | Outcome (`succeeded`, `failed`, or `uncertain`), code, and the broker, checkpoint, or run record ID |
+| `action_refused` | Instead of a start | The reason |
+
+The authorisation is `standing_allow` with the settings revision that held
+`allow`, or `approval` with the consumed approval ID. A refusal reason is
+`access_denied`, `approval_required`, `approval_denied`, `approval_expired`,
+`invalid_request`, `policy_unavailable`, or `cancelled`. A target is a
+validated workspace-relative path; a value that failed validation is stored
+only as its SHA-256 and byte length.
+
+If the start cannot be recorded, the call does not run and the turn ends with
+`audit_unavailable`. An approval consumed just before that failure is spent.
+A finish can be written by a later writer, so the journal is not locked while
+a command runs. An executed call without a finish, for example after a crash,
+has an unknown outcome, not a failed one.
+
+The journal rotates at 4 MiB or 16,384 events and keeps at most four
+archives; a record is at most 32 KiB. `omgcode actions list [--limit N]` lists
+the most recent calls, oldest first, from 1 to 1,000. Like the other journals
+it is private data: targets and codes can reveal workspace names. It is not
+tamper-evident against another process running as the same user.
+
 ## Model read/list and command tools
+
+The paragraphs below describe `write` and `execute` at `prompt`, the state
+that `true` has always meant. Under `allow` the approval steps are skipped
+and the call runs at once; under `deny` the tool is not offered. See
+[deny, prompt, or allow](#deny-prompt-or-allow-adr-0063).
 
 `workspace permissions <id> --revision <n> --model-tools true` lets `chat` offer
 the local model two tools for that workspace: `workspace_read_file` and

@@ -138,8 +138,23 @@
   color: var(--muted);
 }
 
-.flag.on {
+.flag.on,
+.flag.access-allow {
   color: var(--accent-text);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+/* Prompt is neither filled nor plain: model calls run only after a decision. */
+.flag.access-prompt {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* The chip colours the label only; the selector keeps the surface colours. */
+.flag select {
+  margin-left: 2px;
+  padding: 0 4px;
+  color: var(--text);
+  background: var(--surface);
 }

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use omgcode_core::session::SessionJournal;
 use omgcode_core::skills::SkillName;
-use omgcode_core::turn::CancelToken;
+use omgcode_core::turn::{ApprovalWaitSlot, AwaitedCall, CancelToken};
 use uuid::Uuid;
 
 use super::Inner;
@@ -69,6 +69,8 @@ pub(super) struct Slot {
     pub(super) state: SlotState,
     /// The turn thread, until it is joined.
     handle: Option<JoinHandle<()>>,
+    /// The call the running turn waits on, shared with the turn thread.
+    awaited: ApprovalWaitSlot,
     /// Order in which finished slots were finished; smaller is older.
     finished_order: u64,
 }
@@ -97,6 +99,14 @@ impl TurnTable {
             .is_some_and(|slot| matches!(slot.state, SlotState::Running { .. }))
     }
 
+    /// The call the session's running turn waits on, if it is waiting.
+    pub(super) fn awaited_call(&self, session_id: Uuid) -> Option<AwaitedCall> {
+        self.slots
+            .get(&session_id)
+            .filter(|slot| matches!(slot.state, SlotState::Running { .. }))
+            .and_then(|slot| slot.awaited.current())
+    }
+
     pub(super) fn running_ids(&self) -> HashSet<Uuid> {
         self.slots
             .iter()
@@ -122,7 +132,12 @@ impl TurnTable {
 
     /// Insert a running slot, replacing a finished one for the same session and
     /// evicting the oldest joined finished slots beyond the bound.
-    pub(super) fn insert_running(&mut self, session_id: Uuid, handle: JoinHandle<()>) {
+    pub(super) fn insert_running(
+        &mut self,
+        session_id: Uuid,
+        handle: JoinHandle<()>,
+        awaited: ApprovalWaitSlot,
+    ) {
         self.slots.insert(
             session_id,
             Slot {
@@ -131,6 +146,7 @@ impl TurnTable {
                     cancel: None,
                 },
                 handle: Some(handle),
+                awaited,
                 finished_order: 0,
             },
         );
@@ -326,6 +342,9 @@ pub(super) struct TurnJob {
     /// Skills the operator selected for this turn only. The turn loads them
     /// from core and refuses the turn when one is not enabled (ADR-0057).
     pub(super) skills: Vec<SkillName>,
+    /// Where the turn publishes the call it waits on (ADR-0063). The slot in
+    /// the turn table holds a clone, so a review can read it.
+    pub(super) approval_wait: ApprovalWaitSlot,
 }
 
 /// Start the turn thread.
@@ -413,6 +432,7 @@ fn execute(inner: &Inner, job: &TurnJob) -> Result<ChatOutcome, DesktopError> {
     let mut hand_over = |cancel: CancelToken| inner.hand_over_cancel_token(session_id, cancel);
     let mut forward = |event: ChatStreamEvent<'_>| inner.events_stream(session_id, event);
     let mut hooks = ChatHooks {
+        approval_wait: Some(job.approval_wait.clone()),
         cancel: None,
         on_cancel_token: Some(&mut hand_over),
         on_stream: if inner.stream {
@@ -495,11 +515,11 @@ mod tests {
         })
         .expect("open service");
         let handle = thread::spawn(|| ());
-        service
-            .inner
-            .lock_turns()
-            .expect("turns")
-            .insert_running(session_id, handle);
+        service.inner.lock_turns().expect("turns").insert_running(
+            session_id,
+            handle,
+            ApprovalWaitSlot::new(),
+        );
         (directory, service)
     }
 

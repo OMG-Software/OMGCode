@@ -43,7 +43,7 @@ use omgcode_core::control::{
     ControlError, ControlStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth, ProviderKind,
     ProviderProfileDeclaration,
 };
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet, WriteTool};
 use omgcode_core::run::{self, REVOCATION_WAIT};
 use omgcode_core::turn::display_safe_line;
 
@@ -123,37 +123,91 @@ impl Drop for ChangeGuard<'_> {
     }
 }
 
-/// The preferences in display order, with what turning each on allows.
-const FLAG_EFFECTS: [(&str, &str); 6] = [
-    (
-        "model tools",
-        "chat offers the local model the workspace tools",
-    ),
-    ("read", "tools may read files in the workspace"),
-    (
-        "write",
-        "approved model tools and trusted commands may change files in the workspace",
-    ),
-    (
-        "execute",
-        "the trusted runner and the approval-gated command tool may start programs in the workspace",
-    ),
-    ("task network", "a trusted run may select network access"),
-    (
-        "host services",
-        "a trusted run may select host-service socket access (Linux)",
-    ),
-];
+/// One preference as the confirmation names it: its label, what permitting
+/// it lets happen, and its state. `model_tools` is shown as `deny` or `allow`.
+struct Preference {
+    name: &'static str,
+    effect: &'static str,
+    state: Access,
+}
 
-const fn flags_of(set: &PermissionSet) -> [bool; 6] {
+/// Every preference in display order, including the per-tool write limits.
+fn preferences_of(set: &PermissionSet) -> [Preference; 11] {
+    let tool = |name, effect, tool| Preference {
+        name,
+        effect,
+        state: set.write_tools.get(tool),
+    };
     [
-        set.model_tools,
-        set.read,
-        set.write,
-        set.execute,
-        set.task_network,
-        set.host_services,
+        Preference {
+            name: "model tools",
+            effect: "chat offers the local model the workspace tools",
+            state: if set.model_tools {
+                Access::Allow
+            } else {
+                Access::Deny
+            },
+        },
+        Preference {
+            name: "read",
+            effect: "tools may read files in the workspace",
+            state: set.read,
+        },
+        Preference {
+            name: "write",
+            effect: "model tools and trusted commands may change files in the workspace",
+            state: set.write,
+        },
+        Preference {
+            name: "execute",
+            effect: "the trusted runner and the model command tool may start programs in the workspace",
+            state: set.execute,
+        },
+        Preference {
+            name: "task network",
+            effect: "a trusted run may select network access",
+            state: set.task_network,
+        },
+        Preference {
+            name: "host services",
+            effect: "a trusted run may select host-service socket access (Linux)",
+            state: set.host_services,
+        },
+        tool(
+            "edit tool",
+            "the model may edit existing files",
+            WriteTool::Edit,
+        ),
+        tool(
+            "multi-edit tool",
+            "the model may make several edits to one file",
+            WriteTool::MultiEdit,
+        ),
+        tool(
+            "create tool",
+            "the model may create new files",
+            WriteTool::Create,
+        ),
+        tool(
+            "rename tool",
+            "the model may rename files",
+            WriteTool::Rename,
+        ),
+        tool(
+            "delete tool",
+            "the model may delete files (each is checkpointed first)",
+            WriteTool::Delete,
+        ),
     ]
+}
+
+/// What a widened state adds, for the confirmation text.
+const fn widened_meaning(state: Access) -> &'static str {
+    match state {
+        Access::Deny => "",
+        Access::Prompt => "each model call asks you first",
+        Access::Allow => "model calls run without asking you",
+    }
 }
 
 const fn permission_set(flags: PermissionFlags) -> PermissionSet {
@@ -164,33 +218,45 @@ const fn permission_set(flags: PermissionFlags) -> PermissionSet {
         task_network: flags.task_network,
         model_tools: flags.model_tools,
         host_services: flags.host_services,
+        write_tools: flags.write_tools,
     }
 }
 
-/// The confirmation for turning preferences on, or `None` when none is
-/// turned on.
+/// The confirmation for widening preferences, or `None` when nothing is
+/// widened. A preference widens when its state moves towards `allow`, from
+/// `deny` to `prompt` or `allow`, or from `prompt` to `allow`.
 fn raise_confirmation(
     folder: &str,
     current: &PermissionSet,
     wanted: &PermissionSet,
 ) -> Option<Confirmation> {
-    let raised: Vec<(&str, &str)> = flags_of(current)
+    let raised: Vec<(Preference, Access)> = preferences_of(current)
         .into_iter()
-        .zip(flags_of(wanted))
-        .zip(FLAG_EFFECTS)
-        .filter(|((was, now), _)| !was && *now)
-        .map(|(_, effect)| effect)
+        .zip(preferences_of(wanted))
+        .filter(|(was, now)| now.state > was.state)
+        .map(|(was, now)| (now, was.state))
         .collect();
     if raised.is_empty() {
         return None;
     }
-    let names: Vec<&str> = raised.iter().map(|(name, _)| *name).collect();
+    let names: Vec<&str> = raised.iter().map(|(now, _)| now.name).collect();
     let mut message = format!(
-        "Turn on {} for this workspace?\n\n{folder}\n",
+        "Widen {} for this workspace?\n\n{folder}\n",
         names.join(", ")
     );
-    for (name, effect) in &raised {
-        message.push_str(&format!("\n- {name}: {effect}"));
+    for (now, was) in &raised {
+        message.push_str(&format!(
+            "\n- {}: {} to {}. {}",
+            now.name,
+            was.as_str(),
+            now.state.as_str(),
+            now.effect
+        ));
+        let meaning = widened_meaning(now.state);
+        if now.name != "model tools" && !meaning.is_empty() {
+            message.push_str(&format!("; {meaning}"));
+        }
+        message.push('.');
     }
     Some(Confirmation {
         title: "Allow more access",
@@ -349,11 +415,11 @@ impl DesktopService {
             .pick_folder(FolderPurpose::Workspace, start.as_deref())
             .ok_or_else(DesktopError::cancelled)?;
         let defaults = PermissionSet::default();
-        let on: Vec<&str> = flags_of(&defaults)
+        let on: Vec<String> = preferences_of(&defaults)
             .into_iter()
-            .zip(FLAG_EFFECTS)
-            .filter(|(enabled, _)| *enabled)
-            .map(|(_, (name, _))| name)
+            .take(6)
+            .filter(|preference| preference.state.permits())
+            .map(|preference| format!("{} ({})", preference.name, preference.state.as_str()))
             .collect();
         confirm(
             prompt,
@@ -468,7 +534,7 @@ impl DesktopService {
     }
 
     /// `settings` only. Choose the active model connection: a recorded local
-    /// profile by name, or `None` for the default endpoint (ADR-0063). A
+    /// profile by name, or `None` for the default endpoint (ADR-0064). A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///
@@ -616,15 +682,8 @@ impl DesktopService {
 mod tests {
     use super::*;
 
-    fn set(flags: [bool; 6]) -> PermissionSet {
-        let [
-            model_tools,
-            read,
-            write,
-            execute,
-            task_network,
-            host_services,
-        ] = flags;
+    fn set(model_tools: bool, states: [Access; 5]) -> PermissionSet {
+        let [read, write, execute, task_network, host_services] = states;
         PermissionSet {
             read,
             write,
@@ -632,27 +691,34 @@ mod tests {
             task_network,
             model_tools,
             host_services,
+            write_tools: WriteToolAccess::default(),
         }
     }
 
+    use Access::{Allow, Deny, Prompt};
+    use omgcode_core::policy::WriteToolAccess;
+
     #[test]
-    fn turning_preferences_off_needs_no_confirmation() {
-        let current = set([true, true, true, true, true, true]);
-        let wanted = set([false, true, false, false, false, false]);
+    fn narrowing_preferences_needs_no_confirmation() {
+        let current = set(true, [Allow, Allow, Allow, Allow, Allow]);
+        let wanted = set(false, [Allow, Prompt, Deny, Deny, Prompt]);
         assert_eq!(raise_confirmation("folder", &current, &wanted), None);
         assert_eq!(raise_confirmation("folder", &current, &current), None);
+        let mut limited = current;
+        limited.write_tools.set(WriteTool::Delete, Prompt);
+        assert_eq!(raise_confirmation("folder", &current, &limited), None);
     }
 
     #[test]
-    fn each_preference_turned_on_is_named_with_its_effect() {
-        let current = set([false, true, true, false, false, false]);
-        let wanted = set([true, true, false, true, false, true]);
+    fn each_widened_preference_is_named_with_both_states() {
+        let current = set(false, [Allow, Prompt, Deny, Deny, Deny]);
+        let wanted = set(true, [Allow, Allow, Prompt, Deny, Allow]);
         let confirmation = raise_confirmation("C:\\code\\app", &current, &wanted).expect("a raise");
         assert_eq!(confirmation.title, "Allow more access");
         assert!(
-            confirmation
-                .message
-                .starts_with("Turn on model tools, execute, host services for this workspace?"),
+            confirmation.message.starts_with(
+                "Widen model tools, write, execute, host services for this workspace?"
+            ),
             "{}",
             confirmation.message
         );
@@ -660,12 +726,34 @@ mod tests {
         assert!(
             confirmation
                 .message
-                .contains("- execute: the trusted runner")
+                .contains("- write: prompt to allow. model tools and trusted commands may change files in the workspace; model calls run without asking you."),
+            "{}",
+            confirmation.message
         );
-        // A preference turned off, or left on, is not listed.
-        assert!(!confirmation.message.contains("- write"));
+        assert!(
+            confirmation
+                .message
+                .contains("- execute: deny to prompt. the trusted runner"),
+            "{}",
+            confirmation.message
+        );
+        // A preference narrowed, or left alone, is not listed.
         assert!(!confirmation.message.contains("- read"));
         assert!(!confirmation.message.contains("- task network"));
+    }
+
+    #[test]
+    fn widening_a_tool_limit_is_confirmed() {
+        let mut current = set(true, [Allow, Allow, Deny, Deny, Deny]);
+        current.write_tools.set(WriteTool::Delete, Prompt);
+        let mut wanted = current;
+        wanted.write_tools.set(WriteTool::Delete, Allow);
+        let confirmation = raise_confirmation("folder", &current, &wanted).expect("a raise");
+        assert!(
+            confirmation
+                .message
+                .contains("- delete tool: prompt to allow.")
+        );
     }
 
     #[test]

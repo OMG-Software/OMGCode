@@ -7,6 +7,7 @@ use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
 use omgcode_core::skills::{MAX_SELECTED_SKILLS, SkillName};
+use omgcode_core::turn::ApprovalWaitSlot;
 
 use super::ChatEventSink;
 use super::error::DesktopError;
@@ -33,7 +34,7 @@ impl DesktopService {
     /// the CLI's budgets when none are saved (ADR-0059 decision 8).
     ///
     /// The endpoint is the launch endpoint when it is fixed, and otherwise
-    /// the active connection selected in `settings` (ADR-0063). When the
+    /// the active connection selected in `settings` (ADR-0064). When the
     /// active connection cannot be read now, the launch default is shown and
     /// `chat_send` reports the precise failure.
     ///
@@ -164,6 +165,7 @@ impl DesktopService {
         let settings = chat_settings(request.settings, endpoint);
         let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&error))?;
+        let approval_wait = ApprovalWaitSlot::new();
         let job = TurnJob {
             session_id,
             path,
@@ -172,6 +174,7 @@ impl DesktopService {
             token,
             clients,
             skills,
+            approval_wait: approval_wait.clone(),
         };
 
         // Reserve the slot and start the thread under one lock hold, so two
@@ -188,7 +191,7 @@ impl DesktopService {
             return Err(DesktopError::too_many_turns());
         }
         let handle = spawn_turn(inner, job)?;
-        turns.insert_running(session_id, handle);
+        turns.insert_running(session_id, handle, approval_wait);
         drop(turns);
         Ok(status_of(
             session_id,

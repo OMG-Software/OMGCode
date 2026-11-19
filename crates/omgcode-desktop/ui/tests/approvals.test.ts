@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ApprovalsApp, startApprovals } from "../src/approvals/app";
 import {
+  approvalEffect,
   approveGate,
   decisionArgs,
   orderApprovals,
@@ -49,11 +50,19 @@ function detail(
       { label: "Arguments", value: `test\n${HOSTILE_IMG}`, multiline: true },
     ],
     review_token: "tok-1",
+    waiting: true,
     ...overrides,
   };
 }
 
 describe("approval model", () => {
+  it("says whether approving runs the request now or only allows a later one", () => {
+    expect(approvalEffect(detail())).toContain("Approving runs this request now");
+    expect(approvalEffect(detail({ waiting: false }))).toContain("Approving runs nothing now");
+    expect(approvalEffect(detail({ binding: "stale", review_token: null }))).toBeNull();
+    expect(approvalEffect(detail({}, { state: "approved" }))).toBeNull();
+  });
+
   it("orders pending by soonest expiry, then decided newest first", () => {
     const { pending, decided } = orderApprovals([
       view({ id: "late", expires_unix: 2000 }),
@@ -156,7 +165,7 @@ describe("approvals window", () => {
     expect(rows[0]?.textContent).toContain("Session title");
     expect(rows[2]?.textContent).toContain("denied");
     expect(document.activeElement).toBe(root.querySelector(".approval-button"));
-    expect(root.textContent).toContain("Nothing runs when you approve.");
+    expect(root.textContent).toContain("If its turn is waiting, it runs as soon as you approve");
   });
 
   it("counts down from the core clock", async () => {
@@ -302,6 +311,15 @@ describe("approvals window", () => {
     });
     expect(root.querySelector(".result")?.textContent).toContain("approved");
     expect(ipc.callsTo("approvals_list").length).toBeGreaterThan(1);
+  });
+
+  it("tells the operator what approving does for the shown request", async () => {
+    await start();
+    await select();
+    expect(root.querySelector(".effect")?.textContent).toContain("Approving runs this request now");
+    current = detail({ waiting: false });
+    await select();
+    expect(root.querySelector(".effect")?.textContent).toContain("Approving runs nothing now");
   });
 
   it("sends writers_stopped false for a command approval", async () => {

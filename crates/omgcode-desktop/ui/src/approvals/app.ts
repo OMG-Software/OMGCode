@@ -96,7 +96,7 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
       el("h1", { text: "Tool approvals" }),
       el("p", {
         class: "intro",
-        text: "Approving lets the model's next identical request run once. Nothing runs when you approve.",
+        text: "Approving lets a request run once. If its turn is waiting, it runs as soon as you approve; otherwise the model's next identical request runs it.",
       }),
       errorLine,
       listBox,

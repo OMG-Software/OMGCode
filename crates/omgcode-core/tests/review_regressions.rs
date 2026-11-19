@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use omgcode_core::control::ControlStore;
 use omgcode_core::files::{FileBroker, FileError, FileTarget};
-use omgcode_core::policy::{DecisionReason, PermissionSet, SessionBinding};
+use omgcode_core::policy::{Access, DecisionReason, PermissionSet, SessionBinding};
 use serde_json::Value;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -191,7 +191,7 @@ fn a_full_operation_journal_does_not_grow_settings_or_prevent_permission_revocat
         .set_permissions(
             workspace_id,
             PermissionSet {
-                read: false,
+                read: Access::Deny,
                 ..PermissionSet::default()
             },
             revision,

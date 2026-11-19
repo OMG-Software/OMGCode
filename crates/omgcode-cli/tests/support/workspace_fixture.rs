@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use omgcode_core::control::ControlStore;
-use omgcode_core::policy::{PermissionSet, WorkspaceId};
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteToolAccess};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -44,12 +44,13 @@ impl Fixture {
                 .set_permissions(
                     workspace_id,
                     PermissionSet {
-                        read: true,
-                        write: true,
-                        execute: false,
-                        task_network: false,
+                        read: Access::Allow,
+                        write: Access::Prompt,
+                        execute: Access::Deny,
+                        task_network: Access::Deny,
                         model_tools: false,
-                        host_services: false,
+                        host_services: Access::Deny,
+                        write_tools: WriteToolAccess::default(),
                     },
                     control.revision(),
                 )

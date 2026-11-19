@@ -39,7 +39,7 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
-- Since version 0.43.0 (ADR-0063), the `settings` window chooses the model
+- Since version 0.44.0 (ADR-0064), the `settings` window chooses the model
   connection from a dropdown: the default LM Studio endpoint or a recorded
   `lm_studio` or `ollama_local` profile, after a native confirmation. It can
   also add and remove local connections without a credential. A launch
@@ -68,6 +68,11 @@ merged to `main` at the time of writing):
 - Since version 0.42.0 (ADR-0062), Enter sends the composer's message and
   Shift+Enter adds a newline. An **Enter to send** chat preference, on by
   default, can be turned off to restore Ctrl+Enter. See [chat](#chat).
+- Since version 0.43.0 (ADR-0063), each preference except `model_tools` is
+  Deny, Prompt, or Allow, and each model file-write tool has its own limit. A
+  chat turn waits for each approval it needs, and an approved call completes
+  in the same turn. Every model tool call is recorded in the model action
+  journal.
 
 Not implemented:
 
@@ -177,7 +182,7 @@ normal close exits with status 0.
 With neither `--endpoint` nor `--provider-profile`, the connection is not
 fixed. Each chat turn resolves the active connection recorded in the
 settings store when it starts: a profile chosen in the `settings` window
-(ADR-0063), or, with none chosen, `http://127.0.0.1:1234/v1` and
+(ADR-0064), or, with none chosen, `http://127.0.0.1:1234/v1` and
 `OMGCODE_LM_TOKEN`. An unusable selection fails the turn, not the launch, so
 the `settings` window stays reachable to change it.
 
@@ -241,7 +246,7 @@ their registered identifier, and approvals by identifier.
 | `settings_overview` | settings | Return the trusted configuration, creating an empty settings store when none exists |
 | `settings_choose_root` | settings | Choose the development root in a native folder dialog, after a native confirmation |
 | `settings_register_workspace` | settings | Register a folder below the root, chosen in a native dialog, after a native confirmation |
-| `settings_set_permissions` | settings | Set one workspace's six preferences; turning any on needs a native confirmation |
+| `settings_set_permissions` | settings | Set one workspace's preferences and per-tool write limits; widening any needs a native confirmation |
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
@@ -432,7 +437,7 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   another connection after `main` read the endpoint. No turn starts. The
   composer then reads the endpoint again and keeps the draft and the model
   name, so the operator can check the model before sending again
-  (ADR-0063). With `--provider-profile`, each turn also resolves the profile
+  (ADR-0064). With `--provider-profile`, each turn also resolves the profile
   again. If its recorded endpoint no longer equals the
   launch value, because the profile was removed and added again, `chat_send`
   fails at once with a `credential` error that starts `endpoint_changed:` and
@@ -521,11 +526,13 @@ store exists from the first launch. It shows:
 
 - the settings revision;
 - the development root, with **Choose folder…** or **Change…**;
-- each registered workspace with its folder, a checkbox for each of its six
-  preferences (`model_tools`, `read`, `write`, `execute`, `task_network`,
-  and `host_services`), and its package cache root with **Choose…** and,
-  when one is set, **Clear**; and **Register workspace…**, which is disabled
-  until a root is set;
+- each registered workspace with its folder, a checkbox for `model_tools`, a
+  Deny, Prompt, or Allow selector for each of `read`, `write`, `execute`,
+  `task_network`, and `host_services`, a selector for each model file-write
+  tool's limit (edit, multi-edit, create, rename, and delete; since 0.43.0,
+  ADR-0063), and its package cache root with **Choose…** and, when one is set,
+  **Clear**; and **Register workspace…**, which is disabled until a root is
+  set. A preference at Allow is shown filled and one at Prompt outlined;
 - the connection the next turn uses, with a **Model provider** dropdown. It
   lists the default LM Studio endpoint and every `lm_studio` or
   `ollama_local` profile with an endpoint. When a launch argument fixed the
@@ -547,7 +554,7 @@ store exists from the first launch. It shows:
 Only this window receives the configuration view. The `main` window receives
 only the workspace summaries of `workspace_list` (each registered
 workspace's identifier, folder display text, and `model_tools`, `read`,
-`write`, and `execute` preferences), the endpoint text of
+`write`, and `execute` states), the endpoint text of
 `chat_defaults`, and the enabled skill names of `session_skills`.
 
 The view reads the settings store through the same core functions as the
@@ -563,7 +570,8 @@ The five change commands call the same `ControlStore` functions as the CLI's
 `workspace set-root`, `register`, `permissions`, `set-package-cache`, and
 `clear-package-cache`. They use the same expected-revision check, validation,
 and audit events. Each takes only identifiers, the revision the window last
-read, and for `settings_set_permissions` the complete set of six flags. None
+read, and for `settings_set_permissions` the complete preference set:
+`model_tools`, the five three-state preferences, and `write_tools`. None
 takes a path. Each returns the new overview.
 
 - **Folders come from a native dialog.** Rust opens the operating system's
@@ -573,11 +581,13 @@ takes a path. Each returns the new overview.
   command exists, so no webview can open, answer, or read a dialog.
 - **Widening needs a native confirmation.** These changes are applied only
   after the operator answers Yes in a native message box: setting the root,
-  registering a workspace, turning any preference on, and choosing a package
-  cache root. The service composes the text from fixed words and
-  display-safe values, and it names each preference turned on with what that
-  preference allows. Turning preferences off and clearing a cache root show
-  no dialog.
+  registering a workspace, widening any preference or tool limit, and
+  choosing a package cache root. A state widens when it moves towards Allow:
+  from Deny to Prompt or Allow, or from Prompt to Allow. The service composes
+  the text from fixed words and display-safe values. It names each widened
+  preference with its old and new states, what it allows, and whether model
+  calls will ask first or run without asking. Narrowing and clearing a cache
+  root show no dialog.
 - **No lock while the operator decides.** The service checks the revision,
   releases the store, shows the dialogs, and then reopens the store and
   applies the change with the same revision. A change made meanwhile, for
@@ -595,7 +605,7 @@ takes a path. Each returns the new overview.
   until the answer arrives.
 
 A closed dialog or a No answer returns `cancelled`. The window shows "No
-change was made." and reads the configuration again, so every checkbox shows
+change was made." and reads the configuration again, so every control shows
 the recorded value. Any other failure is shown with its code and is followed
 by the same re-read.
 
@@ -604,7 +614,7 @@ by the same re-read.
 The three connection commands call the same `ControlStore` functions as the
 CLI's `workspace provider-profile-select`, `provider-profile-add`, and
 `provider-profile-remove`, with the same revision check and validation
-(ADR-0063).
+(ADR-0064).
 
 - **Selecting needs a native confirmation.** `settings_select_connection`
   takes the revision and a profile name, or none for the default. The
@@ -631,9 +641,13 @@ CLI's `workspace provider-profile-select`, `provider-profile-add`, and
 
 ## Approvals
 
-The model's file-write (edit, multi-edit, create, rename, and delete) and
-command tools need a trusted single-use approval
-([agent instructions](agent-instructions.md#approval-records)). The CLI
+A model tool call needs a trusted single-use approval when its effective
+state is Prompt: the file-write tools (edit, multi-edit, create, rename, and
+delete) and the command tool under the default `write` and `execute` state,
+and, since 0.43.0, the read and list tools when `read` is Prompt
+([agent instructions](agent-instructions.md#approval-records),
+[deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0063)).
+A call whose state is Allow needs none. The CLI
 commands `approvals list`, `show`, `approve`, and `deny` still work and remain
 the surface for headless use. The approvals window is a second surface for the
 same records. It adds no authority. Core still enforces single decisions,
@@ -641,8 +655,9 @@ expiry, the settings revision, and the writers-stopped acknowledgement.
 
 The flow:
 
-1. A chat turn asks for an edit or a command. Core records a pending approval
-   and tells the model to retry in a later turn after approval.
+1. A chat turn makes a call whose state is Prompt. Core records a pending
+   approval, and the turn waits for the decision (ADR-0063). It publishes the
+   exact call it waits on so that the approvals window can review it.
 2. The `main` window polls `approvals_summary` every 3 seconds and shows the
    pending count. It can show the approvals window and nothing more.
 3. The operator opens the `approvals` window. It polls `approvals_list` every 3
@@ -658,7 +673,7 @@ The flow:
      because the file or the settings changed. The window shows no arguments
      and offers Deny only.
    - `not_found`: no recorded request exists to review. Deny only.
-5. For a file edit, the operator must tick the writers-stopped checkbox. This
+5. For a file change, the operator must tick the writers-stopped checkbox. This
    is the operator's statement that no other process is writing the file.
    Neither this window nor the CLI detects a concurrent writer.
 6. Approve is enabled only for an `exact` binding with a token, after the
@@ -670,8 +685,20 @@ The flow:
    valid for 120 seconds, and kept in memory only. A new detail request for the
    same approval replaces it. At most 64 tokens are outstanding. Deny needs no
    token.
-8. The model's next identical call, in a later turn, consumes the approved
-   record and runs through the trusted runner or checkpointed apply.
+8. The waiting turn sees the decision within about 250 ms. An approved call
+   is dispatched again, so every live check and digest is repeated, then it
+   consumes the record and runs through the broker, the trusted runner, or
+   checkpointed apply, in the same turn. A denied call ends with
+   `approval_denied` and the turn continues; cancelling the turn ends the
+   wait and leaves the record pending. The time spent waiting does not count
+   against the turn deadline.
+
+The detail reports `waiting`, which is true only when a turn waits on that
+approval now. Above the decision buttons, an exact pending review states the
+effect: "Approving runs this request now" when its turn is waiting, or that
+approving runs nothing now and only lets the model's next identical request
+run once, for example after the turn was cancelled or from the CLI. The
+window's introduction says the same.
 
 Reviewed fields:
 
@@ -685,10 +712,12 @@ Reviewed fields:
   once the source changed or the destination exists.
 - **Delete:** File, Size, and SHA-256. The review is stale once the file
   changed or is gone.
+- **Read:** Action (`Read a file` or `List a directory`), Path, and `Most bytes` or
+  `Most entries`. Reviewing it reads no file.
 
 Review reads only what the approval needs:
 
-- Only `command` and `file_write` approvals can be reviewed.
+- Only `command`, `file_read`, and `file_write` approvals can be reviewed.
 - Opening a command approval changes nothing.
 - Opening a file-write approval makes one audited broker read of the target
   file (two for a rename, which also reads the destination), under the same
@@ -698,8 +727,12 @@ Review reads only what the approval needs:
 - Opening a record that is no longer pending reads nothing.
 - Review does not check that the approval is still unexpired. Core checks that
   when the record is consumed.
-- While a turn runs in the shell, its journal is locked on Windows, so the
-  detail request reports `busy` until the turn ends.
+- While a turn waits on an approval, the review uses the call the turn
+  published instead of reading the locked journal. Core still recomputes the
+  digest from that call and the live workspace, so only the recorded request
+  can be `exact`. While a turn runs for any other reason, its journal is
+  locked on Windows, so the detail request reports `busy` until the turn
+  ends.
 - Tokens are lost when the application exits. The operator reviews again.
 
 Display-safe text. Core renders the fields the window shows, plus session
@@ -734,7 +767,7 @@ What the design does:
 - **Endpoint and token outside `main`.** The `main` webview cannot choose the
   provider, choose the credential source, or read the token. Only the
   `settings` window chooses the connection, among recorded local profiles,
-  after a native confirmation, unless a launch argument fixed it (ADR-0063).
+  after a native confirmation, unless a launch argument fixed it (ADR-0064).
   No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
 - **Channel, no `core:` permission.** `chat_subscribe` takes a Tauri IPC

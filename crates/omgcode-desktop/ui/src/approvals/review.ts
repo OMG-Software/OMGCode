@@ -3,6 +3,7 @@ import { approvalsApi } from "../ipc/approvals_client";
 import { toIpcError } from "../ipc/errors";
 import type { ApprovalDetail, ApprovalView } from "../ipc/types";
 import {
+  approvalEffect,
   approveGate,
   decisionArgs,
   REVIEW_AGAIN_CODES,
@@ -134,6 +135,7 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
       );
     }
     const explain = explanation(detail);
+    const effect = approvalEffect(detail);
     replaceChildren(
       element,
       el("h2", { text: "Review" }),
@@ -150,6 +152,7 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
             el("code", { text: detail.approval.request_sha256 }),
           )
         : null,
+      effect === null ? null : el("p", { class: "effect", text: effect }),
       pending && isFile && exact ? checkLabel : null,
       el("div", { class: "decision" }, ...(pending ? [deny, exact ? approve : null] : [])),
       hint,

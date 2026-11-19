@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use omgcode_core::control::{ControlError, ControlStore, WorkspaceRegistration};
-use omgcode_core::policy::{DecisionReason, Operation, PermissionSet, PolicyRequest};
+use omgcode_core::policy::{Access, DecisionReason, Operation, PermissionSet, PolicyRequest};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -176,7 +176,7 @@ fn enabled_configuration_is_audited_without_granting_execution_or_changing_revis
     let mut store = open_store(&fixture);
     let registration = register(&mut store, &fixture.workspace);
     let permissions = PermissionSet {
-        execute: true,
+        execute: Access::Prompt,
         ..PermissionSet::default()
     };
     store
@@ -326,7 +326,7 @@ fn replacing_workspace_directory_blocks_binding_and_reregistration() {
     let mut store = open_store(&fixture);
     let workspace = register(&mut store, &fixture.workspace);
     let permissions = PermissionSet {
-        read: false,
+        read: Access::Deny,
         ..PermissionSet::default()
     };
     store

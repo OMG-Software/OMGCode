@@ -3,7 +3,7 @@
 //! The window reads the trusted configuration and, from phase S2, changes the
 //! development root, workspace registrations, workspace preferences, and
 //! package cache roots. It also records local model connections and chooses
-//! the active one (ADR-0063). No handler takes a path: a folder comes from a native
+//! the active one (ADR-0064). No handler takes a path: a folder comes from a native
 //! dialog that Rust opens ([`NativePrompt`]), and every change that widens
 //! access waits for the operator's answer in a native confirmation. Each
 //! handler runs on the blocking pool because the dialogs and the settings
@@ -162,7 +162,7 @@ pub async fn settings_clear_package_cache(
 
 /// `settings` only. After a native confirmation that names the provider and
 /// endpoint, makes a recorded local profile (or the default endpoint, for a
-/// `null` profile) the active model connection (ADR-0063).
+/// `null` profile) the active model connection (ADR-0064).
 ///
 /// # Errors
 ///

@@ -6,8 +6,8 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.43.0 adds Ollama Local and a model-provider dropdown in the
-  desktop `settings` window (ADR-0063, accepted; the connection part of
+- Version 0.44.0 adds Ollama Local and a model-provider dropdown in the
+  desktop `settings` window (ADR-0064, accepted; the connection part of
   ADR-0059 phase S3).
   - **Ollama Local:** an `ollama_local` profile can record a loopback
     endpoint, such as `http://127.0.0.1:11434/v1`, under the same rule as
@@ -25,7 +25,7 @@ Changes are recorded here before a release version is assigned.
     selected; an unchanged selection is refused; replay checks each one
     again; removing the selected profile clears it. The snapshot writes
     `active_provider` only when set, so older journals keep their bytes; a
-    journal that records a selection cannot be read by 0.42.0. The
+    journal that records a selection cannot be read by 0.43.0. The
     new trusted CLI command `workspace provider-profile-select <name>` (or
     `--default`) records it. CLI `chat` does not read it.
   - **Settings window dropdown:** **Model provider** lists the default LM
@@ -50,6 +50,54 @@ Changes are recorded here before a release version is assigned.
   - The shell now has 31 commands: 19 for `main`, 3 for `approvals`, and 9 for
     `settings`. API-key entry in the window, execution setup, and skills
     still change only through the CLI.
+
+- Version 0.43.0 lets the operator deny, prompt for, or allow each workspace
+  preference, waits for approvals inside the desktop turn, and records every
+  model action (ADR-0063).
+  - **Three states:** `read`, `write`, `execute`, `task_network`, and
+    `host_services` are each `deny`, `prompt`, or `allow`. `prompt` and
+    `allow` both permit a trusted operator command. For a model tool call,
+    `prompt` needs a single-use approval and `allow` runs it without one.
+    `model_tools` stays on or off.
+  - **Per-tool write limits:** `write_tools` holds a limit for each of the
+    edit, multi-edit, create, rename, and delete tools. Each defaults to
+    `allow` and can only narrow `write`; a `deny` limit removes the tool. The
+    command tool uses the most restrictive of `execute`, `read`, and `write`,
+    and the limits do not reach it.
+  - **Prompted reads:** under `read` prompt, the read and list tools record a
+    `file_read` approval for the exact path and limit and read nothing until
+    it is approved. A read approval needs no writers-stopped acknowledgement.
+  - **CLI:** `workspace permissions` takes `deny`, `prompt`, or `allow` for
+    `--read`, `--write`, `--execute`, `--task-network`, and
+    `--host-services`, and the new `--edit-tool`, `--multi-edit-tool`,
+    `--create-tool`, `--rename-tool`, and `--delete-tool`. The earlier `true`
+    and `false` still work and keep their meaning. `workspace status` reports
+    states as strings and adds `write_tools`.
+  - **Settings window:** each preference and each tool limit has a Deny,
+    Prompt, or Allow selector; `model_tools` stays a checkbox. A change
+    towards Allow asks for a native confirmation that names the old and new
+    states.
+  - **In-turn approvals:** a desktop turn now waits while the operator
+    decides. An approved call is dispatched again, so every live check is
+    repeated, and then completes in the same turn. A denial ends the call with
+    `approval_denied`, expiry with `approval_expired`, and cancelling the turn
+    ends the wait. Waiting does not count against the turn deadline. The CLI
+    `chat` command does not wait. The approvals window says whether approving
+    runs the request now or only lets a later identical request run, and the
+    approval detail reports `waiting`.
+  - **Standing-allow commands:** a model command run without an approval
+    records `standing_allow`. The runner rechecks that the command state is
+    still `allow` under its own settings lock, and the watcher withdraws the
+    run once it is not, so a change to `prompt` cannot start or keep an
+    unapproved command.
+  - **Model action journal:** `<data-dir>/model-actions-v1.jsonl` records each
+    executed call before it acts, with how it was authorised (a standing
+    `allow` and its settings revision, or the consumed approval), and its
+    outcome afterwards. A refused call is recorded with the reason. A call
+    whose start cannot be recorded does not run and ends the turn with
+    `audit_unavailable`. A target that fails validation is stored only as its
+    digest and length. The journal rotates at 4 MiB or 16,384 events into
+    four archives. `omgcode actions list [--limit N]` lists recent calls.
 
 - Version 0.42.0 makes Enter send the desktop composer's message and
   Shift+Enter add a newline (ADR-0062, accepted). Before this, only
@@ -1352,6 +1400,19 @@ Changes are recorded here before a release version is assigned.
   development guide. Keep the existing Sonar project key to retain its history.
 
 ### Fixed
+
+- Approving a request in the desktop approvals window now completes the call.
+  Before, the call ended when it recorded the approval, and only an identical
+  call in a later turn could use it, so approving appeared to do nothing
+  (ADR-0063).
+- The approvals window can review a request while its turn waits for the
+  decision. The waiting turn shares the exact call it waits on, and core
+  still checks it against the approval digest. Before, any running turn made
+  the review `busy`.
+- The chat and dispatch paths wait up to 2 seconds for another holder of the
+  settings store instead of failing. A turn polling for its approval, another
+  turn, or the approvals window could make a call fail with `control journal
+  is already open`.
 
 - A run whose access a settings change withdrew kept running if another
   change restored that access before the run's watcher read the settings (it

@@ -21,21 +21,22 @@ pub fn create_session(
     let control_error = |error: omgcode_core::control::ControlError| {
         AppError::new(ErrorKind::Control, error.to_string())
     };
-    let registration_id = match ControlStore::open_existing(data_root).map_err(control_error)? {
-        Some(mut store) if store.has_development_root() => {
-            let registration = store
-                .register_workspace(workspace, store.revision())
-                .map_err(control_error)?;
-            let id = registration.id();
-            drop(store);
-            Some(id)
-        }
-        Some(store) => {
-            drop(store);
-            None
-        }
-        None => None,
-    };
+    let registration_id =
+        match ControlStore::open_existing_waiting(data_root).map_err(control_error)? {
+            Some(mut store) if store.has_development_root() => {
+                let registration = store
+                    .register_workspace(workspace, store.revision())
+                    .map_err(control_error)?;
+                let id = registration.id();
+                drop(store);
+                Some(id)
+            }
+            Some(store) => {
+                drop(store);
+                None
+            }
+            None => None,
+        };
 
     match registration_id {
         Some(id) => SessionJournal::create_with_workspace_id(data_root, workspace, title, id),

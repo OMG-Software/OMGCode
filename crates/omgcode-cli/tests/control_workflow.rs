@@ -141,9 +141,9 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
     assert_ne!(first_id, second_id);
     assert_eq!(second["snapshot"]["revision"], 3);
 
-    // When flags are omitted, defaults keep read/write enabled and execute,
-    // network, model tools, and host services disabled. Status reports every
-    // flag explicitly.
+    // When flags are omitted, defaults allow read, prompt for write, and deny
+    // execute, network, and host services, with model tools off. Status
+    // reports every preference and per-tool limit explicitly.
     let second_permissions = second["snapshot"]["workspaces"]
         .as_array()
         .expect("workspace registrations")
@@ -154,12 +154,19 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
     assert_eq!(
         default_permissions,
         &json!({
-            "read": true,
-            "write": true,
-            "execute": false,
-            "task_network": false,
+            "read": "allow",
+            "write": "prompt",
+            "execute": "deny",
+            "task_network": "deny",
             "model_tools": false,
-            "host_services": false
+            "host_services": "deny",
+            "write_tools": {
+                "edit": "allow",
+                "multi_edit": "allow",
+                "create": "allow",
+                "rename": "allow",
+                "delete": "allow"
+            }
         })
     );
 
@@ -1084,7 +1091,7 @@ fn file_write_approvals_require_the_writers_stopped_acknowledgement() {
 }
 
 /// The trusted CLI chooses the connection a desktop shell without a connection
-/// argument uses, among local profiles with an endpoint (ADR-0063).
+/// argument uses, among local profiles with an endpoint (ADR-0064).
 #[test]
 fn provider_profile_select_records_and_clears_the_active_connection() {
     let temporary = TempDir::new().expect("temporary directory");

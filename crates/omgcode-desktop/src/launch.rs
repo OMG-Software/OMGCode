@@ -18,7 +18,7 @@
 //!
 //! With neither flag the connection is not fixed: each turn uses the active
 //! connection chosen in the `settings` window, or [`DEFAULT_ENDPOINT`] with
-//! `OMGCODE_LM_TOKEN` while none is chosen (ADR-0059 decision 7, ADR-0063).
+//! `OMGCODE_LM_TOKEN` while none is chosen (ADR-0059 decision 7, ADR-0064).
 //!
 //! `--stream` chooses whether chat turns send streamed model requests and push
 //! their text to the window (`on`, the default) or send non-streaming requests

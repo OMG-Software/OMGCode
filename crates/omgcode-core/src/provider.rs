@@ -1388,7 +1388,7 @@ Connection: close
         );
     }
 
-    /// Non-streaming reply shapes captured from Ollama 0.40.16 (ADR-0063).
+    /// Non-streaming reply shapes captured from Ollama 0.40.16 (ADR-0064).
     /// Only the assistant text is shortened. `prompt_tokens_details` is an
     /// extra usage member the parser ignores.
     const OLLAMA_TEXT_REPLY: &str = r#"{"id":"chatcmpl-289","object":"chat.completion","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"message":{"role":"assistant","content":"Hello there"},"finish_reason":"length"}],"usage":{"prompt_tokens":26,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":64,"total_tokens":90}}"#;

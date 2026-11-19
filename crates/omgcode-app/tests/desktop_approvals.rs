@@ -1,15 +1,17 @@
-//! Approval commands of the desktop service (ADR-0046) end to end: a scripted
-//! model requests a gated tool call, the operator reviews and decides through
-//! the service, and the identical call in a later turn consumes the approval.
+//! Approval commands of the desktop service (ADR-0046, ADR-0063) end to end:
+//! a scripted model requests a gated tool call, the turn waits while the
+//! operator reviews and decides through the service, and the same call then
+//! completes in the same turn.
 
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use omgcode_app::desktop::{
-    ApprovalOperationDto, ApprovalStateDto, ApprovalView, Binding, ChatState, DesktopService,
+    ApprovalOperationDto, ApprovalStateDto, ApprovalView, Binding, ChatState, ChatStatus,
+    DesktopService,
 };
 use omgcode_core::control::{ApprovalDeclaration, ApprovalOperation, ControlStore, now_unix};
-use omgcode_core::policy::WorkspaceId;
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -22,6 +24,9 @@ use common::{
 const EDIT_TOOL: &str = "workspace_edit_file";
 const COMMAND_TOOL: &str = "workspace_run_command";
 const FILE_AUDIT_NAME: &str = "file-operations-v1.jsonl";
+const ACTION_JOURNAL_NAME: &str = "model-actions-v1.jsonl";
+/// How long a test waits for a turn to record its approval.
+const PENDING_DEADLINE: Duration = Duration::from_secs(20);
 
 struct Setup {
     fixture: Fixture,
@@ -31,9 +36,13 @@ struct Setup {
 }
 
 fn setup(steps: Vec<Step>) -> Setup {
+    setup_with(all_tools(), steps)
+}
+
+fn setup_with(permissions: PermissionSet, steps: Vec<Step>) -> Setup {
     let fixture = Fixture::new();
     fixture.declare_profile();
-    let workspace = fixture.workspace("project", all_tools());
+    let workspace = fixture.workspace("project", permissions);
     let server = MockServer::start(steps);
     let service = fixture.service(&server.endpoint);
     Setup {
@@ -62,8 +71,8 @@ impl Setup {
             .session_id
     }
 
-    /// Send one message and wait for the turn to complete.
-    fn turn(&self, session: Uuid, message: &str) {
+    /// Send one message without waiting for the turn.
+    fn start(&self, session: Uuid, message: &str) {
         self.service
             .chat_send(wire(json!({
                 "session_id": session,
@@ -72,8 +81,48 @@ impl Setup {
                 "skills": [],
             })))
             .expect("send");
+    }
+
+    /// Send one message and wait for the turn to complete.
+    fn turn(&self, session: Uuid, message: &str) {
+        self.start(session, message);
+        self.finish(session);
+    }
+
+    /// Wait for the session's turn to end and require it to have completed.
+    fn finish(&self, session: Uuid) -> ChatStatus {
         let done = wait_finished(&self.service, session);
         assert_eq!(done.state, ChatState::Completed, "{:?}", done.error);
+        done
+    }
+
+    /// Wait until the session's running turn has recorded a pending approval
+    /// and is waiting on it, and return its ID.
+    fn await_pending(&self, session: Uuid) -> Uuid {
+        let deadline = Instant::now() + PENDING_DEADLINE;
+        loop {
+            if let Some(view) = self
+                .pending()
+                .into_iter()
+                .find(|view| view.session_id == session)
+            {
+                return view.id;
+            }
+            if Instant::now() >= deadline {
+                let status = self
+                    .service
+                    .chat_status(wire(json!({"session_id": session})))
+                    .expect("status");
+                panic!("no approval was recorded; turn {status:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Deny `id` and let its waiting turn complete.
+    fn deny_and_finish(&self, id: Uuid, session: Uuid) {
+        self.decide(id, "deny", false, None).expect("deny");
+        self.finish(session);
     }
 
     fn list(&self) -> Vec<ApprovalView> {
@@ -121,14 +170,24 @@ impl Setup {
             .map(|text| text.lines().count())
             .unwrap_or(0)
     }
+
+    /// The event of every model action journal record, parsed.
+    fn actions(&self) -> Vec<Value> {
+        fs::read_to_string(self.fixture.data.join(ACTION_JOURNAL_NAME))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let record: Value = serde_json::from_str(line).expect("an action record");
+                record["event"].clone()
+            })
+            .collect()
+    }
 }
 
 #[test]
-fn an_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+fn an_edit_approval_is_reviewed_approved_and_applied_in_the_same_turn() {
     let setup = setup(vec![
         Step::reply(tool_call("edit-1", EDIT_TOOL, &edit_args("notes.txt"))),
-        Step::reply(text("waiting for approval")),
-        Step::reply(tool_call("edit-2", EDIT_TOOL, &edit_args("notes.txt"))),
         Step::reply(text("applied")),
     ]);
     let notes = setup.workspace.path.join("notes.txt");
@@ -138,7 +197,8 @@ fn an_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
     let mut responses = Vec::new();
 
     assert_eq!(service.approvals_summary().expect("summary").pending, 0);
-    setup.turn(session, "fix the typo");
+    setup.start(session, "fix the typo");
+    let id = setup.await_pending(session);
     let summary = service.approvals_summary().expect("summary");
     assert_eq!(summary.pending, 1);
     responses.push(text_of(&summary));
@@ -148,6 +208,7 @@ fn an_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
     responses.push(text_of(&listed));
     assert_eq!(listed.approvals.len(), 1);
     let approval = &listed.approvals[0];
+    assert_eq!(approval.id, id);
     assert_eq!(approval.session_id, session);
     assert_eq!(approval.session_title.as_deref(), Some("Edits"));
     assert!(
@@ -161,12 +222,13 @@ fn an_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
     assert!(!approval.writers_stopped);
     assert_eq!(approval.request_sha256.len(), 64);
     assert!(listed.now_unix <= approval.expires_unix);
-    let id = approval.id;
 
-    // Review: exact, with the edit's fields and a token. Nothing is changed.
+    // Review while the turn waits: exact, with the edit's fields and a token,
+    // read from the call the waiting turn published. Nothing is changed.
     let detail = setup.detail(id);
     responses.push(text_of(&detail));
     assert_eq!(detail.binding, Binding::Exact);
+    assert!(detail.waiting, "the turn waits on this approval");
     assert_eq!(detail.tool.as_deref(), Some(EDIT_TOOL));
     let field = |label: &str| {
         detail
@@ -206,32 +268,119 @@ fn an_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
     assert_eq!(approved.state, ApprovalStateDto::Approved);
     assert!(approved.writers_stopped);
     assert_eq!(service.approvals_summary().expect("summary").pending, 0);
-    assert_eq!(fs::read_to_string(&notes).expect("read"), "alpha bcc\n");
 
-    // The model repeats the identical call; core consumes the approval and applies.
-    setup.turn(session, "try again");
+    // The waiting turn consumes the approval, applies, and completes: the
+    // model was asked twice, never to repeat the call.
+    setup.finish(session);
     assert_eq!(fs::read_to_string(&notes).expect("read"), "alpha bc\n");
     assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
     responses.push(text_of(&setup.list()));
 
+    // The action journal records the edit as authorised by this approval.
+    let actions = setup.actions();
+    let started = actions
+        .iter()
+        .find(|record| record["type"] == "action_started")
+        .expect("a start record");
+    assert_eq!(started["payload"]["tool"], "edit_file");
+    assert_eq!(
+        started["payload"]["authorization"]["payload"]["approval_id"],
+        json!(id)
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|record| record["type"] == "action_finished"
+                && record["payload"]["outcome"] == "succeeded"),
+        "{actions:?}"
+    );
+
     assert_no_leaks(&setup.fixture, &responses);
-    assert_eq!(setup.server.finish(), 4);
+    assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
-fn a_command_approval_is_consumed_by_the_identical_call() {
+fn an_allowed_create_runs_without_an_approval_and_is_journaled() {
+    let permissions = PermissionSet {
+        write: Access::Allow,
+        ..all_tools()
+    };
+    let setup = setup_with(
+        permissions,
+        vec![
+            Step::reply(tool_call("create-1", CREATE_TOOL, &create_args("new.txt"))),
+            Step::reply(text("created")),
+        ],
+    );
+    let session = setup.session("Allowed");
+    setup.turn(session, "add a file");
+    assert_eq!(
+        fs::read_to_string(setup.workspace.path.join("new.txt")).expect("created"),
+        "hello\nworld\n"
+    );
+    assert!(setup.list().is_empty(), "no approval was recorded");
+    let actions = setup.actions();
+    let started = actions
+        .iter()
+        .find(|record| record["type"] == "action_started")
+        .expect("a start record");
+    assert_eq!(started["payload"]["tool"], "create_file");
+    assert_eq!(
+        started["payload"]["authorization"]["type"],
+        "standing_allow"
+    );
+    assert_eq!(setup.server.finish(), 2);
+}
+
+#[test]
+fn a_denied_tool_limit_refuses_the_call_and_journals_the_refusal() {
+    let mut permissions = PermissionSet {
+        write: Access::Allow,
+        ..all_tools()
+    };
+    permissions
+        .write_tools
+        .set(omgcode_core::policy::WriteTool::Create, Access::Deny);
+    let setup = setup_with(
+        permissions,
+        vec![Step::reply(tool_call(
+            "create-1",
+            CREATE_TOOL,
+            &create_args("new.txt"),
+        ))],
+    );
+    let session = setup.session("Limited");
+    setup.start(session, "add a file");
+    // The create tool was not offered, so the call fails closed and ends the
+    // turn; nothing is created and no approval is recorded.
+    let done = wait_finished(&setup.service, session);
+    assert_eq!(done.state, ChatState::Failed);
+    assert_eq!(done.error.expect("an error").code(), "permission");
+    assert!(!setup.workspace.path.join("new.txt").exists());
+    assert!(setup.list().is_empty());
+    assert!(
+        setup
+            .actions()
+            .iter()
+            .any(|record| record["type"] == "action_refused"),
+        "{:?}",
+        setup.actions()
+    );
+    assert_eq!(setup.server.finish(), 1);
+}
+
+#[test]
+fn a_command_approval_is_decided_while_the_turn_waits() {
     let setup = setup(vec![
         Step::reply(tool_call("cmd-1", COMMAND_TOOL, &command_args())),
-        Step::reply(text("waiting")),
-        Step::reply(tool_call("cmd-2", COMMAND_TOOL, &command_args())),
         Step::reply(text("ran")),
     ]);
     let session = setup.session("Commands");
-    setup.turn(session, "say hello");
+    setup.start(session, "say hello");
+    let id = setup.await_pending(session);
     let pending = setup.pending();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].operation, ApprovalOperationDto::Command);
-    let id = pending[0].id;
 
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Exact);
@@ -255,41 +404,35 @@ fn a_command_approval_is_consumed_by_the_identical_call() {
     assert_eq!(approved.state, ApprovalStateDto::Approved);
     assert!(!approved.writers_stopped);
 
-    setup.turn(session, "again");
+    setup.finish(session);
     assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
-    assert_eq!(setup.server.finish(), 4);
+    assert_eq!(setup.server.finish(), 2);
 }
 
-/// Two sessions, each with one pending edit approval on its own file.
-fn two_pending() -> (Setup, Uuid, Uuid) {
+/// Two sessions, each with a turn waiting on one pending edit approval for
+/// its own file. Each turn needs one more model reply once it is decided.
+fn two_pending() -> (Setup, [(Uuid, Uuid); 2]) {
     let setup = setup(vec![
         Step::reply(tool_call("edit-a", EDIT_TOOL, &edit_args("a.txt"))),
-        Step::reply(text("a asked")),
         Step::reply(tool_call("edit-b", EDIT_TOOL, &edit_args("b.txt"))),
-        Step::reply(text("b asked")),
+        Step::reply(text("done")),
+        Step::reply(text("done")),
     ]);
     fs::write(setup.workspace.path.join("a.txt"), "abcc\n").expect("a");
     fs::write(setup.workspace.path.join("b.txt"), "bbcc\n").expect("b");
     let first = setup.session("First");
-    setup.turn(first, "edit a");
+    setup.start(first, "edit a");
+    let a = setup.await_pending(first);
     let second = setup.session("Second");
-    setup.turn(second, "edit b");
-    let pending = setup.pending();
-    assert_eq!(pending.len(), 2);
-    let id_for = |session: Uuid| {
-        pending
-            .iter()
-            .find(|view| view.session_id == session)
-            .expect("approval for session")
-            .id
-    };
-    let (a, b) = (id_for(first), id_for(second));
-    (setup, a, b)
+    setup.start(second, "edit b");
+    let b = setup.await_pending(second);
+    assert_eq!(setup.pending().len(), 2);
+    (setup, [(a, first), (b, second)])
 }
 
 #[test]
 fn approve_needs_a_matching_unused_unexpired_review_token() {
-    let (setup, a, b) = two_pending();
+    let (setup, [(a, first), (b, second)]) = two_pending();
 
     // No token at all.
     let none = setup
@@ -329,13 +472,27 @@ fn approve_needs_a_matching_unused_unexpired_review_token() {
         .decide(b, "approve", true, Some(&token_b))
         .expect_err("b's token was removed by the failed attempt");
     assert_eq!(burnt_b.code(), "review_expired");
+
+    setup.finish(first);
+    assert_eq!(
+        fs::read_to_string(setup.workspace.path.join("a.txt")).expect("a"),
+        "abc\n"
+    );
+    setup.deny_and_finish(b, second);
+    assert_eq!(setup.server.finish(), 4);
 }
 
 #[test]
-fn deny_needs_no_token_and_a_second_decision_is_not_pending() {
-    let (setup, a, b) = two_pending();
+fn deny_needs_no_token_ends_the_wait_and_a_second_decision_is_not_pending() {
+    let (setup, [(a, first), (b, second)]) = two_pending();
     let denied = setup.decide(a, "deny", false, None).expect("deny");
     assert_eq!(denied.state, ApprovalStateDto::Denied);
+    // The denied call ends without a change, and the turn completes.
+    setup.finish(first);
+    assert_eq!(
+        fs::read_to_string(setup.workspace.path.join("a.txt")).expect("a"),
+        "abcc\n"
+    );
 
     for decision in ["deny", "approve"] {
         let twice = setup
@@ -356,12 +513,14 @@ fn deny_needs_no_token_and_a_second_decision_is_not_pending() {
         setup.service.approvals_summary().expect("summary").pending,
         1
     );
+    setup.deny_and_finish(b, second);
+    assert_eq!(setup.server.finish(), 4);
 }
 
 #[test]
 fn reviewing_a_non_pending_approval_reads_nothing_and_returns_stale_without_a_token() {
-    let (setup, a, b) = two_pending();
-    setup.decide(a, "deny", false, None).expect("deny");
+    let (setup, [(a, first), (b, second)]) = two_pending();
+    setup.deny_and_finish(a, first);
 
     let before = setup.audit_lines();
     let detail = setup.detail(a);
@@ -385,11 +544,13 @@ fn reviewing_a_non_pending_approval_reads_nothing_and_returns_stale_without_a_to
         .approval_detail(wire(json!({"id": Uuid::new_v4()})))
         .expect_err("unknown approval");
     assert_eq!(unknown.code(), "not_found");
+    setup.deny_and_finish(b, second);
+    assert_eq!(setup.server.finish(), 4);
 }
 
 #[test]
 fn a_changed_target_makes_the_review_stale_and_blocks_approval() {
-    let (setup, a, _) = two_pending();
+    let (setup, [(a, first), (b, second)]) = two_pending();
     fs::write(setup.workspace.path.join("a.txt"), "completely different\n").expect("change a");
     let detail = setup.detail(a);
     assert_eq!(detail.binding, Binding::Stale);
@@ -399,31 +560,44 @@ fn a_changed_target_makes_the_review_stale_and_blocks_approval() {
         .decide(a, "approve", true, None)
         .expect_err("a stale review has no token");
     assert_eq!(refused.code(), "review_expired");
+    setup.deny_and_finish(a, first);
+    setup.deny_and_finish(b, second);
+    assert_eq!(setup.server.finish(), 4);
 }
 
 #[test]
-fn a_turn_running_for_the_session_makes_the_review_busy() {
+fn a_turn_running_for_another_reason_makes_the_review_busy() {
     let (release, hold) = common::gate();
     let (announce, arrived) = std::sync::mpsc::channel();
     let setup = setup(vec![
         Step::reply(tool_call("edit-a", EDIT_TOOL, &edit_args("a.txt"))),
-        Step::reply(text("asked")),
         Step::gated(text("later"), hold).announcing(announce),
     ]);
     fs::write(setup.workspace.path.join("a.txt"), "abcc\n").expect("a");
     let session = setup.session("Busy review");
-    setup.turn(session, "edit");
-    let id = setup.pending()[0].id;
+    setup.start(session, "edit");
+    let id = setup.await_pending(session);
 
+    // Cancelling interrupts the wait; the record stays pending, undecided.
     setup
         .service
-        .chat_send(wire(json!({
-            "session_id": session,
-            "message": "again",
-            "settings": settings_json(&setup.server.endpoint),
-            "skills": [],
-        })))
-        .expect("send");
+        .chat_cancel(wire(json!({"session_id": session})))
+        .expect("cancel");
+    let cancelled = wait_finished(&setup.service, session);
+    assert_eq!(cancelled.state, ChatState::Failed);
+    assert_eq!(cancelled.error.expect("an error").code(), "cancelled");
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+
+    // With no turn running, the review reads the journal. The request is
+    // still exact, but no turn waits on it, so approving would only allow a
+    // later identical call.
+    let idle = setup.detail(id);
+    assert_eq!(idle.binding, Binding::Exact);
+    assert!(!idle.waiting);
+
+    // A later turn of the session holds the journal without waiting on this
+    // record, so the review cannot read the request.
+    setup.start(session, "again");
     common::wait_arrived(&arrived);
     let busy = setup
         .service
@@ -431,7 +605,8 @@ fn a_turn_running_for_the_session_makes_the_review_busy() {
         .expect_err("the journal belongs to the running turn");
     assert_eq!(busy.code(), "busy");
     release.send(()).expect("release");
-    wait_finished(&setup.service, session);
+    setup.finish(session);
+    assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
@@ -608,16 +783,10 @@ fn field_value<'a>(detail: &'a omgcode_app::desktop::ApprovalDetail, label: &str
 }
 
 #[test]
-fn a_multi_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+fn a_multi_edit_approval_is_reviewed_approved_and_applied_in_the_same_turn() {
     let setup = setup(vec![
         Step::reply(tool_call(
             "multi-1",
-            MULTI_EDIT_TOOL,
-            &multi_edit_args("notes.txt"),
-        )),
-        Step::reply(text("waiting for approval")),
-        Step::reply(tool_call(
-            "multi-2",
             MULTI_EDIT_TOOL,
             &multi_edit_args("notes.txt"),
         )),
@@ -626,12 +795,12 @@ fn a_multi_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call
     let notes = setup.workspace.path.join("notes.txt");
     fs::write(&notes, "alpha beta gamma\n").expect("workspace file");
     let session = setup.session("Multi");
-    setup.turn(session, "change two things");
+    setup.start(session, "change two things");
+    let id = setup.await_pending(session);
 
     let pending = setup.pending();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].operation, ApprovalOperationDto::FileWrite);
-    let id = pending[0].id;
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Exact);
     assert_eq!(detail.tool.as_deref(), Some(MULTI_EDIT_TOOL));
@@ -649,10 +818,10 @@ fn a_multi_edit_approval_is_reviewed_approved_and_consumed_by_the_identical_call
         .decide(id, "approve", true, Some(&token))
         .expect("approve");
 
-    setup.turn(session, "try again");
+    setup.finish(session);
     assert_eq!(fs::read_to_string(&notes).expect("read"), "A beta G\n");
     assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
-    assert_eq!(setup.server.finish(), 4);
+    assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
@@ -663,12 +832,12 @@ fn a_changed_multi_edit_target_makes_the_review_stale() {
             MULTI_EDIT_TOOL,
             &multi_edit_args("notes.txt"),
         )),
-        Step::reply(text("waiting for approval")),
+        Step::reply(text("stopped")),
     ]);
     fs::write(setup.workspace.path.join("notes.txt"), "alpha beta gamma\n").expect("file");
     let session = setup.session("Multi");
-    setup.turn(session, "change two things");
-    let id = setup.pending()[0].id;
+    setup.start(session, "change two things");
+    let id = setup.await_pending(session);
     assert_eq!(setup.detail(id).binding, Binding::Exact);
     fs::write(
         setup.workspace.path.join("notes.txt"),
@@ -685,24 +854,22 @@ fn a_changed_multi_edit_target_makes_the_review_stale() {
             .code(),
         "review_expired"
     );
+    setup.deny_and_finish(id, session);
     assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
-fn a_create_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+fn a_create_approval_is_reviewed_approved_and_applied_in_the_same_turn() {
     let setup = setup(vec![
         Step::reply(tool_call("create-1", CREATE_TOOL, &create_args("new.txt"))),
-        Step::reply(text("waiting for approval")),
-        Step::reply(tool_call("create-2", CREATE_TOOL, &create_args("new.txt"))),
         Step::reply(text("created")),
     ]);
     let created = setup.workspace.path.join("new.txt");
     let session = setup.session("Create");
-    setup.turn(session, "add a file");
+    setup.start(session, "add a file");
+    let id = setup.await_pending(session);
 
-    let pending = setup.pending();
-    assert_eq!(pending.len(), 1);
-    let id = pending[0].id;
+    assert_eq!(setup.pending().len(), 1);
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Exact);
     assert_eq!(detail.tool.as_deref(), Some(CREATE_TOOL));
@@ -715,29 +882,30 @@ fn a_create_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
         .decide(id, "approve", true, Some(&token))
         .expect("approve");
 
-    setup.turn(session, "try again");
+    setup.finish(session);
     assert_eq!(
         fs::read_to_string(&created).expect("read"),
         "hello\nworld\n"
     );
     assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
-    assert_eq!(setup.server.finish(), 4);
+    assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
 fn a_create_review_becomes_stale_once_the_file_exists() {
     let setup = setup(vec![
         Step::reply(tool_call("create-1", CREATE_TOOL, &create_args("new.txt"))),
-        Step::reply(text("waiting for approval")),
+        Step::reply(text("stopped")),
     ]);
     let session = setup.session("Create");
-    setup.turn(session, "add a file");
-    let id = setup.pending()[0].id;
+    setup.start(session, "add a file");
+    let id = setup.await_pending(session);
     assert_eq!(setup.detail(id).binding, Binding::Exact);
     fs::write(setup.workspace.path.join("new.txt"), "someone else").expect("other writer");
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Stale);
     assert_eq!(detail.review_token, None);
+    setup.deny_and_finish(id, session);
     assert_eq!(setup.server.finish(), 2);
 }
 
@@ -745,23 +913,21 @@ const RENAME_TOOL: &str = "workspace_rename_file";
 const DELETE_TOOL: &str = "workspace_delete_file";
 
 #[test]
-fn a_rename_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+fn a_rename_approval_is_reviewed_approved_and_applied_in_the_same_turn() {
     let args = json!({"from": "a.txt", "to": "b.txt"});
     let setup = setup(vec![
         Step::reply(tool_call("rename-1", RENAME_TOOL, &args)),
-        Step::reply(text("waiting for approval")),
-        Step::reply(tool_call("rename-2", RENAME_TOOL, &args)),
         Step::reply(text("renamed")),
     ]);
     let source = setup.workspace.path.join("a.txt");
     fs::write(&source, "alpha\n").expect("workspace file");
     let session = setup.session("Rename");
-    setup.turn(session, "rename a file");
+    setup.start(session, "rename a file");
+    let id = setup.await_pending(session);
 
     let pending = setup.pending();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].operation, ApprovalOperationDto::FileWrite);
-    let id = pending[0].id;
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Exact);
     assert_eq!(detail.tool.as_deref(), Some(RENAME_TOOL));
@@ -774,14 +940,14 @@ fn a_rename_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
         .decide(id, "approve", true, Some(&token))
         .expect("approve");
 
-    setup.turn(session, "try again");
+    setup.finish(session);
     assert!(!source.exists());
     assert_eq!(
         fs::read_to_string(setup.workspace.path.join("b.txt")).expect("read"),
         "alpha\n"
     );
     assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
-    assert_eq!(setup.server.finish(), 4);
+    assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
@@ -789,37 +955,35 @@ fn a_rename_review_becomes_stale_once_the_destination_exists() {
     let args = json!({"from": "a.txt", "to": "b.txt"});
     let setup = setup(vec![
         Step::reply(tool_call("rename-1", RENAME_TOOL, &args)),
-        Step::reply(text("waiting for approval")),
+        Step::reply(text("stopped")),
     ]);
     fs::write(setup.workspace.path.join("a.txt"), "alpha\n").expect("file");
     let session = setup.session("Rename");
-    setup.turn(session, "rename a file");
-    let id = setup.pending()[0].id;
+    setup.start(session, "rename a file");
+    let id = setup.await_pending(session);
     assert_eq!(setup.detail(id).binding, Binding::Exact);
     fs::write(setup.workspace.path.join("b.txt"), "someone else").expect("other writer");
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Stale);
     assert_eq!(detail.review_token, None);
+    setup.deny_and_finish(id, session);
     assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
-fn a_delete_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
+fn a_delete_approval_is_reviewed_approved_and_applied_in_the_same_turn() {
     let args = json!({"path": "old.txt"});
     let setup = setup(vec![
         Step::reply(tool_call("delete-1", DELETE_TOOL, &args)),
-        Step::reply(text("waiting for approval")),
-        Step::reply(tool_call("delete-2", DELETE_TOOL, &args)),
         Step::reply(text("deleted")),
     ]);
     let target = setup.workspace.path.join("old.txt");
     fs::write(&target, "alpha\n").expect("workspace file");
     let session = setup.session("Delete");
-    setup.turn(session, "delete a file");
+    setup.start(session, "delete a file");
+    let id = setup.await_pending(session);
 
-    let pending = setup.pending();
-    assert_eq!(pending.len(), 1);
-    let id = pending[0].id;
+    assert_eq!(setup.pending().len(), 1);
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Exact);
     assert_eq!(detail.tool.as_deref(), Some(DELETE_TOOL));
@@ -831,10 +995,10 @@ fn a_delete_approval_is_reviewed_approved_and_consumed_by_the_identical_call() {
         .decide(id, "approve", true, Some(&token))
         .expect("approve");
 
-    setup.turn(session, "try again");
+    setup.finish(session);
     assert!(!target.exists());
     assert_eq!(setup.state_of(id), ApprovalStateDto::Consumed);
-    assert_eq!(setup.server.finish(), 4);
+    assert_eq!(setup.server.finish(), 2);
 }
 
 #[test]
@@ -842,16 +1006,17 @@ fn a_delete_review_becomes_stale_once_the_file_changes() {
     let args = json!({"path": "old.txt"});
     let setup = setup(vec![
         Step::reply(tool_call("delete-1", DELETE_TOOL, &args)),
-        Step::reply(text("waiting for approval")),
+        Step::reply(text("stopped")),
     ]);
     fs::write(setup.workspace.path.join("old.txt"), "alpha\n").expect("file");
     let session = setup.session("Delete");
-    setup.turn(session, "delete a file");
-    let id = setup.pending()[0].id;
+    setup.start(session, "delete a file");
+    let id = setup.await_pending(session);
     assert_eq!(setup.detail(id).binding, Binding::Exact);
     fs::write(setup.workspace.path.join("old.txt"), "alpha changed\n").expect("change");
     let detail = setup.detail(id);
     assert_eq!(detail.binding, Binding::Stale);
     assert_eq!(detail.review_token, None);
+    setup.deny_and_finish(id, session);
     assert_eq!(setup.server.finish(), 2);
 }

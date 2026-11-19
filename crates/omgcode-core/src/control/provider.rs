@@ -7,7 +7,7 @@
 //!
 //! An `lm_studio` or `ollama_local` profile may record the endpoint the local
 //! adapter uses. Both servers speak the same OpenAI-compatible Chat
-//! Completions API, so one adapter and one rule serve both (ADR-0063). The
+//! Completions API, so one adapter and one rule serve both (ADR-0064). The
 //! text must pass the rule the local adapter applies to every request
 //! (`provider::validate_base_url`), is stored exactly as validated, and is
 //! fixed for the life of the profile: no operation changes it, so a bound
@@ -19,7 +19,7 @@
 //!
 //! The store also records which local profile is the *active* connection: the
 //! one a desktop process started without a connection argument uses for each
-//! turn (ADR-0059 decision 7, ADR-0063). Only a local profile that records an
+//! turn (ADR-0059 decision 7, ADR-0064). Only a local profile that records an
 //! endpoint can be selected. Removing the selected profile clears the
 //! selection in the same event, so the selection never names a missing
 //! profile.
@@ -84,7 +84,7 @@ impl ProviderKind {
     }
 
     /// Whether the local OpenAI-compatible adapter serves this kind: LM Studio
-    /// and Ollama on this computer (ADR-0063).
+    /// and Ollama on this computer (ADR-0064).
     pub const fn is_local(self) -> bool {
         matches!(self, Self::LmStudio | Self::OllamaLocal)
     }
@@ -274,7 +274,7 @@ impl ControlStore {
         Ok(profile)
     }
 
-    /// The active local connection, if one is selected (ADR-0063). It always
+    /// The active local connection, if one is selected (ADR-0064). It always
     /// names a recorded local profile with an endpoint.
     pub fn active_provider_profile(&self) -> Option<&ProviderProfileStatus> {
         let id = self.snapshot.active_provider?;

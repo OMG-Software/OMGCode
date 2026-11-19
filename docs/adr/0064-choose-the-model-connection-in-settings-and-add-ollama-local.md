@@ -1,8 +1,8 @@
-# 0063: Choose the model connection in settings and add Ollama Local
+# 0064: Choose the model connection in settings and add Ollama Local
 
 - Status: Accepted
 - Date: 2026-11-19
-- Implemented: version 0.43.0 (the connection part of ADR-0059 phase S3)
+- Implemented: version 0.44.0 (the connection part of ADR-0059 phase S3)
 
 ## Context
 

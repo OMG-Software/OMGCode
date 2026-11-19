@@ -54,7 +54,7 @@ authorization. See
   and endpoint; a launch argument fixes it instead. The `settings` window may
   supply a loopback endpoint for a new local profile without a credential,
   and core validates it. Refuse a `main` request whose endpoint differs from
-  the one resolved for the turn (ADR-0063).
+  the one resolved for the turn (ADR-0064).
 - Show the trusted configuration view only in the `settings` window, which
   renders no transcript text, tool output, or skill description or body, and
   grant the configuration commands to that window only (ADR-0059). The

@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use uuid::{Uuid, Version};
 
+mod access;
+
+pub use access::{Access, AccessParseError, WriteTool, WriteToolAccess};
+
 const SESSION_BINDING_LIFETIME: Duration = Duration::from_secs(15 * 60);
 
 /// A non-nil version 4 identifier for a workspace.
@@ -75,38 +79,56 @@ fn is_valid_workspace_uuid(value: Uuid) -> bool {
     !value.is_nil() && value.get_version() == Some(Version::Random)
 }
 
-/// User-configured permission flags for the four supported operation classes,
-/// the model read/list tool preference, and the host-service preference.
+/// User-configured preferences for the four supported operation classes, the
+/// host-service preference, the model-tool preference, and per-tool limits on
+/// the model file-write tools.
 ///
-/// These flags are policy inputs only. They do not mint execution grants.
-/// `model_tools` and `host_services` are omitted from persisted JSON while
-/// they are `false`, so settings written without them keep their exact bytes
-/// and older readers can still open them. Once enabled, older readers refuse
-/// the field.
+/// Each operation preference is [`Access::Deny`], [`Access::Prompt`], or
+/// [`Access::Allow`] (ADR-0063). They are policy inputs only and never mint
+/// execution grants. Trusted operator commands treat `Prompt` and `Allow`
+/// alike; the two differ only for model-initiated tool calls.
+///
+/// Persisted settings keep their earlier bytes: `false` is `Deny`, `true` is
+/// `Allow` for `read` and `Prompt` for every other preference, and only the
+/// remaining state is stored by name. `model_tools`, `host_services`, and
+/// `write_tools` are omitted while at their defaults, so older readers can
+/// still open such settings. Older readers refuse any named state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionSet {
-    /// Whether policy permits reading workspace data.
-    pub read: bool,
-    /// Whether policy permits writing workspace data.
-    pub write: bool,
-    /// Whether policy permits process execution.
-    pub execute: bool,
-    /// Whether policy permits task network access.
-    pub task_network: bool,
-    /// Whether chat may offer the model the read and list workspace tools.
+    /// How policy treats reading workspace data.
+    #[serde(with = "access::legacy_allow")]
+    pub read: Access,
+    /// How policy treats writing workspace data.
+    #[serde(with = "access::legacy_prompt")]
+    pub write: Access,
+    /// How policy treats process execution.
+    #[serde(with = "access::legacy_prompt")]
+    pub execute: Access,
+    /// How policy treats task network access. No model tool uses it yet.
+    #[serde(with = "access::legacy_prompt")]
+    pub task_network: Access,
+    /// Whether chat may offer the model workspace tools at all.
     ///
-    /// Each model call still needs the live `read` preference and a fresh
+    /// Each model call still needs the live operation preference and a fresh
     /// binding, and stays confined to the session workspace.
     #[serde(default, skip_serializing_if = "is_false")]
     pub model_tools: bool,
-    /// Whether a trusted `run` may select host-service Unix-socket access.
+    /// How policy treats a trusted `run` that selects host-service Unix-socket
+    /// access.
     ///
     /// Each run must also ask for it explicitly. Host-service access reaches
     /// every Unix socket the user can open, such as the Docker daemon, and is
     /// refused on Windows. It is never offered to a model.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub host_services: bool,
+    #[serde(
+        default = "deny",
+        skip_serializing_if = "is_deny",
+        with = "access::legacy_prompt"
+    )]
+    pub host_services: Access,
+    /// Per-tool limits that can only narrow `write` for model file tools.
+    #[serde(default, skip_serializing_if = "WriteToolAccess::is_unrestricted")]
+    pub write_tools: WriteToolAccess,
 }
 
 /// Keep a disabled optional preference out of persisted settings records.
@@ -115,29 +137,89 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Keep a denied optional preference out of persisted settings records.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes the field by reference.
+const fn is_deny(value: &Access) -> bool {
+    matches!(value, Access::Deny)
+}
+
+/// The default for an optional preference that was never recorded.
+const fn deny() -> Access {
+    Access::Deny
+}
+
 impl Default for PermissionSet {
-    /// Leave process execution, task networking, model tools, and host
-    /// services disabled until configured.
+    /// Allow reads and prompt for writes, as before three-state preferences.
+    /// Process execution, task networking, model tools, and host services stay
+    /// off until configured.
     fn default() -> Self {
         Self {
-            read: true,
-            write: true,
-            execute: false,
-            task_network: false,
+            read: Access::Allow,
+            write: Access::Prompt,
+            execute: Access::Deny,
+            task_network: Access::Deny,
             model_tools: false,
-            host_services: false,
+            host_services: Access::Deny,
+            write_tools: WriteToolAccess::default(),
         }
     }
 }
 
 impl PermissionSet {
-    /// Return whether the configured flag for `operation` is enabled.
-    pub const fn allows(self, operation: Operation) -> bool {
+    /// Return the configured state for `operation`.
+    pub const fn access(self, operation: Operation) -> Access {
         match operation {
             Operation::Read => self.read,
             Operation::Write => self.write,
             Operation::Execute => self.execute,
             Operation::TaskNetwork => self.task_network,
+        }
+    }
+
+    /// Return whether the configured state for `operation` permits it at all.
+    pub const fn allows(self, operation: Operation) -> bool {
+        self.access(operation).permits()
+    }
+
+    /// The effective state of the model read and list tools.
+    ///
+    /// `Deny` unless `model_tools` is enabled; otherwise the `read` state.
+    pub const fn model_read(self) -> Access {
+        if self.model_tools {
+            self.read
+        } else {
+            Access::Deny
+        }
+    }
+
+    /// The effective state of one model file-write tool.
+    ///
+    /// `Deny` unless `model_tools` is enabled and `read` permits the live read
+    /// that every write tool performs first. Otherwise the more restrictive of
+    /// `write` and the tool's own limit. A `Prompt` read preference does not
+    /// add a prompt here: the write tool's internal read returns no file text
+    /// to the model.
+    pub const fn model_write(self, tool: WriteTool) -> Access {
+        if self.model_tools && self.read.permits() {
+            self.write.most_restrictive(self.write_tools.get(tool))
+        } else {
+            Access::Deny
+        }
+    }
+
+    /// The effective state of the model command tool.
+    ///
+    /// A command can read and change the workspace, so it is the most
+    /// restrictive of `execute`, `read`, and `write`, and `Deny` unless
+    /// `model_tools` is enabled. Per-tool write limits do not reach it: a
+    /// permitted command can still create, change, or delete files.
+    pub const fn model_command(self) -> Access {
+        if self.model_tools {
+            self.execute
+                .most_restrictive(self.read)
+                .most_restrictive(self.write)
+        } else {
+            Access::Deny
         }
     }
 }
@@ -369,10 +451,12 @@ mod tests {
     fn default_permissions_enable_only_read_and_write() {
         let permissions = PermissionSet::default();
 
-        assert!(permissions.read);
-        assert!(permissions.write);
-        assert!(!permissions.execute);
-        assert!(!permissions.task_network);
+        assert_eq!(permissions.read, Access::Allow);
+        assert_eq!(permissions.write, Access::Prompt);
+        assert_eq!(permissions.execute, Access::Deny);
+        assert_eq!(permissions.task_network, Access::Deny);
+        assert_eq!(permissions.host_services, Access::Deny);
+        assert!(permissions.write_tools.is_unrestricted());
         assert!(permissions.allows(Operation::Read));
         assert!(permissions.allows(Operation::Write));
         assert!(!permissions.allows(Operation::Execute));
@@ -387,48 +471,52 @@ mod tests {
                 Operation::Read,
                 false,
                 PermissionSet {
-                    read: false,
-                    write: true,
-                    execute: false,
-                    task_network: false,
+                    read: Access::Deny,
+                    write: Access::Prompt,
+                    execute: Access::Deny,
+                    task_network: Access::Deny,
                     model_tools: false,
-                    host_services: false,
+                    host_services: Access::Deny,
+                    write_tools: WriteToolAccess::default(),
                 },
             ),
             (
                 Operation::Write,
                 false,
                 PermissionSet {
-                    read: true,
-                    write: false,
-                    execute: false,
-                    task_network: false,
+                    read: Access::Allow,
+                    write: Access::Deny,
+                    execute: Access::Deny,
+                    task_network: Access::Deny,
                     model_tools: false,
-                    host_services: false,
+                    host_services: Access::Deny,
+                    write_tools: WriteToolAccess::default(),
                 },
             ),
             (
                 Operation::Execute,
                 true,
                 PermissionSet {
-                    read: true,
-                    write: true,
-                    execute: true,
-                    task_network: false,
+                    read: Access::Allow,
+                    write: Access::Prompt,
+                    execute: Access::Prompt,
+                    task_network: Access::Deny,
                     model_tools: false,
-                    host_services: false,
+                    host_services: Access::Deny,
+                    write_tools: WriteToolAccess::default(),
                 },
             ),
             (
                 Operation::TaskNetwork,
                 true,
                 PermissionSet {
-                    read: true,
-                    write: true,
-                    execute: false,
-                    task_network: true,
+                    read: Access::Allow,
+                    write: Access::Prompt,
+                    execute: Access::Deny,
+                    task_network: Access::Prompt,
                     model_tools: false,
-                    host_services: false,
+                    host_services: Access::Deny,
+                    write_tools: WriteToolAccess::default(),
                 },
             ),
         ];
@@ -690,7 +778,7 @@ mod tests {
         let default = serde_json::to_value(PermissionSet::default()).expect("encode default");
         assert!(default.get("host_services").is_none());
         let enabled = PermissionSet {
-            host_services: true,
+            host_services: Access::Prompt,
             ..PermissionSet::default()
         };
         let encoded = serde_json::to_value(enabled).expect("encode enabled");
@@ -710,6 +798,144 @@ mod tests {
                 PermissionSet::default().allows(operation)
             );
         }
+    }
+
+    /// Each preference has exactly one stored form, and every form a boolean
+    /// could express keeps the bytes written before three-state preferences.
+    #[test]
+    fn every_state_round_trips_through_its_one_canonical_form() {
+        for read in Access::ALL {
+            for write in Access::ALL {
+                for host_services in Access::ALL {
+                    let set = PermissionSet {
+                        read,
+                        write,
+                        execute: write,
+                        task_network: write,
+                        host_services,
+                        ..PermissionSet::default()
+                    };
+                    let encoded = serde_json::to_value(set).expect("encode");
+                    let expected_read = match read {
+                        Access::Deny => json!(false),
+                        Access::Allow => json!(true),
+                        Access::Prompt => json!("prompt"),
+                    };
+                    let expected_write = match write {
+                        Access::Deny => json!(false),
+                        Access::Prompt => json!(true),
+                        Access::Allow => json!("allow"),
+                    };
+                    assert_eq!(encoded["read"], expected_read);
+                    assert_eq!(encoded["write"], expected_write);
+                    assert_eq!(encoded["execute"], expected_write);
+                    assert_eq!(encoded["task_network"], expected_write);
+                    assert_eq!(
+                        encoded.get("host_services").is_none(),
+                        host_services == Access::Deny
+                    );
+                    assert_eq!(
+                        serde_json::from_value::<PermissionSet>(encoded).expect("decode"),
+                        set
+                    );
+                }
+            }
+        }
+    }
+
+    /// A name that a boolean already expresses, or an unknown name, is refused
+    /// so no state has two stored forms.
+    #[test]
+    fn non_canonical_and_unknown_state_names_are_refused() {
+        let base = || json!({"read": true, "write": true, "execute": false, "task_network": false});
+        for (field, value) in [
+            ("read", "allow"),
+            ("read", "deny"),
+            ("write", "prompt"),
+            ("write", "deny"),
+            ("execute", "prompt"),
+            ("task_network", "deny"),
+            ("host_services", "prompt"),
+            ("host_services", "deny"),
+            ("write", "Allow"),
+            ("read", "ask"),
+        ] {
+            let mut stored = base();
+            stored[field] = json!(value);
+            assert!(
+                serde_json::from_value::<PermissionSet>(stored).is_err(),
+                "{field}: {value} must be refused"
+            );
+        }
+        for value in [json!(1), json!(null), json!(["allow"])] {
+            let mut stored = base();
+            stored["write"] = value;
+            assert!(serde_json::from_value::<PermissionSet>(stored).is_err());
+        }
+    }
+
+    /// Per-tool limits are absent until one is narrowed and refuse unknown tools.
+    #[test]
+    fn write_tool_limits_are_absent_until_narrowed() {
+        let mut set = PermissionSet::default();
+        assert!(
+            serde_json::to_value(set)
+                .expect("encode")
+                .get("write_tools")
+                .is_none()
+        );
+        set.write_tools.set(WriteTool::Delete, Access::Prompt);
+        let encoded = serde_json::to_value(set).expect("encode");
+        assert_eq!(encoded["write_tools"]["delete"], "prompt");
+        assert_eq!(encoded["write_tools"]["edit"], "allow");
+        assert_eq!(
+            serde_json::from_value::<PermissionSet>(encoded.clone()).expect("decode"),
+            set
+        );
+        let mut extra = encoded;
+        extra["write_tools"]["chmod"] = json!("allow");
+        assert!(serde_json::from_value::<PermissionSet>(extra).is_err());
+    }
+
+    /// Effective model states take the most restrictive preference and need
+    /// `model_tools`.
+    #[test]
+    fn model_states_take_the_most_restrictive_preference() {
+        let mut set = PermissionSet {
+            model_tools: true,
+            read: Access::Allow,
+            write: Access::Allow,
+            execute: Access::Allow,
+            ..PermissionSet::default()
+        };
+        assert_eq!(set.model_read(), Access::Allow);
+        assert_eq!(set.model_command(), Access::Allow);
+        for tool in WriteTool::ALL {
+            assert_eq!(set.model_write(tool), Access::Allow);
+        }
+        set.write_tools.set(WriteTool::Delete, Access::Prompt);
+        set.write_tools.set(WriteTool::Rename, Access::Deny);
+        assert_eq!(set.model_write(WriteTool::Delete), Access::Prompt);
+        assert_eq!(set.model_write(WriteTool::Rename), Access::Deny);
+        assert_eq!(set.model_write(WriteTool::Create), Access::Allow);
+        // A per-tool limit never widens `write`.
+        set.write = Access::Prompt;
+        assert_eq!(set.model_write(WriteTool::Create), Access::Prompt);
+        assert_eq!(set.model_command(), Access::Prompt);
+        // A prompted read still lets write tools read; a denied one does not.
+        set.read = Access::Prompt;
+        assert_eq!(set.model_read(), Access::Prompt);
+        assert_eq!(set.model_write(WriteTool::Edit), Access::Prompt);
+        assert_eq!(set.model_command(), Access::Prompt);
+        set.read = Access::Deny;
+        assert_eq!(set.model_write(WriteTool::Edit), Access::Deny);
+        assert_eq!(set.model_command(), Access::Deny);
+        // Without model tools nothing is offered.
+        set.read = Access::Allow;
+        set.model_tools = false;
+        assert_eq!(set.model_read(), Access::Deny);
+        assert_eq!(set.model_write(WriteTool::Edit), Access::Deny);
+        assert_eq!(set.model_command(), Access::Deny);
     }
 
     /// Reject future or attacker-added permission fields instead of ignoring them.

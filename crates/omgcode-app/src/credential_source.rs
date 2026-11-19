@@ -11,14 +11,14 @@
 //!   is the `OMGCODE_LM_TOKEN` variable, through [`read_lm_token`].
 //! - [`ConnectionSource::Profile`] reads the endpoint recorded with a
 //!   recorded local provider profile (`lm_studio` or `ollama_local`,
-//!   ADR-0063) and the credential bound to it from protected OS storage. The
+//!   ADR-0064) and the credential bound to it from protected OS storage. The
 //!   environment variable is not read at all, and every failure ends the turn
 //!   with a `credential` error. There is no fallback to no token, to another
 //!   token, or to another endpoint. A profile that records no endpoint is
 //!   refused with `endpoint_not_recorded`. An `ollama_local` profile is always
 //!   `none`, so it never reads native storage.
 //! - [`ConnectionSource::Active`] is the desktop default when no connection
-//!   argument was given (ADR-0059 decision 7, ADR-0063). Each turn reads the
+//!   argument was given (ADR-0059 decision 7, ADR-0064). Each turn reads the
 //!   active connection recorded in the settings store. When one is selected it
 //!   is resolved exactly as [`ConnectionSource::Profile`], within the same
 //!   open store, so the selection and the profile it names are read together.
@@ -67,7 +67,7 @@ pub enum TokenSource {
     Profile(String),
     /// The active connection recorded in the settings store, read again for
     /// each turn, or the launch endpoint and `OMGCODE_LM_TOKEN` when none is
-    /// selected (ADR-0063).
+    /// selected (ADR-0064).
     Active,
 }
 
@@ -303,9 +303,10 @@ fn open_settings(data_root: &Path, name: &str) -> Result<ControlStore, AppError>
 }
 
 /// Open the existing settings store, or `None` when none exists. Another
-/// process holding it is refused at once (no retry here).
+/// holder is waited for briefly ([`ControlStore::open_existing_waiting`]), and
+/// refused if it still holds the store after that.
 fn open_settings_if_any(data_root: &Path) -> Result<Option<ControlStore>, AppError> {
-    match ControlStore::open_existing(data_root) {
+    match ControlStore::open_existing_waiting(data_root) {
         Ok(control) => Ok(control),
         Err(ControlError::Busy) => Err(credential_error(
             "the settings store is in use by another process; try again".to_owned(),
