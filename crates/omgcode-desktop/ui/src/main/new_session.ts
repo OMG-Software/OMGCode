@@ -10,18 +10,10 @@ export interface NewSessionDialog {
   show(): Promise<void>;
 }
 
+/** The workspace's preferences, such as `Model tools on. Read allow, write prompt, execute deny.` */
 function permissionText(choice: WorkspaceChoice): string {
-  const enabled = (
-    [
-      ["model tools", choice.model_tools],
-      ["read", choice.read],
-      ["write", choice.write],
-      ["execute", choice.execute],
-    ] as const
-  )
-    .filter(([, on]) => on)
-    .map(([name]) => name);
-  return enabled.length === 0 ? "No preferences enabled" : `Enabled: ${enabled.join(", ")}`;
+  const tools = choice.model_tools ? "Model tools on." : "Model tools off.";
+  return `${tools} Read ${choice.read}, write ${choice.write}, execute ${choice.execute}.`;
 }
 
 /**

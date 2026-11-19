@@ -2,11 +2,13 @@ import { button, type Child, el, replaceChildren } from "../dom";
 import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type {
+  Access,
   ConnectionView,
   PermissionFlags,
   SettingsOverview,
   SkillSettingView,
   WorkspaceSettingsView,
+  WriteToolAccess,
 } from "../ipc/types";
 
 export interface SettingsApp {
@@ -28,15 +30,39 @@ export const INTRO =
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";
 
-/** The preferences in the order they are shown, with their labels. */
-export const PERMISSION_LABELS: ReadonlyArray<[keyof PermissionFlags, string]> = [
-  ["model_tools", "model tools"],
+/** The three-state preferences, keyed by their wire names. */
+type AccessKey = Exclude<keyof PermissionFlags, "model_tools" | "write_tools">;
+
+/** The three-state preferences in the order they are shown, with their labels. */
+export const PERMISSION_LABELS: ReadonlyArray<[AccessKey, string]> = [
   ["read", "read"],
   ["write", "write"],
   ["execute", "execute"],
   ["task_network", "task network"],
   ["host_services", "host services"],
 ];
+
+/** The per-tool write limits in the order they are shown, with their labels. */
+export const WRITE_TOOL_LABELS: ReadonlyArray<[keyof WriteToolAccess, string]> = [
+  ["edit", "edit tool"],
+  ["multi_edit", "multi-edit tool"],
+  ["create", "create tool"],
+  ["rename", "rename tool"],
+  ["delete", "delete tool"],
+];
+
+/** The states in the order a selector offers them, with their labels. */
+export const ACCESS_LABELS: ReadonlyArray<[Access, string]> = [
+  ["deny", "Deny"],
+  ["prompt", "Prompt"],
+  ["allow", "Allow"],
+];
+
+/** What the selectors mean, shown on each workspace card. */
+export const ACCESS_HELP =
+  "Deny stops the action. Prompt asks you to approve each model call, and the turn waits for " +
+  "your decision. Allow lets model calls run without asking. A tool limit can only narrow " +
+  "write. Every model action is recorded in the action journal.";
 
 /** What one control asks the core to do, given the revision the window last read. */
 type Change = (revision: number) => Promise<SettingsOverview>;
@@ -79,23 +105,81 @@ function flagsOf(workspace: WorkspaceSettingsView): PermissionFlags {
     execute: workspace.execute,
     task_network: workspace.task_network,
     host_services: workspace.host_services,
+    write_tools: { ...workspace.write_tools },
   };
 }
 
-/** One preference as a checkbox. Changing it asks the core for the whole set with it flipped. */
-function permissionToggle(
+/** Ask the core for the workspace's whole preference set with one change applied. */
+function submitWith(
   workspace: WorkspaceSettingsView,
-  key: keyof PermissionFlags,
+  submit: (change: Change) => void,
+  change: (flags: PermissionFlags) => void,
+): void {
+  const wanted = flagsOf(workspace);
+  change(wanted);
+  submit((revision) => settingsApi.setPermissions(workspace.workspace_id, revision, wanted));
+}
+
+/** The model-tools preference as a checkbox. */
+function modelToolsToggle(
+  workspace: WorkspaceSettingsView,
+  submit: (change: Change) => void,
+): HTMLElement {
+  const box = el("input", { attrs: { type: "checkbox", "aria-label": "model tools" } });
+  box.checked = workspace.model_tools;
+  box.addEventListener("change", () => {
+    submitWith(workspace, submit, (flags) => {
+      flags.model_tools = box.checked;
+    });
+  });
+  return el("label", { class: box.checked ? "flag on" : "flag" }, box, " model tools");
+}
+
+/** One Deny, Prompt, or Allow selector. Only a state it offers is ever sent. */
+function accessSelect(
+  label: string,
+  current: Access,
+  choose: (state: Access) => void,
+): HTMLElement {
+  const select = el("select", { attrs: { "aria-label": label } });
+  for (const [state, text] of ACCESS_LABELS) {
+    const option = el("option", { text, attrs: { value: state } });
+    option.selected = state === current;
+    select.append(option);
+  }
+  select.addEventListener("change", () => {
+    const chosen = ACCESS_LABELS.find(([state]) => state === select.value);
+    if (chosen !== undefined) {
+      choose(chosen[0]);
+    }
+  });
+  return el("label", { class: `flag access-${current}` }, `${label} `, select);
+}
+
+function permissionSelect(
+  workspace: WorkspaceSettingsView,
+  key: AccessKey,
   label: string,
   submit: (change: Change) => void,
 ): HTMLElement {
-  const box = el("input", { attrs: { type: "checkbox", "aria-label": label } });
-  box.checked = workspace[key];
-  box.addEventListener("change", () => {
-    const wanted = { ...flagsOf(workspace), [key]: box.checked };
-    submit((revision) => settingsApi.setPermissions(workspace.workspace_id, revision, wanted));
+  return accessSelect(label, workspace[key], (state) => {
+    submitWith(workspace, submit, (flags) => {
+      flags[key] = state;
+    });
   });
-  return el("label", { class: box.checked ? "flag on" : "flag" }, box, ` ${label}`);
+}
+
+function toolSelect(
+  workspace: WorkspaceSettingsView,
+  key: keyof WriteToolAccess,
+  label: string,
+  submit: (change: Change) => void,
+): HTMLElement {
+  return accessSelect(label, workspace.write_tools[key], (state) => {
+    submitWith(workspace, submit, (flags) => {
+      flags.write_tools[key] = state;
+    });
+  });
 }
 
 function workspaceCard(
@@ -116,8 +200,15 @@ function workspaceCard(
     el(
       "div",
       { class: "flags" },
-      ...PERMISSION_LABELS.map(([key, label]) => permissionToggle(workspace, key, label, submit)),
+      modelToolsToggle(workspace, submit),
+      ...PERMISSION_LABELS.map(([key, label]) => permissionSelect(workspace, key, label, submit)),
     ),
+    el(
+      "div",
+      { class: "flags tools" },
+      ...WRITE_TOOL_LABELS.map(([key, label]) => toolSelect(workspace, key, label, submit)),
+    ),
+    el("p", { class: "muted", text: ACCESS_HELP }),
     facts([["Identifier", workspace.workspace_id]]),
     el(
       "div",
