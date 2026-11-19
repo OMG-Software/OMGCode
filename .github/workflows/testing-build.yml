@@ -297,19 +297,86 @@ jobs:
               fi
             fi
           fi
-          # Delete the previous release and its tag, then recreate both at
-          # this commit. With assets, gh creates a draft, uploads, and then
-          # publishes, so readers never see a mix of old and new archives.
-          if gh release view latest >/dev/null 2>&1; then
-            gh release delete latest --yes --cleanup-tag
-          fi
-          if gh api "repos/${GH_REPO}/git/ref/tags/latest" >/dev/null 2>&1; then
-            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/latest"
-          fi
-          gh release create latest \
+          # Stage the new release as a draft under a run-specific tag name
+          # while the published release keeps serving its archives. A draft
+          # creates no tag and only users with write access can see it. The
+          # prefix is reserved for these drafts.
+          staging_prefix=testing-build-staging-
+          staging_tag="${staging_prefix}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          staging_draft_ids() {
+            gh api --paginate "repos/${GH_REPO}/releases?per_page=100" \
+              --jq ".[] | select(.draft and (.tag_name | startswith(\"$1\"))) | .id"
+          }
+          # Remove drafts left by a run that stopped before its cleanup ran.
+          # Runs on main never overlap (see the concurrency group), so none
+          # of these belongs to a live run. Assign first: `set -e` ignores a
+          # failed substitution in a `for` list.
+          stale_ids=$(staging_draft_ids "$staging_prefix")
+          for stale_id in $stale_ids; do
+            gh api -X DELETE "repos/${GH_REPO}/releases/${stale_id}"
+          done
+          swapped=false
+          remove_unpublished_draft() {
+            [ "$swapped" = true ] && return 0
+            local ids
+            if ! ids=$(staging_draft_ids "$staging_tag"); then
+              echo "::warning::Could not list staging drafts; the next run removes ${staging_tag}."
+              return 0
+            fi
+            for id in $ids; do
+              gh api -X DELETE "repos/${GH_REPO}/releases/${id}" \
+                || echo "::warning::Could not delete staging draft ${id}; the next run removes it."
+            done
+          }
+          trap remove_unpublished_draft EXIT
+          gh release create "$staging_tag" \
+            --draft \
             --target "$GITHUB_SHA" \
             --prerelease \
             --latest=false \
             --title "Latest testing build (${short_sha})" \
             --notes-file notes.md \
             assets/omgcode-* assets/SHA256SUMS
+          draft_ids=$(staging_draft_ids "$staging_tag")
+          if [ "$(printf '%s\n' "$draft_ids" | grep -c .)" != 1 ]; then
+            echo "::error::Expected one staging draft named ${staging_tag}, found: ${draft_ids:-none}."
+            exit 1
+          fi
+          draft_id="$draft_ids"
+          # Publish only a draft that holds every archive, fully uploaded,
+          # at its local size.
+          expected=$(cd assets && stat -c '%n %s' -- omgcode-* SHA256SUMS | sort)
+          actual=$(gh api --paginate "repos/${GH_REPO}/releases/${draft_id}/assets?per_page=100" \
+            --jq '.[] | select(.state == "uploaded") | "\(.name) \(.size)"' | sort)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::The staging draft's assets do not match the built archives."
+            printf 'Expected:\n%s\nUploaded:\n%s\n' "$expected" "$actual"
+            exit 1
+          fi
+          # Swap: delete the previous release and its tag, then publish the
+          # draft as `latest`, which creates the tag at this commit. Downloads
+          # fail only between these few API calls, not for the whole upload.
+          # If a call fails, the trap deletes the draft and a re-run of this
+          # job stages it again from the same artifacts.
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --yes --cleanup-tag
+          fi
+          if gh api "repos/${GH_REPO}/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/latest"
+          fi
+          gh api -X PATCH "repos/${GH_REPO}/releases/${draft_id}" \
+            -f tag_name=latest \
+            -f target_commitish="$GITHUB_SHA" \
+            -F draft=false \
+            -F prerelease=true \
+            -f make_latest=false \
+            --silent
+          swapped=true
+          # Confirm what readers now see.
+          tagged=$(gh api "repos/${GH_REPO}/commits/refs/tags/latest" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::latest points to ${tagged}, expected ${GITHUB_SHA}."
+            exit 1
+          fi
+          gh release view latest --json tagName,isDraft,isPrerelease,assets \
+            --jq '"\(.tagName) draft=\(.isDraft) prerelease=\(.isPrerelease)", (.assets[] | "  \(.name) \(.size)")'

@@ -66,9 +66,10 @@ meaningful alternative does not need an ADR.
 | [0049: Stream local model replies and push chat events to the main window](0049-stream-local-model-replies-and-push-chat-events.md) | Accepted | 2026-11-16 |
 | [0050: Interrupt a streamed model request when a turn is cancelled](0050-interrupt-a-streamed-model-request-on-cancellation.md) | Accepted; amended by ADR-0051 | 2026-11-16 |
 | [0051: Cancel every model request and let an interrupt cancel a CLI turn](0051-cancel-every-model-request-and-interrupt-cli-turns.md) | Accepted | 2026-11-17 |
-| [0052: Publish rolling testing builds from main](0052-publish-rolling-testing-builds-from-main.md) | Accepted | 2026-11-17 |
+| [0052: Publish rolling testing builds from main](0052-publish-rolling-testing-builds-from-main.md) | Accepted; amended by ADR-0058 | 2026-11-17 |
 | [0053: Compact the checkpoint ledger in place](0053-compact-the-checkpoint-ledger-in-place.md) | Accepted | 2026-11-17 |
 | [0054: Add multi-edit and create model file tools](0054-add-multi-edit-and-create-model-file-tools.md) | Accepted | 2026-11-17 |
 | [0055: Add checkpointed delete and no-replace rename model tools](0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md) | Accepted | 2026-11-17 |
 | [0056: Send registry credentials to one declared origin](0056-send-registry-credentials-to-one-declared-origin.md) | Accepted | 2026-11-17 |
 | [0057: Import skills into a private registry and load them on explicit selection](0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md) | Accepted | 2026-11-18 |
+| [0058: Stage the latest release as a draft before the swap](0058-stage-the-latest-release-as-a-draft-before-the-swap.md) | Accepted | 2026-11-18 |
