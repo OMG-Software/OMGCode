@@ -20,7 +20,9 @@
 //!
 //! # Untrusted strings
 //!
-//! The call identifier, targets, and codes originate from the model. They are
+//! Targets that fail validation are never rejected or stored: the record holds
+//! only their SHA-256 and length (`withheld`), so hostile attempts stay auditable.
+//! The call identifier and codes originate from the model. They are
 //! validated and **rejected** with [`ActionJournalError::InvalidValue`] when
 //! they exceed their bounds or contain a control character or a Unicode
 //! line-separator, bidirectional-control, or invisible-format character. They
@@ -43,6 +45,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -68,8 +71,6 @@ pub const MAX_ARCHIVES: usize = 4;
 pub const MAX_RECENT_RECORDS: usize = 1000;
 /// Bytes held back per unfinished action so its finish record fits.
 const FINISH_RESERVE_BYTES: usize = 1024;
-/// Unfinished actions one writer tracks. More is refused, not dropped.
-const MAX_OPEN_ACTIONS: usize = 256;
 const MAX_CALL_ID_BYTES: usize = 128;
 const MAX_TARGET_BYTES: usize = 4096;
 const MAX_TARGETS: usize = 2;
@@ -168,6 +169,32 @@ pub enum RefusalReason {
     PolicyUnavailable,
     /// The turn was cancelled before the action started.
     Cancelled,
+}
+
+/// A target as stored: a validated path, or a digest of a value that failed
+/// validation. The journal never stores hostile or oversize text.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    content = "payload",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum StoredTarget {
+    /// A workspace-relative path that passed validation.
+    Path(String),
+    /// A value that failed validation, identified by digest and length.
+    Withheld(WithheldTarget),
+}
+
+/// Identity of a withheld target without its text.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WithheldTarget {
+    /// Lowercase SHA-256 of the raw UTF-8 bytes.
+    pub sha256: String,
+    /// Length of the raw value in bytes.
+    pub bytes: u64,
 }
 
 /// Arguments for [`ActionJournal::record_started`].
@@ -290,8 +317,8 @@ pub struct ActionRecord {
     pub call_id: String,
     /// The tool called.
     pub tool: ActionTool,
-    /// Validated workspace-relative paths.
-    pub targets: Vec<String>,
+    /// Validated workspace-relative paths, or digests of withheld values.
+    pub targets: Vec<StoredTarget>,
     /// Lowercase SHA-256 of the request, when recorded.
     pub request_sha256: Option<String>,
     /// Executed or refused.
@@ -332,7 +359,7 @@ struct StartedPayload {
     workspace_id: WorkspaceId,
     call_id: String,
     tool: ActionTool,
-    targets: Vec<String>,
+    targets: Vec<StoredTarget>,
     request_sha256: Option<String>,
     authorization: Authorization,
 }
@@ -354,7 +381,7 @@ struct RefusedPayload {
     workspace_id: WorkspaceId,
     call_id: String,
     tool: ActionTool,
-    targets: Vec<String>,
+    targets: Vec<StoredTarget>,
     request_sha256: Option<String>,
     reason: RefusalReason,
 }
@@ -397,8 +424,11 @@ pub struct ActionJournal {
     bytes: usize,
     /// First sequence of each retained archive, oldest first.
     archives: Vec<u64>,
-    /// Actions started by this writer and not yet finished.
-    open_actions: HashSet<Uuid>,
+    /// Unfinished starts in the active file. They are finishable.
+    active_open: HashSet<Uuid>,
+    /// Unfinished starts in the newest archive. They stay finishable until the
+    /// next rotation; after that they are unfinished forever and uncounted.
+    archive_open: HashSet<Uuid>,
     poisoned: bool,
     #[cfg(test)]
     fail_next_write: bool,
@@ -461,6 +491,14 @@ impl ActionJournal {
             chain.accept(&archive.lines)?;
         }
         chain.accept(&active_lines)?;
+        // A start is finishable while it is in the active file or the newest
+        // archive and no finish record exists in either.
+        let mut archive_open = HashSet::new();
+        if let Some(newest) = archives.last() {
+            collect_open(&newest.lines, &mut archive_open, None);
+        }
+        let mut active_open = HashSet::new();
+        collect_open(&active_lines, &mut active_open, Some(&mut archive_open));
         let mut journal = Self {
             directory: data_directory.to_path_buf(),
             file,
@@ -475,7 +513,8 @@ impl ActionJournal {
                 .iter()
                 .map(|archive| archive.first_sequence)
                 .collect(),
-            open_actions: HashSet::new(),
+            active_open,
+            archive_open,
             poisoned: false,
             #[cfg(test)]
             fail_next_write: false,
@@ -498,12 +537,9 @@ impl ActionJournal {
         action: &StartedAction<'_>,
     ) -> Result<Uuid, ActionJournalError> {
         self.ensure_healthy()?;
-        if self.open_actions.len() >= MAX_OPEN_ACTIONS {
-            return Err(ActionJournalError::LimitReached);
-        }
         validate_scope(action.session_id, &action.workspace_id)?;
         validate_call_id(action.call_id)?;
-        validate_targets(action.tool, action.targets)?;
+        let targets = classify_targets(action.tool, action.targets, true)?;
         validate_sha256(action.request_sha256)?;
         validate_authorization(&action.authorization)?;
         let action_id = Uuid::new_v4();
@@ -513,27 +549,33 @@ impl ActionJournal {
             workspace_id: action.workspace_id,
             call_id: action.call_id.to_owned(),
             tool: action.tool,
-            targets: action
-                .targets
-                .iter()
-                .map(|target| (*target).to_owned())
-                .collect(),
+            targets,
             request_sha256: action.request_sha256.map(str::to_owned),
             authorization: action.authorization,
         });
-        let pending = self.open_actions.len() + 1;
-        let reserve = pending
-            .checked_mul(FINISH_RESERVE_BYTES)
-            .ok_or(ActionJournalError::LimitReached)?;
-        self.append(event, pending, reserve)?;
-        self.open_actions.insert(action_id);
+        // Reserve room for every finishable start, capped at half a file so
+        // crash leftovers cannot make a start unfittable. A finish that still
+        // does not fit rotates into an empty file, where it always fits.
+        let pending = self
+            .active_open
+            .len()
+            .saturating_add(self.archive_open.len())
+            .saturating_add(1);
+        let reserved_events = pending.min(self.limits.max_events / 2);
+        let reserved_bytes = pending
+            .saturating_mul(FINISH_RESERVE_BYTES)
+            .min(self.limits.max_bytes / 2);
+        self.append(event, reserved_events, reserved_bytes)?;
+        self.active_open.insert(action_id);
         Ok(action_id)
     }
 
     /// Durably record the outcome of an action this writer started.
     ///
-    /// `code` must be 1 to 64 bytes of `[a-z0-9_]`. The action must have been
-    /// started by this handle and not yet finished; a second finish is
+    /// `code` must be 1 to 64 bytes of `[a-z0-9_]`. The start may come from
+    /// any earlier writer, so a caller can drop the writer while the action
+    /// runs. It must still be in the active file or the newest archive and
+    /// unfinished there; an unknown, already finished, or rotated-out id is
     /// refused. The finish fits by reservation, and the journal rotates rather
     /// than refusing when it does not.
     pub fn record_finished(
@@ -544,9 +586,9 @@ impl ActionJournal {
         operation_id: Option<Uuid>,
     ) -> Result<(), ActionJournalError> {
         self.ensure_healthy()?;
-        if !self.open_actions.contains(&action_id) {
+        if !self.active_open.contains(&action_id) && !self.archive_open.contains(&action_id) {
             return Err(ActionJournalError::InvalidValue(
-                "action was not started by this writer or is already finished",
+                "action is unknown, already finished, or no longer finishable",
             ));
         }
         validate_code(code)?;
@@ -558,7 +600,8 @@ impl ActionJournal {
             operation_id,
         });
         self.append(event, 0, 0)?;
-        self.open_actions.remove(&action_id);
+        self.active_open.remove(&action_id);
+        self.archive_open.remove(&action_id);
         Ok(())
     }
 
@@ -571,7 +614,7 @@ impl ActionJournal {
         self.ensure_healthy()?;
         validate_scope(action.session_id, &action.workspace_id)?;
         validate_call_id(action.call_id)?;
-        validate_targets(action.tool, action.targets)?;
+        let targets = classify_targets(action.tool, action.targets, false)?;
         validate_sha256(action.request_sha256)?;
         validate_reason(&action.reason)?;
         let event = JournalEvent::Refused(RefusedPayload {
@@ -579,11 +622,7 @@ impl ActionJournal {
             workspace_id: action.workspace_id,
             call_id: action.call_id.to_owned(),
             tool: action.tool,
-            targets: action
-                .targets
-                .iter()
-                .map(|target| (*target).to_owned())
-                .collect(),
+            targets,
             request_sha256: action.request_sha256.map(str::to_owned),
             reason: action.reason,
         });
@@ -776,6 +815,9 @@ impl ActionJournal {
             self.poisoned = true;
             return Err(error);
         }
+        // The rotated file is now the newest archive. Starts in the previous
+        // newest archive stop being finishable and stop counting.
+        self.archive_open = std::mem::take(&mut self.active_open);
         self.events = 0;
         self.bytes = 0;
         if self.prune().is_err() {
@@ -946,6 +988,29 @@ fn read_all(directory: &Path) -> Result<Vec<JournalLine>, ActionJournalError> {
     Ok(lines)
 }
 
+/// Add unfinished starts from `lines` to `open`. A finish also clears `older`,
+/// the set for the preceding file.
+fn collect_open(
+    lines: &[JournalLine],
+    open: &mut HashSet<Uuid>,
+    mut older: Option<&mut HashSet<Uuid>>,
+) {
+    for line in lines {
+        match &line.event {
+            JournalEvent::Started(start) => {
+                open.insert(start.action_id);
+            }
+            JournalEvent::Finished(finish) => {
+                open.remove(&finish.action_id);
+                if let Some(older) = older.as_deref_mut() {
+                    older.remove(&finish.action_id);
+                }
+            }
+            JournalEvent::Refused(_) => {}
+        }
+    }
+}
+
 /// A Windows writer's byte-range lock blocks other handles from reading.
 fn classify_read_error(error: ActionJournalError) -> ActionJournalError {
     #[cfg(windows)]
@@ -1063,7 +1128,7 @@ fn validate_line(line: &JournalLine) -> Result<(), ActionJournalError> {
             }
             validate_scope(start.session_id, &start.workspace_id)
                 .and_then(|()| validate_call_id(&start.call_id))
-                .and_then(|()| validate_targets(start.tool, &start.targets))
+                .and_then(|()| validate_stored_targets(start.tool, &start.targets, true))
                 .and_then(|()| validate_sha256(start.request_sha256.as_deref()))
                 .and_then(|()| validate_authorization(&start.authorization))
         }
@@ -1076,7 +1141,7 @@ fn validate_line(line: &JournalLine) -> Result<(), ActionJournalError> {
         }
         JournalEvent::Refused(refusal) => validate_scope(refusal.session_id, &refusal.workspace_id)
             .and_then(|()| validate_call_id(&refusal.call_id))
-            .and_then(|()| validate_targets(refusal.tool, &refusal.targets))
+            .and_then(|()| validate_stored_targets(refusal.tool, &refusal.targets, false))
             .and_then(|()| validate_sha256(refusal.request_sha256.as_deref()))
             .and_then(|()| validate_reason(&refusal.reason)),
     };
@@ -1156,22 +1221,75 @@ fn validate_call_id(call_id: &str) -> Result<(), ActionJournalError> {
     validate_text(call_id, MAX_CALL_ID_BYTES)
 }
 
-fn validate_targets<T: AsRef<str>>(
+/// Check the number of targets. A started action follows the tool's arity; a
+/// refusal may carry 0 to 2 so a malformed call can still be refused on record.
+fn validate_target_count(
     tool: ActionTool,
-    targets: &[T],
+    count: usize,
+    strict: bool,
 ) -> Result<(), ActionJournalError> {
-    if targets.len() > MAX_TARGETS {
+    if count > MAX_TARGETS {
         return invalid("too many targets");
     }
-    let expected_exact = matches!(tool, ActionTool::RenameFile);
-    if expected_exact && targets.len() != MAX_TARGETS {
-        return invalid("a rename needs a source and a destination");
+    if strict {
+        let exact = matches!(tool, ActionTool::RenameFile);
+        if exact && count != MAX_TARGETS {
+            return invalid("a rename needs a source and a destination");
+        }
+        if !exact && count > 1 {
+            return invalid("only a rename may name two targets");
+        }
     }
-    if !expected_exact && targets.len() > 1 {
-        return invalid("only a rename may name two targets");
-    }
+    Ok(())
+}
+
+/// Classify raw model-supplied targets. A value that fails path validation is
+/// stored only as a digest and length, so hostile text never reaches the file.
+fn classify_targets(
+    tool: ActionTool,
+    targets: &[&str],
+    strict: bool,
+) -> Result<Vec<StoredTarget>, ActionJournalError> {
+    validate_target_count(tool, targets.len(), strict)?;
+    Ok(targets
+        .iter()
+        .map(|target| {
+            if validate_target(tool, target).is_ok() {
+                StoredTarget::Path((*target).to_owned())
+            } else {
+                StoredTarget::Withheld(WithheldTarget {
+                    sha256: Sha256::digest(target.as_bytes())
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect(),
+                    bytes: u64::try_from(target.len()).unwrap_or(u64::MAX),
+                })
+            }
+        })
+        .collect())
+}
+
+/// Strictly validate stored targets read from disk.
+fn validate_stored_targets(
+    tool: ActionTool,
+    targets: &[StoredTarget],
+    strict: bool,
+) -> Result<(), ActionJournalError> {
+    validate_target_count(tool, targets.len(), strict)?;
     for target in targets {
-        validate_target(tool, target.as_ref())?;
+        match target {
+            StoredTarget::Path(path) => validate_target(tool, path)?,
+            StoredTarget::Withheld(withheld) => {
+                if withheld.sha256.len() != 64
+                    || !withheld
+                        .sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return invalid("withheld digest must be 64 lowercase hexadecimal characters");
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -1,6 +1,7 @@
 use std::fs;
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -147,7 +148,13 @@ fn every_event_round_trips_through_recent() {
     let last = records.last().expect("oldest");
     assert_eq!(last.sequence, 1);
     assert_eq!(last.tool, ActionTool::RenameFile);
-    assert_eq!(last.targets, ["old.txt", "new.txt"]);
+    assert_eq!(
+        last.targets,
+        [
+            StoredTarget::Path("old.txt".to_owned()),
+            StoredTarget::Path("new.txt".to_owned())
+        ]
+    );
     assert_eq!(last.request_sha256.as_deref(), Some(DIGEST));
     let ActionDisposition::Executed {
         action_id,
@@ -264,13 +271,24 @@ fn malformed_stored_values_are_refused() {
         line["event"]["payload"]["call_id"] = json!("x".repeat(129));
     });
     assert_tampered_line_is_corrupt(|line| {
-        line["event"]["payload"]["targets"] = json!(["../escape"]);
+        line["event"]["payload"]["targets"] = json!([{"type": "path", "payload": "../escape"}]);
     });
     assert_tampered_line_is_corrupt(|line| {
-        line["event"]["payload"]["targets"] = json!(["a\u{202e}txt"]);
+        line["event"]["payload"]["targets"] = json!([{"type": "path", "payload": "a\u{202e}txt"}]);
     });
     assert_tampered_line_is_corrupt(|line| {
-        line["event"]["payload"]["targets"] = json!(["a", "b", "c"]);
+        let path = json!({"type": "path", "payload": "a"});
+        line["event"]["payload"]["targets"] = json!([path, path, path]);
+    });
+    assert_tampered_line_is_corrupt(|line| {
+        line["event"]["payload"]["targets"] = json!([path_bytes("A", 1)]);
+    });
+    assert_tampered_line_is_corrupt(|line| {
+        line["event"]["payload"]["targets"] = json!([path_bytes(&"a".repeat(63), 1)]);
+    });
+    assert_tampered_line_is_corrupt(|line| {
+        line["event"]["payload"]["targets"] = json!([{"type": "withheld", "payload": {
+            "sha256": DIGEST, "bytes": 1, "extra": 1}}]);
     });
     assert_tampered_line_is_corrupt(|line| {
         line["event"]["payload"]["action_id"] = json!("00000000-0000-0000-0000-000000000000");
@@ -320,7 +338,6 @@ fn duplicate_start_and_duplicate_finish_are_refused() {
 fn untrusted_values_are_rejected_not_stored() {
     let directory = tempfile::tempdir().expect("directory");
     let mut journal = ActionJournal::open(directory.path()).expect("open");
-    let long_path = "p".repeat(MAX_TARGET_BYTES + 1);
     let bad_calls = [
         "",
         "a\nb",
@@ -339,27 +356,6 @@ fn untrusted_values_are_rejected_not_stored() {
         journal.record_started(&started(&"c".repeat(129), ActionTool::ReadFile, &["a"])),
         Err(ActionJournalError::InvalidValue(_))
     ));
-    for target in [
-        "a\tb",
-        "a\u{1b}[31m",
-        "/etc/passwd",
-        "\\\\server\\share",
-        "C:\\x",
-        "c:x",
-        "a/../b",
-        "a\\..\\b",
-        "..",
-        "",
-        long_path.as_str(),
-    ] {
-        assert!(
-            matches!(
-                journal.record_started(&started("c", ActionTool::ReadFile, &[target])),
-                Err(ActionJournalError::InvalidValue(_))
-            ),
-            "target {target:?} must be rejected"
-        );
-    }
     let two = ["a", "b"];
     assert!(
         journal
@@ -459,19 +455,12 @@ fn finish_codes_and_ids_are_validated() {
 fn unfinished_start_is_reported_as_unfinished_and_stays_so() {
     let directory = tempfile::tempdir().expect("directory");
     let mut journal = ActionJournal::open(directory.path()).expect("open");
-    let id = journal
+    journal
         .record_started(&started("crash", ActionTool::DeleteFile, &["gone.txt"]))
         .expect("start");
     drop(journal);
-
-    let mut journal = ActionJournal::open(directory.path()).expect("reopen");
-    assert!(
-        journal
-            .record_finished(id, ActionOutcome::Succeeded, None, None)
-            .is_err(),
-        "no automatic recovery: a new writer cannot finish an old action"
-    );
-    drop(journal);
+    // Reopening recovers nothing automatically: the start stays unfinished.
+    drop(ActionJournal::open(directory.path()).expect("reopen"));
     let records = ActionJournal::recent(directory.path(), 10).expect("recent");
     assert_eq!(records.len(), 1);
     assert!(matches!(
@@ -734,7 +723,10 @@ fn worst_case_start_record_fits_the_event_bound() {
             workspace_id: workspace(),
             call_id: "\\".repeat(MAX_CALL_ID_BYTES),
             tool: ActionTool::RenameFile,
-            targets: vec![quotes.clone(), quotes],
+            targets: vec![
+                StoredTarget::Path(quotes.clone()),
+                StoredTarget::Path(quotes),
+            ],
             request_sha256: Some(DIGEST.to_owned()),
             authorization: Authorization::Approval {
                 approval_id: Uuid::new_v4(),
@@ -863,6 +855,266 @@ fn a_gap_between_archive_and_active_file_is_corrupt() {
         ActionJournal::open(directory.path()),
         Err(ActionJournalError::Corrupt("sequence is not consecutive"))
     ));
+}
+
+fn path_bytes(sha256: &str, bytes: u64) -> Value {
+    json!({"type": "withheld", "payload": {"sha256": sha256, "bytes": bytes}})
+}
+
+fn sha256_hex(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[test]
+fn hostile_targets_are_recorded_as_digests_and_never_as_raw_text() {
+    let long_path = "p".repeat(MAX_TARGET_BYTES + 1);
+    let hostile: Vec<(&str, &str)> = vec![
+        ("parent", "a/../SECRETPARENT"),
+        ("parent_backslash", "a\\..\\SECRETBACK"),
+        ("absolute", "/etc/SECRETABS"),
+        ("unc", "\\\\server\\SECRETUNC"),
+        ("drive", "C:\\SECRETDRIVE"),
+        ("control", "SECRET\u{1b}[31mCTRL"),
+        ("tab", "SECRET\tTAB"),
+        ("bidi", "SECRET\u{202e}BIDI"),
+        ("invisible", "SECRET\u{200b}ZW"),
+        ("empty_for_read", ""),
+        ("oversize", long_path.as_str()),
+    ];
+    for (name, target) in hostile {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut journal = ActionJournal::open(directory.path()).expect("open");
+        journal
+            .record_started(&started("c", ActionTool::ReadFile, &[target]))
+            .unwrap_or_else(|error| panic!("{name}: start must not fail: {error}"));
+        let mut refusal = refused("c", RefusalReason::InvalidRequest);
+        let targets = [target, "ok.txt"];
+        refusal.targets = &targets;
+        journal.record_refused(&refusal).expect("refusal");
+        drop(journal);
+
+        let text = String::from_utf8(fs::read(active_path(directory.path())).expect("bytes"))
+            .expect("utf8");
+        assert!(!text.contains("SECRET"), "{name}: raw hostile text stored");
+        assert!(!text.contains("/etc/"), "{name}: raw path stored");
+        assert!(
+            !text.contains('\u{1b}') && !text.contains("\\u001b"),
+            "{name}"
+        );
+        assert!(
+            !text.contains('\u{202e}') && !text.contains("\\u202e"),
+            "{name}"
+        );
+        assert!(!text.contains(&long_path), "{name}");
+        assert!(text.contains(&sha256_hex(target)), "{name}: digest missing");
+
+        let records = ActionJournal::recent(directory.path(), 10).expect("recent");
+        let expected = StoredTarget::Withheld(WithheldTarget {
+            sha256: sha256_hex(target),
+            bytes: u64::try_from(target.len()).expect("length"),
+        });
+        assert_eq!(
+            records[1].targets,
+            std::slice::from_ref(&expected),
+            "{name}"
+        );
+        assert_eq!(
+            records[0].targets,
+            [expected, StoredTarget::Path("ok.txt".to_owned())],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn valid_paths_stay_paths_and_root_listing_stays_valid() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    journal
+        .record_started(&started("c", ActionTool::ListDirectory, &[""]))
+        .expect("root");
+    journal
+        .record_started(&started("c", ActionTool::ReadFile, &["src\\dir/file é.rs"]))
+        .expect("path");
+    drop(journal);
+    let records = ActionJournal::recent(directory.path(), 10).expect("recent");
+    assert_eq!(records[1].targets, [StoredTarget::Path(String::new())]);
+    assert_eq!(
+        records[0].targets,
+        [StoredTarget::Path("src\\dir/file é.rs".to_owned())]
+    );
+}
+
+#[test]
+fn refusals_accept_zero_to_two_targets_but_started_actions_keep_arity() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    for targets in [&[][..], &["a"][..], &["a", "b"][..]] {
+        let mut refusal = refused("c", RefusalReason::InvalidRequest);
+        refusal.tool = ActionTool::RenameFile;
+        refusal.targets = targets;
+        journal.record_refused(&refusal).expect("refusal");
+        refusal.tool = ActionTool::ReadFile;
+        journal.record_refused(&refusal).expect("refusal");
+    }
+    let mut refusal = refused("c", RefusalReason::InvalidRequest);
+    refusal.targets = &["a", "b", "c"];
+    assert!(journal.record_refused(&refusal).is_err());
+    assert!(
+        journal
+            .record_started(&started("c", ActionTool::ReadFile, &["a", "b"]))
+            .is_err()
+    );
+    // An invalid call identifier is still rejected.
+    assert!(
+        journal
+            .record_refused(&refused("bad\nid", RefusalReason::Cancelled))
+            .is_err()
+    );
+}
+
+#[test]
+fn start_drop_reopen_finish_works_and_is_listed_finished() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    let id = journal
+        .record_started(&started("c", ActionTool::RunCommand, &[]))
+        .expect("start");
+    drop(journal);
+    let mut journal = ActionJournal::open(directory.path()).expect("reopen");
+    journal
+        .record_finished(id, ActionOutcome::Succeeded, Some("exit_0"), None)
+        .expect("finish by a later writer");
+    drop(journal);
+    let records = ActionJournal::recent(directory.path(), 10).expect("recent");
+    assert!(matches!(
+        &records[0].disposition,
+        ActionDisposition::Executed {
+            finish: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn start_rotate_reopen_finish_works_from_the_newest_archive() {
+    let directory = tempfile::tempdir().expect("directory");
+    let limits = small(2500, 4);
+    let mut journal = ActionJournal::open_with(directory.path(), limits).expect("open");
+    let id = journal
+        .record_started(&started("c", ActionTool::EditFile, &["a.txt"]))
+        .expect("start");
+    while archive_names(directory.path()).is_empty() {
+        journal
+            .record_refused(&refused("r", RefusalReason::Cancelled))
+            .expect("refuse");
+    }
+    drop(journal);
+    assert_eq!(archive_names(directory.path()).len(), 1);
+    let mut journal = ActionJournal::open_with(directory.path(), limits).expect("reopen");
+    journal
+        .record_finished(id, ActionOutcome::Failed, Some("boom"), None)
+        .expect("finish with the start in the newest archive");
+    assert!(
+        journal
+            .record_finished(id, ActionOutcome::Failed, None, None)
+            .is_err()
+    );
+    drop(journal);
+
+    // The finish is in the active file and the start in an archive: recent joins them.
+    let records = ActionJournal::recent(directory.path(), 1000).expect("recent");
+    let start = records
+        .iter()
+        .find(|record| record.tool == ActionTool::EditFile)
+        .expect("start listed");
+    assert!(matches!(
+        &start.disposition,
+        ActionDisposition::Executed {
+            finish: Some(ActionFinish {
+                outcome: ActionOutcome::Failed,
+                ..
+            }),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn double_finish_across_writers_and_unknown_ids_are_refused() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    let id = journal
+        .record_started(&started("c", ActionTool::RunCommand, &[]))
+        .expect("start");
+    drop(journal);
+    let mut journal = ActionJournal::open(directory.path()).expect("second writer");
+    journal
+        .record_finished(id, ActionOutcome::Succeeded, None, None)
+        .expect("finish");
+    drop(journal);
+    let mut journal = ActionJournal::open(directory.path()).expect("third writer");
+    assert!(
+        journal
+            .record_finished(id, ActionOutcome::Failed, None, None)
+            .is_err(),
+        "a second finish from another writer is refused"
+    );
+    assert!(
+        journal
+            .record_finished(Uuid::new_v4(), ActionOutcome::Failed, None, None)
+            .is_err()
+    );
+}
+
+#[test]
+fn crash_leftovers_never_block_new_starts_and_stop_being_finishable() {
+    let directory = tempfile::tempdir().expect("directory");
+    let limits = small(8000, 4);
+    let mut leftovers = Vec::new();
+    {
+        let mut journal = ActionJournal::open_with(directory.path(), limits).expect("open");
+        for _ in 0..40 {
+            leftovers.push(
+                journal
+                    .record_started(&started("crash", ActionTool::RunCommand, &[]))
+                    .expect("start leftover"),
+            );
+        }
+    }
+    let mut journal = ActionJournal::open_with(directory.path(), limits).expect("reopen");
+    assert!(
+        journal
+            .record_finished(leftovers[0], ActionOutcome::Uncertain, None, None)
+            .is_err(),
+        "the oldest leftover rotated beyond the newest archive"
+    );
+    let newest = *leftovers.last().expect("leftovers");
+    journal
+        .record_finished(newest, ActionOutcome::Uncertain, None, None)
+        .expect("a leftover still in the active file or newest archive is finishable");
+    for round in 0..60 {
+        let call = format!("new_{round}");
+        let id = journal
+            .record_started(&started(&call, ActionTool::ReadFile, &["a"]))
+            .expect("new starts are never blocked");
+        journal
+            .record_finished(id, ActionOutcome::Succeeded, None, None)
+            .expect("new finishes fit");
+    }
+    assert!(
+        journal
+            .record_finished(leftovers[1], ActionOutcome::Failed, None, None)
+            .is_err(),
+        "a start rotated past the newest archive is no longer finishable"
+    );
+    assert!(journal.active_open.is_empty() && journal.archive_open.is_empty());
+    drop(journal);
+    let records = ActionJournal::recent(directory.path(), 1000).expect("recent");
+    assert_eq!(records[0].call_id, "new_59", "newest call is listed first");
 }
 
 #[test]
