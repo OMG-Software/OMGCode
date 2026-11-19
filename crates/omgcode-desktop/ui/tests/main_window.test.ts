@@ -745,7 +745,24 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     await settle();
     const bar = root.querySelector(".statusbar") as HTMLElement;
     expect(bar.hidden).toBe(false);
-    expect(bar.textContent).toBe("The settings window could not be opened.");
+    expect(bar.textContent).toContain("The settings window could not be opened.");
+  });
+
+  it("keeps a window error through the approvals poll until it is dismissed", async () => {
+    await start({
+      approvals_summary: () => ({ pending: 0 }),
+      settings_show_window: () => rejection("window_unavailable", "gone"),
+    });
+    buttonByText(root, "Settings").click();
+    await settle();
+    await settle(3000);
+    await settle(3000);
+    const bar = root.querySelector(".statusbar") as HTMLElement;
+    expect(bar.hidden).toBe(false);
+    expect(bar.textContent).toContain("The settings window could not be opened.");
+    buttonByText(bar, "Dismiss").click();
+    expect(bar.hidden).toBe(true);
+    expect(bar.textContent).toBe("");
   });
 
   it("hides the skill choice when the workspace has no enabled skill", async () => {
@@ -836,5 +853,105 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(root.querySelector(".preferences-row")?.textContent).toContain(
       "Saved defaults could not be read",
     );
+  });
+
+  it("keeps edits made while defaults are being saved", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    await open({
+      chat_preferences_save: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const model = root.querySelector<HTMLInputElement>(
+      ".settings input[type=text]",
+    ) as HTMLInputElement;
+    type(model, "first");
+    buttonByText(root, "Save as defaults").click();
+    await settle();
+    expect(ipc.callsTo("chat_preferences_save")).toHaveLength(1);
+    type(model, "second");
+    finish({ settings: { ...SETTINGS, model: "first" }, preferences: "saved" });
+    await settle();
+    expect(model.value).toBe("second");
+    expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");
+  });
+
+  describe("across session switches", () => {
+    const a = session({ session_id: "s-a", title: "A" });
+    const b = session({ session_id: "s-b", title: "B" });
+    const transcript: Handler = (args) => page(args.session_id === "s-b" ? b : a, []);
+
+    function skillNames(): string {
+      return root.querySelector(".skills")?.textContent ?? "";
+    }
+
+    it("leaves another session's choice alone when an earlier send completes", async () => {
+      let finish: (value: unknown) => void = () => undefined;
+      await start({
+        session_tree: treeOf(a, b),
+        session_transcript: transcript,
+        session_skills: () => ({ workspace_registered: true, skills: ["review"] }),
+        chat_send: () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        chat_status: (args) => ({ ...running, session_id: args.session_id }),
+      });
+      itemFor("s-a").click();
+      await settle();
+      skillBoxes()[0]?.click();
+      type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+      buttonByText(root, "Send").click();
+      await settle();
+
+      itemFor("s-b").click();
+      await settle();
+      skillBoxes()[0]?.click();
+      type(root.querySelector(".message-box") as HTMLTextAreaElement, "draft for B");
+      finish({ ...running, session_id: "s-a" });
+      await settle();
+
+      expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
+        session_id: "s-a",
+        skills: ["review"],
+      });
+      expect(skillBoxes()[0]?.checked).toBe(true);
+      expect((root.querySelector(".message-box") as HTMLTextAreaElement).value).toBe("draft for B");
+    });
+
+    it("ignores a skill list from an earlier opening of the same session", async () => {
+      let finishFirst: (value: unknown) => void = () => undefined;
+      let askedForA = 0;
+      await start({
+        session_tree: treeOf(a, b),
+        session_transcript: transcript,
+        session_skills: (args) => {
+          if (args.session_id === "s-b") {
+            return { workspace_registered: true, skills: [] };
+          }
+          askedForA += 1;
+          if (askedForA === 1) {
+            return new Promise((resolve) => {
+              finishFirst = resolve;
+            });
+          }
+          return { workspace_registered: true, skills: ["fresh"] };
+        },
+      });
+      itemFor("s-a").click();
+      await settle();
+      itemFor("s-b").click();
+      await settle();
+      itemFor("s-a").click();
+      await settle();
+      skillBoxes()[0]?.click();
+
+      finishFirst({ workspace_registered: true, skills: ["stale"] });
+      await settle();
+      expect(skillNames()).toContain("fresh");
+      expect(skillNames()).not.toContain("stale");
+      expect(skillBoxes()[0]?.checked).toBe(true);
+    });
   });
 });

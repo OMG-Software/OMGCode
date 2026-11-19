@@ -46,9 +46,13 @@ authorization. See
   webview is still web content, not a trusted computing base.
 - Fix the provider endpoint and read the provider token outside the webview. A
   webview request cannot choose either.
-- Show trusted configuration only in the `settings` window, which renders no
-  transcript text, tool output, or skill description or body, and grant the
-  configuration commands to that window only (ADR-0059). Return recorded
+- Show the trusted configuration view only in the `settings` window, which
+  renders no transcript text, tool output, or skill description or body, and
+  grant the configuration commands to that window only (ADR-0059). The
+  `main` window may receive only the workspace summaries of `workspace_list`
+  (identifier, folder display text, and the `model_tools`, `read`, `write`,
+  and `execute` preferences), the fixed endpoint text, and the names of the
+  skills enabled for a session's workspace. Return recorded
   paths and names as display-safe text, never a secret, and never accept them
   back as input. Until a later ADR-0059 phase lands, the desktop changes no
   trusted setting.

@@ -25,7 +25,8 @@ Changes are recorded here before a release version is assigned.
     context size, output reserve, custom instructions, compaction threshold,
     and automatic compaction switch in
     `<data_root>/desktop-v1/chat-preferences.json`, at most 512 KiB, written
-    through a synced temporary file and a rename. No endpoint can be saved.
+    through a synced temporary file and a rename. No endpoint can be saved,
+    and streaming stays a launch argument.
     `chat_defaults` now returns the settings with a `preferences` source of
     `defaults`, `saved`, or `unreadable`; an unreadable file falls back to the
     built-in values and the composer shows a note. A failed write returns the

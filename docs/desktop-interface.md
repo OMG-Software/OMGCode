@@ -363,8 +363,11 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   syncs it, and renames it over the old one; on Unix it is created with mode
   0600 and the directory is synced. A missing file gives the built-in
   values. A file that cannot be read or parsed also gives the built-in values,
-  `chat_defaults` reports it as `unreadable`, the composer shows a note, and
-  the next save replaces it. A failed write returns `preferences`.
+  `chat_defaults` reports it as `unreadable`, and the composer shows a note.
+  The next save replaces a damaged regular file. It cannot replace a
+  directory or another entry at that name, or a file it is not allowed to
+  write: the save fails with `preferences`, and the operator must remove the
+  entry or correct its access before saving again.
 - **Skills.** When a session opens, `main` calls `session_skills`. It returns
   the names of the skills effectively enabled for the session's registered
   workspace, and nothing for a workspace that is not registered here or when
@@ -478,6 +481,12 @@ the hidden `settings` window. The window calls one command,
 - container grants with their folder, access, and state;
 - each imported skill's name, its application setting, and its workspace
   overrides, with the workspace shown by its folder.
+
+Only this window receives the configuration view. The `main` window receives
+only the workspace summaries of `workspace_list` (each registered
+workspace's identifier, folder display text, and `model_tools`, `read`,
+`write`, and `execute` preferences), the fixed endpoint text of
+`chat_defaults`, and the enabled skill names of `session_skills`.
 
 The view reads the settings store through the same core functions as the
 trusted CLI and releases it before returning. It reads no stored secret and

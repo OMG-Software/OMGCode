@@ -54,6 +54,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
   let confirmInterrupt = false;
   let chatState: ChatStatus["state"] = "idle";
   let loadToken = 0;
+  // Increases each time a different session is opened. A send or skill
+  // response from an earlier opening must not touch the current composer.
+  let opening = 0;
   let highlightSeq: number | null = null;
   let live: LiveEntry | null = null;
   let frame: number | null = null;
@@ -394,9 +397,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
       return;
     }
     setNotice(null);
+    const submitted = opening;
     try {
       await runner.send(session.session_id, message, settings, skills);
-      composer.clear();
+      if (opening === submitted) {
+        composer.clear();
+      }
     } catch (reason) {
       const error = toIpcError(reason);
       setNotice({ text: `${error.message} (${error.code})`, error: true });
@@ -442,10 +448,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
   }
 
   /** Offers the skills enabled for this session's workspace. A failure offers none. */
-  async function loadSkills(sessionId: string): Promise<void> {
+  async function loadSkills(sessionId: string, requested: number): Promise<void> {
     try {
       const { skills } = await api.sessionSkills(sessionId);
-      if (session?.session_id === sessionId) {
+      if (opening === requested && session?.session_id === sessionId) {
         composer.setSkills(skills);
       }
     } catch {
@@ -460,11 +466,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
     confirmInterrupt = false;
     highlightSeq = seq;
     if (!same) {
+      opening += 1;
       entries = [];
       setNotice(null);
       chatState = runner.isActive(next.session_id) ? "running" : "idle";
       composer.setSkills([]);
-      void loadSkills(next.session_id);
+      void loadSkills(next.session_id, opening);
     }
     empty.hidden = true;
     content.hidden = false;

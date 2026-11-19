@@ -125,9 +125,11 @@ These constraints shape the design:
    only the `settings` window can, and only among recorded profiles.
 8. **Chat preferences are saved, non-authority preferences.** The `main`
    window may read and save its own defaults: model name, context size,
-   output reserve, compaction threshold and mode, streaming, and custom
-   instructions. They are stored in the data root, bounded and validated by
-   the same rules as `chat_send`, and grant nothing. Choosing skills for one
+   output reserve, compaction threshold and mode, and custom instructions.
+   They are stored in the data root, bounded, validated again by `chat_send`
+   when a turn uses them, and grant nothing. Streaming stays a launch
+   argument (`--stream`) in phase S1; saving it as a preference is deferred
+   to a later phase. Choosing skills for one
    turn (the CLI's `--skill`) is added to the `main` composer, limited to
    skills core reports as enabled for that workspace. Skills still load as
    untrusted, labelled messages (ADR-0057).

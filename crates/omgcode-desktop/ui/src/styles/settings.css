@@ -68,12 +68,14 @@
 
 .facts {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   gap: 2px 12px;
   margin: 4px 0 0;
 }
 
 .facts dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 12px;
 }

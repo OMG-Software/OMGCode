@@ -18,11 +18,14 @@
 //!   exclusively, mode 0600 on Unix), is flushed to disk, and then renamed
 //!   over the final name, so a reader sees the old file or the new one. On
 //!   Unix the directory is also synced. Two concurrent saves race; the last
-//!   rename wins, and each file is complete.
+//!   rename wins, and each file is complete. Each save uses its own
+//!   temporary name (process identifier, a process-wide counter, and the
+//!   time), and a failed save removes only a temporary file it created.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -141,25 +144,39 @@ pub(super) fn save(data_root: &Path, preferences: &ChatPreferencesDto) -> Result
     }
     let directory = data_root.join(DIRECTORY);
     create_directory(&directory).map_err(|_| DesktopError::preferences())?;
-    let temporary = directory.join(temporary_name());
-    let written = write_new(&temporary, &bytes)
-        .and_then(|()| fs::rename(&temporary, directory.join(FILE_NAME)));
-    if written.is_err() {
-        // Best-effort cleanup: the temporary file is ours and holds no secret.
-        // A failed removal leaves a stray file that no load reads, and the
-        // save is reported as failed either way.
-        let _ = fs::remove_file(&temporary);
-        return Err(DesktopError::preferences());
-    }
+    replace(&directory, &directory.join(temporary_name()), &bytes)
+        .map_err(|_| DesktopError::preferences())?;
     sync_directory(&directory).map_err(|_| DesktopError::preferences())
 }
 
-/// A temporary name unique to this process and moment.
+/// Write `bytes` through the new file `temporary` and rename it over the
+/// preferences file in `directory`.
+///
+/// The temporary file is removed on failure only when this call created it,
+/// so a name collision never deletes another save's file.
+fn replace(directory: &Path, temporary: &Path, bytes: &[u8]) -> io::Result<()> {
+    let file = create_new(temporary)?;
+    let written =
+        write_synced(file, bytes).and_then(|()| fs::rename(temporary, directory.join(FILE_NAME)));
+    if written.is_err() {
+        // Best-effort cleanup of the file this call created; it holds no
+        // secret. A failed removal leaves a stray file that no load reads,
+        // and the save is reported as failed either way.
+        let _ = fs::remove_file(temporary);
+    }
+    written
+}
+
+/// Distinguishes saves within this process, even within one clock tick.
+static SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// A temporary name unique to this process, this save, and this moment.
 fn temporary_name() -> String {
+    let sequence = SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    format!("{FILE_NAME}.{}-{nanos}.tmp", std::process::id())
+    format!("{FILE_NAME}.{}-{sequence}-{nanos}.tmp", std::process::id())
 }
 
 /// Create the desktop directory, private on Unix.
@@ -178,8 +195,8 @@ fn create_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Write `bytes` to a new file at `path` and flush it to disk.
-fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Create a new file at `path`, failing if any entry already exists there.
+fn create_new(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -187,7 +204,11 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path)?;
+    options.open(path)
+}
+
+/// Write `bytes` to `file` and flush it to disk.
+fn write_synced(mut file: File, bytes: &[u8]) -> io::Result<()> {
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -320,6 +341,47 @@ mod tests {
         fs::remove_file(&path).expect("remove file");
         fs::create_dir(&path).expect("a directory at the file name");
         assert!(matches!(load(&root), Err(LoadError::Io)));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_name_collision_fails_without_removing_the_other_file() {
+        let root = scratch("collision");
+        let directory = root.join(DIRECTORY);
+        fs::create_dir_all(&directory).expect("directory");
+        let temporary = directory.join(temporary_name());
+        fs::write(&temporary, b"another save").expect("the other save's file");
+
+        assert!(replace(&directory, &temporary, b"{}").is_err());
+        assert_eq!(fs::read(&temporary).expect("still there"), b"another save");
+        assert!(!directory.join(FILE_NAME).exists());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn temporary_names_differ_within_one_process() {
+        let names: std::collections::HashSet<String> = (0..64).map(|_| temporary_name()).collect();
+        assert_eq!(names.len(), 64);
+    }
+
+    #[test]
+    fn a_directory_at_the_file_name_fails_the_save_and_is_kept() {
+        let root = scratch("directory");
+        let path = root.join(DIRECTORY).join(FILE_NAME);
+        fs::create_dir_all(&path).expect("a directory at the file name");
+
+        let error = save(&root, &sample()).expect_err("cannot replace a directory");
+        assert_eq!(error.code(), "preferences");
+        assert!(path.is_dir());
+        let strays = fs::read_dir(root.join(DIRECTORY))
+            .expect("list")
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            })
+            .count();
+        assert_eq!(strays, 0);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

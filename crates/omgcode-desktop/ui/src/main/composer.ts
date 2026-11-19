@@ -164,7 +164,9 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   async function saveDefaults(): Promise<void> {
     saveDefaultsButton.disabled = true;
     try {
-      applyDefaults(await api.chatPreferencesSave(preferencesOf(readSettings())));
+      // Only the note changes: the inputs keep any edit made while the save
+      // was in flight, so the returned copy is not written back.
+      await api.chatPreferencesSave(preferencesOf(readSettings()));
       replaceChildren(preferencesNote, "Saved as defaults.");
     } catch (reason) {
       const error = toIpcError(reason);

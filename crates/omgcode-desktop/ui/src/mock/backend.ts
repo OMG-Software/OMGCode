@@ -544,6 +544,10 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       case "settings_overview":
         return settingsOverview();
       case "chat_send":
+        // Like the Rust command: `skills` is required, even when empty.
+        if (!Array.isArray(args.skills) || !args.skills.every((name) => typeof name === "string")) {
+          fail("invalid_argument", "Missing skills.");
+        }
         return chatSend(
           str(args, "session_id"),
           str(args, "message"),
