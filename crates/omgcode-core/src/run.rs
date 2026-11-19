@@ -651,6 +651,26 @@ pub fn workspace_runs(
         .collect())
 }
 
+/// The pending runs that the settings in `control` no longer allow.
+///
+/// A settings change calls this while it still holds the control lock, right
+/// after it records the change, and passes the result to
+/// [`stop_withdrawn_runs`]. A later change that restores access before that
+/// call then cannot empty the list, so the runs this change withdrew are
+/// still waited for. Runs the change leaves allowed are not listed.
+pub fn withdrawn_runs(control: &ControlStore) -> Result<Vec<Uuid>, RunError> {
+    let (journal_root, store_id) = control.file_audit_context()?;
+    let Some(journal) = RunJournal::open_existing(&journal_root, store_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(journal
+        .pending_starts()
+        .into_iter()
+        .filter(|start| withdrawn(control, start).is_some())
+        .map(|start| start.run_id)
+        .collect())
+}
+
 /// Wait for every pending run that the recorded settings no longer allow,
 /// and every pending run in `also_withdrawn`, to stop and record its outcome.
 ///
@@ -1571,6 +1591,64 @@ mod tests {
         let runs =
             stop_withdrawn_runs(&data, Duration::from_millis(100), &[run_id]).expect("check");
         assert_eq!(runs.unconfirmed, vec![run_id]);
+    }
+
+    /// Only pending runs that the settings withdraw are listed. A run that
+    /// recorded its outcome is not pending, so it is not listed again.
+    #[test]
+    fn withdrawn_runs_lists_only_pending_withdrawn_runs() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, store_id) = store(directory.path());
+        let control = open_control(&data).expect("control");
+        assert!(withdrawn_runs(&control).expect("no journal").is_empty());
+        drop(control);
+        let (pending, finished_start) =
+            (withdrawn_start(workspace_id), withdrawn_start(workspace_id));
+        let (pending_id, finished_id) = (pending.run_id, finished_start.run_id);
+        let mut journal = RunJournal::open(&journal_root, store_id).expect("journal");
+        journal.start(pending).expect("start");
+        journal.start(finished_start).expect("start");
+        journal
+            .finish(finished_id, finished(RunResult::Revoked))
+            .expect("finish");
+        drop(journal);
+        let control = open_control(&data).expect("control");
+        assert_eq!(withdrawn_runs(&control).expect("runs"), vec![pending_id]);
+    }
+
+    /// The list follows the settings held under the lock: a run is listed
+    /// while `execute` is off and not once it is restored. A change must
+    /// therefore list its runs before it releases the lock. Linux only, for
+    /// the reason given on `allowed_runs_are_not_waited_for`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn withdrawn_runs_follow_the_settings_held_under_the_lock() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, store_id) = store(directory.path());
+        let start = allowed_start(&data, directory.path(), workspace_id);
+        let run_id = start.run_id;
+        RunJournal::open(&journal_root, store_id)
+            .expect("journal")
+            .start(start)
+            .expect("start");
+        let mut control = ControlStore::open(&data).expect("control store");
+        assert!(withdrawn_runs(&control).expect("allowed").is_empty());
+        let allowed = control
+            .workspace(workspace_id)
+            .expect("registered")
+            .permissions();
+        let revoked = PermissionSet {
+            execute: false,
+            ..allowed
+        };
+        control
+            .set_permissions(workspace_id, revoked, control.revision())
+            .expect("revoke");
+        assert_eq!(withdrawn_runs(&control).expect("revoked"), vec![run_id]);
+        control
+            .set_permissions(workspace_id, allowed, control.revision())
+            .expect("restore");
+        assert!(withdrawn_runs(&control).expect("restored").is_empty());
     }
 
     /// The revocation count a run's watcher compares changes when a

@@ -67,9 +67,11 @@ reviewed in this phase. Three choices remained:
    - Reopen the store and apply the change with the same revision. If any
      change happened meanwhile, core refuses it, so what the operator
      confirmed is exactly what is applied.
-   - Stop and observe the runs that lost access, as the CLI does. A run not
-     observed to stop fails the command with `runs_not_stopped`, and the
-     change stays recorded.
+   - Before releasing the store, list the pending runs that the new settings
+     withdraw. Then stop and observe those runs and any others the settings
+     withdraw. A change that restores access in between cannot hide them. A
+     run not observed to stop fails the command with `runs_not_stopped`, and
+     the change stays recorded.
    - Allow one change at a time per service. A second request while a dialog
      is open fails with `settings_change_running`.
 5. **Five commands, for `settings` only.** They are `settings_choose_root`,
@@ -121,9 +123,11 @@ reviewed in this phase. Three choices remained:
 - On Windows the confirmation's default button is Yes, because `rfd` offers
   no way to change it. A keyboard Enter confirms. The box is modal to the
   settings window and names the folder and each preference.
-- The Linux dialog path is untested. `rfd` runs its GTK dialogs through the
-  default GLib main context, which Tauri's event loop owns, and no window has
-  yet been opened on Linux (ADR-0045).
+- The Linux dialog path is untested. `rfd` starts its own thread that
+  initialises GTK and iterates the default GLib main context, and queues each
+  dialog there. Tauri's event loop also initialises GTK and iterates that
+  context on another thread, so a dialog may run on either. No window has yet
+  been opened on Linux (ADR-0045).
 - Display-safe text in a confirmation still does not detect look-alike
   letters or mixed scripts (ADR-0046).
 - A dialog left open during shutdown is not waited for. The process ends

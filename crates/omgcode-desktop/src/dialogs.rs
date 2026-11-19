@@ -16,9 +16,14 @@
 //! Platform notes:
 //! - Windows: the folder picker is `IFileOpenDialog` and the confirmation is a
 //!   Yes/No message box. Its default button is Yes, as `rfd` offers no choice.
-//! - Linux: `rfd` runs GTK 3 dialogs through the default GLib main context,
-//!   which Tauri's event loop owns. No window has been opened on Linux yet
-//!   (ADR-0045), so this path is untested there.
+//! - Linux: on first use `rfd` starts one long-lived thread that initialises
+//!   GTK 3 and iterates the default GLib main context. It queues each dialog
+//!   as an idle callback on that default context and blocks the caller until
+//!   the dialog returns. GTK calls must stay on the thread that initialised
+//!   GTK, but Tauri initialises GTK on its event loop thread, which also
+//!   iterates the default context, so the callback may run on either thread.
+//!   No window has been opened on Linux yet (ADR-0045), so this interaction
+//!   is untested there.
 
 use std::path::{Path, PathBuf};
 

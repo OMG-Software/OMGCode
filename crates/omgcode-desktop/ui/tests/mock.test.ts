@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatEvent } from "../src/ipc/types";
+import type { ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
 import { createMockBackend } from "../src/mock/backend";
 import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 
@@ -225,6 +225,83 @@ describe("mock backend", () => {
       await send(invoke);
       expect(first).toEqual([]);
       expect(second).toHaveLength(1);
+    });
+  });
+
+  describe("settings", () => {
+    const WORKSPACE = "77777777-7777-4777-8777-777777777777";
+    const FLAGS = {
+      model_tools: true,
+      read: true,
+      write: true,
+      execute: true,
+      task_network: false,
+      host_services: false,
+    };
+
+    it("applies each change after the revision check and bumps the revision", async () => {
+      const { invoke } = createMockBackend();
+      const start = (await invoke("settings_overview", {})) as SettingsOverview;
+      const root = (await invoke("settings_choose_root", {
+        revision: start.revision,
+      })) as SettingsOverview;
+      expect(root.revision).toBe(start.revision + 1);
+      expect(root.development_root).toBe("/home/dev");
+
+      const changed = (await invoke("settings_set_permissions", {
+        workspace_id: WORKSPACE,
+        revision: root.revision,
+        permissions: FLAGS,
+      })) as SettingsOverview;
+      expect(changed.workspaces[0]).toMatchObject(FLAGS);
+
+      const cached = (await invoke("settings_choose_package_cache", {
+        workspace_id: WORKSPACE,
+        revision: changed.revision,
+      })) as SettingsOverview;
+      expect(cached.workspaces[0]?.package_cache_root).toBe("/home/dev/.cache/omgcode-packages");
+      const cleared = (await invoke("settings_clear_package_cache", {
+        workspace_id: WORKSPACE,
+        revision: cached.revision,
+      })) as SettingsOverview;
+      expect(cleared.workspaces[0]?.package_cache_root).toBeNull();
+      expect(cleared.revision).toBe(start.revision + 4);
+    });
+
+    it("refuses a stale revision and an unknown workspace", async () => {
+      const { invoke } = createMockBackend();
+      const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+      await expect(
+        invoke("settings_choose_root", { revision: revision - 1 }),
+      ).rejects.toMatchObject({ code: "stale_revision" });
+      await expect(
+        invoke("settings_clear_package_cache", { workspace_id: "missing", revision }),
+      ).rejects.toMatchObject({ code: "unknown_workspace" });
+      const after = (await invoke("settings_overview", {})) as SettingsOverview;
+      expect(after.revision).toBe(revision);
+    });
+
+    it("lists a registered workspace for a new session", async () => {
+      const { invoke } = createMockBackend();
+      const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+      const registered = (await invoke("settings_register_workspace", {
+        revision,
+      })) as SettingsOverview;
+      const added = registered.workspaces.at(-1);
+      expect(added).toMatchObject({ read: true, write: true, execute: false });
+      const list = (await invoke("workspace_list", {})) as WorkspaceList;
+      expect(list.development_root_set).toBe(true);
+      expect(list.workspaces.map((w) => w.workspace_id)).toEqual(
+        registered.workspaces.map((w) => w.workspace_id),
+      );
+      expect(list.workspaces.at(-1)).toEqual({
+        workspace_id: added?.workspace_id,
+        folder_display: added?.folder_display,
+        model_tools: false,
+        read: true,
+        write: true,
+        execute: false,
+      });
     });
   });
 });

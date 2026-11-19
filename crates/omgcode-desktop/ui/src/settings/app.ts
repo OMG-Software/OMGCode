@@ -311,12 +311,14 @@ export function startSettings(root: HTMLElement): SettingsApp {
   }
 
   /** Runs one change. After any failure the window reads the configuration again, so every
-   *  control shows what is recorded rather than what was asked for. */
+   *  control shows what is recorded rather than what was asked for. If that read fails too, it
+   *  shows the last overview it read, which undoes a checkbox the operator just changed. */
   function submit(change: Change): void {
     if (working || current === null) {
       return;
     }
-    const revision = current.revision;
+    const recorded = current;
+    const revision = recorded.revision;
     setWorking(true);
     clearMessages();
     void (async () => {
@@ -327,6 +329,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
         try {
           show(await settingsApi.overview());
         } catch (again) {
+          show(recorded);
           report(again);
         }
       } finally {

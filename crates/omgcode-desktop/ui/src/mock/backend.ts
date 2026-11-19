@@ -491,27 +491,19 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         item.summary.status = "idle";
         return clone(item.summary);
       }
+      // Read from the mock settings, so a workspace registered in the settings window appears
+      // in the New session list, as it does with core.
       case "workspace_list":
         return {
-          development_root_set: true,
-          workspaces: [
-            {
-              workspace_id: "w1",
-              folder_display: "C:\\work\\omgcode",
-              model_tools: true,
-              read: true,
-              write: true,
-              execute: false,
-            },
-            {
-              workspace_id: "w2",
-              folder_display: "~/src/scratch",
-              model_tools: false,
-              read: true,
-              write: false,
-              execute: false,
-            },
-          ],
+          development_root_set: settings.development_root !== null,
+          workspaces: settings.workspaces.map((w) => ({
+            workspace_id: w.workspace_id,
+            folder_display: w.folder_display,
+            model_tools: w.model_tools,
+            read: w.read,
+            write: w.write,
+            execute: w.execute,
+          })),
         };
       case "session_create": {
         const id = `00000000-0000-4000-8000-${String(100 + sessions.length).padStart(12, "0")}`;

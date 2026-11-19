@@ -240,6 +240,26 @@ describe("settings window", () => {
     expect(checkbox("write").checked).toBe(false);
   });
 
+  it("restores the last read value when reading again after a declined dialog fails", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () => rejection("cancelled", "No change was made."),
+    });
+    ipc.on("settings_overview", () => rejection("io", "The settings could not be read."));
+    const write = checkbox("write");
+    write.checked = true;
+    write.dispatchEvent(new Event("change"));
+    await settle();
+
+    expect(ipc.callsTo("settings_overview")).toHaveLength(2);
+    // The box shows the recorded value again, not what the operator asked for.
+    expect(checkbox("write").checked).toBe(false);
+    expect((root.querySelector("[role=status]") as HTMLElement).textContent).toBe(NOTHING_CHANGED);
+    const alert = root.querySelector("[role=alert]") as HTMLElement;
+    expect(alert.hidden).toBe(false);
+    expect(alert.textContent).toBe("The settings could not be read. (io)");
+    expect(body().disabled).toBe(false);
+  });
+
   it("shows a refusal and reads the configuration again", async () => {
     await start(() => overview(), {
       settings_choose_root: () =>

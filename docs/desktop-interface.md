@@ -538,9 +538,13 @@ takes a path. Each returns the new overview.
   applies the change with the same revision. A change made meanwhile, for
   example by the CLI, makes the request fail with `stale_revision`, and
   nothing is applied.
-- **Revocation is observed.** After a change, runs that lost access are
-  stopped and observed, as for the CLI. A run that is not observed to stop
-  fails the command with `runs_not_stopped`, and the change stays recorded.
+- **Revocation is observed.** The runs a change withdraws are listed while
+  the settings lock is still held, so a later change that restores access
+  cannot hide them. They, and any others the settings withdraw, are stopped
+  and observed. A run that is not observed to stop fails the command with
+  `runs_not_stopped`, and the change stays recorded. A run whose access is
+  restored before its watcher samples the settings keeps running and is
+  reported this way; it is not stopped.
 - **One change at a time.** While one change waits for the operator, another
   fails with `settings_change_running`. The window disables its controls
   until the answer arrives.

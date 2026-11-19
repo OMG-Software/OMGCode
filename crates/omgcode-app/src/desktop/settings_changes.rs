@@ -396,20 +396,34 @@ impl DesktopService {
         })
     }
 
-    /// Apply one change to a freshly opened store, release it, stop the runs
-    /// that lost access, and return the new overview.
+    /// Apply one change to a freshly opened store, list the runs it withdrew
+    /// while the store is still held, release it, wait for those runs and any
+    /// others the settings withdraw to stop, and return the new overview.
+    ///
+    /// The runs are listed under the lock because runs start only under it,
+    /// and a change that restores access after the release cannot then hide
+    /// them. Such a run is still waited for, and is reported as not stopped
+    /// if it keeps running.
     fn apply(
         &self,
         change: impl FnOnce(&mut ControlStore) -> Result<(), ControlError>,
     ) -> Result<SettingsOverview, DesktopError> {
-        {
+        let affected = {
             let mut store = self.inner.open_or_create_control()?;
             change(&mut store).map_err(|error| DesktopError::from_control(&error))?;
-        }
-        let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, &[])
+            run::withdrawn_runs(&store)
+        };
+        // An unreadable run journal never undoes the recorded change: stop
+        // what the settings now withdraw, then report that the runs were not
+        // all checked.
+        let named = affected.as_deref().unwrap_or(&[]);
+        let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, named)
             .map_err(|_| DesktopError::runs_unchecked())?;
         if !withdrawn.unconfirmed.is_empty() {
             return Err(DesktopError::runs_not_stopped(withdrawn.unconfirmed.len()));
+        }
+        if affected.is_err() {
+            return Err(DesktopError::runs_unchecked());
         }
         let store = self.inner.open_or_create_control()?;
         Ok(overview_of(&self.inner, store))

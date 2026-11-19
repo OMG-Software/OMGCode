@@ -38,8 +38,10 @@ Changes are recorded here before a release version is assigned.
   - **Safe ordering:** no settings lock is held while a dialog is open. A
     change made meanwhile makes the request fail with the new code
     `stale_revision`, so the change the operator confirmed is the one
-    applied. Runs that lost access are stopped and observed, as for the
-    CLI (`runs_not_stopped` otherwise). One change runs at a time
+    applied. The runs a change withdraws are listed by the new core
+    function `run::withdrawn_runs` while the settings lock is held, then
+    stopped and observed (`runs_not_stopped` otherwise), so a change that
+    restores access before the check cannot hide them. One change runs at a time
     (`settings_change_running`). A closed dialog or a No answer returns
     `cancelled`. A missing root returns `no_development_root`.
   - **Settings window controls:** the development root has **Choose
