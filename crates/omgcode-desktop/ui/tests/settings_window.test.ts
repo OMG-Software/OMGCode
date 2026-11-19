@@ -10,13 +10,15 @@ import type {
 import { HOSTILE } from "../src/mock/fixtures";
 import {
   ACCESS_HELP,
+  ADVANCED_HELP,
   DEFAULT_CHOICE,
   DEFAULT_ENDPOINTS,
-  INTRO,
+  MODEL_HELP,
   NOTHING_CHANGED,
   PERMISSION_LABELS,
   type SettingsApp,
   startSettings,
+  WORKSPACES_HELP,
   WRITE_TOOL_LABELS,
 } from "../src/settings/app";
 import {
@@ -138,25 +140,53 @@ function checkbox(label: string): HTMLInputElement {
   return found;
 }
 
-function selector(label: string): HTMLSelectElement {
-  const found = root.querySelector(`select[aria-label="${label}"]`);
-  if (!(found instanceof HTMLSelectElement)) {
-    throw new Error(`No selector ${label}`);
+/** Show a section as the operator would, by pressing its navigation button. */
+function go(section: string): void {
+  const found = Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+    (item) => item.textContent === section,
+  );
+  if (found === undefined) {
+    throw new Error(`No navigation button ${section}`);
+  }
+  found.click();
+}
+
+function group(label: string): HTMLElement {
+  const found = root.querySelector(`[role=radiogroup][aria-label="${label}"]`);
+  if (!(found instanceof HTMLElement)) {
+    throw new Error(`No permission control ${label}`);
   }
   return found;
 }
 
-/** Choose `value` in a selector as the operator would. */
+/** The state a Deny, Prompt, Allow control shows as chosen. */
+function stateOf(label: string): string | null | undefined {
+  return group(label).querySelector("[aria-checked=true]")?.getAttribute("data-value");
+}
+
+/** Choose a state in a Deny, Prompt, Allow control as the operator would. */
 function choose(label: string, value: string): void {
-  const select = selector(label);
-  select.value = value;
-  select.dispatchEvent(new Event("change"));
+  const choice = group(label).querySelector<HTMLButtonElement>(`[data-value="${value}"]`);
+  if (choice === null) {
+    throw new Error(`No ${value} choice in ${label}`);
+  }
+  choice.click();
 }
 
 function workspaceCard(): HTMLElement {
-  const found = root.querySelector(".card");
+  const found = root.querySelector(".workspace-block");
   if (!(found instanceof HTMLElement)) {
-    throw new Error("No workspace card");
+    throw new Error("No workspace block");
+  }
+  return found;
+}
+
+function rowOf(name: string): HTMLElement {
+  const found = Array.from(root.querySelectorAll<HTMLElement>(".row")).find(
+    (row) => row.querySelector(".row-title")?.textContent === name,
+  );
+  if (found === undefined) {
+    throw new Error(`No row ${name}`);
   }
   return found;
 }
@@ -214,67 +244,89 @@ describe("settings window", () => {
     expect(ipc.callsTo("settings_overview")[0]?.args).toEqual({});
   });
 
-  it("explains the system dialogs and what still needs the CLI", async () => {
+  it("gives each section one short line of help and says what still needs the CLI", async () => {
     await start(() => overview());
-    expect(root.textContent).toContain(INTRO);
+    // Workspaces is shown first.
+    expect(root.textContent).toContain(WORKSPACES_HELP);
+    go("Model");
+    expect(root.textContent).toContain(MODEL_HELP);
+    go("Advanced");
+    expect(root.textContent).toContain(ADVANCED_HELP);
+    expect(ADVANCED_HELP).toContain("omgcode workspace");
+    expect(ADVANCED_HELP).toContain("omgcode skills");
+  });
+
+  it("types no path and offers exactly three access states everywhere", async () => {
+    await start(() => overview());
     // No control takes a typed path: folders come only from the system dialog. The only typed
-    // values are a new connection's name and loopback URL (ADR-0064).
-    expect(root.querySelectorAll("textarea")).toHaveLength(0);
-    const typed = Array.from(root.querySelectorAll("input"))
-      .filter((input) => input.type !== "checkbox")
-      .map((input) => input.getAttribute("aria-label"));
+    // values are a new connection name and loopback URL (ADR-0064).
+    const typed: Array<string | null> = [];
+    for (const section of ["Workspaces", "Model", "Advanced"]) {
+      go(section);
+      expect(root.querySelectorAll("textarea")).toHaveLength(0);
+      for (const input of Array.from(root.querySelectorAll("input"))) {
+        if (input.type !== "checkbox") {
+          typed.push(input.getAttribute("aria-label"));
+        }
+      }
+    }
     expect(typed).toEqual(["New connection name", "New connection endpoint"]);
-    // Two dropdowns choose a provider; every other one offers exactly the three access states.
+    // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
+    // group, and the three labels are the same everywhere.
+    go("Model");
     const providerLabels = ["Model provider", "New connection provider"];
     const selects = Array.from(root.querySelectorAll("select"));
-    const providers = selects.filter((s) => providerLabels.includes(s.ariaLabel ?? ""));
-    expect(providers.map((s) => s.ariaLabel)).toEqual(providerLabels);
-    const access = selects.filter((s) => !providers.includes(s));
-    expect(access).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length);
-    for (const select of access) {
-      expect(Array.from(select.options).map((option) => option.value)).toEqual([
-        "deny",
-        "prompt",
-        "allow",
-      ]);
+    expect(selects.map((s) => s.ariaLabel)).toEqual(providerLabels);
+    go("Workspaces");
+    expect(root.querySelectorAll("select")).toHaveLength(0);
+    const groups = Array.from(root.querySelectorAll("[role=radiogroup]"));
+    expect(groups).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length);
+    for (const one of groups) {
+      expect(one.classList.contains("access")).toBe(true);
+      const buttons = Array.from(one.querySelectorAll("button"));
+      expect(buttons.map((b) => b.textContent)).toEqual(["Deny", "Prompt", "Allow"]);
+      expect(buttons.map((b) => b.getAttribute("data-value"))).toEqual(["deny", "prompt", "allow"]);
     }
     expect(root.textContent).toContain(ACCESS_HELP);
   });
 
   it("shows each group of the configuration", async () => {
     await start(() => overview());
-    const text = root.textContent ?? "";
-    expect(text).toContain("Settings revision 7");
-    expect(text).toContain("/home/dev/project");
-    expect(text).toContain("Provider profile lms, set at launch");
-    expect(text).toContain("LM Studio");
-    expect(text).toContain("stored");
-    expect(text).toContain("/opt/rust");
-    expect(text).toContain("RUSTUP_HOME");
-    expect(text).toContain("No package-network profile is recorded.");
-    expect(text).toContain("No container grant is recorded.");
-    // Model tools is a checkbox; each other preference is a selector showing the recorded state.
+    expect(root.textContent).toContain("Revision 7");
+    expect(root.textContent).toContain("/home/dev/project");
+    // Model tools is a checkbox; each other preference is a control showing the recorded state.
     expect(checkbox("model tools").checked).toBe(true);
-    expect(PERMISSION_LABELS.map(([, label]) => selector(label).value)).toEqual([
+    expect(PERMISSION_LABELS.map(([, label]) => stateOf(label))).toEqual([
       "allow",
       "prompt",
       "deny",
       "deny",
       "deny",
     ]);
-    expect(WRITE_TOOL_LABELS.map(([, label]) => selector(label).value)).toEqual([
+    expect(WRITE_TOOL_LABELS.map(([, label]) => stateOf(label))).toEqual([
       "allow",
       "allow",
       "allow",
       "allow",
       "allow",
     ]);
+
+    go("Model");
+    let text = root.textContent ?? "";
+    expect(text).toContain("Provider profile lms, set at launch");
+    expect(text).toContain("LM Studio");
+    expect(text).toContain("stored");
+
+    go("Advanced");
+    text = root.textContent ?? "";
+    expect(text).toContain("/opt/rust");
+    expect(text).toContain("RUSTUP_HOME");
+    expect(text).toContain("No package-network profile is recorded.");
+    expect(text).toContain("No container grant is recorded.");
     // A skill override names the workspace by its folder.
-    const skill = Array.from(root.querySelectorAll(".card")).find((card) =>
-      card.textContent?.startsWith("review"),
-    );
-    expect(skill?.textContent).toContain("/home/dev/project");
-    expect(skill?.textContent).toContain("disabled");
+    const skill = rowOf("review");
+    expect(skill.textContent).toContain("/home/dev/project");
+    expect(skill.textContent).toContain("disabled");
   });
 
   it("asks the core to choose the root with the revision it read and shows the reply", async () => {
@@ -283,6 +335,7 @@ describe("settings window", () => {
     });
     expect(buttonByText(root, "Register workspace").disabled).toBe(true);
     expect(root.textContent).toContain("Choose a development root first.");
+    expect(root.textContent).toContain("No workspace is registered.");
 
     buttonByText(root, "Choose folder").click();
     await settle();
@@ -290,7 +343,7 @@ describe("settings window", () => {
     // The window names no folder: Rust opens the dialog.
     expect(ipc.callsTo("settings_choose_root")[0]?.args).toEqual({ revision: 7 });
     expect(root.textContent).toContain("C:\\code");
-    expect(root.textContent).toContain("Settings revision 8");
+    expect(root.textContent).toContain("Revision 8");
     expect(buttonByText(root, "Register workspace").disabled).toBe(false);
   });
 
@@ -316,7 +369,7 @@ describe("settings window", () => {
       settings_set_permissions: () =>
         overview({ revision: 8, workspaces: [workspace({ execute: "prompt" })] }),
     });
-    choose("execute", "prompt");
+    choose("Execute", "prompt");
     await settle();
 
     expect(ipc.callsTo("settings_set_permissions")[0]?.args).toEqual({
@@ -332,7 +385,7 @@ describe("settings window", () => {
         write_tools: ALL_TOOLS,
       },
     });
-    expect(selector("execute").value).toBe("prompt");
+    expect(stateOf("Execute")).toBe("prompt");
   });
 
   it("sends a tool limit inside the complete preference set", async () => {
@@ -343,7 +396,7 @@ describe("settings window", () => {
           workspaces: [workspace({ write_tools: { ...ALL_TOOLS, delete: "deny" } })],
         }),
     });
-    choose("delete tool", "deny");
+    choose("Delete tool", "deny");
     await settle();
 
     expect(ipc.callsTo("settings_set_permissions")[0]?.args).toEqual({
@@ -359,8 +412,8 @@ describe("settings window", () => {
         write_tools: { ...ALL_TOOLS, delete: "deny" },
       },
     });
-    expect(selector("delete tool").value).toBe("deny");
-    expect(selector("edit tool").value).toBe("allow");
+    expect(stateOf("Delete tool")).toBe("deny");
+    expect(stateOf("Edit tool")).toBe("allow");
   });
 
   it("sends the model tools checkbox with every state unchanged", async () => {
@@ -381,7 +434,7 @@ describe("settings window", () => {
     await start(() => overview(), {
       settings_set_permissions: () => rejection("cancelled", "No change was made."),
     });
-    choose("write", "allow");
+    choose("Write", "allow");
     await settle();
 
     const notice = root.querySelector("[role=status]") as HTMLElement;
@@ -390,7 +443,7 @@ describe("settings window", () => {
     expect((root.querySelector("[role=alert]") as HTMLElement).hidden).toBe(true);
     // The window read the configuration again, so the selector shows what is recorded.
     expect(ipc.callsTo("settings_overview")).toHaveLength(2);
-    expect(selector("write").value).toBe("prompt");
+    expect(stateOf("Write")).toBe("prompt");
   });
 
   it("restores the last read value when reading again after a declined dialog fails", async () => {
@@ -398,12 +451,12 @@ describe("settings window", () => {
       settings_set_permissions: () => rejection("cancelled", "No change was made."),
     });
     ipc.on("settings_overview", () => rejection("io", "The settings could not be read."));
-    choose("write", "allow");
+    choose("Write", "allow");
     await settle();
 
     expect(ipc.callsTo("settings_overview")).toHaveLength(2);
-    // The selector shows the recorded state again, not what the operator asked for.
-    expect(selector("write").value).toBe("prompt");
+    // The control shows the recorded state again, not what the operator asked for.
+    expect(stateOf("Write")).toBe("prompt");
     expect((root.querySelector("[role=status]") as HTMLElement).textContent).toBe(NOTHING_CHANGED);
     const alert = root.querySelector("[role=alert]") as HTMLElement;
     expect(alert.hidden).toBe(false);
@@ -425,7 +478,7 @@ describe("settings window", () => {
     expect(alert.textContent).toBe(
       "The settings changed since this window read them. (stale_revision)",
     );
-    expect(root.textContent).toContain("Settings revision 9");
+    expect(root.textContent).toContain("Revision 9");
   });
 
   it("disables every control while a change waits for the operator", async () => {
@@ -441,8 +494,13 @@ describe("settings window", () => {
     expect(body().disabled).toBe(true);
     expect(buttonByText(root, "Refresh").disabled).toBe(true);
 
+    // Every control is disabled, the navigation included.
+    const items = Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-item"));
+    expect(items).toHaveLength(3);
+    expect(items.every((item) => item.disabled)).toBe(true);
+
     // A second click while the first waits sends nothing.
-    choose("write", "allow");
+    choose("Write", "allow");
     await settle();
     expect(ipc.callsTo("settings_set_permissions")).toHaveLength(0);
 
@@ -529,6 +587,7 @@ describe("settings window", () => {
         ],
       }),
     );
+    go("Model");
     const provider = picker("Model provider");
     expect(provider.disabled).toBe(false);
     expect(Array.from(provider.options).map((option) => option.value)).toEqual([
@@ -540,7 +599,8 @@ describe("settings window", () => {
     expect(provider.selectedOptions[0]?.textContent).toBe(`Ollama: ollama (${OLLAMA_ENDPOINT})`);
     const text = root.textContent ?? "";
     expect(text).toContain("Provider profile ollama, chosen here");
-    expect(text).toContain("ollama (active)");
+    expect(rowOf("ollama").textContent).toContain("Active");
+    expect(rowOf("lms").textContent).not.toContain("Active");
   });
 
   it("asks the core to switch with the revision it read when a provider is chosen", async () => {
@@ -558,6 +618,7 @@ describe("settings window", () => {
           provider_profiles: [lms(), ollama({ active: true })],
         }),
     });
+    go("Model");
     const provider = picker("Model provider");
     expect(provider.value).toBe(DEFAULT_CHOICE);
     provider.value = "ollama";
@@ -587,6 +648,7 @@ describe("settings window", () => {
     await start(() => choosable(), {
       settings_select_connection: () => rejection("cancelled", "No change was made."),
     });
+    go("Model");
     const provider = picker("Model provider");
     provider.value = "ollama";
     provider.dispatchEvent(new Event("change"));
@@ -597,6 +659,7 @@ describe("settings window", () => {
 
   it("disables the dropdown when a launch argument fixed the connection", async () => {
     await start(() => overview());
+    go("Model");
     const provider = picker("Model provider");
     expect(provider.disabled).toBe(true);
     expect(provider.selectedOptions[0]?.textContent).toBe(
@@ -609,6 +672,7 @@ describe("settings window", () => {
     await start(() => choosable({ provider_profiles: [] }), {
       settings_add_local_connection: () => choosable({ revision: 8 }),
     });
+    go("Model");
     expect(picker("New connection provider").value).toBe("ollama_local");
     expect(field("New connection name").value).toBe("ollama");
     expect(field("New connection endpoint").value).toBe(DEFAULT_ENDPOINTS.ollama_local);
@@ -634,39 +698,34 @@ describe("settings window", () => {
       kind: "ollama_local",
       endpoint: "http://127.0.0.1:4000/v1",
     });
-    expect(root.textContent).toContain("Settings revision 8");
+    expect(root.textContent).toContain("Revision 8");
   });
 
   it("removes a connection without a credential and leaves a stored one to the CLI", async () => {
     await start(() => choosable(), {
       settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [lms()] }),
     });
-    const cardOf = (name: string): HTMLElement =>
-      Array.from(root.querySelectorAll<HTMLElement>(".card")).find(
-        (card) => card.querySelector(".card-title")?.textContent === name,
-      ) as HTMLElement;
-    expect(buttonByText(cardOf("lms"), "Remove").disabled).toBe(true);
-    expect(cardOf("lms").textContent).toContain("remove with the trusted CLI");
-    buttonByText(cardOf("ollama"), "Remove").click();
+    go("Model");
+    expect(buttonByText(rowOf("lms"), "Remove").disabled).toBe(true);
+    expect(rowOf("lms").textContent).toContain("remove with the trusted CLI");
+    buttonByText(rowOf("ollama"), "Remove").click();
     await settle();
     expect(ipc.callsTo("settings_remove_connection")[0]?.args).toEqual({
       revision: 7,
       name: "ollama",
     });
-    expect(cardOf("ollama")).toBeUndefined();
+    expect(() => rowOf("ollama")).toThrow();
   });
 
   it("keeps the active connection when its removal is declined", async () => {
     await start(() => choosable(), {
       settings_remove_connection: () => rejection("cancelled", "The change was not confirmed."),
     });
-    const ollama = Array.from(root.querySelectorAll<HTMLElement>(".card")).find(
-      (card) => card.querySelector(".card-title")?.textContent === "ollama",
-    ) as HTMLElement;
-    buttonByText(ollama, "Remove").click();
+    go("Model");
+    buttonByText(rowOf("ollama"), "Remove").click();
     await settle();
     expect(root.textContent).toContain("No change was made.");
-    // The configuration is read again, so the card is still shown.
+    // The configuration is read again, so the row is still shown.
     expect(ipc.callsTo("settings_overview").length).toBeGreaterThan(1);
     expect(root.textContent).toContain("ollama");
   });

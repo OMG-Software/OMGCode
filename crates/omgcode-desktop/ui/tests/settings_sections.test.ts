@@ -1,0 +1,486 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setInvoker } from "../src/ipc/client";
+import type {
+  ProviderProfileView,
+  SettingsOverview,
+  WorkspaceSettingsView,
+  WriteToolAccess,
+} from "../src/ipc/types";
+import { type SettingsApp, startSettings } from "../src/settings/app";
+import { buttonByText, type FakeIpc, installFakeIpc, mountRoot, settle } from "./helpers";
+
+const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const ALL_TOOLS: WriteToolAccess = {
+  edit: "allow",
+  multi_edit: "allow",
+  create: "allow",
+  rename: "allow",
+  delete: "allow",
+};
+
+function workspace(id: string, folder: string, extra: Partial<WorkspaceSettingsView> = {}) {
+  return {
+    workspace_id: id,
+    folder_display: folder,
+    model_tools: true,
+    read: "allow",
+    write: "prompt",
+    execute: "deny",
+    task_network: "deny",
+    host_services: "deny",
+    write_tools: { ...ALL_TOOLS },
+    package_cache_root: null,
+    ...extra,
+  } satisfies WorkspaceSettingsView;
+}
+
+function profile(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
+  return {
+    name: "ollama",
+    kind: "ollama_local",
+    auth: "none",
+    endpoint: "http://127.0.0.1:11434/v1",
+    credential_bound: false,
+    selectable: true,
+    active: false,
+    ...overrides,
+  };
+}
+
+function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
+  return {
+    revision: 3,
+    development_root: "/home/dev",
+    workspaces: [workspace(A, "/home/dev/a"), workspace(B, "/home/dev/b", { write: "allow" })],
+    connection: {
+      endpoint: "http://127.0.0.1:1234/v1",
+      source: "active",
+      profile: null,
+      kind: null,
+      selectable: true,
+    },
+    provider_profiles: [profile()],
+    toolchain_profiles: [],
+    package_profiles: [],
+    container_grants: [],
+    skills: [],
+    ...overrides,
+  };
+}
+
+let app: SettingsApp | null = null;
+let root: HTMLElement;
+let ipc: FakeIpc;
+
+async function start(
+  reply: () => unknown,
+  more: Record<string, (args: Record<string, unknown>) => unknown> = {},
+): Promise<void> {
+  app?.dispose();
+  ipc = installFakeIpc({ settings_overview: reply, ...more });
+  root = mountRoot();
+  app = startSettings(root);
+  await settle();
+}
+
+function navItems(): HTMLButtonElement[] {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-item"));
+}
+
+function go(label: string): void {
+  const found = navItems().find((item) => item.textContent === label);
+  if (found === undefined) {
+    throw new Error(`No navigation button ${label}`);
+  }
+  found.click();
+}
+
+function current(): string | null {
+  const marked = navItems().filter((item) => item.getAttribute("aria-current") === "page");
+  return marked.length === 1 ? (marked[0]?.textContent ?? null) : null;
+}
+
+function chooser(): HTMLSelectElement {
+  return root.querySelector('select[aria-label="Workspace"]') as HTMLSelectElement;
+}
+
+function pick(select: HTMLSelectElement, value: string): void {
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
+}
+
+function choose(label: string, value: string): void {
+  const group = root.querySelector(`[role=radiogroup][aria-label="${label}"]`);
+  const choice = group?.querySelector<HTMLButtonElement>(`[data-value="${value}"]`);
+  if (!choice) {
+    throw new Error(`No ${value} choice in ${label}`);
+  }
+  choice.click();
+}
+
+function heading(): string | null | undefined {
+  return root.querySelector(".workspace-title")?.textContent;
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  app?.dispose();
+  app = null;
+  setInvoker(null);
+  vi.useRealTimers();
+});
+
+describe("settings navigation", () => {
+  it("lists three sections, starts on Workspaces, and marks the shown one", async () => {
+    await start(() => overview());
+    expect(navItems().map((item) => item.textContent)).toEqual(["Model", "Workspaces", "Advanced"]);
+    expect(current()).toBe("Workspaces");
+    expect(root.querySelector("h2")?.textContent).toBe("Workspaces");
+
+    go("Model");
+    expect(current()).toBe("Model");
+    expect(root.querySelector("h2")?.textContent).toBe("Model");
+    expect(root.querySelector(".workspace-block")).toBeNull();
+
+    go("Advanced");
+    expect(current()).toBe("Advanced");
+    expect(root.querySelector("h2")?.textContent).toBe("Advanced");
+    // Switching sections reads nothing and sends nothing.
+    expect(ipc.calls.map((call) => call.command)).toEqual(["settings_overview"]);
+  });
+
+  it("puts Refresh and the revision in the navigation", async () => {
+    await start(() => overview());
+    const nav = root.querySelector("nav") as HTMLElement;
+    expect(nav.getAttribute("aria-label")).toBe("Settings sections");
+    expect(buttonByText(nav, "Refresh")).toBeDefined();
+    expect(nav.textContent).toContain("Revision 3");
+  });
+
+  it("keeps the section across a refresh, a visibility read, and a change", async () => {
+    await start(() => overview(), {
+      settings_select_connection: () => overview({ revision: 4 }),
+    });
+    go("Model");
+    ipc.on("settings_overview", () => overview({ revision: 5 }));
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(current()).toBe("Model");
+    expect(root.textContent).toContain("Revision 5");
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(current()).toBe("Model");
+
+    const provider = root.querySelector("#provider-picker") as HTMLSelectElement;
+    pick(provider, "ollama");
+    await settle();
+    expect(ipc.callsTo("settings_select_connection")).toHaveLength(1);
+    expect(current()).toBe("Model");
+    expect(root.textContent).toContain("Revision 4");
+  });
+
+  it("keeps the section after a refused change that reads the settings again", async () => {
+    await start(() => overview(), {
+      settings_choose_root: () => {
+        throw { code: "stale_revision", message: "The settings changed." };
+      },
+    });
+    go("Advanced");
+    go("Workspaces");
+    buttonByText(root, "Change").click();
+    await settle();
+    expect(current()).toBe("Workspaces");
+    expect((root.querySelector("[role=alert]") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("uses no web storage", async () => {
+    const before = [localStorage.length, sessionStorage.length];
+    await start(() => overview());
+    go("Model");
+    expect([localStorage.length, sessionStorage.length]).toEqual(before);
+  });
+});
+
+describe("workspace chooser", () => {
+  it("is absent for one workspace and chooses between several", async () => {
+    await start(() => overview({ workspaces: [workspace(A, "/home/dev/a")] }));
+    expect(chooser()).toBeNull();
+    expect(heading()).toBe("/home/dev/a");
+
+    await start(() => overview());
+    expect(chooser().labels?.[0]?.textContent).toBe("Workspace");
+    expect(Array.from(chooser().options).map((o) => [o.value, o.textContent])).toEqual([
+      [A, "/home/dev/a"],
+      [B, "/home/dev/b"],
+    ]);
+    expect(heading()).toBe("/home/dev/a");
+  });
+
+  it("shows the chosen workspace, sends its identifier, and remembers it by identifier", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () =>
+        overview({
+          revision: 4,
+          workspaces: [
+            workspace(B, "/home/dev/b", { write: "allow", execute: "prompt" }),
+            workspace(A, "/home/dev/a"),
+          ],
+        }),
+    });
+    pick(chooser(), B);
+    expect(heading()).toBe("/home/dev/b");
+    expect(chooser().value).toBe(B);
+    // Choosing a workspace to look at sends nothing.
+    expect(ipc.calls.map((call) => call.command)).toEqual(["settings_overview"]);
+
+    choose("Execute", "prompt");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({
+      workspace_id: B,
+      revision: 3,
+    });
+    // The order changed, but the same workspace is still shown.
+    expect(heading()).toBe("/home/dev/b");
+    expect(chooser().value).toBe(B);
+
+    go("Model");
+    go("Workspaces");
+    expect(heading()).toBe("/home/dev/b");
+  });
+
+  it("falls back to the first workspace when the shown one disappears", async () => {
+    await start(() => overview());
+    pick(chooser(), B);
+    expect(heading()).toBe("/home/dev/b");
+
+    ipc.on("settings_overview", () =>
+      overview({ revision: 4, workspaces: [workspace(A, "/home/dev/a")] }),
+    );
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(heading()).toBe("/home/dev/a");
+    expect(chooser()).toBeNull();
+  });
+});
+
+describe("permission controls", () => {
+  it("send the whole preference set with one state changed", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () => overview({ revision: 4 }),
+    });
+    choose("Task network", "prompt");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toEqual({
+      workspace_id: A,
+      revision: 3,
+      permissions: {
+        model_tools: true,
+        read: "allow",
+        write: "prompt",
+        execute: "deny",
+        task_network: "prompt",
+        host_services: "deny",
+        write_tools: ALL_TOOLS,
+      },
+    });
+  });
+
+  it("send a tool limit and the model tools box with every other state", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () => overview({ revision: 4 }),
+    });
+    choose("Create tool", "prompt");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({
+      permissions: { write: "prompt", write_tools: { ...ALL_TOOLS, create: "prompt" } },
+    });
+    const box = root.querySelector('input[aria-label="model tools"]') as HTMLInputElement;
+    box.checked = false;
+    box.dispatchEvent(new Event("change"));
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[1]?.args).toMatchObject({
+      permissions: { model_tools: false, read: "allow", write: "prompt", write_tools: ALL_TOOLS },
+    });
+  });
+
+  it("send nothing for the state already chosen", async () => {
+    await start(() => overview());
+    choose("Write", "prompt");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")).toHaveLength(0);
+  });
+
+  it("name the permission and mark Deny, Prompt, Allow by data-value", async () => {
+    await start(() => overview());
+    for (const label of ["Read", "Write", "Execute", "Task network", "Host services"]) {
+      const group = root.querySelector(`[role=radiogroup][aria-label="${label}"]`);
+      expect(group, label).not.toBeNull();
+      expect(group?.classList.contains("access")).toBe(true);
+    }
+  });
+
+  it("show a muted note beside a tool wider than Write", async () => {
+    await start(() => overview());
+    const notes = Array.from(root.querySelectorAll(".perm-note")).map((n) => n.textContent);
+    expect(notes).toEqual(Array(5).fill("Limited by Write: Prompt"));
+
+    await start(() =>
+      overview({
+        workspaces: [
+          workspace(A, "/home/dev/a", {
+            write: "prompt",
+            write_tools: { ...ALL_TOOLS, edit: "prompt", create: "deny" },
+          }),
+        ],
+      }),
+    );
+    // Only the tools wider than Write carry the note: multi-edit, rename, delete.
+    const rows = Array.from(root.querySelectorAll(".tool-limits .perm-row"));
+    const noted = rows
+      .filter((row) => row.querySelector(".perm-note") !== null)
+      .map((row) => row.querySelector(".perm-label")?.textContent);
+    expect(noted).toEqual(["Multi-edit tool", "Rename tool", "Delete tool"]);
+
+    await start(() => overview({ workspaces: [workspace(A, "/home/dev/a", { write: "allow" })] }));
+    expect(root.querySelectorAll(".perm-note")).toHaveLength(0);
+  });
+
+  it("hold the tool limits in a disclosure under Write that stays open", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () => overview({ revision: 4 }),
+    });
+    const details = root.querySelector("details.tool-limits") as HTMLDetailsElement;
+    expect(details.querySelector("summary")?.textContent).toBe("File-write tool limits");
+    expect(details.querySelectorAll("[role=radiogroup]")).toHaveLength(5);
+    expect(details.open).toBe(false);
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    choose("Delete tool", "prompt");
+    await settle();
+    expect((root.querySelector("details.tool-limits") as HTMLDetailsElement).open).toBe(true);
+  });
+});
+
+describe("advanced section", () => {
+  it("is read-only: no button, field, or checkbox changes anything", async () => {
+    await start(() =>
+      overview({
+        toolchain_profiles: [
+          {
+            name: "rust",
+            platform: "linux",
+            read_only_roots: ["/opt/rust"],
+            path_entries: ["/opt/rust/bin"],
+            environment_names: ["RUSTUP_HOME"],
+          },
+        ],
+        package_profiles: [
+          { name: "crates", origins: ["https://crates.io"], credentials_bound: 0 },
+        ],
+        container_grants: [
+          {
+            grant_id: "g1",
+            workspace_id: A,
+            directory: "C:\\code\\a",
+            access: "read_write",
+            state: "active",
+          },
+        ],
+        skills: [{ name: "review", application: null, workspace_overrides: [] }],
+      }),
+    );
+    go("Advanced");
+    expect(root.querySelector(".settings-body button")).toBeNull();
+    expect(root.querySelector(".settings-body input, .settings-body select")).toBeNull();
+    expect(root.querySelector(".settings-body textarea")).toBeNull();
+    const headings = Array.from(root.querySelectorAll("h3")).map((h) => h.textContent);
+    expect(headings).toEqual([
+      "Toolchain profiles",
+      "Package-network profiles",
+      "Container grants",
+      "Skills",
+    ]);
+    const text = root.textContent ?? "";
+    expect(text).toContain("https://crates.io");
+    expect(text).toContain("read and write");
+    expect(text).toContain("/home/dev/a");
+    expect(text).toContain("not set (disabled)");
+  });
+
+  it("gives each empty group one line", async () => {
+    await start(() => overview());
+    go("Advanced");
+    const lines = Array.from(root.querySelectorAll(".empty")).map((p) => p.textContent);
+    expect(lines).toEqual([
+      "No toolchain profile is recorded.",
+      "No package-network profile is recorded.",
+      "No container grant is recorded.",
+      "No skill is imported.",
+    ]);
+  });
+});
+
+describe("hostile configuration text", () => {
+  const rtl = String.fromCharCode(0x202e);
+  const bidi = String.fromCharCode(0x2066);
+  const hostile = `<img src=x onerror=alert(1)>${rtl}exe.txt${bidi}`;
+
+  it("stays text in every section", async () => {
+    await start(() =>
+      overview({
+        development_root: hostile,
+        workspaces: [workspace(A, hostile, { package_cache_root: "</script><b>x</b>" })],
+        connection: {
+          endpoint: hostile,
+          source: "profile",
+          profile: hostile,
+          kind: "lm_studio",
+          selectable: false,
+        },
+        provider_profiles: [
+          profile({ name: hostile, endpoint: hostile, auth: hostile, active: true }),
+        ],
+        toolchain_profiles: [
+          {
+            name: hostile,
+            platform: "windows",
+            read_only_roots: [hostile],
+            path_entries: [hostile],
+            environment_names: [hostile],
+          },
+        ],
+        package_profiles: [{ name: hostile, origins: [hostile], credentials_bound: 1 }],
+        container_grants: [
+          {
+            grant_id: hostile,
+            workspace_id: "gone",
+            directory: hostile,
+            access: "read_execute",
+            state: "pending",
+          },
+        ],
+        skills: [
+          {
+            name: hostile,
+            application: true,
+            workspace_overrides: [{ workspace_id: A, enabled: true }],
+          },
+        ],
+      }),
+    );
+    for (const section of ["Workspaces", "Model", "Advanced"]) {
+      go(section);
+      expect(root.querySelector("img, script, b"), section).toBeNull();
+      expect(root.querySelector("[onerror]"), section).toBeNull();
+      const text = root.textContent ?? "";
+      expect(text, section).toContain("<img src=x onerror=alert(1)>");
+      expect(text, section).not.toContain(rtl);
+      expect(text, section).not.toContain(bidi);
+    }
+  });
+});
