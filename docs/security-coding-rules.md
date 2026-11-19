@@ -47,8 +47,14 @@ authorization. See
   binding between the approval and a recorded request. Show request fields next
   to a decision control only when core reproduces the approval's digest. The
   webview is still web content, not a trusted computing base.
-- Fix the provider endpoint and read the provider token outside the webview. A
-  webview request cannot choose either.
+- Resolve the provider endpoint and read the provider token outside the
+  webview. A `main` webview request cannot choose either. Only the `settings`
+  window may choose the active connection, among recorded local profiles with
+  an endpoint, and only after a native confirmation that names the provider
+  and endpoint; a launch argument fixes it instead. The `settings` window may
+  supply a loopback endpoint for a new local profile without a credential,
+  and core validates it. Refuse a `main` request whose endpoint differs from
+  the one resolved for the turn (ADR-0062).
 - Show the trusted configuration view only in the `settings` window, which
   renders no transcript text, tool output, or skill description or body, and
   grant the configuration commands to that window only (ADR-0059). The

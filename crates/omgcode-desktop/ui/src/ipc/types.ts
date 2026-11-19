@@ -274,12 +274,18 @@ export interface PermissionFlags {
   host_services: boolean;
 }
 
-export type ConnectionSource = "environment" | "profile" | "injected";
+export type ConnectionSource = "environment" | "profile" | "active" | "injected";
 
 export interface ConnectionView {
+  /** The endpoint the next chat turn uses. */
   endpoint: string;
   source: ConnectionSource;
+  /** The profile in use, or `null` for the launch or default endpoint. */
   profile: string | null;
+  /** That profile's provider kind, as the CLI names it. */
+  kind: string | null;
+  /** Whether this window may choose the active connection (no launch argument fixed it). */
+  selectable: boolean;
 }
 
 export interface ProviderProfileView {
@@ -288,7 +294,14 @@ export interface ProviderProfileView {
   auth: string;
   endpoint: string | null;
   credential_bound: boolean;
+  /** A local LM Studio or Ollama profile with a recorded endpoint (ADR-0062). */
+  selectable: boolean;
+  /** Whether it is the active connection. */
+  active: boolean;
 }
+
+/** A local provider the settings window may record (ADR-0062). */
+export type LocalProviderKind = "lm_studio" | "ollama_local";
 
 export interface ToolchainProfileView {
   name: string;

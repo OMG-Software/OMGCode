@@ -28,9 +28,14 @@ const MAX_INSTRUCTIONS_INPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
 
 impl DesktopService {
-    /// The settings the interface starts from: the fixed endpoint with the
-    /// saved chat preferences, or with an empty model and the CLI's budgets
-    /// when none are saved (ADR-0059 decision 8).
+    /// The settings the interface starts from: the endpoint the next turn
+    /// would use with the saved chat preferences, or with an empty model and
+    /// the CLI's budgets when none are saved (ADR-0059 decision 8).
+    ///
+    /// The endpoint is the launch endpoint when it is fixed, and otherwise
+    /// the active connection selected in `settings` (ADR-0062). When the
+    /// active connection cannot be read now, the launch default is shown and
+    /// `chat_send` reports the precise failure.
     ///
     /// A preferences file that cannot be read or fails validation is reported
     /// as [`PreferencesSource::Unreadable`] and the built-in defaults apply,
@@ -41,9 +46,14 @@ impl DesktopService {
             Ok(None) => (built_in_preferences(), PreferencesSource::Defaults),
             Err(_) => (built_in_preferences(), PreferencesSource::Unreadable),
         };
+        let endpoint = self
+            .inner
+            .token
+            .current_endpoint(&self.inner.data_root, &self.inner.endpoint)
+            .map_or_else(|_| self.inner.endpoint.clone(), |current| current.endpoint);
         ChatDefaults {
             settings: ChatSettingsDto {
-                endpoint: self.inner.endpoint.clone(),
+                endpoint,
                 model: preferences.model,
                 context_tokens: preferences.context_tokens,
                 max_output_tokens: preferences.max_output_tokens,
@@ -80,15 +90,17 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `invalid_request` (endpoint differs, empty or oversized message),
-    /// `not_found`, `invalid_journal`, `busy`, `archived`, `turn_open`,
-    /// `turn_running`, `too_many_turns`, `shutting_down`, `internal` (thread
-    /// start failure), and the application layer's `provider`, `configuration`,
-    /// and `credential` codes for unusable settings or token.
+    /// `invalid_request` (a fixed endpoint differs, empty or oversized
+    /// message), `connection_changed` (the active connection's endpoint is
+    /// not the one the window sent), `not_found`, `invalid_journal`, `busy`,
+    /// `archived`, `turn_open`, `turn_running`, `too_many_turns`,
+    /// `shutting_down`, `internal` (thread start failure), and the
+    /// application layer's `provider`, `configuration`, and `credential`
+    /// codes for unusable settings or token.
     pub fn chat_send(&self, request: ChatSendRequest) -> Result<ChatStatus, DesktopError> {
         let inner = &self.inner;
         let session_id = request.session_id;
-        if request.settings.endpoint != inner.endpoint {
+        if inner.token.is_fixed() && request.settings.endpoint != inner.endpoint {
             return Err(DesktopError::invalid_request(
                 "The endpoint is fixed by the application.",
             ));
@@ -137,12 +149,17 @@ impl DesktopService {
         // model, context, or endpoint is a synchronous error and no thread
         // starts. The connection is resolved again for every turn, so a
         // rotated credential applies to the next one. The resolved endpoint is
-        // the only endpoint the turn uses; it equals the launch endpoint,
-        // which was compared with the request above.
+        // the only endpoint the turn uses. A fixed one equals the launch
+        // endpoint, which was compared with the request above. The active
+        // connection must equal what the window sent, so a change made in
+        // `settings` after the window read it is never used unseen.
         let LocalConnection { endpoint, token } = inner
             .token
             .resolve(&inner.data_root, &inner.endpoint)
             .map_err(|error| DesktopError::from_app(&error))?;
+        if endpoint != request.settings.endpoint {
+            return Err(DesktopError::connection_changed());
+        }
         let settings = chat_settings(request.settings, endpoint);
         let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&error))?;

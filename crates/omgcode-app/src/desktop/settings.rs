@@ -46,7 +46,10 @@ impl DesktopService {
 /// Shape the overview from an open store, then release the store. Every path
 /// and recorded name passes through core's display-safe functions.
 pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOverview {
-    let connection = connection_view(inner);
+    let connection = connection_view(inner, &store);
+    let active = store
+        .active_provider_profile()
+        .map(|status| status.profile().id());
     let workspaces = store
         .workspaces()
         .map(|workspace| {
@@ -77,6 +80,8 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                     .endpoint()
                     .map(|endpoint| display_safe_line(endpoint.as_str())),
                 credential_bound: status.credential().is_some(),
+                selectable: profile.kind().is_local() && profile.endpoint().is_some(),
+                active: active == Some(profile.id()),
             }
         })
         .collect();
@@ -214,21 +219,42 @@ impl DesktopService {
     }
 }
 
-/// The connection this process uses, as the `settings` window shows it.
-fn connection_view(inner: &Inner) -> ConnectionView {
-    let (source, profile) = match &inner.token {
-        TokenResolver::Source(TokenSource::Environment) => {
-            (ConnectionSourceView::Environment, None)
-        }
-        TokenResolver::Source(TokenSource::Profile(name)) => {
-            (ConnectionSourceView::Profile, Some(display_safe_line(name)))
-        }
-        TokenResolver::Injected(_) => (ConnectionSourceView::Injected, None),
-    };
-    ConnectionView {
+/// The connection the next turn uses, as the `settings` window shows it. The
+/// active connection is read from `store`, the store this overview reads.
+fn connection_view(inner: &Inner, store: &ControlStore) -> ConnectionView {
+    let launch = |source, profile: Option<&String>| ConnectionView {
         endpoint: display_safe_line(&inner.endpoint),
         source,
-        profile,
+        profile: profile.map(|name| display_safe_line(name)),
+        kind: profile
+            .and_then(|name| store.provider_profile(name))
+            .map(|status| status.profile().kind().as_str()),
+        selectable: false,
+    };
+    match &inner.token {
+        TokenResolver::Source(TokenSource::Environment) => {
+            launch(ConnectionSourceView::Environment, None)
+        }
+        TokenResolver::Source(TokenSource::Profile(name)) => {
+            launch(ConnectionSourceView::Profile, Some(name))
+        }
+        TokenResolver::Injected(_) => launch(ConnectionSourceView::Injected, None),
+        TokenResolver::Source(TokenSource::Active) => {
+            let active = store
+                .active_provider_profile()
+                .map(|status| status.profile());
+            ConnectionView {
+                endpoint: display_safe_line(
+                    active
+                        .and_then(|profile| profile.endpoint())
+                        .map_or(inner.endpoint.as_str(), |endpoint| endpoint.as_str()),
+                ),
+                source: ConnectionSourceView::Active,
+                profile: active.map(|profile| display_safe_line(profile.name())),
+                kind: active.map(|profile| profile.kind().as_str()),
+                selectable: true,
+            }
+        }
     }
 }
 

@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { neutralise } from "../src/dom";
 import { setInvoker } from "../src/ipc/client";
-import type { SettingsOverview, WorkspaceSettingsView } from "../src/ipc/types";
+import type {
+  ProviderProfileView,
+  SettingsOverview,
+  WorkspaceSettingsView,
+} from "../src/ipc/types";
 import { HOSTILE } from "../src/mock/fixtures";
 import {
+  DEFAULT_CHOICE,
+  DEFAULT_ENDPOINTS,
   INTRO,
   NOTHING_CHANGED,
   PERMISSION_LABELS,
@@ -36,21 +42,47 @@ function workspace(overrides: Partial<WorkspaceSettingsView> = {}): WorkspaceSet
   };
 }
 
+const OLLAMA_ENDPOINT = "http://127.0.0.1:11434/v1";
+
+function lms(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
+  return {
+    name: "lms",
+    kind: "lm_studio",
+    auth: "api_key",
+    endpoint: "http://127.0.0.1:1234/v1",
+    credential_bound: true,
+    selectable: true,
+    active: false,
+    ...overrides,
+  };
+}
+
+function ollama(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
+  return {
+    name: "ollama",
+    kind: "ollama_local",
+    auth: "none",
+    endpoint: OLLAMA_ENDPOINT,
+    credential_bound: false,
+    selectable: true,
+    active: false,
+    ...overrides,
+  };
+}
+
 function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
   return {
     revision: 7,
     development_root: "/home/dev",
     workspaces: [workspace()],
-    connection: { endpoint: "http://127.0.0.1:1234/v1", source: "profile", profile: "lms" },
-    provider_profiles: [
-      {
-        name: "lms",
-        kind: "lm_studio",
-        auth: "api_key",
-        endpoint: "http://127.0.0.1:1234/v1",
-        credential_bound: true,
-      },
-    ],
+    connection: {
+      endpoint: "http://127.0.0.1:1234/v1",
+      source: "profile",
+      profile: "lms",
+      kind: "lm_studio",
+      selectable: false,
+    },
+    provider_profiles: [lms()],
     toolchain_profiles: [
       {
         name: "rust",
@@ -103,6 +135,37 @@ function workspaceCard(): HTMLElement {
   return found;
 }
 
+function picker(label: string): HTMLSelectElement {
+  const found = root.querySelector(`select[aria-label="${label}"]`);
+  if (!(found instanceof HTMLSelectElement)) {
+    throw new Error(`No dropdown ${label}`);
+  }
+  return found;
+}
+
+function field(label: string): HTMLInputElement {
+  const found = root.querySelector(`input[aria-label="${label}"]`);
+  if (!(found instanceof HTMLInputElement)) {
+    throw new Error(`No field ${label}`);
+  }
+  return found;
+}
+
+/** A process started without a connection argument, so the window may choose. */
+function choosable(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
+  return overview({
+    connection: {
+      endpoint: "http://127.0.0.1:1234/v1",
+      source: "active",
+      profile: null,
+      kind: null,
+      selectable: true,
+    },
+    provider_profiles: [lms(), ollama()],
+    ...overrides,
+  });
+}
+
 function body(): HTMLFieldSetElement {
   return root.querySelector("fieldset.settings-body") as HTMLFieldSetElement;
 }
@@ -128,10 +191,16 @@ describe("settings window", () => {
   it("explains the system dialogs and what still needs the CLI", async () => {
     await start(() => overview());
     expect(root.textContent).toContain(INTRO);
-    // No control takes typed text: folders come only from the system dialog.
-    expect(root.querySelectorAll("textarea, select")).toHaveLength(0);
-    const inputs = Array.from(root.querySelectorAll("input"));
-    expect(inputs.every((input) => input.type === "checkbox")).toBe(true);
+    // No control takes a typed path: folders come only from the system dialog. The only typed
+    // values are a new connection's name and loopback URL, and the only dropdowns choose a
+    // provider (ADR-0062).
+    expect(root.querySelectorAll("textarea")).toHaveLength(0);
+    const selects = Array.from(root.querySelectorAll("select")).map((s) => s.ariaLabel);
+    expect(selects).toEqual(["Model provider", "New connection provider"]);
+    const typed = Array.from(root.querySelectorAll("input"))
+      .filter((input) => input.type !== "checkbox")
+      .map((input) => input.getAttribute("aria-label"));
+    expect(typed).toEqual(["New connection name", "New connection endpoint"]);
   });
 
   it("shows each group of the configuration", async () => {
@@ -140,7 +209,7 @@ describe("settings window", () => {
     expect(text).toContain("Settings revision 7");
     expect(text).toContain("/home/dev/project");
     expect(text).toContain("Provider profile lms, set at launch");
-    expect(text).toContain("lm_studio");
+    expect(text).toContain("LM Studio");
     expect(text).toContain("stored");
     expect(text).toContain("/opt/rust");
     expect(text).toContain("RUSTUP_HOME");
@@ -359,6 +428,150 @@ describe("settings window", () => {
     await settle();
     expect(alert.hidden).toBe(true);
     expect(root.textContent).toContain("/home/dev/project");
+  });
+
+  it("lists the default and every selectable connection and shows the active one", async () => {
+    await start(() =>
+      choosable({
+        connection: {
+          endpoint: OLLAMA_ENDPOINT,
+          source: "active",
+          profile: "ollama",
+          kind: "ollama_local",
+          selectable: true,
+        },
+        provider_profiles: [
+          lms(),
+          ollama({ active: true }),
+          lms({ name: "cloud", kind: "openai", endpoint: null, selectable: false }),
+        ],
+      }),
+    );
+    const provider = picker("Model provider");
+    expect(provider.disabled).toBe(false);
+    expect(Array.from(provider.options).map((option) => option.value)).toEqual([
+      DEFAULT_CHOICE,
+      "lms",
+      "ollama",
+    ]);
+    expect(provider.value).toBe("ollama");
+    expect(provider.selectedOptions[0]?.textContent).toBe(`Ollama: ollama (${OLLAMA_ENDPOINT})`);
+    const text = root.textContent ?? "";
+    expect(text).toContain("Provider profile ollama, chosen here");
+    expect(text).toContain("ollama (active)");
+  });
+
+  it("asks the core to switch with the revision it read when a provider is chosen", async () => {
+    await start(() => choosable(), {
+      settings_select_connection: (args) =>
+        choosable({
+          revision: 8,
+          connection: {
+            endpoint: OLLAMA_ENDPOINT,
+            source: "active",
+            profile: args.profile as string,
+            kind: "ollama_local",
+            selectable: true,
+          },
+          provider_profiles: [lms(), ollama({ active: true })],
+        }),
+    });
+    const provider = picker("Model provider");
+    expect(provider.value).toBe(DEFAULT_CHOICE);
+    provider.value = "ollama";
+    provider.dispatchEvent(new Event("change"));
+    await settle();
+    // The window names only the profile: Rust asks for the confirmation and resolves it.
+    expect(ipc.callsTo("settings_select_connection")[0]?.args).toEqual({
+      revision: 7,
+      profile: "ollama",
+    });
+    expect(picker("Model provider").value).toBe("ollama");
+    expect(root.textContent).toContain(OLLAMA_ENDPOINT);
+
+    // Choosing the default sends no profile.
+    ipc.on("settings_select_connection", () => choosable({ revision: 9 }));
+    const again = picker("Model provider");
+    again.value = DEFAULT_CHOICE;
+    again.dispatchEvent(new Event("change"));
+    await settle();
+    expect(ipc.callsTo("settings_select_connection")[1]?.args).toEqual({
+      revision: 8,
+      profile: null,
+    });
+  });
+
+  it("shows a declined switch as no change and the recorded provider", async () => {
+    await start(() => choosable(), {
+      settings_select_connection: () => rejection("cancelled", "No change was made."),
+    });
+    const provider = picker("Model provider");
+    provider.value = "ollama";
+    provider.dispatchEvent(new Event("change"));
+    await settle();
+    expect((root.querySelector("[role=status]") as HTMLElement).textContent).toBe(NOTHING_CHANGED);
+    expect(picker("Model provider").value).toBe(DEFAULT_CHOICE);
+  });
+
+  it("disables the dropdown when a launch argument fixed the connection", async () => {
+    await start(() => overview());
+    const provider = picker("Model provider");
+    expect(provider.disabled).toBe(true);
+    expect(provider.selectedOptions[0]?.textContent).toBe(
+      "Set at launch (http://127.0.0.1:1234/v1)",
+    );
+    expect(root.textContent).toContain("Fixed by --endpoint or --provider-profile at launch.");
+  });
+
+  it("adds an Ollama connection with its usual address and follows the provider choice", async () => {
+    await start(() => choosable({ provider_profiles: [] }), {
+      settings_add_local_connection: () => choosable({ revision: 8 }),
+    });
+    expect(picker("New connection provider").value).toBe("ollama_local");
+    expect(field("New connection name").value).toBe("ollama");
+    expect(field("New connection endpoint").value).toBe(DEFAULT_ENDPOINTS.ollama_local);
+
+    // Switching the provider moves an unedited address and name with it.
+    const kind = picker("New connection provider");
+    kind.value = "lm_studio";
+    kind.dispatchEvent(new Event("change"));
+    expect(field("New connection endpoint").value).toBe(DEFAULT_ENDPOINTS.lm_studio);
+    expect(field("New connection name").value).toBe("lmstudio");
+    // An edited address is kept.
+    field("New connection endpoint").value = "http://127.0.0.1:4000/v1";
+    kind.value = "ollama_local";
+    kind.dispatchEvent(new Event("change"));
+    expect(field("New connection endpoint").value).toBe("http://127.0.0.1:4000/v1");
+
+    field("New connection name").value = "  local  ";
+    buttonByText(root, "Add connection").click();
+    await settle();
+    expect(ipc.callsTo("settings_add_local_connection")[0]?.args).toEqual({
+      revision: 7,
+      name: "local",
+      kind: "ollama_local",
+      endpoint: "http://127.0.0.1:4000/v1",
+    });
+    expect(root.textContent).toContain("Settings revision 8");
+  });
+
+  it("removes a connection without a credential and leaves a stored one to the CLI", async () => {
+    await start(() => choosable(), {
+      settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [lms()] }),
+    });
+    const cardOf = (name: string): HTMLElement =>
+      Array.from(root.querySelectorAll<HTMLElement>(".card")).find(
+        (card) => card.querySelector(".card-title")?.textContent === name,
+      ) as HTMLElement;
+    expect(buttonByText(cardOf("lms"), "Remove").disabled).toBe(true);
+    expect(cardOf("lms").textContent).toContain("remove with the trusted CLI");
+    buttonByText(cardOf("ollama"), "Remove").click();
+    await settle();
+    expect(ipc.callsTo("settings_remove_connection")[0]?.args).toEqual({
+      revision: 7,
+      name: "ollama",
+    });
+    expect(cardOf("ollama")).toBeUndefined();
   });
 
   it("reads again when the window becomes visible", async () => {

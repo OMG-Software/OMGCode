@@ -121,8 +121,22 @@ pub(crate) enum WorkspaceCommand {
         revision: u64,
     },
     /// Record a provider connection shape, optionally with its endpoint. No
-    /// credential is stored; the local lm_studio adapter reads a selected profile.
+    /// credential is stored; the local adapter reads a selected lm_studio or
+    /// ollama_local profile.
     ProviderProfileAdd(ProviderProfileAddArgs),
+    /// Choose the connection a desktop shell started without `--endpoint` or
+    /// `--provider-profile` sends new turns to: a recorded lm_studio or
+    /// ollama_local profile with an endpoint, or `--default` for the default
+    /// endpoint and OMGCODE_LM_TOKEN. `chat` is not affected.
+    ProviderProfileSelect {
+        #[arg(required_unless_present = "default")]
+        name: Option<String>,
+        /// Clear the selection instead of naming a profile.
+        #[arg(long, conflicts_with = "name")]
+        default: bool,
+        #[arg(long)]
+        revision: u64,
+    },
     /// Show one recorded provider profile.
     ProviderProfileShow { name: String },
     /// Remove a provider profile. A bound credential is unbound by the same
@@ -136,8 +150,8 @@ pub(crate) enum WorkspaceCommand {
     ///
     /// The secret is read from standard input only, up to 16 KiB; one
     /// trailing newline is removed. A previously bound credential is deleted
-    /// after the new binding is recorded. The local lm_studio adapter reads it
-    /// for a selected profile.
+    /// after the new binding is recorded. The local adapter reads it for a
+    /// selected lm_studio profile.
     ProviderCredentialSet {
         name: String,
         #[arg(long)]
@@ -162,9 +176,9 @@ pub(crate) struct ProviderProfileAddArgs {
     /// One of: subscription, api_key, none.
     #[arg(long)]
     auth: String,
-    /// The endpoint the profile's adapter uses. Only lm_studio accepts one:
-    /// http://<loopback IP>:<port>/v1. It cannot be changed later; remove the
-    /// profile and add it again.
+    /// The endpoint the profile's adapter uses. Only lm_studio and
+    /// ollama_local accept one: http://<loopback IP>:<port>/v1. It cannot be
+    /// changed later; remove the profile and add it again.
     #[arg(long)]
     endpoint: Option<String>,
     #[arg(long)]
@@ -428,6 +442,18 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .provider_profile(&name)
                 .ok_or_else(|| control_error(ControlError::UnknownProvider))?;
             print_json(&json!({ "provider_profile": profile }))
+        }
+        WorkspaceCommand::ProviderProfileSelect {
+            name,
+            default: _,
+            revision,
+        } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            store
+                .select_active_provider(name.as_deref(), revision)
+                .map_err(control_error)?;
+            print_json(&json!({ "snapshot": store.snapshot() }))
         }
         WorkspaceCommand::ProviderProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?

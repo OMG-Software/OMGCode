@@ -2,6 +2,8 @@ import type { IpcError } from "./types";
 
 /** Error code of a chat turn the operator cancelled. The core sets it; the window matches only this code. */
 export const CANCELLED_CODE = "cancelled";
+/** The settings window chose another model connection after this window read its endpoint. */
+export const CONNECTION_CHANGED_CODE = "connection_changed";
 
 /** Error thrown by every IPC call. `code` and `message` come from the Rust core. */
 export class IpcFailure extends Error {

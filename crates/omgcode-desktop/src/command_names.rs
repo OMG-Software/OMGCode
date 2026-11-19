@@ -32,4 +32,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_set_permissions",
     "settings_choose_package_cache",
     "settings_clear_package_cache",
+    "settings_select_connection",
+    "settings_add_local_connection",
+    "settings_remove_connection",
 ];

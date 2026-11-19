@@ -23,7 +23,7 @@ directory grants.
 > workspace permission preferences, perform bounded workspace reads/listings,
 > create new files/directories through the trusted CLI, preview bounded diffs
 > against trusted proposed content, and send a chat request to
-> an explicitly selected local LM Studio model. `omgcode chat --stream` streams
+> an explicitly selected local LM Studio or Ollama model. `omgcode chat --stream` streams
 > that model's reply to standard error as provisional text.
 > When a workspace enables the `model_tools` preference, chat lets the local
 > model read and list files inside that workspace through a bounded runtime.
@@ -62,10 +62,11 @@ directory grants.
 > adapter or login. Trusted single-use approval records authorize one exact
 > model-tool call; the trusted CLI or the desktop approvals window can decide
 > them. API keys can be stored in protected OS storage (DPAPI on Windows, the
-> Secret Service on Linux) and bound to a profile. Only the local LM Studio
-> adapter reads one, through an operator-selected `lm_studio` profile
-> (`--provider-profile`) that also supplies the endpoint; no other adapter
-> reads them. Runs have memory,
+> Secret Service on Linux) and bound to a profile. Only the local adapter
+> reads one, through an operator-selected `lm_studio` profile
+> (`--provider-profile`) that also supplies the endpoint; an `ollama_local`
+> profile records an endpoint without a credential. The desktop `settings`
+> window chooses between them from a dropdown. Runs have memory,
 > process-count, CPU-time, and sampled disk-growth limits; the disk limit is
 > not a filesystem quota. See [command execution](docs/execution.md#tree-limits).
 
@@ -107,8 +108,8 @@ frontend in `crates/omgcode-desktop/ui`. The CLI provides:
   provide model tool definitions, and `file diff` never writes to the workspace.
 - `session`: create, inspect, archive, restore, compact older active context,
   and explicitly interrupt an abandoned turn in a JSONL journal.
-- `chat`: send one user turn to an already-running LM Studio server at a literal
-  loopback HTTP endpoint. It does not discover, start, or download models, and it
+- `chat`: send one user turn to an already-running LM Studio or Ollama server
+  at a literal loopback HTTP endpoint. It does not discover, start, or download models, and it
   rejects model tool requests unless the session's workspace enables
   `model_tools`. Then it offers read/list tools; when `read` and `write` are
   also enabled, the approval-gated edit, multi-edit, create, rename, and delete
@@ -227,14 +228,24 @@ enabled for `.`, the model can call the read and list tools. With `read` and
 with `execute` enabled as well it can request the command tool. Each edit or
 command needs an operator approval. The file
 contents it reads are sent to the local model.
-The loopback connection does not establish how LM Studio handles data upstream;
-check the server's configuration before sending sensitive text.
+For Ollama, record a profile once and name it on each turn. Set the server's
+context length in Ollama (for example `OLLAMA_CONTEXT_LENGTH`), because this
+API cannot change it:
+
+```sh
+cargo run --locked -p omgcode-cli -- workspace provider-profile-add ollama --kind ollama_local --auth none --endpoint http://127.0.0.1:11434/v1 --revision REVISION
+cargo run --locked -p omgcode-cli -- chat --workspace . --provider-profile ollama --model "YOUR_MODEL_ID" --context-tokens CONTEXT_TOKENS "Say hello in one sentence."
+```
+
+The loopback connection does not establish how LM Studio or Ollama handles
+data upstream; check the server's configuration before sending sensitive text.
 
 ## Planned features
 
-- **Additional model providers:** OpenAI, Anthropic / Claude, Ollama Local,
-  Ollama Cloud, and OpenRouter. One bounded LM Studio chat path exists in the
-  prototype; its compatibility and security are not release-qualified.
+- **Additional model providers:** OpenAI, Anthropic / Claude, Ollama Cloud,
+  and OpenRouter. One bounded local chat path serves LM Studio and Ollama
+  Local in the prototype; its compatibility and security are not
+  release-qualified.
 - **Subscription authentication:** Required ChatGPT and Claude subscription
   connections, alongside separate API-key connections. Provider eligibility
   and approval remain implementation gates.

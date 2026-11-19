@@ -67,11 +67,14 @@ pub enum Command {
     SettingsSetPermissions,
     SettingsChoosePackageCache,
     SettingsClearPackageCache,
+    SettingsSelectConnection,
+    SettingsAddLocalConnection,
+    SettingsRemoveConnection,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 31] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -100,6 +103,9 @@ impl Command {
         Self::SettingsSetPermissions,
         Self::SettingsChoosePackageCache,
         Self::SettingsClearPackageCache,
+        Self::SettingsSelectConnection,
+        Self::SettingsAddLocalConnection,
+        Self::SettingsRemoveConnection,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -134,6 +140,9 @@ impl Command {
             Self::SettingsSetPermissions => "settings_set_permissions",
             Self::SettingsChoosePackageCache => "settings_choose_package_cache",
             Self::SettingsClearPackageCache => "settings_clear_package_cache",
+            Self::SettingsSelectConnection => "settings_select_connection",
+            Self::SettingsAddLocalConnection => "settings_add_local_connection",
+            Self::SettingsRemoveConnection => "settings_remove_connection",
         }
     }
 
@@ -149,7 +158,10 @@ impl Command {
             | Self::SettingsRegisterWorkspace
             | Self::SettingsSetPermissions
             | Self::SettingsChoosePackageCache
-            | Self::SettingsClearPackageCache => WindowLabel::Settings,
+            | Self::SettingsClearPackageCache
+            | Self::SettingsSelectConnection
+            | Self::SettingsAddLocalConnection
+            | Self::SettingsRemoveConnection => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -206,10 +218,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 28);
+        assert_eq!(Command::ALL.len(), 31);
         assert_eq!(with_window(WindowLabel::Main).len(), 19);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 6);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 9);
     }
 
     #[test]
@@ -292,10 +304,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_twenty_eight_unique_names_matching_the_enum() {
+    fn shared_name_list_has_thirty_one_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 28);
-        assert_eq!(shared.len(), 28);
+        assert_eq!(COMMAND_NAMES.len(), 31);
+        assert_eq!(shared.len(), 31);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

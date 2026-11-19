@@ -1,7 +1,7 @@
 import { append, button, el, replaceChildren } from "../dom";
 import { formatUpdated } from "../format";
 import { api } from "../ipc/client";
-import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
+import { CANCELLED_CODE, CONNECTION_CHANGED_CODE, toIpcError } from "../ipc/errors";
 import type {
   ChatSettings,
   ChatStatus,
@@ -406,6 +406,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
     } catch (reason) {
       const error = toIpcError(reason);
       setNotice({ text: `${error.message} (${error.code})`, error: true });
+      if (error.code === CONNECTION_CHANGED_CODE) {
+        // The settings window chose another connection after this window read
+        // its endpoint. Show the new one so the operator can check the model
+        // and send again; the draft is kept.
+        await composer.refreshEndpoint().catch(() => undefined);
+      }
     }
   }
 

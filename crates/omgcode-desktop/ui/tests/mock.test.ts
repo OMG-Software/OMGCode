@@ -107,10 +107,26 @@ describe("mock backend", () => {
         skills: [],
       });
     await expect(send("http://127.0.0.1:9/v1")).rejects.toEqual({
-      code: "invalid_request",
-      message: "The endpoint is fixed by the application.",
+      code: "connection_changed",
+      message: "The model connection changed in settings. Check the model name, then send again.",
     });
     await expect(send(defaults.endpoint)).resolves.toMatchObject({ state: "running" });
+  });
+
+  it("moves the chat endpoint to the connection chosen in settings, like core", async () => {
+    const { invoke } = createMockBackend();
+    const overview = (await invoke("settings_overview", {})) as { revision: number };
+    await invoke("settings_select_connection", {
+      revision: overview.revision,
+      profile: "ollama",
+    });
+    const { settings } = (await invoke("chat_defaults", {})) as {
+      settings: { endpoint: string };
+    };
+    expect(settings.endpoint).toBe("http://127.0.0.1:11434/v1");
+    await expect(
+      invoke("settings_select_connection", { revision: overview.revision, profile: null }),
+    ).rejects.toMatchObject({ code: "stale_revision" });
   });
 
   it("refuses a chat request without a skills list, like the Rust command", async () => {

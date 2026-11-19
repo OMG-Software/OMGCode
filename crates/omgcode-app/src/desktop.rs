@@ -16,11 +16,12 @@
 //!   display text, which is escaped by core's `display_safe_line`.
 //! - It never returns, stores in a response, or logs the local server token.
 //!   The token is resolved for one turn from the operator-chosen
-//!   [`TokenSource`] (the environment, or a provider profile's stored
-//!   credential, ADR-0047), held in a zeroing type with a redacted `Debug`,
+//!   [`TokenSource`] (the environment, a provider profile's stored
+//!   credential, ADR-0047, or the active connection chosen in the `settings`
+//!   window, ADR-0062), held in a zeroing type with a redacted `Debug`,
 //!   removed from every recorded and returned message, and dropped when the
-//!   turn thread ends. Nothing is cached between turns. The interface cannot
-//!   choose or see the source.
+//!   turn thread ends. Nothing is cached between turns. The `main` window
+//!   cannot choose or see the source, and no window sees the token.
 //!
 //! # State and locks
 //!
@@ -114,8 +115,9 @@ pub use self::wire::{
     ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
     ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatDefaults,
     ChatEvent, ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest,
-    ChatSettingsDto, ChatState, ChatStatus, ConnectionSourceView, ConnectionView,
-    ContainerGrantView, ContextMeterDto, Decision, EntryKind, MessageRoleDto, PackageProfileView,
+    ChatSettingsDto, ChatState, ChatStatus, ConnectionRemoveRequest, ConnectionSelectRequest,
+    ConnectionSourceView, ConnectionView, ContainerGrantView, ContextMeterDto, Decision, EntryKind,
+    LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto, PackageProfileView,
     PermissionFlags, PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit,
     SearchRequest, SearchResult, SearchRoleDto, SessionCreateRequest, SessionRequest,
     SessionSkills, SessionStatus, SessionSummary, SessionTree, SettingsOverview,
@@ -124,7 +126,10 @@ pub use self::wire::{
     TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceList,
     WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
-use crate::{AppError, ErrorKind, LmToken, LocalConnection, TokenSource, resolve_local_connection};
+use crate::{
+    AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
+    resolve_local_connection, resolve_local_endpoint,
+};
 
 /// Fixed settings of one desktop process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,15 +137,19 @@ pub struct DesktopConfig {
     /// Trusted application storage. It comes from the operator, never from the
     /// interface.
     pub data_root: PathBuf,
-    /// The chat endpoint, fixed for the process lifetime. A chat request whose
+    /// The launch endpoint. With an environment or injected token source it
+    /// is the chat endpoint for the process lifetime, and a chat request whose
     /// endpoint differs byte-for-byte is refused. With a profile token source
     /// it is the profile's recorded endpoint, resolved once at launch; each
     /// turn resolves the profile again and refuses the turn with
     /// `endpoint_changed` when the profile's endpoint no longer equals it.
+    /// With the active source it is the default used while no connection is
+    /// selected in `settings` (ADR-0062).
     pub endpoint: String,
-    /// Where each chat turn gets the optional local server token (and, for a
-    /// profile, the endpoint it must still equal). It is fixed
-    /// for the process lifetime and never comes from the interface.
+    /// Where each chat turn gets its endpoint and optional local server token.
+    /// It is fixed for the process lifetime and never comes from the
+    /// interface; only the `settings` window can change what an active source
+    /// selects, among recorded profiles.
     pub token_source: TokenSource,
     /// Whether chat turns send streamed model requests and push their
     /// provisional text to the subscriber (ADR-0049). When `false`, turns send
@@ -183,7 +192,9 @@ impl TokenResolver {
             Self::Source(source) => {
                 let connection =
                     resolve_local_connection(data_root, &source.connection(launch_endpoint))?;
-                if connection.endpoint != launch_endpoint {
+                // An active source may change between turns; `chat_send`
+                // compares its endpoint with the one the window was shown.
+                if source.is_fixed() && connection.endpoint != launch_endpoint {
                     return Err(AppError::new(
                         ErrorKind::Credential,
                         "endpoint_changed: the provider profile's endpoint changed since launch; restart the application",
@@ -194,6 +205,34 @@ impl TokenResolver {
             Self::Injected(supplier) => Ok(LocalConnection {
                 endpoint: launch_endpoint.to_owned(),
                 token: supplier()?.map(LmToken::new),
+            }),
+        }
+    }
+
+    /// Whether the endpoint is fixed for the process. Only the active source
+    /// changes between turns.
+    const fn is_fixed(&self) -> bool {
+        match self {
+            Self::Source(source) => source.is_fixed(),
+            Self::Injected(_) => true,
+        }
+    }
+
+    /// The endpoint the next turn would use, without its token. A fixed
+    /// source answers with the launch endpoint; the active source reads the
+    /// settings store.
+    fn current_endpoint(
+        &self,
+        data_root: &Path,
+        launch_endpoint: &str,
+    ) -> Result<LocalEndpoint, AppError> {
+        match self {
+            Self::Source(source) if !source.is_fixed() => {
+                resolve_local_endpoint(data_root, &source.connection(launch_endpoint))
+            }
+            Self::Source(_) | Self::Injected(_) => Ok(LocalEndpoint {
+                endpoint: launch_endpoint.to_owned(),
+                profile: None,
             }),
         }
     }

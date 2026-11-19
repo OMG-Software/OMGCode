@@ -592,7 +592,7 @@ fn an_endpoint_the_adapter_would_refuse_is_refused_when_the_profile_is_added() {
         assert_error_code(&output, "control");
         let message = error_message(&output);
         assert!(
-            message.contains("lm_studio endpoint") || message.contains("256 bytes"),
+            message.contains("local provider endpoint") || message.contains("256 bytes"),
             "{endpoint:?}: {message}"
         );
     }

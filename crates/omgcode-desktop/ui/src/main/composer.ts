@@ -23,6 +23,12 @@ export interface Composer {
   readSettings(): ChatSettings;
   /** Offers these skill names for the next turn; an empty list hides the choice. */
   setSkills(names: readonly string[]): void;
+  /**
+   * Reads the current endpoint again after the settings window chose another
+   * connection. Only the endpoint changes: the model and the other inputs keep
+   * the operator's values, since a new provider may need a different model.
+   */
+  refreshEndpoint(): Promise<void>;
 }
 
 function labelled(label: string, input: HTMLElement): HTMLElement {
@@ -75,7 +81,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
         { class: "field" },
         el("span", { text: "Endpoint" }),
         endpointValue,
-        el("span", { class: "muted", text: "Set when OMGCode starts." }),
+        el("span", {
+          class: "muted",
+          text: "Chosen in the Settings window, or fixed when OMGCode starts.",
+        }),
       ),
       labelled("Model", model),
       contextField,
@@ -286,5 +295,11 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     },
     readSettings,
     setSkills,
+    async refreshEndpoint() {
+      const defaults = await api.chatDefaults();
+      fixedEndpoint = defaults.settings.endpoint;
+      replaceChildren(endpointValue, fixedEndpoint);
+      refresh();
+    },
   };
 }

@@ -492,13 +492,60 @@ describe("chat lifecycle", () => {
     await settle();
     const settings = root.querySelector(".settings") as HTMLElement;
     expect(settings.textContent).toContain(endpoint);
-    expect(settings.textContent).toContain("Set when OMGCode starts.");
+    expect(settings.textContent).toContain(
+      "Chosen in the Settings window, or fixed when OMGCode starts.",
+    );
     const editable = Array.from(settings.querySelectorAll<HTMLInputElement>("input, textarea"));
     expect(editable.some((field) => field.value === endpoint)).toBe(false);
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
     buttonByText(root, "Send").click();
     await settle();
     expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ settings: { endpoint } });
+  });
+
+  it("picks up a connection chosen in settings and keeps the draft and model", async () => {
+    const before = "http://127.0.0.1:1234/v1";
+    const after = "http://127.0.0.1:11434/v1";
+    let current = before;
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, [userMessage(1, "hi")]),
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, endpoint: current },
+        preferences: "defaults",
+      }),
+      chat_send: (args) =>
+        (args.settings as { endpoint: string }).endpoint === current
+          ? running
+          : rejection("connection_changed", "The model connection changed in settings."),
+    });
+    itemFor("s-chat").click();
+    await settle();
+    // The settings window switches to Ollama after this window read its endpoint.
+    current = after;
+    const model = Array.from(root.querySelectorAll(".settings label.field"))
+      .find((label) => label.querySelector("span")?.textContent === "Model")
+      ?.querySelector("input") as HTMLInputElement;
+    type(model, "lfm2.5:latest");
+    const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+    type(box, "hello");
+    buttonByText(root, "Send").click();
+    await settle();
+    const notice = root.querySelector(".notice") as HTMLElement;
+    expect(notice.textContent).toContain("connection_changed");
+    expect(notice.classList.contains("error")).toBe(true);
+    const settings = root.querySelector(".settings") as HTMLElement;
+    expect(settings.textContent).toContain(after);
+    expect(settings.textContent).not.toContain(before);
+    expect(box.value).toBe("hello");
+
+    // The next send carries the new endpoint and the operator's own inputs.
+    buttonByText(root, "Send").click();
+    await settle();
+    const sent = ipc.callsTo("chat_send");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.args).toMatchObject({ settings: { endpoint: after } });
+    expect(sent[1]?.args).toMatchObject({ settings: { model: "lfm2.5:latest" } });
   });
 
   it("cancels a running turn", async () => {

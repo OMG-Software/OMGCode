@@ -847,10 +847,13 @@ pub struct PermissionsChangeRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionSourceView {
-    /// The launch endpoint (or its default) and `OMGCODE_LM_TOKEN`.
+    /// The `--endpoint` launch argument and `OMGCODE_LM_TOKEN`.
     Environment,
     /// A provider profile selected with `--provider-profile` at launch.
     Profile,
+    /// The active connection chosen in `settings`, or the default endpoint
+    /// and `OMGCODE_LM_TOKEN` while none is chosen (ADR-0062).
+    Active,
     /// A token supplier injected by an embedder or a test.
     Injected,
 }
@@ -858,12 +861,18 @@ pub enum ConnectionSourceView {
 /// The model connection of this process, for the `settings` window only.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConnectionView {
-    /// The endpoint every turn uses.
+    /// The endpoint the next turn uses.
     pub endpoint: String,
     /// Where the endpoint and token come from.
     pub source: ConnectionSourceView,
-    /// The selected profile name when `source` is `profile`.
+    /// The profile in use: the launch profile when `source` is `profile`, the
+    /// active one when `source` is `active`, and `null` for the default.
     pub profile: Option<String>,
+    /// That profile's provider kind, as the CLI names it, or `null`.
+    pub kind: Option<&'static str>,
+    /// Whether the `settings` window may choose the active connection: only
+    /// when no launch argument fixed it.
+    pub selectable: bool,
 }
 
 /// One recorded provider profile. It never carries a secret.
@@ -880,6 +889,56 @@ pub struct ProviderProfileView {
     /// Whether a stored credential is bound. The credential itself is never
     /// read for this view.
     pub credential_bound: bool,
+    /// Whether the profile can be the active connection: a local kind
+    /// (`lm_studio` or `ollama_local`) with a recorded endpoint.
+    pub selectable: bool,
+    /// Whether it is the recorded active connection.
+    pub active: bool,
+}
+
+/// A local provider the `settings` window may add (ADR-0062).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalProviderKind {
+    /// LM Studio's local server.
+    LmStudio,
+    /// Ollama on this computer.
+    OllamaLocal,
+}
+
+/// Arguments of `settings_select_connection`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionSelectRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// A recorded profile name, or `null` for the default endpoint.
+    pub profile: Option<String>,
+}
+
+/// Arguments of `settings_add_local_connection`. Core validates every value
+/// with the rule the CLI's `provider-profile-add` uses.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalConnectionAddRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// The new profile name.
+    pub name: String,
+    /// The local provider.
+    pub kind: LocalProviderKind,
+    /// A loopback `http://<IP>:<port>/v1` endpoint.
+    pub endpoint: String,
+}
+
+/// Arguments of `settings_remove_connection`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionRemoveRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// A recorded profile name.
+    pub name: String,
 }
 
 /// One recorded toolchain profile. Variable values are not shown.

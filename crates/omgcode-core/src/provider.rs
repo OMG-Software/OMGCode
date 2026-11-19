@@ -1387,4 +1387,49 @@ Connection: close
             "the connection was closed"
         );
     }
+
+    /// Non-streaming reply shapes captured from Ollama 0.40.16 (ADR-0062).
+    /// Only the assistant text is shortened. `prompt_tokens_details` is an
+    /// extra usage member the parser ignores.
+    const OLLAMA_TEXT_REPLY: &str = r#"{"id":"chatcmpl-289","object":"chat.completion","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"message":{"role":"assistant","content":"Hello there"},"finish_reason":"length"}],"usage":{"prompt_tokens":26,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":64,"total_tokens":90}}"#;
+
+    const OLLAMA_TOOL_REPLY: &str = r#"{"id":"chatcmpl-484","object":"chat.completion","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"message":{"role":"assistant","content":"Listing.","tool_calls":[{"id":"call_yk0rwzuq","index":0,"type":"function","function":{"name":"workspace_list_directory","arguments":"{\"path\":\"src\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":89,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":176,"total_tokens":265}}"#;
+
+    #[test]
+    fn an_ollama_text_reply_is_accepted() {
+        let reply = parse_response(OLLAMA_TEXT_REPLY.as_bytes()).expect("Ollama text reply");
+        assert_eq!(reply.content, "Hello there");
+        assert_eq!(reply.finish_reason, "length");
+        assert_eq!(
+            reply.usage,
+            Some(Usage {
+                prompt_tokens: Some(26),
+                completion_tokens: Some(64),
+                total_tokens: Some(90),
+            })
+        );
+    }
+
+    #[test]
+    fn an_ollama_tool_reply_keeps_its_call_raw_and_a_text_request_refuses_it() {
+        let reply = parse_tool_response(OLLAMA_TOOL_REPLY.as_bytes()).expect("Ollama tool reply");
+        assert_eq!(reply.content, "Listing.");
+        assert_eq!(reply.finish_reason, "tool_calls");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(
+            reply.tool_calls[0]["function"]["name"],
+            "workspace_list_directory"
+        );
+        assert_eq!(
+            parse_response(OLLAMA_TOOL_REPLY.as_bytes()),
+            Err(ProviderError::UnsupportedToolCall)
+        );
+    }
+
+    /// Ollama's documented default address is a valid local endpoint.
+    #[test]
+    fn the_default_ollama_endpoint_is_a_valid_local_endpoint() {
+        assert!(validate_base_url("http://127.0.0.1:11434/v1").is_ok());
+        assert!(validate_base_url("http://localhost:11434/v1").is_err());
+    }
 }

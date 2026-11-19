@@ -65,7 +65,7 @@ enum Command {
         #[command(subcommand)]
         action: file_cli::FileCommand,
     },
-    /// Send one turn to an explicitly selected local LM Studio model.
+    /// Send one turn to an explicitly selected local LM Studio or Ollama model.
     Chat(ChatArgs),
     /// Run one program in a workspace under native confinement, using a
     /// recorded toolchain profile. Needs the workspace `execute` preference.
@@ -136,9 +136,9 @@ enum SessionCommand {
         context_tokens: u64,
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
-        /// Read the server token from this recorded `lm_studio` provider
-        /// profile's stored credential instead of OMGCODE_LM_TOKEN. The endpoint
-        /// then comes from the profile too.
+        /// Use this recorded `lm_studio` or `ollama_local` provider profile's
+        /// endpoint, and its stored credential, if any, instead of
+        /// OMGCODE_LM_TOKEN.
         #[arg(long, value_parser = non_empty_name)]
         provider_profile: Option<String>,
     },
@@ -189,9 +189,9 @@ struct ChatArgs {
     /// Enable compaction at the effective trigger before a turn.
     #[arg(long)]
     auto_compact: bool,
-    /// Read the server token from this recorded `lm_studio` provider profile's
-    /// stored credential instead of OMGCODE_LM_TOKEN. The variable is then
-    /// not read, and the endpoint is the one recorded with the profile.
+    /// Use this recorded `lm_studio` or `ollama_local` provider profile's
+    /// endpoint, and its stored credential, if any, instead of
+    /// OMGCODE_LM_TOKEN. The variable is then not read.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
     /// Stream the model's text to standard error as it arrives. The text is
@@ -330,8 +330,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "provider_profile_endpoints": true,
             "provider_adapters": false,
             "stored_credential_adapters": ["lm_studio"],
-            "streaming_adapters": ["lm_studio"],
-            "cancellable_adapters": ["lm_studio"],
+            "streaming_adapters": ["lm_studio", "ollama_local"],
+            "cancellable_adapters": ["lm_studio", "ollama_local"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "package_registry_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),

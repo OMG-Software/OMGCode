@@ -2,13 +2,15 @@
 //!
 //! The window reads the trusted configuration and, from phase S2, changes the
 //! development root, workspace registrations, workspace preferences, and
-//! package cache roots. No handler takes a path: a folder comes from a native
+//! package cache roots. It also records local model connections and chooses
+//! the active one (ADR-0062). No handler takes a path: a folder comes from a native
 //! dialog that Rust opens ([`NativePrompt`]), and every change that widens
 //! access waits for the operator's answer in a native confirmation. Each
 //! handler runs on the blocking pool because the dialogs and the settings
 //! store block.
 
 use omgcode_app::desktop::{
+    ConnectionRemoveRequest, ConnectionSelectRequest, LocalConnectionAddRequest, LocalProviderKind,
     PermissionFlags, PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
     WorkspaceRevisionRequest,
 };
@@ -154,6 +156,80 @@ pub async fn settings_clear_package_cache(
     };
     blocking(&state, move |service| {
         service.settings_clear_package_cache(request)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the provider and
+/// endpoint, makes a recorded local profile (or the default endpoint, for a
+/// `null` profile) the active model connection (ADR-0062).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`connection_fixed`,
+/// `cancelled`, `control`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_select_connection(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    profile: Option<String>,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSelectConnection, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ConnectionSelectRequest { revision, profile };
+    blocking(&state, move |service| {
+        service.settings_select_connection(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Records a local LM Studio or Ollama connection with no
+/// credential. Recording it grants nothing, so no dialog is shown.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`, `control`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_add_local_connection(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+    kind: LocalProviderKind,
+    endpoint: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsAddLocalConnection, webview.label())?;
+    let request = LocalConnectionAddRequest {
+        revision,
+        name,
+        kind,
+        endpoint,
+    };
+    blocking(&state, move |service| {
+        service.settings_add_local_connection(request)
+    })
+    .await
+}
+
+/// `settings` only. Removes a recorded provider profile that has no stored
+/// credential. It narrows access, so no dialog is shown.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`credential_bound`,
+/// `control`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_remove_connection(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRemoveConnection, webview.label())?;
+    let request = ConnectionRemoveRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_remove_connection(request)
     })
     .await
 }

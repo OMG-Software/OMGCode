@@ -39,15 +39,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use omgcode_core::control::{ControlError, ControlStore};
+use omgcode_core::control::{
+    ControlError, ControlStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth, ProviderKind,
+    ProviderProfileDeclaration,
+};
 use omgcode_core::policy::PermissionSet;
 use omgcode_core::run::{self, REVOCATION_WAIT};
+use omgcode_core::turn::display_safe_line;
 
 use super::DesktopService;
 use super::error::DesktopError;
 use super::settings::overview_of;
 use super::state::folder_of_directory;
 use super::wire::{
+    ConnectionRemoveRequest, ConnectionSelectRequest, LocalConnectionAddRequest, LocalProviderKind,
     PermissionFlags, PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
     WorkspaceRevisionRequest,
 };
@@ -190,6 +195,72 @@ fn raise_confirmation(
     Some(Confirmation {
         title: "Allow more access",
         message,
+    })
+}
+
+/// Largest profile name accepted before core applies its own, smaller bound.
+const MAX_NAME_INPUT_BYTES: usize = 256;
+
+/// How the confirmation names a local provider.
+const fn provider_label(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::OllamaLocal => "Ollama",
+        _ => "LM Studio",
+    }
+}
+
+/// The confirmation for choosing the active connection, composed from fixed
+/// text and core's display-safe values. A choice core would refuse is refused
+/// here first, with core's own error, so no dialog is shown for it.
+fn selection_confirmation(
+    store: &ControlStore,
+    name: Option<&str>,
+    default_endpoint: &str,
+) -> Result<Confirmation, ControlError> {
+    let current = store
+        .active_provider_profile()
+        .map(|status| status.profile().id());
+    let Some(name) = name else {
+        if current.is_none() {
+            return Err(ControlError::ProviderRefused(
+                "this is already the active connection",
+            ));
+        }
+        return Ok(Confirmation {
+            title: "Choose the model connection",
+            message: format!(
+                "Send new chat turns to the default connection?\n\n{}\n\nThe OMGCODE_LM_TOKEN environment variable is sent to it when set.",
+                display_safe_line(default_endpoint)
+            ),
+        });
+    };
+    let status = store
+        .provider_profile(name)
+        .ok_or(ControlError::UnknownProvider)?;
+    let profile = status.profile();
+    let Some(endpoint) = profile.endpoint().filter(|_| profile.kind().is_local()) else {
+        return Err(ControlError::ProviderRefused(
+            "only an lm_studio or ollama_local profile with a recorded endpoint can be the active connection",
+        ));
+    };
+    if current == Some(profile.id()) {
+        return Err(ControlError::ProviderRefused(
+            "this is already the active connection",
+        ));
+    }
+    let credential = if status.credential().is_some() {
+        "\n\nIts stored credential is sent with each request."
+    } else {
+        ""
+    };
+    Ok(Confirmation {
+        title: "Choose the model connection",
+        message: format!(
+            "Send new chat turns to {} through the connection {}?\n\n{}\n\nEach turn's messages, instructions, selected skills, and tool results go to this server.{credential}",
+            provider_label(profile.kind()),
+            display_safe_line(profile.name()),
+            display_safe_line(endpoint.as_str()),
+        ),
     })
 }
 
@@ -393,6 +464,116 @@ impl DesktopService {
                 .map(|workspace| workspace.id())
                 .ok_or(ControlError::UnknownWorkspace)?;
             store.clear_package_cache_root(workspace_id, request.revision)
+        })
+    }
+
+    /// `settings` only. Choose the active model connection: a recorded local
+    /// profile by name, or `None` for the default endpoint (ADR-0062). A
+    /// native confirmation names the provider and endpoint first, because the
+    /// choice decides where chat turns send their messages.
+    ///
+    /// It applies to turns that start after it is recorded. A `main` window
+    /// that still shows the earlier endpoint has its next send refused with
+    /// `connection_changed`.
+    ///
+    /// # Errors
+    ///
+    /// `connection_fixed` when a launch argument fixed the connection;
+    /// `control` with core's reason for an unknown, unselectable, or
+    /// unchanged choice; otherwise as
+    /// [`settings_choose_root`](Self::settings_choose_root).
+    pub fn settings_select_connection(
+        &self,
+        request: ConnectionSelectRequest,
+        prompt: &dyn SettingsPrompt,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        if self.inner.token.is_fixed() {
+            return Err(DesktopError::connection_fixed());
+        }
+        let confirmation = {
+            let store = self.inner.open_or_create_control()?;
+            check_revision(&store, request.revision)?;
+            selection_confirmation(&store, request.profile.as_deref(), &self.inner.endpoint)
+                .map_err(|error| DesktopError::from_control(&error))?
+        };
+        confirm(prompt, &confirmation)?;
+        self.apply(|store| {
+            store.select_active_provider(request.profile.as_deref(), request.revision)
+        })
+    }
+
+    /// `settings` only. Record a local LM Studio or Ollama connection with no
+    /// credential, through the same core call as the CLI's
+    /// `provider-profile-add --auth none --endpoint`. Recording it grants
+    /// nothing and sends nothing; only selecting it does, after a
+    /// confirmation.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request` for an oversized value; `control` with core's reason
+    /// (a bad name, a duplicate, or an endpoint that is not
+    /// `http://<loopback IP>:<port>/v1`); `stale_revision`;
+    /// `settings_change_running`; `busy`.
+    pub fn settings_add_local_connection(
+        &self,
+        request: LocalConnectionAddRequest,
+    ) -> Result<SettingsOverview, DesktopError> {
+        if request.name.len() > MAX_NAME_INPUT_BYTES
+            || request.endpoint.len() > MAX_PROVIDER_ENDPOINT_BYTES
+        {
+            return Err(DesktopError::invalid_request("A value is too long."));
+        }
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        let kind = match request.kind {
+            LocalProviderKind::LmStudio => ProviderKind::LmStudio,
+            LocalProviderKind::OllamaLocal => ProviderKind::OllamaLocal,
+        };
+        let declaration = ProviderProfileDeclaration {
+            name: request.name,
+            kind: kind.as_str().to_owned(),
+            auth: ProviderAuth::None.as_str().to_owned(),
+            endpoint: Some(request.endpoint),
+        };
+        self.apply(|store| {
+            store
+                .add_provider_profile(&declaration, request.revision)
+                .map(drop)
+        })
+    }
+
+    /// `settings` only. Remove a recorded provider profile that has no stored
+    /// credential. Removing the active connection returns to the default
+    /// endpoint in the same recorded event. This narrows access, so no native
+    /// dialog is shown. A profile with a bound credential stays with the
+    /// trusted CLI, which also deletes the native item.
+    ///
+    /// # Errors
+    ///
+    /// `credential_bound`; `control` for an unknown profile;
+    /// `stale_revision`; `settings_change_running`; `busy`.
+    pub fn settings_remove_connection(
+        &self,
+        request: ConnectionRemoveRequest,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        {
+            let store = self.inner.open_or_create_control()?;
+            check_revision(&store, request.revision)?;
+            let status = store
+                .provider_profile(&request.name)
+                .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
+            if status.credential().is_some() {
+                return Err(DesktopError::credential_bound());
+            }
+        }
+        // Core checks the same revision again, so a credential bound after the
+        // check above makes the removal a revision conflict, not a removal
+        // that strands the native item.
+        self.apply(|store| {
+            store
+                .remove_provider_profile(&request.name, request.revision)
+                .map(drop)
         })
     }
 

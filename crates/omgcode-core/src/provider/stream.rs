@@ -1062,4 +1062,58 @@ mod tests {
         assert_eq!(whole.0.expect("valid stream").content, "a");
         assert_eq!(pieces.0.expect("valid stream").content, "a");
     }
+
+    /// Payload shapes captured from Ollama 0.40.16 at
+    /// `http://127.0.0.1:11434/v1/chat/completions` (ADR-0062). Only the
+    /// assistant text is shortened; every member and its order are as sent.
+    const OLLAMA_TEXT_STREAM: &str = concat!(
+        r#"data: {"id":"chatcmpl-203","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}"#,
+        "\n\n",
+        r#"data: {"id":"chatcmpl-203","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"content":" there"},"finish_reason":null}]}"#,
+        "\n\n",
+        r#"data: {"id":"chatcmpl-203","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}"#,
+        "\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    const OLLAMA_TOOL_STREAM: &str = concat!(
+        r#"data: {"id":"chatcmpl-644","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":"Listing."},"finish_reason":null}]}"#,
+        "\n\n",
+        r#"data: {"id":"chatcmpl-644","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"id":"call_v34zddw6","index":0,"type":"function","function":{"name":"workspace_list_directory","arguments":"{\"path\":\"src\"}"}}]},"finish_reason":null}]}"#,
+        "\n\n",
+        r#"data: {"id":"chatcmpl-644","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+        "\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    /// Ollama's streamed text reply passes the strict rules unchanged.
+    #[test]
+    fn an_ollama_text_stream_is_accepted() {
+        let (result, pieces) = run(StreamMode::Text, OLLAMA_TEXT_STREAM.as_bytes());
+        let outcome = result.expect("Ollama text stream");
+        assert_eq!(pieces, ["Hello", " there"]);
+        assert_eq!(outcome.content, "Hello there");
+        assert_eq!(outcome.finish_reason, "length");
+        assert_eq!(outcome.usage, None);
+        assert!(outcome.tool_calls.is_empty());
+    }
+
+    /// Ollama sends a whole tool call in one piece, beside empty content, and
+    /// then a separate `tool_calls` finish. It assembles into one raw call.
+    #[test]
+    fn an_ollama_tool_call_stream_assembles_into_one_raw_call() {
+        let (result, pieces) = run(StreamMode::Tools, OLLAMA_TOOL_STREAM.as_bytes());
+        let outcome = result.expect("Ollama tool stream");
+        assert_eq!(pieces, ["Listing."]);
+        assert_eq!(outcome.finish_reason, "tool_calls");
+        assert_eq!(outcome.tool_calls.len(), 1);
+        let call = &outcome.tool_calls[0];
+        assert_eq!(call["id"], "call_v34zddw6");
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "workspace_list_directory");
+        assert_eq!(call["function"]["arguments"], r#"{"path":"src"}"#);
+        // A text-only request refuses the same stream.
+        let (text_only, _) = run(StreamMode::Text, OLLAMA_TOOL_STREAM.as_bytes());
+        assert_eq!(text_only, Err(ProviderError::UnsupportedToolCall));
+    }
 }
