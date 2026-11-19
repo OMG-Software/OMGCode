@@ -2,9 +2,12 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { IpcFailure, toIpcError } from "./errors";
 import type {
   AppInfo,
+  ChatDefaults,
+  ChatPreferences,
   ChatSettings,
   ChatStatus,
   SearchResult,
+  SessionSkills,
   SessionSummary,
   SessionTree,
   TranscriptPage,
@@ -97,13 +100,18 @@ export const api = {
   workspaceList: () => invokeCommand<WorkspaceList>("workspace_list", {}),
   sessionCreate: (workspaceId: string, title: string) =>
     invokeCommand<SessionSummary>("session_create", { workspace_id: workspaceId, title }),
-  chatDefaults: () => invokeCommand<ChatSettings>("chat_defaults", {}),
-  chatSend: (sessionId: string, message: string, settings: ChatSettings) =>
-    invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings }),
+  chatDefaults: () => invokeCommand<ChatDefaults>("chat_defaults", {}),
+  chatPreferencesSave: (preferences: ChatPreferences) =>
+    invokeCommand<ChatDefaults>("chat_preferences_save", { preferences }),
+  chatSend: (sessionId: string, message: string, settings: ChatSettings, skills: string[]) =>
+    invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings, skills }),
+  sessionSkills: (sessionId: string) =>
+    invokeCommand<SessionSkills>("session_skills", { session_id: sessionId }),
   chatStatus: (sessionId: string) =>
     invokeCommand<ChatStatus>("chat_status", { session_id: sessionId }),
   chatCancel: (sessionId: string) =>
     invokeCommand<ChatStatus>("chat_cancel", { session_id: sessionId }),
   approvalsSummary: () => invokeCommand<{ pending: number }>("approvals_summary", {}),
   approvalsShowWindow: () => invokeCommand<null>("approvals_show_window", {}),
+  settingsShowWindow: () => invokeCommand<null>("settings_show_window", {}),
 };

@@ -41,6 +41,17 @@ pub(crate) struct DirectoryRecord {
 }
 
 impl DirectoryRecord {
+    /// The recorded path as display text: lossy, with control, invisible, and
+    /// bidirectional formatting characters replaced by visible escapes (see
+    /// [`crate::turn::display_safe_line`]). For people to read only; never an
+    /// authorization key and never a path to reopen.
+    pub(crate) fn display(&self) -> String {
+        self.path.to_path_buf().map_or_else(
+            |_| String::from("(path not representable on this system)"),
+            |path| crate::turn::display_safe_line(&path.to_string_lossy()),
+        )
+    }
+
     /// Compare the identity of the directory actually opened by the native broker.
     pub(crate) fn native_identity(&self) -> omgcode_platform::DirectoryIdentity {
         omgcode_platform::DirectoryIdentity {

@@ -136,6 +136,11 @@ impl DesktopError {
         Self::new("unknown_workspace", "The workspace is not registered.")
     }
 
+    /// The saved chat preferences could not be written.
+    pub(crate) fn preferences() -> Self {
+        Self::new("preferences", "The chat preferences could not be saved.")
+    }
+
     /// The application is shutting down.
     pub(crate) fn shutting_down() -> Self {
         Self::new("shutting_down", "The application is shutting down.")

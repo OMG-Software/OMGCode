@@ -129,6 +129,24 @@ impl ToolchainProfile {
     pub(crate) fn path_entries(&self) -> &[DirectoryRecord] {
         &self.path_entries
     }
+
+    /// The read-only roots as display-safe text, in declaration order. Never
+    /// reopen a path from it.
+    pub fn read_only_root_displays(&self) -> Vec<String> {
+        self.read_only_roots
+            .iter()
+            .map(DirectoryRecord::display)
+            .collect()
+    }
+
+    /// The `PATH` entries as display-safe text, in declaration order. Never
+    /// reopen a path from it.
+    pub fn path_entry_displays(&self) -> Vec<String> {
+        self.path_entries
+            .iter()
+            .map(DirectoryRecord::display)
+            .collect()
+    }
 }
 
 /// A profile and the settings revision that recorded it.

@@ -9,6 +9,7 @@ export interface SidebarHandlers {
   onOpen(session: SessionSummary, folder: string, seq: number | null): void;
   onNewSession(): void;
   onShowApprovals(): void;
+  onShowSettings(): void;
 }
 
 export interface Sidebar {
@@ -39,6 +40,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
   approvalsBadge.hidden = true;
   const approvalsButton = button("Approvals", handlers.onShowApprovals, { class: "ghost" });
   approvalsButton.appendChild(approvalsBadge);
+  const settingsButton = button("Settings", handlers.onShowSettings, { class: "ghost" });
 
   const activeButton = button("Active", () => setView("active"), { class: "seg" });
   const archivedButton = button("Archived", () => setView("archived"), { class: "seg" });
@@ -117,7 +119,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     ),
     el("div", { class: "sort-row" }, sortSelect, directionButton),
     search,
-    approvalsButton,
+    el("div", { class: "window-row" }, approvalsButton, settingsButton),
   );
   const element = el(
     "nav",

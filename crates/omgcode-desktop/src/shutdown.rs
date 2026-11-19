@@ -1,7 +1,7 @@
 //! Bounded, idempotent shutdown.
 //!
 //! Closing `main` (or any other exit path) must not freeze the UI thread for
-//! the service's grace period. The first request hides both windows at once,
+//! the service's grace period. The first request hides every window at once,
 //! then runs [`DesktopService::shutdown`] on a separate thread and exits the
 //! application. A request that arrives while shutdown runs does nothing.
 //!
@@ -63,7 +63,7 @@ pub fn begin(app: &AppHandle, code: i32) {
     if !gate.begin() {
         return;
     }
-    for label in [WindowLabel::Main, WindowLabel::Approvals] {
+    for label in WindowLabel::ALL {
         if let Some(window) = app.get_webview_window(label.as_str())
             && window.hide().is_err()
         {

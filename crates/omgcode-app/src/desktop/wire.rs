@@ -126,6 +126,9 @@ pub struct ChatSendRequest {
     pub message: String,
     /// Model and budgets for this turn.
     pub settings: ChatSettingsDto,
+    /// Names of skills the operator selected for this turn only (ADR-0057).
+    /// Each must be enabled for the session's workspace. Empty for none.
+    pub skills: Vec<String>,
 }
 
 /// Arguments of `approval_detail`.
@@ -700,4 +703,212 @@ pub struct ApprovalDetail {
     /// A single-use token that allows one approve, only for an `exact`,
     /// pending approval.
     pub review_token: Option<String>,
+}
+
+/// Chat defaults the `main` window may save (ADR-0058 decision 8). They grant
+/// nothing: `chat_send` validates every value again when it is used. The
+/// endpoint is not a preference; it stays fixed by the application.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatPreferencesDto {
+    /// The model identifier to start from.
+    pub model: String,
+    /// The context size to start from; `0` means not set.
+    pub context_tokens: u64,
+    /// The output reserve to start from.
+    pub max_output_tokens: u32,
+    /// Custom instructions to start from. Untrusted-origin text, as in a turn.
+    pub instructions: String,
+    /// The compaction threshold to start from.
+    pub compact_threshold: u64,
+    /// Whether auto-compaction starts enabled.
+    pub auto_compact: bool,
+}
+
+/// Arguments of `chat_preferences_save`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChatPreferencesSaveRequest {
+    /// The preferences to save.
+    pub preferences: ChatPreferencesDto,
+}
+
+/// Where the chat defaults came from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreferencesSource {
+    /// No preferences are saved; built-in defaults apply.
+    Defaults,
+    /// Saved preferences apply.
+    Saved,
+    /// A preferences file exists but could not be read or failed validation.
+    /// Built-in defaults apply. Saving again replaces the file.
+    Unreadable,
+}
+
+/// The `chat_defaults` response.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChatDefaults {
+    /// The settings the composer starts from. The endpoint is the fixed one.
+    pub settings: ChatSettingsDto,
+    /// Where `settings` came from.
+    pub preferences: PreferencesSource,
+}
+
+/// The `session_skills` response: skills the operator may select for one turn
+/// in this session.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionSkills {
+    /// Whether the session's recorded workspace is registered here. When it
+    /// is not, no skill can be selected.
+    pub workspace_registered: bool,
+    /// Names of the skills effectively enabled for that workspace, in
+    /// registration order. A name is a validated skill name, not a path.
+    pub skills: Vec<String>,
+}
+
+/// One registered workspace as the `settings` window shows it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct WorkspaceSettingsView {
+    /// The workspace identifier.
+    pub workspace_id: Uuid,
+    /// Display-safe folder text.
+    pub folder_display: String,
+    /// The model-tools preference.
+    pub model_tools: bool,
+    /// The read preference.
+    pub read: bool,
+    /// The write preference.
+    pub write: bool,
+    /// The execute preference.
+    pub execute: bool,
+    /// Display-safe text of the selected package cache root, if any.
+    pub package_cache_root: Option<String>,
+}
+
+/// How this process obtains its model connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionSourceView {
+    /// The launch endpoint (or its default) and `OMGCODE_LM_TOKEN`.
+    Environment,
+    /// A provider profile selected with `--provider-profile` at launch.
+    Profile,
+    /// A token supplier injected by an embedder or a test.
+    Injected,
+}
+
+/// The model connection of this process, for the `settings` window only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ConnectionView {
+    /// The endpoint every turn uses.
+    pub endpoint: String,
+    /// Where the endpoint and token come from.
+    pub source: ConnectionSourceView,
+    /// The selected profile name when `source` is `profile`.
+    pub profile: Option<String>,
+}
+
+/// One recorded provider profile. It never carries a secret.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProviderProfileView {
+    /// The profile name.
+    pub name: String,
+    /// The provider kind, as the CLI names it.
+    pub kind: &'static str,
+    /// The authentication mode, as the CLI names it.
+    pub auth: &'static str,
+    /// The recorded endpoint, if any.
+    pub endpoint: Option<String>,
+    /// Whether a stored credential is bound. The credential itself is never
+    /// read for this view.
+    pub credential_bound: bool,
+}
+
+/// One recorded toolchain profile. Variable values are not shown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ToolchainProfileView {
+    /// The profile name.
+    pub name: String,
+    /// `linux` or `windows`.
+    pub platform: &'static str,
+    /// Display-safe read-only roots.
+    pub read_only_roots: Vec<String>,
+    /// Display-safe `PATH` entries.
+    pub path_entries: Vec<String>,
+    /// Names of the extra environment variables.
+    pub environment_names: Vec<String>,
+}
+
+/// One recorded package-network profile. Configuration only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PackageProfileView {
+    /// The profile name.
+    pub name: String,
+    /// The declared origins.
+    pub origins: Vec<String>,
+    /// How many origins have a bound registry credential.
+    pub credentials_bound: u64,
+}
+
+/// One recorded container grant.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ContainerGrantView {
+    /// The grant identifier.
+    pub grant_id: Uuid,
+    /// The workspace whose container holds the grant.
+    pub workspace_id: Uuid,
+    /// Display-safe text of the granted directory.
+    pub directory: String,
+    /// `read_execute` or `read_write`.
+    pub access: &'static str,
+    /// `pending`, `active`, or `revoking`.
+    pub state: &'static str,
+}
+
+/// One workspace's override of a skill's application setting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SkillOverrideView {
+    /// The workspace.
+    pub workspace_id: Uuid,
+    /// Whether the override enables the skill there.
+    pub enabled: bool,
+}
+
+/// One registered skill's settings. The description and body are not shown:
+/// they come from the imported package and are untrusted text (ADR-0058).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SkillSettingView {
+    /// The validated skill name.
+    pub name: String,
+    /// The application setting, or `null` when unset (disabled).
+    pub application: Option<bool>,
+    /// Workspace overrides.
+    pub workspace_overrides: Vec<SkillOverrideView>,
+}
+
+/// The `settings_overview` response: a read-only view of the trusted
+/// configuration, for the `settings` window only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SettingsOverview {
+    /// Whether the settings store exists. Without it every list is empty.
+    pub store_initialized: bool,
+    /// The global settings revision, `0` without a store.
+    pub revision: u64,
+    /// Display-safe development root, if one is set.
+    pub development_root: Option<String>,
+    /// Registered workspaces.
+    pub workspaces: Vec<WorkspaceSettingsView>,
+    /// This process's model connection.
+    pub connection: ConnectionView,
+    /// Recorded provider profiles.
+    pub provider_profiles: Vec<ProviderProfileView>,
+    /// Recorded toolchain profiles.
+    pub toolchain_profiles: Vec<ToolchainProfileView>,
+    /// Recorded package-network profiles.
+    pub package_profiles: Vec<PackageProfileView>,
+    /// Recorded container grants.
+    pub container_grants: Vec<ContainerGrantView>,
+    /// Registered skills and their settings.
+    pub skills: Vec<SkillSettingView>,
 }

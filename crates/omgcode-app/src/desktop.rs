@@ -86,8 +86,10 @@ mod approvals;
 mod chat;
 mod error;
 mod events;
+mod preferences;
 mod review_tokens;
 mod sessions;
+mod settings;
 mod state;
 mod turns;
 mod wire;
@@ -108,12 +110,16 @@ pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
 pub use self::wire::{
     ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
-    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatEvent,
-    ChatOutcome, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto,
-    Decision, EntryKind, MessageRoleDto, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
-    SessionCreateRequest, SessionRequest, SessionStatus, SessionSummary, SessionTree, SnippetPart,
-    ToolOutcomeDto, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest,
-    TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceList,
+    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatDefaults,
+    ChatEvent, ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest,
+    ChatSettingsDto, ChatState, ChatStatus, ConnectionSourceView, ConnectionView,
+    ContainerGrantView, ContextMeterDto, Decision, EntryKind, MessageRoleDto, PackageProfileView,
+    PreferencesSource, ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
+    SessionCreateRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
+    SessionTree, SettingsOverview, SkillOverrideView, SkillSettingView, SnippetPart,
+    ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
+    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
+    WorkspaceList, WorkspaceSettingsView,
 };
 use crate::{AppError, ErrorKind, LmToken, LocalConnection, TokenSource, resolve_local_connection};
 

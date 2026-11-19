@@ -24,7 +24,8 @@ the rules this shell relies on: [session storage](session-storage.md),
 Implemented (Phase E, version 0.29.0, branch `codex/desktop-interface`; not
 merged to `main` at the time of writing):
 
-- A Tauri 2 shell with two windows, `main` and `approvals`.
+- A Tauri 2 shell with two windows, `main` and `approvals`. Version 0.40.0
+  adds a third, `settings`.
 - A session tree grouped by workspace folder, with archived and active views.
 - Full-text search over session titles and transcript text.
 - A paged transcript view that reads a journal without taking the writer lock.
@@ -49,6 +50,10 @@ merged to `main` at the time of writing):
 - Since version 0.34.0 (Phase D6, ADR-0051), cancelling also interrupts a
   non-streamed request (`--stream off`) and the compaction request before a
   turn. No command or wire type changed.
+- Since version 0.40.0 (Phase S1, ADR-0058), an isolated `settings` window
+  shows a read-only view of the trusted configuration. The `main` window
+  saves its chat preferences and can select up to four enabled skills for
+  one turn. See [settings window](#settings-window).
 
 Not implemented:
 
@@ -56,11 +61,17 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- A settings interface. Workspace settings change only through the trusted
-  CLI ([workspace settings](workspace-permissions.md)). Chat settings are not
-  saved between runs.
+- Changing trusted settings in the desktop application. The `settings`
+  window is read-only. Workspaces, the development root, permissions,
+  profiles, credentials, container grants, package cache roots, and skill
+  enablement change only through the trusted CLI
+  ([workspace settings](workspace-permissions.md)). Phases S2 to S5 of
+  [ADR-0058](adr/0058-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
+  are not implemented: the native folder dialog, the native confirmations,
+  the write-only API key field, and choosing the active connection.
 - Development panels: terminal tabs, task logs, diffs, and a file browser.
-- Git, MCP, skills, and memory interfaces.
+- Git, MCP, and memory interfaces, and skill management. The `main` window
+  can only select an already enabled skill for one turn.
 - A recovery interface for damaged journals or an incomplete tail.
 - A provider other than the local LM Studio server. Stored API keys are used
   only for that server's token, through `--provider-profile`. The frontend
@@ -180,7 +191,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has two webview windows and 19 commands. No other command exists.
+The shell has three webview windows and 23 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -195,22 +206,29 @@ their registered identifier, and approvals by identifier.
 | `session_interrupt` | main | Close a session's unfinished turn as `operator_interrupted` |
 | `workspace_list` | main | List the registered workspaces a session can be created in |
 | `session_create` | main | Create a session in a registered workspace |
-| `chat_defaults` | main | Return the fixed endpoint and default chat budgets |
+| `chat_defaults` | main | Return the fixed endpoint and the saved or built-in chat preferences |
+| `chat_preferences_save` | main | Save the chat preferences the composer starts from |
+| `session_skills` | main | List the names of the skills enabled for a session's workspace |
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
 | `chat_subscribe` | main | Subscribe a caller-created channel to chat events |
 | `approvals_summary` | main | Return the advisory count of pending approvals |
 | `approvals_show_window` | main | Show the existing approvals window |
+| `settings_show_window` | main | Show the existing settings window |
 | `approvals_list` | approvals | List pending approvals and recent decisions |
 | `approval_detail` | approvals | Review one approval and obtain a review token |
 | `approval_decide` | approvals | Approve or deny one approval |
+| `settings_overview` | settings | Return a read-only view of the trusted configuration |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
 request, and holds the only decision controls. It starts hidden and never
-renders transcript content. Closing `approvals` hides it. Closing `main` hides
-both windows, runs a bounded shutdown, and exits.
+renders transcript content. `settings` shows the read-only configuration
+view. It starts hidden, never renders transcript text, tool output, or a
+skill's description or body, and has no decision control. Closing
+`approvals` or `settings` hides it. Closing `main` hides every window, runs a
+bounded shutdown, and exits.
 
 ## Session tree
 
@@ -325,12 +343,40 @@ folder was recorded by another operating system cannot be used to create a
 session here. Registering or changing a workspace is a CLI operation.
 
 A turn takes the model name, the context size, the output reserve, optional
-user instructions, and the compaction settings. These are typed into the
-interface for each run and are not saved. The model must be loaded on the
+user instructions, and the compaction settings. The composer starts from the
+saved chat preferences, or from built-in values when none are saved, and
+each can be changed before a turn. The model must be loaded on the
 server, and the context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
+- **Saved preferences.** **Save as defaults** sends the model name, context
+  size, output reserve, custom instructions, compaction threshold, and the
+  automatic compaction switch to `chat_preferences_save`. They carry no
+  endpoint and grant nothing. The request refuses an unknown field, so an
+  endpoint cannot be saved. A model name over 256 bytes or with a control
+  character, and instructions over 64 KiB, are refused with
+  `invalid_request`. The budgets are not checked when saved; `chat_send`
+  checks them as before. The file is
+  `<data_root>/desktop-v1/chat-preferences.json`, at most 512 KiB, read only
+  as a regular file and parsed strictly. A save writes a new temporary file,
+  syncs it, and renames it over the old one; on Unix it is created with mode
+  0600 and the directory is synced. A missing file gives the built-in
+  values. A file that cannot be read or parsed also gives the built-in values,
+  `chat_defaults` reports it as `unreadable`, the composer shows a note, and
+  the next save replaces it. A failed write returns `preferences`.
+- **Skills.** When a session opens, `main` calls `session_skills`. It returns
+  the names of the skills effectively enabled for the session's registered
+  workspace, and nothing for a workspace that is not registered here or when
+  no settings store exists. The composer lists them as check boxes and allows
+  at most four. `chat_send` carries the selected names in `skills`, and the
+  composer clears them after a send. The service refuses more than four, or
+  a name that is not a valid skill name, with `invalid_request`, and a
+  repeated name with `skill_selection_invalid`, before a turn starts. Core
+  then loads each skill as the CLI's `chat --skill` does (ADR-0057): a skill
+  that is no longer enabled fails the turn before any model request. A
+  selected skill reaches only that turn's first request, as a labelled
+  untrusted message, and is never journaled. The window shows names only.
 - **Endpoint.** Fixed at launch. With a profile, the launch value is the
   profile's recorded endpoint. A request whose endpoint is not byte for byte
   the launch endpoint is refused with `invalid_request`. Each turn also
@@ -409,6 +455,38 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   it as `turn_open`, and the operator can interrupt it.
 
 A panicked turn thread is recorded as a failed turn with the code `internal`.
+
+## Settings window
+
+**Settings** in the session sidebar calls `settings_show_window`, which shows
+the hidden `settings` window. The window calls one command,
+`settings_overview`, when it starts, when it becomes visible again, and when
+**Refresh** is pressed. It shows, read-only:
+
+- the settings revision, or that no settings store exists yet;
+- the development root;
+- each registered workspace with its folder, its `model_tools`, `read`,
+  `write`, and `execute` preferences, and its package cache root;
+- the connection this process uses: the endpoint, and whether the token comes
+  from `OMGCODE_LM_TOKEN` or from a named provider profile set at launch;
+- provider profiles with their kind, authentication, endpoint, and whether a
+  credential is bound;
+- toolchain profiles with their platform, read-only roots, path entries, and
+  environment variable names, without values;
+- package-network profiles with their origins and how many credentials are
+  bound;
+- container grants with their folder, access, and state;
+- each imported skill's name, its application setting, and its workspace
+  overrides, with the workspace shown by its folder.
+
+The view reads the settings store through the same core functions as the
+trusted CLI and releases it before returning. It reads no stored secret and
+returns no secret value. Every path and recorded name is passed through
+core's display-safe functions; a path that this system cannot represent is
+shown as a fixed note. A skill's description and body are never returned.
+The window shows a note that it is read-only and names the CLI commands that
+change each setting. It has no input field. An error is shown with its code,
+and **Refresh** stays available.
 
 ## Approvals
 
@@ -499,14 +577,18 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands. Every handler also calls the Rust
+  not grant the three approval commands or `settings_overview`. The
+  `settings` file grants only `settings_overview`. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
   permission. Adding one needs an ADR.
 - **No host paths.** No command accepts a path. The service returns no journal
   path, no data root, no token, and no tool output digest. Workspace folder
-  display text is the only path-like text it returns, and it is display-safe.
+  display text is the only path-like text the `main` window receives. The
+  `settings` window also receives the recorded development root, profile
+  roots and path entries, package cache roots, and grant folders, all as
+  display-safe text. No command takes any of them back as input.
 - **Fixed endpoint and token.** The webview cannot choose the provider, choose
   the credential source, or read the token. The profile and its endpoint are
   fixed at launch. A stored credential goes only to the endpoint recorded with
@@ -534,6 +616,11 @@ What the design does:
   `approval_detail`. The command name `chat_subscribe` lives in
   `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
   test checks that no approvals asset contains it.
+- **The configuration view only in `settings`.** The settings window loads its
+  own bundle. `settings_overview` is named only in
+  `src/ipc/settings_client.ts`, and bundle tests check that no main or
+  approvals asset contains it and that no settings asset contains
+  `approval_decide`, `approval_detail`, or `chat_subscribe`.
 - **The index is a cache.** It authorizes nothing. A journal path from the
   index is revalidated against the strict layout, and the writer open
   validates the journal again by replay.
@@ -546,7 +633,13 @@ What it does not do:
   read the provisional text of running turns, which it could already read from
   transcripts once recorded. It cannot name a host path, choose
   the endpoint, read the token, or decide an approval. It can cause approval
-  requests; it cannot decide them.
+  requests; it cannot decide them. It can overwrite the saved chat
+  preferences, which grant nothing, and select enabled skills for a turn,
+  which load as untrusted text and grant no permission. It cannot call
+  `settings_overview`.
+- A compromised `settings` webview can read the configuration view: recorded
+  paths, profile names, endpoints, origins, and skill names. It cannot read a
+  secret, change a setting, or call any other command.
 - The approvals webview is still web content. The design reduces what reaches
   it and what it can call. It does not make the webview a trusted computing
   base. A native dialog for the final confirmation remains a possible later
@@ -572,7 +665,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 19 |
+| Commands | 23 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
@@ -585,6 +678,10 @@ What it does not do:
 | Client preview bound | 64 KiB of UTF-16 code units |
 | Finished chat results kept | 64 |
 | Message and instructions prefilter | 64 KiB each |
+| Skills selected per turn | 4 |
+| Saved model name | 256 bytes, no control characters |
+| Saved instructions | 64 KiB |
+| Chat preferences file | 512 KiB |
 | Review token lifetime | 120 seconds, single use |
 | Outstanding review tokens | 64 |
 | Decided approvals listed | 50 most recent |
@@ -651,7 +748,11 @@ private store refuses, see the notes in
   `ui/tests/live_preview.test.ts` (the live entry and its bounds), and
   `ui/tests/client.test.ts` (the channel wrapper) cover the streaming frontend.
   The main window tests also cover the cancelled notice, which is decided by
-  the error code only.
+  the error code only, saving preferences, the unreadable note, and the
+  skill choice and its limit. `ui/tests/settings_window.test.ts` covers the
+  read-only view, hostile recorded text, errors, and refresh. The scans
+  also confine the settings command to the settings client and keep the
+  settings window free of main, approvals, and chat code.
 - **Shell (no webview).** The policy table; the capability files against the
   policy; the build script's command list against the policy; the frontend's
   command names against the policy; the configuration and the content security
@@ -661,7 +762,9 @@ private store refuses, see the notes in
   gate.
 - **Service.** Tests with a mock provider cover chat, approvals, review
   tokens, shutdown, and the index. `crates/omgcode-app/tests/desktop_events.rs`
-  covers the event hub. The desktop chat and event tests also cover cancelling
+  covers the event hub. `crates/omgcode-app/tests/desktop_settings.rs` covers
+  the configuration view, session skills, skill selection, and saved
+  preferences. The desktop chat and event tests also cover cancelling
   a streamed turn and shutting down while one runs, and cancelling a turn
   whose request is not streamed.
 - **End to end.** The real Windows shell was driven over the WebView2 remote
@@ -695,6 +798,10 @@ private store refuses, see the notes in
   real shell's windows were not driven again for 0.34.0; the service tests
   cover cancelling a non-streamed turn.
 - The CI workflow changes for the shell have not run.
+- Phase S1 (0.40.0): the `settings` window, saved preferences, and skill
+  selection were checked by unit, service, and bundle tests and in the Vite
+  development server against the mock backend. The real shell's windows were
+  not driven for 0.40.0.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no

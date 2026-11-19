@@ -13,6 +13,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use omgcode_core::session::SessionJournal;
+use omgcode_core::skills::SkillName;
 use omgcode_core::turn::CancelToken;
 use uuid::Uuid;
 
@@ -322,6 +323,9 @@ pub(super) struct TurnJob {
     pub(super) settings: ChatSettings,
     pub(super) token: Option<LmToken>,
     pub(super) clients: ChatClients,
+    /// Skills the operator selected for this turn only. The turn loads them
+    /// from core and refuses the turn when one is not enabled (ADR-0057).
+    pub(super) skills: Vec<SkillName>,
 }
 
 /// Start the turn thread.
@@ -424,7 +428,7 @@ fn execute(inner: &Inner, job: &TurnJob) -> Result<ChatOutcome, DesktopError> {
             message: &job.message,
             settings: &job.settings,
             token,
-            skills: &[],
+            skills: &job.skills,
         },
         &job.clients,
         &mut hooks,

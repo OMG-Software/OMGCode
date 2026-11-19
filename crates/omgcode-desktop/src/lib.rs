@@ -1,9 +1,9 @@
 //! OMGCode desktop shell (Tauri 2).
 //!
-//! The Rust side is the only authority. Both webviews render untrusted text and
-//! reach Rust only through commands that are (1) gated by a per-window Tauri
+//! The Rust side is the only authority. Every webview renders untrusted text and
+//! reaches Rust only through commands that are (1) gated by a per-window Tauri
 //! capability and (2) checked again against the window policy in
-//! [`policy`]. See ADR-0045 and ADR-0046.
+//! [`policy`]. See ADR-0045, ADR-0046, and ADR-0058.
 //!
 //! The data root, and either the model endpoint with the environment token or a
 //! provider profile (whose recorded endpoint and stored credential are used
@@ -137,7 +137,11 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::approvals_show_window,
             commands::approvals::approvals_list,
             commands::approvals::approval_detail,
-            commands::approvals::approval_decide
+            commands::approvals::approval_decide,
+            commands::settings_show_window,
+            commands::chat::chat_preferences_save,
+            commands::chat::session_skills,
+            commands::settings::settings_overview
         ])
         .build(tauri::generate_context!());
     match built {

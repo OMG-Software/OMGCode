@@ -1,7 +1,8 @@
 //! `main`-window handlers for chat settings, turns, status, and cancellation.
 
 use omgcode_app::desktop::{
-    ChatEvent, ChatEventSink, ChatSendRequest, ChatSettingsDto, ChatStatus, SessionRequest,
+    ChatDefaults, ChatEvent, ChatEventSink, ChatPreferencesDto, ChatPreferencesSaveRequest,
+    ChatSendRequest, ChatSettingsDto, ChatStatus, SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
@@ -11,8 +12,8 @@ use super::{Service, blocking};
 use crate::error::CommandError;
 use crate::policy::{Command, authorize};
 
-/// `main` only. Returns the process-wide chat defaults, including the fixed
-/// endpoint the process was started with.
+/// `main` only. Returns the chat defaults: the fixed endpoint the process was
+/// started with, and the saved chat preferences or the built-in values.
 ///
 /// # Errors
 ///
@@ -21,9 +22,47 @@ use crate::policy::{Command, authorize};
 pub async fn chat_defaults(
     webview: Webview,
     state: Service<'_>,
-) -> Result<ChatSettingsDto, CommandError> {
+) -> Result<ChatDefaults, CommandError> {
     authorize(Command::ChatDefaults, webview.label())?;
     blocking(&state, |service| Ok(service.chat_defaults())).await
+}
+
+/// `main` only. Saves the chat preferences the composer starts from
+/// (ADR-0058 decision 8). They grant nothing and carry no endpoint.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `preferences`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn chat_preferences_save(
+    webview: Webview,
+    state: Service<'_>,
+    preferences: ChatPreferencesDto,
+) -> Result<ChatDefaults, CommandError> {
+    authorize(Command::ChatPreferencesSave, webview.label())?;
+    let request = ChatPreferencesSaveRequest { preferences };
+    blocking(&state, move |service| {
+        service.chat_preferences_save(request)
+    })
+    .await
+}
+
+/// `main` only. Lists the skills enabled for a session's workspace, which the
+/// operator may select for one turn. Names only.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn session_skills(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+) -> Result<SessionSkills, CommandError> {
+    authorize(Command::SessionSkills, webview.label())?;
+    let request = SessionRequest { session_id };
+    blocking(&state, move |service| service.session_skills(request)).await
 }
 
 /// `main` only. Starts one chat turn on a service thread and returns at once.
@@ -39,12 +78,14 @@ pub async fn chat_send(
     session_id: Uuid,
     message: String,
     settings: ChatSettingsDto,
+    skills: Vec<String>,
 ) -> Result<ChatStatus, CommandError> {
     authorize(Command::ChatSend, webview.label())?;
     let request = ChatSendRequest {
         session_id,
         message,
         settings,
+        skills,
     };
     blocking(&state, move |service| service.chat_send(request)).await
 }

@@ -2,11 +2,15 @@ import { button, el, replaceChildren } from "../dom";
 import { utf8Length } from "../format";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
-import type { ChatSettings } from "../ipc/types";
+import type { ChatDefaults, ChatPreferences, ChatSettings } from "../ipc/types";
 import { type ComposerState, MESSAGE_MAX_BYTES, messageProblem, settingsValid } from "./model";
 
+/** The most skills one turn may load; the core enforces the same bound (ADR-0057). */
+export const SKILLS_PER_TURN = 4;
+
 export interface ComposerHandlers {
-  onSend(message: string, settings: ChatSettings): void;
+  /** `skills` are the names selected for this turn only. */
+  onSend(message: string, settings: ChatSettings, skills: string[]): void;
   onCancel(): void;
 }
 
@@ -14,9 +18,11 @@ export interface Composer {
   element: HTMLElement;
   /** `running` shows the Running state and Cancel button. */
   update(state: ComposerState, running: boolean): void;
-  /** Clears the draft after a successful send. */
+  /** Clears the draft and the skill selection after a successful send. */
   clear(): void;
   readSettings(): ChatSettings;
+  /** Offers these skill names for the next turn; an empty list hides the choice. */
+  setSkills(names: readonly string[]): void;
 }
 
 function labelled(label: string, input: HTMLElement): HTMLElement {
@@ -54,6 +60,8 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
   const autoCompact = el("input", { attrs: { type: "checkbox" } });
   const instructions = el("textarea", { attrs: { rows: "3" } });
+  const preferencesNote = el("span", { class: "muted", attrs: { role: "status" } });
+  const saveDefaultsButton = button("Save as defaults", () => void saveDefaults());
 
   const settingsPanel = el(
     "details",
@@ -80,8 +88,19 @@ export function createComposer(handlers: ComposerHandlers): Composer {
         el("span", { text: "Auto-compact" }),
       ),
       labelled("Custom instructions", instructions),
+      el("div", { class: "field preferences-row" }, saveDefaultsButton, preferencesNote),
     ),
   );
+
+  const skillsList = el("div", { class: "skill-choices" });
+  const skillsPanel = el(
+    "fieldset",
+    { class: "skills" },
+    el("legend", { text: `Skills for this turn (at most ${SKILLS_PER_TURN})` }),
+    skillsList,
+  );
+  skillsPanel.hidden = true;
+  let skillBoxes: Array<[string, HTMLInputElement]> = [];
 
   let state: ComposerState = { visible: false, enabled: false, reason: null };
   let running = false;
@@ -99,6 +118,61 @@ export function createComposer(handlers: ComposerHandlers): Composer {
       compact_threshold: Number(compactThreshold.value),
       auto_compact: autoCompact.checked,
     };
+  }
+
+  function selectedSkills(): string[] {
+    return skillBoxes.filter(([, box]) => box.checked).map(([name]) => name);
+  }
+
+  function setSkills(names: readonly string[]): void {
+    skillBoxes = names.map((name) => {
+      const box = el("input", { attrs: { type: "checkbox" } });
+      box.addEventListener("change", refresh);
+      return [name, box];
+    });
+    replaceChildren(
+      skillsList,
+      ...skillBoxes.map(([name, box]) =>
+        el("label", { class: "field-check skill-choice" }, box, el("span", { text: name })),
+      ),
+    );
+    skillsPanel.hidden = skillBoxes.length === 0;
+    refresh();
+  }
+
+  function preferencesOf(settings: ChatSettings): ChatPreferences {
+    return {
+      model: settings.model,
+      context_tokens: settings.context_tokens,
+      max_output_tokens: settings.max_output_tokens,
+      instructions: settings.instructions,
+      compact_threshold: settings.compact_threshold,
+      auto_compact: settings.auto_compact,
+    };
+  }
+
+  function applyDefaults(defaults: ChatDefaults): void {
+    writeSettings(defaults.settings);
+    replaceChildren(
+      preferencesNote,
+      defaults.preferences === "unreadable"
+        ? "Saved defaults could not be read; built-in defaults are shown."
+        : "",
+    );
+  }
+
+  async function saveDefaults(): Promise<void> {
+    saveDefaultsButton.disabled = true;
+    try {
+      applyDefaults(await api.chatPreferencesSave(preferencesOf(readSettings())));
+      replaceChildren(preferencesNote, "Saved as defaults.");
+    } catch (reason) {
+      const error = toIpcError(reason);
+      replaceChildren(preferencesNote, `${error.message} (${error.code})`);
+    } finally {
+      saveDefaultsButton.disabled = false;
+      refresh();
+    }
   }
 
   function writeSettings(settings: ChatSettings): void {
@@ -144,6 +218,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     ]) {
       input.disabled = !state.enabled;
     }
+    const full = selectedSkills().length >= SKILLS_PER_TURN;
+    for (const [, skillBox] of skillBoxes) {
+      skillBox.disabled = !state.enabled || (full && !skillBox.checked);
+    }
   }
 
   function submit(): void {
@@ -153,7 +231,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
       problem.hidden = issue === null;
       return;
     }
-    handlers.onSend(box.value, readSettings());
+    handlers.onSend(box.value, readSettings(), selectedSkills());
   }
 
   box.addEventListener("input", refresh);
@@ -171,6 +249,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     "section",
     { class: "composer", attrs: { "aria-label": "Compose a message" } },
     settingsPanel,
+    skillsPanel,
     box,
     el("div", { class: "composer-row" }, counter, runningLabel, cancelButton, sendButton),
     reason,
@@ -181,7 +260,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   void api
     .chatDefaults()
     .then((defaults) => {
-      writeSettings(defaults);
+      applyDefaults(defaults);
       refresh();
     })
     .catch((failure: unknown) => {
@@ -198,8 +277,12 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     },
     clear() {
       box.value = "";
+      for (const [, skillBox] of skillBoxes) {
+        skillBox.checked = false;
+      }
       refresh();
     },
     readSettings,
+    setSkills,
   };
 }

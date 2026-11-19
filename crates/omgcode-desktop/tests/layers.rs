@@ -69,7 +69,7 @@ fn string_array(value: &Value) -> Vec<String> {
 
 #[test]
 fn capability_grants_equal_the_policy_for_each_window() {
-    for window in [WindowLabel::Main, WindowLabel::Approvals] {
+    for window in WindowLabel::ALL {
         // Given the capability that names this window.
         let capability = capability_for(window);
 
@@ -96,7 +96,7 @@ fn capability_grants_equal_the_policy_for_each_window() {
 #[test]
 fn each_capability_names_one_local_window_and_no_remote_url() {
     let files = capability_files();
-    assert_eq!(files.len(), 2, "exactly two capability files");
+    assert_eq!(files.len(), 3, "exactly three capability files");
     for path in files {
         let capability = json(&path);
         let windows = string_array(&capability["windows"]);
@@ -117,7 +117,11 @@ fn each_capability_names_one_local_window_and_no_remote_url() {
         .collect();
     assert_eq!(
         labels,
-        BTreeSet::from(["main".to_owned(), "approvals".to_owned()])
+        BTreeSet::from([
+            "main".to_owned(),
+            "approvals".to_owned(),
+            "settings".to_owned()
+        ])
     );
 }
 
@@ -133,6 +137,34 @@ fn decision_commands_are_granted_to_no_other_window() {
     }
     let approvals = string_array(&capability_for(WindowLabel::Approvals)["permissions"]);
     assert_eq!(approvals.len(), 3);
+    let settings = string_array(&capability_for(WindowLabel::Settings)["permissions"]);
+    for command in [
+        Command::ApprovalsList,
+        Command::ApprovalDetail,
+        Command::ApprovalDecide,
+    ] {
+        assert!(!settings.contains(&permission_for(command)));
+    }
+}
+
+#[test]
+fn settings_window_is_granted_only_its_own_commands() {
+    // ADR-0058 decision 2: the settings window reads the configuration and
+    // nothing else; no chat, transcript, session, or approval command.
+    let settings = string_array(&capability_for(WindowLabel::Settings)["permissions"]);
+    let expected: Vec<String> = commands_for(WindowLabel::Settings)
+        .into_iter()
+        .map(|name| format!("allow-{}", name.replace('_', "-")))
+        .collect();
+    assert_eq!(settings, expected);
+    assert_eq!(settings, ["allow-settings-overview"]);
+    for window in [WindowLabel::Main, WindowLabel::Approvals] {
+        let granted = string_array(&capability_for(window)["permissions"]);
+        assert!(
+            !granted.contains(&permission_for(Command::SettingsOverview)),
+            "{window:?} must not read the configuration"
+        );
+    }
 }
 
 #[test]
@@ -144,15 +176,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 19 unique policy names.
+    // And the shared list holds the 23 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 19);
-    assert_eq!(unique.len(), 19);
+    assert_eq!(listed.len(), 23);
+    assert_eq!(unique.len(), 23);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -226,10 +258,11 @@ fn channel_argument_keys(client: &str) -> Vec<BTreeSet<String>> {
 
 #[test]
 fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
-    // Given the two IPC client modules.
+    // Given the three IPC client modules.
     let ui = crate_dir().join("ui/src/ipc");
     let main_calls = invoked_commands(&read(&ui.join("client.ts")));
     let approval_calls = invoked_commands(&read(&ui.join("approvals_client.ts")));
+    let settings_calls = invoked_commands(&read(&ui.join("settings_client.ts")));
     // The one push-channel command is invoked from `chat_events.ts`.
     let channel_calls = channel_commands(&read(&ui.join("chat_events.ts")));
     assert_eq!(
@@ -239,13 +272,13 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
     );
     let main_calls: BTreeSet<String> = main_calls.union(&channel_calls).cloned().collect();
 
-    // Then the main side uses a subset of the main commands (all 16 today)...
+    // Then the main side uses a subset of the main commands (all 19 today)...
     let main_commands: BTreeSet<String> = commands_for(WindowLabel::Main)
         .into_iter()
         .map(str::to_owned)
         .collect();
     assert!(main_calls.is_subset(&main_commands), "{main_calls:?}");
-    assert_eq!(main_calls.len(), 16);
+    assert_eq!(main_calls.len(), 19);
     assert_eq!(main_calls, main_commands);
 
     // ...the approvals client uses exactly the three approval commands...
@@ -255,8 +288,21 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(approval_calls, approval_commands);
 
-    // ...and together they cover all 19 policy commands.
-    let union: BTreeSet<String> = main_calls.union(&approval_calls).cloned().collect();
+    // ...the settings client uses exactly the settings commands...
+    let settings_commands: BTreeSet<String> = commands_for(WindowLabel::Settings)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(settings_calls, settings_commands);
+
+    // ...and together they cover all 23 policy commands.
+    let union: BTreeSet<String> = main_calls
+        .union(&approval_calls)
+        .cloned()
+        .collect::<BTreeSet<String>>()
+        .union(&settings_calls)
+        .cloned()
+        .collect();
     let all: BTreeSet<String> = Command::ALL
         .into_iter()
         .map(|c| c.name().to_owned())
@@ -301,7 +347,7 @@ fn tauri_config_is_locked_down() {
         "no dangerous flag"
     );
 
-    // The capability list is exactly the two files' identifiers.
+    // The capability list is exactly the three files' identifiers.
     let listed = string_array(&config["app"]["security"]["capabilities"]);
     let from_files: Vec<String> = capability_files()
         .iter()
@@ -314,7 +360,7 @@ fn tauri_config_is_locked_down() {
         .collect();
     let listed_set: BTreeSet<&String> = listed.iter().collect();
     let files_set: BTreeSet<&String> = from_files.iter().collect();
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 3);
     assert_eq!(listed_set, files_set);
 
     // The CSP carries each required directive and no loose source.
@@ -492,7 +538,7 @@ fn injected(param: &(String, String)) -> bool {
 }
 
 #[test]
-fn generate_handler_registers_exactly_the_nineteen_policy_commands() {
+fn generate_handler_registers_exactly_the_twenty_three_policy_commands() {
     // Given the invoke handler in lib.rs.
     let lib = read(&crate_dir().join("src/lib.rs"));
     let start =
@@ -507,10 +553,10 @@ fn generate_handler_registers_exactly_the_nineteen_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 19 shared names, once each.
+    // Then they are the 23 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 19);
-    assert_eq!(unique.len(), 19);
+    assert_eq!(registered.len(), 23);
+    assert_eq!(unique.len(), 23);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -527,7 +573,7 @@ fn generate_handler_registers_exactly_the_nineteen_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 19);
+    assert_eq!(handlers.len(), 23);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -643,6 +689,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     let ui = crate_dir().join("ui/src/ipc");
     let mut expected = frontend_arguments(&read(&ui.join("client.ts")));
     expected.extend(frontend_arguments(&read(&ui.join("approvals_client.ts"))));
+    expected.extend(frontend_arguments(&read(&ui.join("settings_client.ts"))));
     // The push-channel command passes one argument, `on_event`, in both of the
     // transport forms of `invokeWithChannel`.
     let channel_keys = channel_argument_keys(&read(&ui.join("client.ts")));
@@ -660,7 +707,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     }
     assert_eq!(
         expected.len(),
-        19,
+        23,
         "all commands are called by the frontend"
     );
 

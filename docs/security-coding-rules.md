@@ -7,8 +7,8 @@ turn/tool runtime for read and list. Chat runs it with the local LM Studio
 adapter only for a workspace whose `model_tools` preference is enabled;
 otherwise chat rejects model-requested tools. A prototype desktop shell
 (see the [desktop interface guide](desktop-interface.md)) renders session
-content in a webview and decides approvals in a separate window; the rules
-below apply to it. Native confinement exists only for the trusted `run` command
+content in a webview, decides approvals in a separate window, and shows a
+read-only configuration view in a third; the rules below apply to it. Native confinement exists only for the trusted `run` command
 and the approval-gated command tool, and it is not whole-user containment.
 Configuration diagnostics always deny execution and do not replace per-target
 authorization. See
@@ -46,6 +46,18 @@ authorization. See
   webview is still web content, not a trusted computing base.
 - Fix the provider endpoint and read the provider token outside the webview. A
   webview request cannot choose either.
+- Show trusted configuration only in the `settings` window, which renders no
+  transcript text, tool output, or skill description or body, and grant the
+  configuration commands to that window only (ADR-0058). Return recorded
+  paths and names as display-safe text, never a secret, and never accept them
+  back as input. Until a later ADR-0058 phase lands, the desktop changes no
+  trusted setting.
+- Saved desktop preferences carry no endpoint, provider, credential, or
+  permission and grant nothing. Bound and strictly parse the file, and fall
+  back to built-in values when it cannot be read.
+- A per-turn skill selection from a webview names skills only. Bound it, and
+  let core load and check each skill for that turn as for the CLI's
+  `chat --skill`.
 
 ## Instructions, summaries, caches, and skills
 

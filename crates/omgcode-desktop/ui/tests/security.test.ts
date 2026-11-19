@@ -102,6 +102,29 @@ describe("source scan", () => {
     expect(users.sort()).toEqual(["src/ipc/chat_events.ts", "src/mock/backend.ts"]);
   });
 
+  it("keeps the settings commands inside the settings client", () => {
+    const users = Object.entries(sources)
+      .filter(([, text]) => /settings_overview|settings_client/.test(text))
+      .map(([key]) => relative(key));
+    expect(users.sort()).toEqual([
+      "src/ipc/settings_client.ts",
+      "src/mock/backend.ts",
+      "src/settings/app.ts",
+    ]);
+  });
+
+  it("keeps the settings window free of main, approvals, and chat code", () => {
+    const settings = Object.entries(sources).filter(
+      ([key]) => key.startsWith("../src/settings/") || key === "../src/settings.ts",
+    );
+    expect(settings.length).toBeGreaterThanOrEqual(2);
+    for (const [key, text] of settings) {
+      expect(text, key).not.toMatch(/from\s+["'](\.\.?\/)+(main|approvals)(\/|["'])/);
+      expect(text, key).not.toMatch(/approvals_client|chat_events|\bapi\./);
+      expect(text, key).not.toMatch(/\bmock\b/);
+    }
+  });
+
   it("keeps the approvals window free of main-window code", () => {
     const approvals = Object.entries(sources).filter(
       ([key]) => key.startsWith("../src/approvals/") || key === "../src/approvals.ts",
@@ -121,8 +144,12 @@ describe("source scan", () => {
 });
 
 describe("HTML entry files", () => {
-  it("finds both entries", () => {
-    expect(Object.keys(pages).map(relative).sort()).toEqual(["approvals.html", "index.html"]);
+  it("finds all three entries", () => {
+    expect(Object.keys(pages).map(relative).sort()).toEqual([
+      "approvals.html",
+      "index.html",
+      "settings.html",
+    ]);
   });
 
   it.each(Object.entries(pages))(

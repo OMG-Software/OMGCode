@@ -48,6 +48,7 @@ fn send(
         "session_id": session,
         "message": message,
         "settings": settings_json(endpoint),
+        "skills": [],
     })))
 }
 
@@ -218,7 +219,7 @@ fn a_profile_replaced_with_another_endpoint_refuses_the_next_turn() {
     .expect("the launch check");
     assert_eq!(launch.endpoint, server.endpoint);
     let service = service(&fixture, &launch.endpoint, "lms");
-    assert_eq!(service.chat_defaults().endpoint, server.endpoint);
+    assert_eq!(service.chat_defaults().settings.endpoint, server.endpoint);
     let session = new_session(&service, workspace.id);
 
     send(&service, session, "hello", &launch.endpoint).expect("first turn");
@@ -247,7 +248,7 @@ fn a_profile_replaced_with_another_endpoint_refuses_the_next_turn() {
         .chat_status(wire(session_request(session)))
         .expect("status");
     assert!(matches!(status.state, ChatState::Completed), "{status:?}");
-    assert_eq!(service.chat_defaults().endpoint, server.endpoint);
+    assert_eq!(service.chat_defaults().settings.endpoint, server.endpoint);
 
     let (served, requests) = server.finish_recorded();
     assert_eq!(served, 1, "only the first turn reached the launch endpoint");

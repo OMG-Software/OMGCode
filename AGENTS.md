@@ -77,8 +77,11 @@ that is never journaled, replayed, or summarized (a recorded model reply can
 repeat its text)
 ([ADR-0057](docs/adr/0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md)).
 No skill script runs, and a skill grants no permission.
-The desktop shell has no settings interface, development panels, installer, or
-recovery interface. CI publishes unsigned archives of the newest tested merge to
+A third, isolated desktop `settings` window shows the trusted configuration
+read-only; the `main` window saves chat preferences and selects enabled
+skills for one turn ([ADR-0058](docs/adr/0058-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)).
+The desktop shell cannot change trusted settings and has no development
+panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.
 The core validates replacement records and can prepare protected checkpoints on

@@ -38,6 +38,7 @@ use crate::policy::{Command, WindowLabel, authorize};
 pub mod approvals;
 pub mod chat;
 pub mod sessions;
+pub mod settings;
 
 /// The service as Tauri state.
 pub type Service<'a> = State<'a, Arc<DesktopService>>;
@@ -112,9 +113,29 @@ pub fn app_info(webview: Webview) -> Result<AppInfo, CommandError> {
 #[tauri::command(rename_all = "snake_case")]
 pub fn approvals_show_window(webview: Webview) -> Result<(), CommandError> {
     authorize(Command::ApprovalsShowWindow, webview.label())?;
+    show_window(&webview, WindowLabel::Approvals)
+}
+
+/// `main` only. Shows, unminimizes, and focuses the existing `settings` window
+/// (ADR-0058). It creates no window, navigates nothing, and passes nothing to
+/// the settings window.
+///
+/// # Errors
+///
+/// `forbidden_window` when the caller is not `main`; `window_unavailable` when
+/// the settings window is missing or the platform refuses a step.
+#[tauri::command(rename_all = "snake_case")]
+pub fn settings_show_window(webview: Webview) -> Result<(), CommandError> {
+    authorize(Command::SettingsShowWindow, webview.label())?;
+    show_window(&webview, WindowLabel::Settings)
+}
+
+/// Show, unminimize, and focus one existing window. The caller has already
+/// passed [`authorize`].
+fn show_window(webview: &Webview, label: WindowLabel) -> Result<(), CommandError> {
     let window = webview
         .app_handle()
-        .get_webview_window(WindowLabel::Approvals.as_str())
+        .get_webview_window(label.as_str())
         .ok_or_else(CommandError::window_unavailable)?;
     window
         .unminimize()

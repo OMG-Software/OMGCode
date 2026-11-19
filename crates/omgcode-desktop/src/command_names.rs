@@ -23,4 +23,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "approvals_list",
     "approval_detail",
     "approval_decide",
+    "settings_show_window",
+    "chat_preferences_save",
+    "session_skills",
+    "settings_overview",
 ];

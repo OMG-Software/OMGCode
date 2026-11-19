@@ -143,8 +143,9 @@ chat that runs the same turn as `omgcode chat`, and an approvals window that
 shows an exact reviewed request before it lets the operator decide. The webview
 gets no authority: the Rust side authorizes every command, and no command
 accepts a host path. The webview is still not a trusted computing base. It has
-no installer, settings interface, development panels, or recovery
-interface, and it has not been run on Linux. Chat streams the local model's
+no installer, development panels, or recovery interface, and it has not
+been run on Linux. A separate `settings` window shows the trusted
+configuration read-only; settings still change through the trusted CLI. Chat streams the local model's
 reply into the window by default (`--stream off` at launch disables it). The
 text is provisional, and the journal records only the validated reply. The
 shell pushes chat events to the main window through one caller-scoped channel
@@ -265,7 +266,8 @@ check the server's configuration before sending sensitive text.
 - **Prompt settings UI:** Inspect the versioned base prompt compiled into the
   Rust application and shown read-only. Add separate user preferences at
   application, workspace, and session scope. The CLI can print the compiled
-  prompt; the settings interface is not implemented. See the
+  prompt; the desktop settings window is read-only and does not show the
+  prompt. See the
   [initial prompt draft](prompts/system.md) and [instruction design](docs/agent-instructions.md).
 - **Automatic compaction:** Configure a trigger in tokens; 200k means 200,000
   tokens. Show any earlier trigger required by the selected model's safe budget.

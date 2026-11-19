@@ -139,6 +139,7 @@ fn send(started: &Started, session: Uuid, message: &str) {
             "session_id": session,
             "message": message,
             "settings": settings_json(&started.server.endpoint),
+            "skills": [],
         })))
         .expect("send");
 }
@@ -540,6 +541,7 @@ fn a_send_refused_synchronously_pushes_no_event() {
             "session_id": session,
             "message": "   ",
             "settings": settings_json(&endpoint),
+            "skills": [],
         })))
         .expect_err("an empty message is refused");
 

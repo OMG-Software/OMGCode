@@ -39,11 +39,21 @@ export function startMain(root: HTMLElement): MainApp {
     }
   }
 
+  async function showSettings(): Promise<void> {
+    try {
+      await api.settingsShowWindow();
+    } catch {
+      replaceChildren(statusBar, "The settings window could not be opened.");
+      statusBar.hidden = false;
+    }
+  }
+
   const conversation = createConversation({ onTreeChanged: () => void sidebar.refresh() });
   const sidebar = createSidebar({
     onOpen: (session, folder, seq) => void conversation.open(session, folder, seq),
     onNewSession: () => void newSession.show(),
     onShowApprovals: () => void showApprovals(),
+    onShowSettings: () => void showSettings(),
   });
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);

@@ -690,6 +690,22 @@ impl ControlStore {
         self.snapshot.development_root.is_some()
     }
 
+    /// The selected development root as display-safe text, if one is set.
+    /// For people to read only; never reopen a path from it.
+    pub fn development_root_display(&self) -> Option<String> {
+        self.snapshot
+            .development_root
+            .as_ref()
+            .map(DirectoryRecord::display)
+    }
+
+    /// One workspace's selected package cache root as display-safe text, if
+    /// one is set. For people to read only; never reopen a path from it.
+    pub fn package_cache_root_display(&self, workspace_id: WorkspaceId) -> Option<String> {
+        self.package_cache_root(workspace_id)
+            .map(DirectoryRecord::display)
+    }
+
     /// Select the fetched-package cache directory for one workspace. It must
     /// exist, must not overlap application storage, must not overlap the
     /// development root, and must not overlap another workspace's cache root.

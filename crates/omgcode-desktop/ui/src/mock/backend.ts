@@ -3,12 +3,15 @@ import { CANCELLED_CODE } from "../ipc/errors";
 import type {
   ApprovalDetail,
   ApprovalView,
+  ChatDefaults,
   ChatEvent,
   ChatOutcome,
+  ChatPreferences,
   ChatSettings,
   ChatStatus,
   SearchHit,
   SessionSummary,
+  SettingsOverview,
   SnippetPart,
   TreeSort,
   TreeView,
@@ -94,6 +97,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   const chats = new Map<string, ChatRecord>();
   const tokens = new Map<string, { id: string; expires: number }>();
   let subscriber: Subscriber | null = null;
+  let savedPreferences: ChatPreferences | null = null;
   const nowUnix = (): number => Math.floor(now() / 1000);
 
   const approvals: ApprovalView[] = [
@@ -528,15 +532,17 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         return clone(created.summary);
       }
       case "chat_defaults":
-        return {
-          endpoint: MOCK_ENDPOINT,
-          model: "qwen2.5-coder",
-          context_tokens: 8192,
-          max_output_tokens: 1024,
-          instructions: "",
-          compact_threshold: 6000,
-          auto_compact: true,
-        } satisfies ChatSettings;
+        return chatDefaults();
+      case "chat_preferences_save":
+        savedPreferences = clone(args.preferences as ChatPreferences);
+        return chatDefaults();
+      case "session_skills":
+        str(args, "session_id");
+        return { workspace_registered: true, skills: ["review-checklist", "release-notes"] };
+      case "settings_show_window":
+        return null;
+      case "settings_overview":
+        return settingsOverview();
       case "chat_send":
         return chatSend(
           str(args, "session_id"),
@@ -566,6 +572,78 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       default:
         return fail("unknown_command", `Unknown command ${command}.`);
     }
+  }
+
+  function chatDefaults(): ChatDefaults {
+    const preferences = savedPreferences ?? {
+      model: "qwen2.5-coder",
+      context_tokens: 8192,
+      max_output_tokens: 1024,
+      instructions: "",
+      compact_threshold: 6000,
+      auto_compact: true,
+    };
+    return {
+      settings: { endpoint: MOCK_ENDPOINT, ...clone(preferences) } satisfies ChatSettings,
+      preferences: savedPreferences === null ? "defaults" : "saved",
+    };
+  }
+
+  function settingsOverview(): SettingsOverview {
+    const workspace = "77777777-7777-4777-8777-777777777777";
+    return {
+      store_initialized: true,
+      revision: 12,
+      development_root: "/home/dev",
+      workspaces: [
+        {
+          workspace_id: workspace,
+          folder_display: "/home/dev/omgcode",
+          model_tools: true,
+          read: true,
+          write: false,
+          execute: false,
+          package_cache_root: null,
+        },
+        {
+          workspace_id: "88888888-8888-4888-8888-888888888888",
+          folder_display: HOSTILE.rtl,
+          model_tools: false,
+          read: false,
+          write: false,
+          execute: false,
+          package_cache_root: null,
+        },
+      ],
+      connection: { endpoint: MOCK_ENDPOINT, source: "environment", profile: null },
+      provider_profiles: [
+        {
+          name: "lms",
+          kind: "lm_studio",
+          auth: "api_key",
+          endpoint: MOCK_ENDPOINT,
+          credential_bound: true,
+        },
+      ],
+      toolchain_profiles: [
+        {
+          name: "rust",
+          platform: "linux",
+          read_only_roots: ["/home/dev/.rustup"],
+          path_entries: [],
+          environment_names: ["RUSTUP_HOME"],
+        },
+      ],
+      package_profiles: [],
+      container_grants: [],
+      skills: [
+        {
+          name: "review-checklist",
+          application: true,
+          workspace_overrides: [{ workspace_id: workspace, enabled: false }],
+        },
+      ],
+    };
   }
 
   return { invoke };

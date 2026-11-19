@@ -69,6 +69,7 @@ impl Setup {
                 "session_id": session,
                 "message": message,
                 "settings": settings_json(&self.server.endpoint),
+                "skills": [],
             })))
             .expect("send");
         let done = wait_finished(&self.service, session);
@@ -420,6 +421,7 @@ fn a_turn_running_for_the_session_makes_the_review_busy() {
             "session_id": session,
             "message": "again",
             "settings": settings_json(&setup.server.endpoint),
+            "skills": [],
         })))
         .expect("send");
     common::wait_arrived(&arrived);
