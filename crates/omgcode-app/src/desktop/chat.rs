@@ -14,7 +14,7 @@ use super::preferences;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
     ChatDefaults, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
-    ChatState, ChatStatus, PreferencesSource, SessionRequest,
+    ChatState, ChatStatus, PreferencesSource, SessionRequest, enter_to_send_default,
 };
 use super::{DesktopService, Inner};
 use crate::{ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection};
@@ -52,6 +52,7 @@ impl DesktopService {
                 auto_compact: preferences.auto_compact,
             },
             preferences: source,
+            enter_to_send: preferences.enter_to_send,
         }
     }
 
@@ -288,6 +289,7 @@ fn built_in_preferences() -> ChatPreferencesDto {
         instructions: String::new(),
         compact_threshold: DEFAULT_COMPACT_THRESHOLD,
         auto_compact: false,
+        enter_to_send: enter_to_send_default(),
     }
 }
 
