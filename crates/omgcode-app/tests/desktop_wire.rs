@@ -765,6 +765,7 @@ fn closed_unions_serialize_to_the_values_types_ts_declares() {
         strings(
             [
                 ApprovalOperationDto::Command,
+                ApprovalOperationDto::FileRead,
                 ApprovalOperationDto::FileWrite,
                 ApprovalOperationDto::GitPush,
                 ApprovalOperationDto::Network

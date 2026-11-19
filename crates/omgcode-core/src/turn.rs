@@ -2177,7 +2177,7 @@ impl WorkspaceToolDispatcher<'_> {
         call: &ToolCall,
         request_sha256: Option<&str>,
         authorization: Authorization,
-    ) -> Result<Uuid, ToolExecution> {
+    ) -> Result<Uuid, Box<ToolExecution>> {
         let targets = action_targets(&call.arguments);
         let started = StartedAction {
             session_id: self.session_id,
@@ -2197,7 +2197,7 @@ impl WorkspaceToolDispatcher<'_> {
                 // A failed start is not refused on record: the journal is the
                 // thing that failed.
                 refused.audited = true;
-                refused
+                Box::new(refused)
             })
     }
 
@@ -2407,7 +2407,7 @@ impl WorkspaceToolDispatcher<'_> {
                 };
             match self.audit_start(call, Some(&digest), authorization) {
                 Ok(action) => Some(action),
-                Err(refused) => return refused,
+                Err(refused) => return *refused,
             }
         } else {
             None
@@ -2439,7 +2439,6 @@ impl WorkspaceToolDispatcher<'_> {
             }
             ToolArguments::Command { .. } => ToolExecution::recoverable("invalid_command", call),
         };
-        drop(broker);
         drop(control);
         match action {
             Some(action) => self.audit_finish(action, execution),
@@ -2521,7 +2520,7 @@ impl WorkspaceToolDispatcher<'_> {
             };
         let action = match self.audit_start(call, Some(&digest), authorization) {
             Ok(action) => action,
-            Err(refused) => return refused,
+            Err(refused) => return *refused,
         };
         let execution = apply_prepared_edit(&mut control, &binding, &target, call, &prepared, None);
         drop(control);
@@ -2595,7 +2594,7 @@ impl WorkspaceToolDispatcher<'_> {
             };
         let action = match self.audit_start(call, Some(&digest), authorization) {
             Ok(action) => action,
-            Err(refused) => return refused,
+            Err(refused) => return *refused,
         };
         let execution = apply_prepared_edit(
             &mut control,
@@ -2673,7 +2672,7 @@ impl WorkspaceToolDispatcher<'_> {
             };
         let action = match self.audit_start(call, Some(&digest), authorization) {
             Ok(action) => action,
-            Err(refused) => return refused,
+            Err(refused) => return *refused,
         };
         // The approval is spent. A concurrent creator makes this a conflict.
         let execution = match FileBroker::new(&mut control).create_file(
@@ -2735,7 +2734,7 @@ impl WorkspaceToolDispatcher<'_> {
         let destination = edit_target(self.session_id, self.workspace_id, to);
         let current = match read_move_source(&mut control, &binding, &source, call) {
             Ok(artifact) => artifact,
-            Err(refusal) => return refusal,
+            Err(refusal) => return *refusal,
         };
         if let Some(refusal) = rename_precheck(&mut control, &binding, &destination, call) {
             return refusal;
@@ -2768,7 +2767,7 @@ impl WorkspaceToolDispatcher<'_> {
             };
         let action = match self.audit_start(call, Some(&digest), authorization) {
             Ok(action) => action,
-            Err(refused) => return refused,
+            Err(refused) => return *refused,
         };
         // The approval is spent. A changed source or a new destination is a
         // refusal; an uncertain rename stays terminal and leaves its pending
@@ -2830,7 +2829,7 @@ impl WorkspaceToolDispatcher<'_> {
         let target = edit_target(self.session_id, self.workspace_id, path);
         let current = match read_move_source(&mut control, &binding, &target, call) {
             Ok(artifact) => artifact,
-            Err(refusal) => return refusal,
+            Err(refusal) => return *refusal,
         };
         let normalized = normalized_path(path);
         let digest = delete_digest(self.session_id, self.workspace_id, &normalized, &current);
@@ -2854,7 +2853,7 @@ impl WorkspaceToolDispatcher<'_> {
             };
         let action = match self.audit_start(call, Some(&digest), authorization) {
             Ok(action) => action,
-            Err(refused) => return refused,
+            Err(refused) => return *refused,
         };
         let execution =
             match FileBroker::new(&mut control).apply_removal(&binding, &target, &current) {
@@ -2935,7 +2934,7 @@ impl WorkspaceToolDispatcher<'_> {
             let approval = ApprovalBinding {
                 session_id: self.session_id,
                 workspace_id: self.workspace_id,
-                operation: operation,
+                operation,
                 request_sha256: digest.clone(),
             };
             if let Err(error) = control.consume_approval(approved.id, &approval, now) {
@@ -2978,7 +2977,7 @@ impl WorkspaceToolDispatcher<'_> {
             &ApprovalDeclaration {
                 session_id: self.session_id,
                 workspace_id: self.workspace_id,
-                operation: operation,
+                operation,
                 request_sha256: digest,
                 summary,
                 ttl_secs: EDIT_APPROVAL_TTL_SECS,
@@ -3142,7 +3141,7 @@ impl WorkspaceToolDispatcher<'_> {
     ) -> ToolExecution {
         let action = match self.audit_start(call, Some(digest), authorization) {
             Ok(action) => action,
-            Err(refused) => return refused,
+            Err(refused) => return *refused,
         };
         let execution = self.execute_command(call, request, max_result_bytes);
         self.audit_finish(action, execution)
@@ -3740,15 +3739,14 @@ fn read_move_source(
     binding: &SessionBinding,
     target: &FileTarget,
     call: &ToolCall,
-) -> Result<RecordedArtifact, ToolExecution> {
+) -> Result<RecordedArtifact, Box<ToolExecution>> {
     match read_edit_source(control, binding, target) {
-        Ok(bytes) => {
-            artifact(&bytes).ok_or_else(|| ToolExecution::recoverable("edit_too_large", call))
-        }
+        Ok(bytes) => artifact(&bytes)
+            .ok_or_else(|| Box::new(ToolExecution::recoverable("edit_too_large", call))),
         Err(FileError::Native(native)) if is_oversize_entry(&native) => {
-            Err(ToolExecution::recoverable("edit_too_large", call))
+            Err(Box::new(ToolExecution::recoverable("edit_too_large", call)))
         }
-        Err(error) => Err(classify_edit_error(call, error)),
+        Err(error) => Err(Box::new(classify_edit_error(call, error))),
     }
 }
 

@@ -26,6 +26,13 @@ pub struct AwaitedCall {
 ///
 /// Enabling an in-turn wait requires one. The turn sets the slot before each
 /// wait and clears it afterwards; a front end reads it to review the call.
+///
+/// Ownership: the turn runtime holds one clone for the turn's lifetime and
+/// the front end holds another, such as the desktop turn table's slot for the
+/// session. The value is freed when the last clone drops. It holds only plain
+/// data, so no reference cycle can form. The lock is held only to copy or
+/// replace the value. A poisoned lock is recovered, because the value is a
+/// whole `Option` with no invariant a panic could leave half-updated.
 #[derive(Clone, Debug, Default)]
 pub struct ApprovalWaitSlot(Arc<Mutex<Option<AwaitedCall>>>);
 
