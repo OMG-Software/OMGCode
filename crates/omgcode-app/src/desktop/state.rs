@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use omgcode_core::control::{ControlError, ControlStore};
 use omgcode_core::session::{NativePath, SessionInspection};
 use omgcode_core::session_index::{IndexedSession, IndexedState, SessionIndex};
-use omgcode_core::turn::display_safe_line;
+use omgcode_core::turn::{AwaitedCall, display_safe_line};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -125,6 +125,15 @@ impl Inner {
     pub(super) fn is_running(&self, session_id: Uuid) -> Result<bool, DesktopError> {
         self.reap()?;
         Ok(self.lock_turns()?.is_running(session_id))
+    }
+
+    /// The call the session's running turn waits on, if it is waiting.
+    pub(super) fn awaited_call(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<AwaitedCall>, DesktopError> {
+        self.reap()?;
+        Ok(self.lock_turns()?.awaited_call(session_id))
     }
 
     /// Resolve a session's journal path, only through the index.

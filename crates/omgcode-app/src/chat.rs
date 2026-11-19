@@ -20,7 +20,7 @@ use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, SkillPrompt};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
 use omgcode_core::session::{ManifestSkill, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
-use omgcode_core::turn::CancelToken;
+use omgcode_core::turn::{ApprovalWaitSlot, CancelToken};
 
 pub use self::output::ChatTurnOutput;
 pub use self::skills::{LoadedSkillSummary, validate_selection as validate_skill_selection};
@@ -133,6 +133,13 @@ pub struct ChatHooks<'a> {
     /// non-streaming. Compaction requests are never streamed, and tool-call
     /// names and arguments are never passed to it.
     pub on_stream: Option<&'a mut dyn FnMut(ChatStreamEvent<'_>)>,
+    /// Wait inside the turn for the operator to decide each approval a model
+    /// call records, then complete the same call (ADR-0062). The turn
+    /// publishes the call it waits on in the slot, so the approvals window
+    /// can review it while the turn holds the journal. The desktop shell sets
+    /// it; `None` keeps the earlier behaviour, where the model must repeat the
+    /// call in a later turn. Cancellation still interrupts the wait.
+    pub approval_wait: Option<ApprovalWaitSlot>,
 }
 
 /// The two validated model clients a turn uses.

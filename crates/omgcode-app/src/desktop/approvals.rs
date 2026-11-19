@@ -118,26 +118,45 @@ impl DesktopService {
         if status.state != ApprovalState::Pending {
             return not_reviewed(Binding::Stale);
         }
-        if inner.is_running(status.session_id)? {
-            return Err(DesktopError::busy());
-        }
-        let path = match inner.resolve_path(status.session_id) {
-            Ok(path) => path,
-            Err(error) if error.code() == "not_found" => return not_reviewed(Binding::NotFound),
-            Err(error) => return Err(error),
+        // A running turn holds the session journal. When it is waiting on this
+        // approval (ADR-0062), the call it published is the only candidate;
+        // core still recomputes the digest from it and the live workspace.
+        // A turn running for any other reason makes the review busy.
+        let awaited = if inner.is_running(status.session_id)? {
+            match inner.awaited_call(status.session_id)? {
+                Some(call) if call.approval_id == status.id => Some(call),
+                _ => return Err(DesktopError::busy()),
+            }
+        } else {
+            None
         };
-        let inspection = SessionInspection::inspect(&path)
-            .map_err(|error| DesktopError::from_session(&error))?;
-        let candidates: Vec<ReviewCandidate<'_>> = inspection
-            .entries
-            .iter()
-            .filter_map(|entry| match &entry.kind {
-                TranscriptEntryKind::ToolRequested {
-                    tool, arguments, ..
-                } => Some(ReviewCandidate { tool, arguments }),
-                _ => None,
-            })
-            .collect();
+        let inspection;
+        let candidates: Vec<ReviewCandidate<'_>> = if let Some(call) = &awaited {
+            vec![ReviewCandidate {
+                tool: &call.tool,
+                arguments: &call.arguments,
+            }]
+        } else {
+            let path = match inner.resolve_path(status.session_id) {
+                Ok(path) => path,
+                Err(error) if error.code() == "not_found" => {
+                    return not_reviewed(Binding::NotFound);
+                }
+                Err(error) => return Err(error),
+            };
+            inspection = SessionInspection::inspect(&path)
+                .map_err(|error| DesktopError::from_session(&error))?;
+            inspection
+                .entries
+                .iter()
+                .filter_map(|entry| match &entry.kind {
+                    TranscriptEntryKind::ToolRequested {
+                        tool, arguments, ..
+                    } => Some(ReviewCandidate { tool, arguments }),
+                    _ => None,
+                })
+                .collect()
+        };
         // No service lock and no control store is held; core opens its own.
         let review = review_approval(&inner.data_root, &status, &candidates)
             .map_err(|error| DesktopError::from_review(&error))?;

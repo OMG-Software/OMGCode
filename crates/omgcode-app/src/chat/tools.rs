@@ -52,6 +52,7 @@ pub(super) fn run(
     hooks: &mut ChatHooks<'_>,
 ) -> Result<ToolTurnOutput, AppError> {
     let token = turn.token;
+    let approval_wait = hooks.approval_wait.clone();
     // Streaming is on only when the front end asked for provisional text. One
     // sink serves every request of the turn; each request restarts it.
     let sink = hooks
@@ -84,11 +85,15 @@ pub(super) fn run(
     let redact_tool_text = |text: &str| redact_known_secret(text, token);
     let report: TurnReport = TurnRuntime::new(journal, turn.data_root, workspace_id, chat_limits())
         .and_then(|runtime| {
-            runtime
+            let runtime = runtime
                 .with_cancel_token(turn.cancel.clone())
                 .with_tool_text_filter(&redact_tool_text)
-                .with_skills(turn.skills.to_vec())
-                .run(
+                .with_skills(turn.skills.to_vec());
+            let mut runtime = match approval_wait {
+                Some(slot) => runtime.with_approval_wait(slot),
+                None => runtime,
+            };
+            runtime.run(
                 &mut model,
                 turn.message,
                 turn.instructions,

@@ -44,7 +44,10 @@ use crate::session::{
     SessionError, SessionJournal, ToolOutcome, sha256_hex,
 };
 
+mod approval_wait;
 mod review;
+
+pub use approval_wait::{ApprovalWaitSlot, AwaitedCall};
 
 pub use review::{
     ApprovalReview, DisplaySafeStream, ReviewCandidate, ReviewError, ReviewField, ReviewedRequest,
@@ -1225,7 +1228,7 @@ pub struct TurnRuntime<'a> {
     cancel: CancelToken,
     tool_text_filter: Option<&'a dyn Fn(&str) -> String>,
     skills: Vec<SkillPrompt>,
-    approval_wait: bool,
+    approval_wait: Option<ApprovalWaitSlot>,
 }
 
 impl<'a> TurnRuntime<'a> {
@@ -1255,7 +1258,7 @@ impl<'a> TurnRuntime<'a> {
             cancel: CancelToken::new(),
             tool_text_filter: None,
             skills: Vec::new(),
-            approval_wait: false,
+            approval_wait: None,
         })
     }
 
@@ -1293,9 +1296,11 @@ impl<'a> TurnRuntime<'a> {
     /// waiting, the settings lock is released between reads, cancellation is
     /// checked every 250 ms, and the turn deadline is paused. A wait ends when
     /// the record is approved, denied, expires, or can no longer be read.
+    /// The call being waited on is published in `slot`, so a reviewer can
+    /// check it while this turn holds the session journal.
     #[must_use]
-    pub const fn with_approval_wait(mut self, wait: bool) -> Self {
-        self.approval_wait = wait;
+    pub fn with_approval_wait(mut self, slot: ApprovalWaitSlot) -> Self {
+        self.approval_wait = Some(slot);
         self
     }
 
@@ -1574,7 +1579,7 @@ impl<'a> TurnRuntime<'a> {
                     workspace_id: self.workspace_id,
                     cancel: self.cancel.clone(),
                     skills: &self.skills,
-                    approval_wait: self.approval_wait,
+                    approval_wait: self.approval_wait.as_ref(),
                 }
                 .dispatch(call, self.limits.max_result_bytes);
                 // Time spent waiting for the operator is not the turn's own.
@@ -1683,7 +1688,7 @@ impl<'a> TurnRuntime<'a> {
 
     /// Read the workspace's current preferences, releasing the settings lock.
     fn workspace_permissions(&self) -> Option<PermissionSet> {
-        match ControlStore::open_existing(self.data_directory) {
+        match open_control(self.data_directory) {
             Ok(Some(control)) => control
                 .workspace(self.workspace_id)
                 .map(|workspace| workspace.permissions()),
@@ -1699,7 +1704,7 @@ impl<'a> TurnRuntime<'a> {
         if self.skills.is_empty() {
             return true;
         }
-        let Ok(Some(control)) = ControlStore::open_existing(self.data_directory) else {
+        let Ok(Some(control)) = open_control(self.data_directory) else {
             return false;
         };
         control.skill_selection_current(self.workspace_id, &self.skills)
@@ -1793,6 +1798,10 @@ enum Decision {
 /// How long recording an action waits for another writer of the action
 /// journal before the action is refused.
 const AUDIT_BUSY_WAIT: Duration = Duration::from_secs(2);
+/// Open the settings store, waiting briefly while another holder releases it.
+fn open_control(data_directory: &Path) -> Result<Option<ControlStore>, ControlError> {
+    ControlStore::open_existing_waiting(data_directory)
+}
 
 /// Domain tag for read and list approval digests (ADR-0062).
 const READ_DIGEST_DOMAIN: &[u8] = b"omgcode-file-read-v1";
@@ -2060,7 +2069,7 @@ struct WorkspaceToolDispatcher<'a> {
     workspace_id: WorkspaceId,
     cancel: CancelToken,
     skills: &'a [SkillPrompt],
-    approval_wait: bool,
+    approval_wait: Option<&'a ApprovalWaitSlot>,
 }
 
 impl WorkspaceToolDispatcher<'_> {
@@ -2086,12 +2095,21 @@ impl WorkspaceToolDispatcher<'_> {
             let Some(approval_id) = execution.awaits_decision() else {
                 return execution;
             };
-            if !self.approval_wait || waits >= MAX_APPROVAL_WAITS {
+            let Some(slot) = self.approval_wait else {
+                return execution;
+            };
+            if waits >= MAX_APPROVAL_WAITS {
                 return execution;
             }
             waits += 1;
             let started = Instant::now();
+            let published = slot.publish(AwaitedCall {
+                approval_id,
+                tool: call.name.as_str().to_owned(),
+                arguments: call.arguments_json().to_owned(),
+            });
             let decision = self.await_decision(approval_id);
+            drop(published);
             waited = waited.saturating_add(started.elapsed());
             let mut ended = match decision {
                 Decision::Approved => continue,
@@ -2270,7 +2288,7 @@ impl WorkspaceToolDispatcher<'_> {
     fn dispatch_once(&mut self, call: &ToolCall, max_result_bytes: usize) -> ToolExecution {
         // Hold the settings lock only for this operation, never across model I/O.
         // A permission change can therefore take effect before the next call.
-        let mut control = match ControlStore::open_existing(self.data_directory) {
+        let mut control = match open_control(self.data_directory) {
             Ok(Some(control)) => control,
             Ok(None) => {
                 return ToolExecution::denied(

@@ -467,6 +467,7 @@ fn a_text_only_turn_serializes_the_published_object_and_calls_the_cancel_hook_on
         Some(SECRET),
         &format!("ping {SECRET}"),
         &mut ChatHooks {
+            approval_wait: None,
             cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: None,
@@ -524,6 +525,7 @@ fn a_tool_turn_calls_the_cancel_hook_once_and_serializes_the_published_object() 
         None,
         "hello",
         &mut ChatHooks {
+            approval_wait: None,
             cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: None,
@@ -581,6 +583,7 @@ fn a_cancelled_token_ends_the_tool_turn_with_the_core_cancelled_failure() {
         None,
         "list the files",
         &mut ChatHooks {
+            approval_wait: None,
             cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: None,
@@ -941,6 +944,7 @@ fn cancel_after_the_first_piece(tools_enabled: bool) -> CancelledTurn {
         None,
         "say something",
         &mut ChatHooks {
+            approval_wait: None,
             cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: Some(&mut on_stream),
@@ -1059,6 +1063,7 @@ fn a_streamed_text_turn_that_is_not_cancelled_hands_over_a_live_token_and_comple
             None,
             "greet me",
             &mut ChatHooks {
+                approval_wait: None,
                 cancel: None,
                 on_cancel_token: Some(&mut on_cancel_token),
                 on_stream: Some(&mut on_stream),
@@ -1106,6 +1111,7 @@ fn a_cancel_seen_only_after_the_reply_arrived_still_ends_the_turn_as_cancelled()
         None,
         "say it",
         &mut ChatHooks {
+            approval_wait: None,
             cancel: None,
             on_cancel_token: Some(&mut on_cancel_token),
             on_stream: Some(&mut on_stream),
@@ -1174,6 +1180,7 @@ fn cancel_while_a_reply_is_held(
         None,
         "hello",
         &mut ChatHooks {
+            approval_wait: None,
             cancel: Some(cancel),
             on_cancel_token: None,
             on_stream: None,
@@ -1320,6 +1327,7 @@ fn a_token_set_before_the_turn_records_nothing_and_sends_nothing() {
             None,
             "hello",
             &mut ChatHooks {
+                approval_wait: None,
                 cancel: Some(cancel),
                 on_cancel_token: Some(&mut on_cancel_token),
                 on_stream: None,

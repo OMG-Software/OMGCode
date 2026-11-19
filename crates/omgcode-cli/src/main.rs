@@ -483,6 +483,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
     let turn = {
         let mut on_stream = |event: ChatStreamEvent<'_>| printer.handle(event);
         let mut hooks = ChatHooks {
+            approval_wait: None,
             cancel: Some(cancel),
             ..ChatHooks::default()
         };

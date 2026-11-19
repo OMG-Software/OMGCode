@@ -514,6 +514,10 @@ pub(crate) struct FileScope {
     pub(crate) workspace: DirectoryRecord,
 }
 
+/// How long [`ControlStore::open_existing_waiting`] waits for another holder.
+pub const CONTROL_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const CONTROL_BUSY_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
 impl ControlStore {
     /// Get current records after configuration checks; this does not mint a permit.
     pub(crate) fn file_scope(&self, workspace_id: WorkspaceId) -> Result<FileScope, ControlError> {
@@ -582,6 +586,25 @@ impl ControlStore {
     /// Open existing state without creating directories or files. Only absence is `None`.
     pub fn open_existing(data_directory: &Path) -> Result<Option<Self>, ControlError> {
         Ok(Self::open_existing_since(data_directory, usize::MAX)?.map(|(store, _)| store))
+    }
+
+    /// Open existing state like [`Self::open_existing`], waiting up to
+    /// [`CONTROL_BUSY_WAIT`] while another holder releases the lock.
+    ///
+    /// Concurrent turns, a turn waiting on an approval (ADR-0062), and the
+    /// approvals window each hold the store only briefly, so a short wait
+    /// avoids failing an operation for contention alone. Every other error,
+    /// and `Busy` after the wait, is returned as is.
+    pub fn open_existing_waiting(data_directory: &Path) -> Result<Option<Self>, ControlError> {
+        let started = std::time::Instant::now();
+        loop {
+            match Self::open_existing(data_directory) {
+                Err(ControlError::Busy) if started.elapsed() < CONTROL_BUSY_WAIT => {
+                    std::thread::sleep(CONTROL_BUSY_POLL);
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Open existing settings like [`Self::open_existing`], and also return

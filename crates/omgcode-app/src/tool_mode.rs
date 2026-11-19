@@ -53,7 +53,7 @@ pub fn select(data_root: &Path, journal: &SessionJournal) -> Result<ToolMode, Ap
             reason: "platform_unsupported",
         });
     }
-    let Some(control) = ControlStore::open_existing(data_root)
+    let Some(control) = ControlStore::open_existing_waiting(data_root)
         .map_err(|error| AppError::new(ErrorKind::Control, error.to_string()))?
     else {
         return Ok(ToolMode::Disabled {
@@ -101,7 +101,7 @@ pub fn tool_replay_allowed(
     if !MODEL_TOOLS_SUPPORTED || schema_version < 2 {
         return Ok(false);
     }
-    let Some(control) = ControlStore::open_existing(data_root)
+    let Some(control) = ControlStore::open_existing_waiting(data_root)
         .map_err(|error| AppError::new(ErrorKind::Control, error.to_string()))?
     else {
         return Ok(false);
