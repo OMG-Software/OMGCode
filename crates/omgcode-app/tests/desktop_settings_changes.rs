@@ -413,7 +413,7 @@ fn turning_a_preference_on_needs_a_confirmation_that_names_it() {
     assert!(
         shown[0]
             .message
-            .starts_with("Turn on execute for this workspace?"),
+            .starts_with("Widen execute for this workspace?"),
         "{}",
         shown[0].message
     );
