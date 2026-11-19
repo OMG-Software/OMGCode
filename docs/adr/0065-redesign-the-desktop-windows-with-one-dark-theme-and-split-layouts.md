@@ -100,8 +100,9 @@ owns the resulting layout contract.
 - The `approvals` window now opens a review without a click: on opening and
   after the selected record stops being pending. For a file-write approval
   that review makes the same audited broker read as before, so reads now also
-  happen at those moments, still one per shown review. Each shown review also
-  issues a review token, within core's limit of 64 outstanding.
+  happen at those moments, still one detail request per shown review (one
+  read, or two for a rename). Each shown review also issues a review token,
+  within core's limit of 64 outstanding.
 - The operator can no longer choose a light appearance. Native folder and
   confirmation dialogs still follow the operating system's theme.
 - The colour contrast test checks token pairs, not every rendered combination;

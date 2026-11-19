@@ -4,7 +4,7 @@ import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
 import { renderAdvanced } from "./advanced_section";
 import type { Actions, Change, SectionContext, SectionId, ViewState } from "./context";
-import { renderModel } from "./model_section";
+import { newConnectionDraft, renderModel } from "./model_section";
 import { createNav } from "./nav";
 import { renderWorkspaces } from "./workspaces_section";
 
@@ -56,6 +56,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     workspaceId: null,
     toolLimitsOpen: false,
     addConnectionOpen: false,
+    connectionDraft: newConnectionDraft(),
   };
   const problem = el("p", { class: "error", attrs: { role: "alert" } });
   problem.hidden = true;
@@ -63,6 +64,8 @@ export function startSettings(root: HTMLElement): SettingsApp {
   notice.hidden = true;
   // A disabled fieldset disables every control inside it without touching their own state.
   const body = el("fieldset", { class: "settings-body" });
+  // The one scroll container for every section.
+  const content = el("div", { class: "settings-content" }, problem, notice, body);
   const nav = createNav(
     view.section,
     (id) => select(id),
@@ -113,6 +116,8 @@ export function startSettings(root: HTMLElement): SettingsApp {
 
   function select(id: SectionId): void {
     view.section = id;
+    // A new section starts at its heading, not at the last section's scroll offset.
+    content.scrollTop = 0;
     draw();
   }
 
@@ -188,15 +193,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
   };
   document.addEventListener("visibilitychange", onVisible);
 
-  replaceChildren(
-    root,
-    el(
-      "main",
-      { class: "settings-window" },
-      nav.element,
-      el("div", { class: "settings-content" }, problem, notice, body),
-    ),
-  );
+  replaceChildren(root, el("main", { class: "settings-window" }, nav.element, content));
   void refresh();
 
   return {

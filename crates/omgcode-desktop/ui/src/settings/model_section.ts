@@ -6,7 +6,7 @@ import type {
   SettingsOverview,
 } from "../ipc/types";
 import { DEFAULT_ENDPOINTS, providerName } from "../providers";
-import type { SectionContext } from "./context";
+import type { ConnectionDraft, SectionContext } from "./context";
 import { facts, sectionHead } from "./parts";
 
 export const MODEL_HELP =
@@ -144,11 +144,19 @@ function labelled(label: string, id: string, control: HTMLElement): HTMLElement 
   return el("div", { class: "field" }, el("label", { text: label, attrs: { for: id } }), control);
 }
 
+/** The add-connection form's starting values: Ollama at its usual address. */
+export function newConnectionDraft(): ConnectionDraft {
+  return { kind: "ollama_local", name: "ollama", endpoint: DEFAULT_ENDPOINTS.ollama_local };
+}
+
 /**
  * A form that records a local LM Studio or Ollama connection without a credential. The
  * endpoint field starts at the chosen provider's usual address; the core validates every value.
+ * The typed values live in the view state, so a redraw (another section, a refresh) keeps them;
+ * they reset only after the core records the connection.
  */
-function addConnectionForm({ submit, actions }: SectionContext): HTMLElement {
+function addConnectionForm({ submit, actions, view }: SectionContext): HTMLElement {
+  const draft = view.connectionDraft;
   const kind = el("select", {
     attrs: { id: "new-connection-provider", "aria-label": "New connection provider" },
   });
@@ -164,7 +172,6 @@ function addConnectionForm({ submit, actions }: SectionContext): HTMLElement {
       placeholder: "name",
     },
   });
-  name.value = "ollama";
   const endpoint = el("input", {
     attrs: {
       id: "new-connection-endpoint",
@@ -173,7 +180,18 @@ function addConnectionForm({ submit, actions }: SectionContext): HTMLElement {
       spellcheck: "false",
     },
   });
-  endpoint.value = DEFAULT_ENDPOINTS.ollama_local;
+  kind.value = draft.kind;
+  name.value = draft.name;
+  endpoint.value = draft.endpoint;
+  const remember = (): void => {
+    view.connectionDraft = {
+      kind: kind.value as LocalProviderKind,
+      name: name.value,
+      endpoint: endpoint.value,
+    };
+  };
+  name.addEventListener("input", remember);
+  endpoint.addEventListener("input", remember);
   kind.addEventListener("change", () => {
     const chosen = kind.value as LocalProviderKind;
     // Only replace values the operator has not edited.
@@ -183,10 +201,17 @@ function addConnectionForm({ submit, actions }: SectionContext): HTMLElement {
     if (name.value === "ollama" || name.value === "lmstudio") {
       name.value = chosen === "ollama_local" ? "ollama" : "lmstudio";
     }
+    remember();
   });
   const add = button("Add connection", () => {
     const chosen = kind.value as LocalProviderKind;
-    submit(actions.addLocalConnection(name.value.trim(), chosen, endpoint.value.trim()));
+    const change = actions.addLocalConnection(name.value.trim(), chosen, endpoint.value.trim());
+    submit(async (revision) => {
+      const recorded = await change(revision);
+      // Reached only when the core recorded the connection; a refusal keeps the draft.
+      view.connectionDraft = newConnectionDraft();
+      return recorded;
+    });
   });
   return el(
     "div",

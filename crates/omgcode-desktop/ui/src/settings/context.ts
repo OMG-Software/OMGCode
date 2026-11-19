@@ -31,6 +31,14 @@ export interface ViewState {
   workspaceId: string | null;
   toolLimitsOpen: boolean;
   addConnectionOpen: boolean;
+  /** What the operator has typed into the add-connection form, kept until an add succeeds. */
+  connectionDraft: ConnectionDraft;
+}
+
+export interface ConnectionDraft {
+  kind: LocalProviderKind;
+  name: string;
+  endpoint: string;
 }
 
 export interface SectionContext {

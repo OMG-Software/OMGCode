@@ -4,6 +4,16 @@ import { arrowStep } from "./segmented";
 export interface TabSpec<T extends string> {
   id: T;
   label: string;
+  /**
+   * The document id of the panel this tab shows. The tab gets `aria-controls` for it and the id
+   * `<panelId>-tab`, which the caller gives the panel as `aria-labelledby`.
+   */
+  panelId?: string;
+}
+
+/** The id a tab carries when its spec names a panel. */
+export function tabIdFor(panelId: string): string {
+  return `${panelId}-tab`;
 }
 
 export interface Tabs<T extends string> {
@@ -46,6 +56,10 @@ export function createTabs<T extends string>(
       attrs: { role: "tab", "data-tab": spec.id },
     });
     tab.type = "button";
+    if (spec.panelId !== undefined) {
+      tab.id = tabIdFor(spec.panelId);
+      tab.setAttribute("aria-controls", spec.panelId);
+    }
     tab.addEventListener("click", () => choose(spec.id));
     buttons.set(spec.id, tab);
     element.append(tab);

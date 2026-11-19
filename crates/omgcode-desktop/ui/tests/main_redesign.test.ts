@@ -139,6 +139,24 @@ describe("status bar approvals segment", () => {
     );
   });
 
+  it("announces a new count in a live region that is always present and holds no button", async () => {
+    let pending = 0;
+    await start({ approvals_summary: () => ({ pending }) });
+    const live = root.querySelector(".status-footer .visually-hidden") as HTMLElement;
+    expect(live.getAttribute("role")).toBe("status");
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.hidden).toBe(false);
+    expect(live.closest("[hidden]")).toBeNull();
+    expect(live.textContent).toBe("");
+    pending = 1;
+    await settle(10_000);
+    expect(live.textContent).toBe("1 approval waiting");
+    expect(live.querySelector("button")).toBeNull();
+    pending = 0;
+    await settle(10_000);
+    expect(live.textContent).toBe("");
+  });
+
   it("names the count, offers Review, and opens only the approvals window", async () => {
     await start({ approvals_summary: () => ({ pending: 3 }) });
     const segment = root.querySelector(".status-approvals") as HTMLElement;

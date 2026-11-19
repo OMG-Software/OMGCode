@@ -8,6 +8,7 @@ import {
   hasButton,
   installFakeIpc,
   mountRoot,
+  rejection,
   settle,
 } from "./helpers";
 
@@ -188,6 +189,16 @@ describe("approvals window flow", () => {
     });
   });
 
+  it("links the Pending and History tabs to their panels", async () => {
+    await start();
+    for (const name of ["pending", "history"]) {
+      const tab = root.querySelector(`[data-tab="${name}"]`) as HTMLElement;
+      const panel = document.getElementById(tab.getAttribute("aria-controls") ?? "");
+      expect(panel?.getAttribute("role")).toBe("tabpanel");
+      expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
+    }
+  });
+
   describe("selection", () => {
     it("selects the soonest-expiring pending request when the window opens", async () => {
       await start();
@@ -366,6 +377,47 @@ describe("approvals window flow", () => {
       expect(pressedIds()).toEqual(["mid"]);
       expect(root.querySelector(".review")?.textContent).toContain("program-mid");
       expect(detailIds().filter((id) => id === "soon")).toHaveLength(1);
+    });
+
+    it("keeps the new review's Approve delay when an earlier decision finishes late", async () => {
+      await start();
+      await settle(1000);
+      let finish: () => void = () => undefined;
+      ipc.on(
+        "approval_decide",
+        (args) =>
+          new Promise<ApprovalView>((resolve) => {
+            finish = () => resolve({ ...view({ id: String(args.id) }), state: "denied" });
+          }),
+      );
+      buttonByText(root, "Deny").click();
+      await settle();
+      rowFor("mid").click();
+      await settle();
+      expect(buttonByText(root, "Approve").disabled).toBe(true);
+      finish();
+      await settle(1000);
+      expect(root.querySelector(".review")?.textContent).toContain("program-mid");
+      expect(buttonByText(root, "Approve").disabled).toBe(false);
+    });
+
+    it("keeps a failed review load on screen across list polls without retrying", async () => {
+      await start();
+      ipc.on("approval_detail", () => rejection("approval_not_found", "Gone."));
+      rowFor("mid").click();
+      await settle();
+      const error = root.querySelector(".approvals > .error") as HTMLElement;
+      expect(error.hidden).toBe(false);
+      expect(error.textContent).toContain("approval_not_found");
+      const loads = detailIds().length;
+      await settle(6000);
+      expect(error.hidden).toBe(false);
+      expect(error.textContent).toContain("approval_not_found");
+      expect(detailIds()).toHaveLength(loads);
+      ipc.on("approval_detail", (args) => detailFor(String(args.id)));
+      rowFor("late").click();
+      await settle();
+      expect(error.hidden).toBe(true);
     });
 
     it("never focuses Approve, when it renders or when it unlocks", async () => {

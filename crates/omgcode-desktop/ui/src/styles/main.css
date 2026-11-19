@@ -475,7 +475,6 @@ mark {
 
 /* Composer: the message box, then one toolbar row. */
 .composer {
-  position: relative;
   display: grid;
   gap: 8px;
   padding: var(--gap);
@@ -496,6 +495,7 @@ mark {
 }
 
 .composer-row {
+  position: relative;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -514,16 +514,17 @@ mark {
   overflow: auto;
 }
 
-/* Composer menus are placed against the whole composer, not their own button, so a panel
-   starts at the composer's edge and never runs past the conversation column (at the 800-pixel
-   minimum the column is about 540 pixels wide). */
+/* Composer menus are placed against the toolbar row, not their own button, so a panel starts at
+   the row's left edge and never runs past the conversation column (at the 800-pixel minimum the
+   column is about 540 pixels wide). It opens upward from the toolbar over the message box, so a
+   tall message box cannot push it above the window. */
 .composer-tools > .popover {
   position: static;
 }
 
 .composer-tools > .popover > .composer-panel {
-  left: var(--gap);
-  max-width: calc(100% - 2 * var(--gap));
+  left: 0;
+  max-width: 100%;
 }
 
 .composer-tools > .settings > .composer-panel {

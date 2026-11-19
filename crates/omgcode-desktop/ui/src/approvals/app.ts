@@ -4,7 +4,7 @@ import { approvalsApi } from "../ipc/approvals_client";
 import { toIpcError } from "../ipc/errors";
 import type { ApprovalList, ApprovalView } from "../ipc/types";
 import { createPoller } from "../poll";
-import { createTabs } from "../ui/tabs";
+import { createTabs, tabIdFor } from "../ui/tabs";
 import { operationLabel, orderApprovals, remainingSeconds } from "./model";
 import { createReviewPanel, type ShowOptions } from "./review";
 
@@ -72,6 +72,8 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   let selectedId: string | null = null;
   // Counts detail requests, so a late answer to an older one is dropped.
   let detailRequest = 0;
+  // The last review load that failed for the selected request, kept across list polls.
+  let detailError: string | null = null;
   let rows = new Map<string, RowRef>();
   let pendingOrder: string[] = [];
   let focusedOnce = false;
@@ -83,8 +85,17 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   const pendingList = el("ul", { class: "approvals-ul" });
   const historyEmpty = el("div", { class: "empty-state" }, "Nothing has been decided yet.");
   const historyList = el("ul", { class: "approvals-ul" });
-  const pendingPanel = el("div", { class: "queue-panel" }, emptyNote, pendingList);
-  const historyPanel = el("div", { class: "queue-panel" }, historyEmpty, historyList);
+  const queuePanel = (id: string, ...children: HTMLElement[]): HTMLElement =>
+    el(
+      "div",
+      {
+        class: "queue-panel",
+        attrs: { id, role: "tabpanel", "aria-labelledby": tabIdFor(id) },
+      },
+      ...children,
+    );
+  const pendingPanel = queuePanel("pending-panel", emptyNote, pendingList);
+  const historyPanel = queuePanel("history-panel", historyEmpty, historyList);
   historyPanel.hidden = true;
 
   function showTab(id: QueueTab): void {
@@ -95,8 +106,8 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   const tabs = createTabs<QueueTab>(
     "Approval queue",
     [
-      { id: "pending", label: "Pending (0)" },
-      { id: "history", label: "History (0)" },
+      { id: "pending", label: "Pending (0)", panelId: "pending-panel" },
+      { id: "history", label: "History (0)", panelId: "history-panel" },
     ],
     "pending",
     showTab,
@@ -284,19 +295,34 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
     try {
       const detail = await approvalsApi.detail(id);
       if (current()) {
+        setDetailError(null);
         review.show(detail, options);
       }
     } catch (reason) {
       if (current()) {
         const error = toIpcError(reason);
         review.clear();
-        showError(`${error.message} (${error.code})`);
+        setDetailError(`${error.message} (${error.code})`);
       }
     }
   }
 
+  /**
+   * A failed review load stays on screen until the operator selects a request or a review is
+   * shown; a successful list poll does not clear it. The poll never retries the load, because
+   * each detail request is an audited read that replaces the review token.
+   */
+  function setDetailError(message: string | null): void {
+    if (detailError === message) {
+      return;
+    }
+    detailError = message;
+    showError(message);
+  }
+
   /** Selects a request (or none) and loads its review. Every call starts a fresh review. */
   function selectApproval(id: string | null, options: ShowOptions = {}): void {
+    setDetailError(null);
     selectedId = id;
     syncSelection();
     if (id === null) {
@@ -344,7 +370,7 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
     try {
       received = await approvalsApi.list();
       receivedAtMs = performance.now();
-      showError(null);
+      showError(detailError);
     } catch (reason) {
       const error = toIpcError(reason);
       showError(`${error.message} (${error.code})`);

@@ -79,6 +79,9 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
   const empty = el("div", { class: "empty-state review-empty" }, "Select a request to review it.");
   const pane = el("div", { class: "review-pane" }, empty, element);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Counts shown reviews. The timer belongs to the newest one, so a decision that finishes
+  // after another review was shown must leave that review's timer alone.
+  let shownCount = 0;
 
   function cancelTimer(): void {
     if (timer !== null) {
@@ -89,6 +92,8 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
 
   function show(detail: ApprovalDetail, options: ShowOptions = {}): void {
     cancelTimer();
+    shownCount += 1;
+    const shown = shownCount;
     const input: ReviewInput = { writersStopped: false, armed: false, busy: false };
     const isFile = detail.approval.operation === "file_write";
     const pending = detail.approval.state === "pending";
@@ -131,7 +136,9 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
           args.writersStopped,
           args.reviewToken,
         );
-        cancelTimer();
+        if (shown === shownCount) {
+          cancelTimer();
+        }
         replaceChildren(result, `Decision recorded: ${view.state}.`);
         result.classList.remove("error");
         approve.disabled = true;

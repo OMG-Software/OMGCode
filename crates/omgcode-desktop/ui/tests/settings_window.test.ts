@@ -701,6 +701,37 @@ describe("settings window", () => {
     expect(root.textContent).toContain("Revision 8");
   });
 
+  it("keeps a typed connection across redraws, after a refusal, and clears it after an add", async () => {
+    let refuse = true;
+    await start(() => choosable({ provider_profiles: [] }), {
+      settings_add_local_connection: () =>
+        refuse ? rejection("invalid_endpoint", "Bad.") : choosable({ revision: 8 }),
+    });
+    go("Model");
+    const type = (label: string, value: string): void => {
+      field(label).value = value;
+      field(label).dispatchEvent(new Event("input"));
+    };
+    type("New connection name", "box");
+    type("New connection endpoint", "http://127.0.0.1:5000/v1");
+    go("Advanced");
+    go("Model");
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(field("New connection name").value).toBe("box");
+    expect(field("New connection endpoint").value).toBe("http://127.0.0.1:5000/v1");
+
+    buttonByText(root, "Add connection").click();
+    await settle();
+    expect(field("New connection name").value).toBe("box");
+
+    refuse = false;
+    buttonByText(root, "Add connection").click();
+    await settle();
+    expect(field("New connection name").value).toBe("ollama");
+    expect(field("New connection endpoint").value).toBe(DEFAULT_ENDPOINTS.ollama_local);
+  });
+
   it("removes a connection without a credential and leaves a stored one to the CLI", async () => {
     await start(() => choosable(), {
       settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [lms()] }),

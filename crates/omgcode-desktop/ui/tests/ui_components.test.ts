@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPopover } from "../src/ui/popover";
 import { segmented } from "../src/ui/segmented";
-import { createTabs } from "../src/ui/tabs";
+import { createTabs, tabIdFor } from "../src/ui/tabs";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -116,6 +116,23 @@ describe("tabs", () => {
     expect(onSelect).not.toHaveBeenCalled();
     tabs.setLabel("pending", "Pending (3)");
     expect(tabs.element.querySelector('[data-tab="pending"]')?.textContent).toBe("Pending (3)");
+  });
+
+  it("links a tab to its panel only when the spec names one", () => {
+    const tabs = createTabs(
+      "Approvals",
+      [
+        { id: "pending", label: "Pending", panelId: "pending-panel" },
+        { id: "history", label: "History" },
+      ],
+      "pending",
+      vi.fn(),
+    );
+    const [pending, history] = Array.from(tabs.element.querySelectorAll("button"));
+    expect(pending?.id).toBe(tabIdFor("pending-panel"));
+    expect(pending?.getAttribute("aria-controls")).toBe("pending-panel");
+    expect(history?.id).toBe("");
+    expect(history?.hasAttribute("aria-controls")).toBe(false);
   });
 });
 

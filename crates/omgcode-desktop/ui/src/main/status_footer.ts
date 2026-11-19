@@ -63,6 +63,13 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
     button("Review", deps.onShowApprovals, { class: "status-link" }),
   );
   approvals.hidden = true;
+  // A polite live region that is always present, outside the hidden segment, so a screen reader
+  // hears when a request starts waiting; Review stays outside it.
+  const approvalsLive = el("span", {
+    class: "visually-hidden",
+    attrs: { role: "status", "aria-live": "polite" },
+  });
+  let pendingShown = 0;
   const provider = el("select", {
     class: "status-provider",
     attrs: { "aria-label": "Model provider" },
@@ -76,6 +83,7 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
     registration,
     branch,
     approvals,
+    approvalsLive,
     el("span", { class: "status-spacer" }),
     message,
     el("label", { class: "status-segment" }, el("span", { text: "Model" }), provider),
@@ -194,11 +202,16 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
       void readBranch();
     },
     setPending(count) {
-      approvals.hidden = count <= 0;
-      replaceChildren(
-        approvalsText,
-        count === 1 ? "1 approval waiting" : `${count} approvals waiting`,
-      );
+      const shown = Math.max(count, 0);
+      if (shown === pendingShown) {
+        return;
+      }
+      pendingShown = shown;
+      const text = shown === 1 ? "1 approval waiting" : `${shown} approvals waiting`;
+      approvals.hidden = shown === 0;
+      replaceChildren(approvalsText, text);
+      // Announce only a change to a nonzero count; clearing to zero needs no interruption.
+      replaceChildren(approvalsLive, shown === 0 ? "" : text);
     },
     refresh() {
       if (!choosing) {

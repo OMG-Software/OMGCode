@@ -882,7 +882,10 @@ Review reads only what the approval needs:
   listing. Since 0.45.0 the window shows a review when the operator selects a
   record and also when it selects one itself: on opening, and when the
   selected record stops being pending. Each of those is one detail request,
-  so the reads stay one per shown review.
+  so each shown review makes the reads of one detail request: one, or two for
+  a rename. If a detail request fails, the error stays on screen until the
+  operator selects a request or a review is shown; the window does not retry
+  it, because each retry would be another audited read.
 - Opening a record that is no longer pending reads nothing.
 - Review does not check that the approval is still unexpired. Core checks that
   when the record is consumed.

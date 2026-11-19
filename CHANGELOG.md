@@ -35,7 +35,9 @@ Changes are recorded here before a release version is assigned.
     late answer cannot display a review token that a newer request replaced.
     Because the window now opens a review by itself, a file-write review's
     audited broker read also happens on opening and after a decision, still
-    once per shown review.
+    one detail request per shown review (two reads for a rename). A failed
+    review load stays on screen until another request is selected and is
+    never retried by a poll.
   - **Settings window:** a sidebar chooses Model, Workspaces (the default),
     or a read-only Advanced section. Each workspace preference is one row
     with a description and a Deny, Prompt, or Allow segmented control, and

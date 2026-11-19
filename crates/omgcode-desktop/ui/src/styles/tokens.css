@@ -270,11 +270,12 @@ pre {
 
 /* Shared components (src/ui/). */
 
+/* The group does not clip its children, so the shared focus outline draws in full outside the
+   focused choice; the end choices round their own outer corners instead. */
 .segmented {
   display: inline-flex;
   border: 1px solid var(--control-border);
   border-radius: var(--radius);
-  overflow: hidden;
 }
 
 .seg-choice {
@@ -283,6 +284,19 @@ pre {
   background: transparent;
   padding: 3px 12px;
   color: var(--muted);
+}
+
+.seg-choice:first-child {
+  border-radius: calc(var(--radius) - 1px) 0 0 calc(var(--radius) - 1px);
+}
+
+.seg-choice:last-child {
+  border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0;
+}
+
+.seg-choice:focus-visible {
+  position: relative;
+  z-index: 1;
 }
 
 .seg-choice + .seg-choice {
@@ -381,6 +395,19 @@ pre {
 .popover.open-up > .popover-panel {
   bottom: 100%;
   margin: 0 0 4px;
+}
+
+/* Read by assistive technology but not drawn, for live announcements. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .empty-state {
