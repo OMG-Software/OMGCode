@@ -15,6 +15,7 @@ use omgcode_app::desktop::{
     TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
     WorkspaceList,
 };
+use omgcode_core::policy::Access;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -366,9 +367,9 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
             workspace_id: id(),
             folder_display: "/work".to_owned(),
             model_tools: true,
-            read: true,
-            write: false,
-            execute: false,
+            read: Access::Allow,
+            write: Access::Deny,
+            execute: Access::Prompt,
         }],
     });
     assert_shape(
@@ -381,9 +382,9 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
             ("workspace_id", "string"),
             ("folder_display", "string"),
             ("model_tools", "bool"),
-            ("read", "bool"),
-            ("write", "bool"),
-            ("execute", "bool"),
+            ("read", "string"),
+            ("write", "string"),
+            ("execute", "string"),
         ],
     );
     assert_shape(
@@ -660,9 +661,9 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
             workspace_id: id(),
             folder_display: "f".to_owned(),
             model_tools: false,
-            read: false,
-            write: false,
-            execute: false,
+            read: Access::Deny,
+            write: Access::Deny,
+            execute: Access::Deny,
         }],
     });
     let detail = json_of(&ApprovalDetail {

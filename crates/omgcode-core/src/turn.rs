@@ -27,7 +27,9 @@ use crate::control::{
     ControlStore, now_unix, valid_profile_name,
 };
 use crate::files::{FileBroker, FileError, FileListing, FileTarget};
-use crate::policy::{DecisionReason, PermissionSet, SessionBinding, WorkspaceId};
+use crate::policy::{
+    Access, DecisionReason, PermissionSet, SessionBinding, WorkspaceId, WriteTool,
+};
 use crate::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, ModelMessage,
     PromptError, SkillPrompt,
@@ -1215,6 +1217,7 @@ pub struct TurnRuntime<'a> {
     cancel: CancelToken,
     tool_text_filter: Option<&'a dyn Fn(&str) -> String>,
     skills: Vec<SkillPrompt>,
+    approval_wait: bool,
 }
 
 impl<'a> TurnRuntime<'a> {
@@ -1244,6 +1247,7 @@ impl<'a> TurnRuntime<'a> {
             cancel: CancelToken::new(),
             tool_text_filter: None,
             skills: Vec::new(),
+            approval_wait: false,
         })
     }
 
@@ -1270,6 +1274,20 @@ impl<'a> TurnRuntime<'a> {
     #[must_use]
     pub fn with_skills(mut self, skills: Vec<SkillPrompt>) -> Self {
         self.skills = skills;
+        self
+    }
+
+    /// Wait inside the turn for the operator to decide each approval a model
+    /// call records, then complete the same call (ADR-0062).
+    ///
+    /// Without it, a call that needs approval returns `approval_required` and
+    /// the model must repeat the identical call in a later turn. While
+    /// waiting, the settings lock is released between reads, cancellation is
+    /// checked every 250 ms, and the turn deadline is paused. A wait ends when
+    /// the record is approved, denied, expires, or can no longer be read.
+    #[must_use]
+    pub const fn with_approval_wait(mut self, wait: bool) -> Self {
+        self.approval_wait = wait;
         self
     }
 
@@ -1310,7 +1328,7 @@ impl<'a> TurnRuntime<'a> {
             return Err(TurnError::ManifestMismatch);
         }
         self.ensure_runnable()?;
-        let deadline = Instant::now()
+        let mut deadline = Instant::now()
             .checked_add(self.limits.deadline)
             .ok_or(TurnError::Timeout)?;
         self.check_checkpoints(deadline)?;
@@ -1319,15 +1337,15 @@ impl<'a> TurnRuntime<'a> {
         // rechecks the live preferences before dispatch.
         let permissions = self.workspace_permissions();
         let mut tools = tool_definitions();
-        if permissions.is_some_and(edit_tool_allowed) {
-            tools.push(edit_tool_definition());
-            tools.push(multi_edit_tool_definition());
-            tools.push(create_tool_definition());
-            tools.push(rename_tool_definition());
-            tools.push(delete_tool_definition());
-        }
-        if permissions.is_some_and(command_tool_allowed) {
-            tools.push(command_tool_definition());
+        if let Some(permissions) = permissions {
+            for tool in WriteTool::ALL {
+                if permissions.model_write(tool).permits() {
+                    tools.push(write_tool_definition(tool));
+                }
+            }
+            if permissions.model_command().permits() {
+                tools.push(command_tool_definition());
+            }
         }
         // The runtime owns the exact instruction and tool metadata it sends.
         manifest.custom_instructions = custom_instructions.to_owned();
@@ -1548,8 +1566,11 @@ impl<'a> TurnRuntime<'a> {
                     workspace_id: self.workspace_id,
                     cancel: self.cancel.clone(),
                     skills: &self.skills,
+                    approval_wait: self.approval_wait,
                 }
                 .dispatch(call, self.limits.max_result_bytes);
+                // Time spent waiting for the operator is not the turn's own.
+                deadline = deadline.checked_add(execution.waited).unwrap_or(deadline);
                 if let Some(filter) = self.tool_text_filter {
                     execution.text = filter(&execution.text);
                 }
@@ -1609,6 +1630,9 @@ impl<'a> TurnRuntime<'a> {
                     Some(TerminalToolError::SkillWithdrawn) => {
                         return Err(self.abort_for(request_id, TurnError::SkillWithdrawn));
                     }
+                    Some(TerminalToolError::Cancelled) => {
+                        return Err(self.abort_for(request_id, TurnError::Cancelled));
+                    }
                     None => {}
                 }
             }
@@ -1639,7 +1663,7 @@ impl<'a> TurnRuntime<'a> {
     /// before the first model request.
     fn tool_replay_allowed(&self) -> bool {
         self.workspace_permissions()
-            .is_some_and(|permissions| permissions.model_tools && permissions.read)
+            .is_some_and(|permissions| permissions.model_read().permits())
     }
 
     /// Read the workspace's current preferences, releasing the settings lock.
@@ -1707,16 +1731,60 @@ impl<'a> TurnRuntime<'a> {
     }
 }
 
-/// Report whether the edit tool may be offered: live `model_tools`, `read`,
-/// and `write`. Each call rechecks them, and every edit still needs approval.
-const fn edit_tool_allowed(permissions: PermissionSet) -> bool {
-    permissions.model_tools && permissions.read && permissions.write
+/// The definition offered for one model file-write tool.
+fn write_tool_definition(tool: WriteTool) -> ToolDefinition {
+    match tool {
+        WriteTool::Edit => edit_tool_definition(),
+        WriteTool::MultiEdit => multi_edit_tool_definition(),
+        WriteTool::Create => create_tool_definition(),
+        WriteTool::Rename => rename_tool_definition(),
+        WriteTool::Delete => delete_tool_definition(),
+    }
 }
 
-/// Report whether the command tool may be offered: live `model_tools`,
-/// `execute`, `read`, and `write`. Each call rechecks them.
-const fn command_tool_allowed(permissions: PermissionSet) -> bool {
-    permissions.model_tools && permissions.execute && permissions.read && permissions.write
+/// The file-write tool a call names, or `None` for any other tool.
+const fn write_tool(arguments: &ToolArguments) -> Option<WriteTool> {
+    match arguments {
+        ToolArguments::EditFile { .. } => Some(WriteTool::Edit),
+        ToolArguments::MultiEditFile { .. } => Some(WriteTool::MultiEdit),
+        ToolArguments::CreateFile { .. } => Some(WriteTool::Create),
+        ToolArguments::RenameFile { .. } => Some(WriteTool::Rename),
+        ToolArguments::DeleteFile { .. } => Some(WriteTool::Delete),
+        ToolArguments::ReadFile { .. }
+        | ToolArguments::ListDirectory { .. }
+        | ToolArguments::Command { .. } => None,
+    }
+}
+
+/// How often an in-turn wait rereads an approval record.
+const APPROVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The most times one call waits for a decision. A later wait happens only
+/// when the approved request no longer matches the live state, such as a file
+/// that changed while the operator decided, and a new request was recorded.
+const MAX_APPROVAL_WAITS: usize = 3;
+
+/// What ended an in-turn wait for an operator decision.
+enum Decision {
+    Approved,
+    Denied,
+    Expired,
+    Cancelled,
+    /// The record could not be read, was consumed elsewhere, or vanished.
+    Unavailable,
+}
+
+/// How a model-initiated write or command was authorized, for the audit
+/// record of the action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Authorization {
+    /// The workspace preference was `Allow` at this settings revision.
+    StandingAllow { settings_revision: u64 },
+    /// This trusted single-use approval was consumed.
+    Approval {
+        approval_id: Uuid,
+        settings_revision: u64,
+    },
 }
 
 /// A terminal tool failure retained until its audit records are durable.
@@ -1725,6 +1793,8 @@ enum TerminalToolError {
     Failed(FileError),
     /// A selected skill was withdrawn before the operation was admitted.
     SkillWithdrawn,
+    /// The turn was cancelled while the call waited for an operator decision.
+    Cancelled,
 }
 
 /// One bounded tool execution result, including the exact text shown to the model.
@@ -1733,15 +1803,31 @@ struct ToolExecution {
     code: Option<&'static str>,
     text: String,
     terminal: Option<TerminalToolError>,
+    /// The pending approval this result asks the operator to decide.
+    pending_approval: Option<Uuid>,
+    /// Time spent waiting for operator decisions, which the turn deadline
+    /// does not count.
+    waited: Duration,
 }
 
 impl ToolExecution {
+    /// Mark an `approval_required` result with the record it asks about. A
+    /// result replaced by `output_too_large` keeps no marker.
+    fn awaiting(mut self, approval_id: Uuid) -> Self {
+        if self.code == Some("approval_required") {
+            self.pending_approval = Some(approval_id);
+        }
+        self
+    }
+
     fn success(text: String) -> Self {
         Self {
             outcome: ToolOutcome::Succeeded,
             code: None,
             text,
             terminal: None,
+            pending_approval: None,
+            waited: Duration::ZERO,
         }
     }
 
@@ -1751,6 +1837,8 @@ impl ToolExecution {
             code: Some(code),
             text: labelled_error(call, code),
             terminal: None,
+            pending_approval: None,
+            waited: Duration::ZERO,
         }
     }
 
@@ -1766,6 +1854,8 @@ impl ToolExecution {
                 call.call_id
             ),
             terminal: None,
+            pending_approval: None,
+            waited: Duration::ZERO,
         }
     }
 
@@ -1775,6 +1865,8 @@ impl ToolExecution {
             code: Some(code),
             text: labelled_error(call, code),
             terminal: Some(TerminalToolError::Denied(error)),
+            pending_approval: None,
+            waited: Duration::ZERO,
         }
     }
 
@@ -1784,6 +1876,8 @@ impl ToolExecution {
             code: Some(code),
             text: labelled_error(call, code),
             terminal: Some(TerminalToolError::Failed(error)),
+            pending_approval: None,
+            waited: Duration::ZERO,
         }
     }
 }
@@ -1795,10 +1889,104 @@ struct WorkspaceToolDispatcher<'a> {
     workspace_id: WorkspaceId,
     cancel: CancelToken,
     skills: &'a [SkillPrompt],
+    approval_wait: bool,
 }
 
 impl WorkspaceToolDispatcher<'_> {
+    /// Dispatch one call and, when enabled, wait for each approval it records.
+    ///
+    /// After an approval the same call is dispatched again, so every live
+    /// check, read, and digest is repeated before the approval is consumed.
     fn dispatch(&mut self, call: &ToolCall, max_result_bytes: usize) -> ToolExecution {
+        let mut waited = Duration::ZERO;
+        let mut waits = 0_usize;
+        loop {
+            let mut execution = self.dispatch_once(call, max_result_bytes);
+            execution.waited = waited;
+            let Some(approval_id) = execution.pending_approval else {
+                return execution;
+            };
+            if !self.approval_wait || waits >= MAX_APPROVAL_WAITS {
+                return execution;
+            }
+            waits += 1;
+            let started = Instant::now();
+            let decision = self.await_decision(approval_id);
+            waited = waited.saturating_add(started.elapsed());
+            let mut ended = match decision {
+                Decision::Approved => continue,
+                Decision::Unavailable => execution,
+                Decision::Denied => status_result(
+                    call,
+                    ToolOutcome::Denied,
+                    "approval_denied",
+                    json!({
+                        "approval_id": approval_id,
+                        "message": "The operator denied this request. Nothing changed. Do not retry it.",
+                    }),
+                    max_result_bytes,
+                ),
+                Decision::Expired => status_result(
+                    call,
+                    ToolOutcome::Failed,
+                    "approval_expired",
+                    json!({
+                        "approval_id": approval_id,
+                        "message": "The approval request expired without a decision. Nothing changed.",
+                    }),
+                    max_result_bytes,
+                ),
+                Decision::Cancelled => ToolExecution {
+                    outcome: ToolOutcome::Failed,
+                    code: Some("cancelled"),
+                    text: labelled_error(call, "cancelled"),
+                    terminal: Some(TerminalToolError::Cancelled),
+                    pending_approval: None,
+                    waited: Duration::ZERO,
+                },
+            };
+            ended.waited = waited;
+            ended.pending_approval = None;
+            return ended;
+        }
+    }
+
+    /// Wait for the operator to decide one approval record.
+    ///
+    /// The settings store is opened only for each read and dropped before the
+    /// sleep, so the approvals window and the trusted CLI can decide the
+    /// record. A busy store is retried at the next poll. The wait is bounded
+    /// by the longest approval lifetime plus a short margin, in case the
+    /// wall clock that sets expiry does not advance.
+    fn await_decision(&self, approval_id: Uuid) -> Decision {
+        let started = Instant::now();
+        let limit = Duration::from_secs(EDIT_APPROVAL_TTL_SECS.max(COMMAND_APPROVAL_TTL_SECS) + 5);
+        loop {
+            if self.cancel.is_cancelled() {
+                return Decision::Cancelled;
+            }
+            match ControlStore::open_existing(self.data_directory) {
+                Ok(Some(control)) => match control.approval_status(approval_id, now_unix()) {
+                    Some(status) => match status.state {
+                        ApprovalState::Pending => {}
+                        ApprovalState::Approved => return Decision::Approved,
+                        ApprovalState::Denied => return Decision::Denied,
+                        ApprovalState::Expired => return Decision::Expired,
+                        ApprovalState::Consumed => return Decision::Unavailable,
+                    },
+                    None => return Decision::Unavailable,
+                },
+                Err(ControlError::Busy) => {}
+                Ok(None) | Err(_) => return Decision::Unavailable,
+            }
+            if started.elapsed() >= limit {
+                return Decision::Expired;
+            }
+            std::thread::sleep(APPROVAL_POLL_INTERVAL);
+        }
+    }
+
+    fn dispatch_once(&mut self, call: &ToolCall, max_result_bytes: usize) -> ToolExecution {
         // Hold the settings lock only for this operation, never across model I/O.
         // A permission change can therefore take effect before the next call.
         let mut control = match ControlStore::open_existing(self.data_directory) {
@@ -1826,6 +2014,8 @@ impl WorkspaceToolDispatcher<'_> {
                 code: Some("skill_withdrawn"),
                 text: labelled_error(call, "skill_withdrawn"),
                 terminal: Some(TerminalToolError::SkillWithdrawn),
+                pending_approval: None,
+                waited: Duration::ZERO,
             };
         }
         // The persisted model-tool preference is rechecked on every call, so a
@@ -1848,44 +2038,33 @@ impl WorkspaceToolDispatcher<'_> {
             );
         }
         if matches!(call.arguments, ToolArguments::Command { .. }) {
-            if !(permissions.execute && permissions.read && permissions.write) {
+            let access = permissions.model_command();
+            if !access.permits() {
                 return ToolExecution::denied(
                     "command_disabled",
                     call,
                     FileError::Denied(DecisionReason::PermissionDisabled),
                 );
             }
-            return self.dispatch_command(control, call, max_result_bytes);
+            return self.dispatch_command(control, call, access, max_result_bytes);
         }
-        if matches!(
-            call.arguments,
-            ToolArguments::EditFile { .. }
-                | ToolArguments::MultiEditFile { .. }
-                | ToolArguments::CreateFile { .. }
-                | ToolArguments::RenameFile { .. }
-                | ToolArguments::DeleteFile { .. }
-        ) {
-            if !edit_tool_allowed(permissions) {
+        if let Some(tool) = write_tool(&call.arguments) {
+            let access = permissions.model_write(tool);
+            if !access.permits() {
                 return ToolExecution::denied(
                     "edit_disabled",
                     call,
                     FileError::Denied(DecisionReason::PermissionDisabled),
                 );
             }
-            return match call.arguments {
-                ToolArguments::MultiEditFile { .. } => {
-                    self.dispatch_multi_edit(control, call, max_result_bytes)
+            return match tool {
+                WriteTool::Edit => self.dispatch_edit(control, call, access, max_result_bytes),
+                WriteTool::MultiEdit => {
+                    self.dispatch_multi_edit(control, call, access, max_result_bytes)
                 }
-                ToolArguments::CreateFile { .. } => {
-                    self.dispatch_create(control, call, max_result_bytes)
-                }
-                ToolArguments::RenameFile { .. } => {
-                    self.dispatch_rename(control, call, max_result_bytes)
-                }
-                ToolArguments::DeleteFile { .. } => {
-                    self.dispatch_delete(control, call, max_result_bytes)
-                }
-                _ => self.dispatch_edit(control, call, max_result_bytes),
+                WriteTool::Create => self.dispatch_create(control, call, access, max_result_bytes),
+                WriteTool::Rename => self.dispatch_rename(control, call, access, max_result_bytes),
+                WriteTool::Delete => self.dispatch_delete(control, call, access, max_result_bytes),
             };
         }
         let binding = match control.bind_session(self.session_id, self.workspace_id) {
@@ -1944,6 +2123,7 @@ impl WorkspaceToolDispatcher<'_> {
         &self,
         mut control: ControlStore,
         call: &ToolCall,
+        access: Access,
         max_result_bytes: usize,
     ) -> ToolExecution {
         let ToolArguments::EditFile {
@@ -1997,11 +2177,11 @@ impl WorkspaceToolDispatcher<'_> {
             ),
             noun: "edit",
         };
-        if let WriteGate::Respond(execution) =
-            self.write_gate(&mut control, call, request, max_result_bytes)
-        {
-            return execution;
-        }
+        let _authorization =
+            match self.write_gate(&mut control, call, request, access, max_result_bytes) {
+                WriteGate::Approved(authorization) => authorization,
+                WriteGate::Respond(execution) => return execution,
+            };
         apply_prepared_edit(&mut control, &binding, &target, call, &prepared, None)
     }
 
@@ -2014,6 +2194,7 @@ impl WorkspaceToolDispatcher<'_> {
         &self,
         mut control: ControlStore,
         call: &ToolCall,
+        access: Access,
         max_result_bytes: usize,
     ) -> ToolExecution {
         let ToolArguments::MultiEditFile { path, edits } = &call.arguments else {
@@ -2063,11 +2244,11 @@ impl WorkspaceToolDispatcher<'_> {
             ),
             noun: "multi-edit",
         };
-        if let WriteGate::Respond(execution) =
-            self.write_gate(&mut control, call, request, max_result_bytes)
-        {
-            return execution;
-        }
+        let _authorization =
+            match self.write_gate(&mut control, call, request, access, max_result_bytes) {
+                WriteGate::Approved(authorization) => authorization,
+                WriteGate::Respond(execution) => return execution,
+            };
         apply_prepared_edit(
             &mut control,
             &binding,
@@ -2089,6 +2270,7 @@ impl WorkspaceToolDispatcher<'_> {
         &self,
         mut control: ControlStore,
         call: &ToolCall,
+        access: Access,
         max_result_bytes: usize,
     ) -> ToolExecution {
         let ToolArguments::CreateFile { path, content } = &call.arguments else {
@@ -2133,11 +2315,11 @@ impl WorkspaceToolDispatcher<'_> {
             ),
             noun: "file creation",
         };
-        if let WriteGate::Respond(execution) =
-            self.write_gate(&mut control, call, request, max_result_bytes)
-        {
-            return execution;
-        }
+        let _authorization =
+            match self.write_gate(&mut control, call, request, access, max_result_bytes) {
+                WriteGate::Approved(authorization) => authorization,
+                WriteGate::Respond(execution) => return execution,
+            };
         // The approval is spent. A concurrent creator makes this a conflict.
         match FileBroker::new(&mut control).create_file(&binding, &target, content.as_bytes()) {
             Ok(created) => ToolExecution::success(create_success_message(
@@ -2166,6 +2348,7 @@ impl WorkspaceToolDispatcher<'_> {
         &self,
         mut control: ControlStore,
         call: &ToolCall,
+        access: Access,
         max_result_bytes: usize,
     ) -> ToolExecution {
         let ToolArguments::RenameFile { from, to } = &call.arguments else {
@@ -2215,11 +2398,11 @@ impl WorkspaceToolDispatcher<'_> {
             ),
             noun: "rename",
         };
-        if let WriteGate::Respond(execution) =
-            self.write_gate(&mut control, call, request, max_result_bytes)
-        {
-            return execution;
-        }
+        let _authorization =
+            match self.write_gate(&mut control, call, request, access, max_result_bytes) {
+                WriteGate::Approved(authorization) => authorization,
+                WriteGate::Respond(execution) => return execution,
+            };
         // The approval is spent. A changed source or a new destination is a
         // refusal; an uncertain rename stays terminal and leaves its pending
         // audit record for the trusted acknowledgement.
@@ -2253,6 +2436,7 @@ impl WorkspaceToolDispatcher<'_> {
         &self,
         mut control: ControlStore,
         call: &ToolCall,
+        access: Access,
         max_result_bytes: usize,
     ) -> ToolExecution {
         let ToolArguments::DeleteFile { path } = &call.arguments else {
@@ -2287,11 +2471,11 @@ impl WorkspaceToolDispatcher<'_> {
             ),
             noun: "deletion",
         };
-        if let WriteGate::Respond(execution) =
-            self.write_gate(&mut control, call, request, max_result_bytes)
-        {
-            return execution;
-        }
+        let _authorization =
+            match self.write_gate(&mut control, call, request, access, max_result_bytes) {
+                WriteGate::Approved(authorization) => authorization,
+                WriteGate::Respond(execution) => return execution,
+            };
         match FileBroker::new(&mut control).apply_removal(&binding, &target, &current) {
             // The widest report was checked by the gate, so this one fits.
             Ok(receipt) if receipt.applied => ToolExecution::success(delete_success_message(
@@ -2314,8 +2498,10 @@ impl WorkspaceToolDispatcher<'_> {
 
     /// The approval flow shared by every model file-write tool.
     ///
-    /// An approved record is consumed only after the widest success report is
-    /// known to fit, and before the caller writes. A pending record repeats the
+    /// Under an `Allow` preference the call proceeds without an approval
+    /// record once the widest success report is known to fit. Under `Prompt`,
+    /// an approved record is consumed only after that check, and before the
+    /// caller writes. A pending record repeats the
     /// request, a denied one refuses, and anything else records a new pending
     /// request. Lookup filters are the session, workspace, `file_write`
     /// operation, exact digest, and current settings revision.
@@ -2324,6 +2510,7 @@ impl WorkspaceToolDispatcher<'_> {
         control: &mut ControlStore,
         call: &ToolCall,
         request: WriteRequest,
+        access: Access,
         max_result_bytes: usize,
     ) -> WriteGate {
         let WriteRequest {
@@ -2334,6 +2521,20 @@ impl WorkspaceToolDispatcher<'_> {
         } = request;
         let now = now_unix();
         let revision = control.revision();
+        // Check that the success report fits before anything is spent or
+        // written, using the widest size, digest, and identifier it can
+        // carry. Otherwise an applied change could only be reported as a
+        // failure. An approval stays unconsumed for a later retry.
+        if widest_success.len() > max_result_bytes.min(MAX_MESSAGE_BYTES) {
+            return WriteGate::Respond(ToolExecution::recoverable("output_too_large", call));
+        }
+        if access == Access::Allow {
+            // The live preference, read under this same settings lock, is the
+            // authorization; no approval record is created or consumed.
+            return WriteGate::Approved(Authorization::StandingAllow {
+                settings_revision: revision,
+            });
+        }
         let statuses = control.approval_statuses(now);
         let matching = |state| {
             statuses.iter().find(|status| {
@@ -2346,13 +2547,6 @@ impl WorkspaceToolDispatcher<'_> {
             })
         };
         if let Some(approved) = matching(ApprovalState::Approved) {
-            // Check that the success report fits before anything is spent or
-            // written, using the widest size, digest, and identifier it can
-            // carry. Otherwise an applied change could only be reported as a
-            // failure. The approval stays unconsumed for a later retry.
-            if widest_success.len() > max_result_bytes.min(MAX_MESSAGE_BYTES) {
-                return WriteGate::Respond(ToolExecution::recoverable("output_too_large", call));
-            }
             let approval = ApprovalBinding {
                 session_id: self.session_id,
                 workspace_id: self.workspace_id,
@@ -2370,7 +2564,10 @@ impl WorkspaceToolDispatcher<'_> {
             }
             // The record is spent before the write, so no crash or retry can
             // reuse it.
-            return WriteGate::Approved;
+            return WriteGate::Approved(Authorization::Approval {
+                approval_id: approved.id,
+                settings_revision: revision,
+            });
         }
         if let Some(pending) = matching(ApprovalState::Pending) {
             return WriteGate::Respond(file_write_approval_required(
@@ -2425,6 +2622,7 @@ impl WorkspaceToolDispatcher<'_> {
         &self,
         mut control: ControlStore,
         call: &ToolCall,
+        access: Access,
         max_result_bytes: usize,
     ) -> ToolExecution {
         let ToolArguments::Command {
@@ -2439,6 +2637,13 @@ impl WorkspaceToolDispatcher<'_> {
         let request =
             command_run_request(self.workspace_id, profile, program, arguments, cwd.as_ref());
         let digest = command_digest(self.session_id, &request);
+        if access == Access::Allow {
+            // The live preference, read under the settings lock that admitted
+            // this call, is the authorization. The runner rechecks settings
+            // under its own lock.
+            drop(control);
+            return self.execute_command(call, &request, max_result_bytes);
+        }
         let now = now_unix();
         let revision = control.revision();
         let statuses = control.approval_statuses(now);
@@ -2481,7 +2686,8 @@ impl WorkspaceToolDispatcher<'_> {
                     "message": "The operator must approve this command before it can run.",
                 }),
                 max_result_bytes,
-            );
+            )
+            .awaiting(pending.id);
         }
         if matching(ApprovalState::Denied).is_some() {
             return status_result(
@@ -2526,6 +2732,7 @@ impl WorkspaceToolDispatcher<'_> {
             }),
             max_result_bytes,
         )
+        .awaiting(status.id)
     }
 
     /// Run one approved command with a fixed, bounded request.
@@ -2753,8 +2960,9 @@ struct WriteRequest {
 
 /// The result of the shared approval gate.
 enum WriteGate {
-    /// An approved record was consumed; the caller may write.
-    Approved,
+    /// The live preference is `Allow`, or an approved record was consumed;
+    /// the caller may write.
+    Approved(Authorization),
     /// The caller must return this result and write nothing.
     Respond(ToolExecution),
 }
@@ -3455,6 +3663,7 @@ fn file_write_approval_required(
         }),
         max_result_bytes,
     )
+    .awaiting(approval_id)
 }
 
 /// Classify a failed edit read or apply.
@@ -3527,6 +3736,8 @@ fn status_result(
         code: Some(code),
         text: message,
         terminal: None,
+        pending_approval: None,
+        waited: Duration::ZERO,
     }
 }
 

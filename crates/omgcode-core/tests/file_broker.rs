@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use omgcode_core::control::{ControlError, ControlStore};
 use omgcode_core::files::{FileBroker, FileError, FileTarget};
-use omgcode_core::policy::{DecisionReason, PermissionSet, SessionBinding, WorkspaceId};
+use omgcode_core::policy::{Access, DecisionReason, PermissionSet, SessionBinding, WorkspaceId};
 use omgcode_core::session::NativePath;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -235,8 +235,8 @@ fn read_only_and_write_only_preferences_require_fresh_bindings() {
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                read: true,
-                write: false,
+                read: Access::Allow,
+                write: Access::Deny,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),
@@ -274,8 +274,8 @@ fn read_only_and_write_only_preferences_require_fresh_bindings() {
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                read: false,
-                write: true,
+                read: Access::Deny,
+                write: Access::Prompt,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),
@@ -389,7 +389,7 @@ fn scope_mismatches_are_denied_without_creating_operation_audit_or_files() {
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                task_network: true,
+                task_network: Access::Prompt,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),

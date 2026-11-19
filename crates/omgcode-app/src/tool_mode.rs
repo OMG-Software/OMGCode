@@ -110,7 +110,7 @@ pub fn tool_replay_allowed(
         .registered_workspace(workspace)
         .is_some_and(|workspace| {
             let permissions = workspace.permissions();
-            permissions.model_tools && permissions.read
+            permissions.model_read().permits()
         }))
 }
 

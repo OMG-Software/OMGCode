@@ -45,7 +45,7 @@ fn scene() -> Scene {
             workspace_id,
             PermissionSet {
                 model_tools: true,
-                read: true,
+                read: Access::Allow,
                 ..PermissionSet::default()
             },
             control.revision(),
@@ -98,6 +98,7 @@ fn dispatch(scene: &Scene, skills: &[SkillPrompt]) -> ToolExecution {
         session_id: Uuid::new_v4(),
         workspace_id: scene.workspace_id,
         cancel: CancelToken::default(),
+        approval_wait: false,
         skills,
     }
     .dispatch(&call, 64 * 1024)

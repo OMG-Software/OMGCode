@@ -16,8 +16,8 @@ use time::{OffsetDateTime, UtcOffset};
 use uuid::{Uuid, Version};
 
 use crate::policy::{
-    self, DecisionReason, Operation, PermissionSet, PolicyDecision, PolicyRequest, SessionBinding,
-    WorkspaceId,
+    self, Access, DecisionReason, Operation, PermissionSet, PolicyDecision, PolicyRequest,
+    SessionBinding, WorkspaceId, WriteToolAccess,
 };
 use crate::storage::{self, StorageError};
 use crate::workspace::DirectoryRecord;
@@ -305,15 +305,17 @@ struct WorkspaceView<'a> {
     permissions: PermissionView,
 }
 
-/// All preference flags, including disabled optional ones.
+/// Every preference, including denied optional ones and unrestricted
+/// per-tool write limits.
 #[derive(Serialize)]
 struct PermissionView {
-    read: bool,
-    write: bool,
-    execute: bool,
-    task_network: bool,
+    read: Access,
+    write: Access,
+    execute: Access,
+    task_network: Access,
     model_tools: bool,
-    host_services: bool,
+    host_services: Access,
+    write_tools: WriteToolAccess,
 }
 
 fn serialize_workspace_views<S: serde::Serializer>(
@@ -332,6 +334,7 @@ fn serialize_workspace_views<S: serde::Serializer>(
                 task_network: permissions.task_network,
                 model_tools: permissions.model_tools,
                 host_services: permissions.host_services,
+                write_tools: permissions.write_tools,
             },
         }
     }))
@@ -1763,7 +1766,11 @@ mod tests {
         let before = store.workspace(id).expect("registered").permissions();
         let from = store.event_count();
         let changed = PermissionSet {
-            execute: !before.execute,
+            execute: if before.execute.permits() {
+                Access::Deny
+            } else {
+                Access::Prompt
+            },
             ..before
         };
         store
@@ -1777,7 +1784,7 @@ mod tests {
             .expect("replay")
             .expect("settings exist");
         assert_eq!(store.event_count(), from + 2);
-        let seen: Vec<bool> = history
+        let seen: Vec<Access> = history
             .into_iter()
             .map(|state| {
                 store.as_of(state, |control| {
@@ -1789,7 +1796,7 @@ mod tests {
                 })
             })
             .collect();
-        assert_eq!(seen, [!before.execute, before.execute]);
+        assert_eq!(seen, [changed.execute, before.execute]);
         let live = store.workspace(id).expect("registered").permissions();
         assert_eq!(live.execute, before.execute, "the live state is restored");
         let count = store.event_count();

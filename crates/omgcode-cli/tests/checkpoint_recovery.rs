@@ -15,7 +15,7 @@ use omgcode_core::control::ControlStore;
 #[cfg(any(target_os = "linux", windows))]
 use omgcode_core::files::{FileBroker, FileTarget};
 #[cfg(any(target_os = "linux", windows))]
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet, WriteToolAccess};
 #[cfg(any(target_os = "linux", windows))]
 use omgcode_core::replacement::RecordedArtifact;
 use serde_json::{Value, json};
@@ -314,12 +314,13 @@ fn checkpoint_acknowledgement_does_not_restore_revoked_workspace_permissions() {
             .set_permissions(
                 fixture.workspace_id,
                 PermissionSet {
-                    read: false,
-                    write: false,
-                    execute: false,
-                    task_network: false,
+                    read: Access::Deny,
+                    write: Access::Deny,
+                    execute: Access::Deny,
+                    task_network: Access::Deny,
                     model_tools: false,
-                    host_services: false,
+                    host_services: Access::Deny,
+                    write_tools: WriteToolAccess::default(),
                 },
                 control.revision(),
             )

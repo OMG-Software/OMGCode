@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use omgcode_app::desktop::{ChatState, ChatStatus, DesktopConfig, DesktopService, SessionRequest};
 use omgcode_app::{AppError, TokenSource};
 use omgcode_core::control::{ControlStore, ProfileDeclaration};
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -543,8 +543,8 @@ impl Fixture {
 /// Permissions that offer the read and list tools.
 pub fn read_tools() -> PermissionSet {
     PermissionSet {
-        read: true,
-        write: false,
+        read: Access::Allow,
+        write: Access::Deny,
         model_tools: true,
         ..PermissionSet::default()
     }
@@ -553,9 +553,9 @@ pub fn read_tools() -> PermissionSet {
 /// Permissions that offer every model tool.
 pub fn all_tools() -> PermissionSet {
     PermissionSet {
-        read: true,
-        write: true,
-        execute: true,
+        read: Access::Allow,
+        write: Access::Prompt,
+        execute: Access::Prompt,
         model_tools: true,
         ..PermissionSet::default()
     }
@@ -564,8 +564,8 @@ pub fn all_tools() -> PermissionSet {
 /// Registered but with no model tools: chats are text-only.
 pub fn text_only() -> PermissionSet {
     PermissionSet {
-        read: false,
-        write: false,
+        read: Access::Deny,
+        write: Access::Deny,
         ..PermissionSet::default()
     }
 }

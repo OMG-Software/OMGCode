@@ -13,6 +13,7 @@
 //! snippets are returned as recorded and must be rendered as text.
 
 use omgcode_core::control::{ApprovalOperation, ApprovalState};
+use omgcode_core::policy::{Access, WriteToolAccess};
 use omgcode_core::session::{MessageRole, MessageSource, ToolOutcome};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -553,12 +554,12 @@ pub struct WorkspaceChoice {
     pub folder_display: String,
     /// The model-tools preference.
     pub model_tools: bool,
-    /// The read preference.
-    pub read: bool,
-    /// The write preference.
-    pub write: bool,
-    /// The execute preference.
-    pub execute: bool,
+    /// The read preference: `deny`, `prompt`, or `allow`.
+    pub read: Access,
+    /// The write preference: `deny`, `prompt`, or `allow`.
+    pub write: Access,
+    /// The execute preference: `deny`, `prompt`, or `allow`.
+    pub execute: Access,
 }
 
 /// The `workspace_list` response.
@@ -777,15 +778,17 @@ pub struct WorkspaceSettingsView {
     /// The model-tools preference.
     pub model_tools: bool,
     /// The read preference.
-    pub read: bool,
+    pub read: Access,
     /// The write preference.
-    pub write: bool,
+    pub write: Access,
     /// The execute preference.
-    pub execute: bool,
+    pub execute: Access,
     /// The task-network preference.
-    pub task_network: bool,
+    pub task_network: Access,
     /// The host-services preference.
-    pub host_services: bool,
+    pub host_services: Access,
+    /// Per-tool limits on the five model file-write tools.
+    pub write_tools: WriteToolAccess,
     /// Display-safe text of the selected package cache root, if any.
     pub package_cache_root: Option<String>,
 }
@@ -819,16 +822,18 @@ pub struct WorkspaceRevisionRequest {
 pub struct PermissionFlags {
     /// Offer the local model the workspace tools.
     pub model_tools: bool,
-    /// Allow reading workspace data.
-    pub read: bool,
-    /// Allow writing workspace data.
-    pub write: bool,
-    /// Allow process execution.
-    pub execute: bool,
-    /// Allow task network access.
-    pub task_network: bool,
-    /// Allow host-service Unix-socket access for a trusted `run`.
-    pub host_services: bool,
+    /// How reading workspace data is treated.
+    pub read: Access,
+    /// How writing workspace data is treated.
+    pub write: Access,
+    /// How process execution is treated.
+    pub execute: Access,
+    /// How task network access is treated.
+    pub task_network: Access,
+    /// How host-service Unix-socket access for a trusted `run` is treated.
+    pub host_services: Access,
+    /// Per-tool limits that can only narrow `write`.
+    pub write_tools: WriteToolAccess,
 }
 
 /// Arguments of `settings_set_permissions`.

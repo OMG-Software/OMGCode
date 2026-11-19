@@ -9,7 +9,7 @@
 mod support;
 
 use omgcode_core::control::ControlStore;
-use omgcode_core::policy::{PermissionSet, WorkspaceId};
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::run;
 use serde_json::Value;
 use std::fs;
@@ -831,7 +831,7 @@ fn access_restored_before_the_watcher_reads_still_stops_the_run() {
             .expect("registered")
             .permissions();
         let revoked = PermissionSet {
-            execute: false,
+            execute: Access::Deny,
             ..allowed
         };
         control

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::{Action, ControlError, ControlStore, MAX_BYTES};
 use super::*;
+use crate::policy::Access;
 
 struct Scene {
     _directory: tempfile::TempDir,
@@ -224,7 +225,11 @@ fn outstanding_grants_keep_room_to_be_revoked() {
     store.bytes = MAX_BYTES - 3 * GRANT_EVENT_RESERVE_BYTES - 64;
     let revision = store.revision();
     let mut changed = store.workspace(workspace).expect("workspace").permissions();
-    changed.write = !changed.write;
+    changed.write = if changed.write.permits() {
+        Access::Deny
+    } else {
+        Access::Prompt
+    };
     assert!(matches!(
         store.set_permissions(workspace, changed, revision),
         Err(ControlError::LimitReached)

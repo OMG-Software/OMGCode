@@ -592,16 +592,16 @@ fn permitted(
     host_services: bool,
     network: bool,
 ) -> Result<(), &'static str> {
-    if !permissions.execute {
+    if !permissions.execute.permits() {
         return Err("the workspace execute preference is disabled");
     }
-    if !permissions.read || !permissions.write {
+    if !permissions.read.permits() || !permissions.write.permits() {
         return Err("the workspace read and write preferences must both be enabled");
     }
-    if host_services && !permissions.host_services {
+    if host_services && !permissions.host_services.permits() {
         return Err("the workspace host_services preference is disabled");
     }
-    if network && !permissions.task_network {
+    if network && !permissions.task_network.permits() {
         return Err("the workspace task_network preference is disabled");
     }
     Ok(())
@@ -1419,6 +1419,7 @@ pub fn archive(data_root: &Path, archive_directory: &Path) -> Result<RunsArchive
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::Access;
     use crate::run_journal::arguments_digest;
 
     /// A registered workspace whose settings allow runs, and the journal
@@ -1435,7 +1436,7 @@ mod tests {
             .expect("register")
             .id();
         let permissions = PermissionSet {
-            execute: true,
+            execute: Access::Prompt,
             ..PermissionSet::default()
         };
         control
@@ -1677,7 +1678,7 @@ mod tests {
             .expect("registered")
             .permissions();
         let revoked = PermissionSet {
-            execute: false,
+            execute: Access::Deny,
             ..allowed
         };
         control
@@ -1790,13 +1791,13 @@ mod tests {
     #[test]
     fn network_access_needs_the_task_network_preference() {
         let base = PermissionSet {
-            execute: true,
-            read: true,
-            write: true,
+            execute: Access::Prompt,
+            read: Access::Allow,
+            write: Access::Prompt,
             ..PermissionSet::default()
         };
         let networked = PermissionSet {
-            task_network: true,
+            task_network: Access::Prompt,
             ..base
         };
         assert_eq!(permitted(base, false, false), Ok(()));
@@ -1810,7 +1811,7 @@ mod tests {
             Err("the workspace host_services preference is disabled")
         );
         let no_execute = PermissionSet {
-            execute: false,
+            execute: Access::Deny,
             ..networked
         };
         assert_eq!(
@@ -1841,8 +1842,8 @@ mod tests {
         drop(control);
         let mut control = ControlStore::open(&data).expect("control store");
         let permissions = PermissionSet {
-            execute: true,
-            task_network: true,
+            execute: Access::Prompt,
+            task_network: Access::Prompt,
             ..PermissionSet::default()
         };
         control
@@ -1876,7 +1877,7 @@ mod tests {
             .set_permissions(
                 workspace_id,
                 PermissionSet {
-                    execute: true,
+                    execute: Access::Prompt,
                     model_tools: true,
                     ..PermissionSet::default()
                 },
@@ -1887,7 +1888,7 @@ mod tests {
             .set_permissions(
                 workspace_id,
                 PermissionSet {
-                    execute: true,
+                    execute: Access::Prompt,
                     ..PermissionSet::default()
                 },
                 control.revision(),
@@ -1898,7 +1899,7 @@ mod tests {
             .set_permissions(
                 workspace_id,
                 PermissionSet {
-                    execute: true,
+                    execute: Access::Prompt,
                     model_tools: true,
                     ..PermissionSet::default()
                 },

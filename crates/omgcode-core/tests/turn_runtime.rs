@@ -6,7 +6,7 @@ use std::time::Duration;
 use omgcode_core::control::{
     ApprovalOperation, ApprovalState, ControlStore, SkillScope, SkillSetting, now_unix,
 };
-use omgcode_core::policy::{PermissionSet, WorkspaceId};
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, SkillPrompt,
 };
@@ -367,9 +367,9 @@ fn a_command_tool_call_requires_an_operator_approval() {
             workspace_id,
             PermissionSet {
                 model_tools: true,
-                execute: true,
-                read: true,
-                write: true,
+                execute: Access::Prompt,
+                read: Access::Allow,
+                write: Access::Prompt,
                 ..PermissionSet::default()
             },
             control.revision(),
@@ -438,9 +438,9 @@ fn an_approved_command_consumes_the_approval_and_attempts_the_run() {
             workspace_id,
             PermissionSet {
                 model_tools: true,
-                execute: true,
-                read: true,
-                write: true,
+                execute: Access::Prompt,
+                read: Access::Allow,
+                write: Access::Prompt,
                 ..PermissionSet::default()
             },
             control.revision(),
@@ -696,7 +696,7 @@ fn revoked_read_permission_is_denied_at_the_broker_boundary() {
         .set_permissions(
             workspace_id,
             PermissionSet {
-                read: false,
+                read: Access::Deny,
                 model_tools: true,
                 ..PermissionSet::default()
             },
@@ -749,7 +749,7 @@ fn revocation_during_model_io_takes_effect_at_the_next_broker_call() {
         data: fixture.data.clone(),
         workspace_id: fixture.workspace_id,
         revoked: PermissionSet {
-            read: false,
+            read: Access::Deny,
             model_tools: true,
             ..PermissionSet::default()
         },
@@ -1835,7 +1835,7 @@ fn request_contains(request: &SeenRequest, text: &str) -> bool {
 fn saved_tool_results_are_withheld_after_read_authority_is_revoked() {
     const SAVED: &str = "sentinel-saved-tool-result";
     let read_revoked = PermissionSet {
-        read: false,
+        read: Access::Deny,
         model_tools: true,
         ..PermissionSet::default()
     };
@@ -2360,7 +2360,10 @@ fn edit_refusals_are_recoverable_and_write_nothing() {
 /// made anyway is denied before any file access or approval.
 #[test]
 fn the_edit_tool_requires_live_read_and_write() {
-    for (read, write) in [(true, false), (false, true)] {
+    for (read, write) in [
+        (Access::Allow, Access::Deny),
+        (Access::Deny, Access::Prompt),
+    ] {
         let mut fixture = Fixture::new();
         let target = fixture.workspace.join("notes.txt");
         fs::write(&target, "alpha beta\n").expect("write workspace file");
@@ -3160,7 +3163,10 @@ fn a_create_whose_report_cannot_fit_keeps_its_approval() {
 /// made anyway is denied before any file access or approval.
 #[test]
 fn the_new_file_tools_require_live_read_and_write() {
-    for (read, write) in [(true, false), (false, true)] {
+    for (read, write) in [
+        (Access::Allow, Access::Deny),
+        (Access::Deny, Access::Prompt),
+    ] {
         for name in ["workspace_multi_edit_file", "workspace_create_file"] {
             let mut fixture = Fixture::new();
             fs::write(fixture.workspace.join("notes.txt"), "alpha beta\n").expect("notes");
@@ -3725,7 +3731,10 @@ fn delete_refusals_are_recoverable_and_record_no_approval() {
 /// anyway is denied before any file access or approval.
 #[test]
 fn the_rename_and_delete_tools_require_live_read_and_write() {
-    for (read, write) in [(true, false), (false, true)] {
+    for (read, write) in [
+        (Access::Allow, Access::Deny),
+        (Access::Deny, Access::Prompt),
+    ] {
         for name in ["workspace_rename_file", "workspace_delete_file"] {
             let mut fixture = Fixture::new();
             fs::write(fixture.workspace.join("a.txt"), "alpha").expect("source");
@@ -3778,7 +3787,7 @@ fn all_eight_tools_are_advertised_in_order_with_execute_enabled() {
             workspace_id,
             PermissionSet {
                 model_tools: true,
-                execute: true,
+                execute: Access::Prompt,
                 ..PermissionSet::default()
             },
             control.revision(),

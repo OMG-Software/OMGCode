@@ -13,6 +13,7 @@ use omgcode_app::desktop::{
     ChatState, ConnectionSourceView, DesktopConfig, DesktopService, PreferencesSource,
 };
 use omgcode_core::control::{ControlStore, SkillScope, SkillSetting};
+use omgcode_core::policy::Access;
 use omgcode_core::skills::SkillName;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -134,7 +135,12 @@ fn the_overview_shows_the_recorded_configuration_without_skill_text() {
     let listed = &overview.workspaces[0];
     assert_eq!(listed.workspace_id, workspace.id);
     assert!(listed.folder_display.ends_with("project"));
-    assert!(listed.model_tools && listed.read && !listed.write && !listed.execute);
+    assert!(
+        listed.model_tools
+            && listed.read.permits()
+            && listed.write == Access::Deny
+            && listed.execute == Access::Deny
+    );
     assert_eq!(listed.package_cache_root, None);
 
     assert_eq!(overview.toolchain_profiles.len(), 1);

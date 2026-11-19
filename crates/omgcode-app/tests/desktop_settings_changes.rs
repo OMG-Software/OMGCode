@@ -16,7 +16,7 @@ use omgcode_app::desktop::{
     WorkspaceRevisionRequest,
 };
 use omgcode_core::control::ControlStore;
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet};
 use serde_json::json;
 
 use common::{Fixture, read_tools, wire};
@@ -129,11 +129,18 @@ fn permissions(
         "revision": value,
         "permissions": {
             "model_tools": model_tools,
-            "read": read,
-            "write": write,
-            "execute": execute,
-            "task_network": false,
-            "host_services": false,
+            "read": if read { "allow" } else { "deny" },
+            "write": if write { "prompt" } else { "deny" },
+            "execute": if execute { "prompt" } else { "deny" },
+            "task_network": "deny",
+            "host_services": "deny",
+            "write_tools": {
+                "edit": "allow",
+                "multi_edit": "allow",
+                "create": "allow",
+                "rename": "allow",
+                "delete": "allow",
+            },
         },
     }))
 }
@@ -325,9 +332,9 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
     let workspace = &overview.workspaces[0];
     assert!(workspace.folder_display.ends_with("project"));
     let defaults = PermissionSet::default();
+    assert_eq!(workspace.model_tools, defaults.model_tools);
     assert_eq!(
         [
-            workspace.model_tools,
             workspace.read,
             workspace.write,
             workspace.execute,
@@ -335,7 +342,6 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
             workspace.host_services,
         ],
         [
-            defaults.model_tools,
             defaults.read,
             defaults.write,
             defaults.execute,
@@ -343,6 +349,7 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
             defaults.host_services,
         ]
     );
+    assert_eq!(workspace.write_tools, defaults.write_tools);
     let asked = prompt.asked();
     let Asked::Folder(purpose, Some(start)) = &asked[0] else {
         panic!("the folder dialog starts at the root: {asked:?}");
@@ -355,7 +362,7 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
     assert!(
         confirmation
             .message
-            .contains("starts with read and write on"),
+            .contains("starts with read (allow) and write (prompt) on"),
         "{}",
         confirmation.message
     );
@@ -400,7 +407,7 @@ fn turning_a_preference_on_needs_a_confirmation_that_names_it() {
         )
         .expect("execute on");
     assert_eq!(overview.revision, start + 1);
-    assert!(overview.workspaces[0].execute);
+    assert_eq!(overview.workspaces[0].execute, Access::Prompt);
     let shown = confirmed.confirmations();
     assert_eq!(shown.len(), 1);
     assert!(
@@ -429,7 +436,12 @@ fn turning_preferences_off_applies_without_a_dialog() {
 
     assert!(prompt.asked().is_empty());
     let listed = &overview.workspaces[0];
-    assert!(!listed.model_tools && !listed.read && !listed.write && !listed.execute);
+    assert!(
+        !listed.model_tools
+            && listed.read == Access::Deny
+            && listed.write == Access::Deny
+            && listed.execute == Access::Deny
+    );
 }
 
 /// A run journal that cannot be read never keeps access in place: the
@@ -460,7 +472,12 @@ fn an_unreadable_run_journal_still_records_the_narrowing_and_reports_it() {
         .find(|registered| *registered.id().as_uuid() == workspace.id)
         .expect("registered")
         .permissions();
-    assert!(!recorded.model_tools && !recorded.read && !recorded.write && !recorded.execute);
+    assert!(
+        !recorded.model_tools
+            && recorded.read == Access::Deny
+            && recorded.write == Access::Deny
+            && recorded.execute == Access::Deny
+    );
 }
 
 #[test]

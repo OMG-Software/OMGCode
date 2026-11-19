@@ -21,7 +21,7 @@ use omgcode_app::{
 };
 use omgcode_core::context::ContextBudget;
 use omgcode_core::control::ControlStore;
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet, WriteToolAccess};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
 use omgcode_core::session::{MessageRole, SessionJournal};
 use omgcode_core::turn::CancelToken;
@@ -211,12 +211,13 @@ impl Fixture {
                 .set_permissions(
                     id,
                     PermissionSet {
-                        read: true,
-                        write: false,
-                        execute: false,
-                        task_network: false,
+                        read: Access::Allow,
+                        write: Access::Deny,
+                        execute: Access::Deny,
+                        task_network: Access::Deny,
                         model_tools: true,
-                        host_services: false,
+                        host_services: Access::Deny,
+                        write_tools: WriteToolAccess::default(),
                     },
                     control.revision(),
                 )

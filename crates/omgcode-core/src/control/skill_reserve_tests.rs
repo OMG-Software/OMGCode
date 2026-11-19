@@ -107,7 +107,7 @@ fn given_a_registered_skill_when_file_work_is_admitted_then_a_permission_withdra
     store.set_development_root(&root, 0).expect("root");
     let workspace = store.register_workspace(&root, 1).expect("workspace");
     let readable = PermissionSet {
-        read: true,
+        read: Access::Allow,
         ..PermissionSet::default()
     };
     store
