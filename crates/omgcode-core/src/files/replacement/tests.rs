@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::control::ControlStore;
-use crate::policy::{PermissionSet, SessionBinding, WorkspaceId};
+use crate::policy::{Access, PermissionSet, SessionBinding, WorkspaceId};
 use crate::replacement::{
     CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
     CheckpointRetention, RecordedArtifact, RecordedReplacement, ReplacementKind,
@@ -51,8 +51,8 @@ impl Fixture {
             .set_permissions(
                 registration.id(),
                 PermissionSet {
-                    read: true,
-                    write: true,
+                    read: Access::Allow,
+                    write: Access::Prompt,
                     ..PermissionSet::default()
                 },
                 control.revision(),
@@ -617,7 +617,10 @@ fn apply_rejects_foreign_and_stale_bindings_and_either_denied_preference() {
             Err(FileError::Checkpoint(CheckpointError::Denied(_)))
         ));
     }
-    for (read, write) in [(false, true), (true, false)] {
+    for (read, write) in [
+        (Access::Deny, Access::Prompt),
+        (Access::Allow, Access::Deny),
+    ] {
         let stale = fixture.binding();
         fixture
             .control
@@ -786,8 +789,8 @@ fn restore_refuses_stale_content_foreign_targets_and_missing_checkpoints() {
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                read: true,
-                write: false,
+                read: Access::Allow,
+                write: Access::Deny,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),
@@ -1433,8 +1436,8 @@ fn removal_refuses_a_wrong_precondition_a_missing_target_and_denied_preferences(
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                read: true,
-                write: false,
+                read: Access::Allow,
+                write: Access::Deny,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),
@@ -1450,8 +1453,8 @@ fn removal_refuses_a_wrong_precondition_a_missing_target_and_denied_preferences(
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                read: true,
-                write: true,
+                read: Access::Allow,
+                write: Access::Prompt,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),

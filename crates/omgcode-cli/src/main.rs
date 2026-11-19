@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 #![recursion_limit = "256"]
 
+mod actions_cli;
 mod approvals_cli;
 mod control_cli;
 mod credential_cli;
@@ -89,6 +90,11 @@ enum Command {
     Approvals {
         #[command(subcommand)]
         action: approvals_cli::ApprovalsCommand,
+    },
+    /// Inspect the record of every model tool call (ADR-0063).
+    Actions {
+        #[command(subcommand)]
+        action: actions_cli::ActionsCommand,
     },
 }
 
@@ -419,6 +425,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Packages { action } => packages_cli::run(action, &data_root(cli.data_dir)?),
         Command::Skills { action } => skills_cli::run(action, &data_root(cli.data_dir)?),
         Command::Approvals { action } => approvals_cli::run(action, &data_root(cli.data_dir)?),
+        Command::Actions { action } => actions_cli::run(action, &data_root(cli.data_dir)?),
     }
 }
 
@@ -483,6 +490,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
     let turn = {
         let mut on_stream = |event: ChatStreamEvent<'_>| printer.handle(event);
         let mut hooks = ChatHooks {
+            approval_wait: None,
             cancel: Some(cancel),
             ..ChatHooks::default()
         };

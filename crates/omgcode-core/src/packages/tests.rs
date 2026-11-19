@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::control::{ControlStore, CredentialId, PackageAuth, PackageProfileDeclaration, Secret};
-use crate::policy::{PermissionSet, WorkspaceId};
+use crate::policy::{Access, PermissionSet, WorkspaceId};
 use crate::test_support::private_data_root;
 
 const PROFILE: &str = "registries";
@@ -128,7 +128,7 @@ impl Scene {
             .expect("register")
             .id();
         let permissions = PermissionSet {
-            task_network: true,
+            task_network: Access::Prompt,
             ..PermissionSet::default()
         };
         store
@@ -622,7 +622,7 @@ fn task_network_is_required_and_bad_names_are_refused() {
         .set_permissions(
             scene.workspace_id,
             PermissionSet {
-                task_network: true,
+                task_network: Access::Prompt,
                 ..PermissionSet::default()
             },
             store.revision(),

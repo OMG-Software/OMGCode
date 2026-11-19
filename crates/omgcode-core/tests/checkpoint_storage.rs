@@ -8,7 +8,7 @@ use omgcode_core::files::{FileBroker, FileError, FileTarget};
 #[cfg(target_os = "linux")]
 use omgcode_core::policy::DecisionReason;
 #[cfg(target_os = "linux")]
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet};
 use omgcode_core::policy::{SessionBinding, WorkspaceId};
 #[cfg(target_os = "linux")]
 use omgcode_core::replacement::ReplacementProgress;
@@ -397,7 +397,7 @@ fn policy_denials_and_invalid_or_stale_inputs_do_not_initialize_storage() {
         .set_permissions(
             denied.workspace_id,
             PermissionSet {
-                read: false,
+                read: Access::Deny,
                 ..PermissionSet::default()
             },
             denied.control.revision(),
@@ -428,7 +428,7 @@ fn policy_denials_and_invalid_or_stale_inputs_do_not_initialize_storage() {
         .set_permissions(
             write_denied.workspace_id,
             PermissionSet {
-                write: false,
+                write: Access::Deny,
                 ..PermissionSet::default()
             },
             write_denied.control.revision(),
@@ -781,8 +781,8 @@ fn sixty_four_acknowledged_checkpoints_are_retained_and_refuse_the_sixty_fifth()
         .set_permissions(
             fixture.workspace_id,
             PermissionSet {
-                read: false,
-                write: false,
+                read: Access::Deny,
+                write: Access::Deny,
                 ..PermissionSet::default()
             },
             fixture.control.revision(),

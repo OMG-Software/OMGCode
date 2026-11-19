@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use omgcode_core::control::{
     ApprovalOperation, ApprovalState, ApprovalStatus, ControlStore, ProfileDeclaration, now_unix,
 };
-use omgcode_core::policy::{PermissionSet, WorkspaceId};
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
 use omgcode_core::session::{RecordedToolRequest, RequestManifest, SessionJournal};
 use omgcode_core::turn::{
@@ -63,9 +63,9 @@ impl Fixture {
                 workspace_id,
                 PermissionSet {
                     model_tools: true,
-                    execute: true,
-                    read: true,
-                    write: true,
+                    execute: Access::Prompt,
+                    read: Access::Allow,
+                    write: Access::Prompt,
                     ..PermissionSet::default()
                 },
                 control.revision(),
@@ -530,10 +530,10 @@ fn a_command_review_is_stale_or_not_found_when_nothing_matches() {
             fixture.workspace_id,
             PermissionSet {
                 model_tools: true,
-                execute: true,
-                read: true,
-                write: true,
-                host_services: true,
+                execute: Access::Prompt,
+                read: Access::Allow,
+                write: Access::Prompt,
+                host_services: Access::Prompt,
                 ..PermissionSet::default()
             },
             control.revision(),

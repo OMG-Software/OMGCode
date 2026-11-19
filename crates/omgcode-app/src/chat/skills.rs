@@ -78,7 +78,7 @@ pub(super) fn load_selected(
             "Skills can be selected only in a version 3 session",
         ));
     }
-    let control = ControlStore::open_existing(data_root)
+    let control = ControlStore::open_existing_waiting(data_root)
         .map_err(|error| AppError::skill("control", error.to_string()))?
         .ok_or_else(|| unavailable(&names[0]))?;
     // The journal's UUID only selects a registration; the ID used afterwards
@@ -130,7 +130,7 @@ pub(super) fn recheck(
     if skills.is_empty() {
         return Ok(());
     }
-    let current = ControlStore::open_existing(data_root)
+    let current = ControlStore::open_existing_waiting(data_root)
         .ok()
         .flatten()
         .is_some_and(|control| {

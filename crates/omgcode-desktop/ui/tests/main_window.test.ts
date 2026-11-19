@@ -704,9 +704,9 @@ describe("approvals nudge and new session", () => {
             workspace_id: "w1",
             folder_display: "C:\\work",
             model_tools: true,
-            read: true,
-            write: false,
-            execute: false,
+            read: "allow",
+            write: "prompt",
+            execute: "deny",
           },
         ],
       }),
@@ -716,7 +716,7 @@ describe("approvals nudge and new session", () => {
     buttonByText(root, "New session").click();
     await settle();
     const dialog = root.querySelector("dialog") as HTMLDialogElement;
-    expect(dialog.textContent).toContain("Enabled: model tools, read");
+    expect(dialog.textContent).toContain("Model tools on. Read allow, write prompt, execute deny.");
     type(dialog.querySelector('input[type="text"]') as HTMLInputElement, "Fresh");
     buttonByText(dialog, "Create").click();
     await settle();

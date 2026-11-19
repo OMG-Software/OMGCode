@@ -15,19 +15,26 @@ Rust side authorizes every command and the trusted CLI remains. Follow the
 Chat offers the local LM Studio model read and list tools; when the workspace
 also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and
-`write`, one command tool. The file-write and command tools each require a
-trusted single-use approval. The edit tool replaces one exact text occurrence
+`write`, one command tool. Each workspace preference except `model_tools` is
+`deny`, `prompt`, or `allow`, and each file-write tool has a limit that can
+only narrow `write` ([ADR-0063](docs/adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
+A model call whose state is `prompt` requires a trusted single-use approval;
+one whose state is `allow` runs without one. Stored settings keep their
+meaning, so model writes and commands stay at `prompt` until the operator
+chooses `allow`. The edit tool replaces one exact text occurrence
 in an existing file, and the multi-edit tool several exact occurrences in one
 existing file, each through checkpointed apply. The create tool makes one new
 file through the exclusive create, without a checkpoint. The rename tool moves
 one regular file to a name that does not exist and never replaces an entry,
 without a checkpoint. The delete tool removes one regular file of at most 1 MiB
 after a durable checkpoint of its bytes, which the trusted CLI can restore. All
-five need the operator's writers-stopped acknowledgement. No model network,
+five need the operator's writers-stopped acknowledgement when approved. No model network,
 Git, or MCP tool exists. Chat offers tools only for a
-workspace whose `model_tools` preference is enabled. There are no unapproved
-model writes, other provider adapters, or unreviewed model-callable process
-execution. The
+workspace whose `model_tools` preference is enabled. A model write or command
+runs without a per-call approval only where the operator set it to `allow`.
+There are no other provider adapters. Every model tool call, executed or
+refused, is recorded in the model action journal, which the trusted
+`actions list` command shows. The
 trusted CLI `run` command starts one program for a workspace whose `execute`
 preference is enabled. It uses an operator-declared toolchain profile, records
 intent and outcome in a run journal, and applies Landlock and a seccomp socket
@@ -46,8 +53,10 @@ storage (DPAPI on Windows, the Secret Service on Linux) and bind them to
 Only the local LM Studio adapter reads a credential, through an
 operator-selected profile that supplies both the endpoint and the token
 (ADR-0047, ADR-0048); no cloud adapter or login exists. Trusted
-single-use approval records authorize one exact model-tool call: only a later
-identical call may consume an approved record. The trusted CLI or the desktop
+single-use approval records authorize one exact model-tool call. In the
+desktop shell the turn waits for the decision and the approved call completes
+in the same turn; on the CLI only a later identical call may consume an
+approved record. The trusted CLI or the desktop
 approvals window can decide a record; the window shows a request only when core
 reproduces its digest, and approval needs a single-use review token.
 `workspace_run_command` then

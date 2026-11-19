@@ -8,7 +8,7 @@ use std::path::Path;
 #[cfg(any(target_os = "linux", windows))]
 use omgcode_core::control::ControlStore;
 #[cfg(any(target_os = "linux", windows))]
-use omgcode_core::policy::PermissionSet;
+use omgcode_core::policy::{Access, PermissionSet, WriteToolAccess};
 #[cfg(any(target_os = "linux", windows))]
 use serde_json::Value;
 #[cfg(any(target_os = "linux", windows))]
@@ -253,12 +253,13 @@ fn denied_write_preference_refuses_replacement() {
             .set_permissions(
                 fixture.workspace_id,
                 PermissionSet {
-                    read: true,
-                    write: false,
-                    execute: false,
-                    task_network: false,
+                    read: Access::Allow,
+                    write: Access::Deny,
+                    execute: Access::Deny,
+                    task_network: Access::Deny,
                     model_tools: false,
-                    host_services: false,
+                    host_services: Access::Deny,
+                    write_tools: WriteToolAccess::default(),
                 },
                 control.revision(),
             )

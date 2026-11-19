@@ -166,7 +166,7 @@ fn load_profile_connection(
     data_root: &Path,
     name: &str,
 ) -> Result<(String, Option<Secret>), AppError> {
-    let control = match ControlStore::open_existing(data_root) {
+    let control = match ControlStore::open_existing_waiting(data_root) {
         Ok(Some(control)) => control,
         Ok(None) => {
             return Err(credential_error(format!(

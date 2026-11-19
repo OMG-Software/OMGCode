@@ -362,6 +362,33 @@ fn an_enabled_preference_lets_the_model_read_the_workspace_through_the_runtime()
     let events = fs::read_to_string(&journal).expect("journal");
     assert!(events.contains("\"tool.requested\""));
     assert!(events.contains("\"tool.completed\""));
+
+    // The read is listed in the model action journal as a standing allow.
+    let listed = run_cli(&fixture.data, &["actions", "list"]);
+    assert_success(&listed);
+    let listing = json_output(&listed);
+    let actions = listing["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 1, "{listing}");
+    let action = &actions[0];
+    assert_eq!(action["tool"], "read_file");
+    assert_eq!(action["call_id"], "call-1");
+    assert_eq!(action["targets"][0]["payload"], "note.txt");
+    assert_eq!(action["workspace_id"], fixture.workspace_id.to_string());
+    let executed = &action["disposition"]["executed"];
+    assert_eq!(executed["authorization"]["type"], "standing_allow");
+    assert_eq!(executed["finish"]["outcome"], "succeeded");
+}
+
+#[test]
+fn the_action_listing_is_empty_before_any_model_call_and_bounds_its_limit() {
+    let fixture = Fixture::new(NOTE);
+    let listed = run_cli(&fixture.data, &["actions", "list"]);
+    assert_success(&listed);
+    assert_eq!(json_output(&listed), json!({"actions": []}));
+    for limit in ["0", "1001"] {
+        let refused = run_cli(&fixture.data, &["actions", "list", "--limit", limit]);
+        assert_error_code(&refused, "configuration");
+    }
 }
 
 #[test]

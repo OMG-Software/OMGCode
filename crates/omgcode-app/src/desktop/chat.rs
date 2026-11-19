@@ -7,6 +7,7 @@ use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
 use omgcode_core::skills::{MAX_SELECTED_SKILLS, SkillName};
+use omgcode_core::turn::ApprovalWaitSlot;
 
 use super::ChatEventSink;
 use super::error::DesktopError;
@@ -147,6 +148,7 @@ impl DesktopService {
         let settings = chat_settings(request.settings, endpoint);
         let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&error))?;
+        let approval_wait = ApprovalWaitSlot::new();
         let job = TurnJob {
             session_id,
             path,
@@ -155,6 +157,7 @@ impl DesktopService {
             token,
             clients,
             skills,
+            approval_wait: approval_wait.clone(),
         };
 
         // Reserve the slot and start the thread under one lock hold, so two
@@ -171,7 +174,7 @@ impl DesktopService {
             return Err(DesktopError::too_many_turns());
         }
         let handle = spawn_turn(inner, job)?;
-        turns.insert_running(session_id, handle);
+        turns.insert_running(session_id, handle, approval_wait);
         drop(turns);
         Ok(status_of(
             session_id,

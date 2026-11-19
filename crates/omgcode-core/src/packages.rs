@@ -171,7 +171,7 @@ pub fn fetch(data_root: &Path, request: &FetchRequest) -> Result<FetchReport, Fe
     let registration = control
         .workspace(request.workspace_id)
         .ok_or(FetchError::Refused("the workspace is not registered"))?;
-    if !registration.permissions().task_network {
+    if !registration.permissions().task_network.permits() {
         return Err(FetchError::Refused(
             "the workspace task_network preference is disabled",
         ));

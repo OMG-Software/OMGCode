@@ -137,13 +137,25 @@ export interface ChatStatus {
   error: IpcError | null;
 }
 
+/** How a workspace preference is treated (ADR-0063). */
+export type Access = "deny" | "prompt" | "allow";
+
+/** Per-tool limits that can only narrow the workspace `write` preference. */
+export interface WriteToolAccess {
+  edit: Access;
+  multi_edit: Access;
+  create: Access;
+  rename: Access;
+  delete: Access;
+}
+
 export interface WorkspaceChoice {
   workspace_id: string;
   folder_display: string;
   model_tools: boolean;
-  read: boolean;
-  write: boolean;
-  execute: boolean;
+  read: Access;
+  write: Access;
+  execute: Access;
 }
 
 export interface WorkspaceList {
@@ -158,7 +170,7 @@ export interface AppInfo {
 }
 
 export type ApprovalState = "pending" | "approved" | "denied" | "consumed" | "expired";
-export type ApprovalOperation = "command" | "file_write" | "git_push" | "network";
+export type ApprovalOperation = "command" | "file_read" | "file_write" | "git_push" | "network";
 
 export interface ApprovalView {
   id: string;
@@ -191,6 +203,8 @@ export interface ApprovalDetail {
   tool: string | null;
   fields: ApprovalField[];
   review_token: string | null;
+  /** Whether a turn waits on this approval now; approving then runs the call in that turn. */
+  waiting: boolean;
 }
 
 /**
@@ -260,22 +274,24 @@ export interface WorkspaceSettingsView {
   workspace_id: string;
   folder_display: string;
   model_tools: boolean;
-  read: boolean;
-  write: boolean;
-  execute: boolean;
-  task_network: boolean;
-  host_services: boolean;
+  read: Access;
+  write: Access;
+  execute: Access;
+  task_network: Access;
+  host_services: Access;
+  write_tools: WriteToolAccess;
   package_cache_root: string | null;
 }
 
-/** The complete preference set a permissions change sends. Every flag is required. */
+/** The complete preference set a permissions change sends. Every field is required. */
 export interface PermissionFlags {
   model_tools: boolean;
-  read: boolean;
-  write: boolean;
-  execute: boolean;
-  task_network: boolean;
-  host_services: boolean;
+  read: Access;
+  write: Access;
+  execute: Access;
+  task_network: Access;
+  host_services: Access;
+  write_tools: WriteToolAccess;
 }
 
 export type ConnectionSource = "environment" | "profile" | "injected";

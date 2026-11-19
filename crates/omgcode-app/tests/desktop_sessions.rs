@@ -10,6 +10,7 @@ use std::time::Duration;
 use omgcode_app::desktop::{
     DesktopService, SearchRoleDto, SessionStatus, SessionSummary, SessionTree, TranscriptPage,
 };
+use omgcode_core::policy::Access;
 use omgcode_core::session::{
     CompactionRecord, MessageRole, RequestManifest, SessionJournal, ToolOutcome,
 };
@@ -657,9 +658,19 @@ fn workspace_listing_reports_the_store_state_and_permissions() {
     };
     let tools_on = find(tools.id);
     assert!(tools_on.folder_display.ends_with("tools-on"));
-    assert!(tools_on.model_tools && tools_on.read && !tools_on.write && !tools_on.execute);
+    assert!(
+        tools_on.model_tools
+            && tools_on.read.permits()
+            && tools_on.write == Access::Deny
+            && tools_on.execute == Access::Deny
+    );
     let plain_off = find(plain.id);
-    assert!(!plain_off.model_tools && !plain_off.read && !plain_off.write && !plain_off.execute);
+    assert!(
+        !plain_off.model_tools
+            && plain_off.read == Access::Deny
+            && plain_off.write == Access::Deny
+            && plain_off.execute == Access::Deny
+    );
 }
 
 #[test]

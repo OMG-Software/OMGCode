@@ -165,8 +165,11 @@ Claude Code prompts.
 
 ## Approval records
 
-A model tool that changes host state must obtain a trusted, single-use
-approval record. `approvals request` records a pending request;
+A model tool call whose effective workspace state is `prompt` must obtain a
+trusted, single-use approval record. Under `allow` the call runs without one,
+and under `deny` the tool is not offered
+([deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0063),
+ADR-0063). The written defaults keep model writes and commands at `prompt`. `approvals request` records a pending request;
 `approvals list`, `show`, `approve`, and `deny` inspect or decide it; and
 `approvals consume` marks an approved record used. The record binds the
 session, workspace, operation, exact request SHA-256, and the settings revision
@@ -184,9 +187,15 @@ creates one bound to both names and the source's size and SHA-256, and
 consumes an approved record immediately before the no-replace rename. The
 `workspace_delete_file` tool creates one bound to the file's size and SHA-256,
 and consumes an approved record immediately before the checkpointed removal.
+Since 0.43.0 the `workspace_read_file` and `workspace_list_directory` tools
+create a `file_read` request bound to the tool, path, and limit when `read` is
+`prompt`, and consume an approved record immediately before the broker read.
 Each tool has its own digest domain,
-so a record for one tool never authorizes another. Each first call
-returns `approval_required`; the operator approves between turns, and the model
+so a record for one tool never authorizes another. In the desktop shell the
+turn waits for the operator's decision and the approved call completes in the
+same turn; the call is dispatched again first, so every live check is
+repeated. The CLI `chat` command does not wait: each first call returns
+`approval_required`, the operator approves between turns, and the model
 retries the same call. Approving a `file_write` record needs
 `approvals approve <id> --writers-stopped`; the decision records that
 acknowledgement, other operations refuse the flag, and consumption refuses a

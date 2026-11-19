@@ -7,7 +7,9 @@ use omgcode_core::control::{
     ContainerGrantAccess, ControlError, ControlStore, PackageProfileDeclaration,
     ProfileDeclaration, ProviderProfileDeclaration,
 };
-use omgcode_core::policy::{Operation, PermissionSet, PolicyRequest, WorkspaceId};
+use omgcode_core::policy::{
+    Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
+};
 use omgcode_core::run;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -235,21 +237,67 @@ pub(crate) struct PermissionsArgs {
     id: String,
     #[arg(long)]
     revision: u64,
-    #[arg(long)]
-    read: Option<bool>,
-    #[arg(long)]
-    write: Option<bool>,
-    #[arg(long)]
-    execute: Option<bool>,
-    #[arg(long = "task-network")]
-    task_network: Option<bool>,
-    /// Let chat offer the local model the read-only workspace read/list tools.
+    /// `deny`, `prompt`, or `allow`. The legacy `true` means `allow`.
+    #[arg(long, value_parser = parse_read_access)]
+    read: Option<Access>,
+    /// `deny`, `prompt`, or `allow`. The legacy `true` means `prompt`.
+    #[arg(long, value_parser = parse_access)]
+    write: Option<Access>,
+    /// `deny`, `prompt`, or `allow`. The legacy `true` means `prompt`.
+    #[arg(long, value_parser = parse_access)]
+    execute: Option<Access>,
+    /// `deny`, `prompt`, or `allow`. No model tool uses it yet.
+    #[arg(long = "task-network", value_parser = parse_access)]
+    task_network: Option<Access>,
+    /// Let chat offer the local model workspace tools at all.
     #[arg(long = "model-tools")]
     model_tools: Option<bool>,
     /// Let a trusted `run` select host-service Unix-socket access when it
     /// also passes `--host-services`. Refused on Windows at run time.
-    #[arg(long = "host-services")]
-    host_services: Option<bool>,
+    /// `deny`, `prompt`, or `allow`; never offered to a model.
+    #[arg(long = "host-services", value_parser = parse_access)]
+    host_services: Option<Access>,
+    /// Limit on the model edit tool; it can only narrow `--write`.
+    #[arg(long = "edit-tool", value_parser = parse_tool_limit)]
+    edit_tool: Option<Access>,
+    /// Limit on the model multi-edit tool; it can only narrow `--write`.
+    #[arg(long = "multi-edit-tool", value_parser = parse_tool_limit)]
+    multi_edit_tool: Option<Access>,
+    /// Limit on the model create tool; it can only narrow `--write`.
+    #[arg(long = "create-tool", value_parser = parse_tool_limit)]
+    create_tool: Option<Access>,
+    /// Limit on the model rename tool; it can only narrow `--write`.
+    #[arg(long = "rename-tool", value_parser = parse_tool_limit)]
+    rename_tool: Option<Access>,
+    /// Limit on the model delete tool; it can only narrow `--write`.
+    #[arg(long = "delete-tool", value_parser = parse_tool_limit)]
+    delete_tool: Option<Access>,
+}
+
+/// Parse a preference whose legacy `true` meant `prompt`.
+fn parse_access(value: &str) -> Result<Access, String> {
+    parse_with_legacy(value, Access::Prompt)
+}
+
+/// Parse `read`, whose legacy `true` meant `allow`.
+fn parse_read_access(value: &str) -> Result<Access, String> {
+    parse_with_legacy(value, Access::Allow)
+}
+
+/// Parse a per-tool limit, which has no legacy form.
+fn parse_tool_limit(value: &str) -> Result<Access, String> {
+    value.parse::<Access>().map_err(|error| error.to_string())
+}
+
+/// Accept `deny`, `prompt`, `allow`, and the earlier `true`/`false` flags.
+fn parse_with_legacy(value: &str, legacy: Access) -> Result<Access, String> {
+    match value {
+        "true" => Ok(legacy),
+        "false" => Ok(Access::Deny),
+        other => other.parse::<Access>().map_err(|_| {
+            "expected deny, prompt, or allow (or the legacy true or false)".to_owned()
+        }),
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -579,6 +627,11 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         && args.task_network.is_none()
         && args.model_tools.is_none()
         && args.host_services.is_none()
+        && args.edit_tool.is_none()
+        && args.multi_edit_tool.is_none()
+        && args.create_tool.is_none()
+        && args.rename_tool.is_none()
+        && args.delete_tool.is_none()
     {
         return Err(CliError::new(
             "configuration",
@@ -591,6 +644,18 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         .workspace(id)
         .ok_or_else(|| CliError::new("control", "Workspace is not registered"))?
         .permissions();
+    let mut write_tools = current.write_tools;
+    for (tool, limit) in [
+        (WriteTool::Edit, args.edit_tool),
+        (WriteTool::MultiEdit, args.multi_edit_tool),
+        (WriteTool::Create, args.create_tool),
+        (WriteTool::Rename, args.rename_tool),
+        (WriteTool::Delete, args.delete_tool),
+    ] {
+        if let Some(limit) = limit {
+            write_tools.set(tool, limit);
+        }
+    }
     let permissions = PermissionSet {
         read: args.read.unwrap_or(current.read),
         write: args.write.unwrap_or(current.write),
@@ -598,6 +663,7 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         task_network: args.task_network.unwrap_or(current.task_network),
         model_tools: args.model_tools.unwrap_or(current.model_tools),
         host_services: args.host_services.unwrap_or(current.host_services),
+        write_tools,
     };
     store
         .set_permissions(id, permissions, args.revision)

@@ -15,6 +15,7 @@ use omgcode_app::desktop::{
     TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
     WorkspaceList,
 };
+use omgcode_core::policy::Access;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -366,9 +367,9 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
             workspace_id: id(),
             folder_display: "/work".to_owned(),
             model_tools: true,
-            read: true,
-            write: false,
-            execute: false,
+            read: Access::Allow,
+            write: Access::Deny,
+            execute: Access::Prompt,
         }],
     });
     assert_shape(
@@ -381,9 +382,9 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
             ("workspace_id", "string"),
             ("folder_display", "string"),
             ("model_tools", "bool"),
-            ("read", "bool"),
-            ("write", "bool"),
-            ("execute", "bool"),
+            ("read", "string"),
+            ("write", "string"),
+            ("execute", "string"),
         ],
     );
     assert_shape(
@@ -415,6 +416,7 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
             multiline: false,
         }],
         review_token: token.map(str::to_owned),
+        waiting: token.is_some(),
     };
     for (value, tool_kind) in [
         (detail(Binding::Exact, Some("token")), "string"),
@@ -429,6 +431,7 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
                 ("tool", tool_kind),
                 ("fields", "array"),
                 ("review_token", "string|null"),
+                ("waiting", "bool"),
             ],
         );
         assert_shape(
@@ -660,9 +663,9 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
             workspace_id: id(),
             folder_display: "f".to_owned(),
             model_tools: false,
-            read: false,
-            write: false,
-            execute: false,
+            read: Access::Deny,
+            write: Access::Deny,
+            execute: Access::Deny,
         }],
     });
     let detail = json_of(&ApprovalDetail {
@@ -675,6 +678,7 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
             multiline: true,
         }],
         review_token: None,
+        waiting: false,
     });
     let list = json_of(&ApprovalList {
         now_unix: 1,
@@ -764,6 +768,7 @@ fn closed_unions_serialize_to_the_values_types_ts_declares() {
         strings(
             [
                 ApprovalOperationDto::Command,
+                ApprovalOperationDto::FileRead,
                 ApprovalOperationDto::FileWrite,
                 ApprovalOperationDto::GitPush,
                 ApprovalOperationDto::Network

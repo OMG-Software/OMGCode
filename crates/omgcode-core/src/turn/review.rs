@@ -16,10 +16,10 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::{
-    PreparedEdit, TextEdit, ToolArguments, ToolCall, ToolName, artifact, command_digest,
-    command_run_request, create_digest, delete_digest, edit_digest, edit_target, is_hidden_format,
-    multi_edit_digest, normalized_path, prepare_edit, prepare_multi_edit, read_edit_source,
-    rename_digest,
+    PreparedEdit, ReadRequest, TextEdit, ToolArguments, ToolCall, ToolName, artifact,
+    command_digest, command_run_request, create_digest, delete_digest, edit_digest, edit_target,
+    is_hidden_format, multi_edit_digest, normalized_path, prepare_edit, prepare_multi_edit,
+    read_edit_source, rename_digest,
 };
 use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
 use crate::file_audit::FileAuditError;
@@ -175,6 +175,7 @@ pub fn review_approval(
     let tools: &[ToolName] = match approval.operation {
         ApprovalOperation::Command => &[ToolName::Command],
         ApprovalOperation::FileWrite => &FILE_WRITE_TOOLS,
+        ApprovalOperation::FileRead => &[ToolName::ReadFile, ToolName::ListDirectory],
         ApprovalOperation::GitPush | ApprovalOperation::Network => {
             return Ok(ApprovalReview::NotFound);
         }
@@ -203,6 +204,10 @@ pub fn review_approval(
         ApprovalOperation::Command => {
             drop(control);
             review_command(approval, relevant)
+        }
+        ApprovalOperation::FileRead => {
+            drop(control);
+            review_file_read(approval, relevant)
         }
         _ => review_file_write(control, approval, relevant)?,
     };
@@ -256,6 +261,32 @@ fn review_command<'a>(
             return Some(ReviewedRequest {
                 tool: ToolName::Command.as_str().to_owned(),
                 fields: command_fields(&request),
+            });
+        }
+    }
+    None
+}
+
+/// Find the newest read or list candidate that reproduces the approval's
+/// digest. The digest binds only the session, workspace, tool, normalized
+/// path, and limit, so no file is read during review.
+fn review_file_read<'a>(
+    approval: &ApprovalStatus,
+    candidates: impl Iterator<Item = &'a ReviewCandidate<'a>>,
+) -> Option<ReviewedRequest> {
+    for candidate in candidates {
+        let Some(call) = parse_candidate(candidate, ToolName::ReadFile)
+            .or_else(|| parse_candidate(candidate, ToolName::ListDirectory))
+        else {
+            continue;
+        };
+        let Some(read) = ReadRequest::of(&call) else {
+            continue;
+        };
+        if read.digest(approval.session_id, approval.workspace_id) == approval.request_sha256 {
+            return Some(ReviewedRequest {
+                tool: call.name.as_str().to_owned(),
+                fields: read_fields(&read),
             });
         }
     }
@@ -649,6 +680,21 @@ fn delete_fields(path: &str, current: &crate::replacement::RecordedArtifact) -> 
         single("File", display_safe_line(path)),
         single("Size", format!("{} bytes", current.bytes)),
         single("SHA-256", current.sha256.clone()),
+    ]
+}
+
+fn read_fields(read: &ReadRequest) -> Vec<ReviewField> {
+    vec![
+        single("Action", read.action().to_owned()),
+        single(
+            "Path",
+            if read.path.is_empty() {
+                "(workspace root)".to_owned()
+            } else {
+                display_safe_line(&read.path)
+            },
+        ),
+        single(read.limit_label(), read.limit.to_string()),
     ]
 }
 

@@ -232,11 +232,18 @@ describe("mock backend", () => {
     const WORKSPACE = "77777777-7777-4777-8777-777777777777";
     const FLAGS = {
       model_tools: true,
-      read: true,
-      write: true,
-      execute: true,
-      task_network: false,
-      host_services: false,
+      read: "allow",
+      write: "allow",
+      execute: "prompt",
+      task_network: "deny",
+      host_services: "deny",
+      write_tools: {
+        edit: "allow",
+        multi_edit: "allow",
+        create: "allow",
+        rename: "allow",
+        delete: "prompt",
+      },
     };
 
     it("applies each change after the revision check and bumps the revision", async () => {
@@ -288,7 +295,7 @@ describe("mock backend", () => {
         revision,
       })) as SettingsOverview;
       const added = registered.workspaces.at(-1);
-      expect(added).toMatchObject({ read: true, write: true, execute: false });
+      expect(added).toMatchObject({ read: "allow", write: "prompt", execute: "deny" });
       const list = (await invoke("workspace_list", {})) as WorkspaceList;
       expect(list.development_root_set).toBe(true);
       expect(list.workspaces.map((w) => w.workspace_id)).toEqual(
@@ -298,9 +305,9 @@ describe("mock backend", () => {
         workspace_id: added?.workspace_id,
         folder_display: added?.folder_display,
         model_tools: false,
-        read: true,
-        write: true,
-        execute: false,
+        read: "allow",
+        write: "prompt",
+        execute: "deny",
       });
     });
   });
