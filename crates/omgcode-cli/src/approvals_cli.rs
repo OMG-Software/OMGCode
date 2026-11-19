@@ -48,7 +48,7 @@ pub(crate) struct RequestArgs {
     /// The registered workspace the future call targets.
     #[arg(long)]
     workspace: String,
-    /// command, file_write, git_push, or network.
+    /// command, file_read, file_write, git_push, or network.
     #[arg(long)]
     operation: String,
     /// SHA-256 of the exact future call, as 64 lowercase hex characters.
@@ -71,7 +71,7 @@ pub(crate) struct ConsumeArgs {
     /// The workspace the call targets.
     #[arg(long)]
     workspace: String,
-    /// command, file_write, git_push, or network.
+    /// command, file_read, file_write, git_push, or network.
     #[arg(long)]
     operation: String,
     /// SHA-256 of the exact call.
@@ -115,7 +115,7 @@ fn request(args: RequestArgs, data_root: &Path) -> Result<(), CliError> {
     let operation = ApprovalOperation::parse(&args.operation).ok_or_else(|| {
         CliError::new(
             "configuration",
-            "Operation must be command, file_write, git_push, or network",
+            "Operation must be command, file_read, file_write, git_push, or network",
         )
     })?;
     let mut store = open(data_root)?;
@@ -173,7 +173,7 @@ fn consume(args: ConsumeArgs, data_root: &Path) -> Result<(), CliError> {
     let operation = ApprovalOperation::parse(&args.operation).ok_or_else(|| {
         CliError::new(
             "configuration",
-            "Operation must be command, file_write, git_push, or network",
+            "Operation must be command, file_read, file_write, git_push, or network",
         )
     })?;
     let mut store = open(data_root)?;
