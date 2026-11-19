@@ -297,6 +297,66 @@ describe("mock backend", () => {
       expect(after.revision).toBe(revision);
     });
 
+    it("adds, chooses, and removes local connections with core's refusals", async () => {
+      const { invoke } = createMockBackend();
+      let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+      const add = (fields: Record<string, unknown>) =>
+        invoke("settings_add_local_connection", {
+          revision,
+          name: "box",
+          kind: "ollama_local",
+          endpoint: "http://127.0.0.1:11500/v1",
+          ...fields,
+        });
+      await expect(add({ kind: "openai" })).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(add({ endpoint: "http://example.com:11434/v1" })).rejects.toMatchObject({
+        code: "control",
+      });
+      await expect(add({ name: "ollama" })).rejects.toMatchObject({ code: "control" });
+
+      const added = (await add({})) as SettingsOverview;
+      expect(added.revision).toBe(revision + 1);
+      expect(added.provider_profiles.at(-1)).toEqual({
+        name: "box",
+        kind: "ollama_local",
+        auth: "none",
+        endpoint: "http://127.0.0.1:11500/v1",
+        credential_bound: false,
+        selectable: true,
+        active: false,
+      });
+      revision = added.revision;
+
+      await expect(
+        invoke("settings_select_connection", { revision, profile: 7 }),
+      ).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(
+        invoke("settings_select_connection", { revision, profile: "missing" }),
+      ).rejects.toMatchObject({ code: "control" });
+      const chosen = (await invoke("settings_select_connection", {
+        revision,
+        profile: "box",
+      })) as SettingsOverview;
+      expect(chosen.connection).toMatchObject({ profile: "box", kind: "ollama_local" });
+      revision = chosen.revision;
+
+      await expect(
+        invoke("settings_remove_connection", { revision, name: "missing" }),
+      ).rejects.toMatchObject({ code: "control" });
+      await expect(
+        invoke("settings_remove_connection", { revision, name: "lms" }),
+      ).rejects.toMatchObject({ code: "credential_bound" });
+      // Removing the active connection returns to the default, as core's event does.
+      const removed = (await invoke("settings_remove_connection", {
+        revision,
+        name: "box",
+      })) as SettingsOverview;
+      expect(removed.provider_profiles.map((p) => p.name)).toEqual(["lms", "ollama"]);
+      expect(removed.connection).toMatchObject({ profile: null, kind: null, source: "active" });
+      const defaults = (await invoke("chat_defaults", {})) as { settings: { endpoint: string } };
+      expect(defaults.settings.endpoint).toBe(removed.connection.endpoint);
+    });
+
     it("lists a registered workspace for a new session", async () => {
       const { invoke } = createMockBackend();
       const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
