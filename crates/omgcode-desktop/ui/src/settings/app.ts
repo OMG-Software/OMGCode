@@ -100,7 +100,15 @@ export function startSettings(root: HTMLElement): SettingsApp {
       rerender: draw,
     };
     nav.select(view.section);
+    // Drawing replaces every control. A focused control with an id (the workspace chooser) gets
+    // focus back on its replacement, so a keyboard user keeps their place.
+    const active = document.activeElement;
+    const focusedId = active instanceof HTMLElement && body.contains(active) ? active.id : "";
     replaceChildren(body, ...renderSection(view.section, context));
+    const replacement = focusedId === "" ? null : document.getElementById(focusedId);
+    if (replacement !== null && body.contains(replacement)) {
+      replacement.focus();
+    }
   }
 
   function select(id: SectionId): void {

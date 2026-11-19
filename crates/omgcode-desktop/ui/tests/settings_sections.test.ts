@@ -253,6 +253,14 @@ describe("workspace chooser", () => {
     expect(heading()).toBe("/home/dev/b");
   });
 
+  it("keeps keyboard focus on the chooser after switching workspace", async () => {
+    await start(() => overview());
+    chooser().focus();
+    pick(chooser(), B);
+    expect(heading()).toBe("/home/dev/b");
+    expect(document.activeElement).toBe(chooser());
+  });
+
   it("falls back to the first workspace when the shown one disappears", async () => {
     await start(() => overview());
     pick(chooser(), B);

@@ -475,6 +475,7 @@ mark {
 
 /* Composer: the message box, then one toolbar row. */
 .composer {
+  position: relative;
   display: grid;
   gap: 8px;
   padding: var(--gap);
@@ -513,9 +514,20 @@ mark {
   overflow: auto;
 }
 
-.settings > .composer-panel {
-  width: min(560px, 90vw);
-  max-width: none;
+/* Composer menus are placed against the whole composer, not their own button, so a panel
+   starts at the composer's edge and never runs past the conversation column (at the 800-pixel
+   minimum the column is about 540 pixels wide). */
+.composer-tools > .popover {
+  position: static;
+}
+
+.composer-tools > .popover > .composer-panel {
+  left: var(--gap);
+  max-width: calc(100% - 2 * var(--gap));
+}
+
+.composer-tools > .settings > .composer-panel {
+  width: 560px;
 }
 
 .counter {

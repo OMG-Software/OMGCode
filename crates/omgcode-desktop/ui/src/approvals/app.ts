@@ -270,9 +270,14 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   /**
    * Loads one review. Only the newest request's answer is shown: a new detail request replaces
    * the approval's review token in core, so an older answer arriving late would carry a token
-   * that no longer works.
+   * that no longer works. A reload for a request that is no longer selected (a decision that
+   * failed after the operator moved on) is ignored before it counts, so it cannot discard the
+   * selected request's answer.
    */
   async function loadDetail(id: string, options: ShowOptions = {}): Promise<void> {
+    if (selectedId !== id) {
+      return;
+    }
     detailRequest += 1;
     const request = detailRequest;
     const current = (): boolean => request === detailRequest && selectedId === id;

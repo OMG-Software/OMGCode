@@ -335,6 +335,39 @@ describe("approvals window flow", () => {
       expect(ipc.callsTo("approval_decide").at(-1)?.args.review_token).toBe("tok-mid-2");
     });
 
+    it("keeps the newly selected review when an earlier decision's review expires", async () => {
+      await start();
+      await settle(1000);
+      let failDecision: () => void = () => undefined;
+      ipc.on(
+        "approval_decide",
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            failDecision = () => reject({ code: "review_expired", message: "Expired." });
+          }),
+      );
+      let answerMid: (detail: ApprovalDetail) => void = () => undefined;
+      ipc.on(
+        "approval_detail",
+        () =>
+          new Promise<ApprovalDetail>((resolve) => {
+            answerMid = resolve;
+          }),
+      );
+      buttonByText(root, "Approve").click();
+      await settle();
+      rowFor("mid").click();
+      await settle();
+      // The decision for "soon" fails while "mid" is selected and its review is still loading.
+      failDecision();
+      await settle();
+      answerMid(detailFor("mid"));
+      await settle();
+      expect(pressedIds()).toEqual(["mid"]);
+      expect(root.querySelector(".review")?.textContent).toContain("program-mid");
+      expect(detailIds().filter((id) => id === "soon")).toHaveLength(1);
+    });
+
     it("never focuses Approve, when it renders or when it unlocks", async () => {
       await start();
       expect(document.activeElement).not.toBe(buttonByText(root, "Approve"));
