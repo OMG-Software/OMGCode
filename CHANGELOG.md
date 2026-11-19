@@ -13,6 +13,7 @@ Changes are recorded here before a release version is assigned.
     default. Turning it off makes Enter add a newline again. Ctrl+Enter
     (Cmd+Enter) sends in both modes. An Enter that confirms an input-method
     composition never sends. The message box hint names the current send key.
+    A change made before the saved defaults load is kept.
   - **Saved with the chat preferences:** **Save as defaults** stores the choice
     as `enter_to_send` in `chat-preferences.json`, and `chat_defaults` returns
     it beside the turn settings. A file or request without the field reads it

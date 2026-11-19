@@ -73,6 +73,8 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   // On until `chat_defaults` says otherwise, so it is on even when they cannot be read.
   const enterToSend = el("input", { attrs: { type: "checkbox" } });
   enterToSend.checked = true;
+  /** Set once the operator changes the check box, so defaults that arrive later do not undo it. */
+  let enterToSendChanged = false;
   const preferencesNote = el("span", { class: "muted", attrs: { role: "status" } });
   const saveDefaultsButton = button("Save as defaults", () => void saveDefaults());
 
@@ -173,8 +175,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
 
   function applyDefaults(defaults: ChatDefaults): void {
     writeSettings(defaults.settings);
-    enterToSend.checked = defaults.enter_to_send;
-    showSendKey();
+    if (!enterToSendChanged) {
+      enterToSend.checked = defaults.enter_to_send;
+      showSendKey();
+    }
     replaceChildren(
       preferencesNote,
       defaults.preferences === "unreadable"
@@ -267,7 +271,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     box.placeholder = enterToSend.checked ? PLACEHOLDER_ENTER : PLACEHOLDER_CTRL_ENTER;
   }
 
-  enterToSend.addEventListener("change", showSendKey);
+  enterToSend.addEventListener("change", () => {
+    enterToSendChanged = true;
+    showSendKey();
+  });
   box.addEventListener("keydown", (event) => {
     // A send key never inserts a newline, even when the message cannot be sent yet;
     // `submit` then shows why.

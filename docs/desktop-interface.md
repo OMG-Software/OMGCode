@@ -371,7 +371,8 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   confirms an input-method composition never sends. A send key never adds a
   newline, so Enter on an empty message shows why it cannot be sent. The
   check box is in **Chat settings** and applies at once; **Save as defaults**
-  keeps it for the next run. `chat_defaults` returns it as `enter_to_send`,
+  keeps it for the next run. A change made before the saved defaults load is
+  kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
   outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Saved preferences.** **Save as defaults** sends the model name, context
   size, output reserve, custom instructions, compaction threshold, the

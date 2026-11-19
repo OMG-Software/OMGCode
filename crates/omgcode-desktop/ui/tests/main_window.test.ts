@@ -942,6 +942,27 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       await open({ chat_defaults: () => rejection("internal", "failed") });
       expect(enterToSendBox().checked).toBe(true);
     });
+
+    it("keeps a change made before the saved defaults arrive", async () => {
+      let finish: (value: unknown) => void = () => undefined;
+      await open({
+        chat_defaults: () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      });
+      enterToSendBox().click();
+      expect(enterToSendBox().checked).toBe(false);
+
+      finish({ settings: { ...SETTINGS }, preferences: "saved", enter_to_send: true });
+      await settle();
+      expect(enterToSendBox().checked).toBe(false);
+      expect(messageBox().placeholder).toBe(PLACEHOLDER_CTRL_ENTER);
+      type(messageBox(), "hello");
+      expect(press({ key: "Enter" })).toBe(false);
+      await settle();
+      expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    });
   });
 
   it("shows the core error when saving defaults fails", async () => {
