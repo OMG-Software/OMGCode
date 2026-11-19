@@ -1,59 +1,95 @@
 @import "./tokens.css";
 
+/* The page never scrolls: the queue and the review pane scroll on their own. */
 #app {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 16px;
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
 }
 
 .no-host {
-  margin: 40px 0;
+  margin: 40px 16px;
 }
 
-.approvals h1 {
-  margin: 0 0 4px;
-  font-size: 18px;
+.approvals {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 
-.approvals h2 {
-  font-size: 14px;
-  margin: 16px 0 6px;
+.approvals-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 .intro {
-  margin: 0 0 12px;
+  flex: 1 1 280px;
+  margin: 0;
+  font-size: 12px;
   color: var(--muted);
+}
+
+.notice {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.approvals > .error,
+.approvals > .notice {
+  margin: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.approvals-body {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* Queue column. */
+.queue {
+  display: flex;
+  flex: 0 0 300px;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+
+.queue-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .approvals-ul {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 6px;
 }
 
 .approval {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.approval.decided {
-  display: grid;
-  gap: 2px;
-  padding: 8px 10px;
-  color: var(--muted);
-  background: transparent;
+  border-bottom: 1px solid var(--border);
 }
 
 .approval-button {
-  display: grid;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  gap: 2px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   text-align: left;
   border: 0;
+  border-radius: 0;
   background: transparent;
 }
 
@@ -62,52 +98,127 @@
   background: var(--surface-2);
 }
 
+.row-text {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.row-title {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
 .op {
+  flex: none;
   font-weight: 600;
+}
+
+.summary {
+  flex: 1 1 auto;
 }
 
 .who,
 .when,
-.countdown,
-.state {
+.countdown {
   font-size: 12px;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+.countdown {
+  flex: none;
+  white-space: nowrap;
+}
+
+.approval.expired .approval-button {
+  opacity: 0.65;
 }
 
 .approval.expired .countdown {
   color: var(--danger);
 }
 
-.summary {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+.approval.decided {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
 }
 
-.review {
-  margin-top: 16px;
-  padding: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.review h2 {
-  margin-top: 0;
-}
-
-.fields {
-  display: grid;
-  grid-template-columns: minmax(90px, 160px) minmax(0, 1fr);
-  gap: 4px 12px;
-  margin: 8px 0;
-}
-
-.fields dt {
+.approval.decided .op,
+.approval.decided .summary {
   color: var(--muted);
 }
 
-.fields dd {
+/* Review pane. */
+.review-pane {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.review-empty {
+  flex: 1 1 auto;
+}
+
+.review {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.review-body {
+  flex: 1 0 auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-heading {
+  min-width: 0;
+}
+
+.review-title {
+  font-size: 15px;
+}
+
+.tool {
+  margin: 2px 0 0;
+  font: 12px / 1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.fields,
+.tech-list {
+  display: grid;
+  grid-template-columns: minmax(80px, 140px) minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.fields dt,
+.tech-list dt {
+  color: var(--muted);
+}
+
+.fields dd,
+.tech-list dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -118,29 +229,155 @@
   border-radius: var(--radius);
 }
 
-.hash code {
+.tech-list code {
   font: 12px / 1.4 var(--mono);
   overflow-wrap: anywhere;
 }
 
+.technical > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.technical[open] > summary {
+  margin-bottom: 6px;
+}
+
+/* Changes as a line diff. */
+.change {
+  display: grid;
+  gap: 6px;
+}
+
+.change-title {
+  color: var(--muted);
+}
+
+.text-block h4 {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.text-block pre {
+  background: var(--surface-2);
+  padding: 6px 8px;
+  border-radius: var(--radius);
+}
+
+.diff {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: 12px / 1.4 var(--mono);
+  overflow-x: auto;
+}
+
+.diff-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px;
+}
+
+.diff-mark {
+  flex: none;
+  width: 1ch;
+  color: var(--muted);
+  white-space: pre;
+  user-select: none;
+}
+
+.diff-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-remove {
+  background: var(--danger-bg);
+}
+
+.diff-remove .diff-mark {
+  color: var(--danger);
+}
+
+.diff-add {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.diff-add .diff-mark {
+  color: var(--success);
+}
+
+.diff-gap {
+  padding: 2px 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* The decision row stays at the bottom of the pane. */
+.review-actions {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  gap: 6px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.review-actions p {
+  margin: 0;
+}
+
 .effect {
   font-weight: 600;
-  margin: 8px 0;
 }
 
 .field-check {
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  margin: 8px 0;
 }
 
 .decision {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
+}
+
+.hint {
+  font-size: 12px;
+}
+
+.result {
+  overflow-wrap: anywhere;
+}
+
+.result:empty {
+  display: none;
 }
 
 [hidden] {
   display: none;
+}
+
+@media (max-width: 720px) {
+  .approvals-body {
+    flex-direction: column;
+  }
+
+  .queue {
+    flex: 0 1 auto;
+    max-height: 40vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* The stacked queue has only a maximum height, so a zero flex basis would collapse the list
+     to nothing; size it by its content and let it shrink and scroll inside the maximum. */
+  .queue-panel {
+    flex: 0 1 auto;
+  }
 }
