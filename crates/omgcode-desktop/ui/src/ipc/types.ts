@@ -259,7 +259,19 @@ export interface WorkspaceSettingsView {
   read: boolean;
   write: boolean;
   execute: boolean;
+  task_network: boolean;
+  host_services: boolean;
   package_cache_root: string | null;
+}
+
+/** The complete preference set a permissions change sends. Every flag is required. */
+export interface PermissionFlags {
+  model_tools: boolean;
+  read: boolean;
+  write: boolean;
+  execute: boolean;
+  task_network: boolean;
+  host_services: boolean;
 }
 
 export type ConnectionSource = "environment" | "profile" | "injected";
@@ -308,7 +320,6 @@ export interface SkillSettingView {
 
 /** The read-only configuration shown in the settings window only. */
 export interface SettingsOverview {
-  store_initialized: boolean;
   revision: number;
   development_root: string | null;
   workspaces: WorkspaceSettingsView[];

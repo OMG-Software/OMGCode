@@ -20,8 +20,10 @@ diagnostic result; see [trusted runs](execution.md#trusted-runs).
 
 ## Trusted settings and identity
 
-Only trusted local CLI input can change settings. The commands are not model
-tools. Prompts, conversation history, imported IDs, skills, and repository files
+Only the trusted local CLI and, since 0.41.0, the desktop `settings` window
+can change these settings (ADR-0060). Neither is a model tool. The window gets
+every folder from a native dialog and asks for a native confirmation before
+any change that widens access. Prompts, conversation history, imported IDs, skills, and repository files
 cannot set a development root, change permissions, or recreate a binding.
 
 Select an existing development root explicitly. Register an existing workspace
@@ -95,9 +97,10 @@ affects have stopped; see [settings changes during a
 run](execution.md#settings-changes-during-a-run). Per-target grants remain
 required. Single-use approvals now exist for the model edit, multi-edit, create,
 rename, delete, and command tools:
-the trusted CLI and the desktop approvals window decide them. Workspace
-settings still change only through the trusted CLI; the desktop `settings`
-window shows them read-only (ADR-0059, phase S1).
+the trusted CLI and the desktop approvals window decide them. The desktop
+`settings` window changes the development root, registrations, the six
+preferences, and package cache roots through the same store calls, and creates
+an empty store on first use (ADR-0059 phase S2, ADR-0060).
 
 ## Persistence and audit
 

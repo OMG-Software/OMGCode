@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-app"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "directories",
  "omgcode-core",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-cli"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "clap",
  "omgcode-app",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-core"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "libc",
  "omgcode-platform",
@@ -2575,9 +2575,10 @@ dependencies = [
 
 [[package]]
 name = "omgcode-desktop"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "omgcode-app",
+ "rfd",
  "serde",
  "serde_json",
  "tauri",
@@ -2587,7 +2588,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-platform"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "libc",
  "rustix",
@@ -3113,6 +3114,32 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "rfd"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+dependencies = [
+ "block2",
+ "dispatch2",
+ "glib-sys",
+ "gobject-sys",
+ "gtk-sys",
+ "js-sys",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "percent-encoding",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

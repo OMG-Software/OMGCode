@@ -1,12 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "settings-window",
-  "description": "Settings commands for the settings window only (ADR-0059). No core permissions, no chat, transcript, or approval commands.",
+  "description": "Settings commands for the settings window only (ADR-0059, ADR-0060). No core or dialog permissions, no chat, transcript, or approval commands.",
   "local": true,
   "windows": [
     "settings"
   ],
   "permissions": [
-    "allow-settings-overview"
+    "allow-settings-choose-package-cache",
+    "allow-settings-choose-root",
+    "allow-settings-clear-package-cache",
+    "allow-settings-overview",
+    "allow-settings-register-workspace",
+    "allow-settings-set-permissions"
   ]
 }

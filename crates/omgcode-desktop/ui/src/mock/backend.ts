@@ -9,12 +9,14 @@ import type {
   ChatPreferences,
   ChatSettings,
   ChatStatus,
+  PermissionFlags,
   SearchHit,
   SessionSummary,
   SettingsOverview,
   SnippetPart,
   TreeSort,
   TreeView,
+  WorkspaceSettingsView,
 } from "../ipc/types";
 import {
   buildFixtures,
@@ -98,6 +100,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   const tokens = new Map<string, { id: string; expires: number }>();
   let subscriber: Subscriber | null = null;
   let savedPreferences: ChatPreferences | null = null;
+  const settings: SettingsOverview = initialSettings();
   const nowUnix = (): number => Math.floor(now() / 1000);
 
   const approvals: ApprovalView[] = [
@@ -542,7 +545,45 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       case "settings_show_window":
         return null;
       case "settings_overview":
-        return settingsOverview();
+        return clone(settings);
+      // The development mock stands in for the native dialogs: each folder dialog "chooses" a
+      // fixed folder and each confirmation is accepted.
+      case "settings_choose_root":
+        return changeSettings(args, () => {
+          settings.development_root = "/home/dev";
+        });
+      case "settings_register_workspace":
+        return changeSettings(args, () => {
+          if (settings.development_root === null) {
+            fail(
+              "no_development_root",
+              "Choose a development root before registering a workspace.",
+            );
+          }
+          settings.workspaces.push({
+            workspace_id: `99999999-9999-4999-8999-${String(settings.workspaces.length).padStart(12, "0")}`,
+            folder_display: `/home/dev/project-${settings.workspaces.length + 1}`,
+            model_tools: false,
+            read: true,
+            write: true,
+            execute: false,
+            task_network: false,
+            host_services: false,
+            package_cache_root: null,
+          });
+        });
+      case "settings_set_permissions":
+        return changeSettings(args, () => {
+          Object.assign(mockWorkspace(args), args.permissions as PermissionFlags);
+        });
+      case "settings_choose_package_cache":
+        return changeSettings(args, () => {
+          mockWorkspace(args).package_cache_root = "/home/dev/.cache/omgcode-packages";
+        });
+      case "settings_clear_package_cache":
+        return changeSettings(args, () => {
+          mockWorkspace(args).package_cache_root = null;
+        });
       case "chat_send":
         // Like the Rust command: `skills` is required, even when empty.
         if (!Array.isArray(args.skills) || !args.skills.every((name) => typeof name === "string")) {
@@ -593,10 +634,28 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  function settingsOverview(): SettingsOverview {
+  /** Applies one mock settings change after the same revision check as core. */
+  function changeSettings(args: Record<string, unknown>, change: () => void): SettingsOverview {
+    if (args.revision !== settings.revision) {
+      fail("stale_revision", "The settings changed since this window read them.");
+    }
+    change();
+    settings.revision += 1;
+    return clone(settings);
+  }
+
+  function mockWorkspace(args: Record<string, unknown>): WorkspaceSettingsView {
+    const id = str(args, "workspace_id");
+    const found = settings.workspaces.find((w) => w.workspace_id === id);
+    if (found === undefined) {
+      fail("unknown_workspace", "The workspace is not registered.");
+    }
+    return found;
+  }
+
+  function initialSettings(): SettingsOverview {
     const workspace = "77777777-7777-4777-8777-777777777777";
     return {
-      store_initialized: true,
       revision: 12,
       development_root: "/home/dev",
       workspaces: [
@@ -607,6 +666,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           read: true,
           write: false,
           execute: false,
+          task_network: false,
+          host_services: false,
           package_cache_root: null,
         },
         {
@@ -616,6 +677,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           read: false,
           write: false,
           execute: false,
+          task_network: false,
+          host_services: false,
           package_cache_root: null,
         },
       ],

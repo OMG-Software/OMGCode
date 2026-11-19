@@ -149,20 +149,55 @@ fn decision_commands_are_granted_to_no_other_window() {
 
 #[test]
 fn settings_window_is_granted_only_its_own_commands() {
-    // ADR-0059 decision 2: the settings window reads the configuration and
-    // nothing else; no chat, transcript, session, or approval command.
+    // ADR-0059 decision 2: the settings window reads and changes the trusted
+    // configuration and nothing else; no chat, transcript, session, or
+    // approval command.
     let settings = string_array(&capability_for(WindowLabel::Settings)["permissions"]);
     let expected: Vec<String> = commands_for(WindowLabel::Settings)
         .into_iter()
         .map(|name| format!("allow-{}", name.replace('_', "-")))
         .collect();
     assert_eq!(settings, expected);
-    assert_eq!(settings, ["allow-settings-overview"]);
+    assert_eq!(
+        settings,
+        [
+            "allow-settings-choose-package-cache",
+            "allow-settings-choose-root",
+            "allow-settings-clear-package-cache",
+            "allow-settings-overview",
+            "allow-settings-register-workspace",
+            "allow-settings-set-permissions",
+        ]
+    );
     for window in [WindowLabel::Main, WindowLabel::Approvals] {
         let granted = string_array(&capability_for(window)["permissions"]);
-        assert!(
-            !granted.contains(&permission_for(Command::SettingsOverview)),
-            "{window:?} must not read the configuration"
+        for command in commands_for(WindowLabel::Settings) {
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                !granted.contains(&permission),
+                "{window:?} must not be granted {command}"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_dialog_plugin_or_other_tauri_plugin_is_a_dependency() {
+    // ADR-0060: native dialogs are opened from Rust through `rfd`, so no
+    // plugin registers a dialog command that a webview could call.
+    let manifest = read(&crate_dir().join("Cargo.toml"));
+    assert!(!manifest.contains("tauri-plugin"), "no Tauri plugin");
+    assert!(manifest.contains("rfd = {"), "rfd opens the dialogs");
+    let lib = read(&crate_dir().join("src/lib.rs"));
+    assert!(!lib.contains(".plugin("), "no plugin is registered");
+    // Only the settings handlers open dialogs.
+    for (path, text) in handler_sources() {
+        let opens_dialogs = text.contains("NativePrompt");
+        assert_eq!(
+            opens_dialogs,
+            path.ends_with("settings.rs"),
+            "{}",
+            path.display()
         );
     }
 }
@@ -176,15 +211,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 23 unique policy names.
+    // And the shared list holds the 28 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 23);
-    assert_eq!(unique.len(), 23);
+    assert_eq!(listed.len(), 28);
+    assert_eq!(unique.len(), 28);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -295,7 +330,7 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(settings_calls, settings_commands);
 
-    // ...and together they cover all 23 policy commands.
+    // ...and together they cover all 28 policy commands.
     let union: BTreeSet<String> = main_calls
         .union(&approval_calls)
         .cloned()
@@ -538,7 +573,7 @@ fn injected(param: &(String, String)) -> bool {
 }
 
 #[test]
-fn generate_handler_registers_exactly_the_twenty_three_policy_commands() {
+fn generate_handler_registers_exactly_the_twenty_eight_policy_commands() {
     // Given the invoke handler in lib.rs.
     let lib = read(&crate_dir().join("src/lib.rs"));
     let start =
@@ -553,10 +588,10 @@ fn generate_handler_registers_exactly_the_twenty_three_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 23 shared names, once each.
+    // Then they are the 28 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 23);
-    assert_eq!(unique.len(), 23);
+    assert_eq!(registered.len(), 28);
+    assert_eq!(unique.len(), 28);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -573,7 +608,7 @@ fn generate_handler_registers_exactly_the_twenty_three_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 23);
+    assert_eq!(handlers.len(), 28);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -707,7 +742,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     }
     assert_eq!(
         expected.len(),
-        23,
+        28,
         "all commands are called by the frontend"
     );
 

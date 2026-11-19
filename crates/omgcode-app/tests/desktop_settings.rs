@@ -96,7 +96,6 @@ fn the_overview_without_a_settings_store_is_empty_but_reports_the_connection() {
     let overview = environment_service(&fixture.data, "http://127.0.0.1:1234/v1")
         .settings_overview()
         .expect("overview");
-    assert!(!overview.store_initialized);
     assert_eq!(overview.revision, 0);
     assert_eq!(overview.development_root, None);
     assert!(overview.workspaces.is_empty());
@@ -107,11 +106,12 @@ fn the_overview_without_a_settings_store_is_empty_but_reports_the_connection() {
         ConnectionSourceView::Environment
     );
     assert_eq!(overview.connection.profile, None);
-    // Reading the overview creates no settings store.
+    // Reading the overview creates an empty settings store (ADR-0060); the
+    // creation itself is covered in `desktop_settings_changes.rs`.
     assert!(
         ControlStore::open_existing(&fixture.data)
             .expect("open")
-            .is_none()
+            .is_some()
     );
 }
 
@@ -126,7 +126,6 @@ fn the_overview_shows_the_recorded_configuration_without_skill_text() {
         .settings_overview()
         .expect("overview");
 
-    assert!(overview.store_initialized);
     assert!(overview.revision > 0);
     let root = overview.development_root.as_deref().expect("a root is set");
     assert!(root.ends_with("development"), "{root}");

@@ -12,6 +12,16 @@ const byPath = new Map<string, string>(
 
 const MARKER = "OMGCODE_MOCK_FIXTURE_MARKER";
 
+/** Commands granted to the settings window alone (ADR-0059, ADR-0060). */
+const SETTINGS_WINDOW_COMMANDS = [
+  "settings_overview",
+  "settings_choose_root",
+  "settings_register_workspace",
+  "settings_set_permissions",
+  "settings_choose_package_cache",
+  "settings_clear_package_cache",
+];
+
 /** JS files reachable from an HTML entry, following static and dynamic relative imports. */
 function reachableScripts(entry: string): Map<string, string> {
   const html = byPath.get(entry) ?? "";
@@ -68,7 +78,9 @@ suite(
       const scripts = reachableScripts("settings.html");
       expect(scripts.size).toBeGreaterThan(0);
       const joined = Array.from(scripts.values()).join("\n");
-      expect(joined).toContain("settings_overview");
+      for (const command of SETTINGS_WINDOW_COMMANDS) {
+        expect(joined).toContain(command);
+      }
       for (const [path, text] of scripts) {
         expect(text, path).not.toContain("approval_decide");
         expect(text, path).not.toContain("approval_detail");
@@ -76,10 +88,12 @@ suite(
       }
     });
 
-    it("main and approvals bundles never mention settings_overview", () => {
+    it("main and approvals bundles never mention a settings-window command", () => {
       for (const entry of ["index.html", "approvals.html"]) {
         for (const [path, text] of reachableScripts(entry)) {
-          expect(text, `${entry} ${path}`).not.toContain("settings_overview");
+          for (const command of SETTINGS_WINDOW_COMMANDS) {
+            expect(text, `${entry} ${path}`).not.toContain(command);
+          }
         }
       }
     });

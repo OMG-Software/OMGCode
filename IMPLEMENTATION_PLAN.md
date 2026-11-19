@@ -126,10 +126,14 @@ This is a resume guide, not a replacement for the owning contracts in
 - **Phase F1**, version **0.39.0**, on branch `codex/runtime-skills`, not
   merged: skill import into private storage, a registry with application and
   workspace enablement, and explicit `chat --skill` loading (ADR-0057).
-- **Phase S1**, version **0.40.0**, on branch `codex/desktop-settings`, not
-  merged: the isolated desktop `settings` window with a read-only
-  configuration view, saved chat preferences, and per-turn skill selection
-  in `main` (ADR-0059).
+- **Phase S1**, version **0.40.0**: the isolated desktop `settings` window
+  with a read-only configuration view, saved chat preferences, and per-turn
+  skill selection in `main` (ADR-0059).
+- **Phase S2**, version **0.41.0**, on branch `codex/desktop-settings-s2`,
+  not merged: the `settings` window changes the development root, workspace
+  registrations, all six workspace preferences, and package cache roots
+  through native dialogs, and creates the settings store on first use
+  (ADR-0060).
 
 Implemented today:
 
@@ -1246,8 +1250,13 @@ merged to `main` in PR #33 with Phases D2 to D6.
   no secret. `main` gains `settings_show_window`, `chat_preferences_save`
   (`<data_root>/desktop-v1/chat-preferences.json`, no endpoint), and
   `session_skills`, and `chat_send` carries up to four skill names: 23
-  commands. Phases S2 to S5 (folder dialog, native confirmations, key entry,
-  and the active connection) are not implemented.
+  commands.
+- **S2 (ADR-0060, version 0.41.0):** five `settings` commands change the
+  development root, registrations, the six workspace preferences, and
+  package cache roots. Rust opens native folder dialogs and confirmations
+  through `rfd`, with no Tauri plugin. `settings_overview` creates an empty
+  settings store when none exists: 28 commands. Phases S3 to S5 (key entry,
+  the active connection, execution setup, and skills) are not implemented.
 
 Still open for the desktop:
 
@@ -1255,7 +1264,8 @@ Still open for the desktop:
   including the Unix-only inspection and index branches, but its webview, IPC,
   capability enforcement, and navigation guard have not run on Linux;
 - development panels (terminal tabs, task logs, and diffs), and changing
-  trusted settings from the `settings` window (ADR-0059 phases S2 to S5);
+  connections, credentials, execution setup, and skills from the `settings`
+  window (ADR-0059 phases S3 to S5);
 - push for approvals and the session tree, which still poll or refresh on
   request, and a run of the event channel on Linux, where no window has been
   opened;

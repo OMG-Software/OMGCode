@@ -54,6 +54,12 @@ merged to `main` at the time of writing):
   shows a read-only view of the trusted configuration. The `main` window
   saves its chat preferences and can select up to four enabled skills for
   one turn. See [settings window](#settings-window).
+- Since version 0.41.0 (Phase S2, ADR-0060), the `settings` window changes
+  the development root, workspace registrations, all six workspace
+  preferences, and package cache roots. Rust opens a native folder dialog for
+  every folder and a native confirmation before every change that widens
+  access. The settings store is created empty the first time the window
+  reads it, so no CLI command is needed first.
 
 Not implemented:
 
@@ -61,14 +67,12 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing trusted settings in the desktop application. The `settings`
-  window is read-only. Workspaces, the development root, permissions,
-  profiles, credentials, container grants, package cache roots, and skill
-  enablement change only through the trusted CLI
-  ([workspace settings](workspace-permissions.md)). Phases S2 to S5 of
+- Changing language-model connections, credentials, toolchain profiles,
+  container grants, package-network profiles, and skills in the desktop
+  application. They change only through the trusted CLI. Phases S3 to S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: the native folder dialog, the native confirmations,
-  the write-only API key field, and choosing the active connection.
+  are not implemented: the write-only API key field, choosing the active
+  connection, execution setup, and skill management.
 - Development panels: terminal tabs, task logs, diffs, and a file browser.
 - Git, MCP, and memory interfaces, and skill management. The `main` window
   can only select an already enabled skill for one turn.
@@ -191,7 +195,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 23 commands. No other command exists.
+The shell has three webview windows and 28 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -219,7 +223,12 @@ their registered identifier, and approvals by identifier.
 | `approvals_list` | approvals | List pending approvals and recent decisions |
 | `approval_detail` | approvals | Review one approval and obtain a review token |
 | `approval_decide` | approvals | Approve or deny one approval |
-| `settings_overview` | settings | Return a read-only view of the trusted configuration |
+| `settings_overview` | settings | Return the trusted configuration, creating an empty settings store when none exists |
+| `settings_choose_root` | settings | Choose the development root in a native folder dialog, after a native confirmation |
+| `settings_register_workspace` | settings | Register a folder below the root, chosen in a native dialog, after a native confirmation |
+| `settings_set_permissions` | settings | Set one workspace's six preferences; turning any on needs a native confirmation |
+| `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
+| `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -336,11 +345,14 @@ are not escaped by the service.
 ## Chat
 
 A new session is created in a workspace the operator has already registered
-with the trusted CLI. The webview cannot name a folder. `workspace_list`
+in the `settings` window or with the trusted CLI. The webview cannot name a
+folder. `workspace_list`
 returns each registered workspace with its folder display text and its
 `model_tools`, `read`, `write`, and `execute` preferences. A workspace whose
 folder was recorded by another operating system cannot be used to create a
-session here. Registering or changing a workspace is a CLI operation.
+session here. When no workspace is registered, the new-session dialog offers
+**Open settings**, which calls `settings_show_window`. The `main` window
+registers and changes no workspace itself.
 
 A turn takes the model name, the context size, the output reserve, optional
 user instructions, and the compaction settings. The composer starts from the
@@ -462,14 +474,19 @@ A panicked turn thread is recorded as a failed turn with the code `internal`.
 ## Settings window
 
 **Settings** in the session sidebar calls `settings_show_window`, which shows
-the hidden `settings` window. The window calls one command,
-`settings_overview`, when it starts, when it becomes visible again, and when
-**Refresh** is pressed. It shows, read-only:
+the hidden `settings` window. The window calls `settings_overview` when it
+starts, when it becomes visible again, and when **Refresh** is pressed. When
+no settings store exists, that call creates an empty one, as the CLI's
+`workspace status` does (ADR-0060). The window loads hidden at launch, so the
+store exists from the first launch. It shows:
 
-- the settings revision, or that no settings store exists yet;
-- the development root;
-- each registered workspace with its folder, its `model_tools`, `read`,
-  `write`, and `execute` preferences, and its package cache root;
+- the settings revision;
+- the development root, with **Choose folder…** or **Change…**;
+- each registered workspace with its folder, a checkbox for each of its six
+  preferences (`model_tools`, `read`, `write`, `execute`, `task_network`,
+  and `host_services`), and its package cache root with **Choose…** and,
+  when one is set, **Clear**; and **Register workspace…**, which is disabled
+  until a root is set;
 - the connection this process uses: the endpoint, and whether the token comes
   from `OMGCODE_LM_TOKEN` or from a named provider profile set at launch;
 - provider profiles with their kind, authentication, endpoint, and whether a
@@ -493,9 +510,45 @@ trusted CLI and releases it before returning. It reads no stored secret and
 returns no secret value. Every path and recorded name is passed through
 core's display-safe functions; a path that this system cannot represent is
 shown as a fixed note. A skill's description and body are never returned.
-The window shows a note that it is read-only and names the CLI commands that
-change each setting. It has no input field. An error is shown with its code,
-and **Refresh** stays available.
+An error is shown with its code, and **Refresh** stays available.
+
+### Changing settings
+
+The five change commands call the same `ControlStore` functions as the CLI's
+`workspace set-root`, `register`, `permissions`, `set-package-cache`, and
+`clear-package-cache`. They use the same expected-revision check, validation,
+and audit events. Each takes only identifiers, the revision the window last
+read, and for `settings_set_permissions` the complete set of six flags. None
+takes a path. Each returns the new overview.
+
+- **Folders come from a native dialog.** Rust opens the operating system's
+  folder picker through `rfd`, modal to the settings window. The chosen path
+  goes from the dialog to core and never reaches a webview. Registration
+  starts the picker at the development root. No Tauri plugin and no dialog
+  command exists, so no webview can open, answer, or read a dialog.
+- **Widening needs a native confirmation.** These changes are applied only
+  after the operator answers Yes in a native message box: setting the root,
+  registering a workspace, turning any preference on, and choosing a package
+  cache root. The service composes the text from fixed words and
+  display-safe values, and it names each preference turned on with what that
+  preference allows. Turning preferences off and clearing a cache root show
+  no dialog.
+- **No lock while the operator decides.** The service checks the revision,
+  releases the store, shows the dialogs, and then reopens the store and
+  applies the change with the same revision. A change made meanwhile, for
+  example by the CLI, makes the request fail with `stale_revision`, and
+  nothing is applied.
+- **Revocation is observed.** After a change, runs that lost access are
+  stopped and observed, as for the CLI. A run that is not observed to stop
+  fails the command with `runs_not_stopped`, and the change stays recorded.
+- **One change at a time.** While one change waits for the operator, another
+  fails with `settings_change_running`. The window disables its controls
+  until the answer arrives.
+
+A closed dialog or a No answer returns `cancelled`. The window shows "No
+change was made." and reads the configuration again, so every checkbox shows
+the recorded value. Any other failure is shown with its code and is followed
+by the same re-read.
 
 ## Approvals
 
@@ -586,8 +639,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or `settings_overview`. The
-  `settings` file grants only `settings_overview`. Every handler also calls the Rust
+  not grant the three approval commands or any of the six settings-window
+  commands. The `settings` file grants only those six. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -597,7 +650,8 @@ What the design does:
   display text is the only path-like text the `main` window receives. The
   `settings` window also receives the recorded development root, profile
   roots and path entries, package cache roots, and grant folders, all as
-  display-safe text. No command takes any of them back as input.
+  display-safe text. No command takes any of them back as input. A settings
+  change gets its folder from a native dialog that Rust opens.
 - **Fixed endpoint and token.** The webview cannot choose the provider, choose
   the credential source, or read the token. The profile and its endpoint are
   fixed at launch. A stored credential goes only to the endpoint recorded with
@@ -625,11 +679,13 @@ What the design does:
   `approval_detail`. The command name `chat_subscribe` lives in
   `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
   test checks that no approvals asset contains it.
-- **The configuration view only in `settings`.** The settings window loads its
-  own bundle. `settings_overview` is named only in
-  `src/ipc/settings_client.ts`, and bundle tests check that no main or
-  approvals asset contains it and that no settings asset contains
+- **The configuration view and changes only in `settings`.** The settings
+  window loads its own bundle. The six settings-window command names appear
+  only in `src/ipc/settings_client.ts`. Bundle tests check that no main or
+  approvals asset contains any of them, and that no settings asset contains
   `approval_decide`, `approval_detail`, or `chat_subscribe`.
+- **No dialog surface for webviews.** The manifest has no Tauri plugin, and
+  only the settings handlers open dialogs. A test checks both.
 - **The index is a cache.** It authorizes nothing. A journal path from the
   index is revalidated against the strict layout, and the writer open
   validates the journal again by replay.
@@ -644,11 +700,15 @@ What it does not do:
   the endpoint, read the token, or decide an approval. It can cause approval
   requests; it cannot decide them. It can overwrite the saved chat
   preferences, which grant nothing, and select enabled skills for a turn,
-  which load as untrusted text and grant no permission. It cannot call
-  `settings_overview`.
+  which load as untrusted text and grant no permission. It can show the
+  settings window. It cannot call any settings-window command.
 - A compromised `settings` webview can read the configuration view: recorded
-  paths, profile names, endpoints, origins, and skill names. It cannot read a
-  secret, change a setting, or call any other command.
+  paths, profile names, endpoints, origins, and skill names. It can turn
+  preferences off, clear package cache roots, and open the native dialogs
+  again and again, one at a time. It cannot choose a folder, answer a
+  dialog, widen access, read a secret, or call any other window's command.
+- On Windows the native confirmation's default button is Yes, because `rfd`
+  offers no way to change it. A keyboard Enter confirms.
 - The approvals webview is still web content. The design reduces what reaches
   it and what it can call. It does not make the webview a trusted computing
   base. A native dialog for the final confirmation remains a possible later
@@ -811,6 +871,11 @@ private store refuses, see the notes in
   selection were checked by unit, service, and bundle tests and in the Vite
   development server against the mock backend. The real shell's windows were
   not driven for 0.40.0.
+- Phase S2 (0.41.0): the change commands were checked by service tests with a
+  scripted prompt, by unit, layer, and bundle tests, and in the Vite
+  development server against the mock backend. The native dialogs and the
+  real shell's settings window were not driven by automation. The Linux
+  dialog path has never run.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no

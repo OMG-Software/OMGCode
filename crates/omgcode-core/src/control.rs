@@ -699,6 +699,20 @@ impl ControlStore {
             .map(DirectoryRecord::display)
     }
 
+    /// The selected development root's recorded native path, if one is set
+    /// and representable on this platform.
+    ///
+    /// It is the trusted selection, not a capability: a caller may use it as
+    /// the starting folder of a native folder dialog, but must not open files
+    /// through it or return it to a webview. Access still goes through a
+    /// binding and the broker.
+    pub fn development_root_path(&self) -> Option<PathBuf> {
+        self.snapshot
+            .development_root
+            .as_ref()
+            .and_then(|directory| directory.path.to_path_buf().ok())
+    }
+
     /// One workspace's selected package cache root as display-safe text, if
     /// one is set. For people to read only; never reopen a path from it.
     pub fn package_cache_root_display(&self, workspace_id: WorkspaceId) -> Option<String> {

@@ -90,13 +90,14 @@ mod preferences;
 mod review_tokens;
 mod sessions;
 mod settings;
+mod settings_changes;
 mod state;
 mod turns;
 mod wire;
 mod workspaces;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use omgcode_core::session_index::SessionIndex;
@@ -105,6 +106,7 @@ pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
 use self::events::EventHub;
 use self::review_tokens::ReviewTokens;
+pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
 use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
@@ -114,12 +116,13 @@ pub use self::wire::{
     ChatEvent, ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest,
     ChatSettingsDto, ChatState, ChatStatus, ConnectionSourceView, ConnectionView,
     ContainerGrantView, ContextMeterDto, Decision, EntryKind, MessageRoleDto, PackageProfileView,
-    PreferencesSource, ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
-    SessionCreateRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
-    SessionTree, SettingsOverview, SkillOverrideView, SkillSettingView, SnippetPart,
-    ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
-    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
-    WorkspaceList, WorkspaceSettingsView,
+    PermissionFlags, PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit,
+    SearchRequest, SearchResult, SearchRoleDto, SessionCreateRequest, SessionRequest,
+    SessionSkills, SessionStatus, SessionSummary, SessionTree, SettingsOverview,
+    SettingsRevisionRequest, SkillOverrideView, SkillSettingView, SnippetPart, ToolOutcomeDto,
+    ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest,
+    TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceList,
+    WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
 use crate::{AppError, ErrorKind, LmToken, LocalConnection, TokenSource, resolve_local_connection};
 
@@ -215,6 +218,9 @@ struct Inner {
     /// The last pending-approval count read, served when the settings store is
     /// busy. Advisory only; it authorizes nothing.
     pending_cache: AtomicU64,
+    /// Set while one settings change waits for the operator or applies, so
+    /// a second change is refused rather than opening a second dialog.
+    settings_change: AtomicBool,
 }
 
 /// The desktop command service. See the [module documentation](self).
@@ -268,6 +274,7 @@ impl DesktopService {
                 reviews: Mutex::new(ReviewTokens::default()),
                 events: Mutex::new(EventHub::default()),
                 pending_cache: AtomicU64::new(0),
+                settings_change: AtomicBool::new(false),
             }),
         })
     }

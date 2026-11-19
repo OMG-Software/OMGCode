@@ -141,6 +141,50 @@ impl DesktopError {
         Self::new("preferences", "The chat preferences could not be saved.")
     }
 
+    /// The operator closed a folder dialog or declined a confirmation. Nothing
+    /// changed.
+    pub(crate) fn cancelled() -> Self {
+        Self::new("cancelled", "No change was made.")
+    }
+
+    /// The caller's settings revision is not the current one.
+    pub(crate) fn stale_revision() -> Self {
+        Self::new(
+            "stale_revision",
+            "The settings changed since this window read them. Review the current values and try again.",
+        )
+    }
+
+    /// Another settings change from this application is waiting for the
+    /// operator.
+    pub(crate) fn settings_change_running() -> Self {
+        Self::new(
+            "settings_change_running",
+            "Another settings change is waiting for a decision.",
+        )
+    }
+
+    /// The change was recorded, but runs that lost access were not observed
+    /// to stop, so the revocation is not complete.
+    pub(crate) fn runs_not_stopped(count: usize) -> Self {
+        Self::new(
+            "runs_not_stopped",
+            format!(
+                "The settings change was recorded, but {count} run(s) that lost access were not observed to stop. Inspect them with the trusted CLI `runs audit`."
+            ),
+        )
+    }
+
+    /// The change was recorded, but the run journal could not be checked for
+    /// runs that lost access. The cause is not shown because it can name a
+    /// path.
+    pub(crate) fn runs_unchecked() -> Self {
+        Self::new(
+            "runs_not_stopped",
+            "The settings change was recorded, but runs that may have lost access could not be checked. Inspect them with the trusted CLI `runs audit`.",
+        )
+    }
+
     /// The application is shutting down.
     pub(crate) fn shutting_down() -> Self {
         Self::new("shutting_down", "The application is shutting down.")
@@ -214,6 +258,11 @@ impl DesktopError {
             ControlError::Busy => Self::busy(),
             ControlError::UnknownWorkspace => Self::unknown_workspace(),
             ControlError::UnknownApproval => Self::not_found("approval"),
+            ControlError::Conflict { .. } => Self::stale_revision(),
+            ControlError::NoRoot => Self::new(
+                "no_development_root",
+                "Choose a development root before registering a workspace.",
+            ),
             ControlError::Io(_)
             | ControlError::Container(_)
             | ControlError::ProfileRemoval(_)

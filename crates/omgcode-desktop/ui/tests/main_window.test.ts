@@ -667,15 +667,25 @@ describe("approvals nudge and new session", () => {
     });
   });
 
-  it("explains how to register workspaces when none exist", async () => {
-    await start({ workspace_list: () => ({ development_root_set: false, workspaces: [] }) });
+  it("sends the operator to Settings to register workspaces when none exist", async () => {
+    await start({
+      workspace_list: () => ({ development_root_set: false, workspaces: [] }),
+      settings_show_window: () => null,
+    });
     buttonByText(root, "New session").click();
     await settle();
     const dialog = root.querySelector("dialog") as HTMLDialogElement;
-    expect(dialog.textContent).toContain("omgcode workspace set-root");
-    expect(dialog.textContent).toContain("omgcode workspace register");
+    expect(dialog.textContent).toContain("register a workspace in Settings");
     expect(hasButton(dialog, "Create")).toBe(false);
     expect(hasButton(dialog, "Close")).toBe(true);
+
+    buttonByText(dialog, "Open settings").click();
+    await settle();
+    expect(ipc.callsTo("settings_show_window")).toHaveLength(1);
+    // The main window only shows the settings window; it changes no setting itself.
+    expect(ipc.calls.map((call) => call.command).filter((c) => c.startsWith("settings_"))).toEqual([
+      "settings_show_window",
+    ]);
   });
 
   it("creates a session in the chosen workspace and opens it", async () => {

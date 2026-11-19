@@ -266,7 +266,7 @@ check the server's configuration before sending sensitive text.
 - **Prompt settings UI:** Inspect the versioned base prompt compiled into the
   Rust application and shown read-only. Add separate user preferences at
   application, workspace, and session scope. The CLI can print the compiled
-  prompt; the desktop settings window is read-only and does not show the
+  prompt; the desktop settings window does not show or change the
   prompt. See the
   [initial prompt draft](prompts/system.md) and [instruction design](docs/agent-instructions.md).
 - **Automatic compaction:** Configure a trigger in tokens; 200k means 200,000

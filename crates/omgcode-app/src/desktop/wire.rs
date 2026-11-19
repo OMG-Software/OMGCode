@@ -782,8 +782,65 @@ pub struct WorkspaceSettingsView {
     pub write: bool,
     /// The execute preference.
     pub execute: bool,
+    /// The task-network preference.
+    pub task_network: bool,
+    /// The host-services preference.
+    pub host_services: bool,
     /// Display-safe text of the selected package cache root, if any.
     pub package_cache_root: Option<String>,
+}
+
+/// Arguments of a settings change that names only the expected revision
+/// (`settings_choose_root`, `settings_register_workspace`). The folder comes
+/// from a native dialog that Rust opens, never from the caller (ADR-0059
+/// decision 4).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsRevisionRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+}
+
+/// Arguments of a settings change for one registered workspace
+/// (`settings_choose_package_cache`, `settings_clear_package_cache`).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceRevisionRequest {
+    /// A registered workspace identifier.
+    pub workspace_id: Uuid,
+    /// The settings revision the window last read.
+    pub revision: u64,
+}
+
+/// The complete preference set a window asks for. Every flag is required,
+/// so a missing field is an error rather than a silent default.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionFlags {
+    /// Offer the local model the workspace tools.
+    pub model_tools: bool,
+    /// Allow reading workspace data.
+    pub read: bool,
+    /// Allow writing workspace data.
+    pub write: bool,
+    /// Allow process execution.
+    pub execute: bool,
+    /// Allow task network access.
+    pub task_network: bool,
+    /// Allow host-service Unix-socket access for a trusted `run`.
+    pub host_services: bool,
+}
+
+/// Arguments of `settings_set_permissions`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionsChangeRequest {
+    /// A registered workspace identifier.
+    pub workspace_id: Uuid,
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// The complete preference set wanted.
+    pub permissions: PermissionFlags,
 }
 
 /// How this process obtains its model connection.
@@ -887,13 +944,11 @@ pub struct SkillSettingView {
     pub workspace_overrides: Vec<SkillOverrideView>,
 }
 
-/// The `settings_overview` response: a read-only view of the trusted
-/// configuration, for the `settings` window only.
+/// The view of the trusted configuration that every `settings` window command
+/// returns, for the `settings` window only.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SettingsOverview {
-    /// Whether the settings store exists. Without it every list is empty.
-    pub store_initialized: bool,
-    /// The global settings revision, `0` without a store.
+    /// The global settings revision. A change must name it.
     pub revision: u64,
     /// Display-safe development root, if one is set.
     pub development_root: Option<String>,
