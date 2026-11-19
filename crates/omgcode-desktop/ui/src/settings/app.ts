@@ -18,7 +18,7 @@ export interface SettingsApp {
 }
 
 /**
- * What this window changes, and what still needs the trusted CLI (ADR-0059 phase S2, ADR-0062).
+ * What this window changes, and what still needs the trusted CLI (ADR-0059 phase S2, ADR-0063).
  * Folders are chosen in a system dialog, and every change that allows more access, or chooses
  * where chat is sent, is confirmed there.
  */

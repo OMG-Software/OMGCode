@@ -9,7 +9,7 @@
 //! provider profile (whose recorded endpoint and stored credential are used
 //! instead), come from the process command line ([`launch`]) and nowhere else.
 //! With neither, each turn uses the active connection chosen in the `settings`
-//! window, or the default endpoint while none is chosen (ADR-0062).
+//! window, or the default endpoint while none is chosen (ADR-0063).
 
 pub mod commands;
 pub mod dialogs;

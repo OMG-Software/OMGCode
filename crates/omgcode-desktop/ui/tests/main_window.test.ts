@@ -3,6 +3,7 @@ import { neutralise } from "../src/dom";
 import { setInvoker } from "../src/ipc/client";
 import type { SearchResult, SessionSummary } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
+import { PLACEHOLDER_CTRL_ENTER, PLACEHOLDER_ENTER } from "../src/main/composer";
 import { createMockBackend } from "../src/mock/backend";
 import { HOSTILE } from "../src/mock/fixtures";
 import {
@@ -485,7 +486,11 @@ describe("chat lifecycle", () => {
     await start({
       session_tree: treeOf(s),
       session_transcript: () => page(s, [userMessage(1, "hi")]),
-      chat_defaults: () => ({ settings: { ...SETTINGS, endpoint }, preferences: "defaults" }),
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, endpoint },
+        preferences: "defaults",
+        enter_to_send: true,
+      }),
       chat_send: () => running,
     });
     itemFor("s-chat").click();
@@ -620,6 +625,7 @@ describe("chat lifecycle", () => {
           auto_compact: false,
         },
         preferences: "defaults",
+        enter_to_send: true,
       }),
     });
     itemFor("s-chat").click();
@@ -871,7 +877,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
   it("saves the model settings as defaults without the endpoint", async () => {
     const saved = { ...SETTINGS, model: "saved-model" };
     await open({
-      chat_preferences_save: () => ({ settings: saved, preferences: "saved" }),
+      chat_preferences_save: () => ({ settings: saved, preferences: "saved", enter_to_send: true }),
     });
     const model = root.querySelector<HTMLInputElement>(".settings input[type=text]");
     type(model as HTMLInputElement, "saved-model");
@@ -887,9 +893,123 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       instructions: SETTINGS.instructions,
       compact_threshold: SETTINGS.compact_threshold,
       auto_compact: SETTINGS.auto_compact,
+      enter_to_send: true,
     });
     expect("endpoint" in args.preferences).toBe(false);
     expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");
+  });
+
+  describe("Enter to send", () => {
+    function messageBox(): HTMLTextAreaElement {
+      return root.querySelector(".message-box") as HTMLTextAreaElement;
+    }
+
+    function enterToSendBox(): HTMLInputElement {
+      const label = Array.from(root.querySelectorAll(".settings label")).find(
+        (candidate) => candidate.textContent === "Enter to send",
+      );
+      return label?.querySelector("input") as HTMLInputElement;
+    }
+
+    /** Dispatches a keydown and reports whether the composer prevented the default. */
+    function press(init: KeyboardEventInit): boolean {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+      messageBox().dispatchEvent(event);
+      return event.defaultPrevented;
+    }
+
+    it("is on by default: Enter sends and Shift+Enter keeps the newline", async () => {
+      await open();
+      expect(enterToSendBox().checked).toBe(true);
+      expect(messageBox().placeholder).toBe(PLACEHOLDER_ENTER);
+      type(messageBox(), "hello");
+
+      expect(press({ key: "Enter", shiftKey: true })).toBe(false);
+      expect(press({ key: "Enter", isComposing: true })).toBe(false);
+      await settle();
+      expect(ipc.callsTo("chat_send")).toHaveLength(0);
+
+      expect(press({ key: "Enter" })).toBe(true);
+      await settle();
+      expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ message: "hello" });
+    });
+
+    it("does not send an empty message on Enter, and says why", async () => {
+      await open();
+      expect(press({ key: "Enter" })).toBe(true);
+      await settle();
+      expect(ipc.callsTo("chat_send")).toHaveLength(0);
+      expect(root.querySelector(".composer-error")?.textContent).toBe("Write a message first.");
+    });
+
+    it("when saved off, keeps Enter as a newline and sends on Ctrl+Enter", async () => {
+      await open({
+        chat_defaults: () => ({
+          settings: { ...SETTINGS },
+          preferences: "saved",
+          enter_to_send: false,
+        }),
+      });
+      expect(enterToSendBox().checked).toBe(false);
+      expect(messageBox().placeholder).toBe(PLACEHOLDER_CTRL_ENTER);
+      type(messageBox(), "hello");
+
+      expect(press({ key: "Enter" })).toBe(false);
+      await settle();
+      expect(ipc.callsTo("chat_send")).toHaveLength(0);
+
+      expect(press({ key: "Enter", ctrlKey: true })).toBe(true);
+      await settle();
+      expect(ipc.callsTo("chat_send")).toHaveLength(1);
+    });
+
+    it("applies a change at once and saves it with the defaults", async () => {
+      await open({
+        chat_preferences_save: () => ({
+          settings: { ...SETTINGS },
+          preferences: "saved",
+          enter_to_send: false,
+        }),
+      });
+      enterToSendBox().click();
+      expect(messageBox().placeholder).toBe(PLACEHOLDER_CTRL_ENTER);
+      type(messageBox(), "hello");
+      expect(press({ key: "Enter" })).toBe(false);
+
+      buttonByText(root, "Save as defaults").click();
+      await settle();
+      const args = ipc.callsTo("chat_preferences_save")[0]?.args as {
+        preferences: Record<string, unknown>;
+      };
+      expect(args.preferences.enter_to_send).toBe(false);
+      expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    });
+
+    it("stays on when the saved defaults cannot be loaded", async () => {
+      await open({ chat_defaults: () => rejection("internal", "failed") });
+      expect(enterToSendBox().checked).toBe(true);
+    });
+
+    it("keeps a change made before the saved defaults arrive", async () => {
+      let finish: (value: unknown) => void = () => undefined;
+      await open({
+        chat_defaults: () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      });
+      enterToSendBox().click();
+      expect(enterToSendBox().checked).toBe(false);
+
+      finish({ settings: { ...SETTINGS }, preferences: "saved", enter_to_send: true });
+      await settle();
+      expect(enterToSendBox().checked).toBe(false);
+      expect(messageBox().placeholder).toBe(PLACEHOLDER_CTRL_ENTER);
+      type(messageBox(), "hello");
+      expect(press({ key: "Enter" })).toBe(false);
+      await settle();
+      expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    });
   });
 
   it("shows the core error when saving defaults fails", async () => {
@@ -905,7 +1025,11 @@ describe("settings window, saved defaults, and per-turn skills", () => {
 
   it("says when saved defaults could not be read", async () => {
     await open({
-      chat_defaults: () => ({ settings: { ...SETTINGS }, preferences: "unreadable" }),
+      chat_defaults: () => ({
+        settings: { ...SETTINGS },
+        preferences: "unreadable",
+        enter_to_send: true,
+      }),
     });
     expect(root.querySelector(".preferences-row")?.textContent).toContain(
       "Saved defaults could not be read",
@@ -928,7 +1052,11 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     await settle();
     expect(ipc.callsTo("chat_preferences_save")).toHaveLength(1);
     type(model, "second");
-    finish({ settings: { ...SETTINGS, model: "first" }, preferences: "saved" });
+    finish({
+      settings: { ...SETTINGS, model: "first" },
+      preferences: "saved",
+      enter_to_send: true,
+    });
     await settle();
     expect(model.value).toBe("second");
     expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");

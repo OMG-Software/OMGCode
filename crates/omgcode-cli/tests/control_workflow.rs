@@ -1084,7 +1084,7 @@ fn file_write_approvals_require_the_writers_stopped_acknowledgement() {
 }
 
 /// The trusted CLI chooses the connection a desktop shell without a connection
-/// argument uses, among local profiles with an endpoint (ADR-0062).
+/// argument uses, among local profiles with an endpoint (ADR-0063).
 #[test]
 fn provider_profile_select_records_and_clears_the_active_connection() {
     let temporary = TempDir::new().expect("temporary directory");

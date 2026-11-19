@@ -357,7 +357,7 @@ fn replay_rejects_invalid_endpoints_and_unknown_fields() {
 const OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434/v1";
 
 /// An `ollama_local` profile records an endpoint under the same loopback rule
-/// as `lm_studio` (ADR-0062), and is refused exactly where `lm_studio` is.
+/// as `lm_studio` (ADR-0063), and is refused exactly where `lm_studio` is.
 #[test]
 fn an_ollama_local_profile_records_a_loopback_endpoint_under_the_shared_rule() {
     let (_directory, data, mut store) = store();

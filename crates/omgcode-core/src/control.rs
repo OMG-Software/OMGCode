@@ -261,7 +261,7 @@ pub struct ControlSnapshot {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     provider_profiles: Vec<ProviderProfileStatus>,
     /// The recorded local provider profile a desktop process started without
-    /// a connection argument uses (ADR-0062). `None` means the default
+    /// a connection argument uses (ADR-0063). `None` means the default
     /// endpoint. It always names a profile in `provider_profiles`.
     #[serde(skip_serializing_if = "Option::is_none")]
     active_provider: Option<Uuid>,
@@ -447,7 +447,7 @@ enum Action {
         )]
         credential_id: Option<CredentialId>,
     },
-    /// The active local connection changed (ADR-0062). `None` returns to the
+    /// The active local connection changed (ADR-0063). `None` returns to the
     /// default endpoint.
     ActiveProviderSelected {
         profile_id: Option<Uuid>,

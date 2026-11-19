@@ -11,14 +11,14 @@
 //!   is the `OMGCODE_LM_TOKEN` variable, through [`read_lm_token`].
 //! - [`ConnectionSource::Profile`] reads the endpoint recorded with a
 //!   recorded local provider profile (`lm_studio` or `ollama_local`,
-//!   ADR-0062) and the credential bound to it from protected OS storage. The
+//!   ADR-0063) and the credential bound to it from protected OS storage. The
 //!   environment variable is not read at all, and every failure ends the turn
 //!   with a `credential` error. There is no fallback to no token, to another
 //!   token, or to another endpoint. A profile that records no endpoint is
 //!   refused with `endpoint_not_recorded`. An `ollama_local` profile is always
 //!   `none`, so it never reads native storage.
 //! - [`ConnectionSource::Active`] is the desktop default when no connection
-//!   argument was given (ADR-0059 decision 7, ADR-0062). Each turn reads the
+//!   argument was given (ADR-0059 decision 7, ADR-0063). Each turn reads the
 //!   active connection recorded in the settings store. When one is selected it
 //!   is resolved exactly as [`ConnectionSource::Profile`], within the same
 //!   open store, so the selection and the profile it names are read together.
@@ -67,7 +67,7 @@ pub enum TokenSource {
     Profile(String),
     /// The active connection recorded in the settings store, read again for
     /// each turn, or the launch endpoint and `OMGCODE_LM_TOKEN` when none is
-    /// selected (ADR-0062).
+    /// selected (ADR-0063).
     Active,
 }
 

@@ -298,10 +298,13 @@ fn saved_chat_preferences_become_the_defaults_and_keep_the_fixed_endpoint() {
             "max_output_tokens": 2048,
             "instructions": "Prefer short answers.",
             "compact_threshold": 24_000,
-            "auto_compact": true
+            "auto_compact": true,
+            "enter_to_send": false
         }})))
         .expect("save");
     assert_eq!(saved.preferences, PreferencesSource::Saved);
+    assert!(!saved.enter_to_send);
+    assert_eq!(json_of(&saved)["enter_to_send"], false);
     assert_eq!(saved.settings.endpoint, endpoint);
     assert_eq!(saved.settings.model, "qwen3-coder");
     assert_eq!(saved.settings.context_tokens, 32_768);
@@ -373,4 +376,22 @@ fn a_damaged_preferences_file_is_reported_and_replaced_by_a_save() {
         }})))
         .expect("save replaces the damaged file");
     assert_eq!(saved.preferences, PreferencesSource::Saved);
+    // A request without the field keeps the built-in choice.
+    assert!(saved.enter_to_send);
+}
+
+#[test]
+fn enter_to_send_must_be_a_boolean() {
+    let refused = serde_json::from_value::<omgcode_app::desktop::ChatPreferencesSaveRequest>(
+        json!({"preferences": {
+            "model": "m",
+            "context_tokens": 1,
+            "max_output_tokens": 1,
+            "instructions": "",
+            "compact_threshold": 1,
+            "auto_compact": false,
+            "enter_to_send": "yes"
+        }}),
+    );
+    assert!(refused.is_err(), "a non-boolean value is refused");
 }

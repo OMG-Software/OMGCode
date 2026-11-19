@@ -1064,7 +1064,7 @@ mod tests {
     }
 
     /// Payload shapes captured from Ollama 0.40.16 at
-    /// `http://127.0.0.1:11434/v1/chat/completions` (ADR-0062). Only the
+    /// `http://127.0.0.1:11434/v1/chat/completions` (ADR-0063). Only the
     /// assistant text is shortened; every member and its order are as sent.
     const OLLAMA_TEXT_STREAM: &str = concat!(
         r#"data: {"id":"chatcmpl-203","object":"chat.completion.chunk","created":1795102716,"model":"lfm2.5:latest","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}"#,

@@ -1,5 +1,5 @@
 //! Choosing the model connection in the desktop `settings` window (ADR-0059
-//! decision 7, ADR-0062): recording a local LM Studio or Ollama connection,
+//! decision 7, ADR-0063): recording a local LM Studio or Ollama connection,
 //! selecting it after a native confirmation, and the next chat turn using it.
 //! A scripted prompt stands in for the native confirmation, and loopback
 //! servers stand in for the model servers.

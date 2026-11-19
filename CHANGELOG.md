@@ -6,8 +6,8 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.42.0 adds Ollama Local and a model-provider dropdown in the
-  desktop `settings` window (ADR-0062, accepted; the connection part of
+- Version 0.43.0 adds Ollama Local and a model-provider dropdown in the
+  desktop `settings` window (ADR-0063, accepted; the connection part of
   ADR-0059 phase S3).
   - **Ollama Local:** an `ollama_local` profile can record a loopback
     endpoint, such as `http://127.0.0.1:11434/v1`, under the same rule as
@@ -25,7 +25,7 @@ Changes are recorded here before a release version is assigned.
     selected; an unchanged selection is refused; replay checks each one
     again; removing the selected profile clears it. The snapshot writes
     `active_provider` only when set, so older journals keep their bytes; a
-    journal that records a selection cannot be read by 0.41.0. The
+    journal that records a selection cannot be read by 0.42.0. The
     new trusted CLI command `workspace provider-profile-select <name>` (or
     `--default`) records it. CLI `chat` does not read it.
   - **Settings window dropdown:** **Model provider** lists the default LM
@@ -51,6 +51,22 @@ Changes are recorded here before a release version is assigned.
     `settings`. API-key entry in the window, execution setup, and skills
     still change only through the CLI.
 
+- Version 0.42.0 makes Enter send the desktop composer's message and
+  Shift+Enter add a newline (ADR-0062, accepted). Before this, only
+  Ctrl+Enter sent.
+  - **Enter to send:** a check box in the composer's settings panel, on by
+    default. Turning it off makes Enter add a newline again. Ctrl+Enter
+    (Cmd+Enter) sends in both modes. An Enter that confirms an input-method
+    composition never sends. The message box hint names the current send key.
+    A change made before the saved defaults load is kept.
+  - **Saved with the chat preferences:** **Save as defaults** stores the choice
+    as `enter_to_send` in `chat-preferences.json`, and `chat_defaults` returns
+    it beside the turn settings. A file or request without the field reads it
+    as on, so files saved by version 0.41.0 keep working. An older build
+    reports a file with the field as unreadable and uses its built-in values.
+  - The panel is renamed from **Model settings** to **Chat settings**.
+  - No command, permission, or capability changed. The choice grants nothing
+    and never reaches a turn.
 - Version 0.41.0 lets the desktop `settings` window change workspace settings
   (Phase S2 of ADR-0059; ADR-0060, accepted). Before this, the window was
   read-only and asked the operator to run `omgcode workspace status` first.

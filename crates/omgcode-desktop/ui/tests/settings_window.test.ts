@@ -193,7 +193,7 @@ describe("settings window", () => {
     expect(root.textContent).toContain(INTRO);
     // No control takes a typed path: folders come only from the system dialog. The only typed
     // values are a new connection's name and loopback URL, and the only dropdowns choose a
-    // provider (ADR-0062).
+    // provider (ADR-0063).
     expect(root.querySelectorAll("textarea")).toHaveLength(0);
     const selects = Array.from(root.querySelectorAll("select")).map((s) => s.ariaLabel);
     expect(selects).toEqual(["Model provider", "New connection provider"]);

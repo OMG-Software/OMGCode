@@ -237,6 +237,8 @@ export interface ChatPreferences {
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
+  /** Enter sends and Shift+Enter adds a newline; otherwise Ctrl+Enter sends (ADR-0062). */
+  enter_to_send: boolean;
 }
 
 export type PreferencesSource = "defaults" | "saved" | "unreadable";
@@ -244,6 +246,8 @@ export type PreferencesSource = "defaults" | "saved" | "unreadable";
 export interface ChatDefaults {
   settings: ChatSettings;
   preferences: PreferencesSource;
+  /** A composer keyboard choice, not a turn setting (ADR-0062). */
+  enter_to_send: boolean;
 }
 
 /** Skills enabled for a session's workspace. Names only. */
@@ -294,13 +298,13 @@ export interface ProviderProfileView {
   auth: string;
   endpoint: string | null;
   credential_bound: boolean;
-  /** A local LM Studio or Ollama profile with a recorded endpoint (ADR-0062). */
+  /** A local LM Studio or Ollama profile with a recorded endpoint (ADR-0063). */
   selectable: boolean;
   /** Whether it is the active connection. */
   active: boolean;
 }
 
-/** A local provider the settings window may record (ADR-0062). */
+/** A local provider the settings window may record (ADR-0063). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
 
 export interface ToolchainProfileView {

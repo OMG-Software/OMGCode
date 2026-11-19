@@ -18,7 +18,7 @@
 //!   The token is resolved for one turn from the operator-chosen
 //!   [`TokenSource`] (the environment, a provider profile's stored
 //!   credential, ADR-0047, or the active connection chosen in the `settings`
-//!   window, ADR-0062), held in a zeroing type with a redacted `Debug`,
+//!   window, ADR-0063), held in a zeroing type with a redacted `Debug`,
 //!   removed from every recorded and returned message, and dropped when the
 //!   turn thread ends. Nothing is cached between turns. The `main` window
 //!   cannot choose or see the source, and no window sees the token.
@@ -144,7 +144,7 @@ pub struct DesktopConfig {
     /// turn resolves the profile again and refuses the turn with
     /// `endpoint_changed` when the profile's endpoint no longer equals it.
     /// With the active source it is the default used while no connection is
-    /// selected in `settings` (ADR-0062).
+    /// selected in `settings` (ADR-0063).
     pub endpoint: String,
     /// Where each chat turn gets its endpoint and optional local server token.
     /// It is fixed for the process lifetime and never comes from the

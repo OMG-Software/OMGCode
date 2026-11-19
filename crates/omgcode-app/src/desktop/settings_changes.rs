@@ -468,7 +468,7 @@ impl DesktopService {
     }
 
     /// `settings` only. Choose the active model connection: a recorded local
-    /// profile by name, or `None` for the default endpoint (ADR-0062). A
+    /// profile by name, or `None` for the default endpoint (ADR-0063). A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///

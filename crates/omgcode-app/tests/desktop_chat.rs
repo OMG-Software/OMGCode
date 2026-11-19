@@ -590,6 +590,7 @@ fn chat_defaults_are_the_cli_defaults_with_the_fixed_endpoint() {
     let endpoint = "http://127.0.0.1:1234/v1";
     let reply = fixture.service(endpoint).chat_defaults();
     assert_eq!(reply.preferences, PreferencesSource::Defaults);
+    assert!(reply.enter_to_send, "Enter sends by default");
     let defaults = reply.settings;
     assert_eq!(defaults.endpoint, endpoint);
     assert_eq!(defaults.model, "");

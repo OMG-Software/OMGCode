@@ -692,10 +692,14 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       instructions: "",
       compact_threshold: 6000,
       auto_compact: true,
+      enter_to_send: true,
     };
+    // A request saved by an older window may lack the field; core reads that as on.
+    const { enter_to_send = true, ...turnSettings } = clone(preferences);
     return {
-      settings: { endpoint: currentEndpoint(), ...clone(preferences) } satisfies ChatSettings,
+      settings: { endpoint: currentEndpoint(), ...turnSettings } satisfies ChatSettings,
       preferences: savedPreferences === null ? "defaults" : "saved",
+      enter_to_send,
     };
   }
 

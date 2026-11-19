@@ -3,14 +3,59 @@ import { formatCountdown, formatUpdated, utf8Length } from "../src/format";
 import type { ChatOutcome } from "../src/ipc/types";
 import {
   composerState,
+  isSendKey,
   messageProblem,
   outcomeLine,
+  type SendKey,
   sessionActions,
   settingsValid,
   statusLabel,
   titleProblem,
 } from "../src/main/model";
 import { SETTINGS, session } from "./helpers";
+
+describe("isSendKey", () => {
+  const plain: SendKey = {
+    key: "Enter",
+    shiftKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    isComposing: false,
+    keyCode: 13,
+  };
+
+  it("sends on a plain Enter only when Enter to send is on", () => {
+    expect(isSendKey(plain, true)).toBe(true);
+    expect(isSendKey(plain, false)).toBe(false);
+  });
+
+  it("keeps Shift+Enter and Alt+Enter as newlines", () => {
+    for (const enterToSend of [true, false]) {
+      expect(isSendKey({ ...plain, shiftKey: true }, enterToSend)).toBe(false);
+      expect(isSendKey({ ...plain, altKey: true }, enterToSend)).toBe(false);
+    }
+  });
+
+  it("always sends on Ctrl+Enter or Cmd+Enter", () => {
+    for (const enterToSend of [true, false]) {
+      expect(isSendKey({ ...plain, ctrlKey: true }, enterToSend)).toBe(true);
+      expect(isSendKey({ ...plain, metaKey: true }, enterToSend)).toBe(true);
+    }
+  });
+
+  it("never sends on an Enter that confirms an input-method composition", () => {
+    for (const enterToSend of [true, false]) {
+      expect(isSendKey({ ...plain, isComposing: true }, enterToSend)).toBe(false);
+      expect(isSendKey({ ...plain, keyCode: 229 }, enterToSend)).toBe(false);
+      expect(isSendKey({ ...plain, ctrlKey: true, isComposing: true }, enterToSend)).toBe(false);
+    }
+  });
+
+  it("ignores other keys", () => {
+    expect(isSendKey({ ...plain, key: "a", keyCode: 65 }, true)).toBe(false);
+  });
+});
 
 describe("composerState", () => {
   it("is hidden without a session, when archived, busy, invalid, or after a load failure", () => {

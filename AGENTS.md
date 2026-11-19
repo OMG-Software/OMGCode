@@ -90,7 +90,7 @@ widens access, and creates an empty settings store on first use
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
 connections without a credential
-([ADR-0062](docs/adr/0062-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
+([ADR-0063](docs/adr/0063-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
 Credentials, execution setup, and skills still change only through the
 trusted CLI. The desktop shell has no development
 panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to

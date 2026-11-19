@@ -186,7 +186,7 @@ impl DesktopError {
     }
 
     /// The active model connection changed in `settings` since the window read
-    /// it (ADR-0062). Nothing was sent.
+    /// it (ADR-0063). Nothing was sent.
     pub(crate) fn connection_changed() -> Self {
         Self::new(
             "connection_changed",

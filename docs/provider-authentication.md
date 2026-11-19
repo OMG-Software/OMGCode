@@ -18,7 +18,7 @@ billing or defer it.
 | ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Official local/open-source integration documented; implementation and entitlement tests pending |
 | Anthropic API | User API key; API-account billing | Planned; not implemented |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
-| Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.42.0, ADR-0062); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
+| Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.43.0, ADR-0063); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
 | Ollama Cloud | Provider cloud credentials | Planned; not implemented |
 | OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
 | LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
@@ -30,8 +30,8 @@ provider name.
 ## Implemented prototype (v0.1.0)
 
 The current CLI has one local Chat Completions adapter. It serves LM Studio
-and, since 0.42.0, Ollama Local, whose `/v1` API returns the same reply,
-tool-call, and stream shapes ([Ollama Local](#ollama-local-0420)). It sends
+and, since 0.43.0, Ollama Local, whose `/v1` API returns the same reply,
+tool-call, and stream shapes ([Ollama Local](#ollama-local-0430)). It sends
 non-streaming requests by default and streamed requests on request
 ([streamed replies](#streamed-replies-0320)). The
 caller supplies an already available model name, a maximum output budget, and a
@@ -156,8 +156,8 @@ provider-specific login approvals remain prerequisites for any real
 connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
 
 Since 0.31.0 `provider-profile-add` accepts `--endpoint <url>` (ADR-0048). An
-`lm_studio` profile accepts one, and since 0.42.0 an `ollama_local` profile
-does too (ADR-0062). It must pass the rule the local adapter
+`lm_studio` profile accepts one, and since 0.43.0 an `ollama_local` profile
+does too (ADR-0063). It must pass the rule the local adapter
 applies to every request: plain `http`, a literal loopback IP, an explicit
 non-zero port, the path `/v1` or `/v1/`, no user information, query, or
 fragment, and at most 256 bytes. Core has one implementation of that rule, and
@@ -211,9 +211,9 @@ the local LM Studio adapter does (next section). A memory-only session
 credential is not implemented. Any process running as the same user can read
 these credentials.
 
-## Ollama Local (0.42.0)
+## Ollama Local (0.43.0)
 
-[ADR-0062](adr/0062-choose-the-model-connection-in-settings-and-add-ollama-local.md)
+[ADR-0063](adr/0063-choose-the-model-connection-in-settings-and-add-ollama-local.md)
 connects the local adapter to Ollama. A probe of Ollama 0.40.16 on Windows
 with `lfm2.5:latest` and `gemma4:e2b` showed that
 `http://127.0.0.1:11434/v1/chat/completions` returns the Chat Completions
@@ -255,7 +255,7 @@ credential. It is the only adapter that reads one.
   <name>`. `omgcode-desktop --provider-profile <name>` selects it for the whole
   process at launch. Without a launch argument, the desktop `settings` window
   can choose a profile as the active connection after a native confirmation
-  (ADR-0062). The `main` webview cannot choose or see it. With a profile
+  (ADR-0063). The `main` webview cannot choose or see it. With a profile
   selected, `OMGCODE_LM_TOKEN` is not read and the endpoint comes from the
   profile, not from `--endpoint` (see
   [endpoint binding](#endpoint-binding-0310)). Without one, behaviour is

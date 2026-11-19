@@ -39,7 +39,7 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
-- Since version 0.42.0 (ADR-0062), the `settings` window chooses the model
+- Since version 0.43.0 (ADR-0063), the `settings` window chooses the model
   connection from a dropdown: the default LM Studio endpoint or a recorded
   `lm_studio` or `ollama_local` profile, after a native confirmation. It can
   also add and remove local connections without a credential. A launch
@@ -65,6 +65,9 @@ merged to `main` at the time of writing):
   every folder and a native confirmation before every change that widens
   access. The settings store is created empty the first time the window
   reads it, so no CLI command is needed first.
+- Since version 0.42.0 (ADR-0062), Enter sends the composer's message and
+  Shift+Enter adds a newline. An **Enter to send** chat preference, on by
+  default, can be turned off to restore Ctrl+Enter. See [chat](#chat).
 
 Not implemented:
 
@@ -174,7 +177,7 @@ normal close exits with status 0.
 With neither `--endpoint` nor `--provider-profile`, the connection is not
 fixed. Each chat turn resolves the active connection recorded in the
 settings store when it starts: a profile chosen in the `settings` window
-(ADR-0062), or, with none chosen, `http://127.0.0.1:1234/v1` and
+(ADR-0063), or, with none chosen, `http://127.0.0.1:1234/v1` and
 `OMGCODE_LM_TOKEN`. An unusable selection fails the turn, not the launch, so
 the `settings` window stays reachable to change it.
 
@@ -377,9 +380,22 @@ server, and the context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
+- **Send key.** With **Enter to send** on, the default, Enter sends the
+  message and Shift+Enter or Alt+Enter adds a newline. With it off, Enter
+  adds a newline. Ctrl+Enter (Cmd+Enter) sends in both modes. An Enter that
+  confirms an input-method composition never sends. A send key never adds a
+  newline, so Enter on an empty message shows why it cannot be sent. The
+  check box is in **Chat settings** and applies at once; **Save as defaults**
+  keeps it for the next run. A change made before the saved defaults load is
+  kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
+  outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Saved preferences.** **Save as defaults** sends the model name, context
-  size, output reserve, custom instructions, compaction threshold, and the
-  automatic compaction switch to `chat_preferences_save`. They carry no
+  size, output reserve, custom instructions, compaction threshold, the
+  automatic compaction switch, and the **Enter to send** choice to
+  `chat_preferences_save`. A file or request without `enter_to_send`, such
+  as a file saved before version 0.42.0, reads it as on. An older build
+  refuses a file that has the field as unknown, reports it as `unreadable`,
+  and uses its built-in values until the next save. They carry no
   endpoint and grant nothing. The request refuses an unknown field, so an
   endpoint cannot be saved. A model name over 256 bytes or with a control
   character, and instructions over 64 KiB, are refused with
@@ -416,7 +432,7 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   another connection after `main` read the endpoint. No turn starts. The
   composer then reads the endpoint again and keeps the draft and the model
   name, so the operator can check the model before sending again
-  (ADR-0062). With `--provider-profile`, each turn also resolves the profile
+  (ADR-0063). With `--provider-profile`, each turn also resolves the profile
   again. If its recorded endpoint no longer equals the
   launch value, because the profile was removed and added again, `chat_send`
   fails at once with a `credential` error that starts `endpoint_changed:` and
@@ -588,7 +604,7 @@ by the same re-read.
 The three connection commands call the same `ControlStore` functions as the
 CLI's `workspace provider-profile-select`, `provider-profile-add`, and
 `provider-profile-remove`, with the same revision check and validation
-(ADR-0062).
+(ADR-0063).
 
 - **Selecting needs a native confirmation.** `settings_select_connection`
   takes the revision and a profile name, or none for the default. The
@@ -718,7 +734,7 @@ What the design does:
 - **Endpoint and token outside `main`.** The `main` webview cannot choose the
   provider, choose the credential source, or read the token. Only the
   `settings` window chooses the connection, among recorded local profiles,
-  after a native confirmation, unless a launch argument fixed it (ADR-0062).
+  after a native confirmation, unless a launch argument fixed it (ADR-0063).
   No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
 - **Channel, no `core:` permission.** `chat_subscribe` takes a Tauri IPC
@@ -882,8 +898,9 @@ private store refuses, see the notes in
   `ui/tests/live_preview.test.ts` (the live entry and its bounds), and
   `ui/tests/client.test.ts` (the channel wrapper) cover the streaming frontend.
   The main window tests also cover the cancelled notice, which is decided by
-  the error code only, saving preferences, the unreadable note, and the
-  skill choice and its limit. `ui/tests/settings_window.test.ts` covers the
+  the error code only, saving preferences, the unreadable note, the send
+  keys with **Enter to send** on and off, and the skill choice and its
+  limit. `ui/tests/settings_window.test.ts` covers the
   read-only view, hostile recorded text, errors, and refresh. The scans
   also confine the settings command to the settings client and keep the
   settings window free of main, approvals, and chat code.
@@ -941,6 +958,10 @@ private store refuses, see the notes in
   development server against the mock backend. The native dialogs and the
   real shell's settings window were not driven by automation. The Linux
   dialog path has never run.
+- 0.42.0 (ADR-0062): the send keys were checked by unit, main window, and
+  service tests and in the Vite development server against the mock backend.
+  The real shell's window was not driven, and no input method was used, so
+  the composition guard is checked against synthetic events only.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no
