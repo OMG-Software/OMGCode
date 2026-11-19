@@ -195,8 +195,8 @@ pub struct RunStart {
     /// omit it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub model_origin: bool,
-    /// Whether a standing `allow` authorized this model run, since 0.42.0
-    /// (ADR-0062). Such a run is withdrawn once the model command state
+    /// Whether a standing `allow` authorized this model run, since 0.43.0
+    /// (ADR-0063). Such a run is withdrawn once the model command state
     /// leaves `allow`. Approved and trusted CLI runs omit it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub standing_allow: bool,

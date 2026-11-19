@@ -84,7 +84,7 @@ fn is_valid_workspace_uuid(value: Uuid) -> bool {
 /// the model file-write tools.
 ///
 /// Each operation preference is [`Access::Deny`], [`Access::Prompt`], or
-/// [`Access::Allow`] (ADR-0062). They are policy inputs only and never mint
+/// [`Access::Allow`] (ADR-0063). They are policy inputs only and never mint
 /// execution grants. Trusted operator commands treat `Prompt` and `Allow`
 /// alike; the two differ only for model-initiated tool calls.
 ///

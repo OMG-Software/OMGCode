@@ -60,7 +60,10 @@ merged to `main` at the time of writing):
   every folder and a native confirmation before every change that widens
   access. The settings store is created empty the first time the window
   reads it, so no CLI command is needed first.
-- Since version 0.42.0 (ADR-0062), each preference except `model_tools` is
+- Since version 0.42.0 (ADR-0062), Enter sends the composer's message and
+  Shift+Enter adds a newline. An **Enter to send** chat preference, on by
+  default, can be turned off to restore Ctrl+Enter. See [chat](#chat).
+- Since version 0.43.0 (ADR-0063), each preference except `model_tools` is
   Deny, Prompt, or Allow, and each model file-write tool has its own limit. A
   chat turn waits for each approval it needs, and an approved call completes
   in the same turn. Every model tool call is recorded in the model action
@@ -367,9 +370,22 @@ server, and the context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
+- **Send key.** With **Enter to send** on, the default, Enter sends the
+  message and Shift+Enter or Alt+Enter adds a newline. With it off, Enter
+  adds a newline. Ctrl+Enter (Cmd+Enter) sends in both modes. An Enter that
+  confirms an input-method composition never sends. A send key never adds a
+  newline, so Enter on an empty message shows why it cannot be sent. The
+  check box is in **Chat settings** and applies at once; **Save as defaults**
+  keeps it for the next run. A change made before the saved defaults load is
+  kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
+  outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Saved preferences.** **Save as defaults** sends the model name, context
-  size, output reserve, custom instructions, compaction threshold, and the
-  automatic compaction switch to `chat_preferences_save`. They carry no
+  size, output reserve, custom instructions, compaction threshold, the
+  automatic compaction switch, and the **Enter to send** choice to
+  `chat_preferences_save`. A file or request without `enter_to_send`, such
+  as a file saved before version 0.42.0, reads it as on. An older build
+  refuses a file that has the field as unknown, reports it as `unreadable`,
+  and uses its built-in values until the next save. They carry no
   endpoint and grant nothing. The request refuses an unknown field, so an
   endpoint cannot be saved. A model name over 256 bytes or with a control
   character, and instructions over 64 KiB, are refused with
@@ -490,8 +506,8 @@ store exists from the first launch. It shows:
 - each registered workspace with its folder, a checkbox for `model_tools`, a
   Deny, Prompt, or Allow selector for each of `read`, `write`, `execute`,
   `task_network`, and `host_services`, a selector for each model file-write
-  tool's limit (edit, multi-edit, create, rename, and delete; since 0.42.0,
-  ADR-0062), and its package cache root with **Choose…** and, when one is set,
+  tool's limit (edit, multi-edit, create, rename, and delete; since 0.43.0,
+  ADR-0063), and its package cache root with **Choose…** and, when one is set,
   **Clear**; and **Register workspace…**, which is disabled until a root is
   set. A preference at Allow is shown filled and one at Prompt outlined;
 - the connection this process uses: the endpoint, and whether the token comes
@@ -569,9 +585,9 @@ by the same re-read.
 A model tool call needs a trusted single-use approval when its effective
 state is Prompt: the file-write tools (edit, multi-edit, create, rename, and
 delete) and the command tool under the default `write` and `execute` state,
-and, since 0.42.0, the read and list tools when `read` is Prompt
+and, since 0.43.0, the read and list tools when `read` is Prompt
 ([agent instructions](agent-instructions.md#approval-records),
-[deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0062)).
+[deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0063)).
 A call whose state is Allow needs none. The CLI
 commands `approvals list`, `show`, `approve`, and `deny` still work and remain
 the surface for headless use. The approvals window is a second surface for the
@@ -581,7 +597,7 @@ expiry, the settings revision, and the writers-stopped acknowledgement.
 The flow:
 
 1. A chat turn makes a call whose state is Prompt. Core records a pending
-   approval, and the turn waits for the decision (ADR-0062). It publishes the
+   approval, and the turn waits for the decision (ADR-0063). It publishes the
    exact call it waits on so that the approvals window can review it.
 2. The `main` window polls `approvals_summary` every 3 seconds and shows the
    pending count. It can show the approvals window and nothing more.
@@ -854,8 +870,9 @@ private store refuses, see the notes in
   `ui/tests/live_preview.test.ts` (the live entry and its bounds), and
   `ui/tests/client.test.ts` (the channel wrapper) cover the streaming frontend.
   The main window tests also cover the cancelled notice, which is decided by
-  the error code only, saving preferences, the unreadable note, and the
-  skill choice and its limit. `ui/tests/settings_window.test.ts` covers the
+  the error code only, saving preferences, the unreadable note, the send
+  keys with **Enter to send** on and off, and the skill choice and its
+  limit. `ui/tests/settings_window.test.ts` covers the
   read-only view, hostile recorded text, errors, and refresh. The scans
   also confine the settings command to the settings client and keep the
   settings window free of main, approvals, and chat code.
@@ -913,6 +930,10 @@ private store refuses, see the notes in
   development server against the mock backend. The native dialogs and the
   real shell's settings window were not driven by automation. The Linux
   dialog path has never run.
+- 0.42.0 (ADR-0062): the send keys were checked by unit, main window, and
+  service tests and in the Vite development server against the mock backend.
+  The real shell's window was not driven, and no input method was used, so
+  the composition guard is checked against synthetic events only.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no

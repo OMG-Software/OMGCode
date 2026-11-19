@@ -4194,7 +4194,7 @@ fn given_a_changed_skill_digest_when_the_turn_starts_then_it_is_refused_as_withd
     assert!(matches!(error, TurnError::SkillWithdrawn));
 }
 
-// ---- Three-state preferences, in-turn approval waits, and the action journal (ADR-0062) ----
+// ---- Three-state preferences, in-turn approval waits, and the action journal (ADR-0063) ----
 
 const ACTION_JOURNAL_NAME: &str = "model-actions-v1.jsonl";
 

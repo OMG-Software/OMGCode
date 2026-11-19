@@ -134,10 +134,10 @@ This is a resume guide, not a replacement for the owning contracts in
   registrations, all six workspace preferences, and package cache roots
   through native dialogs, and creates the settings store on first use
   (ADR-0060).
-- Version **0.42.0**, on branch `codex/permission-modes`, not merged: each
+- Version **0.43.0**, on branch `codex/permission-modes`, not merged: each
   preference is deny, prompt, or allow, with per-tool write limits; desktop
   turns wait for approvals and complete the approved call; every model tool
-  call is recorded in the model action journal (ADR-0062).
+  call is recorded in the model action journal (ADR-0063).
 
 Implemented today:
 

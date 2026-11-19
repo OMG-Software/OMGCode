@@ -1,4 +1,4 @@
-//! Approval commands of the desktop service (ADR-0046, ADR-0062) end to end:
+//! Approval commands of the desktop service (ADR-0046, ADR-0063) end to end:
 //! a scripted model requests a gated tool call, the turn waits while the
 //! operator reviews and decides through the service, and the same call then
 //! completes in the same turn.

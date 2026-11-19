@@ -591,7 +591,7 @@ impl ControlStore {
     /// Open existing state like [`Self::open_existing`], waiting up to
     /// [`CONTROL_BUSY_WAIT`] while another holder releases the lock.
     ///
-    /// Concurrent turns, a turn waiting on an approval (ADR-0062), and the
+    /// Concurrent turns, a turn waiting on an approval (ADR-0063), and the
     /// approvals window each hold the store only briefly, so a short wait
     /// avoids failing an operation for contention alone. Every other error,
     /// and `Busy` after the wait, is returned as is.

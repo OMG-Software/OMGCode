@@ -342,7 +342,7 @@ pub(super) struct TurnJob {
     /// Skills the operator selected for this turn only. The turn loads them
     /// from core and refuses the turn when one is not enabled (ADR-0057).
     pub(super) skills: Vec<SkillName>,
-    /// Where the turn publishes the call it waits on (ADR-0062). The slot in
+    /// Where the turn publishes the call it waits on (ADR-0063). The slot in
     /// the turn table holds a clone, so a review can read it.
     pub(super) approval_wait: ApprovalWaitSlot,
 }

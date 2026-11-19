@@ -38,7 +38,7 @@ pub enum ApprovalOperation {
     /// Replace or create a workspace file.
     FileWrite,
     /// Read one workspace file or list one directory under a `prompt` read
-    /// preference (ADR-0062). Older readers refuse the spelling.
+    /// preference (ADR-0063). Older readers refuse the spelling.
     FileRead,
     /// Perform a Git operation with remote access.
     GitPush,

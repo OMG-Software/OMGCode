@@ -92,7 +92,7 @@ pub struct RunRequest {
     /// leave this false and are unaffected by later model-tool changes.
     pub model_tools: bool,
     /// Whether a standing `allow`, not a consumed approval, authorized this
-    /// model run (ADR-0062). Such a run needs the effective model command
+    /// model run (ADR-0063). Such a run needs the effective model command
     /// state to be `allow` under the runner's own settings lock and for its
     /// whole life, so narrowing it to `prompt` or `deny` refuses or withdraws
     /// the run. Requires `model_tools`.
@@ -601,7 +601,7 @@ const STANDING_ALLOW_WITHDRAWN: &str =
 
 /// Whether the settings still let a model command run without an approval.
 /// A standing-allow run is checked against this under the runner's settings
-/// lock, because the turn released its own lock before the run (ADR-0062).
+/// lock, because the turn released its own lock before the run (ADR-0063).
 const fn allows_unattended(permissions: PermissionSet) -> bool {
     matches!(permissions.model_command(), Access::Allow)
 }
@@ -1886,7 +1886,7 @@ mod tests {
 
     /// A standing-allow model run is refused before anything is recorded when
     /// the settings no longer allow model commands without an approval, even
-    /// though they still permit an approved one (ADR-0062).
+    /// though they still permit an approved one (ADR-0063).
     #[test]
     fn a_standing_allow_run_is_refused_once_commands_need_approval() {
         let directory = tempfile::tempdir().expect("temporary directory");

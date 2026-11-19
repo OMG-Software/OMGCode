@@ -1,4 +1,4 @@
-# 0062: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions
+# 0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions
 
 - Status: Accepted
 - Date: 2026-11-19
@@ -169,7 +169,7 @@ lock is not held while a command runs. The trusted CLI command
   still change files the limits protect.
 - Narrowing a command preference from `allow` to `prompt` stops a command
   running under the standing allow. A run start record with `standing_allow`
-  cannot be read by version 0.41.0 or earlier.
+  cannot be read by version 0.42.0 or earlier.
 - An approval consumed just before an audit failure is spent although nothing
   ran. The call ends with `audit_unavailable`.
 - A finish whose start was rotated past the newest archive is refused, and
@@ -184,7 +184,7 @@ lock is not held while a command runs. The trusted CLI command
 
 ## References
 
-- [Workspace permissions](../workspace-permissions.md#deny-prompt-or-allow-adr-0062)
+- [Workspace permissions](../workspace-permissions.md#deny-prompt-or-allow-adr-0063)
 - [Desktop interface](../desktop-interface.md)
 - [ADR-0039](0039-gate-future-model-tools-with-bound-single-use-approval-records.md),
   [ADR-0043](0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md),

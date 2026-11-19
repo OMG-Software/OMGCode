@@ -1,5 +1,5 @@
 //! The call a turn is waiting on while the operator decides its approval
-//! (ADR-0062).
+//! (ADR-0063).
 //!
 //! A turn that waits in-turn holds its session journal, so a reviewer cannot
 //! read the recorded request from it. The waiting turn publishes the exact

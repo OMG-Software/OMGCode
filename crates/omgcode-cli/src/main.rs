@@ -91,7 +91,7 @@ enum Command {
         #[command(subcommand)]
         action: approvals_cli::ApprovalsCommand,
     },
-    /// Inspect the record of every model tool call (ADR-0062).
+    /// Inspect the record of every model tool call (ADR-0063).
     Actions {
         #[command(subcommand)]
         action: actions_cli::ActionsCommand,

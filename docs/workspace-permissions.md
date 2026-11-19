@@ -28,8 +28,8 @@ cannot set a development root, change permissions, or recreate a binding.
 
 Select an existing development root explicitly. Register an existing workspace
 beneath it, including the root itself. Each workspace gets a random UUIDv4.
-Since 0.42.0 each preference except `model_tools` is `deny`, `prompt`, or
-`allow`; see [deny, prompt, or allow](#deny-prompt-or-allow-adr-0062). A new
+Since 0.43.0 each preference except `model_tools` is `deny`, `prompt`, or
+`allow`; see [deny, prompt, or allow](#deny-prompt-or-allow-adr-0063). A new
 workspace starts with `read` allow and `write` prompt; process execution, task
 network access, and host services are `deny`, and model tools are off. Provider
 connections remain separate from task networking. No operation class executes
@@ -277,9 +277,9 @@ exact request digest, summary, settings revision, and expiry. The events
 settings revision. A decision or consumption is refused after expiry,
 mismatch, reuse, or any settings change. The `workspace_run_command` model tool
 consumes an approval; the CLI consume command marks a record used but executes
-nothing. Since 0.42.0 a `prompt` model read records a `file_read` approval,
+nothing. Since 0.43.0 a `prompt` model read records a `file_read` approval,
 which needs no writers-stopped acknowledgement, and the desktop shell waits
-in the turn for each decision (ADR-0062). The
+in the turn for each decision (ADR-0063). The
 [agent instructions guide](agent-instructions.md#approval-records) owns the
 tool-side contract. See
 [ADR-0039](adr/0039-gate-future-model-tools-with-bound-single-use-approval-records.md)
@@ -311,9 +311,9 @@ log. Host-service access exposes every Unix socket the user can reach,
 including the Docker daemon; see
 [Unix-domain sockets](execution.md#unix-domain-sockets).
 
-## Deny, prompt, or allow (ADR-0062)
+## Deny, prompt, or allow (ADR-0063)
 
-Since 0.42.0, `read`, `write`, `execute`, `task_network`, and `host_services`
+Since 0.43.0, `read`, `write`, `execute`, `task_network`, and `host_services`
 each hold one of three states. `model_tools` stays on or off.
 
 | State | Trusted operator command | Model tool call |
@@ -369,13 +369,13 @@ identical call consumes the approved record.
 `deny` and a stored `true` keeps its earlier meaning; a string is written only
 for a state a boolean cannot express, such as `"allow"` for `write`.
 `write_tools` is omitted while every limit is `allow`. A settings log that uses
-a new state cannot be read by version 0.41.0 or earlier. A non-canonical value,
+a new state cannot be read by version 0.42.0 or earlier. A non-canonical value,
 such as the string `"deny"`, is refused.
 
 ## Model action journal
 
 Every model tool call is recorded in `<data-dir>/model-actions-v1.jsonl`,
-whether it ran or was refused (ADR-0062). The file operation, run, and
+whether it ran or was refused (ADR-0063). The file operation, run, and
 session journals keep their own records; this journal is the one place that
 lists every call with its authorisation.
 
@@ -409,7 +409,7 @@ tamper-evident against another process running as the same user.
 The paragraphs below describe `write` and `execute` at `prompt`, the state
 that `true` has always meant. Under `allow` the approval steps are skipped
 and the call runs at once; under `deny` the tool is not offered. See
-[deny, prompt, or allow](#deny-prompt-or-allow-adr-0062).
+[deny, prompt, or allow](#deny-prompt-or-allow-adr-0063).
 
 `workspace permissions <id> --revision <n> --model-tools true` lets `chat` offer
 the local model two tools for that workspace: `workspace_read_file` and

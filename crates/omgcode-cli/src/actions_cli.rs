@@ -1,4 +1,4 @@
-//! Trusted inspection of the model action journal (ADR-0062).
+//! Trusted inspection of the model action journal (ADR-0063).
 #![forbid(unsafe_code)]
 
 use std::path::Path;

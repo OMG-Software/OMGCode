@@ -137,7 +137,7 @@ export interface ChatStatus {
   error: IpcError | null;
 }
 
-/** How a workspace preference is treated (ADR-0062). */
+/** How a workspace preference is treated (ADR-0063). */
 export type Access = "deny" | "prompt" | "allow";
 
 /** Per-tool limits that can only narrow the workspace `write` preference. */
@@ -251,6 +251,8 @@ export interface ChatPreferences {
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
+  /** Enter sends and Shift+Enter adds a newline; otherwise Ctrl+Enter sends (ADR-0062). */
+  enter_to_send: boolean;
 }
 
 export type PreferencesSource = "defaults" | "saved" | "unreadable";
@@ -258,6 +260,8 @@ export type PreferencesSource = "defaults" | "saved" | "unreadable";
 export interface ChatDefaults {
   settings: ChatSettings;
   preferences: PreferencesSource;
+  /** A composer keyboard choice, not a turn setting (ADR-0062). */
+  enter_to_send: boolean;
 }
 
 /** Skills enabled for a session's workspace. Names only. */

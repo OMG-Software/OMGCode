@@ -17,7 +17,7 @@ also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and
 `write`, one command tool. Each workspace preference except `model_tools` is
 `deny`, `prompt`, or `allow`, and each file-write tool has a limit that can
-only narrow `write` ([ADR-0062](docs/adr/0062-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
+only narrow `write` ([ADR-0063](docs/adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
 A model call whose state is `prompt` requires a trusted single-use approval;
 one whose state is `allow` runs without one. Stored settings keep their
 meaning, so model writes and commands stay at `prompt` until the operator

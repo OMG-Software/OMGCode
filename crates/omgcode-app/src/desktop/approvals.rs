@@ -120,7 +120,7 @@ impl DesktopService {
             return not_reviewed(Binding::Stale);
         }
         // A running turn holds the session journal. When it is waiting on this
-        // approval (ADR-0062), the call it published is the only candidate;
+        // approval (ADR-0063), the call it published is the only candidate;
         // core still recomputes the digest from it and the live workspace.
         // A turn running for any other reason makes the review busy.
         let awaited = if inner.is_running(status.session_id)? {

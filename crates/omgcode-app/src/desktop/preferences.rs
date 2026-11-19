@@ -251,7 +251,25 @@ mod tests {
             instructions: "Prefer short answers.".to_owned(),
             compact_threshold: 24_000,
             auto_compact: true,
+            // Not the built-in value, so a round trip shows it was stored.
+            enter_to_send: false,
         }
+    }
+
+    #[test]
+    fn a_file_saved_before_enter_to_send_existed_reads_it_as_on() {
+        let root = scratch("enter-to-send");
+        let directory = root.join(DIRECTORY);
+        fs::create_dir_all(&directory).expect("directory");
+        fs::write(
+            directory.join(FILE_NAME),
+            br#"{"version":1,"preferences":{"model":"m","context_tokens":1,"max_output_tokens":1,"instructions":"","compact_threshold":1,"auto_compact":false}}"#,
+        )
+        .expect("write an older file");
+        let loaded = load(&root).expect("load").expect("present");
+        assert!(loaded.enter_to_send);
+        assert_eq!(loaded.model, "m");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Three-state workspace preferences: deny, prompt, or allow (ADR-0062).
+//! Three-state workspace preferences: deny, prompt, or allow (ADR-0063).
 //!
 //! A preference is a policy input only. `Prompt` and `Allow` both permit an
 //! operator-initiated trusted command. They differ only for model-initiated

@@ -134,7 +134,7 @@ pub struct ChatHooks<'a> {
     /// names and arguments are never passed to it.
     pub on_stream: Option<&'a mut dyn FnMut(ChatStreamEvent<'_>)>,
     /// Wait inside the turn for the operator to decide each approval a model
-    /// call records, then complete the same call (ADR-0062). The turn
+    /// call records, then complete the same call (ADR-0063). The turn
     /// publishes the call it waits on in the slot, so the approvals window
     /// can review it while the turn holds the journal. The desktop shell sets
     /// it; `None` keeps the earlier behaviour, where the model must repeat the

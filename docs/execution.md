@@ -491,8 +491,8 @@ the event count under the control lock when it starts. The checks are:
   run that selected host services, and `task_network` for a run that
   selected network access;
 - the run's profile still exists with the same identity;
-- for a model run authorized by a standing `allow` (since 0.42.0,
-  ADR-0062), the model command state is still `allow`. A change to `prompt`
+- for a model run authorized by a standing `allow` (since 0.43.0,
+  ADR-0063), the model command state is still `allow`. A change to `prompt`
   stops it, although `prompt` still permits an approved run;
 - on Windows, the workspace still has its active read-write grant, no grant of
   the workspace is `revoking`, and no revocation of any grant of the workspace
@@ -715,7 +715,7 @@ cgroup.
 Version 0.25.0 adds `workspace_run_command` to the core turn runtime. The
 runtime advertises it only when the session workspace's live `model_tools`,
 `execute`, `read`, and `write` preferences are enabled. Each call rechecks
-them, and the trusted run checks them again. Since 0.42.0 (ADR-0062) its
+them, and the trusted run checks them again. Since 0.43.0 (ADR-0063) its
 effective state is the most restrictive of the three. At `prompt` each call
 needs an approval, as described below; at `allow` it starts the trusted run
 without one, under the same profile, limits, and confinement. The per-tool

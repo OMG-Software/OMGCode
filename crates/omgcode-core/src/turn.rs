@@ -1099,7 +1099,7 @@ pub enum TurnError {
     #[error("tool operation failed: {0}")]
     ToolFailed(#[source] Box<FileError>),
     /// The model action journal could not record a call, so the turn stopped
-    /// (ADR-0062). An action is never started without its start record.
+    /// (ADR-0063). An action is never started without its start record.
     #[error("the model action journal is unavailable: {0}")]
     AuditUnavailable(#[source] Box<ActionJournalError>),
     /// The turn failed, and its terminal event could not be recorded.
@@ -1289,7 +1289,7 @@ impl<'a> TurnRuntime<'a> {
     }
 
     /// Wait inside the turn for the operator to decide each approval a model
-    /// call records, then complete the same call (ADR-0062).
+    /// call records, then complete the same call (ADR-0063).
     ///
     /// Without it, a call that needs approval returns `approval_required` and
     /// the model must repeat the identical call in a later turn. While
@@ -1803,7 +1803,7 @@ fn open_control(data_directory: &Path) -> Result<Option<ControlStore>, ControlEr
     ControlStore::open_existing_waiting(data_directory)
 }
 
-/// Domain tag for read and list approval digests (ADR-0062).
+/// Domain tag for read and list approval digests (ADR-0063).
 const READ_DIGEST_DOMAIN: &[u8] = b"omgcode-file-read-v1";
 
 /// One model read or list call, as its approval digest binds it.
@@ -1943,7 +1943,7 @@ enum TerminalToolError {
     SkillWithdrawn,
     /// The turn was cancelled while the call waited for an operator decision.
     Cancelled,
-    /// The action journal could not record the call (ADR-0062).
+    /// The action journal could not record the call (ADR-0063).
     Audit(ActionJournalError),
 }
 

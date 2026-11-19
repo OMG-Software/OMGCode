@@ -454,7 +454,7 @@ the operation must refuse that requirement. Do not label this mode conflict-free
 `old_text` with `new_text` in an existing UTF-8 regular file. The chat runtime
 advertises and dispatches it only while the workspace's live `model_tools`,
 `read`, and `write` preferences are all enabled. The settings never authorize
-the write by themselves. Since 0.42.0 (ADR-0062) the approval described below
+the write by themselves. Since 0.43.0 (ADR-0063) the approval described below
 applies when the tool's effective state is `prompt`. When `write` and the
 tool's limit are both `allow`, the call skips the approval and the
 writers-stopped acknowledgement and goes straight to the same live read,

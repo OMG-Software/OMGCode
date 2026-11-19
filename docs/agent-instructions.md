@@ -168,8 +168,8 @@ Claude Code prompts.
 A model tool call whose effective workspace state is `prompt` must obtain a
 trusted, single-use approval record. Under `allow` the call runs without one,
 and under `deny` the tool is not offered
-([deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0062),
-ADR-0062). The written defaults keep model writes and commands at `prompt`. `approvals request` records a pending request;
+([deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0063),
+ADR-0063). The written defaults keep model writes and commands at `prompt`. `approvals request` records a pending request;
 `approvals list`, `show`, `approve`, and `deny` inspect or decide it; and
 `approvals consume` marks an approved record used. The record binds the
 session, workspace, operation, exact request SHA-256, and the settings revision
@@ -187,7 +187,7 @@ creates one bound to both names and the source's size and SHA-256, and
 consumes an approved record immediately before the no-replace rename. The
 `workspace_delete_file` tool creates one bound to the file's size and SHA-256,
 and consumes an approved record immediately before the checkpointed removal.
-Since 0.42.0 the `workspace_read_file` and `workspace_list_directory` tools
+Since 0.43.0 the `workspace_read_file` and `workspace_list_directory` tools
 create a `file_read` request bound to the tool, path, and limit when `read` is
 `prompt`, and consume an approved record immediately before the broker read.
 Each tool has its own digest domain,
