@@ -37,6 +37,9 @@ pub enum ApprovalOperation {
     Command,
     /// Replace or create a workspace file.
     FileWrite,
+    /// Read one workspace file or list one directory under a `prompt` read
+    /// preference (ADR-0062). Older readers refuse the spelling.
+    FileRead,
     /// Perform a Git operation with remote access.
     GitPush,
     /// Use a destination-scoped network operation.
@@ -49,6 +52,7 @@ impl ApprovalOperation {
         match self {
             Self::Command => "command",
             Self::FileWrite => "file_write",
+            Self::FileRead => "file_read",
             Self::GitPush => "git_push",
             Self::Network => "network",
         }
@@ -59,6 +63,7 @@ impl ApprovalOperation {
         match text.to_ascii_lowercase().as_str() {
             "command" => Some(Self::Command),
             "file_write" | "file-write" => Some(Self::FileWrite),
+            "file_read" | "file-read" => Some(Self::FileRead),
             "git_push" | "git-push" => Some(Self::GitPush),
             "network" => Some(Self::Network),
             _ => None,

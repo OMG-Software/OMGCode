@@ -586,6 +586,8 @@ pub enum ApprovalOperationDto {
     Command,
     /// Replace a workspace file.
     FileWrite,
+    /// Read a workspace file or list a directory (ADR-0062).
+    FileRead,
     /// A Git operation with remote access.
     GitPush,
     /// A destination-scoped network operation.
@@ -597,6 +599,7 @@ impl From<ApprovalOperation> for ApprovalOperationDto {
         match operation {
             ApprovalOperation::Command => Self::Command,
             ApprovalOperation::FileWrite => Self::FileWrite,
+            ApprovalOperation::FileRead => Self::FileRead,
             ApprovalOperation::GitPush => Self::GitPush,
             ApprovalOperation::Network => Self::Network,
         }
