@@ -228,6 +228,7 @@ fn an_edit_approval_is_reviewed_approved_and_applied_in_the_same_turn() {
     let detail = setup.detail(id);
     responses.push(text_of(&detail));
     assert_eq!(detail.binding, Binding::Exact);
+    assert!(detail.waiting, "the turn waits on this approval");
     assert_eq!(detail.tool.as_deref(), Some(EDIT_TOOL));
     let field = |label: &str| {
         detail
@@ -586,6 +587,13 @@ fn a_turn_running_for_another_reason_makes_the_review_busy() {
     assert_eq!(cancelled.state, ChatState::Failed);
     assert_eq!(cancelled.error.expect("an error").code(), "cancelled");
     assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+
+    // With no turn running, the review reads the journal. The request is
+    // still exact, but no turn waits on it, so approving would only allow a
+    // later identical call.
+    let idle = setup.detail(id);
+    assert_eq!(idle.binding, Binding::Exact);
+    assert!(!idle.waiting);
 
     // A later turn of the session holds the journal without waiting on this
     // record, so the review cannot read the request.

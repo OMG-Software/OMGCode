@@ -3026,12 +3026,17 @@ impl WorkspaceToolDispatcher<'_> {
         let digest = command_digest(self.session_id, &request);
         if access == Access::Allow {
             // The live preference, read under the settings lock that admitted
-            // this call, is the authorization. The runner rechecks settings
-            // under its own lock.
+            // this call, is the authorization. This lock is released before
+            // the run, so the runner rechecks the standing allow under its own
+            // lock and withdraws the run if it later leaves `allow`.
             let authorization = Authorization::StandingAllow {
                 settings_revision: control.revision(),
             };
             drop(control);
+            let request = crate::run::RunRequest {
+                standing_allow: true,
+                ..request
+            };
             return self.run_audited(call, &request, &digest, authorization, max_result_bytes);
         }
         let now = now_unix();
@@ -3226,6 +3231,7 @@ fn command_run_request(
         host_services: false,
         network: false,
         model_tools: true,
+        standing_allow: false,
         limits: command_limits(),
     }
 }

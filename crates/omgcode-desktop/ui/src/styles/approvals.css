@@ -123,6 +123,11 @@
   overflow-wrap: anywhere;
 }
 
+.effect {
+  font-weight: 600;
+  margin: 8px 0;
+}
+
 .field-check {
   display: flex;
   gap: 8px;

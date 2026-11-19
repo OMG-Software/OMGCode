@@ -425,6 +425,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           : "workspace_multi_edit_file",
       fields: stale ? [] : fields,
       review_token: token,
+      waiting: !stale && view.operation === "command",
     });
   }
 

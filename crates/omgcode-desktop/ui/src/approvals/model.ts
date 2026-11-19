@@ -57,6 +57,16 @@ export interface Gate {
   reason: string | null;
 }
 
+/** What approving the shown detail does, or null when it cannot be approved. */
+export function approvalEffect(detail: ApprovalDetail): string | null {
+  if (detail.approval.state !== "pending" || detail.binding !== "exact") {
+    return null;
+  }
+  return detail.waiting
+    ? "Its turn is waiting. Approving runs this request now, after its checks are repeated."
+    : "No turn is waiting for this request. Approving runs nothing now: it lets the model's next identical request run once.";
+}
+
 /** Decides whether Approve may be used for the shown detail. */
 export function approveGate(detail: ApprovalDetail, input: ReviewInput): Gate {
   if (detail.approval.state !== "pending") {

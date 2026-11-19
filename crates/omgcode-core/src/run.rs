@@ -28,7 +28,7 @@ use uuid::Uuid;
 use crate::control::{
     ControlError, ControlSnapshot, ControlStore, ProfilePlatform, ToolchainProfile,
 };
-use crate::policy::{PermissionSet, WorkspaceId};
+use crate::policy::{Access, PermissionSet, WorkspaceId};
 use crate::run_journal::{
     ConfinementRecord, LimitKind, LimitsRecord, NetworkRecord, PendingRun, RunFinish, RunJournal,
     RunJournalError, RunResult, RunStart, SocketMode, UsageRecord, arguments_digest, describe,
@@ -91,6 +91,12 @@ pub struct RunRequest {
     /// the live `model_tools` preference for its whole life; trusted CLI runs
     /// leave this false and are unaffected by later model-tool changes.
     pub model_tools: bool,
+    /// Whether a standing `allow`, not a consumed approval, authorized this
+    /// model run (ADR-0062). Such a run needs the effective model command
+    /// state to be `allow` under the runner's own settings lock and for its
+    /// whole life, so narrowing it to `prompt` or `deny` refuses or withdraws
+    /// the run. Requires `model_tools`.
+    pub standing_allow: bool,
     /// Deadline, output, cleanup, and tree bounds. Tree limits are required;
     /// a request without them is refused before anything is recorded.
     pub limits: ProcessLimits,
@@ -571,6 +577,9 @@ fn withdrawn(control: &ControlStore, start: &RunStart) -> Option<&'static str> {
     if start.model_origin && !registration.permissions().model_tools {
         return Some("the workspace model_tools preference is disabled");
     }
+    if start.standing_allow && !allows_unattended(registration.permissions()) {
+        return Some(STANDING_ALLOW_WITHDRAWN);
+    }
     match (
         start.package_cache_root.as_ref(),
         control.package_cache_root(start.workspace_id),
@@ -583,6 +592,18 @@ fn withdrawn(control: &ControlStore, start: &RunStart) -> Option<&'static str> {
         return Some("the workspace is outside the development root");
     };
     workspace_access(control, start.workspace_id, &scope.workspace, true).err()
+}
+
+/// Why a run authorized by a standing `allow` may no longer start or
+/// continue.
+const STANDING_ALLOW_WITHDRAWN: &str =
+    "the workspace no longer allows this model command without an approval";
+
+/// Whether the settings still let a model command run without an approval.
+/// A standing-allow run is checked against this under the runner's settings
+/// lock, because the turn released its own lock before the run (ADR-0062).
+const fn allows_unattended(permissions: PermissionSet) -> bool {
+    matches!(permissions.model_command(), Access::Allow)
 }
 
 /// The preferences a run needs for its whole life. A run writes inside the
@@ -902,6 +923,12 @@ fn prepare(
             "the workspace model_tools preference is disabled",
         ));
     }
+    // The turn chose a standing allow under a settings lock it released
+    // before calling the runner. Recheck it under this lock so a change to
+    // `prompt` or `deny` in between cannot start an unapproved run.
+    if request.standing_allow && !(request.model_tools && allows_unattended(permissions)) {
+        return Err(RunError::Refused(STANDING_ALLOW_WITHDRAWN));
+    }
     permitted(permissions, request.host_services, request.network).map_err(RunError::Refused)?;
     let status = control
         .profile(&request.profile)
@@ -996,6 +1023,7 @@ fn prepare(
         package_cache,
         package_cache_root,
         model_origin: request.model_tools,
+        standing_allow: request.standing_allow,
     };
     Ok(Prepared {
         start,
@@ -1467,6 +1495,7 @@ mod tests {
             package_cache: false,
             package_cache_root: None,
             model_origin: false,
+            standing_allow: false,
         }
     }
 
@@ -1550,6 +1579,7 @@ mod tests {
                 host_services: false,
                 network: false,
                 model_tools: false,
+                standing_allow: false,
                 limits: ProcessLimits {
                     tree: Some(tree),
                     ..ProcessLimits::default()
@@ -1852,6 +1882,144 @@ mod tests {
         drop(control);
         let control = open_control(&data).expect("control");
         assert_eq!(withdrawn(&control, &networked), None);
+    }
+
+    /// A standing-allow model run is refused before anything is recorded when
+    /// the settings no longer allow model commands without an approval, even
+    /// though they still permit an approved one (ADR-0062).
+    #[test]
+    fn a_standing_allow_run_is_refused_once_commands_need_approval() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, _store_id) = store(directory.path());
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    model_tools: true,
+                    execute: Access::Prompt,
+                    read: Access::Allow,
+                    write: Access::Allow,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("permissions");
+        drop(control);
+        for model_tools in [true, false] {
+            let request = RunRequest {
+                workspace_id,
+                profile: "system".into(),
+                program: PathBuf::from("true"),
+                arguments: Vec::new(),
+                working_directory: None,
+                host_services: false,
+                network: false,
+                model_tools,
+                standing_allow: true,
+                limits: ProcessLimits {
+                    tree: Some(process::TreeLimits {
+                        max_memory_bytes: 1024 * 1024 * 1024,
+                        max_processes: 64,
+                        max_cpu_time: Duration::from_secs(60),
+                        max_disk_bytes: Some(1024 * 1024 * 1024),
+                    }),
+                    ..ProcessLimits::default()
+                },
+            };
+            let result = run(&data, &request, &CancelSignal::new());
+            assert!(
+                matches!(result, Err(RunError::Refused(STANDING_ALLOW_WITHDRAWN))),
+                "{model_tools}: {result:?}"
+            );
+        }
+        assert!(!journal_root.join("runs-v1.jsonl").exists());
+    }
+
+    /// Only an effective `allow` lets a model command run unattended.
+    #[test]
+    fn unattended_runs_need_every_command_preference_at_allow() {
+        let all = PermissionSet {
+            model_tools: true,
+            execute: Access::Allow,
+            read: Access::Allow,
+            write: Access::Allow,
+            ..PermissionSet::default()
+        };
+        assert!(allows_unattended(all));
+        for narrowed in [
+            PermissionSet {
+                model_tools: false,
+                ..all
+            },
+            PermissionSet {
+                execute: Access::Prompt,
+                ..all
+            },
+            PermissionSet {
+                read: Access::Prompt,
+                ..all
+            },
+            PermissionSet {
+                write: Access::Deny,
+                ..all
+            },
+        ] {
+            assert!(!allows_unattended(narrowed), "{narrowed:?}");
+        }
+    }
+
+    /// A standing-allow run is withdrawn once its preferences leave `allow`,
+    /// while an approved model run continues under `prompt`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn narrowing_to_prompt_withdraws_only_standing_allow_runs() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, _journal_root, _store_id) = store(directory.path());
+        let mut approved = allowed_start(&data, directory.path(), workspace_id);
+        approved.model_origin = true;
+        let mut standing = approved.clone();
+        standing.standing_allow = true;
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    model_tools: true,
+                    execute: Access::Allow,
+                    read: Access::Allow,
+                    write: Access::Allow,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("allow");
+        drop(control);
+        let control = open_control(&data).expect("control");
+        assert_eq!(withdrawn(&control, &standing), None);
+        assert_eq!(withdrawn(&control, &approved), None);
+        drop(control);
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    model_tools: true,
+                    execute: Access::Prompt,
+                    read: Access::Allow,
+                    write: Access::Allow,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("prompt");
+        drop(control);
+        let control = open_control(&data).expect("control");
+        assert_eq!(
+            withdrawn(&control, &standing),
+            Some(STANDING_ALLOW_WITHDRAWN)
+        );
+        assert_eq!(withdrawn(&control, &approved), None);
     }
 
     /// A run requested by the model also needs live `model_tools`; a trusted

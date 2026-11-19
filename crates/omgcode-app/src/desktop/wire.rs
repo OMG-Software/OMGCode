@@ -707,6 +707,10 @@ pub struct ApprovalDetail {
     /// A single-use token that allows one approve, only for an `exact`,
     /// pending approval.
     pub review_token: Option<String>,
+    /// Whether a turn is waiting on this approval now (ADR-0062). Approving
+    /// then runs the call in that turn; otherwise it only lets a later
+    /// identical call run once.
+    pub waiting: bool,
 }
 
 /// Chat defaults the `main` window may save (ADR-0059 decision 8). They grant

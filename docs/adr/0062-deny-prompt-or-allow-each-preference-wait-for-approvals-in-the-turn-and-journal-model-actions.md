@@ -90,7 +90,17 @@ arguments, in a slot shared with the desktop service. The review uses that
 call as its only candidate when the turn is waiting on that approval. Core
 still recomputes the digest from the call and the live workspace, so the
 review is exact only for the recorded request. A turn running for any other
-reason still makes the review `busy`.
+reason still makes the review `busy`. The detail reports `waiting`, and the
+window states whether approving runs the call now or only lets a later
+identical call run once.
+
+**Standing allow for commands.** The file tools hold the settings lock from
+the decision through the action. The command tool must release it, because
+the runner takes its own. A run authorized by a standing `allow` therefore
+records `standing_allow` in its run start record. The runner refuses it,
+before recording anything, unless the model command state is still `allow`
+under its own lock, and the run watcher withdraws it once that state leaves
+`allow`. An approved run continues under `prompt`, as before.
 
 **Settings contention.** A waiting turn, other turns, and the approvals window
 each hold the settings store briefly. The chat and dispatch paths now wait up
@@ -157,6 +167,9 @@ lock is not held while a command runs. The trusted CLI command
   network or host-service tool gated.
 - The per-tool limits do not limit the command tool. A permitted command can
   still change files the limits protect.
+- Narrowing a command preference from `allow` to `prompt` stops a command
+  running under the standing allow. A run start record with `standing_allow`
+  cannot be read by version 0.41.0 or earlier.
 - An approval consumed just before an audit failure is spent although nothing
   ran. The call ends with `audit_unavailable`.
 - A finish whose start was rotated past the newest archive is refused, and

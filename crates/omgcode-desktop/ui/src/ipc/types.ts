@@ -203,6 +203,8 @@ export interface ApprovalDetail {
   tool: string | null;
   fields: ApprovalField[];
   review_token: string | null;
+  /** Whether a turn waits on this approval now; approving then runs the call in that turn. */
+  waiting: boolean;
 }
 
 /**

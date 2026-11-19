@@ -416,6 +416,7 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
             multiline: false,
         }],
         review_token: token.map(str::to_owned),
+        waiting: token.is_some(),
     };
     for (value, tool_kind) in [
         (detail(Binding::Exact, Some("token")), "string"),
@@ -430,6 +431,7 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
                 ("tool", tool_kind),
                 ("fields", "array"),
                 ("review_token", "string|null"),
+                ("waiting", "bool"),
             ],
         );
         assert_shape(
@@ -676,6 +678,7 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
             multiline: true,
         }],
         review_token: None,
+        waiting: false,
     });
     let list = json_of(&ApprovalList {
         now_unix: 1,

@@ -491,6 +491,9 @@ the event count under the control lock when it starts. The checks are:
   run that selected host services, and `task_network` for a run that
   selected network access;
 - the run's profile still exists with the same identity;
+- for a model run authorized by a standing `allow` (since 0.42.0,
+  ADR-0062), the model command state is still `allow`. A change to `prompt`
+  stops it, although `prompt` still permits an approved run;
 - on Windows, the workspace still has its active read-write grant, no grant of
   the workspace is `revoking`, and no revocation of any grant of the workspace
   was requested since the run started. Every grant applies to the container,
@@ -716,7 +719,12 @@ them, and the trusted run checks them again. Since 0.42.0 (ADR-0062) its
 effective state is the most restrictive of the three. At `prompt` each call
 needs an approval, as described below; at `allow` it starts the trusted run
 without one, under the same profile, limits, and confinement. The per-tool
-write limits do not apply to it. A model-origin run records a
+write limits do not apply to it. The turn releases its settings lock before
+the run starts, so a standing-allow run records `standing_allow` in its start
+record. The runner refuses it before recording anything unless the state is
+still `allow` under the runner's own settings lock, and its watcher withdraws
+it once the state leaves `allow`. An approved run is not affected by a change
+to `prompt`. A model-origin run records a
 durable per-workspace count of `model_tools` true-to-false changes; disabling
 the preference stops the run even if it is re-enabled before the watcher reads
 the setting.

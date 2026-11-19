@@ -37,7 +37,14 @@ Changes are recorded here before a release version is assigned.
     repeated, and then completes in the same turn. A denial ends the call with
     `approval_denied`, expiry with `approval_expired`, and cancelling the turn
     ends the wait. Waiting does not count against the turn deadline. The CLI
-    `chat` command does not wait.
+    `chat` command does not wait. The approvals window says whether approving
+    runs the request now or only lets a later identical request run, and the
+    approval detail reports `waiting`.
+  - **Standing-allow commands:** a model command run without an approval
+    records `standing_allow`. The runner rechecks that the command state is
+    still `allow` under its own settings lock, and the watcher withdraws the
+    run once it is not, so a change to `prompt` cannot start or keep an
+    unapproved command.
   - **Model action journal:** `<data-dir>/model-actions-v1.jsonl` records each
     executed call before it acts, with how it was authorised (a standing
     `allow` and its settings revision, or the consumed approval), and its

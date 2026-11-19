@@ -618,6 +618,13 @@ The flow:
    wait and leaves the record pending. The time spent waiting does not count
    against the turn deadline.
 
+The detail reports `waiting`, which is true only when a turn waits on that
+approval now. Above the decision buttons, an exact pending review states the
+effect: "Approving runs this request now" when its turn is waiting, or that
+approving runs nothing now and only lets the model's next identical request
+run once, for example after the turn was cancelled or from the CLI. The
+window's introduction says the same.
+
 Reviewed fields:
 
 - **Command:** Profile, Program, Arguments (numbered, one per line), Working

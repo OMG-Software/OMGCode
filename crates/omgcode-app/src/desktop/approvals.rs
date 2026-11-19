@@ -113,6 +113,7 @@ impl DesktopService {
                 tool: None,
                 fields: Vec::new(),
                 review_token: None,
+                waiting: false,
             })
         };
         if status.state != ApprovalState::Pending {
@@ -180,6 +181,7 @@ impl DesktopService {
                         })
                         .collect(),
                     review_token: Some(token),
+                    waiting: awaited.is_some(),
                 })
             }
             ApprovalReview::Stale(_) => not_reviewed(Binding::Stale),
