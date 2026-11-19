@@ -163,7 +163,10 @@ Facts established before the decision:
   are serialized.
 - The branch display was tested with linked worktree pointers in core tests.
   A pointer outside the development root, such as a worktree whose repository
-  lives elsewhere, shows "Branch unavailable".
+  lives elsewhere, shows "Branch unavailable". So does a pointer that names
+  the root by another spelling (an 8.3 short name, a junction, or a `subst`
+  drive), because the comparison is by name and resolving the pointer would
+  open a path that repository content chose.
 - The settings webview now carries a typed loopback endpoint. Core validates
   it, and the native dialog shows it before any turn uses it.
 - Ollama's context length must be configured in Ollama. A larger

@@ -576,6 +576,9 @@ store exists from the first launch. It shows:
   runs, and no Git configuration, ref, or object is read. When `.git` is a
   file of the form `gitdir: <path>`, the named directory's `HEAD` is read
   only when it lies inside the development root, from the root's own handle.
+  The check compares names with the recorded root, so a pointer that spells
+  the root another way (an 8.3 short name, a junction, or a `subst` drive)
+  shows "Branch unavailable".
   `ref: refs/heads/<name>` shows the name, another ref shows in full, and a
   40- or 64-digit commit shows as "Detached at" its first seven digits. A
   missing `.git` shows "Not a Git repository". Anything else, a name over

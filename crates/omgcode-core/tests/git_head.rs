@@ -47,6 +47,17 @@ impl Fixture {
     }
 }
 
+/// `path` as Git writes an absolute `gitdir:` pointer: the canonical long
+/// name, without the verbatim prefix, with forward slashes on Windows. The
+/// core compares names only, so a short (8.3) spelling, such as a CI
+/// runner's `TEMP` directory, would not match the recorded root.
+fn git_spelling(path: &Path) -> String {
+    let canonical = fs::canonicalize(path).expect("canonical path");
+    let text = canonical.display().to_string();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    text.replace('\\', "/")
+}
+
 fn write(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent");
@@ -97,10 +108,7 @@ fn follows_a_linked_worktree_pointer_only_inside_the_development_root() {
     let target = main_git.join("worktrees/linked");
     write(
         &folder.join(".git"),
-        &format!(
-            "gitdir: {}\n",
-            target.display().to_string().replace('\\', "/")
-        ),
+        &format!("gitdir: {}\n", git_spelling(&target)),
     );
     assert_eq!(
         fixture.head(id),

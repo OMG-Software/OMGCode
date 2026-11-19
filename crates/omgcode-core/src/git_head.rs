@@ -14,6 +14,11 @@
 //!   names its Git directory with `gitdir: <path>`. That directory is read only
 //!   when the path lies inside the development root; the read is then made
 //!   from the root's handle. A path outside the root is not followed.
+//!   Inside means by name: the pointer is compared lexically with the
+//!   recorded (canonical) root, so a pointer that spells the root another way,
+//!   such as an 8.3 short name, a junction, or a `subst` drive, is reported
+//!   as unreadable. Resolving it would mean opening a path that repository
+//!   content names, which could reach outside the root or a network share.
 //! - A workspace folder that is not the top of a repository has no branch.
 
 use std::io;
