@@ -481,7 +481,10 @@ the program runs.
 ### Settings changes during a run
 
 A run's watcher rereads the settings each time the control journal changes,
-and checks the run against them:
+and checks the run against them. Since 0.41.0 it checks the state after every
+event recorded since it last read them, not only the latest, so a change that
+was undone before it read them still stops the run (ADR-0061). The run takes
+the event count under the control lock when it starts. The checks are:
 
 - the workspace is still registered and inside the development root;
 - `execute`, `read`, and `write` are still enabled, `host_services` for a
@@ -494,10 +497,7 @@ and checks the run against them:
   so revoking any of them withdraws the run, including a grant added after it
   started. The watcher compares a per-workspace count of revocation requests,
   which it cannot miss between two polls. A `pending` grant only adds access,
-  so it does not stop a run;
-- since 0.41.0, no settings change recorded the run as withdrawn
-  (ADR-0061). A recorded run stays withdrawn even if a later change restores
-  the access it lost before the watcher reads the settings.
+  so it does not stop a run.
 
 When a check fails, or the settings cannot be read, the watcher stops the whole
 tree. The outcome is recorded as `revoked`, and the report gives the reason in
@@ -506,13 +506,13 @@ tree. The outcome is recorded as `revoked`, and the report gives the reason in
 `workspace permissions`, `profile-remove`, `container-revoke`, and `set-root`
 record their change first. `set-package-cache`, `clear-package-cache`,
 `package-profile-remove`, and `provider-profile-remove` do the same. While
-they still hold the control lock, all but `container-revoke` record the
-pending runs that the new settings withdraw in a `runs_withdrawn` event
-(ADR-0061). Then they release the lock and wait up to 60 seconds for every
-pending run that the new settings no longer allow or that was recorded as
-withdrawn. If the record cannot be written, for example because the settings
-journal is full, the change stays recorded, the command still waits for what
-the settings withdraw, and then fails with code `run`.
+they still hold the control lock, all but `container-revoke` list the pending
+runs that the new settings withdraw (ADR-0061). Then they release the lock and
+wait up to 60 seconds for those runs and every other pending run that the
+settings no longer allow, so a change that restores access in between cannot
+hide them. If the run journal cannot be read, the change stays recorded and
+the watchers still stop the runs; the command waits for what it can find and
+then fails with code `run`.
 `container-revoke` also waits for every pending run of the grant's workspace
 that started before the revocation; it lists them while it holds the control
 lock, under which every run starts. If the run journal cannot be read, for

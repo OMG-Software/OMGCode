@@ -396,34 +396,34 @@ impl DesktopService {
         })
     }
 
-    /// Apply one change to a freshly opened store, record the runs it
-    /// withdrew while the store is still held, release it, wait for those
-    /// runs and any others the settings withdraw to stop, and return the new
-    /// overview.
+    /// Apply one change to a freshly opened store, list the runs it withdrew
+    /// while the store is still held, release it, wait for those runs and any
+    /// others the settings withdraw to stop, and return the new overview.
     ///
-    /// The withdrawal is recorded under the lock because runs start only
-    /// under it and a run's watcher reads the change and the record together.
-    /// A recorded run stays withdrawn even if a later change restores its
-    /// access before its watcher samples the settings (ADR-0061).
+    /// The runs are listed under the lock because runs start only under it,
+    /// and a change that restores access after the release cannot then hide
+    /// them from the wait. Their watchers stop them even then, because a
+    /// watcher checks every settings state recorded since it last read them
+    /// (ADR-0061).
     fn apply(
         &self,
         change: impl FnOnce(&mut ControlStore) -> Result<(), ControlError>,
     ) -> Result<SettingsOverview, DesktopError> {
-        let recorded = {
+        let listed = {
             let mut store = self.inner.open_or_create_control()?;
             change(&mut store).map_err(|error| DesktopError::from_control(&error))?;
-            run::record_withdrawn_runs(&mut store)
+            run::withdrawn_runs(&store)
         };
-        // A failed record never undoes the recorded change: stop what the
-        // settings now withdraw, then report that the runs were not all
-        // checked.
-        let named = recorded.as_deref().unwrap_or(&[]);
+        // An unreadable run journal never undoes the recorded change, and the
+        // watchers still stop the runs: wait for what the settings now
+        // withdraw, then report that the runs were not all checked.
+        let named = listed.as_deref().unwrap_or(&[]);
         let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, named)
             .map_err(|_| DesktopError::runs_unchecked())?;
         if !withdrawn.unconfirmed.is_empty() {
             return Err(DesktopError::runs_not_stopped(withdrawn.unconfirmed.len()));
         }
-        if recorded.is_err() {
+        if listed.is_err() {
             return Err(DesktopError::runs_unchecked());
         }
         let store = self.inner.open_or_create_control()?;

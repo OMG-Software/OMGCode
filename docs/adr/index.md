@@ -75,4 +75,4 @@ meaningful alternative does not need an ADR.
 | [0058: Stage the latest release as a draft before the swap](0058-stage-the-latest-release-as-a-draft-before-the-swap.md) | Accepted | 2026-11-18 |
 | [0059: Configure trusted settings in an isolated desktop settings window](0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md) | Accepted | 2026-11-18 |
 | [0060: Change workspace settings from the desktop with native dialogs](0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md) | Accepted | 2026-11-19 |
-| [0061: Record run withdrawals in the settings journal](0061-record-run-withdrawals-in-the-settings-journal.md) | Accepted | 2026-11-19 |
+| [0061: Check every recorded settings state in run watchers](0061-check-every-recorded-settings-state-in-run-watchers.md) | Accepted | 2026-11-19 |

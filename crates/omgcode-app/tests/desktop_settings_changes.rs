@@ -432,6 +432,37 @@ fn turning_preferences_off_applies_without_a_dialog() {
     assert!(!listed.model_tools && !listed.read && !listed.write && !listed.execute);
 }
 
+/// A run journal that cannot be read never keeps access in place: the
+/// narrowing is recorded, and the change reports that runs were not all
+/// checked. Run watchers still stop withdrawn runs from the recorded settings
+/// history (ADR-0061).
+#[test]
+fn an_unreadable_run_journal_still_records_the_narrowing_and_reports_it() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let start = current_revision(&fixture.data);
+    fs::write(fixture.data.join("runs-v1.jsonl"), b"{\"sequence\":").expect("partial record");
+    let prompt = ScriptedPrompt::new();
+
+    let result = service(&fixture.data).settings_set_permissions(
+        permissions(workspace.id, start, [false, false, false, false]),
+        &prompt,
+    );
+
+    assert_eq!(code(result), "runs_not_stopped");
+    assert!(prompt.asked().is_empty());
+    assert_eq!(current_revision(&fixture.data), start + 1);
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open settings")
+        .expect("settings exist");
+    let recorded = store
+        .workspaces()
+        .find(|registered| *registered.id().as_uuid() == workspace.id)
+        .expect("registered")
+        .permissions();
+    assert!(!recorded.model_tools && !recorded.read && !recorded.write && !recorded.execute);
+}
+
 #[test]
 fn an_unknown_workspace_is_refused_before_any_dialog() {
     let fixture = Fixture::new();

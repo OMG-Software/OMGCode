@@ -92,9 +92,9 @@ since 0.18.0, `task_network` when it selects network access with
 `--network`.
 It checks them before it starts and again after every settings change while
 it runs. A change that withdraws one stops the running tree, which is recorded
-as `revoked`. Since 0.41.0 the change also records the runs it withdrew, so
-turning the preference back on before the run's watcher reads the settings
-does not keep the run going (ADR-0061). The `permissions` command reports success only after the runs it
+as `revoked`. Since 0.41.0 the run's watcher checks every recorded settings
+state since it last read them, so turning the preference back on before it
+reads does not keep the run going (ADR-0061). The `permissions` command reports success only after the runs it
 affects have stopped; see [settings changes during a
 run](execution.md#settings-changes-during-a-run). Per-target grants remain
 required. Single-use approvals now exist for the model edit, multi-edit, create,
