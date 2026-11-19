@@ -141,7 +141,10 @@ describe("source scan", () => {
   });
 
   it("loads no remote resources from CSS", () => {
+    expect(Object.keys(styles).length).toBeGreaterThanOrEqual(4);
     for (const [key, text] of Object.entries(styles)) {
+      // An empty string would mean Vitest stubbed the CSS and this scan checked nothing.
+      expect(text.length, key).toBeGreaterThan(0);
       expect(text, key).not.toMatch(/https?:|url\(\s*["']?\/\//);
     }
   });

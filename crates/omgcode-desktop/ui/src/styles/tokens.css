@@ -1,38 +1,37 @@
+/*
+ * One dark theme for every window (ADR-0065): near-black greys with an orange accent.
+ * tests/tokens.test.ts reads the colour values below and checks their contrast, so keep each
+ * colour token a six-digit hex value on its own line.
+ *
+ * Orange marks actions, focus, selection, and "waiting for you". It never marks a permission
+ * at Allow, so the riskiest state never looks like the recommended one.
+ */
 :root {
-  color-scheme: light dark;
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #eef0f4;
-  --border: #d5d9e0;
-  --text: #1c2026;
-  --muted: #5b6573;
-  --accent: #2459d6;
-  --accent-text: #ffffff;
-  --danger: #b3261e;
-  --warn: #8a5a00;
-  --warn-bg: #fff4d6;
-  --mark: #ffe58a;
+  color-scheme: dark;
+  --bg: #0e0f11;
+  --surface: #16181b;
+  --surface-2: #1e2125;
+  --surface-3: #262a2f;
+  --border: #2c3036;
+  --control-border: #6b717a;
+  --text: #e8e6e3;
+  --muted: #a19d97;
+  --accent: #ff7a1a;
+  --accent-hover: #ff8f3d;
+  --accent-text: #1a0d00;
+  --accent-fg: #ff9447;
+  --accent-soft: #2a1a0e;
+  --danger: #ff7070;
+  --danger-bg: #2d1416;
+  --warn: #f2c94c;
+  --warn-bg: #2b2410;
+  --success: #62d394;
+  --mark: #6a4310;
   --radius: 6px;
+  --radius-lg: 10px;
   --gap: 12px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171c;
-    --surface: #1b1f26;
-    --surface-2: #242a33;
-    --border: #343c48;
-    --text: #e6e9ee;
-    --muted: #9aa5b4;
-    --accent: #6c9bff;
-    --accent-text: #0c1220;
-    --danger: #ff8b82;
-    --warn: #f1c35b;
-    --warn-bg: #3a2f12;
-    --mark: #6b5a12;
-  }
 }
 
 * {
@@ -51,6 +50,25 @@ body {
   font: 14px / 1.45 var(--font);
 }
 
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  margin: 0;
+}
+
+h1 {
+  font-size: 16px;
+}
+
+h2 {
+  font-size: 14px;
+}
+
+h3 {
+  font-size: 13px;
+}
+
 button,
 input,
 select,
@@ -60,19 +78,19 @@ textarea {
 }
 
 button {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
-  padding: 4px 10px;
+  padding: 4px 12px;
   cursor: pointer;
 }
 
 button:hover:not(:disabled) {
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -80,6 +98,12 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 button.danger {
@@ -87,14 +111,36 @@ button.danger {
   color: var(--danger);
 }
 
+button.danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
 input,
 select,
 textarea {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--bg);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   padding: 4px 8px;
   max-width: 100%;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 
 :focus-visible {
@@ -107,6 +153,11 @@ pre {
   font: 12px / 1.4 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+::selection {
+  background: var(--mark);
+  color: var(--text);
 }
 
 .muted,
@@ -129,23 +180,49 @@ pre {
 
 .chip {
   display: inline-block;
-  padding: 0 6px;
+  padding: 0 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   font-size: 11px;
+  line-height: 18px;
   color: var(--muted);
   white-space: nowrap;
 }
 
 .chip-running,
-.chip-turn_open {
-  color: var(--accent);
-  border-color: var(--accent);
+.chip-turn_open,
+.chip-waiting {
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
 }
 
-.chip-invalid {
+.chip-invalid,
+.chip-denied {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.chip-approved,
+.chip-consumed {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+.badge[hidden] {
+  display: none;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -189,4 +266,128 @@ pre {
   margin: 4px 0 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* Shared components (src/ui/). */
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.seg-choice {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 3px 12px;
+  color: var(--muted);
+}
+
+.seg-choice + .seg-choice {
+  border-left: 1px solid var(--border);
+}
+
+.seg-choice[aria-checked="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Permission states: Deny muted, Prompt outlined orange, Allow solid neutral. */
+.segmented.access > .seg-choice[aria-checked="true"][data-value="prompt"] {
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+  box-shadow: inset 0 0 0 1px var(--accent-fg);
+}
+
+.segmented.access > .seg-choice[aria-checked="true"][data-value="allow"] {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 6px 12px;
+  color: var(--muted);
+}
+
+.tab:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.popover {
+  position: relative;
+}
+
+.popover > summary {
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.popover > summary::-webkit-details-marker {
+  display: none;
+}
+
+.popover > summary:hover {
+  background: var(--surface-3);
+}
+
+.popover[open] > summary {
+  border-color: var(--accent);
+}
+
+.popover-panel {
+  position: absolute;
+  z-index: 20;
+  min-width: 220px;
+  max-width: min(420px, 90vw);
+  margin-top: 4px;
+  padding: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 55%);
+  display: grid;
+  gap: 8px;
+}
+
+.popover.align-end > .popover-panel {
+  right: 0;
+}
+
+.popover.open-up > .popover-panel {
+  bottom: 100%;
+  margin: 0 0 4px;
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  padding: 32px 16px;
+  color: var(--muted);
+  text-align: center;
 }

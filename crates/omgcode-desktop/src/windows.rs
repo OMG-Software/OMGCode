@@ -6,6 +6,7 @@
 //! external page inside one would be a privilege problem.
 
 use tauri::webview::NewWindowResponse;
+use tauri::window::Color;
 use tauri::{App, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::policy::WindowLabel;
@@ -54,6 +55,10 @@ fn allowed_for(url: &Url, windows: bool, debug: bool) -> bool {
     }
 }
 
+/// The window and webview background before the page paints. It matches `--bg` in
+/// `ui/src/styles/tokens.css`, so a window never flashes white on open (ADR-0065).
+const WINDOW_BACKGROUND: Color = Color(0x0e, 0x0f, 0x11, 0xff);
+
 /// Creates the `main`, `approvals`, and `settings` windows.
 ///
 /// `approvals` and `settings` start hidden, and closing either hides it. Devtools exist only in debug builds. File
@@ -73,6 +78,7 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
     .title("OMGCode")
     .inner_size(1200.0, 800.0)
     .min_inner_size(800.0, 560.0)
+    .background_color(WINDOW_BACKGROUND)
     .disable_drag_drop_handler()
     .devtools(debug)
     .on_navigation(move |url| navigation_allowed(url, debug))
@@ -95,8 +101,9 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
         WebviewUrl::App("approvals.html".into()),
     )
     .title("OMGCode \u{2014} Tool approvals")
-    .inner_size(760.0, 720.0)
-    .min_inner_size(560.0, 480.0)
+    .inner_size(960.0, 720.0)
+    .min_inner_size(600.0, 480.0)
+    .background_color(WINDOW_BACKGROUND)
     .visible(false)
     .disable_drag_drop_handler()
     .devtools(debug)
@@ -112,8 +119,9 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
         WebviewUrl::App("settings.html".into()),
     )
     .title("OMGCode \u{2014} Settings")
-    .inner_size(820.0, 720.0)
-    .min_inner_size(560.0, 480.0)
+    .inner_size(960.0, 720.0)
+    .min_inner_size(600.0, 480.0)
+    .background_color(WINDOW_BACKGROUND)
     .visible(false)
     .disable_drag_drop_handler()
     .devtools(debug)
