@@ -96,18 +96,35 @@ describe("mock backend", () => {
 
   it("rejects a chat endpoint that differs from chat_defaults", async () => {
     const { invoke } = createMockBackend();
-    const defaults = (await invoke("chat_defaults", {})) as { endpoint: string };
+    const { settings: defaults } = (await invoke("chat_defaults", {})) as {
+      settings: { endpoint: string };
+    };
     const send = (endpoint: string) =>
       invoke("chat_send", {
         session_id: "00000000-0000-4000-8000-000000000001",
         message: "hello",
         settings: { ...defaults, model: "m", endpoint },
+        skills: [],
       });
     await expect(send("http://127.0.0.1:9/v1")).rejects.toEqual({
       code: "invalid_request",
       message: "The endpoint is fixed by the application.",
     });
     await expect(send(defaults.endpoint)).resolves.toMatchObject({ state: "running" });
+  });
+
+  it("refuses a chat request without a skills list, like the Rust command", async () => {
+    const { invoke } = createMockBackend();
+    const { settings: defaults } = (await invoke("chat_defaults", {})) as {
+      settings: { endpoint: string };
+    };
+    await expect(
+      invoke("chat_send", {
+        session_id: "00000000-0000-4000-8000-000000000001",
+        message: "hello",
+        settings: { ...defaults, model: "m" },
+      }),
+    ).rejects.toEqual({ code: "invalid_argument", message: "Missing skills." });
   });
 
   describe("chat_subscribe", () => {
@@ -121,11 +138,14 @@ describe("mock backend", () => {
     });
 
     async function send(invoke: ReturnType<typeof createMockBackend>["invoke"]): Promise<void> {
-      const defaults = (await invoke("chat_defaults", {})) as { endpoint: string };
+      const { settings: defaults } = (await invoke("chat_defaults", {})) as {
+        settings: { endpoint: string };
+      };
       await invoke("chat_send", {
         session_id: SESSION,
         message: "hello",
         settings: { ...defaults, model: "m" },
+        skills: [],
       });
     }
 

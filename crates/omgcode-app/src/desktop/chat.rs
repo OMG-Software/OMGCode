@@ -6,12 +6,18 @@ use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
 use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
+use omgcode_core::skills::{MAX_SELECTED_SKILLS, SkillName};
+
 use super::ChatEventSink;
 use super::error::DesktopError;
+use super::preferences;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
-use super::wire::{ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, SessionRequest};
+use super::wire::{
+    ChatDefaults, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
+    ChatState, ChatStatus, PreferencesSource, SessionRequest,
+};
 use super::{DesktopService, Inner};
-use crate::{ChatClients, ChatSettings, LmToken, LocalConnection};
+use crate::{ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -22,18 +28,48 @@ const MAX_INSTRUCTIONS_INPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
 
 impl DesktopService {
-    /// The settings the interface starts from: the fixed endpoint, an empty
-    /// model, and the CLI's budgets.
-    pub fn chat_defaults(&self) -> ChatSettingsDto {
-        ChatSettingsDto {
-            endpoint: self.inner.endpoint.clone(),
-            model: String::new(),
-            context_tokens: 0,
-            max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
-            instructions: String::new(),
-            compact_threshold: DEFAULT_COMPACT_THRESHOLD,
-            auto_compact: false,
+    /// The settings the interface starts from: the fixed endpoint with the
+    /// saved chat preferences, or with an empty model and the CLI's budgets
+    /// when none are saved (ADR-0059 decision 8).
+    ///
+    /// A preferences file that cannot be read or fails validation is reported
+    /// as [`PreferencesSource::Unreadable`] and the built-in defaults apply,
+    /// so a damaged file never blocks chat. Saving again replaces it.
+    pub fn chat_defaults(&self) -> ChatDefaults {
+        let (preferences, source) = match preferences::load(&self.inner.data_root) {
+            Ok(Some(saved)) => (saved, PreferencesSource::Saved),
+            Ok(None) => (built_in_preferences(), PreferencesSource::Defaults),
+            Err(_) => (built_in_preferences(), PreferencesSource::Unreadable),
+        };
+        ChatDefaults {
+            settings: ChatSettingsDto {
+                endpoint: self.inner.endpoint.clone(),
+                model: preferences.model,
+                context_tokens: preferences.context_tokens,
+                max_output_tokens: preferences.max_output_tokens,
+                instructions: preferences.instructions,
+                compact_threshold: preferences.compact_threshold,
+                auto_compact: preferences.auto_compact,
+            },
+            preferences: source,
         }
+    }
+
+    /// Save the chat preferences the composer starts from next time.
+    ///
+    /// They grant nothing; `chat_send` validates every value when it is used.
+    /// The file is replaced atomically in application storage.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request` for a value over its bound, `preferences` when the
+    /// file cannot be written.
+    pub fn chat_preferences_save(
+        &self,
+        request: ChatPreferencesSaveRequest,
+    ) -> Result<ChatDefaults, DesktopError> {
+        preferences::save(&self.inner.data_root, &request.preferences)?;
+        Ok(self.chat_defaults())
     }
 
     /// Start one chat turn and return at once with state `running`.
@@ -65,6 +101,7 @@ impl DesktopService {
         {
             return Err(DesktopError::invalid_request("The request is too large."));
         }
+        let skills = selected_skills(&request.skills)?;
         inner.reap()?;
         check_slot(inner, session_id)?;
 
@@ -116,6 +153,7 @@ impl DesktopService {
             settings,
             token,
             clients,
+            skills,
         };
 
         // Reserve the slot and start the thread under one lock hold, so two
@@ -238,6 +276,39 @@ fn check_slot(inner: &Inner, session_id: Uuid) -> Result<(), DesktopError> {
         return Err(DesktopError::too_many_turns());
     }
     Ok(())
+}
+
+/// The preferences that apply when none are saved: an empty model and the
+/// CLI's budgets.
+fn built_in_preferences() -> ChatPreferencesDto {
+    ChatPreferencesDto {
+        model: String::new(),
+        context_tokens: 0,
+        max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        instructions: String::new(),
+        compact_threshold: DEFAULT_COMPACT_THRESHOLD,
+        auto_compact: false,
+    }
+}
+
+/// Parse the turn's skill names and check the selection shape (at most four,
+/// none repeated). Whether each is registered and enabled for the session's
+/// workspace is decided by the turn itself, which loads them from core.
+fn selected_skills(names: &[String]) -> Result<Vec<SkillName>, DesktopError> {
+    if names.len() > MAX_SELECTED_SKILLS {
+        return Err(DesktopError::invalid_request(format!(
+            "Select at most {MAX_SELECTED_SKILLS} skills for one turn."
+        )));
+    }
+    let parsed = names
+        .iter()
+        .map(|name| {
+            SkillName::new(name)
+                .map_err(|_| DesktopError::invalid_request("A skill name is not valid."))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_skill_selection(&parsed).map_err(|error| DesktopError::from_app(&error))?;
+    Ok(parsed)
 }
 
 fn chat_settings(settings: ChatSettingsDto, endpoint: String) -> ChatSettings {

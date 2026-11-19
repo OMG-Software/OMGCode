@@ -4,7 +4,8 @@
 use std::time::{Duration, Instant};
 
 use omgcode_app::desktop::{
-    ChatEvent, ChatState, ChatStatus, DesktopError, DesktopService, SessionStatus, ToolsMode,
+    ChatEvent, ChatState, ChatStatus, DesktopError, DesktopService, PreferencesSource,
+    SessionStatus, ToolsMode,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -33,6 +34,7 @@ fn send(
         "session_id": session,
         "message": message,
         "settings": settings_json(endpoint),
+        "skills": [],
     })))
 }
 
@@ -262,7 +264,7 @@ fn a_refused_send_starts_no_thread_and_records_nothing() {
     settings["model"] = json!("");
     let bad_model = service
         .chat_send(wire(
-            json!({"session_id": session, "message": "hi", "settings": settings}),
+            json!({"session_id": session, "message": "hi", "settings": settings, "skills": []}),
         ))
         .expect_err("an empty model");
     assert_eq!(bad_model.code(), "provider");
@@ -270,7 +272,7 @@ fn a_refused_send_starts_no_thread_and_records_nothing() {
     settings["context_tokens"] = json!(0);
     let bad_context = service
         .chat_send(wire(
-            json!({"session_id": session, "message": "hi", "settings": settings}),
+            json!({"session_id": session, "message": "hi", "settings": settings, "skills": []}),
         ))
         .expect_err("a zero context");
     assert_eq!(bad_context.code(), "provider");
@@ -586,7 +588,9 @@ fn shutdown_with_no_turns_returns_at_once() {
 fn chat_defaults_are_the_cli_defaults_with_the_fixed_endpoint() {
     let fixture = Fixture::bare();
     let endpoint = "http://127.0.0.1:1234/v1";
-    let defaults = fixture.service(endpoint).chat_defaults();
+    let reply = fixture.service(endpoint).chat_defaults();
+    assert_eq!(reply.preferences, PreferencesSource::Defaults);
+    let defaults = reply.settings;
     assert_eq!(defaults.endpoint, endpoint);
     assert_eq!(defaults.model, "");
     assert_eq!(defaults.context_tokens, 0);

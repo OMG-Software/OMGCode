@@ -21,7 +21,13 @@ export interface ChatPreview {
 }
 
 export interface ChatRunner {
-  send(sessionId: string, message: string, settings: ChatSettings): Promise<void>;
+  /** `skills` are names the operator selected for this turn only; none by default. */
+  send(
+    sessionId: string,
+    message: string,
+    settings: ChatSettings,
+    skills?: readonly string[],
+  ): Promise<void>;
   cancel(sessionId: string): Promise<void>;
   /** Tracks a session the core reports as running (for example after switching back). */
   watch(sessionId: string): void;
@@ -225,13 +231,13 @@ export function createChatRunner(events: ChatRunnerEvents): ChatRunner {
   }
 
   return {
-    async send(sessionId, message, settings) {
+    async send(sessionId, message, settings, skills = []) {
       await ensureSubscribed();
       setPreview(sessionId, null, false);
       const early = { finished: false };
       starting.set(sessionId, early);
       try {
-        track(await api.chatSend(sessionId, message, settings));
+        track(await api.chatSend(sessionId, message, settings, [...skills]));
       } catch (reason) {
         if (!pollers.has(sessionId)) {
           setPreview(sessionId, null);

@@ -64,6 +64,26 @@ suite(
       }
     });
 
+    it("settings window bundle reads the overview and never decides or subscribes", () => {
+      const scripts = reachableScripts("settings.html");
+      expect(scripts.size).toBeGreaterThan(0);
+      const joined = Array.from(scripts.values()).join("\n");
+      expect(joined).toContain("settings_overview");
+      for (const [path, text] of scripts) {
+        expect(text, path).not.toContain("approval_decide");
+        expect(text, path).not.toContain("approval_detail");
+        expect(text, path).not.toContain("chat_subscribe");
+      }
+    });
+
+    it("main and approvals bundles never mention settings_overview", () => {
+      for (const entry of ["index.html", "approvals.html"]) {
+        for (const [path, text] of reachableScripts(entry)) {
+          expect(text, `${entry} ${path}`).not.toContain("settings_overview");
+        }
+      }
+    });
+
     it("contains no mock fixture marker in any asset", () => {
       for (const [path, text] of byPath) {
         expect(text, path).not.toContain(MARKER);
@@ -71,7 +91,7 @@ suite(
     });
 
     it("has HTML with no inline script, inline style or remote URL", () => {
-      for (const entry of ["index.html", "approvals.html"]) {
+      for (const entry of ["index.html", "approvals.html", "settings.html"]) {
         const html = byPath.get(entry) ?? "";
         expect(html, entry).not.toBe("");
         for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {

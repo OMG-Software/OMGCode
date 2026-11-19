@@ -6,6 +6,45 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.40.0 adds the first desktop settings increment (Phase S1 of
+  ADR-0059, accepted). ADR-0059 records the design for configuring every CLI
+  setting in the desktop application, delivered in phases S1 to S5. Only S1
+  is implemented; the desktop still changes no trusted setting.
+  - **Settings window:** a third webview window, `settings`, with its own
+    capability file, bundle, and HTML page. It starts hidden and opens from
+    **Settings** in the session sidebar through `settings_show_window`. Its one
+    command, `settings_overview`, returns a read-only view of the trusted
+    configuration: the settings revision, development root, workspaces and
+    their preferences and package cache roots, the connection this process
+    uses, provider, toolchain, and package-network profiles, container
+    grants, and skill enablement. Paths and recorded names are display-safe
+    text. No secret, environment value, skill description, or skill body is
+    returned. The window has no input field and names the CLI commands that
+    change each setting.
+  - **Saved chat preferences:** `chat_preferences_save` stores the model name,
+    context size, output reserve, custom instructions, compaction threshold,
+    and automatic compaction switch in
+    `<data_root>/desktop-v1/chat-preferences.json`, at most 512 KiB, written
+    through a synced temporary file and a rename. No endpoint can be saved,
+    and streaming stays a launch argument.
+    `chat_defaults` now returns the settings with a `preferences` source of
+    `defaults`, `saved`, or `unreadable`; an unreadable file falls back to the
+    built-in values and the composer shows a note. A failed write returns the
+    new error code `preferences`.
+  - **Skills for one turn:** `session_skills` lists the names of the skills
+    enabled for a session's registered workspace, and `chat_send` takes a
+    required `skills` list of at most four names. Core loads each as for
+    `chat --skill` (ADR-0057), so a skill that is no longer enabled fails the
+    turn before any model request.
+  - The shell now has three windows and 23 commands. The `settings` capability
+    grants only `settings_overview`, which `main` cannot call; bundle tests
+    keep the settings command out of the main and approvals bundles and the
+    decision and chat-event commands out of the settings bundle.
+  - The security coding rules add the S1 rules for the configuration view,
+    saved preferences, and skill selection. Phases S2 to S5 (the native folder
+    dialog, native confirmations, the write-only API key field, and choosing
+    the active connection) are not implemented.
+
 - Version 0.39.0 adds the first skills increment (Phase F1): trusted import of
   a skill folder into private storage, a registry with application and
   workspace enablement, and loading of an enabled skill into one chat turn on

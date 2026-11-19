@@ -228,3 +228,94 @@ export function isChatEvent(value: unknown): value is ChatEvent {
       return false;
   }
 }
+
+/** Saved composer defaults (ADR-0059). They grant nothing and carry no endpoint. */
+export interface ChatPreferences {
+  model: string;
+  context_tokens: number;
+  max_output_tokens: number;
+  instructions: string;
+  compact_threshold: number;
+  auto_compact: boolean;
+}
+
+export type PreferencesSource = "defaults" | "saved" | "unreadable";
+
+export interface ChatDefaults {
+  settings: ChatSettings;
+  preferences: PreferencesSource;
+}
+
+/** Skills enabled for a session's workspace. Names only. */
+export interface SessionSkills {
+  workspace_registered: boolean;
+  skills: string[];
+}
+
+export interface WorkspaceSettingsView {
+  workspace_id: string;
+  folder_display: string;
+  model_tools: boolean;
+  read: boolean;
+  write: boolean;
+  execute: boolean;
+  package_cache_root: string | null;
+}
+
+export type ConnectionSource = "environment" | "profile" | "injected";
+
+export interface ConnectionView {
+  endpoint: string;
+  source: ConnectionSource;
+  profile: string | null;
+}
+
+export interface ProviderProfileView {
+  name: string;
+  kind: string;
+  auth: string;
+  endpoint: string | null;
+  credential_bound: boolean;
+}
+
+export interface ToolchainProfileView {
+  name: string;
+  platform: "linux" | "windows";
+  read_only_roots: string[];
+  path_entries: string[];
+  environment_names: string[];
+}
+
+export interface PackageProfileView {
+  name: string;
+  origins: string[];
+  credentials_bound: number;
+}
+
+export interface ContainerGrantView {
+  grant_id: string;
+  workspace_id: string;
+  directory: string;
+  access: "read_execute" | "read_write";
+  state: "pending" | "active" | "revoking";
+}
+
+export interface SkillSettingView {
+  name: string;
+  application: boolean | null;
+  workspace_overrides: Array<{ workspace_id: string; enabled: boolean }>;
+}
+
+/** The read-only configuration shown in the settings window only. */
+export interface SettingsOverview {
+  store_initialized: boolean;
+  revision: number;
+  development_root: string | null;
+  workspaces: WorkspaceSettingsView[];
+  connection: ConnectionView;
+  provider_profiles: ProviderProfileView[];
+  toolchain_profiles: ToolchainProfileView[];
+  package_profiles: PackageProfileView[];
+  container_grants: ContainerGrantView[];
+  skills: SkillSettingView[];
+}

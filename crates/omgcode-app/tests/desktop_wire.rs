@@ -344,6 +344,7 @@ fn error_value() -> DesktopError {
             "session_id": id(),
             "message": "  ",
             "settings": common::settings_json("http://127.0.0.1:1/v1"),
+            "skills": [],
         })))
         .expect_err("an empty message is refused")
 }
@@ -852,11 +853,12 @@ fn requests_match_the_argument_objects_the_client_sends() {
     let create: SessionCreateRequest = wire(json!({"workspace_id": session, "title": "t"}));
     assert_eq!(create.title, "t");
 
-    assert!(client.contains("{ session_id: sessionId, message, settings }"));
+    assert!(client.contains("{ session_id: sessionId, message, settings, skills }"));
     let send: ChatSendRequest = wire(json!({
         "session_id": session,
         "message": "m",
         "settings": common::settings_json("http://127.0.0.1:1/v1"),
+        "skills": [],
     }));
     assert_eq!(send.message, "m");
 
@@ -956,7 +958,7 @@ fn requests_reject_unknown_fields_and_wrong_values() {
         parse!(
             ChatSendRequest,
             json!({
-                "session_id": session, "message": "m", "settings": {"endpoint": "e"}
+                "session_id": session, "message": "m", "settings": {"endpoint": "e"}, "skills": []
             })
         ),
         "incomplete settings",
@@ -966,7 +968,7 @@ fn requests_reject_unknown_fields_and_wrong_values() {
     reject(
         parse!(
             ChatSendRequest,
-            json!({"session_id": session, "message": "m", "settings": settings})
+            json!({"session_id": session, "message": "m", "settings": settings, "skills": []})
         ),
         "an extra settings field",
     );

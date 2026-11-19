@@ -1,6 +1,6 @@
 //! The window policy: which webview may call which command.
 //!
-//! This is the second of two layers (ADR-0046 decision 2). Tauri's capability
+//! This is the second of two layers (ADR-0046 decision 2, ADR-0059 decision 2). Tauri's capability
 //! files are the first. Every command handler calls [`authorize`] before doing
 //! anything else, so a capability file edited by mistake cannot expose a decision
 //! command to the wrong window. The calling label comes from the runtime, which
@@ -8,22 +8,29 @@
 
 use crate::error::CommandError;
 
-/// The two webview windows. Labels are fixed at creation.
+/// The three webview windows. Labels are fixed at creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowLabel {
     /// Session tree, transcripts, and chat.
     Main,
     /// The only window that may list, review, and decide approvals.
     Approvals,
+    /// The only window that may read the full trusted configuration
+    /// (ADR-0059). It renders no transcript, tool, or skill text.
+    Settings,
 }
 
 impl WindowLabel {
+    /// Every window, in creation order.
+    pub const ALL: [Self; 3] = [Self::Main, Self::Approvals, Self::Settings];
+
     /// The label string passed to the window builder and matched in capabilities.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Main => "main",
             Self::Approvals => "approvals",
+            Self::Settings => "settings",
         }
     }
 }
@@ -51,11 +58,15 @@ pub enum Command {
     ApprovalsList,
     ApprovalDetail,
     ApprovalDecide,
+    SettingsShowWindow,
+    ChatPreferencesSave,
+    SessionSkills,
+    SettingsOverview,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 23] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -75,6 +86,10 @@ impl Command {
         Self::ApprovalsList,
         Self::ApprovalDetail,
         Self::ApprovalDecide,
+        Self::SettingsShowWindow,
+        Self::ChatPreferencesSave,
+        Self::SessionSkills,
+        Self::SettingsOverview,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -100,6 +115,10 @@ impl Command {
             Self::ApprovalsList => "approvals_list",
             Self::ApprovalDetail => "approval_detail",
             Self::ApprovalDecide => "approval_decide",
+            Self::SettingsShowWindow => "settings_show_window",
+            Self::ChatPreferencesSave => "chat_preferences_save",
+            Self::SessionSkills => "session_skills",
+            Self::SettingsOverview => "settings_overview",
         }
     }
 
@@ -110,6 +129,7 @@ impl Command {
             Self::ApprovalsList | Self::ApprovalDetail | Self::ApprovalDecide => {
                 WindowLabel::Approvals
             }
+            Self::SettingsOverview => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -125,7 +145,10 @@ impl Command {
             | Self::ChatCancel
             | Self::ChatSubscribe
             | Self::ApprovalsSummary
-            | Self::ApprovalsShowWindow => WindowLabel::Main,
+            | Self::ApprovalsShowWindow
+            | Self::SettingsShowWindow
+            | Self::ChatPreferencesSave
+            | Self::SessionSkills => WindowLabel::Main,
         }
     }
 }
@@ -163,9 +186,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 19);
-        assert_eq!(with_window(WindowLabel::Main).len(), 16);
+        assert_eq!(Command::ALL.len(), 23);
+        assert_eq!(with_window(WindowLabel::Main).len(), 19);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 1);
     }
 
     #[test]
@@ -177,7 +201,15 @@ mod tests {
         ] {
             assert_eq!(command.window(), WindowLabel::Approvals);
             assert_eq!(authorize(command, "approvals"), Ok(()));
-            for label in ["main", "unknown", "", "Approvals", "approvals ", "main\0"] {
+            for label in [
+                "main",
+                "settings",
+                "unknown",
+                "",
+                "Approvals",
+                "approvals ",
+                "main\0",
+            ] {
                 assert_eq!(
                     authorize(command, label),
                     Err(CommandError::forbidden_window()),
@@ -192,7 +224,7 @@ mod tests {
     fn main_commands_are_refused_for_every_other_label() {
         for command in with_window(WindowLabel::Main) {
             assert_eq!(authorize(command, "main"), Ok(()));
-            for label in ["approvals", "unknown", ""] {
+            for label in ["approvals", "settings", "unknown", ""] {
                 assert_eq!(
                     authorize(command, label),
                     Err(CommandError::forbidden_window()),
@@ -201,6 +233,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn settings_commands_are_settings_only() {
+        for command in with_window(WindowLabel::Settings) {
+            assert_eq!(authorize(command, "settings"), Ok(()));
+            for label in ["main", "approvals", "Settings", "settings ", "unknown", ""] {
+                assert_eq!(
+                    authorize(command, label),
+                    Err(CommandError::forbidden_window()),
+                    "{} must be refused for {label:?}",
+                    command.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn window_labels_are_distinct() {
+        let labels: BTreeSet<&str> = WindowLabel::ALL.iter().map(|w| w.as_str()).collect();
+        assert_eq!(labels.len(), WindowLabel::ALL.len());
     }
 
     #[test]
@@ -219,10 +272,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_nineteen_unique_names_matching_the_enum() {
+    fn shared_name_list_has_twenty_three_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 19);
-        assert_eq!(shared.len(), 19);
+        assert_eq!(COMMAND_NAMES.len(), 23);
+        assert_eq!(shared.len(), 23);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

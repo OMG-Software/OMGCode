@@ -1,12 +1,12 @@
 //! Window creation, the navigation guard, and close behaviour.
 //!
-//! Both windows are created in Rust so that the navigation and new-window
-//! hooks are attached before the first page loads. Neither window may leave
+//! Every window is created in Rust so that the navigation and new-window
+//! hooks are attached before the first page loads. No window may leave
 //! the application's own origin: the webviews hold the IPC capability, so an
 //! external page inside one would be a privilege problem.
 
 use tauri::webview::NewWindowResponse;
-use tauri::{App, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{App, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::policy::WindowLabel;
 use crate::shutdown;
@@ -54,9 +54,9 @@ fn allowed_for(url: &Url, windows: bool, debug: bool) -> bool {
     }
 }
 
-/// Creates the `main` and `approvals` windows.
+/// Creates the `main`, `approvals`, and `settings` windows.
 ///
-/// `approvals` starts hidden. Devtools exist only in debug builds. File
+/// `approvals` and `settings` start hidden, and closing either hides it. Devtools exist only in debug builds. File
 /// drag-and-drop is disabled so a dropped file cannot navigate a webview.
 ///
 /// # Errors
@@ -80,9 +80,9 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
     .build()?;
     let handle = app.handle().clone();
     main.on_window_event(move |event| {
-        // Closing `main` ends the application; the hidden approvals window must
-        // not keep the process alive. The close is held back so both windows can
-        // be hidden at once and the bounded shutdown can run off this thread.
+        // Closing `main` ends the application; the hidden approvals and settings
+        // windows must not keep the process alive. The close is held back so
+        // every window can be hidden at once and the bounded shutdown can run off this thread.
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             shutdown::begin(&handle, 0);
@@ -103,17 +103,41 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
     .on_navigation(move |url| navigation_allowed(url, debug))
     .on_new_window(|_, _| NewWindowResponse::Deny)
     .build()?;
-    let hidden = approvals.clone();
-    approvals.on_window_event(move |event| {
-        // Closing hides the window so its state and the process survive.
+    hide_on_close(&approvals);
+
+    // The settings window renders only operator-recorded configuration (ADR-0059).
+    let settings = WebviewWindowBuilder::new(
+        app,
+        WindowLabel::Settings.as_str(),
+        WebviewUrl::App("settings.html".into()),
+    )
+    .title("OMGCode \u{2014} Settings")
+    .inner_size(820.0, 720.0)
+    .min_inner_size(560.0, 480.0)
+    .visible(false)
+    .disable_drag_drop_handler()
+    .devtools(debug)
+    .on_navigation(move |url| navigation_allowed(url, debug))
+    .on_new_window(|_, _| NewWindowResponse::Deny)
+    .build()?;
+    hide_on_close(&settings);
+    Ok(())
+}
+
+/// Closing a secondary window hides it, so its state and the process survive.
+fn hide_on_close(window: &WebviewWindow) {
+    let hidden = window.clone();
+    window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             if hidden.hide().is_err() {
-                eprintln!("omgcode-desktop: could not hide the approvals window");
+                eprintln!(
+                    "omgcode-desktop: could not hide the {} window",
+                    hidden.label()
+                );
             }
         }
     });
-    Ok(())
 }
 
 #[cfg(test)]

@@ -62,9 +62,10 @@ replay them.
 Not implemented: mid-turn compaction after tool results, persisted workspace
 settings, provider-native opaque compaction, caches, and memories. The desktop
 shell shows the context meter line after each turn (estimated tokens, context
-size, and the compaction trigger). It has no settings interface, persisted
-settings, or live meter while a turn runs, and it shows the meter only for a
-turn that reports one.
+size, and the compaction trigger). Since 0.40.0 it saves the chat
+preferences, including the compaction threshold and the automatic
+compaction switch, which grant nothing. It has no live meter while a turn
+runs, and it shows the meter only for a turn that reports one.
 
 ## Settings and accounting
 

@@ -463,6 +463,7 @@ describe("chat lifecycle", () => {
       session_id: "s-chat",
       message: "hello",
       settings: { model: "test-model", context_tokens: 8192, auto_compact: true },
+      skills: [],
     });
     expect((root.querySelector(".composer .running") as HTMLElement).hidden).toBe(false);
     const transcriptCalls = ipc.callsTo("session_transcript").length;
@@ -484,7 +485,7 @@ describe("chat lifecycle", () => {
     await start({
       session_tree: treeOf(s),
       session_transcript: () => page(s, [userMessage(1, "hi")]),
-      chat_defaults: () => ({ ...SETTINGS, endpoint }),
+      chat_defaults: () => ({ settings: { ...SETTINGS, endpoint }, preferences: "defaults" }),
       chat_send: () => running,
     });
     itemFor("s-chat").click();
@@ -562,13 +563,16 @@ describe("chat lifecycle", () => {
       session_tree: treeOf(s),
       session_transcript: () => page(s, []),
       chat_defaults: () => ({
-        endpoint: "",
-        model: "",
-        context_tokens: 0,
-        max_output_tokens: 0,
-        instructions: "",
-        compact_threshold: 0,
-        auto_compact: false,
+        settings: {
+          endpoint: "",
+          model: "",
+          context_tokens: 0,
+          max_output_tokens: 0,
+          instructions: "",
+          compact_threshold: 0,
+          auto_compact: false,
+        },
+        preferences: "defaults",
       }),
     });
     itemFor("s-chat").click();
@@ -702,5 +706,252 @@ describe("approvals nudge and new session", () => {
     await settle();
     expect(ipc.callsTo("session_create")[0]?.args).toEqual({ workspace_id: "w1", title: "Fresh" });
     expect(root.querySelector(".pane-header")?.textContent).toContain("Fresh");
+  });
+});
+
+describe("settings window, saved defaults, and per-turn skills", () => {
+  const s = session({ session_id: "s-skills", title: "Skills" });
+  const running = { session_id: "s-skills", state: "running", outcome: null, error: null };
+
+  async function open(handlers: Record<string, Handler> = {}): Promise<void> {
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
+      chat_send: () => running,
+      chat_status: () => running,
+      ...handlers,
+    });
+    itemFor("s-skills").click();
+    await settle();
+  }
+
+  function skillBoxes(): HTMLInputElement[] {
+    return Array.from(root.querySelectorAll<HTMLInputElement>(".skills input[type=checkbox]"));
+  }
+
+  it("opens the settings window and nothing else", async () => {
+    await start();
+    buttonByText(root, "Settings").click();
+    await settle();
+    expect(ipc.callsTo("settings_show_window")).toEqual([
+      { command: "settings_show_window", args: {} },
+    ]);
+    expect(ipc.callsTo("settings_overview")).toHaveLength(0);
+  });
+
+  it("says so when the settings window cannot be shown", async () => {
+    await start({ settings_show_window: () => rejection("window_unavailable", "gone") });
+    buttonByText(root, "Settings").click();
+    await settle();
+    const bar = root.querySelector(".statusbar") as HTMLElement;
+    expect(bar.hidden).toBe(false);
+    expect(bar.textContent).toContain("The settings window could not be opened.");
+  });
+
+  it("keeps a window error through the approvals poll until it is dismissed", async () => {
+    await start({
+      approvals_summary: () => ({ pending: 0 }),
+      settings_show_window: () => rejection("window_unavailable", "gone"),
+    });
+    buttonByText(root, "Settings").click();
+    await settle();
+    await settle(3000);
+    await settle(3000);
+    const bar = root.querySelector(".statusbar") as HTMLElement;
+    expect(bar.hidden).toBe(false);
+    expect(bar.textContent).toContain("The settings window could not be opened.");
+    buttonByText(bar, "Dismiss").click();
+    expect(bar.hidden).toBe(true);
+    expect(bar.textContent).toBe("");
+  });
+
+  it("hides the skill choice when the workspace has no enabled skill", async () => {
+    await open();
+    expect(ipc.callsTo("session_skills")[0]?.args).toEqual({ session_id: "s-skills" });
+    expect((root.querySelector(".skills") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("sends the selected skills with one turn and clears them afterwards", async () => {
+    await open({
+      session_skills: () => ({ workspace_registered: true, skills: ["review", HOSTILE.img] }),
+    });
+    expect((root.querySelector(".skills") as HTMLElement).hidden).toBe(false);
+    // Skill names are text, never markup.
+    expect(root.querySelector(".skills img")).toBeNull();
+    expect(root.querySelector(".skills")?.textContent).toContain(HOSTILE.img);
+    const [review] = skillBoxes();
+    (review as HTMLInputElement).click();
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ skills: ["review"] });
+    expect(skillBoxes().every((box) => !box.checked)).toBe(true);
+  });
+
+  it("allows at most four skills for one turn", async () => {
+    await open({
+      session_skills: () => ({
+        workspace_registered: true,
+        skills: ["a1", "a2", "a3", "a4", "a5"],
+      }),
+    });
+    const boxes = skillBoxes();
+    for (const box of boxes.slice(0, 4)) {
+      box.click();
+    }
+    expect(boxes[4]?.disabled).toBe(true);
+    expect(boxes.slice(0, 4).every((box) => !box.disabled)).toBe(true);
+    boxes[0]?.click();
+    expect(boxes[4]?.disabled).toBe(false);
+  });
+
+  it("offers no skills when the list cannot be read", async () => {
+    await open({ session_skills: () => rejection("busy", "busy") });
+    expect((root.querySelector(".skills") as HTMLElement).hidden).toBe(true);
+    expect(buttonByText(root, "Send")).toBeDefined();
+  });
+
+  it("saves the model settings as defaults without the endpoint", async () => {
+    const saved = { ...SETTINGS, model: "saved-model" };
+    await open({
+      chat_preferences_save: () => ({ settings: saved, preferences: "saved" }),
+    });
+    const model = root.querySelector<HTMLInputElement>(".settings input[type=text]");
+    type(model as HTMLInputElement, "saved-model");
+    buttonByText(root, "Save as defaults").click();
+    await settle();
+    const args = ipc.callsTo("chat_preferences_save")[0]?.args as {
+      preferences: Record<string, unknown>;
+    };
+    expect(args.preferences).toEqual({
+      model: "saved-model",
+      context_tokens: SETTINGS.context_tokens,
+      max_output_tokens: SETTINGS.max_output_tokens,
+      instructions: SETTINGS.instructions,
+      compact_threshold: SETTINGS.compact_threshold,
+      auto_compact: SETTINGS.auto_compact,
+    });
+    expect("endpoint" in args.preferences).toBe(false);
+    expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");
+  });
+
+  it("shows the core error when saving defaults fails", async () => {
+    await open({
+      chat_preferences_save: () => rejection("invalid_request", "The model name is too long."),
+    });
+    buttonByText(root, "Save as defaults").click();
+    await settle();
+    expect(root.querySelector(".preferences-row")?.textContent).toContain(
+      "The model name is too long. (invalid_request)",
+    );
+  });
+
+  it("says when saved defaults could not be read", async () => {
+    await open({
+      chat_defaults: () => ({ settings: { ...SETTINGS }, preferences: "unreadable" }),
+    });
+    expect(root.querySelector(".preferences-row")?.textContent).toContain(
+      "Saved defaults could not be read",
+    );
+  });
+
+  it("keeps edits made while defaults are being saved", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    await open({
+      chat_preferences_save: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const model = root.querySelector<HTMLInputElement>(
+      ".settings input[type=text]",
+    ) as HTMLInputElement;
+    type(model, "first");
+    buttonByText(root, "Save as defaults").click();
+    await settle();
+    expect(ipc.callsTo("chat_preferences_save")).toHaveLength(1);
+    type(model, "second");
+    finish({ settings: { ...SETTINGS, model: "first" }, preferences: "saved" });
+    await settle();
+    expect(model.value).toBe("second");
+    expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");
+  });
+
+  describe("across session switches", () => {
+    const a = session({ session_id: "s-a", title: "A" });
+    const b = session({ session_id: "s-b", title: "B" });
+    const transcript: Handler = (args) => page(args.session_id === "s-b" ? b : a, []);
+
+    function skillNames(): string {
+      return root.querySelector(".skills")?.textContent ?? "";
+    }
+
+    it("leaves another session's choice alone when an earlier send completes", async () => {
+      let finish: (value: unknown) => void = () => undefined;
+      await start({
+        session_tree: treeOf(a, b),
+        session_transcript: transcript,
+        session_skills: () => ({ workspace_registered: true, skills: ["review"] }),
+        chat_send: () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        chat_status: (args) => ({ ...running, session_id: args.session_id }),
+      });
+      itemFor("s-a").click();
+      await settle();
+      skillBoxes()[0]?.click();
+      type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+      buttonByText(root, "Send").click();
+      await settle();
+
+      itemFor("s-b").click();
+      await settle();
+      skillBoxes()[0]?.click();
+      type(root.querySelector(".message-box") as HTMLTextAreaElement, "draft for B");
+      finish({ ...running, session_id: "s-a" });
+      await settle();
+
+      expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
+        session_id: "s-a",
+        skills: ["review"],
+      });
+      expect(skillBoxes()[0]?.checked).toBe(true);
+      expect((root.querySelector(".message-box") as HTMLTextAreaElement).value).toBe("draft for B");
+    });
+
+    it("ignores a skill list from an earlier opening of the same session", async () => {
+      let finishFirst: (value: unknown) => void = () => undefined;
+      let askedForA = 0;
+      await start({
+        session_tree: treeOf(a, b),
+        session_transcript: transcript,
+        session_skills: (args) => {
+          if (args.session_id === "s-b") {
+            return { workspace_registered: true, skills: [] };
+          }
+          askedForA += 1;
+          if (askedForA === 1) {
+            return new Promise((resolve) => {
+              finishFirst = resolve;
+            });
+          }
+          return { workspace_registered: true, skills: ["fresh"] };
+        },
+      });
+      itemFor("s-a").click();
+      await settle();
+      itemFor("s-b").click();
+      await settle();
+      itemFor("s-a").click();
+      await settle();
+      skillBoxes()[0]?.click();
+
+      finishFirst({ workspace_registered: true, skills: ["stale"] });
+      await settle();
+      expect(skillNames()).toContain("fresh");
+      expect(skillNames()).not.toContain("stale");
+      expect(skillBoxes()[0]?.checked).toBe(true);
+    });
   });
 });

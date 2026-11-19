@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         index: "index.html",
         approvals: "approvals.html",
+        settings: "settings.html",
       },
     },
   },

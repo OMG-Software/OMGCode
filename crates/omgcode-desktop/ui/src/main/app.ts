@@ -19,6 +19,23 @@ export function startMain(root: HTMLElement): MainApp {
     attrs: { role: "status", "aria-live": "polite" },
   });
   statusBar.hidden = true;
+  // What the bar shows. The approvals poll clears only its own nudge, so an
+  // error stays until the operator dismisses it or a new nudge replaces it.
+  let notice: "none" | "approval" | "error" = "none";
+
+  function clearNotice(): void {
+    // `hidden` alone is not enough while a stylesheet rule sets `display` on
+    // the bar (see `.statusbar[hidden]`), so the content is removed too.
+    replaceChildren(statusBar);
+    statusBar.hidden = true;
+    notice = "none";
+  }
+
+  function showError(text: string): void {
+    replaceChildren(statusBar, el("span", { text }), button("Dismiss", clearNotice));
+    statusBar.hidden = false;
+    notice = "error";
+  }
 
   function showApprovalNudge(): void {
     replaceChildren(
@@ -28,14 +45,22 @@ export function startMain(root: HTMLElement): MainApp {
     );
     replaceChildren(statusText, "An approval is waiting.");
     statusBar.hidden = false;
+    notice = "approval";
   }
 
   async function showApprovals(): Promise<void> {
     try {
       await api.approvalsShowWindow();
     } catch {
-      replaceChildren(statusBar, "The approvals window could not be opened.");
-      statusBar.hidden = false;
+      showError("The approvals window could not be opened.");
+    }
+  }
+
+  async function showSettings(): Promise<void> {
+    try {
+      await api.settingsShowWindow();
+    } catch {
+      showError("The settings window could not be opened.");
     }
   }
 
@@ -44,6 +69,7 @@ export function startMain(root: HTMLElement): MainApp {
     onOpen: (session, folder, seq) => void conversation.open(session, folder, seq),
     onNewSession: () => void newSession.show(),
     onShowApprovals: () => void showApprovals(),
+    onShowSettings: () => void showSettings(),
   });
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);
@@ -65,11 +91,8 @@ export function startMain(root: HTMLElement): MainApp {
     // The first poll counts from zero: an approval already waiting at startup is shown.
     if (pending > (previousPending ?? 0)) {
       showApprovalNudge();
-    } else if (pending === 0) {
-      // Remove the notice and any message it carried. `hidden` alone is not enough
-      // while a stylesheet rule sets `display` on the bar (see `.statusbar[hidden]`).
-      replaceChildren(statusBar);
-      statusBar.hidden = true;
+    } else if (pending === 0 && notice === "approval") {
+      clearNotice();
     }
     previousPending = pending;
   }, APPROVALS_POLL_MS);

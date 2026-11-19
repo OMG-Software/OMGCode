@@ -126,6 +126,10 @@ This is a resume guide, not a replacement for the owning contracts in
 - **Phase F1**, version **0.39.0**, on branch `codex/runtime-skills`, not
   merged: skill import into private storage, a registry with application and
   workspace enablement, and explicit `chat --skill` loading (ADR-0057).
+- **Phase S1**, version **0.40.0**, on branch `codex/desktop-settings`, not
+  merged: the isolated desktop `settings` window with a read-only
+  configuration view, saved chat preferences, and per-turn skill selection
+  in `main` (ADR-0059).
 
 Implemented today:
 
@@ -1236,20 +1240,28 @@ merged to `main` in PR #33 with Phases D2 to D6.
   exit cancels every running turn. No command or wire type changes.
 - **D6 (ADR-0051):** `chat_cancel` and exit also stop a non-streamed turn
   (`--stream off`) and a pre-turn compaction. No command or wire type changes.
+- **S1 (ADR-0059, version 0.40.0):** a third window, `settings`, with its
+  own capability file and bundle and one command, `settings_overview`, a
+  read-only view of the trusted configuration with display-safe paths and
+  no secret. `main` gains `settings_show_window`, `chat_preferences_save`
+  (`<data_root>/desktop-v1/chat-preferences.json`, no endpoint), and
+  `session_skills`, and `chat_send` carries up to four skill names: 23
+  commands. Phases S2 to S5 (folder dialog, native confirmations, key entry,
+  and the active connection) are not implemented.
 
 Still open for the desktop:
 
 - opening the shell's windows on Linux. It builds and its tests pass there,
   including the Unix-only inspection and index branches, but its webview, IPC,
   capability enforcement, and navigation guard have not run on Linux;
-- development panels (terminal tabs, task logs, and diffs), a settings
-  interface, and persisted chat settings;
+- development panels (terminal tabs, task logs, and diffs), and changing
+  trusted settings from the `settings` window (ADR-0059 phases S2 to S5);
 - push for approvals and the session tree, which still poll or refresh on
   request, and a run of the event channel on Linux, where no window has been
   opened;
 - a recovery interface for an incomplete tail or a damaged journal, plus
   `session.archive_requested` stop-and-archive and storage-use display;
-- Git, MCP, skills, and memory interfaces;
+- Git, MCP, and memory interfaces, and skill management;
 - a native confirmation dialog for approvals, which would remove the webview
   from the final decision;
 - signing and installers (Phase G); the unsigned testing archives of

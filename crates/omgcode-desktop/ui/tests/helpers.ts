@@ -61,7 +61,9 @@ export function installFakeIpc(handlers: Record<string, Handler> = {}): FakeIpc 
 export function mainHandlers(overrides: Record<string, Handler> = {}): Record<string, Handler> {
   return {
     session_tree: () => tree([]),
-    chat_defaults: () => ({ ...SETTINGS }),
+    chat_defaults: () => ({ settings: { ...SETTINGS }, preferences: "defaults" }),
+    session_skills: () => ({ workspace_registered: true, skills: [] }),
+    settings_show_window: () => null,
     approvals_summary: () => ({ pending: 0 }),
     approvals_show_window: () => null,
     ...overrides,

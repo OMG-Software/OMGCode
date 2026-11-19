@@ -103,6 +103,11 @@ impl ContainerGrant {
     pub(crate) const fn directory(&self) -> &DirectoryRecord {
         &self.directory
     }
+
+    /// The granted directory as display-safe text. Never reopen a path from it.
+    pub fn directory_display(&self) -> String {
+        self.directory.display()
+    }
 }
 
 /// A grant and its current state, as reported in status output.
