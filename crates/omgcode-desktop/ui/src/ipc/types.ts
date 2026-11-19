@@ -264,6 +264,21 @@ export interface ChatDefaults {
   enter_to_send: boolean;
 }
 
+/** One model the next turn's connection reports (ADR-0066). */
+export interface ModelChoice {
+  /** The exact id sent as `model`. Untrusted provider text. */
+  id: string;
+  /** The id carries Ollama's cloud tag: a naming convention, not proof either way. */
+  cloud_tag: boolean;
+}
+
+/** The models of the connection the next turn uses, sorted by id. */
+export interface ChatModels {
+  /** The endpoint that was asked; a list for another endpoint is not offered. */
+  endpoint: string;
+  models: ModelChoice[];
+}
+
 /** Skills enabled for a session's workspace. Names only. */
 export interface SessionSkills {
   workspace_registered: boolean;

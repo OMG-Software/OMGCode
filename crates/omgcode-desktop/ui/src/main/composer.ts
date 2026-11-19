@@ -11,6 +11,7 @@ import {
   messageProblem,
   settingsValid,
 } from "./model";
+import { createModelPicker } from "./model_picker";
 
 /** The most skills one turn may load; the core enforces the same bound (ADR-0057). */
 export const SKILLS_PER_TURN = 4;
@@ -39,8 +40,9 @@ export interface Composer {
   setSkills(names: readonly string[]): void;
   /**
    * Reads the current endpoint again after the settings window chose another
-   * connection. Only the endpoint changes: the model and the other inputs keep
-   * the operator's values, since a new provider may need a different model.
+   * connection, and lists that connection's models. The chosen model and the
+   * other inputs keep the operator's values; a model the new server does not
+   * report stays chosen and is marked, so the operator sees it must change.
    */
   refreshEndpoint(): Promise<void>;
   /** Removes the listeners the two menus put on the document. */
@@ -77,7 +79,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   runningLabel.hidden = true;
 
   const endpointValue = el("span", { class: "fixed-value" });
-  const model = el("input", { attrs: { type: "text", autocomplete: "off" } });
+  const model = createModelPicker(() => refresh());
   const [contextField, contextTokens] = numberInput("Context tokens", 0, 0);
   const [outputField, maxOutput] = numberInput("Max output tokens", 0, 0);
   const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
@@ -107,7 +109,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
           text: "Chosen in the Settings window, or fixed when OMGCode starts.",
         }),
       ),
-      labelled("Model", model),
+      model.element,
       contextField,
       outputField,
       compactField,
@@ -149,7 +151,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   function readSettings(): ChatSettings {
     return {
       endpoint: fixedEndpoint,
-      model: model.value.trim(),
+      model: model.value(),
       context_tokens: Number(contextTokens.value),
       max_output_tokens: Number(maxOutput.value),
       instructions: instructions.value,
@@ -195,6 +197,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
 
   function applyDefaults(defaults: ChatDefaults): void {
     writeSettings(defaults.settings);
+    void model.load(fixedEndpoint);
     if (!enterToSendChanged) {
       enterToSend.checked = defaults.enter_to_send;
       showSendKey();
@@ -226,7 +229,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   function writeSettings(settings: ChatSettings): void {
     fixedEndpoint = settings.endpoint;
     replaceChildren(endpointValue, settings.endpoint);
-    model.value = settings.model;
+    model.setValue(settings.model);
     contextTokens.value = String(settings.context_tokens);
     maxOutput.value = String(settings.max_output_tokens);
     compactThreshold.value = String(settings.compact_threshold);
@@ -236,7 +239,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
 
   function currentProblem(): string | null {
     if (!settingsValid(readSettings())) {
-      return "Set a model and a positive context size in Chat settings.";
+      return "Choose a model and set a positive context size in Chat settings.";
     }
     return messageProblem(box.value);
   }
@@ -259,14 +262,8 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     reason.hidden = state.reason === null;
     replaceChildren(problem, defaultsError ?? "");
     problem.hidden = defaultsError === null;
-    for (const input of [
-      model,
-      contextTokens,
-      maxOutput,
-      compactThreshold,
-      autoCompact,
-      instructions,
-    ]) {
+    model.setDisabled(!state.enabled);
+    for (const input of [contextTokens, maxOutput, compactThreshold, autoCompact, instructions]) {
       input.disabled = !state.enabled;
     }
     const full = selectedSkills().length >= SKILLS_PER_TURN;
@@ -286,9 +283,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   }
 
   box.addEventListener("input", refresh);
-  for (const input of [model, contextTokens]) {
-    input.addEventListener("input", refresh);
-  }
+  contextTokens.addEventListener("input", refresh);
   /** Shows the send key in the message box hint. */
   function showSendKey(): void {
     box.placeholder = enterToSend.checked ? PLACEHOLDER_ENTER : PLACEHOLDER_CTRL_ENTER;
@@ -357,6 +352,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
       const defaults = await api.chatDefaults();
       fixedEndpoint = defaults.settings.endpoint;
       replaceChildren(endpointValue, fixedEndpoint);
+      void model.load(fixedEndpoint);
       refresh();
     },
   };

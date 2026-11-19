@@ -2,9 +2,9 @@
 //! and for the status bar's workspace branch and model connection (ADR-0064).
 
 use omgcode_app::desktop::{
-    ChatDefaults, ChatEvent, ChatEventSink, ChatPreferencesDto, ChatPreferencesSaveRequest,
-    ChatSendRequest, ChatSettingsDto, ChatStatus, ConnectionChooseRequest, ConnectionStatus,
-    SessionContext, SessionRequest, SessionSkills,
+    ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesDto,
+    ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatStatus,
+    ConnectionChooseRequest, ConnectionStatus, SessionContext, SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
@@ -122,6 +122,19 @@ pub async fn connection_select(
         service.connection_select(request, &prompt)
     })
     .await
+}
+
+/// `main` only. Lists the models the next turn's connection reports, for the
+/// composer's model choice (ADR-0066). Ids only; the list grants nothing.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`provider`, `configuration`,
+/// `credential`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn chat_models(webview: Webview, state: Service<'_>) -> Result<ChatModels, CommandError> {
+    authorize(Command::ChatModels, webview.label())?;
+    blocking(&state, |service| service.chat_models()).await
 }
 
 /// `main` only. Starts one chat turn on a service thread and returns at once.

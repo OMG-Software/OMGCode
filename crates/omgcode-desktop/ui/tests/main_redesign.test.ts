@@ -241,7 +241,9 @@ describe("composer toolbar", () => {
     expect(settings.querySelector(".fixed-value")?.textContent).toBe(SETTINGS.endpoint);
     expect(settings.textContent).toContain("Chosen in the Settings window");
     expect(buttonByText(settings, "Save as defaults")).toBeDefined();
-    expect(settings.querySelectorAll("input[type=text]")).toHaveLength(1);
+    // The model is chosen from the connection's list, not typed (ADR-0066).
+    expect(settings.querySelectorAll("input[type=text]")).toHaveLength(0);
+    expect(settings.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
     expect(settings.querySelectorAll("input[type=number]")).toHaveLength(3);
   });
 

@@ -938,6 +938,32 @@ pub struct ConnectionStatus {
     pub choices: Vec<ConnectionChoice>,
 }
 
+/// The models the next turn's connection reports, for the composer's model
+/// choice (ADR-0066).
+///
+/// Every id is untrusted provider text, already refused by core when it is
+/// empty, over 256 bytes, or holds a control or bidirectional formatting
+/// character. The list grants nothing: `chat_send` validates the chosen model
+/// as it validates a typed one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChatModels {
+    /// The endpoint that was asked. The window compares it with the endpoint
+    /// it shows, so a list from another connection is never offered for it.
+    pub endpoint: String,
+    /// The reported models, sorted by id.
+    pub models: Vec<ModelChoice>,
+}
+
+/// One model the composer may offer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ModelChoice {
+    /// The exact id `chat_send` sends as `model`.
+    pub id: String,
+    /// Whether the id carries Ollama's cloud tag, so the model runs on
+    /// Ollama's hosted service. A naming convention, not proof either way.
+    pub cloud_tag: bool,
+}
+
 /// One connection the status bar may offer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConnectionChoice {

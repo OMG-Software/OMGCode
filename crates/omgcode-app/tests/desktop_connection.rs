@@ -557,3 +557,60 @@ fn removing_the_selected_profile_under_a_launch_argument_asks_nothing() {
     assert!(quiet.shown().is_empty());
     assert!(overview.provider_profiles.is_empty());
 }
+
+/// The composer's model list (ADR-0066) asks the connection the next turn
+/// would use: the default endpoint first, then the Ollama connection chosen in
+/// `settings`, each with one GET and no token. A server that cannot be
+/// reached is a `provider` error, and the list carries Ollama's cloud tag.
+#[test]
+fn the_model_list_follows_the_chosen_connection() {
+    let fixture = Fixture::new();
+    let default = MockServer::start(vec![Step::reply(json!({
+        "object": "list",
+        "data": [{"id": "omnicoder-9b", "object": "model"}, {"id": "google/gemma-4-e4b", "object": "model"}],
+    }))]);
+    let ollama = MockServer::start(vec![Step::reply(json!({
+        "object": "list",
+        "data": [{"id": "lfm2.5:latest"}, {"id": "kimi-k3:cloud"}],
+    }))]);
+    let service = active_service(&fixture, &default.endpoint);
+
+    let listed = service.chat_models().expect("default list");
+    assert_eq!(listed.endpoint, default.endpoint);
+    let ids: Vec<&str> = listed.models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["google/gemma-4-e4b", "omnicoder-9b"]);
+    assert!(listed.models.iter().all(|model| !model.cloud_tag));
+
+    add(
+        &service,
+        &fixture,
+        "ollama",
+        "ollama_local",
+        &ollama.endpoint,
+    )
+    .expect("record");
+    select(&service, &fixture, Some("ollama"), &Answers::with(&[true])).expect("select");
+    let listed = service.chat_models().expect("ollama list");
+    assert_eq!(listed.endpoint, ollama.endpoint);
+    assert_eq!(
+        serde_json::to_value(&listed.models).expect("JSON"),
+        json!([
+            {"id": "kimi-k3:cloud", "cloud_tag": true},
+            {"id": "lfm2.5:latest", "cloud_tag": false},
+        ])
+    );
+
+    for server in [default, ollama] {
+        let (served, recorded) = server.finish_recorded();
+        assert_eq!(served, 1);
+        assert!(
+            recorded[0].head.starts_with("GET /v1/models "),
+            "{}",
+            recorded[0].head
+        );
+        assert_eq!(recorded[0].header("authorization"), None);
+    }
+
+    let unreachable = active_service(&Fixture::new(), &unused_endpoint());
+    assert_eq!(code(unreachable.chat_models()), "provider");
+}

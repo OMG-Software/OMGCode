@@ -3,6 +3,7 @@ import { IpcFailure, toIpcError } from "./errors";
 import type {
   AppInfo,
   ChatDefaults,
+  ChatModels,
   ChatPreferences,
   ChatSettings,
   ChatStatus,
@@ -103,6 +104,8 @@ export const api = {
   sessionCreate: (workspaceId: string, title: string) =>
     invokeCommand<SessionSummary>("session_create", { workspace_id: workspaceId, title }),
   chatDefaults: () => invokeCommand<ChatDefaults>("chat_defaults", {}),
+  /** The models the next turn's connection reports (ADR-0066). */
+  chatModels: () => invokeCommand<ChatModels>("chat_models", {}),
   chatPreferencesSave: (preferences: ChatPreferences) =>
     invokeCommand<ChatDefaults>("chat_preferences_save", { preferences }),
   chatSend: (sessionId: string, message: string, settings: ChatSettings, skills: string[]) =>

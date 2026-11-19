@@ -555,6 +555,26 @@ mark {
   align-items: center;
 }
 
+/* The model choice spans the row: ids can be long (ADR-0066). */
+.model-field {
+  grid-column: 1 / -1;
+}
+
+.model-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.model-row > select {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-note.warning {
+  color: var(--warn);
+}
+
 .preferences-row {
   display: flex;
   gap: 8px;

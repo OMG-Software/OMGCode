@@ -1,0 +1,209 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setInvoker } from "../src/ipc/client";
+import type { ChatModels } from "../src/ipc/types";
+import { type MainApp, startMain } from "../src/main/app";
+import {
+  CHANGED_NOTE,
+  CLOUD_SUFFIX,
+  CLOUD_WARNING,
+  EMPTY_NOTE,
+  UNLISTED_SUFFIX,
+} from "../src/main/model_picker";
+import {
+  buttonByText,
+  choose,
+  type FakeIpc,
+  type Handler,
+  installFakeIpc,
+  mainHandlers,
+  modelSelect,
+  mountRoot,
+  page,
+  rejection,
+  SETTINGS,
+  session,
+  settle,
+  tree,
+  userMessage,
+} from "./helpers";
+
+// The composer chooses the model from the connection's list (ADR-0066).
+
+let app: MainApp | null = null;
+let root: HTMLElement;
+let ipc: FakeIpc;
+
+const s = session({ session_id: "s-pick", title: "Pick" });
+const running = { session_id: "s-pick", state: "running", outcome: null, error: null };
+
+function listing(...models: Array<[string, boolean]>): Handler {
+  return () =>
+    ({
+      endpoint: SETTINGS.endpoint,
+      models: models.map(([id, cloud_tag]) => ({ id, cloud_tag })),
+    }) satisfies ChatModels;
+}
+
+async function start(handlers: Record<string, Handler> = {}): Promise<void> {
+  ipc = installFakeIpc(
+    mainHandlers({
+      session_tree: () => tree([{ id: "g1", folder: "C:\\work", sessions: [s] }]),
+      session_transcript: () => page(s, [userMessage(1, "hi")]),
+      chat_send: () => running,
+      chat_status: () => running,
+      ...handlers,
+    }),
+  );
+  root = mountRoot();
+  app = startMain(root);
+  await settle();
+  root.querySelector<HTMLElement>('[data-session-id="s-pick"]')?.click();
+  await settle();
+}
+
+function labels(): string[] {
+  return Array.from(modelSelect(root).options).map((option) => option.textContent ?? "");
+}
+
+function note(): string {
+  return root.querySelector(".model-note")?.textContent ?? "";
+}
+
+function send(): void {
+  const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+  box.value = "hello";
+  box.dispatchEvent(new Event("input", { bubbles: true }));
+  buttonByText(root, "Send").click();
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  app?.dispose();
+  app = null;
+  setInvoker(null);
+  vi.useRealTimers();
+});
+
+describe("model choice", () => {
+  it("offers the listed models and sends the chosen one", async () => {
+    await start({ chat_models: listing(["a-model", false], [SETTINGS.model, false]) });
+    expect(ipc.callsTo("chat_models")).toHaveLength(1);
+    expect(ipc.callsTo("chat_models")[0]?.args).toEqual({});
+    expect(labels()).toEqual(["Choose a model", "a-model", SETTINGS.model]);
+    // The saved default is chosen, and the model is no longer a text box.
+    expect(modelSelect(root).value).toBe(SETTINGS.model);
+    expect(root.querySelector('.settings input[type="text"]')).toBeNull();
+
+    choose(modelSelect(root), "a-model");
+    send();
+    await settle();
+    expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ settings: { model: "a-model" } });
+  });
+
+  it("keeps a saved model the server does not report, marked", async () => {
+    await start({ chat_models: listing(["other", false]) });
+    expect(labels()).toEqual(["Choose a model", `${SETTINGS.model}${UNLISTED_SUFFIX}`, "other"]);
+    expect(modelSelect(root).value).toBe(SETTINGS.model);
+  });
+
+  it("marks a cloud-tagged Ollama model and warns while it is chosen", async () => {
+    await start({ chat_models: listing(["kimi-k3:cloud", true], [SETTINGS.model, false]) });
+    expect(labels()).toContain(`kimi-k3:cloud${CLOUD_SUFFIX}`);
+    expect(note()).toBe("");
+    choose(modelSelect(root), "kimi-k3:cloud");
+    expect(note()).toBe(CLOUD_WARNING);
+    expect(root.querySelector(".model-note")?.classList.contains("warning")).toBe(true);
+    choose(modelSelect(root), SETTINGS.model);
+    expect(note()).toBe("");
+  });
+
+  it("cannot send without a chosen model", async () => {
+    await start({
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, model: "" },
+        preferences: "defaults",
+        enter_to_send: true,
+      }),
+    });
+    expect(modelSelect(root).value).toBe("");
+    send();
+    await settle();
+    expect(buttonByText(root, "Send").disabled).toBe(true);
+    expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    choose(modelSelect(root), SETTINGS.model);
+    expect(buttonByText(root, "Send").disabled).toBe(false);
+  });
+
+  it("shows why the list could not be read and keeps the saved model", async () => {
+    await start({
+      chat_models: () => rejection("provider", "local model transport failed"),
+    });
+    expect(note()).toBe("Could not list models: local model transport failed (provider)");
+    expect(labels()).toEqual(["No model listed", `${SETTINGS.model}${UNLISTED_SUFFIX}`]);
+    expect(modelSelect(root).value).toBe(SETTINGS.model);
+  });
+
+  it("says when the server reports no models", async () => {
+    await start({ chat_models: listing() });
+    expect(note()).toBe(EMPTY_NOTE);
+  });
+
+  it("discards a list for another endpoint", async () => {
+    await start({
+      chat_models: () => ({
+        endpoint: "http://127.0.0.1:11434/v1",
+        models: [{ id: "elsewhere", cloud_tag: false }],
+      }),
+    });
+    expect(note()).toBe(CHANGED_NOTE);
+    expect(labels()).not.toContain("elsewhere");
+  });
+
+  it("lists again on Refresh", async () => {
+    const answers: Array<(value: ChatModels) => void> = [];
+    await start({ chat_models: listing([SETTINGS.model, false]) });
+    ipc.on(
+      "chat_models",
+      () =>
+        new Promise<ChatModels>((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    const refresh = root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh the model list"]',
+    ) as HTMLButtonElement;
+    refresh.click();
+    await settle();
+    // Disabled while listing, so a second click cannot start another request.
+    expect(refresh.disabled).toBe(true);
+    expect(note()).toBe("Listing models…");
+    expect(answers).toHaveLength(1);
+    answers[0]?.({
+      endpoint: SETTINGS.endpoint,
+      models: [{ id: "fresh", cloud_tag: false }],
+    });
+    await settle();
+    expect(labels()).toContain("fresh");
+    expect(refresh.disabled).toBe(false);
+    expect(ipc.callsTo("chat_models")).toHaveLength(2);
+  });
+
+  it("keeps its options while the message is typed", async () => {
+    await start({ chat_models: listing(["a-model", false], [SETTINGS.model, false]) });
+    const first = modelSelect(root).options[1];
+    const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+    box.value = "typing";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(modelSelect(root).options[1]).toBe(first);
+  });
+
+  it("shows a hostile id as text only", async () => {
+    const hostile = '<img src=x onerror="alert(1)">';
+    await start({ chat_models: listing([hostile, false], [SETTINGS.model, false]) });
+    expect(labels()).toContain(hostile);
+    expect(root.querySelector(".settings img")).toBeNull();
+  });
+});

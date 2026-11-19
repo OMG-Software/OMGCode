@@ -28,6 +28,7 @@
     "allow-session-skills",
     "allow-session-context",
     "allow-connection-status",
-    "allow-connection-select"
+    "allow-connection-select",
+    "allow-chat-models"
   ]
 }
