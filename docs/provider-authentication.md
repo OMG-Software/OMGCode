@@ -34,7 +34,9 @@ and, since 0.44.0, Ollama Local, whose `/v1` API returns the same reply,
 tool-call, and stream shapes ([Ollama Local](#ollama-local-0440)). It sends
 non-streaming requests by default and streamed requests on request
 ([streamed replies](#streamed-replies-0320)). The
-caller supplies an already available model name, a maximum output budget, and a
+caller supplies an already available model name, which `omgcode models` and
+the desktop's model choice can list ([model listing](#model-listing-0460)),
+a maximum output budget, and a
 context budget with `--context-tokens`. For example, the CLI test fixture passes
 131072 as its configured context budget. This value is caller input; the
 prototype does not discover or verify the model's actual capacity. The adapter
@@ -237,9 +239,37 @@ streams are core test fixtures.
   length. `--context-tokens` and the composer's context size are a
   client-side budget, so set the server's length in Ollama, for example with
   `OLLAMA_CONTEXT_LENGTH`, to at least that value.
-- **Not covered.** Ollama's native `/api` endpoints, model listing or
-  download, starting the server, an Ollama server behind authentication, and
-  Ollama Cloud.
+- **Not covered.** Ollama's native `/api` endpoints, model download,
+  starting the server, an Ollama server behind authentication, and Ollama
+  Cloud as a provider. Model listing uses `/v1/models` (next section).
+
+## Model listing (0.46.0)
+
+[ADR-0066](adr/0066-choose-the-chat-model-from-the-local-servers-model-list.md)
+lets the operator choose a model the server reports instead of typing its id.
+LM Studio and Ollama both document `GET /v1/models` in their
+OpenAI-compatible APIs, and both returned
+`{"object":"list","data":[{"id":...}]}` on the development host on
+2026-11-19.
+
+- **Request.** `omgcode models [--endpoint URL | --provider-profile NAME]`
+  and the desktop `chat_models` command resolve the connection as `chat`
+  does and send one `GET /v1/models`. The endpoint passes the same loopback
+  rule, and a stored `lm_studio` credential is sent as the same bearer
+  header. No proxy, redirect, or retry; a five-second connect timeout, a
+  ten-second deadline, and a 1 MiB body.
+- **Response.** Parsed strictly: a `data` array of at most 512 objects with
+  string ids, no duplicate key, and no repeated id. An id that is empty, over
+  256 bytes, or holds a control or bidirectional formatting character
+  refuses the whole list. Other members are ignored. Failures are the
+  `provider` errors of a chat request.
+- **Cloud tag.** Ollama lists models that run on its hosted service with a
+  `:cloud` tag, or a tag ending in `-cloud`. Such an id is reported with
+  `cloud_tag: true` and labelled in the desktop. The tag is a naming
+  convention: `/v1/models` does not say where a model runs, and Ollama's
+  native `/api/tags`, which does, is not read.
+- **Not covered.** Loaded state, model type, and context length, which
+  `/v1/models` does not report. Embedding models are listed.
 
 `capabilities` reports `streaming_adapters` and `cancellable_adapters` as
 `["lm_studio", "ollama_local"]`. `stored_credential_adapters` stays

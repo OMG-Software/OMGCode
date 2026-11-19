@@ -4,6 +4,42 @@ Changes are recorded here before a release version is assigned.
 
 ## Unreleased
 
+### Added
+
+- Version 0.46.0 lists the models the local LM Studio or Ollama server
+  reports, so the operator chooses a model instead of typing its id
+  (ADR-0066, accepted).
+  - **Core:** `provider::list_local_models` sends one `GET /v1/models` to the
+    loopback endpoint, after the same endpoint rule and with the same optional
+    bearer token as a chat request: no proxy, redirect, or retry, a
+    ten-second deadline, and a 1 MiB body. The list is parsed strictly and
+    refused whole when it holds more than 512 entries, a repeated id, or an id
+    that is empty, over 256 bytes, or holds a control or bidirectional
+    formatting character. Ids are sorted. An id whose last tag is `cloud` or
+    ends in `-cloud` is reported with `cloud_tag`, by Ollama's naming
+    convention only. `bearer_header` now builds the token header for both
+    requests.
+  - **CLI:** `omgcode models [--endpoint URL | --provider-profile NAME]`
+    prints `{endpoint, models: [{id, cloud_tag}]}` for the connection `chat`
+    would use. `capabilities` reports `local_model_listing: true`.
+    `chat --model` is unchanged.
+  - **Desktop:** a new `main`-only command, `chat_models`, lists the models
+    of the connection `chat_send` would use, resolved the same way, stored
+    credential included. The policy has 35 commands, 23 for `main`. The
+    composer's **Model** field is now a choice with a **Refresh** button,
+    listed when the defaults load, after the connection changes, and on
+    Refresh. A list for another endpoint is discarded. A saved or chosen
+    model the server did not report stays chosen and is marked. A model with
+    the cloud tag is labelled "(Ollama cloud)", and while it is chosen a
+    warning says prompts leave this computer. Nothing is chosen
+    automatically. Choosing grants nothing; `chat_send` validates the model
+    as before.
+  - **Tests:** core parser, endpoint, token, status, redirect, and deadline
+    tests with captured LM Studio and Ollama lists; CLI `models` tests; app
+    tests for the default and chosen Ollama connection and the stored LM
+    Studio credential; Vitest tests for the choice. The shared app test server
+    now accepts a GET without a body length.
+
 ### Changed
 
 - Version 0.45.0 redesigns the three desktop windows with one dark theme
