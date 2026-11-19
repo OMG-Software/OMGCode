@@ -6,16 +6,17 @@ use std::time::Duration;
 use omgcode_core::control::{
     ApprovalOperation, ApprovalState, ControlStore, SkillScope, SkillSetting, now_unix,
 };
-use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::prompt::{
     self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, SkillPrompt,
 };
 use omgcode_core::session::{MessageRole, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
 use omgcode_core::turn::{
-    CancelToken, MAX_EDIT_FILE_BYTES, ModelError, TOOL_SCHEMA_VERSION, ToolArguments, ToolCall,
-    ToolCallError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimit, TurnLimits,
-    TurnReport, TurnRuntime, WITHHELD_TOOL_RESULT,
+    ApprovalWaitSlot, AwaitedCall, CancelToken, MAX_EDIT_FILE_BYTES, ModelError,
+    TOOL_SCHEMA_VERSION, ToolArguments, ToolCall, ToolCallError, ToolModel, ToolModelReply,
+    ToolModelRequest, TurnError, TurnLimit, TurnLimits, TurnReport, TurnRuntime,
+    WITHHELD_TOOL_RESULT,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -4191,4 +4192,373 @@ fn given_a_changed_skill_digest_when_the_turn_starts_then_it_is_refused_as_withd
     .expect_err("a different digest is not the loaded skill");
 
     assert!(matches!(error, TurnError::SkillWithdrawn));
+}
+
+// ---- Three-state preferences, in-turn approval waits, and the action journal (ADR-0062) ----
+
+const ACTION_JOURNAL_NAME: &str = "model-actions-v1.jsonl";
+
+impl Fixture {
+    /// Set the workspace preferences, keeping model tools on.
+    fn set_access(&mut self, permissions: PermissionSet) {
+        let workspace_id = self.workspace_id;
+        let control = self.control_mut();
+        control
+            .set_permissions(workspace_id, permissions, control.revision())
+            .expect("set preferences");
+    }
+
+    /// Run with an in-turn approval wait that publishes into `slot`.
+    fn run_waiting(
+        &mut self,
+        model: &mut ScriptedModel,
+        slot: ApprovalWaitSlot,
+    ) -> Result<TurnReport, TurnError> {
+        self.release_control();
+        let journal = self.journal.as_mut().expect("journal is open");
+        let runtime = TurnRuntime::new(
+            journal,
+            &self.data,
+            self.workspace_id,
+            TurnLimits::default(),
+        )
+        .expect("build runtime");
+        let mut runtime = runtime.with_approval_wait(slot);
+        runtime.run(model, "read the file", "", manifest())
+    }
+
+    /// The event of every action journal record.
+    fn actions(&self) -> Vec<Value> {
+        read_events(&self.data.join(ACTION_JOURNAL_NAME))
+            .into_iter()
+            .map(|record| record["event"].clone())
+            .collect()
+    }
+}
+
+/// Read preferences that make the model ask before every read.
+fn prompted_reads() -> PermissionSet {
+    PermissionSet {
+        model_tools: true,
+        read: Access::Prompt,
+        ..PermissionSet::default()
+    }
+}
+
+fn read_notes() -> Result<ToolModelReply, ModelError> {
+    tool_reply(vec![call(
+        "read-1",
+        "workspace_read_file",
+        json!({"path": "notes.txt"}),
+    )])
+}
+
+/// Decide the first pending approval from another thread, as the operator
+/// would, once the waiting turn has published the call it waits on.
+fn decide_when_waiting(
+    data: PathBuf,
+    slot: ApprovalWaitSlot,
+    approve: bool,
+) -> std::thread::JoinHandle<AwaitedCall> {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(waiting) = slot.current() {
+                let mut control = ControlStore::open_existing_waiting(&data)
+                    .expect("open control")
+                    .expect("control store");
+                let status = control
+                    .approval_status(waiting.approval_id, now_unix())
+                    .expect("the published approval exists");
+                assert_eq!(status.state, ApprovalState::Pending);
+                control
+                    .decide_approval(waiting.approval_id, approve, now_unix())
+                    .expect("decide");
+                return waiting;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the turn never waited"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })
+}
+
+#[test]
+fn a_prompted_read_without_a_wait_records_a_file_read_approval_and_reads_nothing() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "secret notes").expect("file");
+    fixture.set_access(prompted_reads());
+    let mut model = ScriptedModel::new(vec![read_notes(), text_reply("asked")]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("turn with a pending read approval");
+    // The read tool is still offered under Prompt; the call is gated.
+    assert!(
+        model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_read_file")
+    );
+    assert!(
+        !model.requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("secret notes")),
+        "the file was read before approval"
+    );
+    fixture.close_journal();
+    assert_eq!(
+        fixture.last_tool_code().as_deref(),
+        Some("approval_required")
+    );
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    let pending = control
+        .approval_statuses(now_unix())
+        .into_iter()
+        .find(|status| status.state == ApprovalState::Pending)
+        .expect("a pending approval");
+    assert_eq!(pending.operation, ApprovalOperation::FileRead);
+    // The refusal names the approval; no start record exists.
+    let actions = fixture.actions();
+    assert!(
+        actions
+            .iter()
+            .all(|record| record["type"] != "action_started")
+    );
+    let refused = actions
+        .iter()
+        .find(|record| record["type"] == "action_refused")
+        .expect("a refusal record");
+    assert_eq!(refused["payload"]["tool"], "read_file");
+    assert_eq!(refused["payload"]["reason"]["type"], "approval_required");
+    assert_eq!(
+        refused["payload"]["reason"]["payload"]["approval_id"],
+        json!(pending.id)
+    );
+}
+
+#[test]
+fn a_prompted_read_waits_in_the_turn_and_reads_once_approved() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "approved notes").expect("file");
+    fixture.set_access(prompted_reads());
+    let slot = ApprovalWaitSlot::new();
+    let operator = decide_when_waiting(fixture.data.clone(), slot.clone(), true);
+    let mut model = ScriptedModel::new(vec![read_notes(), text_reply("read it")]);
+    let report = fixture
+        .run_waiting(&mut model, slot.clone())
+        .expect("approved turn");
+    let waited = operator.join().expect("operator thread");
+
+    assert_eq!(report.reply, "read it");
+    assert_eq!(model.requests.len(), 2, "the model never repeated the call");
+    assert!(
+        model.requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("approved notes")),
+        "the approved read reached the model"
+    );
+    // The published call is the exact recorded request, and the slot is clear.
+    assert_eq!(waited.tool, "workspace_read_file");
+    assert_eq!(
+        serde_json::from_str::<Value>(&waited.arguments).expect("arguments"),
+        json!({"path": "notes.txt"})
+    );
+    assert_eq!(slot.current(), None);
+
+    fixture.close_journal();
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    let status = control
+        .approval_status(waited.approval_id, now_unix())
+        .expect("status");
+    assert_eq!(status.state, ApprovalState::Consumed);
+    let actions = fixture.actions();
+    let started = actions
+        .iter()
+        .find(|record| record["type"] == "action_started")
+        .expect("a start record");
+    assert_eq!(started["payload"]["tool"], "read_file");
+    assert_eq!(started["payload"]["targets"][0]["payload"], "notes.txt");
+    assert_eq!(started["payload"]["authorization"]["type"], "approval");
+    assert_eq!(
+        started["payload"]["authorization"]["payload"]["approval_id"],
+        json!(waited.approval_id)
+    );
+    let finished = actions
+        .iter()
+        .find(|record| record["type"] == "action_finished")
+        .expect("a finish record");
+    assert_eq!(
+        finished["payload"]["action_id"],
+        started["payload"]["action_id"]
+    );
+    assert_eq!(finished["payload"]["outcome"], "succeeded");
+}
+
+#[test]
+fn a_denied_wait_ends_the_call_without_reading() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "denied notes").expect("file");
+    fixture.set_access(prompted_reads());
+    let slot = ApprovalWaitSlot::new();
+    let operator = decide_when_waiting(fixture.data.clone(), slot.clone(), false);
+    let mut model = ScriptedModel::new(vec![read_notes(), text_reply("stopped")]);
+    fixture
+        .run_waiting(&mut model, slot)
+        .expect("a denied call does not fail the turn");
+    let waited = operator.join().expect("operator thread");
+    assert!(
+        !model.requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("denied notes"))
+    );
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("approval_denied"));
+    assert!(fixture.audit_events().is_empty(), "no broker operation ran");
+    let refused = fixture
+        .actions()
+        .into_iter()
+        .find(|record| record["type"] == "action_refused")
+        .expect("a refusal record");
+    assert_eq!(refused["payload"]["reason"]["type"], "approval_denied");
+    assert_eq!(
+        refused["payload"]["reason"]["payload"]["approval_id"],
+        json!(waited.approval_id)
+    );
+}
+
+#[test]
+fn cancelling_during_a_wait_ends_the_turn_as_cancelled() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "notes").expect("file");
+    fixture.set_access(prompted_reads());
+    let slot = ApprovalWaitSlot::new();
+    let cancel = CancelToken::new();
+    let watcher = {
+        let slot = slot.clone();
+        let cancel = cancel.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while slot.current().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the turn never waited"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            cancel.cancel();
+        })
+    };
+    fixture.release_control();
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    let runtime = TurnRuntime::new(
+        journal,
+        &fixture.data,
+        fixture.workspace_id,
+        TurnLimits::default(),
+    )
+    .expect("build runtime");
+    let mut runtime = runtime.with_cancel_token(cancel).with_approval_wait(slot);
+    let mut model = ScriptedModel::new(vec![read_notes(), text_reply("unreached")]);
+    let error = runtime
+        .run(&mut model, "read the file", "", manifest())
+        .expect_err("a cancelled wait ends the turn");
+    watcher.join().expect("watcher");
+    assert!(matches!(error, TurnError::Cancelled), "{error:?}");
+    assert_eq!(model.requests.len(), 1);
+}
+
+#[test]
+fn an_allowed_read_is_journaled_as_a_standing_allow() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("notes.txt"), "plain notes").expect("file");
+    let revision = {
+        fixture.set_access(PermissionSet {
+            model_tools: true,
+            read: Access::Allow,
+            ..PermissionSet::default()
+        });
+        fixture.control().revision()
+    };
+    let mut model = ScriptedModel::new(vec![read_notes(), text_reply("done")]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("allowed read");
+    fixture.close_journal();
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    assert!(control.approval_statuses(now_unix()).is_empty());
+    drop(control);
+    let actions = fixture.actions();
+    let started = actions
+        .iter()
+        .find(|record| record["type"] == "action_started")
+        .expect("a start record");
+    assert_eq!(started["payload"]["tool"], "read_file");
+    assert_eq!(
+        started["payload"]["authorization"]["type"],
+        "standing_allow"
+    );
+    assert_eq!(
+        started["payload"]["authorization"]["payload"]["settings_revision"],
+        json!(revision)
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|record| record["type"] == "action_finished"
+                && record["payload"]["outcome"] == "succeeded")
+    );
+}
+
+#[test]
+fn an_allowed_write_runs_without_an_approval_and_a_denied_tool_limit_is_not_offered() {
+    let mut fixture = Fixture::new();
+    let mut permissions = PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    };
+    permissions.write_tools.set(WriteTool::Delete, Access::Deny);
+    permissions
+        .write_tools
+        .set(WriteTool::Rename, Access::Prompt);
+    fixture.set_access(permissions);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "create-1",
+            "workspace_create_file",
+            json!({"path": "made.txt", "content": "made\n"}),
+        )]),
+        text_reply("created"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("allowed create");
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("made.txt")).expect("created"),
+        "made\n"
+    );
+    let offered = &model.requests[0].tools;
+    assert!(offered.iter().any(|name| name == "workspace_create_file"));
+    assert!(offered.iter().any(|name| name == "workspace_rename_file"));
+    assert!(
+        !offered.iter().any(|name| name == "workspace_delete_file"),
+        "a denied tool limit removes the tool"
+    );
+    fixture.close_journal();
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    assert!(control.approval_statuses(now_unix()).is_empty());
 }
