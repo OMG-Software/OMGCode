@@ -1,4 +1,4 @@
-# 0058: Configure trusted settings in an isolated desktop settings window
+# 0059: Configure trusted settings in an isolated desktop settings window
 
 - Status: Accepted
 - Date: 2026-11-18

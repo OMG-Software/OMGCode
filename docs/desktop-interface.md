@@ -50,7 +50,7 @@ merged to `main` at the time of writing):
 - Since version 0.34.0 (Phase D6, ADR-0051), cancelling also interrupts a
   non-streamed request (`--stream off`) and the compaction request before a
   turn. No command or wire type changed.
-- Since version 0.40.0 (Phase S1, ADR-0058), an isolated `settings` window
+- Since version 0.40.0 (Phase S1, ADR-0059), an isolated `settings` window
   shows a read-only view of the trusted configuration. The `main` window
   saves its chat preferences and can select up to four enabled skills for
   one turn. See [settings window](#settings-window).
@@ -66,7 +66,7 @@ Not implemented:
   profiles, credentials, container grants, package cache roots, and skill
   enablement change only through the trusted CLI
   ([workspace settings](workspace-permissions.md)). Phases S2 to S5 of
-  [ADR-0058](adr/0058-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
+  [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
   are not implemented: the native folder dialog, the native confirmations,
   the write-only API key field, and choosing the active connection.
 - Development panels: terminal tabs, task logs, diffs, and a file browser.

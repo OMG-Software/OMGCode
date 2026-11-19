@@ -229,7 +229,7 @@ export function isChatEvent(value: unknown): value is ChatEvent {
   }
 }
 
-/** Saved composer defaults (ADR-0058). They grant nothing and carry no endpoint. */
+/** Saved composer defaults (ADR-0059). They grant nothing and carry no endpoint. */
 export interface ChatPreferences {
   model: string;
   context_tokens: number;

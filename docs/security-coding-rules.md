@@ -48,9 +48,9 @@ authorization. See
   webview request cannot choose either.
 - Show trusted configuration only in the `settings` window, which renders no
   transcript text, tool output, or skill description or body, and grant the
-  configuration commands to that window only (ADR-0058). Return recorded
+  configuration commands to that window only (ADR-0059). Return recorded
   paths and names as display-safe text, never a secret, and never accept them
-  back as input. Until a later ADR-0058 phase lands, the desktop changes no
+  back as input. Until a later ADR-0059 phase lands, the desktop changes no
   trusted setting.
 - Saved desktop preferences carry no endpoint, provider, credential, or
   permission and grant nothing. Bound and strictly parse the file, and fall

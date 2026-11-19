@@ -117,7 +117,7 @@ pub fn approvals_show_window(webview: Webview) -> Result<(), CommandError> {
 }
 
 /// `main` only. Shows, unminimizes, and focuses the existing `settings` window
-/// (ADR-0058). It creates no window, navigates nothing, and passes nothing to
+/// (ADR-0059). It creates no window, navigates nothing, and passes nothing to
 /// the settings window.
 ///
 /// # Errors

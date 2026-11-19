@@ -7,7 +7,7 @@ Changes are recorded here before a release version is assigned.
 ### Added
 
 - Version 0.40.0 adds the first desktop settings increment (Phase S1 of
-  ADR-0058, accepted). ADR-0058 records the design for configuring every CLI
+  ADR-0059, accepted). ADR-0059 records the design for configuring every CLI
   setting in the desktop application, delivered in phases S1 to S5. Only S1
   is implemented; the desktop still changes no trusted setting.
   - **Settings window:** a third webview window, `settings`, with its own
@@ -1190,6 +1190,22 @@ Changes are recorded here before a release version is assigned.
   durability contract for the flush; see ADR-0023.
 
 ### Changed
+
+- The Testing build's publish job now uploads the archives to a draft
+  prerelease under a run-specific `testing-build-staging-` tag name, checks
+  each asset's name and size, and only then deletes the previous `latest`
+  release and publishes the draft as `latest`. The `latest` downloads used to
+  fail for the whole upload; now they fail only during that final swap. If the
+  publish call fails after the old release is deleted, the exit trap removes
+  the draft and no `latest` release exists until a re-run of the publish job
+  or a later successful run publishes one. An exit trap deletes an unpublished
+  draft, and each run first removes drafts that a stopped run left behind. See ADR-0058, which amends ADR-0052. The new flow
+  was tested locally against a stub `gh` (normal swap, first publish, orphan
+  tag, refused rollback, failed upload, asset mismatch, failed publish call,
+  failed draft listing); it has not run on GitHub. The repository-checks guide
+  and coding rules no longer say that the workflows have not run: Testing build
+  run 44405313895 at `3208b03` passed on Ubuntu and Windows and published the
+  first `latest` release.
 
 - The implementation plan's baseline now records PRs #33, #34, #36, and #37
   as merged. It had still listed the desktop interface and Phases D2 to D6 as

@@ -46,7 +46,7 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
   `src/ipc/approvals_client.ts`, so the main bundle never contains `approval_decide` or
   `approval_detail`. It renders no transcript text.
 - `settings.html` is the settings window, a read-only view of the trusted configuration
-  (ADR-0058, phase S1). Only this entry imports `src/ipc/settings_client.ts`, so no other bundle
+  (ADR-0059, phase S1). Only this entry imports `src/ipc/settings_client.ts`, so no other bundle
   contains `settings_overview`. It renders no transcript text, tool output, or skill text, and
   it imports no main, approvals, or chat code.
 

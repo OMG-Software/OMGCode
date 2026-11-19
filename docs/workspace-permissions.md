@@ -97,7 +97,7 @@ required. Single-use approvals now exist for the model edit, multi-edit, create,
 rename, delete, and command tools:
 the trusted CLI and the desktop approvals window decide them. Workspace
 settings still change only through the trusted CLI; the desktop `settings`
-window shows them read-only (ADR-0058, phase S1).
+window shows them read-only (ADR-0059, phase S1).
 
 ## Persistence and audit
 

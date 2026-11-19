@@ -105,7 +105,7 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
     .build()?;
     hide_on_close(&approvals);
 
-    // The settings window renders only operator-recorded configuration (ADR-0058).
+    // The settings window renders only operator-recorded configuration (ADR-0059).
     let settings = WebviewWindowBuilder::new(
         app,
         WindowLabel::Settings.as_str(),

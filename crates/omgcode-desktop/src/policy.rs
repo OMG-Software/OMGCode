@@ -1,6 +1,6 @@
 //! The window policy: which webview may call which command.
 //!
-//! This is the second of two layers (ADR-0046 decision 2, ADR-0058 decision 2). Tauri's capability
+//! This is the second of two layers (ADR-0046 decision 2, ADR-0059 decision 2). Tauri's capability
 //! files are the first. Every command handler calls [`authorize`] before doing
 //! anything else, so a capability file edited by mistake cannot expose a decision
 //! command to the wrong window. The calling label comes from the runtime, which
@@ -16,7 +16,7 @@ pub enum WindowLabel {
     /// The only window that may list, review, and decide approvals.
     Approvals,
     /// The only window that may read the full trusted configuration
-    /// (ADR-0058). It renders no transcript, tool, or skill text.
+    /// (ADR-0059). It renders no transcript, tool, or skill text.
     Settings,
 }
 

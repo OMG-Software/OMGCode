@@ -3,7 +3,7 @@
 //! The Rust side is the only authority. Every webview renders untrusted text and
 //! reaches Rust only through commands that are (1) gated by a per-window Tauri
 //! capability and (2) checked again against the window policy in
-//! [`policy`]. See ADR-0045, ADR-0046, and ADR-0058.
+//! [`policy`]. See ADR-0045, ADR-0046, and ADR-0059.
 //!
 //! The data root, and either the model endpoint with the environment token or a
 //! provider profile (whose recorded endpoint and stored credential are used

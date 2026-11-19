@@ -14,7 +14,7 @@ export interface SettingsApp {
   dispose(): void;
 }
 
-/** The CLI commands that change each group in this version (ADR-0058 phase S1). */
+/** The CLI commands that change each group in this version (ADR-0059 phase S1). */
 export const CLI_HINT =
   "Read-only in this version. Change settings with the trusted CLI: " +
   "omgcode workspace, omgcode skills, and chat --provider-profile at launch.";

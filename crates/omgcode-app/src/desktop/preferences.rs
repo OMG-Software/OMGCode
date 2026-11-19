@@ -1,4 +1,4 @@
-//! Saved chat preferences of the desktop `main` window (ADR-0058 decision 8).
+//! Saved chat preferences of the desktop `main` window (ADR-0059 decision 8).
 //!
 //! The file is `<data_root>/desktop-v1/chat-preferences.json`. It holds
 //! non-authority defaults for the composer: the model name, budgets,

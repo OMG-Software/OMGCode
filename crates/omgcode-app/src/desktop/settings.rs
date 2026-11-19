@@ -1,4 +1,4 @@
-//! Read-only views of the trusted configuration (ADR-0058, phase S1).
+//! Read-only views of the trusted configuration (ADR-0059, phase S1).
 //!
 //! [`DesktopService::settings_overview`] serves the `settings` window. It
 //! reads the settings store and shapes what the trusted CLI's `workspace

@@ -240,7 +240,9 @@ Clippy, tests, and doc tests on Ubuntu 24.04 and Windows Server 2025.
 bundle checks on the same two systems. On a push to main,
 `.github/workflows/testing-build.yml` calls both, builds and packages release
 binaries for Windows, Ubuntu, and Fedora 44, and replaces the `latest`
-prerelease. None of these workflow changes has run on GitHub yet. The desktop shell is a prototype, and native confinement exists
+prerelease through a staged draft. These workflows have run on GitHub; the
+[repository-checks guide](repository-checks.md#testing-build-workflow) records
+which runs and what remains unverified. The desktop shell is a prototype, and native confinement exists
 only for the trusted `run` command and the approval-gated command tool; it is
 not release-qualified. Rustfmt checks formatting; Clippy and
 the compiler check selected properties; tests check exercised cases. None

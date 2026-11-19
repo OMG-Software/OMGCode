@@ -129,7 +129,7 @@ This is a resume guide, not a replacement for the owning contracts in
 - **Phase S1**, version **0.40.0**, on branch `codex/desktop-settings`, not
   merged: the isolated desktop `settings` window with a read-only
   configuration view, saved chat preferences, and per-turn skill selection
-  in `main` (ADR-0058).
+  in `main` (ADR-0059).
 
 Implemented today:
 
@@ -1240,7 +1240,7 @@ merged to `main` in PR #33 with Phases D2 to D6.
   exit cancels every running turn. No command or wire type changes.
 - **D6 (ADR-0051):** `chat_cancel` and exit also stop a non-streamed turn
   (`--stream off`) and a pre-turn compaction. No command or wire type changes.
-- **S1 (ADR-0058, version 0.40.0):** a third window, `settings`, with its
+- **S1 (ADR-0059, version 0.40.0):** a third window, `settings`, with its
   own capability file and bundle and one command, `settings_overview`, a
   read-only view of the trusted configuration with display-safe paths and
   no secret. `main` gains `settings_show_window`, `chat_preferences_save`
@@ -1255,7 +1255,7 @@ Still open for the desktop:
   including the Unix-only inspection and index branches, but its webview, IPC,
   capability enforcement, and navigation guard have not run on Linux;
 - development panels (terminal tabs, task logs, and diffs), and changing
-  trusted settings from the `settings` window (ADR-0058 phases S2 to S5);
+  trusted settings from the `settings` window (ADR-0059 phases S2 to S5);
 - push for approvals and the session tree, which still poll or refresh on
   request, and a run of the event channel on Linux, where no window has been
   opened;

@@ -149,7 +149,7 @@ fn decision_commands_are_granted_to_no_other_window() {
 
 #[test]
 fn settings_window_is_granted_only_its_own_commands() {
-    // ADR-0058 decision 2: the settings window reads the configuration and
+    // ADR-0059 decision 2: the settings window reads the configuration and
     // nothing else; no chat, transcript, session, or approval command.
     let settings = string_array(&capability_for(WindowLabel::Settings)["permissions"]);
     let expected: Vec<String> = commands_for(WindowLabel::Settings)

@@ -79,7 +79,7 @@ repeat its text)
 No skill script runs, and a skill grants no permission.
 A third, isolated desktop `settings` window shows the trusted configuration
 read-only; the `main` window saves chat preferences and selects enabled
-skills for one turn ([ADR-0058](docs/adr/0058-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)).
+skills for one turn ([ADR-0059](docs/adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)).
 The desktop shell cannot change trusted settings and has no development
 panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not

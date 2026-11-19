@@ -30,7 +30,7 @@ const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
 impl DesktopService {
     /// The settings the interface starts from: the fixed endpoint with the
     /// saved chat preferences, or with an empty model and the CLI's budgets
-    /// when none are saved (ADR-0058 decision 8).
+    /// when none are saved (ADR-0059 decision 8).
     ///
     /// A preferences file that cannot be read or fails validation is reported
     /// as [`PreferencesSource::Unreadable`] and the built-in defaults apply,

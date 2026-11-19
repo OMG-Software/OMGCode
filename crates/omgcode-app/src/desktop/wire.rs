@@ -705,7 +705,7 @@ pub struct ApprovalDetail {
     pub review_token: Option<String>,
 }
 
-/// Chat defaults the `main` window may save (ADR-0058 decision 8). They grant
+/// Chat defaults the `main` window may save (ADR-0059 decision 8). They grant
 /// nothing: `chat_send` validates every value again when it is used. The
 /// endpoint is not a preference; it stays fixed by the application.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -876,7 +876,7 @@ pub struct SkillOverrideView {
 }
 
 /// One registered skill's settings. The description and body are not shown:
-/// they come from the imported package and are untrusted text (ADR-0058).
+/// they come from the imported package and are untrusted text (ADR-0059).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SkillSettingView {
     /// The validated skill name.

@@ -1,5 +1,5 @@
 //! Settings window views, saved chat preferences, and per-turn skill selection
-//! in the desktop service (ADR-0058, phase S1). Each test uses a private data
+//! in the desktop service (ADR-0059, phase S1). Each test uses a private data
 //! root; model requests go to a scripted loopback server or to a server that
 //! fails the test when it is contacted.
 

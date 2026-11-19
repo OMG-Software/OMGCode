@@ -28,7 +28,7 @@ pub async fn chat_defaults(
 }
 
 /// `main` only. Saves the chat preferences the composer starts from
-/// (ADR-0058 decision 8). They grant nothing and carry no endpoint.
+/// (ADR-0059 decision 8). They grant nothing and carry no endpoint.
 ///
 /// # Errors
 ///

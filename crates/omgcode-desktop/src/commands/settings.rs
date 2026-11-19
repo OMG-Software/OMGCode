@@ -1,4 +1,4 @@
-//! `settings`-window handlers (ADR-0058). In phase S1 the window can only read
+//! `settings`-window handlers (ADR-0059). In phase S1 the window can only read
 //! the trusted configuration; every change is still a trusted CLI operation.
 
 use omgcode_app::desktop::SettingsOverview;
