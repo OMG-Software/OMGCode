@@ -494,15 +494,25 @@ and checks the run against them:
   so revoking any of them withdraws the run, including a grant added after it
   started. The watcher compares a per-workspace count of revocation requests,
   which it cannot miss between two polls. A `pending` grant only adds access,
-  so it does not stop a run.
+  so it does not stop a run;
+- since 0.41.0, no settings change recorded the run as withdrawn
+  (ADR-0061). A recorded run stays withdrawn even if a later change restores
+  the access it lost before the watcher reads the settings.
 
 When a check fails, or the settings cannot be read, the watcher stops the whole
 tree. The outcome is recorded as `revoked`, and the report gives the reason in
 `revoked_because`.
 
 `workspace permissions`, `profile-remove`, `container-revoke`, and `set-root`
-record their change first. Then they release the control lock and wait up to
-60 seconds for every pending run that the new settings no longer allow.
+record their change first. `set-package-cache`, `clear-package-cache`,
+`package-profile-remove`, and `provider-profile-remove` do the same. While
+they still hold the control lock, all but `container-revoke` record the
+pending runs that the new settings withdraw in a `runs_withdrawn` event
+(ADR-0061). Then they release the lock and wait up to 60 seconds for every
+pending run that the new settings no longer allow or that was recorded as
+withdrawn. If the record cannot be written, for example because the settings
+journal is full, the change stays recorded, the command still waits for what
+the settings withdraw, and then fails with code `run`.
 `container-revoke` also waits for every pending run of the grant's workspace
 that started before the revocation; it lists them while it holds the control
 lock, under which every run starts. If the run journal cannot be read, for

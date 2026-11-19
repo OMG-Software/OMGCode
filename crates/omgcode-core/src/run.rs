@@ -498,6 +498,13 @@ impl Watch<'_> {
                 *seen = current;
                 withdrawn(&control, self.start)
                     .or_else(|| {
+                        // Access restored before this poll does not undo a
+                        // withdrawal that a settings change recorded.
+                        control
+                            .run_withdrawn(self.start.run_id)
+                            .then_some("a settings change withdrew this run")
+                    })
+                    .or_else(|| {
                         // A disable followed by a re-enable can happen between
                         // polls, so the current value alone is not enough. The
                         // durable count records the withdrawal.
@@ -651,14 +658,31 @@ pub fn workspace_runs(
         .collect())
 }
 
-/// The pending runs that the settings in `control` no longer allow.
+/// Record every pending run that the settings in `control` no longer allow
+/// as withdrawn, and return those runs (ADR-0061).
 ///
 /// A settings change calls this while it still holds the control lock, right
-/// after it records the change, and passes the result to
-/// [`stop_withdrawn_runs`]. A later change that restores access before that
-/// call then cannot empty the list, so the runs this change withdrew are
-/// still waited for. Runs the change leaves allowed are not listed.
-pub fn withdrawn_runs(control: &ControlStore) -> Result<Vec<Uuid>, RunError> {
+/// after it records the change. Runs start only under that lock and a run's
+/// watcher cannot read the settings while it is held, so the watcher sees the
+/// change and this record together. A recorded run stays withdrawn even if a
+/// later change restores the access it lost before its watcher samples the
+/// settings, and [`stop_withdrawn_runs`] waits for it. Runs the settings
+/// still allow are not recorded.
+///
+/// # Errors
+///
+/// Fails if the run journal cannot be read or the record cannot be appended,
+/// for example because the settings journal is full. The change itself is
+/// already recorded; the caller still stops what the settings withdraw and
+/// reports the failure.
+pub fn record_withdrawn_runs(control: &mut ControlStore) -> Result<Vec<Uuid>, RunError> {
+    let runs = withdrawn_runs(control)?;
+    control.record_runs_withdrawn(&runs)?;
+    Ok(runs)
+}
+
+/// The pending runs that the settings in `control` no longer allow.
+fn withdrawn_runs(control: &ControlStore) -> Result<Vec<Uuid>, RunError> {
     let (journal_root, store_id) = control.file_audit_context()?;
     let Some(journal) = RunJournal::open_existing(&journal_root, store_id)? else {
         return Ok(Vec::new());
@@ -671,8 +695,9 @@ pub fn withdrawn_runs(control: &ControlStore) -> Result<Vec<Uuid>, RunError> {
         .collect())
 }
 
-/// Wait for every pending run that the recorded settings no longer allow,
-/// and every pending run in `also_withdrawn`, to stop and record its outcome.
+/// Wait for every pending run that the recorded settings no longer allow or
+/// that a change recorded as withdrawn ([`record_withdrawn_runs`]), and every
+/// pending run in `also_withdrawn`, to stop and record its outcome.
 ///
 /// Settings commands that can withdraw access call this after their change
 /// is recorded and their control lock is released, so each run's watcher can
@@ -697,7 +722,9 @@ pub fn stop_withdrawn_runs(
             .pending_starts()
             .into_iter()
             .filter(|start| {
-                also_withdrawn.contains(&start.run_id) || withdrawn(&control, start).is_some()
+                also_withdrawn.contains(&start.run_id)
+                    || control.run_withdrawn(start.run_id)
+                    || withdrawn(&control, start).is_some()
             })
             .map(|start| start.run_id)
             .collect();
@@ -1616,23 +1643,28 @@ mod tests {
         assert_eq!(withdrawn_runs(&control).expect("runs"), vec![pending_id]);
     }
 
-    /// The list follows the settings held under the lock: a run is listed
-    /// while `execute` is off and not once it is restored. A change must
-    /// therefore list its runs before it releases the lock. Linux only, for
-    /// the reason given on `allowed_runs_are_not_waited_for`.
+    /// A withdrawal recorded under the lock outlasts restored access: the run
+    /// stays recorded and is still waited for, while the live settings alone
+    /// would allow it again (ADR-0061). Linux only, for the reason given on
+    /// `allowed_runs_are_not_waited_for`.
     #[cfg(target_os = "linux")]
     #[test]
-    fn withdrawn_runs_follow_the_settings_held_under_the_lock() {
+    fn a_recorded_withdrawal_outlasts_restored_access() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let (data, workspace_id, journal_root, store_id) = store(directory.path());
         let start = allowed_start(&data, directory.path(), workspace_id);
         let run_id = start.run_id;
+        let _owner = OwnerLock::acquire(&journal_root, run_id).expect("owner lock");
         RunJournal::open(&journal_root, store_id)
             .expect("journal")
             .start(start)
             .expect("start");
         let mut control = ControlStore::open(&data).expect("control store");
-        assert!(withdrawn_runs(&control).expect("allowed").is_empty());
+        assert!(
+            record_withdrawn_runs(&mut control)
+                .expect("allowed")
+                .is_empty()
+        );
         let allowed = control
             .workspace(workspace_id)
             .expect("registered")
@@ -1644,11 +1676,20 @@ mod tests {
         control
             .set_permissions(workspace_id, revoked, control.revision())
             .expect("revoke");
-        assert_eq!(withdrawn_runs(&control).expect("revoked"), vec![run_id]);
+        assert_eq!(
+            record_withdrawn_runs(&mut control).expect("revoked"),
+            vec![run_id]
+        );
         control
             .set_permissions(workspace_id, allowed, control.revision())
             .expect("restore");
         assert!(withdrawn_runs(&control).expect("restored").is_empty());
+        assert!(control.run_withdrawn(run_id));
+        drop(control);
+        // The run's supervisor is still live, so it is waited for and
+        // reported as not stopped rather than skipped.
+        let runs = stop_withdrawn_runs(&data, Duration::from_millis(100), &[]).expect("check");
+        assert_eq!(runs.unconfirmed, vec![run_id]);
     }
 
     /// The revocation count a run's watcher compares changes when a

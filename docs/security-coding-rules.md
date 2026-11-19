@@ -27,7 +27,10 @@ authorization. See
   and lifetime. Validate it at execution. Invalidate pending grants when their
   scope or policy changes.
 - Narrowing permissions must block new affected work and stop tasks that retain
-  revoked access. Observe cleanup before reporting revocation complete.
+  revoked access. Observe cleanup before reporting revocation complete. Record
+  the tasks a change withdraws under the lock of that change, so restoring the
+  access before a task's watcher reads the settings cannot keep it running
+  (ADR-0061).
 - Keep permission-setting controls separate from rendered untrusted content.
   Validate and limit every command exposed to a webview.
 - Declare every webview command to the permission layer, grant it to named

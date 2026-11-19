@@ -67,11 +67,11 @@ reviewed in this phase. Three choices remained:
    - Reopen the store and apply the change with the same revision. If any
      change happened meanwhile, core refuses it, so what the operator
      confirmed is exactly what is applied.
-   - Before releasing the store, list the pending runs that the new settings
-     withdraw. Then stop and observe those runs and any others the settings
-     withdraw. A change that restores access in between cannot hide them. A
-     run not observed to stop fails the command with `runs_not_stopped`, and
-     the change stays recorded.
+   - Before releasing the store, record the pending runs that the new
+     settings withdraw (ADR-0061). Then stop and observe those runs and any
+     others the settings withdraw. A change that restores access in between
+     cannot keep them running. A run not observed to stop fails the command
+     with `runs_not_stopped`, and the change stays recorded.
    - Allow one change at a time per service. A second request while a dialog
      is open fails with `settings_change_running`.
 5. **Five commands, for `settings` only.** They are `settings_choose_root`,

@@ -4,7 +4,7 @@
 //! Settings are user input, never model tools. Directory checks here detect
 //! ordinary replacement and configuration mistakes; they are not an I/O broker.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -90,6 +90,9 @@ const PERMISSION_EVENT_RESERVE_BYTES: usize = 2048;
 // Each registered skill keeps one such event free, so a full journal can
 // always withdraw it (`skill_reserve_tests` checks the bound).
 const SKILL_REMOVAL_RESERVE_BYTES: usize = 512;
+/// Run identifiers in one `runs_withdrawn` event. 256 identifiers keep the
+/// event far below [`MAX_EVENT_BYTES`]; more are split across events.
+const MAX_WITHDRAWN_RUNS_PER_EVENT: usize = 256;
 
 /// A settings, validation, locking, or durability failure.
 #[derive(Debug, Error)]
@@ -284,6 +287,11 @@ pub struct ControlSnapshot {
     /// with the count when it loaded the skill.
     #[serde(skip)]
     skill_enablement_changes: BTreeMap<Uuid, u64>,
+    /// Runs that a settings change withdrew (ADR-0061). Derived on replay
+    /// from `runs_withdrawn` events and never serialized. A run listed here
+    /// stays withdrawn even if a later change restores the access it lost.
+    #[serde(skip)]
+    withdrawn_runs: BTreeSet<Uuid>,
 }
 
 /// One workspace's selected fetched-package cache root.
@@ -380,6 +388,11 @@ enum Action {
     },
     ContainerGrantRevoked {
         grant_id: Uuid,
+    },
+    /// Runs that the settings recorded just before withdrew. Written under
+    /// the same lock as that change, so a watcher reads both together.
+    RunsWithdrawn {
+        run_ids: Vec<Uuid>,
     },
     ProfileAdded {
         profile: ToolchainProfile,
@@ -648,6 +661,7 @@ impl ControlStore {
                 grant_revocations: BTreeMap::new(),
                 model_tool_revocations: BTreeMap::new(),
                 skill_enablement_changes: BTreeMap::new(),
+                withdrawn_runs: BTreeSet::new(),
             },
             entries: Vec::new(),
             bytes: 0,
@@ -675,6 +689,33 @@ impl ControlStore {
             .copied()
             .unwrap_or(0)
     }
+    /// Whether a settings change recorded this run as withdrawn. A run's
+    /// watcher stops a listed run even if the access it lost is restored
+    /// before the watcher samples the settings (ADR-0061).
+    pub(crate) fn run_withdrawn(&self, run_id: Uuid) -> bool {
+        self.snapshot.withdrawn_runs.contains(&run_id)
+    }
+
+    /// Record runs as withdrawn, skipping any already recorded. Call it under
+    /// the lock of the change that withdrew them. It keeps the revision, as
+    /// it only confirms that access the change removed stays removed.
+    pub(crate) fn record_runs_withdrawn(&mut self, run_ids: &[Uuid]) -> Result<(), ControlError> {
+        let fresh: Vec<Uuid> = run_ids
+            .iter()
+            .copied()
+            .filter(|run_id| !self.snapshot.withdrawn_runs.contains(run_id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for chunk in fresh.chunks(MAX_WITHDRAWN_RUNS_PER_EVENT) {
+            let action = Action::RunsWithdrawn {
+                run_ids: chunk.to_vec(),
+            };
+            self.append(action, self.revision())?;
+        }
+        Ok(())
+    }
+
     /// How many enablement changes this skill has recorded in any scope. A
     /// turn compares this with the count when it loaded the skill, so a
     /// disable followed by a re-enable still withdraws it.
@@ -1297,6 +1338,7 @@ impl ControlStore {
                 | Action::ContainerGrantApplied { .. }
                 | Action::ContainerRevokeRequested { .. }
                 | Action::ContainerGrantRevoked { .. }
+                | Action::RunsWithdrawn { .. }
                 | Action::PackageFetchStarted { .. }
                 | Action::PackageFetchFinished { .. }
                 | Action::ApprovalRequested { .. }
@@ -1391,6 +1433,19 @@ impl ControlStore {
             | Action::ContainerGrantApplied { .. }
             | Action::ContainerRevokeRequested { .. }
             | Action::ContainerGrantRevoked { .. } => container::apply(state, &entry.action)?,
+            Action::RunsWithdrawn { run_ids } => {
+                if run_ids.is_empty()
+                    || run_ids.len() > MAX_WITHDRAWN_RUNS_PER_EVENT
+                    || run_ids.iter().any(|run_id| !valid_uuid(*run_id))
+                {
+                    return Err(ControlError::Invalid("invalid withdrawn runs"));
+                }
+                for run_id in run_ids {
+                    if !state.withdrawn_runs.insert(*run_id) {
+                        return Err(ControlError::Invalid("run already withdrawn"));
+                    }
+                }
+            }
             Action::ProfileAdded { .. } | Action::ProfileRemoved { .. } => {
                 profile::apply(state, &entry.action, revision)?;
             }
@@ -1712,6 +1767,76 @@ mod tests {
                 fs::read(data.join(FILE_NAME)).expect("fixture preserved"),
                 bytes
             );
+        }
+    }
+
+    /// A recorded run withdrawal keeps the revision, skips runs already
+    /// recorded, splits long lists, and survives replay (ADR-0061).
+    #[test]
+    fn withdrawn_runs_are_recorded_once_and_survive_replay() {
+        let directory = tempfile::tempdir().expect("private temporary directory");
+        let data = directory.path().join("data");
+        let mut store = ControlStore::open(&data).expect("store");
+        let revision = store.revision();
+        let first = Uuid::new_v4();
+        assert!(!store.run_withdrawn(first));
+        store.record_runs_withdrawn(&[]).expect("nothing to record");
+        store
+            .record_runs_withdrawn(&[first, first])
+            .expect("record");
+        let events = store.entries.len();
+        store.record_runs_withdrawn(&[first]).expect("again");
+        assert_eq!(store.entries.len(), events, "a recorded run is skipped");
+        let many: Vec<Uuid> = (0..=MAX_WITHDRAWN_RUNS_PER_EVENT)
+            .map(|_| Uuid::new_v4())
+            .collect();
+        store.record_runs_withdrawn(&many).expect("record many");
+        assert_eq!(store.entries.len(), events + 2, "split into two events");
+        assert_eq!(store.revision(), revision);
+        drop(store);
+        let store = ControlStore::open(&data).expect("replayed");
+        assert!(store.run_withdrawn(first));
+        assert!(many.iter().all(|run_id| store.run_withdrawn(*run_id)));
+        assert!(!store.run_withdrawn(Uuid::new_v4()));
+        assert_eq!(store.revision(), revision);
+    }
+
+    /// Replay refuses a withdrawal event that is empty, too long, names a nil
+    /// run, or names a run twice.
+    #[test]
+    fn replay_rejects_malformed_withdrawn_runs() {
+        let repeated = Uuid::new_v4();
+        let cases = [
+            ("empty", Vec::new()),
+            (
+                "too long",
+                (0..=MAX_WITHDRAWN_RUNS_PER_EVENT)
+                    .map(|_| Uuid::new_v4())
+                    .collect(),
+            ),
+            ("nil", vec![Uuid::nil()]),
+            ("repeated", vec![repeated, repeated]),
+        ];
+        for (case, run_ids) in cases {
+            let directory = tempfile::tempdir().expect("private temporary directory");
+            let data = directory.path().join("data");
+            let store = ControlStore::open(&data).expect("store");
+            let mut entries = store.entries.clone();
+            drop(store);
+            let created = entries.first().expect("created event").clone();
+            entries.push(AuditEntry {
+                event_id: Uuid::new_v4(),
+                sequence: 1,
+                action: Action::RunsWithdrawn { run_ids },
+                ..created
+            });
+            let mut bytes = Vec::new();
+            for entry in entries {
+                bytes.extend(serde_json::to_vec(&entry).expect("event JSON"));
+                bytes.push(b'\n');
+            }
+            fs::write(data.join(FILE_NAME), &bytes).expect("fixture");
+            assert!(ControlStore::open(&data).is_err(), "{case}");
         }
     }
 

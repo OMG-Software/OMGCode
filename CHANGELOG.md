@@ -38,10 +38,8 @@ Changes are recorded here before a release version is assigned.
   - **Safe ordering:** no settings lock is held while a dialog is open. A
     change made meanwhile makes the request fail with the new code
     `stale_revision`, so the change the operator confirmed is the one
-    applied. The runs a change withdraws are listed by the new core
-    function `run::withdrawn_runs` while the settings lock is held, then
-    stopped and observed (`runs_not_stopped` otherwise), so a change that
-    restores access before the check cannot hide them. One change runs at a time
+    applied. Runs that lost access are stopped and observed
+    (`runs_not_stopped` otherwise). One change runs at a time
     (`settings_change_running`). A closed dialog or a No answer returns
     `cancelled`. A missing root returns `no_development_root`.
   - **Settings window controls:** the development root has **Choose
@@ -1294,6 +1292,20 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- A run whose access a settings change withdrew kept running if another
+  change restored that access before the run's watcher read the settings (it
+  polls every 50 ms). This applied to `execute`, `read`, `write`,
+  `host_services`, `task_network`, the package cache root, and the
+  development root, from the CLI and, in 0.41.0, from the desktop.
+  The command that withdrew the access could then report success. Settings
+  changes now record the runs they withdraw in a new `runs_withdrawn` event
+  while they hold the settings lock, through the new core function
+  `run::record_withdrawn_runs`. The watcher stops a recorded run even after
+  access is restored, with the reason "a settings change withdrew this run",
+  and the stop check waits for it (ADR-0061). If the record cannot be
+  written, the change stays recorded and the command fails after stopping
+  what the settings withdraw. A binary from before 0.41.0 cannot read a
+  settings journal that holds the new event.
 - Every Testing build run on `main` failed in the Ubuntu Rust job:
   `an_abandoned_run_is_pending_until_acknowledged` panicked parsing its start
   marker. `ubuntu-latest` is now Ubuntu 26.04 with systemd 259, and since

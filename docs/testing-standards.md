@@ -166,7 +166,7 @@ As the relevant components are implemented, include:
 
 | Area | Required cases |
 | --- | --- |
-| Permissions | Allowed/denied requests, stale grants, scope mismatch, revocation; workspace registration and directory replacement |
+| Permissions | Allowed/denied requests, stale grants, scope mismatch, revocation; workspace registration and directory replacement; a run withdrawn by a recorded change still stops when access is restored before its watcher reads the settings (ADR-0061) |
 | Workspace identity | Native paths, stable directory IDs after child writes, ancestor/sibling checks, missing creation-time metadata failure |
 | Files | Bounded read/list/create/mkdir, policy scope, traversal, native paths, symlinks/junctions, hard links, special files, collisions, uncertain creation, audit privacy, path-swap races, and read-only edit-preview bounds/no-mutation |
 | Processes | Descendant escape attempts, limits, cleanup, startup failure |
