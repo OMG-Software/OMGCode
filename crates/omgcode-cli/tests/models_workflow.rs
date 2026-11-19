@@ -1,6 +1,9 @@
 //! `omgcode models` lists the local server's models (ADR-0066).
 //!
-//! These tests open no store, so children need no spawn gate.
+//! Every child runs under the shared deadline, and every fixture has its own,
+//! so a hung CLI or a missing request fails the test instead of hanging it.
+
+mod support;
 
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -8,6 +11,7 @@ use std::net::TcpListener;
 use std::process::{Command, Output, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use support::{CLI_DEADLINE, run_with_deadline};
 
 const FIXTURE_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -63,14 +67,20 @@ fn serve_once(body: &'static str) -> (String, JoinHandle<Result<String, String>>
     (endpoint, worker)
 }
 
+/// Run `omgcode models` under the shared deadline; a timeout fails the test.
 fn run_models(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_omgcode"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_omgcode"));
+    command
         .env_remove("OMGCODE_LM_TOKEN")
         .arg("models")
         .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run OMGCode models command")
+        .stdin(Stdio::null());
+    let bounded = run_with_deadline(command, CLI_DEADLINE).expect("run OMGCode models command");
+    assert!(
+        !bounded.timed_out,
+        "omgcode models exceeded {CLI_DEADLINE:?}"
+    );
+    bounded.output
 }
 
 #[test]

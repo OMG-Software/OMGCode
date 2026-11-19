@@ -479,12 +479,15 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   control or bidirectional formatting character. The deadline is ten
   seconds. The composer lists models when the chat defaults load, after the
   connection changes, and on **Refresh**, which is disabled while a list is
-  being read. A list whose endpoint is not the one shown is discarded with a
-  note. The ids are sorted and shown as text. A chosen or saved model the
+  being read. When the connection changes, the previous server's models are
+  removed at once, before the new list arrives. A list whose endpoint is not
+  the one shown is discarded with a note. The ids are sorted and shown as text. A chosen or saved model the
   server did not report stays chosen and is marked "(not reported by the
   server)". An id whose last tag is `cloud` or ends in `-cloud` is marked
   "(Ollama cloud)", and while it is chosen a warning says that prompts and
-  workspace text sent to it leave this computer. The mark follows Ollama's
+  workspace text sent to it leave this computer. The warning is read from the
+  chosen id itself, so it also shows for a saved model while the list loads or
+  after listing fails. A chosen id is sent exactly as listed, never trimmed. The mark follows Ollama's
   naming convention and is not proof; an unmarked model is not shown to be
   local. A failure is shown beside the field with its code. Nothing is chosen
   automatically: with no saved model, Send stays disabled until a model is

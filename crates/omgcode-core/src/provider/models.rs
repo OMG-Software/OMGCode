@@ -386,12 +386,27 @@ mod tests {
         // until the test releases it, or for at most three seconds, so only
         // the client's own deadline can end the request early.
         let listener = TcpListener::bind("127.0.0.1:0").expect("private fixture");
+        listener.set_nonblocking(true).expect("bounded accept");
         let base_url = format!("http://{}/v1", listener.local_addr().expect("address"));
         let (release, released) = std::sync::mpsc::channel::<()>();
         let task = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
+            // Both waits are bounded, so a client that never connects ends the
+            // fixture too, and the join below cannot hang.
+            let end = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break Some(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= end || released.try_recv().is_ok() {
+                            break None;
+                        }
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
             // A timeout or a dropped sender both end the hold.
-            let _ignored = released.recv_timeout(Duration::from_secs(3));
+            let _ignored = released.recv_timeout(end.saturating_duration_since(Instant::now()));
             drop(stream);
         });
         let started = Instant::now();

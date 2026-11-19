@@ -571,7 +571,7 @@ mark {
   min-width: 0;
 }
 
-.model-note.warning {
+.model-warning {
   color: var(--warn);
 }
 

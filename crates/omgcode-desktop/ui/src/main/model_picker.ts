@@ -30,6 +30,20 @@ export interface ModelPicker {
   setDisabled(disabled: boolean): void;
 }
 
+/**
+ * Whether `id` carries Ollama's cloud tag: the tag after the last `:` is `cloud` or ends
+ * in `-cloud`. The same rule as core's, applied to the chosen id itself, so a saved model
+ * is warned about before a list arrives or when listing fails.
+ */
+export function hasCloudTag(id: string): boolean {
+  const colon = id.lastIndexOf(":");
+  if (colon < 0) {
+    return false;
+  }
+  const tag = id.slice(colon + 1);
+  return tag === "cloud" || tag.endsWith("-cloud");
+}
+
 function option(value: string, label: string): HTMLOptionElement {
   const node = el("option", { text: label });
   // The exact id, set as a property; the label went through `neutralise`.
@@ -48,6 +62,8 @@ export function createModelPicker(onChange: () => void): ModelPicker {
     attrs: { "aria-label": "Refresh the model list" },
   });
   const note = el("span", { class: "muted model-note", attrs: { role: "status" } });
+  // Separate from the list status, so loading or a failure never hides it.
+  const warning = el("span", { class: "model-warning", attrs: { role: "status" } });
 
   let models: ModelChoice[] = [];
   let chosen = "";
@@ -65,26 +81,32 @@ export function createModelPicker(onChange: () => void): ModelPicker {
     if (failure !== null) {
       return failure;
     }
-    if (models.find((model) => model.id === chosen)?.cloud_tag === true) {
-      return CLOUD_WARNING;
-    }
     return models.length === 0 && endpoint !== "" ? EMPTY_NOTE : "";
+  }
+
+  /** The chosen model is cloud-tagged by its own id or by the server's list. */
+  function chosenIsCloud(): boolean {
+    return hasCloudTag(chosen) || models.find((model) => model.id === chosen)?.cloud_tag === true;
   }
 
   function render(): void {
     const options = [option("", models.length === 0 ? "No model listed" : "Choose a model")];
     if (chosen !== "" && !models.some((model) => model.id === chosen)) {
-      options.push(option(chosen, `${chosen}${UNLISTED_SUFFIX}`));
+      const cloud = hasCloudTag(chosen) ? CLOUD_SUFFIX : "";
+      options.push(option(chosen, `${chosen}${cloud}${UNLISTED_SUFFIX}`));
     }
     for (const model of models) {
-      options.push(option(model.id, model.cloud_tag ? `${model.id}${CLOUD_SUFFIX}` : model.id));
+      const cloud = model.cloud_tag || hasCloudTag(model.id);
+      options.push(option(model.id, cloud ? `${model.id}${CLOUD_SUFFIX}` : model.id));
     }
     select.replaceChildren(...options);
     select.value = chosen;
     select.disabled = disabled;
     refreshButton.disabled = disabled || loading || endpoint === "";
     replaceChildren(note, noteText());
-    note.classList.toggle("warning", failure === null && noteText() === CLOUD_WARNING);
+    const cloud = chosenIsCloud();
+    replaceChildren(warning, cloud ? CLOUD_WARNING : "");
+    warning.hidden = !cloud;
   }
 
   select.addEventListener("change", () => {
@@ -94,6 +116,11 @@ export function createModelPicker(onChange: () => void): ModelPicker {
   });
 
   async function load(forEndpoint: string): Promise<void> {
+    if (forEndpoint !== endpoint) {
+      // Another server's models must not be offered while the new list loads; the chosen
+      // model stays, marked as not reported, until the operator changes it.
+      models = [];
+    }
     endpoint = forEndpoint;
     generation += 1;
     const mine = generation;
@@ -129,12 +156,14 @@ export function createModelPicker(onChange: () => void): ModelPicker {
     el("span", { text: "Model" }),
     el("div", { class: "model-row" }, select, refreshButton),
     note,
+    warning,
   );
   render();
 
   return {
     element,
-    value: () => chosen.trim(),
+    // The exact id: a listed id is sent as the server reported it, never trimmed.
+    value: () => chosen,
     setValue(id) {
       chosen = id;
       render();

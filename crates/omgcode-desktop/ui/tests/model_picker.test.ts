@@ -69,6 +69,11 @@ function note(): string {
   return root.querySelector(".model-note")?.textContent ?? "";
 }
 
+function warning(): string {
+  const node = root.querySelector<HTMLElement>(".model-warning");
+  return node === null || node.hidden ? "" : (node.textContent ?? "");
+}
+
 function send(): void {
   const box = root.querySelector(".message-box") as HTMLTextAreaElement;
   box.value = "hello";
@@ -112,12 +117,77 @@ describe("model choice", () => {
   it("marks a cloud-tagged Ollama model and warns while it is chosen", async () => {
     await start({ chat_models: listing(["kimi-k3:cloud", true], [SETTINGS.model, false]) });
     expect(labels()).toContain(`kimi-k3:cloud${CLOUD_SUFFIX}`);
-    expect(note()).toBe("");
+    expect(warning()).toBe("");
     choose(modelSelect(root), "kimi-k3:cloud");
-    expect(note()).toBe(CLOUD_WARNING);
-    expect(root.querySelector(".model-note")?.classList.contains("warning")).toBe(true);
+    expect(warning()).toBe(CLOUD_WARNING);
     choose(modelSelect(root), SETTINGS.model);
-    expect(note()).toBe("");
+    expect(warning()).toBe("");
+  });
+
+  it("warns about a saved cloud model while listing and after listing fails", async () => {
+    let fail: (reason: unknown) => void = () => undefined;
+    await start({
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, model: "gpt-oss:120b-cloud" },
+        preferences: "saved",
+        enter_to_send: true,
+      }),
+      chat_models: () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    });
+    // Still listing: the status says so and the warning shows beside it.
+    expect(note()).toBe("Listing models…");
+    expect(warning()).toBe(CLOUD_WARNING);
+    expect(labels()).toContain(`gpt-oss:120b-cloud${CLOUD_SUFFIX}${UNLISTED_SUFFIX}`);
+    fail({ code: "provider", message: "local model transport failed" });
+    await settle();
+    expect(note()).toContain("Could not list models");
+    expect(warning()).toBe(CLOUD_WARNING);
+  });
+
+  it("offers no model of the previous server while the new list loads", async () => {
+    let current = SETTINGS.endpoint;
+    const ollama = "http://127.0.0.1:11434/v1";
+    let answer: (value: ChatModels) => void = () => undefined;
+    await start({
+      chat_models: listing(["lm-only", false], [SETTINGS.model, false]),
+      chat_defaults: () => ({
+        settings: { ...SETTINGS, endpoint: current },
+        preferences: "defaults",
+        enter_to_send: true,
+      }),
+      chat_send: (args) =>
+        (args.settings as { endpoint: string }).endpoint === current
+          ? running
+          : rejection("connection_changed", "The model connection changed in settings."),
+    });
+    expect(labels()).toContain("lm-only");
+    ipc.on(
+      "chat_models",
+      () =>
+        new Promise<ChatModels>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    // The settings window switched to Ollama; the refused send reads the new endpoint.
+    current = ollama;
+    send();
+    await settle();
+    expect(labels()).not.toContain("lm-only");
+    expect(labels()).toContain(`${SETTINGS.model}${UNLISTED_SUFFIX}`);
+    answer({ endpoint: ollama, models: [{ id: "lfm2.5:latest", cloud_tag: false }] });
+    await settle();
+    expect(labels()).toContain("lfm2.5:latest");
+  });
+
+  it("sends a listed id exactly as the server reported it", async () => {
+    await start({ chat_models: listing([" spaced ", false], [SETTINGS.model, false]) });
+    choose(modelSelect(root), " spaced ");
+    send();
+    await settle();
+    expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ settings: { model: " spaced " } });
   });
 
   it("cannot send without a chosen model", async () => {
