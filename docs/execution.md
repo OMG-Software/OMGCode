@@ -712,7 +712,11 @@ cgroup.
 Version 0.25.0 adds `workspace_run_command` to the core turn runtime. The
 runtime advertises it only when the session workspace's live `model_tools`,
 `execute`, `read`, and `write` preferences are enabled. Each call rechecks
-them, and the trusted run checks them again. A model-origin run records a
+them, and the trusted run checks them again. Since 0.42.0 (ADR-0062) its
+effective state is the most restrictive of the three. At `prompt` each call
+needs an approval, as described below; at `allow` it starts the trusted run
+without one, under the same profile, limits, and confinement. The per-tool
+write limits do not apply to it. A model-origin run records a
 durable per-workspace count of `model_tools` true-to-false changes; disabling
 the preference stops the run even if it is re-enabled before the watcher reads
 the setting.

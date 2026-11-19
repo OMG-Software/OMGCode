@@ -4562,3 +4562,103 @@ fn an_allowed_write_runs_without_an_approval_and_a_denied_tool_limit_is_not_offe
         .expect("control store");
     assert!(control.approval_statuses(now_unix()).is_empty());
 }
+
+#[test]
+fn allowed_edits_renames_and_deletes_apply_without_approvals_and_are_journaled() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("edit.txt"), "alpha bcc\n").expect("edit target");
+    fs::write(fixture.workspace.join("multi.txt"), "alpha beta gamma\n").expect("multi target");
+    fs::write(fixture.workspace.join("from.txt"), "moved\n").expect("rename source");
+    fs::write(fixture.workspace.join("gone.txt"), "removed\n").expect("delete target");
+    fixture.set_access(PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    });
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            call(
+                "edit-1",
+                "workspace_edit_file",
+                json!({"path": "edit.txt", "old_text": "bc", "new_text": "b"}),
+            ),
+            call(
+                "multi-1",
+                "workspace_multi_edit_file",
+                json!({"path": "multi.txt", "edits": [
+                    {"old_text": "gamma", "new_text": "G"},
+                    {"old_text": "alpha", "new_text": "A"},
+                ]}),
+            ),
+            call(
+                "rename-1",
+                "workspace_rename_file",
+                json!({"from": "from.txt", "to": "to.txt"}),
+            ),
+            call(
+                "delete-1",
+                "workspace_delete_file",
+                json!({"path": "gone.txt"}),
+            ),
+        ]),
+        text_reply("done"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("allowed writes");
+    let workspace = &fixture.workspace;
+    assert_eq!(
+        fs::read_to_string(workspace.join("edit.txt")).expect("edited"),
+        "alpha bc\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("multi.txt")).expect("multi-edited"),
+        "A beta G\n"
+    );
+    assert!(!workspace.join("from.txt").exists());
+    assert_eq!(
+        fs::read_to_string(workspace.join("to.txt")).expect("renamed"),
+        "moved\n"
+    );
+    assert!(!workspace.join("gone.txt").exists());
+
+    fixture.close_journal();
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    assert!(control.approval_statuses(now_unix()).is_empty());
+    drop(control);
+    let actions = fixture.actions();
+    let started: Vec<&Value> = actions
+        .iter()
+        .filter(|record| record["type"] == "action_started")
+        .collect();
+    let tools: Vec<&str> = started
+        .iter()
+        .map(|record| record["payload"]["tool"].as_str().expect("tool"))
+        .collect();
+    assert_eq!(
+        tools,
+        ["edit_file", "multi_edit_file", "rename_file", "delete_file"]
+    );
+    assert!(
+        started
+            .iter()
+            .all(|record| record["payload"]["authorization"]["type"] == "standing_allow")
+    );
+    assert_eq!(
+        started[2]["payload"]["targets"].as_array().map(Vec::len),
+        Some(2)
+    );
+    let finished: Vec<&Value> = actions
+        .iter()
+        .filter(|record| record["type"] == "action_finished")
+        .collect();
+    assert_eq!(finished.len(), 4);
+    assert!(
+        finished
+            .iter()
+            .all(|record| record["payload"]["outcome"] == "succeeded")
+    );
+}
