@@ -54,13 +54,21 @@ export function createNewSessionDialog(
 
   const heading = el("h2", { text: "New session", attrs: { id: "new-session-title" } });
 
-  function showMessage(message: string): void {
+  function showMessage(message: string, ...actions: HTMLButtonElement[]): void {
     replaceChildren(
       dialog,
       heading,
       el("p", { text: message }),
-      el("div", { class: "dialog-actions" }, button("Close", close)),
+      el("div", { class: "dialog-actions" }, ...actions, button("Close", close)),
     );
+  }
+
+  /** Shows the settings window, where workspaces are registered, and closes this dialog. */
+  function openSettings(): void {
+    close();
+    api.settingsShowWindow().catch(() => {
+      // The settings window is optional here; a failure leaves the main window as it was.
+    });
   }
 
   function showForm(workspaces: WorkspaceChoice[]): void {
@@ -138,7 +146,8 @@ export function createNewSessionDialog(
         const list = await api.workspaceList();
         if (!list.development_root_set || list.workspaces.length === 0) {
           showMessage(
-            "No workspaces are available. Workspaces are registered with the trusted CLI: run `omgcode workspace set-root`, then `omgcode workspace register`.",
+            "No workspaces are available. Choose a development root and register a workspace in Settings.",
+            button("Open settings", openSettings),
           );
           return;
         }

@@ -8,6 +8,9 @@
 
 mod support;
 
+use omgcode_core::control::ControlStore;
+use omgcode_core::policy::{PermissionSet, WorkspaceId};
+use omgcode_core::run;
 use serde_json::Value;
 use std::fs;
 #[cfg(target_os = "linux")]
@@ -797,6 +800,73 @@ fn removing_the_profile_stops_a_live_run() {
             .expect("reason")
             .contains("profile")
     );
+    scene.close();
+}
+
+/// A run whose access a settings change withdrew stops even when another
+/// change restores that access before the run's watcher reads the settings
+/// (ADR-0061). The test makes that race certain: under one hold of the
+/// settings lock it revokes `execute`, lists the withdrawn runs as a
+/// settings command does, and restores `execute`. The live settings then
+/// always allow the run.
+///
+/// The watcher alone must stop it, with no command waiting, which is also
+/// what happens when a command cannot list or wait for its runs.
+#[test]
+fn access_restored_before_the_watcher_reads_still_stops_the_run() {
+    let scene = Scene::new();
+    assert_success(&scene.add_profile("system", &[]));
+    let child = scene
+        .command(&[], &shell(LONG_RUN))
+        .spawn()
+        .expect("spawn run");
+    let run_id = wait_for_start(&scene);
+    let listed = {
+        let mut control = ControlStore::open_existing(&scene.data)
+            .expect("open settings")
+            .expect("settings exist");
+        let workspace_id: WorkspaceId = scene.id.parse().expect("workspace id");
+        let allowed = control
+            .workspace(workspace_id)
+            .expect("registered")
+            .permissions();
+        let revoked = PermissionSet {
+            execute: false,
+            ..allowed
+        };
+        control
+            .set_permissions(workspace_id, revoked, control.revision())
+            .expect("revoke execute");
+        let listed = run::withdrawn_runs(&control).expect("list");
+        control
+            .set_permissions(workspace_id, allowed, control.revision())
+            .expect("restore execute");
+        assert!(run::withdrawn_runs(&control).expect("list").is_empty());
+        listed
+    };
+    assert_eq!(
+        listed.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec![run_id.clone()]
+    );
+    // Nothing waits here: the watcher stops the run from the recorded
+    // history although the live settings allow it.
+    let run = run_json(&wait(child, Duration::from_secs(30)));
+    assert_eq!(run["finish"]["result"]["kind"], "revoked");
+    assert!(
+        run["revoked_because"]
+            .as_str()
+            .expect("reason")
+            .contains("execute")
+    );
+    // Its outcome is recorded, so the stop check that a settings command
+    // runs next finds nothing left to wait for or report.
+    let withdrawn =
+        run::stop_withdrawn_runs(&scene.data, run::REVOCATION_WAIT, &listed).expect("stop");
+    assert!(
+        withdrawn.unconfirmed.is_empty() && withdrawn.stopped.is_empty(),
+        "{withdrawn:?}"
+    );
+    assert_eq!(scene.audit()["pending"], Value::Array(Vec::new()));
     scene.close();
 }
 

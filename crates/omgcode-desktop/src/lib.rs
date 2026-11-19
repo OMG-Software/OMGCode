@@ -10,6 +10,7 @@
 //! instead), come from the process command line ([`launch`]) and nowhere else.
 
 pub mod commands;
+pub mod dialogs;
 pub mod error;
 pub mod launch;
 pub mod policy;
@@ -141,7 +142,12 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings_show_window,
             commands::chat::chat_preferences_save,
             commands::chat::session_skills,
-            commands::settings::settings_overview
+            commands::settings::settings_overview,
+            commands::settings::settings_choose_root,
+            commands::settings::settings_register_workspace,
+            commands::settings::settings_set_permissions,
+            commands::settings::settings_choose_package_cache,
+            commands::settings::settings_clear_package_cache
         ])
         .build(tauri::generate_context!());
     match built {

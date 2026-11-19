@@ -578,6 +578,20 @@ impl ControlStore {
 
     /// Open existing state without creating directories or files. Only absence is `None`.
     pub fn open_existing(data_directory: &Path) -> Result<Option<Self>, ControlError> {
+        Ok(Self::open_existing_since(data_directory, usize::MAX)?.map(|(store, _)| store))
+    }
+
+    /// Open existing settings like [`Self::open_existing`], and also return
+    /// the state after each event from index `from` on, oldest first.
+    ///
+    /// A run's watcher checks every one of these states, not only the last,
+    /// so a change that withdrew its run and was undone before the watcher
+    /// read the settings still stops the run (ADR-0061). The change's own
+    /// event is the evidence, so nothing else has to be written.
+    pub(crate) fn open_existing_since(
+        data_directory: &Path,
+        from: usize,
+    ) -> Result<Option<(Self, Vec<ControlSnapshot>)>, ControlError> {
         let path = data_directory.join(FILE_NAME);
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if !metadata.is_file() => {
@@ -600,6 +614,7 @@ impl ControlStore {
             ));
         }
         let mut store = Self::empty(file, data_directory)?;
+        let mut history = Vec::new();
         let mut event_ids = HashSet::new();
         let complete = bytes
             .strip_suffix(b"\n")
@@ -620,10 +635,28 @@ impl ControlStore {
                 store.snapshot.store_id = entry.store_id;
             }
             Self::apply(&mut store.snapshot, &entry, store.entries.len())?;
+            if store.entries.len() >= from {
+                history.push(store.snapshot.clone());
+            }
             store.entries.push(entry);
         }
         store.bytes = bytes.len();
-        Ok(Some(store))
+        Ok(Some((store, history)))
+    }
+
+    /// The number of recorded events. A run takes it under the control lock
+    /// when it starts, and its watcher checks every state recorded after it.
+    pub(crate) fn event_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Call `check` with this store as it stood in `state`, a state that
+    /// [`Self::open_existing_since`] returned, then restore the live state.
+    pub(crate) fn as_of<R>(&mut self, state: ControlSnapshot, check: impl FnOnce(&Self) -> R) -> R {
+        let live = std::mem::replace(&mut self.snapshot, state);
+        let result = check(self);
+        self.snapshot = live;
+        result
     }
 
     /// Capture trusted storage identity before initialization or validated replay.
@@ -697,6 +730,20 @@ impl ControlStore {
             .development_root
             .as_ref()
             .map(DirectoryRecord::display)
+    }
+
+    /// The selected development root's recorded native path, if one is set
+    /// and representable on this platform.
+    ///
+    /// It is the trusted selection, not a capability: a caller may use it as
+    /// the starting folder of a native folder dialog, but must not open files
+    /// through it or return it to a webview. Access still goes through a
+    /// binding and the broker.
+    pub fn development_root_path(&self) -> Option<PathBuf> {
+        self.snapshot
+            .development_root
+            .as_ref()
+            .and_then(|directory| directory.path.to_path_buf().ok())
     }
 
     /// One workspace's selected package cache root as display-safe text, if
@@ -1699,6 +1746,58 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    /// Replay returns the state after each event since a given one, and a
+    /// store can be read as of one of them and then restored. A value that a
+    /// later event undid is still visible in its own state (ADR-0061).
+    #[test]
+    fn replay_returns_each_state_since_an_event() {
+        let directory = tempfile::tempdir().expect("private temporary directory");
+        let data = directory.path().join("data");
+        let root = directory.path().join("projects");
+        fs::create_dir(&root).expect("development root");
+        let mut store = ControlStore::open(&data).expect("store");
+        store.set_development_root(&root, 0).expect("root");
+        let id = store.register_workspace(&root, 1).expect("workspace").id();
+        let before = store.workspace(id).expect("registered").permissions();
+        let from = store.event_count();
+        let changed = PermissionSet {
+            execute: !before.execute,
+            ..before
+        };
+        store
+            .set_permissions(id, changed, store.revision())
+            .expect("change");
+        store
+            .set_permissions(id, before, store.revision())
+            .expect("undo");
+        drop(store);
+        let (mut store, history) = ControlStore::open_existing_since(&data, from)
+            .expect("replay")
+            .expect("settings exist");
+        assert_eq!(store.event_count(), from + 2);
+        let seen: Vec<bool> = history
+            .into_iter()
+            .map(|state| {
+                store.as_of(state, |control| {
+                    control
+                        .workspace(id)
+                        .expect("registered")
+                        .permissions()
+                        .execute
+                })
+            })
+            .collect();
+        assert_eq!(seen, [!before.execute, before.execute]);
+        let live = store.workspace(id).expect("registered").permissions();
+        assert_eq!(live.execute, before.execute, "the live state is restored");
+        let count = store.event_count();
+        drop(store);
+        let (_, none) = ControlStore::open_existing_since(&data, count)
+            .expect("replay")
+            .expect("settings exist");
+        assert!(none.is_empty());
     }
 
     /// Exhausted capacities reject mutations rather than discard settings or audit.

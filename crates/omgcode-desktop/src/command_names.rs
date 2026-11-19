@@ -27,4 +27,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "chat_preferences_save",
     "session_skills",
     "settings_overview",
+    "settings_choose_root",
+    "settings_register_workspace",
+    "settings_set_permissions",
+    "settings_choose_package_cache",
+    "settings_clear_package_cache",
 ];

@@ -1,16 +1,19 @@
-//! Read-only views of the trusted configuration (ADR-0059, phase S1).
+//! Views of the trusted configuration (ADR-0059).
 //!
 //! [`DesktopService::settings_overview`] serves the `settings` window. It
-//! reads the settings store and shapes what the trusted CLI's `workspace
-//! status` and `skills list` show, with every path and recorded name passed
-//! through core's display-safe functions. It changes nothing, reads no stored
-//! secret, and returns no host path that could be reopened.
+//! reads the settings store, creating an empty one when none exists
+//! (ADR-0060), and shapes what the trusted CLI's `workspace status` and
+//! `skills list` show, with every path and recorded name passed through
+//! core's display-safe functions. It reads no stored secret and returns no
+//! host path that could be reopened. Changes are in `settings_changes`.
 //!
 //! [`DesktopService::session_skills`] serves the `main` window's per-turn skill
 //! choice. It returns only the names of skills enabled for the session's
 //! workspace; enabling a skill grants no permission (ADR-0057).
 
-use omgcode_core::control::{ContainerGrantAccess, ContainerGrantState, ProfilePlatform};
+use omgcode_core::control::{
+    ContainerGrantAccess, ContainerGrantState, ControlStore, ProfilePlatform,
+};
 use omgcode_core::turn::display_safe_line;
 
 use super::error::DesktopError;
@@ -24,143 +27,137 @@ use super::{DesktopService, Inner, TokenResolver};
 use crate::TokenSource;
 
 impl DesktopService {
-    /// A read-only view of the trusted configuration, for the `settings`
-    /// window only.
+    /// A view of the trusted configuration, for the `settings` window only.
     ///
-    /// Without a settings store, every list is empty and `store_initialized`
-    /// is false; the connection is still reported. The store is opened and
-    /// released inside this call.
+    /// When no settings store exists, an empty one is created first
+    /// (ADR-0060): it records no root, workspace, or permission. The store is
+    /// opened and released inside this call.
     ///
     /// # Errors
     ///
     /// `busy` when the settings store stays held past a two-second wait,
-    /// `control` when it is invalid.
+    /// `control` when it is invalid or cannot be created.
     pub fn settings_overview(&self) -> Result<SettingsOverview, DesktopError> {
-        let inner = &self.inner;
-        let connection = connection_view(inner);
-        let Some(store) = inner.open_control()? else {
-            return Ok(SettingsOverview {
-                store_initialized: false,
-                revision: 0,
-                development_root: None,
-                workspaces: Vec::new(),
-                connection,
-                provider_profiles: Vec::new(),
-                toolchain_profiles: Vec::new(),
-                package_profiles: Vec::new(),
-                container_grants: Vec::new(),
-                skills: Vec::new(),
-            });
-        };
-        let workspaces = store
-            .workspaces()
-            .map(|workspace| {
-                let permissions = workspace.permissions();
-                WorkspaceSettingsView {
-                    workspace_id: *workspace.id().as_uuid(),
-                    folder_display: folder_of_directory(workspace.directory_path()),
-                    model_tools: permissions.model_tools,
-                    read: permissions.read,
-                    write: permissions.write,
-                    execute: permissions.execute,
-                    package_cache_root: store.package_cache_root_display(workspace.id()),
-                }
-            })
-            .collect();
-        let provider_profiles = store
-            .provider_profiles()
-            .iter()
-            .map(|status| {
-                let profile = status.profile();
-                ProviderProfileView {
-                    name: display_safe_line(profile.name()),
-                    kind: profile.kind().as_str(),
-                    auth: profile.auth().as_str(),
-                    endpoint: profile
-                        .endpoint()
-                        .map(|endpoint| display_safe_line(endpoint.as_str())),
-                    credential_bound: status.credential().is_some(),
-                }
-            })
-            .collect();
-        let toolchain_profiles = store
-            .profiles()
-            .iter()
-            .map(|status| {
-                let profile = status.profile();
-                ToolchainProfileView {
-                    name: display_safe_line(profile.name()),
-                    platform: platform_name(profile.platform()),
-                    read_only_roots: profile.read_only_root_displays(),
-                    path_entries: profile.path_entry_displays(),
-                    environment_names: profile
-                        .environment()
-                        .iter()
-                        .map(|variable| display_safe_line(variable.name()))
-                        .collect(),
-                }
-            })
-            .collect();
-        let package_profiles = store
-            .package_profiles()
-            .iter()
-            .map(|status| PackageProfileView {
-                name: display_safe_line(status.profile().name()),
-                origins: status
-                    .profile()
-                    .origins()
-                    .iter()
-                    .map(|origin| display_safe_line(&origin.render()))
-                    .collect(),
-                credentials_bound: u64::try_from(status.credentials().len()).unwrap_or(u64::MAX),
-            })
-            .collect();
-        let container_grants = store
-            .container_grants()
-            .iter()
-            .map(|status| {
-                let grant = status.grant();
-                ContainerGrantView {
-                    grant_id: grant.id(),
-                    workspace_id: *grant.workspace_id().as_uuid(),
-                    directory: grant.directory_display(),
-                    access: access_name(grant.access()),
-                    state: grant_state_name(status.state()),
-                }
-            })
-            .collect();
-        let skills = store
-            .skill_statuses(None)
-            .into_iter()
-            .map(|status| SkillSettingView {
-                name: status.skill.name().as_str().to_owned(),
-                application: status.application,
-                workspace_overrides: status
-                    .workspace_overrides
-                    .iter()
-                    .map(|entry| SkillOverrideView {
-                        workspace_id: *entry.workspace_id.as_uuid(),
-                        enabled: entry.enabled,
-                    })
-                    .collect(),
-            })
-            .collect();
-        let overview = SettingsOverview {
-            store_initialized: true,
-            revision: store.revision(),
-            development_root: store.development_root_display(),
-            workspaces,
-            connection,
-            provider_profiles,
-            toolchain_profiles,
-            package_profiles,
-            container_grants,
-            skills,
-        };
-        drop(store);
-        Ok(overview)
+        let store = self.inner.open_or_create_control()?;
+        Ok(overview_of(&self.inner, store))
     }
+}
 
+/// Shape the overview from an open store, then release the store. Every path
+/// and recorded name passes through core's display-safe functions.
+pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOverview {
+    let connection = connection_view(inner);
+    let workspaces = store
+        .workspaces()
+        .map(|workspace| {
+            let permissions = workspace.permissions();
+            WorkspaceSettingsView {
+                workspace_id: *workspace.id().as_uuid(),
+                folder_display: folder_of_directory(workspace.directory_path()),
+                model_tools: permissions.model_tools,
+                read: permissions.read,
+                write: permissions.write,
+                execute: permissions.execute,
+                task_network: permissions.task_network,
+                host_services: permissions.host_services,
+                package_cache_root: store.package_cache_root_display(workspace.id()),
+            }
+        })
+        .collect();
+    let provider_profiles = store
+        .provider_profiles()
+        .iter()
+        .map(|status| {
+            let profile = status.profile();
+            ProviderProfileView {
+                name: display_safe_line(profile.name()),
+                kind: profile.kind().as_str(),
+                auth: profile.auth().as_str(),
+                endpoint: profile
+                    .endpoint()
+                    .map(|endpoint| display_safe_line(endpoint.as_str())),
+                credential_bound: status.credential().is_some(),
+            }
+        })
+        .collect();
+    let toolchain_profiles = store
+        .profiles()
+        .iter()
+        .map(|status| {
+            let profile = status.profile();
+            ToolchainProfileView {
+                name: display_safe_line(profile.name()),
+                platform: platform_name(profile.platform()),
+                read_only_roots: profile.read_only_root_displays(),
+                path_entries: profile.path_entry_displays(),
+                environment_names: profile
+                    .environment()
+                    .iter()
+                    .map(|variable| display_safe_line(variable.name()))
+                    .collect(),
+            }
+        })
+        .collect();
+    let package_profiles = store
+        .package_profiles()
+        .iter()
+        .map(|status| PackageProfileView {
+            name: display_safe_line(status.profile().name()),
+            origins: status
+                .profile()
+                .origins()
+                .iter()
+                .map(|origin| display_safe_line(&origin.render()))
+                .collect(),
+            credentials_bound: u64::try_from(status.credentials().len()).unwrap_or(u64::MAX),
+        })
+        .collect();
+    let container_grants = store
+        .container_grants()
+        .iter()
+        .map(|status| {
+            let grant = status.grant();
+            ContainerGrantView {
+                grant_id: grant.id(),
+                workspace_id: *grant.workspace_id().as_uuid(),
+                directory: grant.directory_display(),
+                access: access_name(grant.access()),
+                state: grant_state_name(status.state()),
+            }
+        })
+        .collect();
+    let skills = store
+        .skill_statuses(None)
+        .into_iter()
+        .map(|status| SkillSettingView {
+            name: status.skill.name().as_str().to_owned(),
+            application: status.application,
+            workspace_overrides: status
+                .workspace_overrides
+                .iter()
+                .map(|entry| SkillOverrideView {
+                    workspace_id: *entry.workspace_id.as_uuid(),
+                    enabled: entry.enabled,
+                })
+                .collect(),
+        })
+        .collect();
+    let overview = SettingsOverview {
+        revision: store.revision(),
+        development_root: store.development_root_display(),
+        workspaces,
+        connection,
+        provider_profiles,
+        toolchain_profiles,
+        package_profiles,
+        container_grants,
+        skills,
+    };
+    drop(store);
+    overview
+}
+
+impl DesktopService {
     /// The skills the operator may select for one turn in this session: those
     /// effectively enabled for the session's recorded workspace.
     ///

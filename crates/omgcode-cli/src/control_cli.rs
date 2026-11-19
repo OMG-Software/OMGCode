@@ -296,8 +296,10 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .set_development_root(&path, revision)
                 .map_err(control_error)?;
             let snapshot = store.snapshot();
+            let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, &[])?;
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
             print_json(&snapshot)
         }
         WorkspaceCommand::SetPackageCache {
@@ -312,8 +314,10 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .set_package_cache_root(workspace_id, &path, revision)
                 .map_err(control_error)?;
             let snapshot = store.snapshot();
+            let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, &[])?;
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
             print_json(&snapshot)
         }
         WorkspaceCommand::ClearPackageCache {
@@ -327,8 +331,10 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .clear_package_cache_root(workspace_id, revision)
                 .map_err(control_error)?;
             let snapshot = store.snapshot();
+            let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, &[])?;
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
             print_json(&snapshot)
         }
         WorkspaceCommand::Register { path, revision } => {
@@ -364,8 +370,10 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 "removed_profile_id": profile_id,
                 "snapshot": store.snapshot(),
             });
+            let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, &[])?;
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
             print_json(&output)
         }
         WorkspaceCommand::PackageProfileAdd(args) => package_profile_add(args, data_root),
@@ -382,8 +390,10 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
             let output =
                 credential_cli::remove_package_profile(&mut store, data_root, &name, revision)?;
+            let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, &[])?;
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
             print_json(&output)
         }
         WorkspaceCommand::PackageCredentialSet {
@@ -423,8 +433,10 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
             let output = credential_cli::remove_profile(&mut store, data_root, &name, revision)?;
+            let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, &[])?;
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
             print_json(&output)
         }
         WorkspaceCommand::ProviderCredentialSet { name, revision } => {
@@ -591,9 +603,27 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         .set_permissions(id, permissions, args.revision)
         .map_err(control_error)?;
     let snapshot = store.snapshot();
+    let listed = withdrawn_runs(&store);
     drop(store);
-    stop_withdrawn_runs(data_root, &[])?;
+    stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+    listed?;
     print_json(&snapshot)
+}
+
+/// List the runs a change withdrew while its control lock is still held, so
+/// the wait that follows includes them even if a later change restores their
+/// access (ADR-0061). Their watchers stop them in any case. The caller
+/// reports a failure only after it has waited for what the settings
+/// withdraw; a failure never undoes the recorded change.
+fn withdrawn_runs(store: &ControlStore) -> Result<Vec<Uuid>, CliError> {
+    run::withdrawn_runs(store).map_err(|error| {
+        CliError::new(
+            "run",
+            format!(
+                "The settings change was recorded, but the runs it withdrew could not be listed: {error}. Their watchers still stop them; inspect them with `runs audit`."
+            ),
+        )
+    })
 }
 
 /// After a change that can withdraw access, wait for the affected runs to

@@ -62,11 +62,16 @@ pub enum Command {
     ChatPreferencesSave,
     SessionSkills,
     SettingsOverview,
+    SettingsChooseRoot,
+    SettingsRegisterWorkspace,
+    SettingsSetPermissions,
+    SettingsChoosePackageCache,
+    SettingsClearPackageCache,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 28] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -90,6 +95,11 @@ impl Command {
         Self::ChatPreferencesSave,
         Self::SessionSkills,
         Self::SettingsOverview,
+        Self::SettingsChooseRoot,
+        Self::SettingsRegisterWorkspace,
+        Self::SettingsSetPermissions,
+        Self::SettingsChoosePackageCache,
+        Self::SettingsClearPackageCache,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -119,6 +129,11 @@ impl Command {
             Self::ChatPreferencesSave => "chat_preferences_save",
             Self::SessionSkills => "session_skills",
             Self::SettingsOverview => "settings_overview",
+            Self::SettingsChooseRoot => "settings_choose_root",
+            Self::SettingsRegisterWorkspace => "settings_register_workspace",
+            Self::SettingsSetPermissions => "settings_set_permissions",
+            Self::SettingsChoosePackageCache => "settings_choose_package_cache",
+            Self::SettingsClearPackageCache => "settings_clear_package_cache",
         }
     }
 
@@ -129,7 +144,12 @@ impl Command {
             Self::ApprovalsList | Self::ApprovalDetail | Self::ApprovalDecide => {
                 WindowLabel::Approvals
             }
-            Self::SettingsOverview => WindowLabel::Settings,
+            Self::SettingsOverview
+            | Self::SettingsChooseRoot
+            | Self::SettingsRegisterWorkspace
+            | Self::SettingsSetPermissions
+            | Self::SettingsChoosePackageCache
+            | Self::SettingsClearPackageCache => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -186,10 +206,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 23);
+        assert_eq!(Command::ALL.len(), 28);
         assert_eq!(with_window(WindowLabel::Main).len(), 19);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 1);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 6);
     }
 
     #[test]
@@ -272,10 +292,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_twenty_three_unique_names_matching_the_enum() {
+    fn shared_name_list_has_twenty_eight_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 23);
-        assert_eq!(shared.len(), 23);
+        assert_eq!(COMMAND_NAMES.len(), 28);
+        assert_eq!(shared.len(), 28);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

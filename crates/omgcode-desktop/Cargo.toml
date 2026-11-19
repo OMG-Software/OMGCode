@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tauri 2 desktop shell for OMGCode with a capability-gated command surface and two isolated webview windows"
+description = "Tauri 2 desktop shell for OMGCode with a capability-gated command surface and three isolated webview windows"
 build = "build.rs"
 
 [lib]
@@ -35,6 +35,12 @@ uuid.workspace = true
 # Stable 2.x only (3.0 is alpha). `wry` is the webview runtime. `x11` lets WebKitGTK
 # run under X11 sessions on Linux. No devtools, tray, updater, asset protocol, or plugin.
 tauri = { version = "2.12.6", default-features = false, features = ["wry", "x11"] }
+# Native folder and confirmation dialogs that Rust opens for the settings window
+# (ADR-0060). Called from Rust only: unlike the Tauri dialog plugin it adds no IPC
+# command that a webview could reach. `gtk3` uses the GTK that Tauri already links on
+# Linux, instead of the default XDG-portal backend and its D-Bus stack. Windows uses
+# `windows-sys` and no feature.
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3"] }
 
 [build-dependencies]
 tauri-build = { version = "2.7.5", default-features = false, features = ["config-json"] }

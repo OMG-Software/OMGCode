@@ -25,7 +25,9 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::control::{ControlError, ControlStore, ProfilePlatform, ToolchainProfile};
+use crate::control::{
+    ControlError, ControlSnapshot, ControlStore, ProfilePlatform, ToolchainProfile,
+};
 use crate::policy::{PermissionSet, WorkspaceId};
 use crate::run_journal::{
     ConfinementRecord, LimitKind, LimitsRecord, NetworkRecord, PendingRun, RunFinish, RunJournal,
@@ -360,12 +362,22 @@ pub fn run(
         "trusted runs exist only on Linux and Windows",
     ))?;
     let control_path = ControlStore::journal_path(data_root);
-    let (journal_root, store_id, mut prepared, owner, baseline, revocations, model_revocations) = {
+    let (
+        journal_root,
+        store_id,
+        mut prepared,
+        owner,
+        baseline,
+        events,
+        revocations,
+        model_revocations,
+    ) = {
         let control = open_control(data_root)?;
         let (journal_root, store_id) = control.file_audit_context()?;
         let prepared = prepare(&control, request, platform, &journal_root)?;
         // Taken under the control lock, so every later change is seen.
         let baseline = stamp(&control_path)?;
+        let events = control.event_count();
         let revocations = control.grant_revocations(request.workspace_id);
         let model_revocations = control.model_tool_revocations(request.workspace_id);
         let owner = OwnerLock::acquire(&journal_root, prepared.start.run_id)?;
@@ -377,6 +389,7 @@ pub fn run(
             prepared,
             owner,
             baseline,
+            events,
             revocations,
             model_revocations,
         )
@@ -397,7 +410,7 @@ pub fn run(
             done: &done,
             revoked: &revoked,
         };
-        scope.spawn(move || watch.run(baseline));
+        scope.spawn(move || watch.run(baseline, events));
         let result = process::run_confined(
             &prepared.spec,
             &prepared.confinement,
@@ -470,12 +483,12 @@ struct Watch<'a> {
 }
 
 impl Watch<'_> {
-    fn run(&self, mut seen: Stamp) {
+    fn run(&self, mut seen: Stamp, mut events: usize) {
         while !self.done.load(Ordering::SeqCst) {
             if self.caller.is_cancelled() {
                 self.stop.cancel();
             }
-            if let Some(reason) = self.recheck(&mut seen) {
+            if let Some(reason) = self.recheck(&mut seen, &mut events) {
                 let _ = self.revoked.set(reason);
                 self.stop.cancel();
                 return;
@@ -486,17 +499,19 @@ impl Watch<'_> {
 
     /// Reread the settings when the journal changed. Settings that cannot be
     /// read withdraw the run; another command's lock is retried next poll.
-    fn recheck(&self, seen: &mut Stamp) -> Option<&'static str> {
+    /// `events` is how many settings events this watcher has checked.
+    fn recheck(&self, seen: &mut Stamp, events: &mut usize) -> Option<&'static str> {
         let Ok(current) = stamp(self.control_path) else {
             return Some("the settings could not be read");
         };
         if current == *seen {
             return None;
         }
-        match ControlStore::open_existing(self.data_root) {
-            Ok(Some(control)) => {
+        match ControlStore::open_existing_since(self.data_root, *events) {
+            Ok(Some((mut control, history))) => {
                 *seen = current;
-                withdrawn(&control, self.start)
+                *events = control.event_count();
+                withdrawn_since(&mut control, history, self.start)
                     .or_else(|| {
                         // A disable followed by a re-enable can happen between
                         // polls, so the current value alone is not enough. The
@@ -517,6 +532,23 @@ impl Watch<'_> {
             Err(_) => Some("the settings could not be read"),
         }
     }
+}
+
+/// Why the settings withdrew a started run, if they did, in any state of
+/// `history` (oldest first) or in the live settings of `control`.
+///
+/// A change undone between two polls, such as `execute` turned off and on
+/// again, leaves the live settings allowing the run. The state after that
+/// change is still in `history`, so the run is still withdrawn (ADR-0061).
+fn withdrawn_since(
+    control: &mut ControlStore,
+    history: Vec<ControlSnapshot>,
+    start: &RunStart,
+) -> Option<&'static str> {
+    history
+        .into_iter()
+        .find_map(|state| control.as_of(state, |settings| withdrawn(settings, start)))
+        .or_else(|| withdrawn(control, start))
 }
 
 /// Why the recorded settings no longer allow a started run, if they don't.
@@ -647,6 +679,33 @@ pub fn workspace_runs(
         .pending_starts()
         .into_iter()
         .filter(|start| start.workspace_id == workspace_id)
+        .map(|start| start.run_id)
+        .collect())
+}
+
+/// The pending runs that the settings in `control` no longer allow.
+///
+/// A settings change calls this while it still holds the control lock, right
+/// after it records the change, and passes the result to
+/// [`stop_withdrawn_runs`]. A later change that restores access cannot then
+/// hide these runs from the stop check. Their watchers stop them in any case:
+/// a watcher checks every settings state recorded since it last read them
+/// (ADR-0061). Runs the change leaves allowed are not listed.
+///
+/// # Errors
+///
+/// Fails if the run journal cannot be read. The change is already recorded
+/// and the watchers still stop the runs; the caller still waits for what
+/// the settings withdraw, then reports that the runs were not all checked.
+pub fn withdrawn_runs(control: &ControlStore) -> Result<Vec<Uuid>, RunError> {
+    let (journal_root, store_id) = control.file_audit_context()?;
+    let Some(journal) = RunJournal::open_existing(&journal_root, store_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(journal
+        .pending_starts()
+        .into_iter()
+        .filter(|start| withdrawn(control, start).is_some())
         .map(|start| start.run_id)
         .collect())
 }
@@ -1571,6 +1630,86 @@ mod tests {
         let runs =
             stop_withdrawn_runs(&data, Duration::from_millis(100), &[run_id]).expect("check");
         assert_eq!(runs.unconfirmed, vec![run_id]);
+    }
+
+    /// Only pending runs that the settings withdraw are listed. A run that
+    /// recorded its outcome is not pending, so it is not listed again.
+    #[test]
+    fn withdrawn_runs_lists_only_pending_withdrawn_runs() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, store_id) = store(directory.path());
+        let control = open_control(&data).expect("control");
+        assert!(withdrawn_runs(&control).expect("no journal").is_empty());
+        drop(control);
+        let (pending, finished_start) =
+            (withdrawn_start(workspace_id), withdrawn_start(workspace_id));
+        let (pending_id, finished_id) = (pending.run_id, finished_start.run_id);
+        let mut journal = RunJournal::open(&journal_root, store_id).expect("journal");
+        journal.start(pending).expect("start");
+        journal.start(finished_start).expect("start");
+        journal
+            .finish(finished_id, finished(RunResult::Revoked))
+            .expect("finish");
+        drop(journal);
+        let control = open_control(&data).expect("control");
+        assert_eq!(withdrawn_runs(&control).expect("runs"), vec![pending_id]);
+    }
+
+    /// A withdrawal undone before the watcher reads the settings still
+    /// withdraws the run: the state after the withdrawal is in the history,
+    /// while the live settings allow the run again (ADR-0061). A history
+    /// that never withdrew the run leaves it alone. Linux only, for the
+    /// reason given on `allowed_runs_are_not_waited_for`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_withdrawal_undone_before_the_watcher_reads_still_withdraws_the_run() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, store_id) = store(directory.path());
+        let start = allowed_start(&data, directory.path(), workspace_id);
+        RunJournal::open(&journal_root, store_id)
+            .expect("journal")
+            .start(start.clone())
+            .expect("start");
+        let mut control = ControlStore::open(&data).expect("control store");
+        let from = control.event_count();
+        let allowed = control
+            .workspace(workspace_id)
+            .expect("registered")
+            .permissions();
+        let revoked = PermissionSet {
+            execute: false,
+            ..allowed
+        };
+        control
+            .set_permissions(workspace_id, revoked, control.revision())
+            .expect("revoke");
+        assert_eq!(
+            withdrawn_runs(&control).expect("revoked"),
+            vec![start.run_id]
+        );
+        control
+            .set_permissions(workspace_id, allowed, control.revision())
+            .expect("restore");
+        assert!(withdrawn_runs(&control).expect("restored").is_empty());
+        let count = control.event_count();
+        drop(control);
+
+        let (mut control, history) = ControlStore::open_existing_since(&data, from)
+            .expect("replay")
+            .expect("settings exist");
+        assert!(
+            withdrawn(&control, &start).is_none(),
+            "live settings allow it"
+        );
+        assert_eq!(
+            withdrawn_since(&mut control, history, &start),
+            Some("the workspace execute preference is disabled")
+        );
+        drop(control);
+        let (mut control, history) = ControlStore::open_existing_since(&data, count)
+            .expect("replay")
+            .expect("settings exist");
+        assert_eq!(withdrawn_since(&mut control, history, &start), None);
     }
 
     /// The revocation count a run's watcher compares changes when a

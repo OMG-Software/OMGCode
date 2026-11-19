@@ -150,15 +150,31 @@ impl Inner {
     ///
     /// `Ok(None)` means no store exists. No service lock is held while waiting.
     pub(super) fn open_control(&self) -> Result<Option<ControlStore>, DesktopError> {
-        let deadline = Instant::now() + CONTROL_RETRY_DEADLINE;
-        loop {
-            match ControlStore::open_existing(&self.data_root) {
-                Ok(store) => return Ok(store),
-                Err(ControlError::Busy) if Instant::now() < deadline => {
-                    thread::sleep(CONTROL_RETRY_INTERVAL);
-                }
-                Err(error) => return Err(DesktopError::from_control(&error)),
+        retry_busy(|| ControlStore::open_existing(&self.data_root))
+    }
+
+    /// Open the settings store, creating an empty one when none exists, and
+    /// wait briefly for another holder (ADR-0060).
+    ///
+    /// Creation records only the store identity at revision zero: no root,
+    /// no workspace, and no permission. It is the same store the trusted CLI's
+    /// `workspace status` creates. No service lock is held while waiting.
+    pub(super) fn open_or_create_control(&self) -> Result<ControlStore, DesktopError> {
+        retry_busy(|| ControlStore::open(&self.data_root))
+    }
+}
+
+/// Run `open` until it returns anything but `Busy`, or the retry deadline
+/// passes.
+fn retry_busy<T>(mut open: impl FnMut() -> Result<T, ControlError>) -> Result<T, DesktopError> {
+    let deadline = Instant::now() + CONTROL_RETRY_DEADLINE;
+    loop {
+        match open() {
+            Ok(value) => return Ok(value),
+            Err(ControlError::Busy) if Instant::now() < deadline => {
+                thread::sleep(CONTROL_RETRY_INTERVAL);
             }
+            Err(error) => return Err(DesktopError::from_control(&error)),
         }
     }
 }

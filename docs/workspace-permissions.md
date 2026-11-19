@@ -20,8 +20,10 @@ diagnostic result; see [trusted runs](execution.md#trusted-runs).
 
 ## Trusted settings and identity
 
-Only trusted local CLI input can change settings. The commands are not model
-tools. Prompts, conversation history, imported IDs, skills, and repository files
+Only the trusted local CLI and, since 0.41.0, the desktop `settings` window
+can change these settings (ADR-0060). Neither is a model tool. The window gets
+every folder from a native dialog and asks for a native confirmation before
+any change that widens access. Prompts, conversation history, imported IDs, skills, and repository files
 cannot set a development root, change permissions, or recreate a binding.
 
 Select an existing development root explicitly. Register an existing workspace
@@ -90,14 +92,17 @@ since 0.18.0, `task_network` when it selects network access with
 `--network`.
 It checks them before it starts and again after every settings change while
 it runs. A change that withdraws one stops the running tree, which is recorded
-as `revoked`. The `permissions` command reports success only after the runs it
+as `revoked`. Since 0.41.0 the run's watcher checks every recorded settings
+state since it last read them, so turning the preference back on before it
+reads does not keep the run going (ADR-0061). The `permissions` command reports success only after the runs it
 affects have stopped; see [settings changes during a
 run](execution.md#settings-changes-during-a-run). Per-target grants remain
 required. Single-use approvals now exist for the model edit, multi-edit, create,
 rename, delete, and command tools:
-the trusted CLI and the desktop approvals window decide them. Workspace
-settings still change only through the trusted CLI; the desktop `settings`
-window shows them read-only (ADR-0059, phase S1).
+the trusted CLI and the desktop approvals window decide them. The desktop
+`settings` window changes the development root, registrations, the six
+preferences, and package cache roots through the same store calls, and creates
+an empty store on first use (ADR-0059 phase S2, ADR-0060).
 
 ## Persistence and audit
 

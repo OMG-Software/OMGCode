@@ -27,7 +27,10 @@ authorization. See
   and lifetime. Validate it at execution. Invalidate pending grants when their
   scope or policy changes.
 - Narrowing permissions must block new affected work and stop tasks that retain
-  revoked access. Observe cleanup before reporting revocation complete.
+  revoked access. Observe cleanup before reporting revocation complete. A
+  task's watcher checks every recorded settings state since it last read
+  them, so restoring the access before it reads cannot keep the task running
+  (ADR-0061).
 - Keep permission-setting controls separate from rendered untrusted content.
   Validate and limit every command exposed to a webview.
 - Declare every webview command to the permission layer, grant it to named
@@ -54,8 +57,16 @@ authorization. See
   and `execute` preferences), the fixed endpoint text, and the names of the
   skills enabled for a session's workspace. Return recorded
   paths and names as display-safe text, never a secret, and never accept them
-  back as input. Until a later ADR-0059 phase lands, the desktop changes no
-  trusted setting.
+  back as input.
+- A desktop settings change runs only from the `settings` window and through
+  the same core function, revision check, and audit event as the CLI. Get
+  every folder from a native dialog that Rust opens; never accept a path from
+  a webview. Apply a change that widens access only after the operator
+  confirms a native dialog whose text Rust composes from fixed words and
+  display-safe values. Hold no settings lock while a dialog is open, apply
+  with the revision read before it, and observe the stop of runs that lost
+  access. Open native dialogs from Rust without a Tauri plugin, so no webview
+  can reach a dialog command (ADR-0060).
 - Saved desktop preferences carry no endpoint, provider, credential, or
   permission and grant nothing. Bound and strictly parse the file, and fall
   back to built-in values when it cannot be read.

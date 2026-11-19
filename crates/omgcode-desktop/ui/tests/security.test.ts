@@ -104,7 +104,11 @@ describe("source scan", () => {
 
   it("keeps the settings commands inside the settings client", () => {
     const users = Object.entries(sources)
-      .filter(([, text]) => /settings_overview|settings_client/.test(text))
+      .filter(([, text]) =>
+        /settings_(overview|choose_root|register_workspace|set_permissions|choose_package_cache|clear_package_cache)|settings_client/.test(
+          text,
+        ),
+      )
       .map(([key]) => relative(key));
     expect(users.sort()).toEqual([
       "src/ipc/settings_client.ts",

@@ -77,10 +77,16 @@ that is never journaled, replayed, or summarized (a recorded model reply can
 repeat its text)
 ([ADR-0057](docs/adr/0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md)).
 No skill script runs, and a skill grants no permission.
-A third, isolated desktop `settings` window shows the trusted configuration
-read-only; the `main` window saves chat preferences and selects enabled
+A third, isolated desktop `settings` window shows the trusted configuration;
+the `main` window saves chat preferences and selects enabled
 skills for one turn ([ADR-0059](docs/adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)).
-The desktop shell cannot change trusted settings and has no development
+The `settings` window changes the development root, workspace registrations,
+workspace preferences, and package cache roots. Rust opens a native folder
+dialog for each folder and a native confirmation before each change that
+widens access, and creates an empty settings store on first use
+([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
+Connections, credentials, execution setup, and skills still change only
+through the trusted CLI. The desktop shell has no development
 panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.

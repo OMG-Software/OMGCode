@@ -6,6 +6,57 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.41.0 lets the desktop `settings` window change workspace settings
+  (Phase S2 of ADR-0059; ADR-0060, accepted). Before this, the window was
+  read-only and asked the operator to run `omgcode workspace status` first.
+  - **No setup command:** `settings_overview` creates an empty settings store
+    when none exists, as the CLI's `workspace status` does. The store records
+    no root, workspace, or permission. The settings window loads at launch, so
+    the store exists from the first launch. The `store_initialized` field and
+    the "No settings store exists yet" message are removed.
+  - **Five new `settings` commands:**
+    - `settings_choose_root` sets the development root.
+    - `settings_register_workspace` registers a folder beneath the root.
+    - `settings_set_permissions` sets a workspace's complete set of
+      `model_tools`, `read`, `write`, `execute`, `task_network`, and
+      `host_services`.
+    - `settings_choose_package_cache` and `settings_clear_package_cache` set
+      and clear a workspace's package cache root.
+
+    Each calls the same core function as the matching CLI command, with the
+    same revision check, validation, and audit event, and returns the new
+    overview. None takes a path.
+  - **Native dialogs:** Rust opens the operating system's folder picker for
+    every folder. It shows a native Yes/No confirmation before each change
+    that widens access: the root, a registration, a preference turned on,
+    and a cache root. The service writes the confirmation text and names
+    each preference turned on with what it allows. Turning preferences off
+    and clearing a cache root show no dialog. The dialogs come from the new
+    dependency `rfd` 0.17.2 (MIT; `gtk3` backend on Linux, `windows-sys` on
+    Windows), called from Rust. No Tauri plugin and no dialog command
+    exists. `rfd` is the only new package in `Cargo.lock`.
+  - **Safe ordering:** no settings lock is held while a dialog is open. A
+    change made meanwhile makes the request fail with the new code
+    `stale_revision`, so the change the operator confirmed is the one
+    applied. Runs that lost access are stopped and observed
+    (`runs_not_stopped` otherwise). One change runs at a time
+    (`settings_change_running`). A closed dialog or a No answer returns
+    `cancelled`. A missing root returns `no_development_root`.
+  - **Settings window controls:** the development root has **Choose
+    folder…** or **Change…**. Each workspace has a checkbox per preference
+    and package cache **Choose…** and **Clear**. **Register workspace…** is
+    disabled until a root is set. Controls are disabled while a change waits
+    for the operator. After a failure or a declined dialog, the window reads
+    the configuration again.
+  - **Main window:** when no workspace is registered, the new-session dialog
+    offers **Open settings** instead of CLI commands.
+  - The shell now has 28 commands: 19 for `main`, 3 for `approvals`, and 6 for
+    `settings`. Layer tests check the new commands across the policy,
+    capability file, build list, handlers, and frontend keys. A new test
+    keeps every Tauri plugin out of the shell. Bundle tests keep every
+    settings command out of the main and approvals bundles. Language-model
+    connections, credentials, execution setup, and skills still change only
+    through the CLI (phases S3 to S5).
 - Version 0.40.0 adds the first desktop settings increment (Phase S1 of
   ADR-0059, accepted). ADR-0059 records the design for configuring every CLI
   setting in the desktop application, delivered in phases S1 to S5. Only S1
@@ -1241,6 +1292,20 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- A run whose access a settings change withdrew kept running if another
+  change restored that access before the run's watcher read the settings (it
+  polls every 50 ms). This applied to `execute`, `read`, `write`,
+  `host_services`, `task_network`, the package cache root, and the
+  development root, from the CLI and, in 0.41.0, from the desktop.
+  The command that withdrew the access could then report success. A run's
+  watcher now checks the state after every settings event recorded since it
+  last read them, not only the latest, so the change's own event stops the
+  run even after access is restored. Settings commands list the runs they
+  withdraw while they still hold the settings lock, through the core
+  function `run::withdrawn_runs`, and wait for them after releasing it
+  (ADR-0061). Nothing new is written to the settings journal. If the run
+  journal cannot be read, the change stays recorded, the watchers still stop
+  the runs, and the command fails after waiting for what it can find.
 - Every Testing build run on `main` failed in the Ubuntu Rust job:
   `an_abandoned_run_is_pending_until_acknowledged` panicked parsing its start
   marker. `ubuntu-latest` is now Ubuntu 26.04 with systemd 259, and since
