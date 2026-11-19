@@ -4,6 +4,57 @@ Changes are recorded here before a release version is assigned.
 
 ## Unreleased
 
+### Changed
+
+- Version 0.45.0 redesigns the three desktop windows with one dark theme
+  (ADR-0065, accepted). No command, IPC shape, permission, or Rust authority
+  check changed.
+  - **Theme:** one dark palette of near-black greys with an orange accent
+    replaces the light and dark sets, and `color-scheme` is `dark`. Orange
+    marks actions, focus, selection, and "waiting for you"; a permission at
+    Allow is solid neutral and Prompt is outlined in orange. A new token test
+    checks WCAG AA contrast for every text colour on every surface, and 3:1
+    for control borders and focus. Rust opens each window on the same
+    background colour, and the `approvals` and `settings` windows open at 960
+    by 720 (minimum 600 by 480).
+  - **Shared components:** `ui/src/ui/` adds a segmented control, a tab
+    strip, and a `<details>` popover, with no IPC imports.
+  - **Approvals window:** a queue sits beside the review pane, so decided
+    records no longer push **Approve** and **Deny** down. **Pending (n)** and
+    **History (n)** are separate tabs. The window selects the
+    soonest-expiring pending request on opening and the next one after each
+    decision; a poll that only adds a request keeps the selection. Every newly
+    shown review starts with writers-stopped unticked and its own one-second
+    Approve delay, and focus goes to the review heading, never to Approve. No
+    key approves or denies; the up and down arrows move through the pending
+    list and Escape returns to it. Edits are drawn as a bounded line
+    difference (2,000 lines a side, edit distance 2,000), with a fallback to
+    the old and new blocks. The effect, the checkbox, and the buttons stay in
+    a bar at the bottom of the pane, and the digest, tool, and binding move
+    into **Technical details**. Only the newest detail answer is shown, so a
+    late answer cannot display a review token that a newer request replaced.
+    Because the window now opens a review by itself, a file-write review's
+    audited broker read also happens on opening and after a decision, still
+    once per shown review.
+  - **Settings window:** a sidebar chooses Model, Workspaces (the default),
+    or a read-only Advanced section. Each workspace preference is one row
+    with a description and a Deny, Prompt, or Allow segmented control, and
+    the file-write tool limits sit in a disclosure under Write, with a
+    "Limited by Write" note on a tool wider than `write`. With two or more
+    workspaces a field chooses which one is shown. The model connection,
+    its profiles, and **Add connection** share one section. The window
+    sends the same requests as before.
+  - **Main window:** search and a **View** menu (active or archived, sort,
+    direction) replace the crowded sidebar header, and Approvals and
+    Settings move to the bottom of the sidebar. The approval banner becomes a
+    status-bar segment, "N approvals waiting" with **Review**. Tool requests
+    are collapsed rows with a one-line argument preview, tool results compact
+    rows, and turn notes thin dividers. Skills and chat settings move into
+    composer menus, and the byte counter appears only above 80% of the limit.
+- Vitest now processes CSS (`css: true`). It previously replaced every CSS
+  module with an empty string, so the stylesheet remote-resource scan read
+  empty text; the scan now also asserts that each stylesheet is non-empty.
+
 ### Added
 
 - Version 0.44.0 adds Ollama Local, a model-provider dropdown in the

@@ -75,6 +75,12 @@ merged to `main` at the time of writing):
   chat turn waits for each approval it needs, and an approved call completes
   in the same turn. Every model tool call is recorded in the model action
   journal.
+- Since version 0.45.0 (ADR-0065), all three windows use one dark theme and
+  new layouts. The `approvals` window shows its queue beside a fixed review
+  pane, the `settings` window is split into Model, Workspaces, and Advanced
+  sections, and the `main` window moves its view options, skills, and chat
+  settings into menus. No command, IPC shape, or permission changed. See
+  [appearance](#appearance).
 
 Not implemented:
 
@@ -267,6 +273,69 @@ skill's description or body, and has no decision control. Closing
 `approvals` or `settings` hides it. Closing `main` hides every window, runs a
 bounded shutdown, and exits.
 
+## Appearance
+
+Since 0.45.0 ([ADR-0065](adr/0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md))
+every window uses one dark theme defined in `ui/src/styles/tokens.css`:
+near-black greys with an orange accent, and `color-scheme: dark`. There is no
+light theme. Rust opens each window with the same background colour, so a
+window does not flash white before its page paints. Native folder and
+confirmation dialogs follow the operating system's theme.
+
+- **Orange marks action.** It is used for primary buttons, focus, selection,
+  and "waiting for you", never for a permission at Allow. A permission control
+  draws Deny muted, Prompt outlined in orange, and Allow solid neutral, and
+  every state also shows its word.
+- **Contrast.** `tests/tokens.test.ts` checks that each text colour reaches
+  WCAG AA (4.5:1) on every surface, that text on tinted and filled backgrounds
+  reaches 4.5:1, and that control borders and the focus colour reach 3:1 on
+  the page and panel surfaces. It checks token pairs, not every rendered
+  combination.
+- **Shared components.** `ui/src/ui/` holds a segmented control (radio-group
+  semantics: one tab stop, arrow keys move, Space or Enter chooses), a tab
+  strip (tablist semantics: arrow keys select), and a `<details>` popover that
+  closes on Escape or a click outside it. They import no IPC code, so every
+  bundle can use them. The segmented control never changes itself; its window
+  draws it again from the state the core returns.
+- **Window sizes.** `main` opens at 1200 by 800 pixels with a minimum of 800
+  by 560. `approvals` and `settings` open at 960 by 720 with a minimum of 600
+  by 480, wide enough for their two columns.
+
+The `main` window is laid out as follows.
+
+- **Sidebar.** About 260 pixels wide. A title row with **New session**, then
+  the search field with a **View** menu beside it. The menu holds Active or
+  Archived as a segmented control, the sort field, and the direction toggle.
+  The session tree follows, with quiet group labels and an accent bar on the
+  open session. **Approvals**, with the pending-count badge, and **Settings**
+  are rows at the bottom.
+- **Status bar.** The workspace, the branch, an approvals segment, and the
+  **Model** dropdown. The segment reads "N approvals waiting" with a
+  **Review** button while the advisory count is above zero, and is hidden at
+  zero. **Review** and the sidebar row only call `approvals_show_window`. The
+  notice line above the status bar now only reports a failure to open a
+  window, with **Dismiss**; the earlier "An approval is waiting." banner is
+  gone.
+- **Transcript.** The operator's messages are right-aligned bubbles and the
+  assistant's replies plain text, each at most about 72 characters wide. A
+  tool request is a collapsed row whose summary shows the tool name and a
+  one-line preview of its arguments (whitespace collapsed, cut at 160 UTF-16
+  code units without splitting a surrogate pair); opening it shows the full
+  arguments. A tool result is a compact muted row. Turn notes, the request
+  manifest, and archive or restore notes are thin divider lines. A tool
+  request and its result stay separate rows, because paging can put them on
+  different pages.
+- **Composer.** The message box, then one toolbar: a **Skills (n)** menu,
+  where n counts the skills chosen for the turn, hidden when no skill is
+  enabled; a **Chat settings** menu with the settings grid, the read-only
+  endpoint, and **Save as defaults**; then the byte counter, the running
+  label, **Cancel**, and **Send**. The counter appears only above 80% of the
+  message limit or when the message is over it.
+- **No waiting marker.** The `main` window cannot tell which session an
+  approval belongs to: `chat_status`, the chat events, and `approvals_summary`
+  carry no such signal, and the approval detail is not available to its
+  bundle. It therefore shows only the advisory count.
+
 ## Session tree
 
 The tree lists sessions from the derived index. Sessions are grouped by their
@@ -424,8 +493,8 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
 - **Skills.** When a session opens, `main` calls `session_skills`. It returns
   the names of the skills effectively enabled for the session's registered
   workspace, and nothing for a workspace that is not registered here or when
-  no settings store exists. The composer lists them as check boxes and allows
-  at most four. `chat_send` carries the selected names in `skills`, and the
+  no settings store exists. The composer lists them as check boxes in its
+  **Skills** menu and allows at most four. `chat_send` carries the selected names in `skills`, and the
   composer clears them after a send. The service refuses more than four, or
   a name that is not a valid skill name, with `invalid_request`, and a
   repeated name with `skill_selection_invalid`, before a turn starts. Core
@@ -527,34 +596,48 @@ the hidden `settings` window. The window calls `settings_overview` when it
 starts, when it becomes visible again, and when **Refresh** is pressed. When
 no settings store exists, that call creates an empty one, as the CLI's
 `workspace status` does (ADR-0060). The window loads hidden at launch, so the
-store exists from the first launch. It shows:
+store exists from the first launch.
 
-- the settings revision;
-- the development root, with **Choose folder…** or **Change…**;
-- each registered workspace with its folder, a checkbox for `model_tools`, a
-  Deny, Prompt, or Allow selector for each of `read`, `write`, `execute`,
-  `task_network`, and `host_services`, a selector for each model file-write
-  tool's limit (edit, multi-edit, create, rename, and delete; since 0.43.0,
-  ADR-0063), and its package cache root with **Choose…** and, when one is set,
-  **Clear**; and **Register workspace…**, which is disabled until a root is
-  set. A preference at Allow is shown filled and one at Prompt outlined;
-- the connection the next turn uses, with a **Model provider** dropdown. It
-  lists the default LM Studio endpoint and every `lm_studio` or
-  `ollama_local` profile with an endpoint. When a launch argument fixed the
-  connection, the dropdown is disabled and says so;
-- provider profiles with their provider, authentication, endpoint, whether a
-  credential is bound, whether they are active, and **Remove** for a profile
-  without a credential;
-- **Add a local connection**: a provider (`Ollama` or `LM Studio`), a name,
-  and a loopback endpoint, prefilled with the provider's usual address
-  (`http://127.0.0.1:11434/v1` or `http://127.0.0.1:1234/v1`);
-- toolchain profiles with their platform, read-only roots, path entries, and
-  environment variable names, without values;
-- package-network profiles with their origins and how many credentials are
-  bound;
-- container grants with their folder, access, and state;
-- each imported skill's name, its application setting, and its workspace
-  overrides, with the workspace shown by its folder.
+Since 0.45.0 (ADR-0065) a sidebar chooses one of three sections: **Model**,
+**Workspaces** (shown first), and **Advanced**. **Refresh** and the settings
+revision sit at the bottom of the sidebar, and errors and notices at the top
+of the section. The chosen section, the chosen workspace, and which
+disclosures are open are kept in memory only and survive a refresh and every
+change. The sidebar is disabled with every other control while a change
+waits. The window shows:
+
+- **Model.** The connection the next turn uses, with a **Model provider**
+  dropdown, and its provider, endpoint, and source. The dropdown lists the
+  default LM Studio endpoint and every `lm_studio` or `ollama_local` profile
+  with an endpoint; when a launch argument fixed the connection, it is
+  disabled and says so. Then one row per provider profile, with its name, an
+  **Active** chip, its provider, endpoint, and authentication, whether a
+  credential is bound, and **Remove**, disabled for a profile with a
+  credential. Then **Add connection**, a disclosure with labelled provider
+  (`Ollama` or `LM Studio`), name, and loopback endpoint fields, the endpoint
+  prefilled with the provider's usual address (`http://127.0.0.1:11434/v1` or
+  `http://127.0.0.1:1234/v1`).
+- **Workspaces.** The meaning of Deny, Prompt, and Allow, stated once. The
+  development root, with **Choose folder…** or **Change…**, and
+  **Register workspace…**, which is disabled until a root is set. With two or
+  more workspaces, a **Workspace** field chooses which one is shown; choosing
+  sends nothing, and the window shows the first workspace when the chosen one
+  is gone. The shown workspace has its folder, a **Model tools** checkbox for
+  `model_tools`, and one row each for `read`, `write`, `execute`,
+  `task_network`, and `host_services`, each with a short description and a
+  Deny, Prompt, or Allow segmented control. Under Write, the disclosure
+  **File-write tool limits** holds a row for each model file-write tool's limit
+  (edit, multi-edit, create, rename, and delete; since 0.43.0, ADR-0063). A
+  tool whose limit is wider than `write` says "Limited by Write:" and the
+  `write` state. Then the workspace identifier and its package cache root with
+  **Choose…** and, when one is set, **Clear**.
+- **Advanced.** Read-only, with no control that changes anything: toolchain
+  profiles with their platform, read-only roots, path entries, and
+  environment variable names, without values; package-network profiles with
+  their origins and how many credentials are bound; container grants with
+  their folder, access, and state; and each imported skill's name, its
+  application setting, and its workspace overrides, with the workspace shown
+  by its folder. A line says these change only through the trusted CLI.
 - **Status bar.** A footer along the bottom of `main` shows the open
   session's workspace folder, its Git branch, and the model provider
   (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
@@ -706,9 +789,21 @@ The flow:
 2. The `main` window polls `approvals_summary` every 3 seconds and shows the
    pending count. It can show the approvals window and nothing more.
 3. The operator opens the `approvals` window. It polls `approvals_list` every 3
-   seconds. The list shows pending records first, then the 50 most recent
-   decided records. Polling stops while a window is hidden.
-4. The operator selects a record. The window calls `approval_detail`. Core
+   seconds. Polling stops while a window is hidden. Since 0.45.0 (ADR-0065)
+   the window shows a queue beside a review pane; each column scrolls on its
+   own, and below 720 pixels wide they stack. The queue has two tabs:
+   **Pending (n)**, the pending records soonest-expiring first as selectable
+   rows with a countdown, and **History (n)**, the 50 most recent decided
+   records as rows with a state chip and no control. Decided records
+   therefore never push the review or its buttons down.
+4. The window selects a record: the soonest-expiring pending one when it
+   opens, and the next one whenever the selected record stops being pending
+   (decided, expired, or gone). A poll that only adds a record keeps the
+   selection. The operator can select another row by clicking it or with the
+   up and down arrow keys in the pending list; Escape in the review returns
+   focus to the selected row. Each selection calls `approval_detail`, and
+   only the answer to the newest request is shown, because a newer request
+   replaces the review token. Core
    looks for the recorded tool request that the approval is bound to by
    recomputing the approval digest with the same function the tool handler
    uses. The result is one of three bindings:
@@ -723,7 +818,14 @@ The flow:
    Neither this window nor the CLI detects a concurrent writer.
 6. Approve is enabled only for an `exact` binding with a token, after the
    checkbox for a file edit, and one second after the review panel renders.
-   It is never the default focus.
+   It is never the default focus. Every newly shown review, including the one
+   the window moves to after a decision and one loaded again after an expired
+   token, starts with the checkbox unticked and its own one-second delay. When
+   the operator selects a record or the window moves on after a decision,
+   focus goes to the review heading. No key approves or denies. The effect
+   line, the checkbox, and **Deny** and **Approve** stay in a bar at the
+   bottom of the review pane; the request digest, tool identifier, and
+   binding are in a collapsed **Technical details** section.
 7. `approval_decide` redeems the token against the record's current digest in
    the same critical section as the decision, then calls core to approve. A
    token is random, single use, bound to the approval identifier and digest,
@@ -753,6 +855,14 @@ Reviewed fields:
 - **Edit:** File, Old text, New text, Size, Current SHA-256, and Proposed
   SHA-256. The multi-edit tool numbers its texts (`Old text 1`, `New text 1`,
   and so on), and the create tool shows File, Size, SHA-256, and Content.
+  Since 0.45.0 the window draws each old and new pair as a line difference,
+  labelled **Changes** or "Edit 1 of N", with `-`, `+`, or a space before
+  each line and runs of more than six unchanged lines collapsed to "N
+  unchanged lines" with three lines of context. The difference is computed in
+  the window from the display-safe text, over at most 2,000 lines a side and
+  an edit distance of at most 2,000; past either bound it shows the two blocks
+  and "Too large to compare line by line.". A create shows its content as
+  added lines, or one block past 2,000 lines.
 - **Rename:** From, To, Size, and SHA-256 of the source. The review is stale
   once the source changed or the destination exists.
 - **Delete:** File, Size, and SHA-256. The review is stale once the file
@@ -768,7 +878,11 @@ Review reads only what the approval needs:
   file (two for a rename, which also reads the destination), under the same
   live `read` requirement as the tool, and writes one audit record per read.
   It tries at most eight distinct candidate requests, newest first.
-  It happens only when the operator opens that approval, never while listing.
+  It happens only when the window shows that approval's review, never while
+  listing. Since 0.45.0 the window shows a review when the operator selects a
+  record and also when it selects one itself: on opening, and when the
+  selected record stops being pending. Each of those is one detail request,
+  so the reads stay one per shown review.
 - Opening a record that is no longer pending reads nothing.
 - Review does not check that the approval is still unexpired. Core checks that
   when the record is consumed.
@@ -982,7 +1096,19 @@ private store refuses, see the notes in
   limit. `ui/tests/settings_window.test.ts` covers the
   read-only view, hostile recorded text, errors, and refresh. The scans
   also confine the settings command to the settings client and keep the
-  settings window free of main, approvals, and chat code.
+  settings window free of main, approvals, and chat code. Since 0.45.0
+  (ADR-0065): `ui/tests/tokens.test.ts` checks the theme's contrast;
+  `ui/tests/ui_components.test.ts` the segmented control, tabs, and popover;
+  `ui/tests/approvals_diff.test.ts` the line difference and its bounds;
+  `ui/tests/approvals_flow.test.ts` the queue, automatic selection, the fresh
+  delay and checkbox for every shown review, focus, the absence of a decision
+  key, and that a late detail answer is dropped;
+  `ui/tests/settings_sections.test.ts` the sections, the workspace field, the
+  permission rows, and the read-only Advanced section; and
+  `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
+  segment, the composer menus and counter, and the compact transcript rows.
+  Vitest processes CSS, so the stylesheet scans read the real source and
+  assert it is non-empty.
 - **Shell (no webview).** The policy table; the capability files against the
   policy; the build script's command list against the policy; the frontend's
   command names against the policy; the configuration and the content security
@@ -1041,6 +1167,12 @@ private store refuses, see the notes in
   service tests and in the Vite development server against the mock backend.
   The real shell's window was not driven, and no input method was used, so
   the composition guard is checked against synthetic events only.
+- 0.45.0 (ADR-0065): the redesigned windows were checked by unit, window, and
+  bundle tests and in the Vite development server against the mock backend.
+  The real shell's windows, the window background colour, and the native
+  dialogs over the dark theme were not driven by automation, and nothing ran
+  on Linux. The contrast test covers token pairs, not every rendered
+  combination.
 - The approvals polls (3 seconds) add a small constant IPC load while a window
   is visible, and the session tree does not update by push.
 - Streaming: the stream rules were checked against local fixtures only, and no

@@ -52,6 +52,14 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
   contains a settings-window command. It renders no transcript text, tool output, or skill text,
   and it imports no main, approvals, or chat code.
 
+## Theme and shared components
+
+`src/styles/tokens.css` holds the one dark theme every window imports (ADR-0065). Keep each
+colour token a six-digit hex value on its own line: `tests/tokens.test.ts` reads them and
+checks their contrast. Window stylesheets use the tokens and add no colours of their own.
+`src/ui/` holds DOM-only components shared by the windows: `segmented.ts`, `tabs.ts`, and
+`popover.ts`. They import no IPC code, so any bundle may use them.
+
 ## Rules
 
 - Untrusted text is rendered only as text nodes through `src/dom.ts`. Bidirectional override
