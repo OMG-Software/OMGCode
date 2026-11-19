@@ -18,6 +18,10 @@
 //!   registering a workspace, turning any preference on, and choosing a
 //!   package cache root. Turning preferences off and clearing a package cache
 //!   root narrow access and need no confirmation.
+//! - A change of where chat turns are sent is also confirmed (ADR-0064):
+//!   choosing the active connection, from `settings` or the `main` status
+//!   bar, and removing the active connection, which returns turns to the
+//!   default endpoint.
 //!
 //! # Order and races
 //!
@@ -52,9 +56,9 @@ use super::error::DesktopError;
 use super::settings::overview_of;
 use super::state::folder_of_directory;
 use super::wire::{
-    ConnectionRemoveRequest, ConnectionSelectRequest, LocalConnectionAddRequest, LocalProviderKind,
-    PermissionFlags, PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
-    WorkspaceRevisionRequest,
+    ConnectionChooseRequest, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionStatus,
+    LocalConnectionAddRequest, LocalProviderKind, PermissionFlags, PermissionsChangeRequest,
+    SettingsOverview, SettingsRevisionRequest, WorkspaceRevisionRequest,
 };
 
 /// What the operator is asked to choose a folder for. The shell uses it for
@@ -569,6 +573,47 @@ impl DesktopService {
         })
     }
 
+    /// `main` only: the status bar's choice of model connection (ADR-0064).
+    ///
+    /// The window names a profile, or none for the default, and nothing
+    /// else. Rust reads the current settings revision and then follows
+    /// [`Self::settings_select_connection`]: the same checks, the same native
+    /// Yes/No confirmation naming the provider and endpoint, which no webview
+    /// can answer, and the same core call. A change recorded while the dialog
+    /// is open makes this fail with `stale_revision`.
+    ///
+    /// # Errors
+    ///
+    /// `connection_fixed` when a launch argument fixed the connection;
+    /// `invalid_request` when no settings store exists yet; `cancelled`;
+    /// `control` for an unknown, unselectable, or unchanged choice;
+    /// `stale_revision`; `settings_change_running`; `busy`.
+    pub fn connection_select(
+        &self,
+        request: ConnectionChooseRequest,
+        prompt: &dyn SettingsPrompt,
+    ) -> Result<ConnectionStatus, DesktopError> {
+        if self.inner.token.is_fixed() {
+            return Err(DesktopError::connection_fixed());
+        }
+        let revision = match self.inner.open_control()? {
+            Some(store) => store.revision(),
+            None => {
+                return Err(DesktopError::invalid_request(
+                    "No settings are recorded yet. Add a connection in Settings first.",
+                ));
+            }
+        };
+        self.settings_select_connection(
+            ConnectionSelectRequest {
+                revision,
+                profile: request.profile,
+            },
+            prompt,
+        )?;
+        self.connection_status()
+    }
+
     /// `settings` only. Record a local LM Studio or Ollama connection with no
     /// credential, through the same core call as the CLI's
     /// `provider-profile-add --auth none --endpoint`. Recording it grants
@@ -609,21 +654,27 @@ impl DesktopService {
     }
 
     /// `settings` only. Remove a recorded provider profile that has no stored
-    /// credential. Removing the active connection returns to the default
-    /// endpoint in the same recorded event. This narrows access, so no native
-    /// dialog is shown. A profile with a bound credential stays with the
-    /// trusted CLI, which also deletes the native item.
+    /// credential. A profile with a bound credential stays with the trusted
+    /// CLI, which also deletes the native item.
+    ///
+    /// Removing the active connection returns to the default endpoint in the
+    /// same recorded event, and the default receives `OMGCODE_LM_TOKEN` when
+    /// it is set. Unless a launch argument fixed the connection, that removal
+    /// therefore asks the same native Yes/No as choosing the default
+    /// (ADR-0064). Removing any other profile changes where no turn goes, so
+    /// no dialog is shown.
     ///
     /// # Errors
     ///
-    /// `credential_bound`; `control` for an unknown profile;
+    /// `credential_bound`; `control` for an unknown profile; `cancelled`;
     /// `stale_revision`; `settings_change_running`; `busy`.
     pub fn settings_remove_connection(
         &self,
         request: ConnectionRemoveRequest,
+        prompt: &dyn SettingsPrompt,
     ) -> Result<SettingsOverview, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        {
+        let confirmation = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let status = store
@@ -632,6 +683,24 @@ impl DesktopService {
             if status.credential().is_some() {
                 return Err(DesktopError::credential_bound());
             }
+            let active = store
+                .active_provider_profile()
+                .is_some_and(|active| active.profile().id() == status.profile().id());
+            (active && !self.inner.token.is_fixed()).then(|| Confirmation {
+                title: "Remove the active model connection",
+                message: format!(
+                    "Remove the connection {} and send new chat turns to the default connection?
+
+{}
+
+The OMGCODE_LM_TOKEN environment variable is sent to it when set.",
+                    display_safe_line(&request.name),
+                    display_safe_line(&self.inner.endpoint)
+                ),
+            })
+        };
+        if let Some(confirmation) = confirmation {
+            confirm(prompt, &confirmation)?;
         }
         // Core checks the same revision again, so a credential bound after the
         // check above makes the removal a revision conflict, not a removal

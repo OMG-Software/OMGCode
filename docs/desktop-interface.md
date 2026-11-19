@@ -39,10 +39,12 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
-- Since version 0.44.0 (ADR-0064), the `settings` window chooses the model
-  connection from a dropdown: the default LM Studio endpoint or a recorded
-  `lm_studio` or `ollama_local` profile, after a native confirmation. It can
-  also add and remove local connections without a credential. A launch
+- Since version 0.44.0 (ADR-0064), the `settings` window and a status bar at
+  the bottom of the `main` window choose the model connection from a
+  dropdown: the default LM Studio endpoint or a recorded `lm_studio` or
+  `ollama_local` profile, after a native confirmation. The `settings` window
+  can also add and remove local connections without a credential. The status
+  bar also shows the open session's workspace and its Git branch. A launch
   argument still fixes the connection for the process.
 - Since version 0.32.0 (Phase D4 and E6, ADR-0049), a chat turn streams the
   local model's reply and the shell pushes chat events to the `main` window
@@ -215,7 +217,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 31 commands. No other command exists.
+The shell has three webview windows and 34 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -233,6 +235,9 @@ their registered identifier, and approvals by identifier.
 | `chat_defaults` | main | Return the endpoint the next turn uses and the saved or built-in chat preferences |
 | `chat_preferences_save` | main | Save the chat preferences the composer starts from |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
+| `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
+| `connection_status` | main | Return the connection the next turn uses and the local connections the status bar may offer |
+| `connection_select` | main | Request the default or a recorded local profile as the model connection; Rust shows a native confirmation |
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
@@ -251,7 +256,7 @@ their registered identifier, and approvals by identifier.
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
 | `settings_add_local_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential |
-| `settings_remove_connection` | settings | Remove a provider profile that has no bound credential |
+| `settings_remove_connection` | settings | Remove a provider profile that has no bound credential; removing the active one needs a native confirmation |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -550,12 +555,41 @@ store exists from the first launch. It shows:
 - container grants with their folder, access, and state;
 - each imported skill's name, its application setting, and its workspace
   overrides, with the workspace shown by its folder.
+- **Status bar.** A footer along the bottom of `main` shows the open
+  session's workspace folder, its Git branch, and the model provider
+  (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
+  local profile with a recorded endpoint, from `connection_status`, labelled
+  with provider, profile name, and endpoint. Choosing one calls
+  `connection_select` with the profile name only. Rust applies the same
+  checks and native Yes/No dialog as `settings_select_connection`; the
+  footer then shows the recorded choice and the composer reads the endpoint
+  again. A declined dialog shows "The model provider was not changed.". When
+  a launch argument fixed the connection, the dropdown is disabled and shows
+  "Set at launch". The branch comes from `session_context`, which reads only
+  `HEAD` through the anchored broker (see "Git branch display"). The footer
+  reads both again when the window regains focus, when a session opens, and
+  after a turn settles. Like the rest of `main`, it uses no `title`
+  tooltips; the reason a branch is unavailable is shown as text.
+- **Git branch display.** `session_context` opens the session's registered
+  workspace by its recorded root and workspace identities and reads
+  `.git/HEAD`, at most 4096 bytes, without following a link. No Git program
+  runs, and no Git configuration, ref, or object is read. When `.git` is a
+  file of the form `gitdir: <path>`, the named directory's `HEAD` is read
+  only when it lies inside the development root, from the root's own handle.
+  `ref: refs/heads/<name>` shows the name, another ref shows in full, and a
+  40- or 64-digit commit shows as "Detached at" its first seven digits. A
+  missing `.git` shows "Not a Git repository". Anything else, a name over
+  255 bytes, or a name with whitespace or a control character shows "Branch
+  unavailable" with a fixed reason. The name is display-safe text and is
+  never sent to the model.
 
 Only this window receives the configuration view. The `main` window receives
 only the workspace summaries of `workspace_list` (each registered
 workspace's identifier, folder display text, and `model_tools`, `read`,
 `write`, and `execute` states), the endpoint text of
-`chat_defaults`, and the enabled skill names of `session_skills`.
+`chat_defaults`, the enabled skill names of `session_skills`, the branch
+display of `session_context`, and the connection view and local profile
+names, kinds, and endpoints of `connection_status`.
 
 The view reads the settings store through the same core functions as the
 trusted CLI and releases it before returning. It reads no stored secret and
@@ -611,7 +645,10 @@ by the same re-read.
 
 ### Choosing the model connection
 
-The three connection commands call the same `ControlStore` functions as the
+The `main` window's `connection_select` runs the same checks and dialog as
+`settings_select_connection`, below, reading the revision itself; it takes
+only a profile name or none. The three `settings` connection commands call
+the same `ControlStore` functions as the
 CLI's `workspace provider-profile-select`, `provider-profile-add`, and
 `provider-profile-remove`, with the same revision check and validation
 (ADR-0064).
@@ -630,9 +667,14 @@ CLI's `workspace provider-profile-select`, `provider-profile-add`, and
   It records a profile with authentication `none`. Core refuses an endpoint
   that is not `http://<loopback IP>:<port>/v1`. A new profile is not used
   until it is selected.
-- **Removing narrows.** `settings_remove_connection` removes a profile
-  without a bound credential and shows no dialog. Removing the selected
-  profile returns to the default. A profile with a stored credential is
+- **Removing the active connection is confirmed.**
+  `settings_remove_connection` removes a profile without a bound credential.
+  Removing an inactive profile shows no dialog. Removing the selected
+  profile returns new turns to the default endpoint, which receives
+  `OMGCODE_LM_TOKEN` when it is set, so Rust first asks "Remove the
+  connection `<name>` and send new chat turns to the default connection?"
+  with the default endpoint, unless a launch argument fixed the connection.
+  No keeps the profile and its selection. A profile with a stored credential is
   refused with `credential_bound`; remove it with the trusted CLI, which also
   deletes the credential.
 - **Ollama context length.** OMGCode cannot set Ollama's context length over
@@ -764,11 +806,12 @@ What the design does:
   roots and path entries, package cache roots, and grant folders, all as
   display-safe text. No command takes any of them back as input. A settings
   change gets its folder from a native dialog that Rust opens.
-- **Endpoint and token outside `main`.** The `main` webview cannot choose the
-  provider, choose the credential source, or read the token. Only the
-  `settings` window chooses the connection, among recorded local profiles,
-  after a native confirmation, unless a launch argument fixed it (ADR-0064).
-  No webview reads a token. A stored credential goes only to the endpoint
+- **Endpoint and token outside `main`.** The `main` webview cannot supply an
+  endpoint, choose the credential source, or read the token. It may only
+  request a recorded local profile, or the default, with `connection_select`;
+  Rust switches only after the operator confirms a native dialog, and not at
+  all when a launch argument fixed the connection (ADR-0064). The `settings`
+  window chooses through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
 - **Channel, no `core:` permission.** `chat_subscribe` takes a Tauri IPC
   channel that the `main` webview creates. It needs no capability beyond the

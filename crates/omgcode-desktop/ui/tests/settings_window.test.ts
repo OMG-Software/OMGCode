@@ -656,6 +656,21 @@ describe("settings window", () => {
     expect(cardOf("ollama")).toBeUndefined();
   });
 
+  it("keeps the active connection when its removal is declined", async () => {
+    await start(() => choosable(), {
+      settings_remove_connection: () => rejection("cancelled", "The change was not confirmed."),
+    });
+    const ollama = Array.from(root.querySelectorAll<HTMLElement>(".card")).find(
+      (card) => card.querySelector(".card-title")?.textContent === "ollama",
+    ) as HTMLElement;
+    buttonByText(ollama, "Remove").click();
+    await settle();
+    expect(root.textContent).toContain("No change was made.");
+    // The configuration is read again, so the card is still shown.
+    expect(ipc.callsTo("settings_overview").length).toBeGreaterThan(1);
+    expect(root.textContent).toContain("ollama");
+  });
+
   it("reads again when the window becomes visible", async () => {
     await start(() => overview());
     document.dispatchEvent(new Event("visibilitychange"));

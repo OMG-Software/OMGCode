@@ -213,12 +213,13 @@ pub async fn settings_add_local_connection(
 }
 
 /// `settings` only. Removes a recorded provider profile that has no stored
-/// credential. It narrows access, so no dialog is shown.
+/// credential. Removing the active connection first asks a native Yes/No,
+/// because new turns then go to the default endpoint (ADR-0064).
 ///
 /// # Errors
 ///
 /// `forbidden_window`, or the service's error (`credential_bound`,
-/// `control`).
+/// `control`, `cancelled`).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn settings_remove_connection(
     webview: Webview,
@@ -227,9 +228,10 @@ pub async fn settings_remove_connection(
     name: String,
 ) -> Result<SettingsOverview, CommandError> {
     authorize(Command::SettingsRemoveConnection, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
     let request = ConnectionRemoveRequest { revision, name };
     blocking(&state, move |service| {
-        service.settings_remove_connection(request)
+        service.settings_remove_connection(request, &prompt)
     })
     .await
 }

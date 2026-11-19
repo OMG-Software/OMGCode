@@ -885,7 +885,8 @@ pub enum ConnectionSourceView {
     Injected,
 }
 
-/// The model connection of this process, for the `settings` window only.
+/// The model connection of this process. The `settings` window and, since
+/// ADR-0064, the `main` window's status bar receive it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConnectionView {
     /// The endpoint the next turn uses.
@@ -921,6 +922,77 @@ pub struct ProviderProfileView {
     pub selectable: bool,
     /// Whether it is the recorded active connection.
     pub active: bool,
+}
+
+/// The `main` window's status bar view of the model connection (ADR-0064).
+///
+/// It names connections only: a profile's name, provider kind, and endpoint,
+/// all display-safe. It never carries a credential or says whether one is
+/// stored.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ConnectionStatus {
+    /// The connection the next turn uses.
+    pub connection: ConnectionView,
+    /// The local profiles with an endpoint that can be chosen, in recorded
+    /// order. Empty when a launch argument fixed the connection.
+    pub choices: Vec<ConnectionChoice>,
+}
+
+/// One connection the status bar may offer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ConnectionChoice {
+    /// The profile name.
+    pub name: String,
+    /// `lm_studio` or `ollama_local`.
+    pub kind: &'static str,
+    /// The recorded loopback endpoint.
+    pub endpoint: String,
+    /// Whether it is the recorded active connection.
+    pub active: bool,
+}
+
+/// Arguments of `connection_select`, from the `main` window. It names a
+/// profile only; Rust reads the revision and asks for a native confirmation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionChooseRequest {
+    /// A recorded profile name, or `null` for the default endpoint.
+    pub profile: Option<String>,
+}
+
+/// What the status bar shows about a session's workspace (ADR-0064).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionContext {
+    /// Whether the session's recorded workspace is registered here.
+    pub workspace_registered: bool,
+    /// The Git branch that workspace has checked out.
+    pub branch: BranchView,
+}
+
+/// A workspace's Git branch, read from `HEAD` for display only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BranchView {
+    /// What `HEAD` says.
+    pub state: BranchState,
+    /// The branch name, or the abbreviated commit when detached. Display-safe.
+    pub name: Option<String>,
+    /// A fixed reason when `state` is `unavailable`. Never file content.
+    pub note: Option<String>,
+}
+
+/// The kinds of [`BranchView`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchState {
+    /// A branch is checked out.
+    Branch,
+    /// A commit is checked out without a branch.
+    Detached,
+    /// The workspace is not the top folder of a Git repository, or is not
+    /// registered.
+    None,
+    /// A `.git` entry exists but the branch cannot be shown.
+    Unavailable,
 }
 
 /// A local provider the `settings` window may add (ADR-0064).

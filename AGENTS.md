@@ -98,7 +98,10 @@ widens access, and creates an empty settings store on first use
 ([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
-connections without a credential
+connections without a credential. A status bar at the bottom of the `main`
+window shows the open session's workspace and Git branch, read from `HEAD`
+without a Git process, and offers the same connection choice through the same
+native confirmation
 ([ADR-0064](docs/adr/0064-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
 Credentials, execution setup, and skills still change only through the
 trusted CLI. The desktop shell has no development

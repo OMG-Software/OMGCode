@@ -297,28 +297,67 @@ fn an_invalid_connection_is_refused_by_core_or_the_wire() {
     );
 }
 
-/// Removing the active connection returns to the default endpoint. A profile
-/// with a stored credential is left to the trusted CLI.
+fn remove(
+    service: &DesktopService,
+    fixture: &Fixture,
+    name: &str,
+    prompt: &Answers,
+) -> Result<SettingsOverview, DesktopError> {
+    service.settings_remove_connection(
+        wire(json!({ "revision": revision(fixture), "name": name })),
+        prompt,
+    )
+}
+
+/// Removing the active connection returns to the default endpoint, which
+/// receives `OMGCODE_LM_TOKEN`, so it asks the same native Yes/No as choosing
+/// the default. Removing another profile asks nothing. A profile with a stored
+/// credential is left to the trusted CLI.
 #[test]
 fn removing_the_active_connection_returns_to_the_default() {
     let fixture = Fixture::new();
     let default = unused_endpoint();
     let service = active_service(&fixture, &default);
-    add(
-        &service,
-        &fixture,
-        "lms",
-        "lm_studio",
-        "http://127.0.0.1:1234/v1",
-    )
-    .expect("record");
+    for (name, kind, endpoint) in [
+        ("lms", "lm_studio", "http://127.0.0.1:1234/v1"),
+        ("spare", "ollama_local", "http://127.0.0.1:11434/v1"),
+    ] {
+        add(&service, &fixture, name, kind, endpoint).expect("record");
+    }
     select(&service, &fixture, Some("lms"), &Answers::with(&[true])).expect("select");
-    let overview = service
-        .settings_remove_connection(wire(json!({
-            "revision": revision(&fixture),
-            "name": "lms",
-        })))
-        .expect("remove");
+
+    // An inactive profile goes without a dialog.
+    let quiet = Answers::with(&[]);
+    remove(&service, &fixture, "spare", &quiet).expect("remove spare");
+    assert!(quiet.shown().is_empty());
+
+    // No keeps the active connection.
+    let before = revision(&fixture);
+    let declined = Answers::with(&[false]);
+    assert_eq!(
+        code(remove(&service, &fixture, "lms", &declined)),
+        "cancelled"
+    );
+    let shown = declined.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        shown[0].message.contains("OMGCODE_LM_TOKEN"),
+        "{}",
+        shown[0].message
+    );
+    assert!(shown[0].message.contains(&default), "{}", shown[0].message);
+    assert_eq!(revision(&fixture), before);
+    assert_eq!(
+        service
+            .connection_status()
+            .expect("status")
+            .connection
+            .profile
+            .as_deref(),
+        Some("lms")
+    );
+
+    let overview = remove(&service, &fixture, "lms", &Answers::with(&[true])).expect("remove");
     assert!(overview.provider_profiles.is_empty());
     assert_eq!(overview.connection.profile, None);
     assert_eq!(overview.connection.endpoint, default);
@@ -327,13 +366,12 @@ fn removing_the_active_connection_returns_to_the_default() {
     let mut vault = Vault::new(&fixture.data);
     vault.add_profile_at("keyed", "lm_studio", "api_key", "http://127.0.0.1:1234/v1");
     vault.bind("keyed", b"fake-connection-token-41c9");
+    let quiet = Answers::with(&[]);
     assert_eq!(
-        code(service.settings_remove_connection(wire(json!({
-            "revision": revision(&fixture),
-            "name": "keyed",
-        })))),
+        code(remove(&service, &fixture, "keyed", &quiet)),
         "credential_bound"
     );
+    assert!(quiet.shown().is_empty());
     assert!(
         ControlStore::open(&fixture.data)
             .expect("store")
@@ -389,4 +427,133 @@ fn the_active_source_resolves_the_selection_each_time() {
     )
     .expect("named profile");
     assert_eq!(named.endpoint, "http://127.0.0.1:11434/v1");
+}
+
+/// The `main` window's status bar (ADR-0064): it lists only local connections
+/// with an endpoint, switches only after the same native confirmation as the
+/// `settings` window, and offers nothing when a launch argument fixed the
+/// connection.
+#[test]
+fn the_status_bar_switches_only_after_a_confirmation() {
+    let fixture = Fixture::new();
+    let service = active_service(&fixture, &unused_endpoint());
+    add(
+        &service,
+        &fixture,
+        "lms",
+        "lm_studio",
+        "http://127.0.0.1:1234/v1",
+    )
+    .expect("record");
+    add(
+        &service,
+        &fixture,
+        "ollama",
+        "ollama_local",
+        "http://127.0.0.1:11434/v1",
+    )
+    .expect("record");
+    let vault = Vault::new(&fixture.data);
+    vault.add_profile("cloud", "openai", "api_key");
+    vault.add_profile("bare", "lm_studio", "none");
+
+    // A cloud profile and one without an endpoint are not offered.
+    let status = service.connection_status().expect("status");
+    assert!(status.connection.selectable);
+    assert_eq!(status.connection.profile, None);
+    let names: Vec<&str> = status.choices.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["lms", "ollama"]);
+    assert!(status.choices.iter().all(|choice| !choice.active));
+    assert_eq!(status.choices[1].kind, "ollama_local");
+    assert_eq!(status.choices[1].endpoint, "http://127.0.0.1:11434/v1");
+
+    // Yes switches; the confirmation names the connection.
+    let prompt = Answers::with(&[true]);
+    let chosen = service
+        .connection_select(wire(json!({ "profile": "ollama" })), &prompt)
+        .expect("switch");
+    let shown = prompt.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].message.contains("ollama"), "{}", shown[0].message);
+    assert_eq!(chosen.connection.profile.as_deref(), Some("ollama"));
+    assert_eq!(chosen.connection.endpoint, "http://127.0.0.1:11434/v1");
+    let active: Vec<&str> = chosen
+        .choices
+        .iter()
+        .filter(|choice| choice.active)
+        .map(|choice| choice.name.as_str())
+        .collect();
+    assert_eq!(active, ["ollama"]);
+
+    // No changes nothing, and a refused choice shows no dialog.
+    let before = revision(&fixture);
+    let prompt = Answers::with(&[false]);
+    let declined = service.connection_select(wire(json!({ "profile": null })), &prompt);
+    assert_eq!(code(declined), "cancelled");
+    assert_eq!(prompt.shown().len(), 1);
+    let prompt = Answers::with(&[]);
+    for name in ["cloud", "bare", "missing", "ollama"] {
+        let refused = service.connection_select(wire(json!({ "profile": name })), &prompt);
+        assert_eq!(code(refused), "control", "{name}");
+    }
+    assert!(prompt.shown().is_empty());
+    assert_eq!(revision(&fixture), before);
+    assert_eq!(
+        service
+            .connection_status()
+            .expect("status")
+            .connection
+            .profile
+            .as_deref(),
+        Some("ollama")
+    );
+
+    // A launch argument fixes the connection: nothing is offered or switched.
+    let fixed = DesktopService::open(DesktopConfig {
+        data_root: fixture.data.clone(),
+        endpoint: unused_endpoint(),
+        token_source: TokenSource::Environment,
+        stream: false,
+    })
+    .expect("fixed service");
+    let status = fixed.connection_status().expect("status");
+    assert!(!status.connection.selectable);
+    assert!(status.choices.is_empty());
+    let prompt = Answers::with(&[]);
+    let refused = fixed.connection_select(wire(json!({ "profile": "lms" })), &prompt);
+    assert_eq!(code(refused), "connection_fixed");
+    assert!(prompt.shown().is_empty());
+
+    // The request names a profile and nothing else.
+    let extra: Result<omgcode_app::desktop::ConnectionChooseRequest, _> =
+        serde_json::from_value(json!({ "profile": "lms", "endpoint": "http://evil" }));
+    assert!(extra.is_err());
+}
+
+/// With a launch argument the active selection does not decide where turns
+/// go, so removing the selected profile asks nothing.
+#[test]
+fn removing_the_selected_profile_under_a_launch_argument_asks_nothing() {
+    let fixture = Fixture::new();
+    let service = active_service(&fixture, &unused_endpoint());
+    add(
+        &service,
+        &fixture,
+        "lms",
+        "lm_studio",
+        "http://127.0.0.1:1234/v1",
+    )
+    .expect("record");
+    select(&service, &fixture, Some("lms"), &Answers::with(&[true])).expect("select");
+    let fixed = DesktopService::open(DesktopConfig {
+        data_root: fixture.data.clone(),
+        endpoint: unused_endpoint(),
+        token_source: TokenSource::Environment,
+        stream: false,
+    })
+    .expect("fixed service");
+    let quiet = Answers::with(&[]);
+    let overview = remove(&fixed, &fixture, "lms", &quiet).expect("remove");
+    assert!(quiet.shown().is_empty());
+    assert!(overview.provider_profiles.is_empty());
 }

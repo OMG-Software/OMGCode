@@ -511,6 +511,48 @@ mark {
   display: none;
 }
 
+/* The bar along the bottom of the main window: workspace, branch, model (ADR-0064). */
+.status-footer {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+  padding: 3px var(--gap);
+  background: var(--surface);
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.status-segment {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-footer .muted {
+  color: var(--muted);
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-message {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.status-provider {
+  max-width: 360px;
+  font-size: 12px;
+  padding: 1px 4px;
+}
+
 .dialog {
   background: var(--surface);
   color: var(--text);

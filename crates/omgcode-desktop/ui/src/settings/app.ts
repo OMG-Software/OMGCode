@@ -12,6 +12,7 @@ import type {
   WorkspaceSettingsView,
   WriteToolAccess,
 } from "../ipc/types";
+import { DEFAULT_ENDPOINTS, providerName } from "../providers";
 
 export interface SettingsApp {
   /** Reads the configuration again. */
@@ -30,28 +31,12 @@ export const INTRO =
   "container grants, and skills are still changed with the trusted CLI: omgcode workspace and " +
   "omgcode skills.";
 
-/** How the window names each provider kind the core reports. */
-export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
-  lm_studio: "LM Studio",
-  ollama_local: "Ollama",
-  ollama_cloud: "Ollama Cloud",
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  open_router: "OpenRouter",
-};
+export { PROVIDER_NAMES } from "../providers";
 
 /** The value of the dropdown entry that chooses the default endpoint. */
 export const DEFAULT_CHOICE = "";
 
-/** The address each local server listens on by default. The core validates whatever is sent. */
-export const DEFAULT_ENDPOINTS: Readonly<Record<LocalProviderKind, string>> = {
-  lm_studio: "http://127.0.0.1:1234/v1",
-  ollama_local: "http://127.0.0.1:11434/v1",
-};
-
-function providerName(kind: string | null): string {
-  return kind === null ? "LM Studio" : (PROVIDER_NAMES[kind] ?? kind);
-}
+export { DEFAULT_ENDPOINTS } from "../providers";
 
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";

@@ -6,15 +6,18 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.44.0 adds Ollama Local and a model-provider dropdown in the
-  desktop `settings` window (ADR-0064, accepted; the connection part of
-  ADR-0059 phase S3).
+- Version 0.44.0 adds Ollama Local, a model-provider dropdown in the
+  desktop `settings` window, and a status bar in the `main` window
+  (ADR-0064, accepted; the connection part of ADR-0059 phase S3).
   - **Ollama Local:** an `ollama_local` profile can record a loopback
     endpoint, such as `http://127.0.0.1:11434/v1`, under the same rule as
     `lm_studio`. The existing local Chat Completions client serves it; a
     probe of Ollama 0.40.16 on Windows returned the same reply, tool-call,
     and stream shapes, now kept as core test fixtures. The profile has
-    authentication `none`, so no `Authorization` header is sent. CLI `chat
+    authentication `none`, so no `Authorization` header is sent. The
+    buffered (non-streaming) adapter drops the numeric `index` member that
+    Ollama adds to each tool call, so its calls pass the strict runtime
+    parser, as streamed calls already did. CLI `chat
     --provider-profile` and desktop `--provider-profile` accept it.
     `capabilities` reports `streaming_adapters` and `cancellable_adapters` as
     `["lm_studio", "ollama_local"]`. The endpoint refusal now reads "a local
@@ -36,7 +39,9 @@ Changes are recorded here before a release version is assigned.
     Ollama or LM Studio profile with a typed loopback endpoint, prefilled
     with the provider's usual address. **Remove**
     (`settings_remove_connection`) removes a profile without a credential;
-    one with a credential is refused with `credential_bound`.
+    removing the active one asks a native Yes/No first, because new turns
+    then go to the default endpoint with `OMGCODE_LM_TOKEN`. One with a
+    credential is refused with `credential_bound`.
   - **Launch arguments still win:** with `--endpoint` or `--provider-profile`
     the dropdown is disabled and selection is refused with
     `connection_fixed`. Without either, each turn resolves the active
@@ -47,7 +52,17 @@ Changes are recorded here before a release version is assigned.
     composer then shows the new endpoint and keeps the draft and model name.
     The endpoint note now reads "Chosen in the Settings window, or fixed when
     OMGCode starts."
-  - The shell now has 31 commands: 19 for `main`, 3 for `approvals`, and 9 for
+  - **Status bar:** a footer along the bottom of the `main` window shows the
+    open session's workspace, its Git branch, and a **Model provider**
+    dropdown. `connection_status` lists the default and the local profiles
+    with an endpoint. Choosing one calls `connection_select` with the profile
+    name only; Rust shows the same native Yes/No dialog as the settings
+    window before switching, and the composer then shows the new endpoint.
+    `session_context` reads the branch from `HEAD` through the anchored
+    broker, with no Git process, and follows a linked worktree's `gitdir`
+    only inside the development root. The footer reads both again on focus,
+    on session open, and after a turn.
+  - The shell now has 34 commands: 22 for `main`, 3 for `approvals`, and 9 for
     `settings`. API-key entry in the window, execution setup, and skills
     still change only through the CLI.
 

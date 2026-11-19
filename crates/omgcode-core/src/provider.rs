@@ -858,7 +858,9 @@ fn parse_tool_response(bytes: &[u8]) -> Result<ToolModelReply, ProviderError> {
 
     let tool_calls = match message.get("tool_calls") {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(calls)) if calls.len() <= MAX_RESPONSE_TOOL_CALLS => calls.clone(),
+        Some(Value::Array(calls)) if calls.len() <= MAX_RESPONSE_TOOL_CALLS => {
+            calls.iter().map(without_position_index).collect()
+        }
         Some(_) => return Err(ProviderError::MalformedResponse),
     };
     let content = match message.get("content") {
@@ -883,6 +885,21 @@ fn parse_tool_response(bytes: &[u8]) -> Result<ToolModelReply, ProviderError> {
         tool_calls,
         finish_reason: finish_reason.to_owned(),
     })
+}
+
+/// One buffered call without the numeric `index` member that Ollama adds
+/// (ADR-0064). A stream uses `index` to assemble calls and never keeps it, so
+/// both paths hand [`crate::turn::ToolCall::parse`] the same three members.
+/// Any other member, or an `index` that is not a non-negative integer, stays,
+/// and that strict parser refuses it.
+fn without_position_index(call: &Value) -> Value {
+    let mut call = call.clone();
+    if let Some(object) = call.as_object_mut()
+        && object.get("index").is_some_and(Value::is_u64)
+    {
+        object.remove("index");
+    }
+    call
 }
 
 /// Parse one bounded assistant response; never expose server error bodies.
@@ -1411,11 +1428,15 @@ Connection: close
     }
 
     #[test]
-    fn an_ollama_tool_reply_keeps_its_call_raw_and_a_text_request_refuses_it() {
+    fn an_ollama_tool_reply_parses_as_a_tool_call_and_a_text_request_refuses_it() {
         let reply = parse_tool_response(OLLAMA_TOOL_REPLY.as_bytes()).expect("Ollama tool reply");
         assert_eq!(reply.content, "Listing.");
         assert_eq!(reply.finish_reason, "tool_calls");
         assert_eq!(reply.tool_calls.len(), 1);
+        // The captured call carries `index`; the runtime's strict parser
+        // accepts what the adapter hands on.
+        let call = crate::turn::ToolCall::parse(&reply.tool_calls[0]).expect("runtime parse");
+        assert_eq!(call.call_id, "call_yk0rwzuq");
         assert_eq!(
             reply.tool_calls[0]["function"]["name"],
             "workspace_list_directory"
@@ -1424,6 +1445,32 @@ Connection: close
             parse_response(OLLAMA_TOOL_REPLY.as_bytes()),
             Err(ProviderError::UnsupportedToolCall)
         );
+    }
+
+    /// Only a numeric `index` is dropped: any other extra member, or an
+    /// `index` of another type, reaches the strict runtime parser, which
+    /// refuses it.
+    #[test]
+    fn only_a_numeric_position_index_is_dropped_from_a_buffered_call() {
+        let reply_with = |extra: &str| {
+            format!(
+                r#"{{"choices":[{{"message":{{"role":"assistant","content":null,"tool_calls":[{{"id":"c1",{extra}"type":"function","function":{{"name":"workspace_read_file","arguments":"{{\"path\":\"a.txt\"}}"}}}}]}},"finish_reason":"tool_calls"}}]}}"#
+            )
+        };
+        for (extra, accepted) in [
+            ("", true),
+            (r#""index":3,"#, true),
+            (r#""index":"0","#, false),
+            (r#""index":-1,"#, false),
+            (r#""extra":0,"#, false),
+        ] {
+            let reply = parse_tool_response(reply_with(extra).as_bytes()).expect("tool reply");
+            assert_eq!(
+                crate::turn::ToolCall::parse(&reply.tool_calls[0]).is_ok(),
+                accepted,
+                "{extra}"
+            );
+        }
     }
 
     /// Ollama's documented default address is a valid local endpoint.

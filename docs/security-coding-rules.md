@@ -48,10 +48,11 @@ authorization. See
   to a decision control only when core reproduces the approval's digest. The
   webview is still web content, not a trusted computing base.
 - Resolve the provider endpoint and read the provider token outside the
-  webview. A `main` webview request cannot choose either. Only the `settings`
-  window may choose the active connection, among recorded local profiles with
-  an endpoint, and only after a native confirmation that names the provider
-  and endpoint; a launch argument fixes it instead. The `settings` window may
+  webview. A `main` webview request cannot supply either. The `settings`
+  window, and the `main` window's status bar, may request the active
+  connection by profile name only, among recorded local profiles with an
+  endpoint; Rust records it only after a native confirmation that names the
+  provider and endpoint, and a launch argument fixes it instead. The `settings` window may
   supply a loopback endpoint for a new local profile without a credential,
   and core validates it. Refuse a `main` request whose endpoint differs from
   the one resolved for the turn (ADR-0064).
@@ -122,6 +123,9 @@ authorization. See
 - A string-prefix comparison or check-then-open canonicalization is insufficient.
   Use appropriate operating-system containment and object-relative operations.
 - Do not automatically follow Git metadata or links outside the permitted root.
+  A display of the checked-out branch reads only `HEAD`, bounded, through the
+  anchored broker, with no Git process, and follows a linked worktree's
+  `gitdir` only inside the development root (ADR-0064).
   Refuse layouts whose required access cannot be enforced.
 - Bound reads, writes, searches, extraction, and temporary storage. Check the
   original content and version before replacing a file or applying a patch.

@@ -228,8 +228,9 @@ streams are core test fixtures.
   no `Authorization` header is sent.
 - **Use.** `omgcode chat --provider-profile <name>` and `omgcode-desktop
   --provider-profile <name>` use it for one command or one process. In a
-  desktop shell started without a connection argument, the `settings` window
-  or `omgcode workspace provider-profile-select <name>` makes it the active
+  desktop shell started without a connection argument, the `settings` window,
+  the `main` window's status bar (each after a native confirmation), or
+  `omgcode workspace provider-profile-select <name>` makes it the active
   connection for later turns; `--default` returns to the default endpoint.
   CLI `chat` does not read the active connection.
 - **Context length.** The OpenAI-compatible API cannot set Ollama's context

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
-    ChatState, ConnectionSourceView, DesktopConfig, DesktopService, PreferencesSource,
+    BranchState, ChatState, ConnectionSourceView, DesktopConfig, DesktopService, PreferencesSource,
 };
 use omgcode_core::control::{ControlStore, SkillScope, SkillSetting};
 use omgcode_core::policy::Access;
@@ -400,4 +400,53 @@ fn enter_to_send_must_be_a_boolean() {
         }}),
     );
     assert!(refused.is_err(), "a non-boolean value is refused");
+}
+
+/// The status bar's branch (ADR-0064) is read from the workspace's `HEAD` for
+/// display only; a folder without `.git` has none, and an unknown session is
+/// refused.
+#[test]
+fn session_context_reads_the_workspace_branch_for_display() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let session = new_session(&service, &workspace);
+
+    let context = service
+        .session_context(wire(session_request(session)))
+        .expect("context");
+    assert!(context.workspace_registered);
+    assert_eq!(context.branch.state, BranchState::None);
+    assert_eq!(context.branch.name, None);
+
+    fs::create_dir(workspace.path.join(".git")).expect("git dir");
+    fs::write(
+        workspace.path.join(".git").join("HEAD"),
+        "ref: refs/heads/feature/\u{202e}status\n",
+    )
+    .expect("head");
+    let context = service
+        .session_context(wire(session_request(session)))
+        .expect("context");
+    assert_eq!(context.branch.state, BranchState::Branch);
+    // The name is display-safe text: a bidirectional control is escaped.
+    let name = context.branch.name.clone().expect("name");
+    assert!(!name.contains('\u{202e}'), "{name}");
+    assert!(name.starts_with("feature/"), "{name}");
+    assert_eq!(
+        json_of(&context)["branch"]["state"],
+        Value::String("branch".to_owned())
+    );
+
+    fs::write(workspace.path.join(".git").join("HEAD"), "garbage").expect("head");
+    let context = service
+        .session_context(wire(session_request(session)))
+        .expect("context");
+    assert_eq!(context.branch.state, BranchState::Unavailable);
+    assert!(context.branch.note.is_some());
+
+    let unknown = service
+        .session_context(wire(session_request(Uuid::new_v4())))
+        .expect_err("unknown session");
+    assert_eq!(unknown.code(), "not_found");
 }

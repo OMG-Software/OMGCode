@@ -10,18 +10,27 @@
 //! [`DesktopService::session_skills`] serves the `main` window's per-turn skill
 //! choice. It returns only the names of skills enabled for the session's
 //! workspace; enabling a skill grants no permission (ADR-0057).
+//!
+//! [`DesktopService::connection_status`] and
+//! [`DesktopService::session_context`] serve the `main` window's status bar
+//! (ADR-0064): the connection the next turn uses with the local connections
+//! that may be chosen, and the Git branch of a session's workspace, read from
+//! `HEAD` for display only.
 
 use omgcode_core::control::{
     ContainerGrantAccess, ContainerGrantState, ControlStore, ProfilePlatform,
 };
+use omgcode_core::git_head::{WorkspaceHead, workspace_head};
+use omgcode_core::policy::WorkspaceId;
 use omgcode_core::turn::display_safe_line;
 
 use super::error::DesktopError;
 use super::state::folder_of_directory;
 use super::wire::{
-    ConnectionSourceView, ConnectionView, ContainerGrantView, PackageProfileView,
-    ProviderProfileView, SessionRequest, SessionSkills, SettingsOverview, SkillOverrideView,
-    SkillSettingView, ToolchainProfileView, WorkspaceSettingsView,
+    BranchState, BranchView, ConnectionChoice, ConnectionSourceView, ConnectionStatus,
+    ConnectionView, ContainerGrantView, PackageProfileView, ProviderProfileView, SessionContext,
+    SessionRequest, SessionSkills, SettingsOverview, SkillOverrideView, SkillSettingView,
+    ToolchainProfileView, WorkspaceSettingsView,
 };
 use super::{DesktopService, Inner, TokenResolver};
 use crate::TokenSource;
@@ -46,7 +55,7 @@ impl DesktopService {
 /// Shape the overview from an open store, then release the store. Every path
 /// and recorded name passes through core's display-safe functions.
 pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOverview {
-    let connection = connection_view(inner, &store);
+    let connection = connection_view(inner, Some(&store));
     let active = store
         .active_provider_profile()
         .map(|status| status.profile().id());
@@ -174,6 +183,99 @@ impl DesktopService {
     ///
     /// `not_found` for an unknown session, `busy`, `control`, or `internal`.
     pub fn session_skills(&self, request: SessionRequest) -> Result<SessionSkills, DesktopError> {
+        let Some((store, workspace_id)) = self.session_workspace(request)? else {
+            return Ok(SessionSkills {
+                workspace_registered: false,
+                skills: Vec::new(),
+            });
+        };
+        let skills = store
+            .skill_statuses(Some(workspace_id))
+            .into_iter()
+            .filter(|status| status.effective == Some(true))
+            .map(|status| status.skill.name().as_str().to_owned())
+            .collect();
+        drop(store);
+        Ok(SessionSkills {
+            workspace_registered: true,
+            skills,
+        })
+    }
+
+    /// What the `main` window's status bar shows about a session: whether its
+    /// workspace is registered here, and the Git branch that workspace has
+    /// checked out (ADR-0064).
+    ///
+    /// The branch is read from `HEAD` through the anchored broker, with no Git
+    /// program, configuration, or link followed. It is display text only.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` for an unknown session, `busy`, `control`, or `internal`.
+    pub fn session_context(&self, request: SessionRequest) -> Result<SessionContext, DesktopError> {
+        let Some((store, workspace_id)) = self.session_workspace(request)? else {
+            return Ok(SessionContext {
+                workspace_registered: false,
+                branch: branch_view(None),
+            });
+        };
+        let head = workspace_head(&store, workspace_id);
+        drop(store);
+        Ok(SessionContext {
+            workspace_registered: true,
+            branch: branch_view(Some(head.unwrap_or(WorkspaceHead::Unreadable(
+                "the workspace record cannot be used",
+            )))),
+        })
+    }
+
+    /// The connection the next turn uses and the local connections that may
+    /// be chosen, for the `main` window's status bar (ADR-0064). It names
+    /// profiles, kinds, and endpoints only, never a credential.
+    ///
+    /// # Errors
+    ///
+    /// `busy`, `control`, or `internal`.
+    pub fn connection_status(&self) -> Result<ConnectionStatus, DesktopError> {
+        let inner = &self.inner;
+        let store = inner.open_control()?;
+        let connection = connection_view(inner, store.as_ref());
+        let choices = match (&store, connection.selectable) {
+            (Some(store), true) => {
+                let active = store
+                    .active_provider_profile()
+                    .map(|status| status.profile().id());
+                store
+                    .provider_profiles()
+                    .iter()
+                    .map(|status| status.profile())
+                    .filter_map(|profile| {
+                        let endpoint = profile.endpoint()?;
+                        profile.kind().is_local().then(|| ConnectionChoice {
+                            name: display_safe_line(profile.name()),
+                            kind: profile.kind().as_str(),
+                            endpoint: display_safe_line(endpoint.as_str()),
+                            active: active == Some(profile.id()),
+                        })
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        drop(store);
+        Ok(ConnectionStatus {
+            connection,
+            choices,
+        })
+    }
+
+    /// The settings store, with the registered workspace a session was
+    /// recorded in, or `None` when there is no store or the workspace is not
+    /// registered here.
+    fn session_workspace(
+        &self,
+        request: SessionRequest,
+    ) -> Result<Option<(ControlStore, WorkspaceId)>, DesktopError> {
         let inner = &self.inner;
         let recorded = inner.with_index(|state| {
             let lookup = |state: &super::state::IndexState| {
@@ -190,45 +292,49 @@ impl DesktopService {
                 .map(|session| session.workspace_id)
                 .ok_or_else(|| DesktopError::not_found("session"))
         })?;
-        let none = SessionSkills {
-            workspace_registered: false,
-            skills: Vec::new(),
-        };
         let Some(recorded) = recorded else {
-            return Ok(none);
+            return Ok(None);
         };
         let Some(store) = inner.open_control()? else {
-            return Ok(none);
+            return Ok(None);
         };
         let Some(workspace_id) = store
             .registered_workspace(recorded)
             .map(|workspace| workspace.id())
         else {
-            return Ok(none);
+            return Ok(None);
         };
-        let skills = store
-            .skill_statuses(Some(workspace_id))
-            .into_iter()
-            .filter(|status| status.effective == Some(true))
-            .map(|status| status.skill.name().as_str().to_owned())
-            .collect();
-        drop(store);
-        Ok(SessionSkills {
-            workspace_registered: true,
-            skills,
-        })
+        Ok(Some((store, workspace_id)))
     }
 }
 
-/// The connection the next turn uses, as the `settings` window shows it. The
-/// active connection is read from `store`, the store this overview reads.
-fn connection_view(inner: &Inner, store: &ControlStore) -> ConnectionView {
+/// The status bar's view of a workspace's `HEAD`. `None` means no registered
+/// workspace.
+fn branch_view(head: Option<WorkspaceHead>) -> BranchView {
+    let (state, name, note) = match head {
+        None | Some(WorkspaceHead::NotRepository) => (BranchState::None, None, None),
+        Some(WorkspaceHead::Branch(name)) => (BranchState::Branch, Some(name), None),
+        Some(WorkspaceHead::Detached(commit)) => (BranchState::Detached, Some(commit), None),
+        Some(WorkspaceHead::Unreadable(reason)) => {
+            (BranchState::Unavailable, None, Some(reason.to_owned()))
+        }
+    };
+    BranchView {
+        state,
+        name: name.map(|name| display_safe_line(&name)),
+        note,
+    }
+}
+
+/// The connection the next turn uses. The active connection is read from
+/// `store`, the store the caller holds; with no store, none is active.
+fn connection_view(inner: &Inner, store: Option<&ControlStore>) -> ConnectionView {
     let launch = |source, profile: Option<&String>| ConnectionView {
         endpoint: display_safe_line(&inner.endpoint),
         source,
         profile: profile.map(|name| display_safe_line(name)),
         kind: profile
-            .and_then(|name| store.provider_profile(name))
+            .and_then(|name| store?.provider_profile(name))
             .map(|status| status.profile().kind().as_str()),
         selectable: false,
     };
@@ -242,7 +348,7 @@ fn connection_view(inner: &Inner, store: &ControlStore) -> ConnectionView {
         TokenResolver::Injected(_) => launch(ConnectionSourceView::Injected, None),
         TokenResolver::Source(TokenSource::Active) => {
             let active = store
-                .active_provider_profile()
+                .and_then(ControlStore::active_provider_profile)
                 .map(|status| status.profile());
             ConnectionView {
                 endpoint: display_safe_line(

@@ -308,6 +308,38 @@ export interface ConnectionView {
   selectable: boolean;
 }
 
+/** One connection the main window's status bar may offer (ADR-0064). Never a credential. */
+export interface ConnectionChoice {
+  name: string;
+  /** `lm_studio` or `ollama_local`. */
+  kind: string;
+  endpoint: string;
+  active: boolean;
+}
+
+/** The status bar's view of the model connection. `choices` is empty when a launch argument fixed it. */
+export interface ConnectionStatus {
+  connection: ConnectionView;
+  choices: ConnectionChoice[];
+}
+
+export type BranchState = "branch" | "detached" | "none" | "unavailable";
+
+/** A workspace's Git branch, read from `HEAD` for display only. */
+export interface BranchView {
+  state: BranchState;
+  /** The branch name, or the abbreviated commit when detached. */
+  name: string | null;
+  /** A fixed reason when `state` is `unavailable`. */
+  note: string | null;
+}
+
+/** What the status bar shows about a session's workspace. */
+export interface SessionContext {
+  workspace_registered: boolean;
+  branch: BranchView;
+}
+
 export interface ProviderProfileView {
   name: string;
   kind: string;
