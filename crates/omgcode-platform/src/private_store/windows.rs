@@ -1,4 +1,4 @@
-//! Windows private storage with verified per-user ACLs on NTFS.
+//! Windows private storage with verified per-user ACLs on NTFS or ReFS.
 //!
 //! Every entry this store creates carries an explicit protected DACL granting
 //! only the current user, applied by the same native create. The application
@@ -12,6 +12,7 @@
 //! or renames. See ADR-0023. Same-user and administrator actors are not isolated.
 
 mod metadata;
+mod volume;
 #[cfg(test)]
 pub(crate) use metadata::read_security;
 pub(super) use metadata::stage_metadata;
@@ -19,6 +20,7 @@ pub(crate) use metadata::{
     apply_security, read_native_security, set_content_indexing, split_native_security,
     validate_file_metadata,
 };
+pub(crate) use volume::{VolumeRole, require_supported_filesystem};
 
 use std::ffi::{OsStr, OsString, c_void};
 use std::fs::{File, OpenOptions};
@@ -53,9 +55,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FileDispositionInfoEx,
-    GetVolumeInformationByHandleW, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
-    WRITE_DAC, WRITE_OWNER,
+    FILE_SHARE_READ, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FileDispositionInfoEx, READ_CONTROL,
+    SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, SECURITY_DESCRIPTOR_REVISION,
@@ -89,7 +90,6 @@ pub(crate) const FILE_OPTIONS: u32 =
 const MAX_COMPONENT_UNITS: usize = 255;
 const MAX_ROOT_ACES: u32 = 64;
 const MAX_TOKEN_USER_BYTES: u32 = 1024;
-const FILE_SYSTEM_NAME_UNITS: usize = 32;
 
 /// An owned copy of a native SID in aligned storage.
 #[derive(Clone)]
@@ -536,41 +536,6 @@ fn require_trusted_root(file: &File, principals: &Principals) -> io::Result<()> 
     Ok(())
 }
 
-/// Refuses anything except NTFS, the only filesystem this backend has tested.
-#[allow(unsafe_code)]
-pub(crate) fn require_ntfs(file: &File) -> io::Result<()> {
-    let mut name = [0u16; FILE_SYSTEM_NAME_UNITS];
-    let capacity = u32::try_from(name.len()).map_err(|_| invalid_data("name buffer too large"))?;
-    // SAFETY: `file` is live and `name` is writable for `capacity` units. The
-    // optional outputs are null, which the API permits.
-    let read = unsafe {
-        GetVolumeInformationByHandleW(
-            file.as_raw_handle() as HANDLE,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            name.as_mut_ptr(),
-            capacity,
-        )
-    };
-    if read == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let length = name
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(name.len());
-    if !"NTFS".encode_utf16().eq(name.iter().copied().take(length)) {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "private storage requires NTFS on Windows",
-        ));
-    }
-    Ok(())
-}
-
 /// Which ACL rule applies to a retained directory.
 #[derive(Clone, Copy)]
 enum Scope {
@@ -578,7 +543,7 @@ enum Scope {
     Private,
 }
 
-/// A retained private directory on NTFS. Owned handles close on drop.
+/// A retained private directory on NTFS or ReFS. Owned handles close on drop.
 ///
 /// Handles deny delete sharing, which blocks ordinary rename and delete while
 /// held. The caller must compare the root identity with its trusted
@@ -599,7 +564,7 @@ impl WindowsPrivateDirectory {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = open_root_handle(path)?;
         let volume = query_identity(&file)?.VolumeSerialNumber;
-        require_ntfs(&file)?;
+        require_supported_filesystem(&file, VolumeRole::PrivateStore)?;
         let root = Self {
             file,
             volume,

@@ -8,8 +8,10 @@ is evidence, and nothing here changes what the
 ## Purpose
 
 Trusted apply, restore, checkpoint deletion, and ledger compaction run on Linux
-ext4 and Windows NTFS. Their native tests show one rename and the ordered syncs
-on one tested mount. They do not show which filesystems, kernels, and Windows
+ext4, btrfs, XFS, tmpfs, and ZFS and on Windows NTFS and ReFS
+([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)
+widened the list from ext4 and NTFS). Their native tests show one rename and
+the ordered syncs on one tested mount. They do not show which filesystems, kernels, and Windows
 builds a release can support, or what the store and workspace hold after a
 power loss. This plan defines the campaign that would answer both questions
 before any release claim.
@@ -42,13 +44,16 @@ error and nothing is written to the workspace or the store.
 | Ubuntu LTS (current and previous), Fedora (current) | ext4, default options, local block device | Supported candidate |
 | Same distributions | ext4 with `data=journal`, and with `nodelalloc` | Supported candidate; record any difference |
 | Same distributions | ext4 on LVM and on dm-crypt | Supported candidate |
-| Same distributions | XFS, Btrfs, tmpfs, overlayfs | Apply refuses; store behaviour recorded |
+| Same distributions | XFS, Btrfs, ZFS | Supported candidate (ADR-0069) |
+| Same distributions | tmpfs | Supported candidate (ADR-0069); not persistent, so the power-loss campaign is not applicable |
+| Same distributions | overlayfs | Apply refuses; store behaviour recorded |
 | Same distributions | NFS, SMB/CIFS, FUSE | Apply and store refuse |
 | WSL 2 | ext4 virtual disk | Supported candidate; WSL results do not qualify a native Linux host |
 | WSL 2 | drvfs (`/mnt/<drive>`) | Apply and store refuse |
 | Windows 11 (current and previous feature update), Windows Server 2025 | NTFS on a fixed local disk | Supported candidate |
 | Same builds | NTFS on BitLocker | Supported candidate |
-| Same builds | ReFS (including a Dev Drive), FAT32, exFAT, removable media | Apply and store refuse |
+| Same builds | ReFS, including a Dev Drive | Supported candidate (ADR-0069) |
+| Same builds | FAT32, exFAT, removable media | Apply and store refuse |
 | Same builds | SMB share, mapped drive, OneDrive placeholder | Apply and store refuse |
 
 Each run records the exact OS build, kernel, filesystem tools version, mount

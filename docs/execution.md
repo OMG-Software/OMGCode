@@ -929,7 +929,8 @@ Grants are applied by `container::grant`:
   `FILE_GENERIC_WRITE | DELETE`, without `WRITE_DAC`, `WRITE_OWNER`, or
   `FILE_DELETE_CHILD`. Both are inherited by directories and files.
 - The directory is opened with backup semantics and without following a final
-  reparse point. It must be an NTFS directory with the recorded identity.
+  reparse point. It must be a directory on an NTFS or ReFS volume that reports the required
+  capabilities ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)), with the recorded identity.
 - `SetEntriesInAclW` replaces any explicit entry for the SID, and
   `SetSecurityInfo` writes the DACL through the same handle, keeping its
   protected state. Windows propagates the entry to existing children; on a

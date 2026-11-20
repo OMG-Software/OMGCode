@@ -1,4 +1,4 @@
-//! Grant and revoke round trips on real NTFS directories.
+//! Grant and revoke round trips on real NTFS or ReFS directories.
 
 use std::fs;
 use std::path::Path;

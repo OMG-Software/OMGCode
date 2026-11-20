@@ -1140,8 +1140,8 @@ CLI. The first `--` passes the arguments through npm. After `dev`, the next two
 script notes. `tauri dev` drops the `custom-protocol` feature and loads the dev
 server.
 
-On a Windows host whose temporary directory is not on NTFS or whose ACLs the
-private store refuses, see the notes in
+On a Windows host whose temporary directory is not on NTFS or ReFS or whose
+ACLs the private store refuses, see the notes in
 [testing standards](testing-standards.md#desktop-shell-and-frontend).
 
 ## Tests

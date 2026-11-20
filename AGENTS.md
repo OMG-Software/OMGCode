@@ -19,7 +19,7 @@ elements and text nodes; links and images stay inert text, and a code block's
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only
-([ADR-0068](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
+([ADR-0069](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
 also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and
@@ -123,9 +123,11 @@ implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides
 existing-only checkpoint inspection and acknowledgement. Trusted CLI apply can
-replace an existing file on a qualified Linux ext4 mount or on Windows NTFS
-under the file-access contract. It requires the operator to stop other writers.
-Windows makes no power-loss claim. Trusted CLI restore writes a retained
+replace an existing file on a Linux ext4, btrfs, XFS, tmpfs, or ZFS mount, or on
+a Windows NTFS or ReFS volume, under the file-access contract
+([ADR-0069](docs/adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
+It requires the operator to stop other writers. No filesystem has a power-loss
+claim. Trusted CLI restore writes a retained
 original back through the same apply path and a new checkpoint. Trusted CLI
 checkpoint deletion removes one resolved checkpoint and keeps its history.
 Neither is power-loss qualified. The ledger is compacted in place, by a trusted
