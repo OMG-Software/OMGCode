@@ -59,7 +59,11 @@ impl VolumeRole {
 /// Refuses a volume that is not NTFS or ReFS with every required capability.
 ///
 /// The name and flags come from the open handle, so no path is resolved. A
-/// refusal is `Unsupported` and names the role and the filesystem.
+/// refusal is `Unsupported` and names the role and the filesystem. Callers
+/// keep using the same handle afterwards. A mounted volume's filesystem and
+/// these capability flags cannot change under an open handle; a forced
+/// dismount invalidates the handle, so later I/O fails rather than running on
+/// a different filesystem.
 #[allow(unsafe_code)]
 pub(crate) fn require_supported_filesystem(
     file: &File,
