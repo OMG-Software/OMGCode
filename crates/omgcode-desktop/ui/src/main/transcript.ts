@@ -1,7 +1,11 @@
 import { append, el, neutralise, text } from "../dom";
 import { formatAbsolute } from "../format";
 import type { TranscriptEntry } from "../ipc/types";
+import { renderPng } from "./capture";
 import type { ChatPreview } from "./chat_runner";
+import { copyPng, copyText, feedbackButton } from "./clipboard";
+import { renderMarkdown } from "./markdown";
+import { plainText } from "./plain_text";
 
 const ROLE_LABELS = { user: "You", assistant: "Assistant", tool: "Tool" } as const;
 
@@ -13,7 +17,7 @@ function head(label: string, entry: TranscriptEntry, extra?: string): HTMLElemen
   return el(
     "div",
     { class: "entry-head" },
-    el("span", { class: "entry-label", text: label }),
+    el("span", { class: "entry-label", text: label, attrs: { title: neutralise(label) } }),
     extra === undefined ? null : el("span", { class: "entry-extra", text: extra }),
     el("span", { class: "entry-time", text: formatAbsolute(entry.timestamp) }),
   );
@@ -59,7 +63,7 @@ export interface LiveEntry {
  * Builds the provisional entry shown while a model reply is generated. The text is untrusted and
  * lives in one text node. It is not the recorded reply and goes away when the turn settles.
  */
-export function createLiveEntry(): LiveEntry {
+export function createLiveEntry(model: string | null = null): LiveEntry {
   const body = text("");
   const cutOff = el("p", {
     class: "muted live-note",
@@ -74,7 +78,10 @@ export function createLiveEntry(): LiveEntry {
     el(
       "div",
       { class: "entry-head" },
-      el("span", { class: "entry-label", text: "Assistant (generating, not saved yet)" }),
+      el("span", {
+        class: "entry-label",
+        text: `${replyLabel(model)} (generating, not saved yet)`,
+      }),
     ),
     textBox,
     cutOff,
@@ -88,15 +95,92 @@ export function createLiveEntry(): LiveEntry {
   };
 }
 
-/** Renders one transcript entry. Every string is shown as text. */
-export function renderEntry(entry: TranscriptEntry): HTMLElement {
+type MessageEntry = Extract<TranscriptEntry, { kind: "message" }>;
+
+/** What an entry needs from the entries before it. */
+export interface EntryContext {
+  /** The model of the current turn's latest request manifest, or null when none is loaded. */
+  model: string | null;
+}
+
+/**
+ * The label of an assistant reply: the model id recorded in the turn's request manifest, or
+ * "Assistant" when no manifest precedes the reply. The id is untrusted text chosen by the model
+ * server and only names the model that was asked; it is not an identity check.
+ */
+export function replyLabel(model: string | null): string {
+  return model === null || model.trim() === "" ? ROLE_LABELS.assistant : model;
+}
+
+/**
+ * The context of each entry, in order. A request manifest sets the model for the replies after
+ * it, and a turn start clears it, so a reply is never labelled with an earlier turn's model.
+ * Transcripts load from the oldest entry, so every earlier manifest of a turn is present.
+ */
+export function entryContexts(entries: readonly TranscriptEntry[]): EntryContext[] {
+  let model: string | null = null;
+  return entries.map((entry) => {
+    if (entry.kind === "turn_started") {
+      model = null;
+    } else if (entry.kind === "request_manifest") {
+      model = entry.model;
+    }
+    return { model };
+  });
+}
+
+/**
+ * The actions of a recorded reply (ADR-0068): copy its Markdown source, copy it as plain text,
+ * and copy an image of the whole entry. Each writes to the clipboard only on a click; nothing
+ * reads it. The row is left out of the image. The source is copied with the same visible markers
+ * the screen shows in place of bidirectional overrides.
+ */
+function replyActions(entry: MessageEntry, node: HTMLElement, body: HTMLElement): HTMLElement {
+  return el(
+    "div",
+    {
+      class: "reply-actions",
+      attrs: { role: "group", "aria-label": "Reply actions", "data-capture": "skip" },
+    },
+    feedbackButton("Copy Markdown", "Copied", () => copyText(neutralise(entry.text)), {
+      class: "reply-action",
+    }),
+    feedbackButton("Copy text", "Copied", () => copyText(plainText(body)), {
+      class: "reply-action",
+    }),
+    feedbackButton("Copy image", "Copied", () => copyPng(renderPng(node)), {
+      class: "reply-action",
+    }),
+  );
+}
+
+/**
+ * A recorded assistant reply is rendered as Markdown built from elements and text nodes
+ * (ADR-0067); a reply too long to parse, and every other role, is shown as plain text.
+ */
+function messageBody(entry: MessageEntry): HTMLElement {
+  const rendered = entry.role === "assistant" ? renderMarkdown(entry.text) : null;
+  return rendered ?? el("div", { class: "bubble-text", text: entry.text });
+}
+
+/** Renders one transcript entry. Every string is shown as text or inert Markdown elements. */
+export function renderEntry(
+  entry: TranscriptEntry,
+  context: EntryContext = { model: null },
+): HTMLElement {
   switch (entry.kind) {
     case "message": {
       const node = entryShell(entry, `bubble bubble-${entry.role}`);
+      const body = messageBody(entry);
+      if (entry.role !== "assistant") {
+        append(node, head(ROLE_LABELS[entry.role], entry, entry.source), body);
+        return node;
+      }
       append(
         node,
-        head(ROLE_LABELS[entry.role], entry, entry.source),
-        el("div", { class: "bubble-text", text: entry.text }),
+        head(replyLabel(context.model), entry, entry.source),
+        body,
+        replyActions(entry, node, body),
       );
       return node;
     }

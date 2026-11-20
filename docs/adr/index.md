@@ -81,3 +81,5 @@ meaningful alternative does not need an ADR.
 | [0064: Choose the model connection in settings and add Ollama Local](0064-choose-the-model-connection-in-settings-and-add-ollama-local.md) | Accepted | 2026-11-19 |
 | [0065: Redesign the desktop windows with one dark theme and split layouts](0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md) | Accepted | 2026-11-19 |
 | [0066: Choose the chat model from the local server's model list](0066-choose-the-chat-model-from-the-local-servers-model-list.md) | Accepted | 2026-11-19 |
+| [0067: Render recorded replies as inert Markdown](0067-render-recorded-replies-as-inert-markdown.md) | Accepted | 2026-11-20 |
+| [0068: Name replies by model and copy them as Markdown, text, or an image](0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md) | Accepted | 2026-11-20 |

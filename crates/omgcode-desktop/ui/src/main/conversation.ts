@@ -19,7 +19,7 @@ import {
   statusLabel,
   TRANSCRIPT_PAGE_SIZE,
 } from "./model";
-import { createLiveEntry, type LiveEntry, renderEntry } from "./transcript";
+import { createLiveEntry, entryContexts, type LiveEntry, renderEntry } from "./transcript";
 
 const MAX_PAGES_PER_LOAD = 50;
 const SCROLL_END_SLACK_PX = 8;
@@ -63,6 +63,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
   let opening = 0;
   let highlightSeq: number | null = null;
   let live: LiveEntry | null = null;
+  // The model of the loaded transcript's last turn, and the model each send from this window
+  // asked for, by session. The live entry is labelled with the send's model when known.
+  let lastTurnModel: string | null = null;
+  const sentModels = new Map<string, string>();
   let frame: number | null = null;
 
   const runner = createChatRunner({ onStatus: handleChatStatus, onPreview: handlePreview });
@@ -215,9 +219,11 @@ export function createConversation(deps: ConversationDeps): Conversation {
       if (entries.length === 0) {
         nodes.push(el("p", { class: "muted", text: "This session has no entries yet." }));
       }
-      for (const entry of entries) {
-        nodes.push(renderEntry(entry));
-      }
+      const contexts = entryContexts(entries);
+      entries.forEach((entry, index) => {
+        nodes.push(renderEntry(entry, contexts[index]));
+      });
+      lastTurnModel = contexts[contexts.length - 1]?.model ?? null;
       if (nextAfter !== null) {
         nodes.push(button("Load more", () => void loadMore(), { class: "load-more" }));
       }
@@ -252,7 +258,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     }
     const follow = atEnd();
     if (live === null) {
-      live = createLiveEntry();
+      live = createLiveEntry(sentModels.get(session?.session_id ?? "") ?? lastTurnModel);
     }
     live.update(preview);
     if (live.element.parentNode !== transcript) {
@@ -402,6 +408,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     }
     setNotice(null);
     const submitted = opening;
+    sentModels.set(session.session_id, settings.model);
     try {
       await runner.send(session.session_id, message, settings, skills);
       if (opening === submitted) {
@@ -434,6 +441,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
 
   function handleChatStatus(status: ChatStatus): void {
     const settled = status.state !== "running" && status.state !== "cancelling";
+    if (settled) {
+      sentModels.delete(status.session_id);
+    }
     if (session === null || status.session_id !== session.session_id) {
       if (settled) {
         deps.onTreeChanged();

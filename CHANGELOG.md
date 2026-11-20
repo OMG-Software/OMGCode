@@ -6,6 +6,52 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.47.0 renders recorded assistant replies as Markdown in the
+  desktop `main` window (ADR-0067, accepted).
+  - **Desktop:** a reply sits in a response block one shade lighter than the
+    transcript. `src/main/markdown.ts` parses a subset (paragraphs, headings,
+    rules, block quotes, nested lists, tables, inline code, strong, emphasis,
+    strikethrough, escapes) into elements and text nodes through `src/dom.ts`;
+    no dependency is added. A fenced code block is a darker monospace block
+    with its language label and a **Copy** button that writes the block's
+    shown text, with visible markers in place of bidirectional overrides,
+    through `navigator.clipboard.writeText`. Raw HTML stays literal text.
+    Links and images are inert: each shows its destination, and no element
+    gets an `href` or `src`. A reply over 100,000 UTF-16 code units, the
+    operator's messages, tool messages, summaries, and the live preview stay
+    plain text. Nesting is limited to six block levels and eight inline
+    levels, tables to 32 columns, and delimiter searches are cached so
+    unmatched delimiters parse in close to linear time.
+  - **Tests:** Vitest tests for the reply from the request, each block and
+    inline form, copy success, refusal, and absence, copying a bidirectional
+    override as its marker, hostile HTML in every position, inert links and
+    images, the size and depth bounds, eight pathological replies under a
+    time bound, and plain text for other roles. The mock transcript holds a
+    Markdown reply for the dev server.
+  - **Reply label and copy actions (ADR-0068, accepted):** a reply is
+    labelled with the model id from its turn's request manifest instead of
+    "Assistant", which remains the fallback; the live entry uses the model
+    the send asked for. Each recorded reply has **Copy Markdown** (the
+    recorded text, overrides as visible markers), **Copy text** (the rendered
+    reply without Markdown symbols: "•" bullets, kept numbers, tab-separated
+    table cells, code without fences), and **Copy image** (a PNG of the whole
+    entry without its buttons, written through `ClipboardItem`).
+    `src/main/capture.ts` repaints the entry on a canvas from the computed
+    layout, with list markers drawn from the list, bounded at 8,192 pixels on
+    a side, 4096 × 4096 in area, and 50,000 text runs. No dependency or Rust
+    command is added. The mock backend records a manifest for each mock turn,
+    and its fixture now starts a turn before its manifest, as core does.
+  - **Tests (reply actions):** model labels from manifests and their reset
+    at a turn start, a hostile model id, the live entry label, the label in
+    the window, each copy action, refusal and label reset, plain-text
+    conversion, the painter's backgrounds, text positions, list markers,
+    skipped controls, run budget, and scale bounds, and an image copy through
+    a stubbed canvas and `ClipboardItem`. The live preview test now expects
+    the sent model's name.
+  - **Not verified:** a successful copy of text or an image in the WebView2
+    or WebKitGTK shell. A Chromium browser pane refused every clipboard
+    write and showed "Copy failed". The painted image was compared with the
+    screen in that pane against the mock backend.
 - Version 0.46.0 lists the models the local LM Studio or Ollama server
   reports, so the operator chooses a model instead of typing its id
   (ADR-0066, accepted).
