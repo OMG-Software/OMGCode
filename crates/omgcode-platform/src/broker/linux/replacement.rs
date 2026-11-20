@@ -550,11 +550,13 @@ fn require_supported_mount(mount_id: u64) -> io::Result<LinuxFilesystem> {
 fn classify_mount_type(filesystem: &[u8]) -> io::Result<LinuxFilesystem> {
     LinuxFilesystem::from_mount_type(filesystem).ok_or_else(|| {
         // Display text only, bounded; the comparison above used the bytes.
+        // Escaping shows any non-UTF-8 or control byte (a FUSE subtype comes
+        // from a mount option) as `\xNN` rather than a replacement character.
         let shown = filesystem.get(..MAX_REPORTED_TYPE).unwrap_or(filesystem);
         let shown = if shown.is_empty() {
-            "an unnamed filesystem".into()
+            "an unnamed filesystem".to_owned()
         } else {
-            String::from_utf8_lossy(shown)
+            shown.escape_ascii().to_string()
         };
         io::Error::new(
             io::ErrorKind::Unsupported,
@@ -1117,6 +1119,13 @@ mod tests {
             .to_string();
         assert!(long.contains(&"x".repeat(MAX_REPORTED_TYPE)));
         assert!(!long.contains(&"x".repeat(MAX_REPORTED_TYPE + 1)));
+        assert_eq!(
+            classify_mount_type(b"fuse.\xff\n")
+                .expect_err("non-UTF-8")
+                .to_string(),
+            "workspace mount uses fuse.\\xff\\n; file writes require ext4, btrfs, XFS, \
+             tmpfs, or ZFS"
+        );
     }
 
     #[test]
