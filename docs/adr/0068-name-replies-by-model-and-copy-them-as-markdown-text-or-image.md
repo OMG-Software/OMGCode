@@ -56,7 +56,7 @@ command and opens no dialogs.
    the property), and list markers drawn from the list. A word that wraps
    inside itself is placed one grapheme at a time, through `Intl.Segmenter`
    where it exists. Otherwise each line's part of the word is painted whole
-   at its first box: a browser never breaks a line inside a grapheme
+   at its first box, with a line-through spanning all of it: a browser never breaks a line inside a grapheme
    cluster, so grouping code points by line cannot split one in any script.
    The padding takes the background of the entry's nearest ancestor that
    paints one, and stays transparent when none does. Buttons and

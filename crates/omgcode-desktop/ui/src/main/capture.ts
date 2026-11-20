@@ -371,17 +371,26 @@ export function graphemes(word: string, segmenter: Intl.Segmenter): string[] {
   return Array.from(segmenter.segment(word), (part) => part.segment);
 }
 
+/** A text box in viewport coordinates. */
+export interface Box {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 export interface Piece {
   text: string;
-  rect: DOMRect;
+  rect: Box;
 }
 
 /**
  * Where to paint each piece of a word that wraps inside itself, as overflow-wrap allows. With a
  * segmenter, each grapheme is placed at its own box. Without one, each line's part of the word is
- * kept whole and placed at its first box: a browser never breaks a line inside a grapheme
- * cluster, so grouping code points by the line their box is on cannot split one, in any script.
- * Exported for tests, which pass no segmenter.
+ * kept whole, placed at its first box, and given a box spanning to its last, so a line-through
+ * crosses all of it: a browser never breaks a line inside a grapheme cluster, so grouping code
+ * points by the line their box is on cannot split one, in any script. Exported for tests, which
+ * pass no segmenter.
  */
 export function wrappedPieces(
   node: Text,
@@ -403,7 +412,7 @@ export function wrappedPieces(
     return pieces;
   }
   let text = "";
-  let rect: DOMRect | undefined;
+  let rect: Box | undefined;
   for (const point of word) {
     const box = boxOf(range, node, start + offset, point.length);
     // A box at least half a line below the run's first box starts the next line's run.
@@ -412,7 +421,11 @@ export function wrappedPieces(
       text = "";
       rect = undefined;
     }
-    rect ??= box;
+    if (box !== undefined && rect === undefined) {
+      rect = { left: box.left, top: box.top, width: box.width, height: box.height };
+    } else if (box !== undefined && rect !== undefined) {
+      rect.width = Math.max(rect.width, box.left + box.width - rect.left);
+    }
     text += point;
     offset += point.length;
   }
@@ -470,7 +483,7 @@ function paintText(
 function paintRun(
   context: CanvasRenderingContext2D,
   run: string,
-  rect: DOMRect,
+  rect: Box,
   origin: Origin,
   ascent: number,
   strike: boolean,

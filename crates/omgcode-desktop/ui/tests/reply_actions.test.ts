@@ -453,6 +453,58 @@ describe("image painting", () => {
     ]);
   });
 
+  it("strikes through every line of a wrapped word without Intl.Segmenter", async () => {
+    // The painter picks its segmenter when the module loads, so load it again without one.
+    const original = Intl.Segmenter;
+    Reflect.defineProperty(Intl, "Segmenter", { value: undefined, configurable: true });
+    vi.resetModules();
+    try {
+      const { paintElement: paintWithoutSegmenter } = await import("../src/main/capture");
+      // "abcdef" wraps after "abc": the whole word reports two line boxes, and each code point
+      // its own eight-pixel box on its line.
+      Object.defineProperty(Range.prototype, "getClientRects", {
+        configurable: true,
+        value(this: Range) {
+          const length = this.endOffset - this.startOffset;
+          if (length > 1) {
+            return [
+              { left: 100, top: 50, width: 24, height: 16 },
+              { left: 100, top: 66, width: 24, height: 16 },
+            ];
+          }
+          const line = this.startOffset < 3 ? 0 : 1;
+          const column = this.startOffset - line * 3;
+          return [{ left: 100 + column * 8, top: 50 + line * 16, width: 8, height: 16 }];
+        },
+      });
+      const root = document.createElement("p");
+      const del = document.createElement("del");
+      del.style.textDecorationLine = "line-through";
+      del.append("abcdef");
+      root.append(del);
+      document.body.append(root);
+      const { context, calls } = recordingContext();
+      paintWithoutSegmenter(context, root, { x: 0, y: 0 }, { runs: 100 });
+      const texts = calls
+        .filter((c) => c.startsWith("fillText("))
+        .map((c) => c.slice("fillText(".length).split(",")[0]);
+      expect(texts).toEqual(["abc", "def"]);
+      const strikes = calls
+        .filter((c) => c.startsWith("fillRect(") && c.endsWith(",1)"))
+        .map((c) => c.slice("fillRect(".length, -1).split(",").map(Number))
+        .map(([x, y, width]) => [x, Math.round(y ?? 0), width]);
+      // Each line's line-through spans its whole part of the word, not its first character.
+      expect(strikes).toEqual([
+        [100, 59, 24],
+        [100, 75, 24],
+      ]);
+      root.remove();
+    } finally {
+      Reflect.defineProperty(Intl, "Segmenter", { value: original, configurable: true });
+      vi.resetModules();
+    }
+  });
+
   it("pads the image with the colour behind the entry", () => {
     const pane = document.createElement("section");
     pane.style.backgroundColor = "rgb(1, 2, 3)";
