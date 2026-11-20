@@ -34,7 +34,11 @@ Changes are recorded here before a release version is assigned.
     platform, core, and CLI file-access suites.
   - **Tests:** volume and mount classification, per-filesystem attribute
     policy, a supported-temporary-volume check on both systems, and a
-    cross-mount test that no longer assumes tmpfs is refused.
+    cross-mount test that no longer assumes tmpfs is refused. The
+    package-fetch deadline test times the connection from its fixture
+    server and requires a timed-out error, so the synced control records
+    around the request, slow on a CI XFS loop mount, no longer count
+    against the one-second deadline.
 
 ### Added
 
