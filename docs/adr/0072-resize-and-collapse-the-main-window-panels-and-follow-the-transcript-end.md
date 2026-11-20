@@ -48,8 +48,10 @@ Constraints:
    terminal panel is 240 to 720 pixels, opens at 360 when expanded, and starts
    collapsed. Neither panel may take the conversation below 360 pixels. When
    the window narrows, the terminal panel gives way first, then the sessions
-   panel. When a panel expands or grows, the other panel narrows to the room
-   left. When both panels at their minimums would leave the conversation less
+   panel. A panel dragged or keyed wider grows into the other panel, which
+   narrows down to its own minimum. A panel that expands from its rail takes
+   the free room first, and the other panel narrows only as far as the
+   expanding panel's minimum needs. When both panels at their minimums would leave the conversation less
    than 360 pixels, as in an 800-pixel window, the other panel collapses
    instead; on narrowing, the terminal panel collapses first. A panel
    collapsed this way stays collapsed when the window widens.

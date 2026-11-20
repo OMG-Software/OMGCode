@@ -119,15 +119,33 @@ export function createShellLayout(parts: {
     return state.collapsed ? RAIL_WIDTH : state.width;
   }
 
-  /** The widest this panel can be while the conversation keeps its minimum, if known. */
-  function maxWidth(state: PanelState): number {
+  /** The narrowest the other panel's track can become: its rail, or its minimum width. */
+  function leastTrack(state: PanelState): number {
+    return state.collapsed ? RAIL_WIDTH : state.limits.min;
+  }
+
+  /**
+   * The widest this panel can be while the conversation keeps its minimum and the other panel
+   * keeps the track `otherTrack`. Without a laid-out shell (hidden, or a test document) only the
+   * panel's own limits apply.
+   */
+  function widthBeside(state: PanelState, otherTrack: number): number {
     const shellWidth = element.clientWidth;
     if (shellWidth <= 0) {
-      // Not laid out (hidden, or a test document): only the panel's own limit applies.
       return state.limits.max;
     }
-    const room = shellWidth - CENTER_MIN_WIDTH - trackWidth(other(state)) - 2 * SEPARATOR_WIDTH;
+    const room = shellWidth - CENTER_MIN_WIDTH - otherTrack - 2 * SEPARATOR_WIDTH;
     return clamp(Math.floor(room), state.limits.min, state.limits.max);
+  }
+
+  /** The room the other panel, at its current width, leaves this one. */
+  function roomLeft(state: PanelState): number {
+    return widthBeside(state, trackWidth(other(state)));
+  }
+
+  /** The widest this panel can grow: the other panel then narrows, down to its minimum. */
+  function growLimit(state: PanelState): number {
+    return widthBeside(state, leastTrack(other(state)));
   }
 
   function setWidthProperty(state: PanelState): void {
@@ -139,7 +157,7 @@ export function createShellLayout(parts: {
     element.classList.toggle(`${state.side}-collapsed`, state.collapsed);
     setWidthProperty(state);
     const { separator } = state;
-    separator.setAttribute("aria-valuemax", String(maxWidth(state)));
+    separator.setAttribute("aria-valuemax", String(growLimit(state)));
     separator.setAttribute(
       "aria-valuenow",
       String(state.collapsed ? state.limits.min : state.width),
@@ -160,37 +178,39 @@ export function createShellLayout(parts: {
     if (shellWidth <= 0) {
       return false;
     }
-    const least = (state: PanelState) => (state.collapsed ? RAIL_WIDTH : state.limits.min);
-    return shellWidth - least(left) - least(right) - 2 * SEPARATOR_WIDTH < CENTER_MIN_WIDTH;
+    return (
+      shellWidth - leastTrack(left) - leastTrack(right) - 2 * SEPARATOR_WIDTH < CENTER_MIN_WIDTH
+    );
   }
 
   /** Narrows an expanded panel to the room the conversation and the other panel leave it. */
   function shrinkToFit(state: PanelState): void {
-    if (!state.collapsed && state.width > maxWidth(state)) {
-      state.width = maxWidth(state);
+    if (!state.collapsed && state.width > roomLeft(state)) {
+      state.width = roomLeft(state);
     }
   }
 
   /**
-   * Expands `state` to `requested` pixels, or to its kept width. The other panel gives way: it
+   * Shows `state` at `requested` pixels, at most `limit(state)`. The other panel gives way: it
    * collapses when even both minimums leave the conversation too little, and otherwise narrows
    * to the room left. `state` cannot always give way itself, because it never goes below its
    * own minimum.
    */
-  function expand(state: PanelState, requested: number): void {
+  function expand(state: PanelState, requested: number, limit: (s: PanelState) => number): void {
     state.collapsed = false;
     const rest = other(state);
     if (!rest.collapsed && minimumsOverflow()) {
       rest.collapsed = true;
     }
-    state.width = clamp(Math.round(requested), state.limits.min, maxWidth(state));
+    state.width = clamp(Math.round(requested), state.limits.min, limit(state));
     shrinkToFit(rest);
     render(state);
     render(rest);
   }
 
+  /** A drag or key asks for a width: the panel may grow into the other, down to its minimum. */
   function setWidth(state: PanelState, requested: number): void {
-    expand(state, requested);
+    expand(state, requested, growLimit);
   }
 
   function setCollapsed(state: PanelState, collapsed: boolean): void {
@@ -198,7 +218,9 @@ export function createShellLayout(parts: {
       return;
     }
     if (!collapsed) {
-      expand(state, state.width);
+      // Expanding takes the free room first; the other panel narrows only as far as this one's
+      // minimum needs.
+      expand(state, state.width, roomLeft);
       return;
     }
     state.collapsed = true;

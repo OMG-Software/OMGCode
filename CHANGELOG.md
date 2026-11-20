@@ -16,7 +16,8 @@ Changes are recorded here before a release version is assigned.
     click). The sessions panel is 200 to 480 pixels; the terminal panel is
     240 to 720 and starts collapsed; neither takes the conversation below
     360 pixels: the terminal panel gives way first when the window narrows,
-    expanding or widening a panel narrows the other one, and when both
+    a panel dragged wider grows into the other down to its minimum, a panel
+    expanding from its rail takes the free room first, and when both
     minimums do not fit (an 800-pixel window) the other panel collapses. A collapsed panel is a rail of icon buttons: the sessions rail
     holds Expand, New session, Search, Sessions, Approvals with its count,
     and Settings. The terminal panel only says that no terminal is

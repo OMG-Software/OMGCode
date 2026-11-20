@@ -437,18 +437,45 @@ describe("keeping room for the conversation", () => {
     expect(centerWidth(900)).toBeGreaterThanOrEqual(CENTER_MIN_WIDTH);
   });
 
-  it("does not let a panel take the conversation's minimum width", async () => {
+  it("grows a panel into its neighbour, down to the neighbour's minimum", async () => {
     await start();
     shellWidth(1000);
     byLabel("Show terminal panel").click();
-    const leftMax = 1000 - CENTER_MIN_WIDTH - RIGHT_PANEL.initial - 2 * SEPARATOR_WIDTH;
-    expect(separator("left").getAttribute("aria-valuemax")).toBe(String(leftMax));
-    // End asks for the panel's own maximum, which the conversation's minimum cuts to leftMax.
+    // The sessions panel may grow until the terminal panel is at its own minimum.
+    const leftMax = 1000 - CENTER_MIN_WIDTH - RIGHT_PANEL.min - 2 * SEPARATOR_WIDTH;
     expect(leftMax).toBeLessThan(LEFT_PANEL.max);
+    expect(separator("left").getAttribute("aria-valuemax")).toBe(String(leftMax));
     key(separator("left"), "End");
     expect(width("left")).toBe(`${leftMax}px`);
+    expect(width("right")).toBe(`${RIGHT_PANEL.min}px`);
+    expect(centerWidth(1000)).toBe(CENTER_MIN_WIDTH);
+    // Neither the conversation nor the terminal panel gives more.
     key(separator("left"), "ArrowRight");
     expect(width("left")).toBe(`${leftMax}px`);
+    expect(width("right")).toBe(`${RIGHT_PANEL.min}px`);
+  });
+
+  it("widens a panel whose neighbour was narrowed to make room for it", async () => {
+    await start();
+    shellWidth(1000);
+    key(separator("left"), "End");
+    byLabel("Show terminal panel").click();
+    // Expanding the terminal panel narrowed the sessions panel to leave the conversation 360.
+    expect(width("right")).toBe(`${RIGHT_PANEL.min}px`);
+    expect(width("left")).toBe(
+      `${1000 - CENTER_MIN_WIDTH - RIGHT_PANEL.min - 2 * SEPARATOR_WIDTH}px`,
+    );
+    // The terminal panel can still grow, by drag and by End, taking room from the sessions panel.
+    pointer(separator("right"), "pointerdown", 700);
+    pointer(document, "pointermove", 600);
+    pointer(document, "pointerup", 600);
+    expect(width("right")).toBe(`${RIGHT_PANEL.min + 100}px`);
+    expect(centerWidth(1000)).toBe(CENTER_MIN_WIDTH);
+    key(separator("right"), "End");
+    const rightMax = 1000 - CENTER_MIN_WIDTH - LEFT_PANEL.min - 2 * SEPARATOR_WIDTH;
+    expect(width("right")).toBe(`${rightMax}px`);
+    expect(width("left")).toBe(`${LEFT_PANEL.min}px`);
+    expect(centerWidth(1000)).toBe(CENTER_MIN_WIDTH);
   });
 
   it("narrows the terminal panel first, then the sessions panel, when the window narrows", async () => {

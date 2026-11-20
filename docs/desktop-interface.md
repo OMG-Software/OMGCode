@@ -327,8 +327,9 @@ The `main` window is laid out as follows.
   its minimum collapses it. The sessions panel is 200 to 480 pixels and opens
   at 260; the terminal panel is 240 to 720, opens at 360, and starts
   collapsed. Neither may take the conversation below 360 pixels: when the
-  window narrows the terminal panel gives way first, and when a panel expands
-  or grows the other one narrows if it must. When both minimums do not fit,
+  window narrows the terminal panel gives way first. A panel dragged or keyed
+  wider grows into the other, which narrows down to its minimum; a panel
+  expanding from its rail takes the free room first. When both minimums do not fit,
   as at the 800-pixel minimum window width, the other panel collapses to its
   rail (on narrowing, the terminal panel first) and stays collapsed until the
   operator expands it. Widths and collapsed
