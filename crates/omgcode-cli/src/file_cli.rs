@@ -195,7 +195,7 @@ pub(crate) enum FileCommand {
 #[derive(Args)]
 pub(crate) struct StoreChoice {
     /// Use this workspace's `.OMGCode` folder. Without it, the command uses
-    /// the legacy store in the data directory, written before 0.48.0.
+    /// the legacy store in the data directory, written before 0.49.0.
     #[arg(long)]
     workspace: Option<WorkspaceId>,
 }

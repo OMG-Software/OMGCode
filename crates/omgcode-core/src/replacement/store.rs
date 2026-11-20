@@ -38,9 +38,11 @@ mod workspace;
 pub use publication::ReplacementReceipt;
 pub use workspace::CheckpointStore;
 pub(crate) use workspace::ensure as ensure_workspace_store;
-#[cfg(test)]
-pub(crate) use workspace::trust_ledger_for_test;
 use workspace::{HeadFile, Location, locate};
+#[cfg(test)]
+pub(crate) use workspace::{
+    head_state_for_test, ledger_digest_for_test, set_head_for_test, trust_ledger_for_test,
+};
 
 const ANCHOR: &str = "replacement-init-v1.jsonl";
 const DIRECTORY: &str = "replacement-v1";

@@ -32,11 +32,12 @@ pub(super) const GITIGNORE: &str = ".gitignore";
 const GITIGNORE_BYTES: &[u8] = b"*\n";
 const UNREGISTERED: &str = "an unregistered .OMGCode folder already exists in this workspace; \
      move or delete it, or empty it, before the next file write";
+const ACCESS_CHANGED: &str = "the checkpoint folder's owner or access list changed";
 
 /// Which checkpoint store a request uses (ADR-0070).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckpointStore {
-    /// The data-directory store that versions before 0.48.0 wrote. New
+    /// The data-directory store that versions before 0.49.0 wrote. New
     /// operations never go here; existing entries stay inspectable,
     /// acknowledgeable, deletable, compactable, and restorable.
     Legacy,
@@ -88,9 +89,7 @@ pub(super) fn open_bound_root(
             return Err(CheckpointError::StoreMissing);
         }
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-            return Err(CheckpointError::StoreChanged(
-                "the checkpoint folder's owner or access list changed",
-            ));
+            return Err(CheckpointError::StoreChanged(ACCESS_CHANGED));
         }
         Err(error) => return Err(error.into()),
     };
@@ -100,7 +99,16 @@ pub(super) fn open_bound_root(
             "the checkpoint folder was replaced",
         ));
     }
-    Ok(root)
+    // A root open accepts any DACL limited to trusted principals. A bound
+    // folder must keep the exact owner-only protection it was created with,
+    // or a later inheritable grant on the workspace would reach it.
+    match root.require_owner_only() {
+        Ok(()) => Ok(root),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            Err(CheckpointError::StoreChanged(ACCESS_CHANGED))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Bind the workspace's `.OMGCode` folder on its first checkpoint.
@@ -293,6 +301,54 @@ impl HeadSlot {
     }
 }
 
+/// Open a bound store's recorded head, for tests.
+#[cfg(test)]
+fn head_for_test(control: &ControlStore, workspace_id: WorkspaceId) -> HeadFile {
+    locate(control, CheckpointStore::Workspace(workspace_id))
+        .expect("locate the store")
+        .expect("a bound store")
+        .head
+        .expect("a workspace head slot")
+        .open()
+        .expect("open the head record")
+        .expect("a recorded head")
+}
+
+/// The digest a head records for these ledger bytes, for tests.
+#[cfg(test)]
+pub(crate) fn ledger_digest_for_test(ledger: &[u8]) -> RecordedArtifact {
+    ledger_descriptor(ledger, &[]).expect("ledger digest")
+}
+
+/// The committed and announced ledgers of a bound store's head, for tests.
+#[cfg(test)]
+pub(crate) fn head_state_for_test(
+    control: &ControlStore,
+    workspace_id: WorkspaceId,
+) -> (Option<RecordedArtifact>, Option<RecordedArtifact>) {
+    let head = head_for_test(control, workspace_id);
+    (head.record.committed, head.record.next)
+}
+
+/// Rewrite a bound store's head through its ordinary atomic write.
+///
+/// Tests use this to stand in for a store that grew through ordinary
+/// appends, or for a write that stopped between its announce and commit
+/// steps. Nothing in the product may.
+#[cfg(test)]
+pub(crate) fn set_head_for_test(
+    control: &ControlStore,
+    workspace_id: WorkspaceId,
+    committed: Option<RecordedArtifact>,
+    next: Option<RecordedArtifact>,
+) {
+    let mut head = head_for_test(control, workspace_id);
+    let mut record = head.record.clone();
+    record.committed = committed;
+    record.next = next;
+    head.write(record).expect("rewrite the head record");
+}
+
 /// Record the ledger now in a bound folder as its committed head.
 ///
 /// Only tests that seed a ledger directly, standing in for a store that grew
@@ -311,16 +367,12 @@ pub(crate) fn trust_ledger_for_test(control: &ControlStore, workspace_id: Worksp
             .join(super::LEDGER),
     )
     .expect("read the seeded ledger");
-    let mut head = location
-        .head
-        .expect("a workspace head slot")
-        .open()
-        .expect("open the head record")
-        .expect("a recorded head");
-    let mut record = head.record.clone();
-    record.committed = Some(ledger_descriptor(&ledger, &[]).expect("ledger digest"));
-    record.next = None;
-    head.write(record).expect("record the seeded head");
+    set_head_for_test(
+        control,
+        workspace_id,
+        Some(ledger_digest_for_test(&ledger)),
+        None,
+    );
 }
 
 fn temporary_name(name: &str) -> String {

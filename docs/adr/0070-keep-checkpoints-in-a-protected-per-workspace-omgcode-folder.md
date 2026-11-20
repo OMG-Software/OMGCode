@@ -63,6 +63,9 @@ Tamper evidence:
 - A missing folder is `checkpoint_store_missing`. A replaced folder, changed
   access, a different store, a rewritten, extended, or rolled-back ledger,
   removed storage, or a missing head record is `checkpoint_store_changed`.
+  Changed access means anything but the exact owner-only shape that
+  creation applies, checked on every open: a Windows root open alone would
+  accept an inherited DACL naming only trusted principals.
   Nothing is repaired automatically.
 - While either error stands, the workspace admits no broker operation, reads
   included, exactly as for an unresolved operation: a rolled-back folder can

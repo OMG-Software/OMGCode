@@ -1910,6 +1910,152 @@ fn given_a_rolled_back_ledger_or_a_missing_head_when_opening_then_the_store_is_r
 }
 
 #[test]
+fn given_a_bound_folder_whose_access_changed_when_opening_then_the_store_is_refused() {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let folder = fixture.store_dir();
+    // Windows: the workspace grants only the current user, inheritably, so
+    // the folder's inherited DACL names only trusted principals and the root
+    // open passes. Only the exact owner-only check refuses it.
+    #[cfg(windows)]
+    {
+        icacls(&[
+            fixture.workspace.as_os_str(),
+            "/inheritance:r".as_ref(),
+            "/grant:r".as_ref(),
+            format!("*{}:(OI)(CI)F", current_user_sid()).as_ref(),
+        ]);
+        icacls(&[folder.as_os_str(), "/inheritance:e".as_ref()]);
+        omgcode_platform::private_store::PrivateDirectory::open(&folder)
+            .expect("the inherited DACL passes the trusted-root open");
+    }
+    #[cfg(unix)]
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o750)).expect("widen the folder");
+
+    let changed = "the checkpoint folder's owner or access list changed";
+    assert_eq!(store_changed(&checkpoint_error(fixture.inspect())), changed);
+    let error = checkpoint_error(apply_bytes(&mut fixture, PROPOSED, ORIGINAL));
+    assert_eq!(store_changed(&error), changed);
+    assert_eq!(source_bytes(&fixture), PROPOSED);
+}
+
+fn head_state(fixture: &Fixture) -> (Option<RecordedArtifact>, Option<RecordedArtifact>) {
+    crate::replacement::store::head_state_for_test(&fixture.control, fixture.workspace_id)
+}
+
+fn ledger_digest(fixture: &Fixture) -> RecordedArtifact {
+    crate::replacement::store::ledger_digest_for_test(
+        &fs::read(ledger_path(fixture)).expect("read the ledger"),
+    )
+}
+
+#[test]
+fn given_a_head_announced_before_an_interrupted_append_when_reopened_then_the_committed_ledger_is_kept()
+ {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let ledger = fs::read(ledger_path(&fixture)).expect("ledger");
+    let committed = ledger_digest(&fixture);
+    assert_eq!(head_state(&fixture), (Some(committed.clone()), None));
+
+    // A change announced its ledger, then stopped before appending to it.
+    let mut never_written = ledger.clone();
+    never_written.extend_from_slice(b"{\"never\":\"appended\"}\n");
+    let announced = crate::replacement::store::ledger_digest_for_test(&never_written);
+    crate::replacement::store::set_head_for_test(
+        &fixture.control,
+        fixture.workspace_id,
+        Some(committed.clone()),
+        Some(announced.clone()),
+    );
+
+    fixture
+        .inspect()
+        .expect("a read-only open accepts the committed ledger");
+    assert_eq!(head_state(&fixture), (Some(committed), Some(announced)));
+    assert_eq!(fs::read(ledger_path(&fixture)).expect("ledger"), ledger);
+
+    // The next change announces and commits over the stale announcement.
+    applied_id(&mut fixture, PROPOSED, ORIGINAL);
+    assert_eq!(head_state(&fixture), (Some(ledger_digest(&fixture)), None));
+}
+
+#[test]
+fn given_an_append_synced_before_its_head_committed_when_reopened_then_it_is_accepted_and_committed()
+ {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let earlier = ledger_digest(&fixture);
+    applied_id(&mut fixture, PROPOSED, ORIGINAL);
+    let later = ledger_digest(&fixture);
+
+    // The append synced, but the head still names the earlier ledger as
+    // committed and the synced one only as announced.
+    crate::replacement::store::set_head_for_test(
+        &fixture.control,
+        fixture.workspace_id,
+        Some(earlier.clone()),
+        Some(later.clone()),
+    );
+    fixture
+        .inspect()
+        .expect("a read-only open accepts the announced ledger");
+    assert_eq!(
+        head_state(&fixture),
+        (Some(earlier), Some(later)),
+        "a read-only open never writes the head"
+    );
+
+    // A writable open commits the announced head, then the change proceeds.
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    assert_eq!(head_state(&fixture), (Some(ledger_digest(&fixture)), None));
+    assert_eq!(source_bytes(&fixture), PROPOSED);
+}
+
+#[test]
+fn given_a_stray_or_partial_head_record_when_opening_then_only_the_partial_one_is_refused() {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let head = head_path(&fixture);
+    let complete = fs::read(&head).expect("head record");
+
+    // A replacement that stopped before its rename leaves only the private
+    // temporary record. The complete record is still read, and the next
+    // write removes the temporary one.
+    let mut stray = head.clone().into_os_string();
+    stray.push(".next");
+    let stray = PathBuf::from(stray);
+    fs::write(&stray, &complete[..complete.len() / 2]).expect("stray temporary head");
+    #[cfg(windows)]
+    copy_security(&head, &stray);
+    #[cfg(unix)]
+    fs::set_permissions(&stray, fs::Permissions::from_mode(0o600)).expect("private stray");
+    fixture
+        .inspect()
+        .expect("a stray temporary head is not read");
+    applied_id(&mut fixture, PROPOSED, ORIGINAL);
+    assert!(!stray.exists());
+    assert_eq!(head_state(&fixture), (Some(ledger_digest(&fixture)), None));
+
+    // A partial record under the head's own name, which only an interrupted
+    // first write can leave, is refused rather than guessed at.
+    let complete = fs::read(&head).expect("head record");
+    fs::write(&head, &complete[..complete.len() / 2]).expect("truncate the head");
+    assert!(
+        matches!(
+            checkpoint_error(fixture.inspect()),
+            CheckpointError::Json(_)
+        ),
+        "a partial head record must be refused"
+    );
+    assert!(matches!(
+        checkpoint_error(apply_bytes(&mut fixture, ORIGINAL, PROPOSED)),
+        CheckpointError::Json(_)
+    ));
+    assert_eq!(source_bytes(&fixture), ORIGINAL);
+}
+
+#[test]
 fn given_a_forgotten_store_when_writing_again_then_an_empty_folder_is_bound_anew() {
     let mut fixture = Fixture::new();
     let first = applied_id(&mut fixture, ORIGINAL, PROPOSED);

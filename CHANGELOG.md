@@ -34,7 +34,10 @@ Changes are recorded here before a release version is assigned.
     creation, adoption, deletion, replacement, ledger rollback, missing
     head, forget, legacy admission and restore; `create_in` on both
     systems; a CLI forget flow and a `git status` check. Existing
-    checkpoint tests now use the workspace store.
+    checkpoint tests now use the workspace store. A bound folder whose
+    access changed, a head announced before an interrupted append, an
+    append synced before its head committed, and stray or partial head
+    records are covered; every open rechecks the exact owner-only folder.
 - Version 0.48.0 accepts ReFS, including a Dev Drive, on Windows and btrfs,
   XFS, tmpfs, and ZFS on Linux for trusted apply, checkpoint storage, and
   Windows container grants (ADR-0069, accepted). Model edit, multi-edit, and

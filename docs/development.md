@@ -51,7 +51,7 @@ omgcode --data-dir /private/omgcode-data file acknowledge-checkpoint OPERATION_U
 Checkpoints live in each workspace's `.OMGCode` folder, which Git ignores
 and the broker refuses to open. `--workspace` selects that folder; without
 it, the checkpoint commands use the legacy store in the data directory
-that versions before 0.48.0 wrote ([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
+that versions before 0.49.0 wrote ([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
 
 These commands require existing workspace settings, but no workspace/session
 selection. Inspection never initializes storage and returns metadata only.

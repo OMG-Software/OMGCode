@@ -318,7 +318,7 @@ omgcode --data-dir /private/omgcode-data file acknowledge-checkpoint OPERATION_U
 
 `--workspace` selects that workspace's `.OMGCode` folder. Without it, these
 and the other checkpoint commands use the legacy store in the data
-directory, which versions before 0.48.0 wrote
+directory, which versions before 0.49.0 wrote
 ([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
 
 These routes require an existing control store. They never provision checkpoint
@@ -680,7 +680,7 @@ stale once the file changed or is gone.
 ### Private checkpoints, quota, and retention
 
 Use `replacement-v1/` in the workspace's `.OMGCode` folder
-([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)). Before 0.48.0 it was `<data-dir>/replacement-v1/`,
+([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)). Before 0.49.0 it was `<data-dir>/replacement-v1/`,
 which remains readable as the legacy store. The store must be on the
 target's filesystem; refuse a file on another mount or subvolume before
 preparation rather than relocating storage or copying during commit.
@@ -755,9 +755,12 @@ syncs. Opening the store requires the replayed ledger to match the
 committed or the announced head.
 
 - A missing folder is `checkpoint_store_missing`.
-- A replaced folder, changed access, another store's ledger, a rewritten,
-  extended, or rolled-back ledger, removed storage, or a missing head
-  record is `checkpoint_store_changed`.
+- A replaced folder, changed access (on Windows any DACL but the exact
+  protected owner-only one, even one naming only trusted principals; on
+  Linux any owner or mode but the user's 0700), another store's ledger, a
+  rewritten, extended, or rolled-back ledger, removed storage, or a missing
+  or partial head record is `checkpoint_store_changed` or, for a partial
+  head, a refusal to parse it.
 - Either error blocks every broker operation in the workspace, reads
   included, as an unresolved operation does. Nothing is repaired.
 
