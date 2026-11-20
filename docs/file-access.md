@@ -77,6 +77,13 @@ prefixes, empty components, dot/parent components, and NUL. The empty path denot
 the workspace for listing only. Windows also rejects alternate streams, device
 aliases, invalid characters, and trailing-dot/space spellings.
 
+The name `.OMGCode` is reserved for checkpoint storage at any depth and in
+any ASCII letter case. It is refused as a path component with
+`PermissionDenied` (`the .OMGCode folder is reserved for checkpoint
+storage`), and a listing shows it as blocked. Windows also compares each
+opened directory's normalized long name, which refuses a short-name alias
+such as `OMGCOD~1` ([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
+
 Linux uses `openat2` with `BENEATH`, `NO_SYMLINKS`, `NO_MAGICLINKS`, and `NO_XDEV`
 for untrusted traversal. Mount crossings, including bind mounts, are refused.
 The required syscall/flags must be available; there is no weaker fallback.
@@ -258,9 +265,10 @@ On Linux, private directories must belong to the
 current effective user and have mode 0700. Files must be regular, single-link,
 owned by that user, and mode 0600. The implementation checks opened objects,
 not only requested creation modes. It retains directory handles, checks the
-registered data-root identity and creation time, and uses `openat2` without
-symlink or magic-link traversal. Selecting the trusted data root can cross a
-mount; child traversal cannot. Generated procfs reopening requires procfs and
+registered identity and creation time of the store root (a workspace's bound
+`.OMGCode` folder, or the data directory for the legacy store), and uses
+`openat2` without symlink or magic-link traversal. Selecting the trusted
+data root can cross a mount; child traversal cannot. Generated procfs reopening requires procfs and
 verifies the retained file identity again. There is no weaker path fallback.
 Windows uses the private store from
 [ADR-0023](adr/0023-store-windows-checkpoints-with-verified-acls.md), with exact
@@ -303,9 +311,15 @@ commands; see [Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4).
 recovery APIs. Their trusted CLI routes are:
 
 ```text
-omgcode --data-dir /private/omgcode-data file checkpoints
-omgcode --data-dir /private/omgcode-data file acknowledge-checkpoint OPERATION_UUID
+omgcode --data-dir /private/omgcode-data file checkpoints --workspace WORKSPACE_UUID
+omgcode --data-dir /private/omgcode-data file acknowledge-checkpoint OPERATION_UUID \
+  --workspace WORKSPACE_UUID
 ```
+
+`--workspace` selects that workspace's `.OMGCode` folder. Without it, these
+and the other checkpoint commands use the legacy store in the data
+directory, which versions before 0.48.0 wrote
+([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
 
 These routes require an existing control store. They never provision checkpoint
 storage or require a live workspace binding. Inspection returns metadata and
@@ -665,9 +679,11 @@ stale once the file changed or is gone.
 
 ### Private checkpoints, quota, and retention
 
-Use `<data-dir>/replacement-v1/`, outside the development root and workspace.
-It must be on the target's filesystem; refuse a cross-filesystem configuration
-before preparation rather than relocating storage or copying during commit.
+Use `replacement-v1/` in the workspace's `.OMGCode` folder
+([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)). Before 0.48.0 it was `<data-dir>/replacement-v1/`,
+which remains readable as the legacy store. The store must be on the
+target's filesystem; refuse a file on another mount or subvolume before
+preparation rather than relocating storage or copying during commit.
 Keep this store under the control-store identity. Every admitted replacement
 gets an exclusive UUID-named entry containing the captured original bytes,
 proposed bytes, and a bounded manifest. The manifest binds the control store,
@@ -715,6 +731,58 @@ checkpoints. Checkpoints contain source bytes and can
 contain secrets. They are private recovery data, never ordinary model context,
 tool output, or conversation events.
 
+### Workspace checkpoint folder (ADR-0070)
+
+The first checkpoint in a workspace creates `<workspace>/.OMGCode` under the
+control lock, after the write permission check. On Windows it has the
+protected current-user DACL of ADR-0023; on Linux it is mode 0700 and owned
+by the effective user. An existing folder is adopted only when it is empty
+and has exactly that shape: on Windows a protected DACL with one
+non-inheritable full-access entry for the current user, which an inherited
+DACL never has even when it names only trusted principals. Any other entry
+at that name is refused with `checkpoint_store_changed`. The
+control journal records `workspace_store_bound` with the folder's identity
+and creation time; it does not change the settings revision. The folder
+contains a `.gitignore` with `*`, so Git ignores it. The operator's
+`.gitignore` is never edited.
+
+The data directory keeps one head record per workspace store in
+`checkpoint-heads-v1/<workspace-id>.json`. It records the store ID and the
+committed ledger's size and SHA-256, plus the next one while a ledger
+change is in progress. Initialization, each append, and compaction
+announce the next head before writing and commit it after the ledger
+syncs. Opening the store requires the replayed ledger to match the
+committed or the announced head.
+
+- A missing folder is `checkpoint_store_missing`.
+- A replaced folder, changed access, another store's ledger, a rewritten,
+  extended, or rolled-back ledger, removed storage, or a missing head
+  record is `checkpoint_store_changed`.
+- Either error blocks every broker operation in the workspace, reads
+  included, as an unresolved operation does. Nothing is repaired.
+
+Recover with the trusted CLI:
+
+```text
+omgcode --data-dir DATA file forget-checkpoint-store --workspace WORKSPACE_UUID --abandon
+```
+
+It records `workspace_store_forgotten` and prints `forgotten` and
+`folder_changed: false`; the folder stays where it is and no command reads
+it again. The next checkpoint needs the old folder moved, deleted, or
+emptied, and then binds a new one. The desktop has no equivalent.
+
+Admission checks both the workspace store and the legacy store, so a
+pending legacy operation still blocks the workspace. Restore reads a
+legacy checkpoint when the workspace store does not hold its ID; the
+restore itself is checkpointed in the workspace store.
+
+On Windows the folder's protected DACL grants only the current user and
+does not inherit a workspace AppContainer grant. On Linux, Landlock grants
+the workspace as a hierarchy, so a contained run with write access can
+change the folder. The identity binding and head record detect such a
+change before the next use; they do not prevent it.
+
 ### Replacement sequence and audit compatibility
 
 An upgraded installation initially has neither the replacement store nor its
@@ -725,8 +793,8 @@ must not create a replacement ledger just because it is absent.
 The library preparation API or trusted apply may provision
 storage under the control writer lock,
 after authorization, private-storage, same-filesystem, and capacity checks.
-Use a separate `<data-dir>/replacement-init-v1.jsonl` anchor, outside the
-replacement directory.
+Use a separate `replacement-init-v1.jsonl` anchor in the store root, outside
+the replacement directory.
 It is a strict, private, single-link journal of at most 4 KiB and two records,
 bound to the control-store UUID and a new replacement-store UUID. Its two states
 are `initializing` and `ready`, in that order. It is part of the aggregate
@@ -912,7 +980,8 @@ are operator commands, not model tool routes. See
 omgcode --data-dir DATA file restore WORKSPACE_UUID PATH --session SESSION_UUID \
   --checkpoint OPERATION_UUID --expected-sha256 CURRENT_SHA256 \
   --expected-bytes CURRENT_BYTES --writers-stopped
-omgcode --data-dir DATA file delete-checkpoint OPERATION_UUID --permanent
+omgcode --data-dir DATA file delete-checkpoint OPERATION_UUID \
+  --workspace WORKSPACE_UUID --permanent
 ```
 
 `file restore` reads the named checkpoint's `original` payload, rereads it
@@ -993,6 +1062,7 @@ Compaction runs in two ways:
 
 - `file compact-checkpoints --discard-history` is a trusted operator command. It
   needs no workspace binding and opens no workspace file or checkpoint entry.
+  `--workspace WORKSPACE_UUID` selects that workspace's store.
 - Apply, restore, and deletion compact first when the ledger lacks room for
   their records: six for an apply or restore and two for a deletion. They do
   not compact for the aggregate byte quota.

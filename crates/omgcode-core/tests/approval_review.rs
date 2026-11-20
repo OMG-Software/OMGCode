@@ -179,7 +179,9 @@ impl Fixture {
             .expect("open control")
             .expect("control store");
         omgcode_core::files::FileBroker::new(&mut control)
-            .checkpoint_inspect()
+            .checkpoint_inspect(omgcode_core::replacement::CheckpointStore::Workspace(
+                self.workspace_id,
+            ))
             .expect("inspect checkpoints")
             .operations
             .len()

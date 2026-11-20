@@ -455,6 +455,9 @@ fn reopen_pinned_file(object: &File) -> io::Result<File> {
 }
 
 fn classify_entry(directory: &File, name: &OsStr) -> io::Result<EntryKind> {
+    if super::is_reserved_name(name) {
+        return Ok(EntryKind::Blocked);
+    }
     classify_entry_metadata(statat(directory, name, AtFlags::SYMLINK_NOFOLLOW))
 }
 
@@ -947,5 +950,28 @@ mod tests {
             .expect("bounded name units");
         assert_eq!(by_name.entries.len(), 1);
         assert!(by_name.truncated);
+    }
+
+    #[test]
+    fn given_a_store_folder_when_listed_or_opened_then_it_is_blocked() {
+        let (temporary, workspace) = workspace();
+        let store = temporary.path().join("root/workspace/.OMGCode");
+        fs::create_dir(&store).expect("create store folder");
+        fs::write(store.join("ledger"), b"private").expect("create store file");
+
+        let listing = workspace
+            .list(&relative(""), 10, 100)
+            .expect("list entries");
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].name, OsStr::new(".OMGCode"));
+        assert_eq!(listing.entries[0].kind, EntryKind::Blocked);
+        for name in [".OMGCode/ledger", ".omgcode/ledger"] {
+            let error = RelativePath::new(Path::new(name)).expect_err(name);
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{name:?}");
+        }
+        assert_eq!(
+            fs::read(store.join("ledger")).expect("store file unchanged"),
+            b"private"
+        );
     }
 }

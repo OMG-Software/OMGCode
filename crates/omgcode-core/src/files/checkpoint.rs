@@ -8,7 +8,7 @@ use crate::policy::{Operation, PolicyRequest, SessionBinding};
 use crate::replacement::store::{self, Store};
 use crate::replacement::{
     CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
-    CheckpointReceipt, RecordedArtifact,
+    CheckpointReceipt, CheckpointStore, RecordedArtifact,
 };
 use crate::session::sha256_hex;
 
@@ -29,6 +29,20 @@ impl FileBroker<'_> {
     /// inspection; do not automatically retry or remove that evidence.
     pub fn checkpoint_prepare(
         &mut self,
+        binding: &SessionBinding,
+        target: &FileTarget,
+        expected: &RecordedArtifact,
+        proposed: &[u8],
+    ) -> Result<CheckpointReceipt, FileError> {
+        let store = CheckpointStore::Workspace(target.workspace_id);
+        self.prepare_in(store, binding, target, expected, proposed)
+    }
+
+    /// Prepare into `store`. Product routes pass the target's workspace
+    /// store; tests also seed the legacy store, which nothing else writes.
+    pub(super) fn prepare_in(
+        &mut self,
+        store: CheckpointStore,
         binding: &SessionBinding,
         target: &FileTarget,
         expected: &RecordedArtifact,
@@ -62,19 +76,32 @@ impl FileBroker<'_> {
         }
         // Root setup precedes the callback; initialization cannot start from an
         // old authorization result. The control writer remains borrowed here.
-        let mut store = Store::open_or_initialize(self.control, capture.volume, |_| {
+        check_permissions(self.control, binding, target)?;
+        if let CheckpointStore::Workspace(workspace_id) = store {
+            if workspace_id != target.workspace_id {
+                return Err(FileError::Invalid(
+                    "checkpoint store belongs to another workspace",
+                ));
+            }
+            store::ensure_workspace_store(self.control, workspace_id)?;
+        }
+        let mut opened = Store::open_or_initialize(self.control, store, capture.volume, |_| {
             check_permissions(self.control, binding, target)
         })?;
         check_permissions(self.control, binding, target)?;
-        Ok(store.prepare(target, self.control.revision(), &capture, proposed)?)
+        Ok(opened.prepare(target, self.control.revision(), &capture, proposed)?)
     }
 
     /// Inspect existing protected metadata without creating files or opening any
     /// workspace target. No checkpoint contents are returned.
     /// Invalid records or missing required artifacts return an error without
     /// repair. A complete initializing anchor reports incomplete initialization.
-    pub fn checkpoint_inspect(&mut self) -> Result<CheckpointInspection, FileError> {
-        Ok(store::inspect(self.control)?)
+    /// An unbound workspace reports unused storage.
+    pub fn checkpoint_inspect(
+        &mut self,
+        store: CheckpointStore,
+    ) -> Result<CheckpointInspection, FileError> {
+        Ok(store::inspect(self.control, store)?)
     }
 
     /// Acknowledge one unresolved operation in existing storage. This does not
@@ -82,8 +109,26 @@ impl FileBroker<'_> {
     /// Only the current pending operation ID is accepted. The acknowledgement
     /// is appended and synced; a write or sync failure can be uncertain and must
     /// be inspected on reopen without automatic retry.
-    pub fn checkpoint_acknowledge(&mut self, operation_id: Uuid) -> Result<(), FileError> {
-        Ok(store::acknowledge(self.control, operation_id)?)
+    pub fn checkpoint_acknowledge(
+        &mut self,
+        store: CheckpointStore,
+        operation_id: Uuid,
+    ) -> Result<(), FileError> {
+        Ok(store::acknowledge(self.control, store, operation_id)?)
+    }
+
+    /// Abandon a workspace's bound `.OMGCode` checkpoint folder (ADR-0070).
+    ///
+    /// This is a trusted operator action, not a model tool route. Only the
+    /// control journal changes; the folder and its contents stay where they
+    /// are. The next checkpoint in the workspace creates a new folder, so an
+    /// old one must first be moved, deleted, or emptied. Returns whether a
+    /// folder was bound.
+    pub fn checkpoint_forget_store(
+        &mut self,
+        workspace_id: crate::policy::WorkspaceId,
+    ) -> Result<bool, FileError> {
+        Ok(self.control.forget_workspace_store(workspace_id)?)
     }
 
     /// Permanently delete one resolved checkpoint entry from existing storage.
@@ -97,9 +142,10 @@ impl FileBroker<'_> {
     /// recursive, and no error path deletes other evidence.
     pub fn checkpoint_delete(
         &mut self,
+        store: CheckpointStore,
         operation_id: Uuid,
     ) -> Result<CheckpointDeletion, FileError> {
-        Ok(store::delete(self.control, operation_id)?)
+        Ok(store::delete(self.control, store, operation_id)?)
     }
 
     /// Rewrite the checkpoint ledger in place, dropping deleted entries' history.
@@ -112,8 +158,11 @@ impl FileBroker<'_> {
     /// unfinished, and writes nothing when the ledger would not shrink. A
     /// failure during the rewrite is uncertain; reopen to inspect, and do not
     /// retry automatically.
-    pub fn checkpoint_compact(&mut self) -> Result<CheckpointCompaction, FileError> {
-        Ok(store::compact(self.control)?)
+    pub fn checkpoint_compact(
+        &mut self,
+        store: CheckpointStore,
+    ) -> Result<CheckpointCompaction, FileError> {
+        Ok(store::compact(self.control, store)?)
     }
 }
 

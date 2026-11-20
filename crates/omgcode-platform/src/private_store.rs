@@ -123,6 +123,18 @@ impl PrivateDirectory {
     pub fn open(_path: &Path) -> io::Result<Self> {
         Err(unsupported())
     }
+    /// Refuse unsupported private root creation before any I/O.
+    pub fn create_in(
+        _parent: &Path,
+        _parent_identity: DirectoryIdentity,
+        _name: &OsStr,
+    ) -> io::Result<Self> {
+        Err(unsupported())
+    }
+    /// Refuse an unsupported owner-only check.
+    pub fn require_owner_only(&self) -> io::Result<()> {
+        Err(unsupported())
+    }
     /// Refuse unsupported native identity lookup.
     pub fn identity(&self) -> io::Result<DirectoryIdentity> {
         Err(unsupported())

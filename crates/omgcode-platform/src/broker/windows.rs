@@ -312,7 +312,9 @@ impl NativeWorkspace {
     }
 
     fn classify_entry(&self, parent: &File, name: &OsStr, attributes: u32) -> EntryKind {
-        if attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE) != 0 {
+        if super::is_reserved_name(name)
+            || attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE) != 0
+        {
             return EntryKind::Blocked;
         }
         if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
@@ -359,6 +361,14 @@ fn open_relative_directory(parent: &File, name: &OsStr, volume: u64) -> io::Resu
         FILE_ATTRIBUTE_DIRECTORY,
     )?;
     validate_directory(&file, volume)?;
+    // A short-name or case alias of the checkpoint folder resolves to it;
+    // its normalized long name does not (ADR-0070).
+    if super::is_reserved_units(&replacement::normalized_final_name(&file)?) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the .OMGCode folder is reserved for checkpoint storage",
+        ));
+    }
     Ok(file)
 }
 
@@ -1432,5 +1442,70 @@ pub(crate) mod tests {
         }
         let too_long = OsString::from_wide(&vec![120; MAX_COMPONENT_UNITS + 1]);
         assert!(validate_component(&too_long).is_err());
+    }
+
+    /// The 8.3 alias of `path`'s leaf, when the volume generated a distinct one.
+    #[allow(unsafe_code)]
+    fn short_leaf(path: &Path) -> Option<OsString> {
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut buffer = vec![0_u16; 2048];
+        let capacity = u32::try_from(buffer.len()).expect("bounded buffer");
+        // SAFETY: `wide` is NUL-terminated and `buffer` holds `capacity` units.
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), capacity) };
+        let written = usize::try_from(written).expect("u32 fits usize");
+        if written == 0 || written >= buffer.len() {
+            return None;
+        }
+        let short = PathBuf::from(OsString::from_wide(&buffer[..written]));
+        let leaf = short.file_name()?.to_os_string();
+        (leaf.as_os_str() != path.file_name()?).then_some(leaf)
+    }
+
+    #[test]
+    fn given_a_store_folder_when_listed_or_opened_by_alias_then_it_is_blocked() {
+        let temporary = tempdir().expect("temporary directory");
+        let workspace = native(temporary.path());
+        let store = temporary.path().join("workspace").join(".OMGCode");
+        fs::create_dir(&store).expect("create store folder");
+        fs::write(store.join("ledger"), b"private").expect("create store file");
+
+        let listing = workspace
+            .list(
+                &RelativePath::new(Path::new("")).expect("workspace root"),
+                8,
+                128,
+            )
+            .expect("list workspace");
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].name, OsString::from(".OMGCode"));
+        assert_eq!(listing.entries[0].kind, EntryKind::Blocked);
+
+        let Some(alias) = short_leaf(&store) else {
+            eprintln!("skipped alias check: this volume generated no 8.3 name");
+            return;
+        };
+        assert!(
+            !crate::broker::is_reserved_name(&alias),
+            "the alias must differ: {alias:?}"
+        );
+        let folder = RelativePath::new(Path::new(&alias)).expect("alias is an ordinary name");
+        let error = workspace
+            .list(&folder, 8, 128)
+            .expect_err("listing through the alias must be refused");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "the .OMGCode folder is reserved for checkpoint storage"
+        );
+        let file = RelativePath::new(&Path::new(&alias).join("ledger")).expect("alias file");
+        let error = workspace
+            .read(&file, 64)
+            .expect_err("reading through the alias must be refused");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            fs::read(store.join("ledger")).expect("store file unchanged"),
+            b"private"
+        );
     }
 }

@@ -11,7 +11,7 @@ mod replay;
 pub(crate) mod store;
 pub use store::{
     CheckpointCompaction, CheckpointDeletion, CheckpointError, CheckpointInspection,
-    CheckpointReceipt, CheckpointState, ReplacementReceipt,
+    CheckpointReceipt, CheckpointState, CheckpointStore, ReplacementReceipt,
 };
 
 use std::collections::{HashMap, HashSet};

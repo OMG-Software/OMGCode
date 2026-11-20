@@ -99,11 +99,17 @@ impl Fixture {
     }
 
     fn inspect(&mut self) -> Result<CheckpointInspection, FileError> {
-        FileBroker::new(&mut self.control).checkpoint_inspect()
+        FileBroker::new(&mut self.control)
+            .checkpoint_inspect(CheckpointStore::Workspace(self.workspace_id))
+    }
+
+    /// The workspace's checkpoint folder (ADR-0070).
+    fn store_dir(&self) -> PathBuf {
+        self.workspace.join(".OMGCode")
     }
 
     fn operation_dir(&self, id: Uuid) -> PathBuf {
-        self.data.join("replacement-v1").join(id.to_string())
+        self.store_dir().join("replacement-v1").join(id.to_string())
     }
 }
 
@@ -408,7 +414,7 @@ fn publication_faults_reopen_with_exact_progress_and_no_automatic_retry() {
 
         if fault == "after_native_commit" {
             FileBroker::new(&mut fixture.control)
-                .checkpoint_acknowledge(id)
+                .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), id)
                 .expect("acknowledge without claiming success");
             let acknowledged = fixture.inspect().expect("inspect acknowledgement");
             let record = operation(&acknowledged, id);
@@ -443,12 +449,15 @@ fn partial_publication_records_fail_closed_without_changing_evidence() {
         assert_stage(&fixture, id, !applied);
         assert_payloads(&fixture, id);
 
-        let ledger = fixture.data.join("replacement-v1").join("ledger.jsonl");
+        let ledger = fixture
+            .store_dir()
+            .join("replacement-v1")
+            .join("ledger.jsonl");
         let before = fs::read(&ledger).expect("read partial ledger evidence");
         assert!(fixture.inspect().is_err(), "{fault} must not replay");
         assert!(
             FileBroker::new(&mut fixture.control)
-                .checkpoint_acknowledge(id)
+                .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), id)
                 .is_err(),
             "{fault} must not acknowledge corrupt evidence"
         );
@@ -484,7 +493,10 @@ fn tampered_stage_metadata_fails_closed_and_preserves_the_bytes() {
     let stage_bytes = fs::read(&stage).expect("read retained stage");
     tamper_stage_security(&stage);
     let security = source_security(&stage);
-    let ledger = fixture.data.join("replacement-v1").join("ledger.jsonl");
+    let ledger = fixture
+        .store_dir()
+        .join("replacement-v1")
+        .join("ledger.jsonl");
     let ledger_bytes = fs::read(&ledger).expect("read complete ledger");
 
     assert!(
@@ -493,7 +505,7 @@ fn tampered_stage_metadata_fails_closed_and_preserves_the_bytes() {
     );
     assert!(
         FileBroker::new(&mut fixture.control)
-            .checkpoint_acknowledge(id)
+            .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), id)
             .is_err(),
         "tampered stage cannot be acknowledged"
     );
@@ -646,8 +658,8 @@ fn apply_rejects_foreign_and_stale_bindings_and_either_denied_preference() {
         fs::read(fixture.workspace.join("source.txt")).expect("unchanged source"),
         ORIGINAL
     );
-    assert!(!fixture.data.join("replacement-init-v1.jsonl").exists());
-    assert!(!fixture.data.join("replacement-v1").exists());
+    // A denial precedes the workspace checkpoint folder (ADR-0070).
+    assert!(!fixture.store_dir().exists());
     assert!(!fixture.data.join("file-operations-v1.jsonl").exists());
 }
 
@@ -689,7 +701,8 @@ fn restore(
 }
 
 fn delete(fixture: &mut Fixture, id: Uuid) -> Result<CheckpointDeletion, FileError> {
-    FileBroker::new(&mut fixture.control).checkpoint_delete(id)
+    FileBroker::new(&mut fixture.control)
+        .checkpoint_delete(CheckpointStore::Workspace(fixture.workspace_id), id)
 }
 
 fn checkpoint_error<T: std::fmt::Debug>(result: Result<T, FileError>) -> CheckpointError {
@@ -891,7 +904,7 @@ fn unresolved_operations_must_be_acknowledged_before_deletion() {
     ));
     assert_payloads(&fixture, id);
     FileBroker::new(&mut fixture.control)
-        .checkpoint_acknowledge(id)
+        .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), id)
         .expect("acknowledge");
     assert!(!delete(&mut fixture, id).expect("delete").resumed);
     let inspection = fixture.inspect().expect("inspect");
@@ -913,8 +926,13 @@ fn an_interrupted_deletion_blocks_other_work_until_repeated() {
         let target = fixture.workspace.join("source.txt");
         let first = applied_id(&mut fixture, ORIGINAL, PROPOSED);
         let second = applied_id(&mut fixture, PROPOSED, ORIGINAL);
-        let error = crate::replacement::store::delete_with_fault(&fixture.control, first, fault)
-            .expect_err(fault);
+        let error = crate::replacement::store::delete_with_fault(
+            &fixture.control,
+            CheckpointStore::Workspace(fixture.workspace_id),
+            first,
+            fault,
+        )
+        .expect_err(fault);
         assert!(
             matches!(
                 error,
@@ -947,7 +965,7 @@ fn an_interrupted_deletion_blocks_other_work_until_repeated() {
         assert!(blocked(checkpoint_error(delete(&mut fixture, second))));
         assert!(
             FileBroker::new(&mut fixture.control)
-                .checkpoint_acknowledge(first)
+                .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), first)
                 .is_err()
         );
         assert_eq!(fs::read(&target).unwrap(), ORIGINAL);
@@ -971,9 +989,13 @@ fn an_interrupted_deletion_blocks_other_work_until_repeated() {
     // A completion record that became visible despite a sync error stands.
     let mut fixture = Fixture::new();
     let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
-    let error =
-        crate::replacement::store::delete_with_fault(&fixture.control, id, "deletion_outcome_sync")
-            .expect_err("outcome sync fault");
+    let error = crate::replacement::store::delete_with_fault(
+        &fixture.control,
+        CheckpointStore::Workspace(fixture.workspace_id),
+        id,
+        "deletion_outcome_sync",
+    )
+    .expect_err("outcome sync fault");
     assert_eq!(error.code(), "checkpoint_uncertain");
     let inspection = fixture.inspect().expect("inspect");
     assert_eq!(inspection.pending_deletion, None);
@@ -992,10 +1014,18 @@ fn partial_deletion_records_fail_closed_without_further_removal() {
     ] {
         let mut fixture = Fixture::new();
         let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
-        let error = crate::replacement::store::delete_with_fault(&fixture.control, id, fault)
-            .expect_err(fault);
+        let error = crate::replacement::store::delete_with_fault(
+            &fixture.control,
+            CheckpointStore::Workspace(fixture.workspace_id),
+            id,
+            fault,
+        )
+        .expect_err(fault);
         assert_eq!(error.code(), "checkpoint_uncertain", "{fault}");
-        let ledger = fixture.data.join("replacement-v1").join("ledger.jsonl");
+        let ledger = fixture
+            .store_dir()
+            .join("replacement-v1")
+            .join("ledger.jsonl");
         let before = fs::read(&ledger).expect("partial ledger evidence");
         assert!(fixture.inspect().is_err(), "{fault} must not replay");
         assert!(delete(&mut fixture, id).is_err(), "{fault}");
@@ -1011,8 +1041,13 @@ fn partial_deletion_records_fail_closed_without_further_removal() {
 fn deletion_never_removes_an_unknown_name() {
     let mut fixture = Fixture::new();
     let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
-    crate::replacement::store::delete_with_fault(&fixture.control, id, "deletion_artifact")
-        .expect_err("interrupted deletion");
+    crate::replacement::store::delete_with_fault(
+        &fixture.control,
+        CheckpointStore::Workspace(fixture.workspace_id),
+        id,
+        "deletion_artifact",
+    )
+    .expect_err("interrupted deletion");
     let unexpected = fixture.operation_dir(id).join("unexpected");
     fs::write(&unexpected, b"operator data").expect("unknown name");
     assert_eq!(
@@ -1024,15 +1059,22 @@ fn deletion_never_removes_an_unknown_name() {
 }
 
 fn compact(fixture: &mut Fixture) -> Result<CheckpointCompaction, FileError> {
-    FileBroker::new(&mut fixture.control).checkpoint_compact()
+    FileBroker::new(&mut fixture.control)
+        .checkpoint_compact(CheckpointStore::Workspace(fixture.workspace_id))
 }
 
 fn ledger_path(fixture: &Fixture) -> PathBuf {
-    fixture.data.join("replacement-v1").join("ledger.jsonl")
+    fixture
+        .store_dir()
+        .join("replacement-v1")
+        .join("ledger.jsonl")
 }
 
 fn candidate_path(fixture: &Fixture) -> PathBuf {
-    fixture.data.join("replacement-v1").join("ledger.compact")
+    fixture
+        .store_dir()
+        .join("replacement-v1")
+        .join("ledger.compact")
 }
 
 fn record_count(bytes: &[u8]) -> usize {
@@ -1147,6 +1189,7 @@ fn pad_ledger(fixture: &Fixture, minimum: usize) -> Option<Uuid> {
     }
     let failed = (padding.records < minimum).then(|| padding.failed());
     fs::write(&path, padding.bytes).expect("write padded ledger");
+    crate::replacement::store::trust_ledger_for_test(&fixture.control, fixture.workspace_id);
     failed
 }
 
@@ -1237,12 +1280,17 @@ fn compaction_is_refused_while_an_operation_or_deletion_is_unresolved() {
     );
     assert_eq!(fs::read(ledger_path(&fixture)).unwrap(), ledger);
     FileBroker::new(&mut fixture.control)
-        .checkpoint_acknowledge(pending)
+        .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), pending)
         .expect("acknowledge");
 
     let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
-    crate::replacement::store::delete_with_fault(&fixture.control, id, "deletion_artifact")
-        .expect_err("interrupted deletion");
+    crate::replacement::store::delete_with_fault(
+        &fixture.control,
+        CheckpointStore::Workspace(fixture.workspace_id),
+        id,
+        "deletion_artifact",
+    )
+    .expect_err("interrupted deletion");
     let ledger = fs::read(ledger_path(&fixture)).expect("ledger");
     assert_eq!(
         checkpoint_error(compact(&mut fixture)).code(),
@@ -1265,8 +1313,12 @@ fn compaction_faults_keep_a_valid_ledger_and_are_not_retried() {
         let before = fixture.inspect().expect("inspect");
         let old = fs::read(ledger_path(&fixture)).expect("ledger");
 
-        let error = crate::replacement::store::compact_with_fault(&fixture.control, fault)
-            .expect_err(fault);
+        let error = crate::replacement::store::compact_with_fault(
+            &fixture.control,
+            CheckpointStore::Workspace(fixture.workspace_id),
+            fault,
+        )
+        .expect_err(fault);
         assert_eq!(error.code(), "checkpoint_uncertain", "{fault}");
         // Either ledger reopens with the same retained state.
         let after = fixture.inspect().expect(fault);
@@ -1539,7 +1591,7 @@ fn removal_faults_leave_exact_unresolved_evidence_and_are_not_retried() {
         if !outcome_recorded {
             assert!(remove(&mut fixture, ORIGINAL).is_err(), "{fault}");
             FileBroker::new(&mut fixture.control)
-                .checkpoint_acknowledge(id)
+                .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), id)
                 .expect("acknowledge without claiming success");
             assert_eq!(fixture.inspect().expect("inspect").pending, None);
         }
@@ -1689,4 +1741,339 @@ fn a_stage_file_in_a_removal_entry_is_refused_on_reopen() {
         fixture.inspect(),
         Err(FileError::Checkpoint(CheckpointError::Invalid(_)))
     ));
+}
+
+// ADR-0070: the per-workspace `.OMGCode` checkpoint folder.
+
+/// The data-directory head record of the fixture's workspace store.
+fn head_path(fixture: &Fixture) -> PathBuf {
+    fixture
+        .data
+        .join("checkpoint-heads-v1")
+        .join(format!("{}.json", fixture.workspace_id.as_uuid()))
+}
+
+fn source_bytes(fixture: &Fixture) -> Vec<u8> {
+    fs::read(fixture.workspace.join("source.txt")).expect("read source")
+}
+
+/// Create a directory with the owner-only access a private store requires.
+fn make_private_dir(path: &Path) {
+    #[cfg(windows)]
+    make_private_root(path);
+    #[cfg(unix)]
+    {
+        fs::create_dir(path).expect("create private directory");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("owner-only mode");
+    }
+}
+
+/// Creates `.OMGCode` exactly as trusted creation does: owner-only and
+/// exclusive, through the platform private-directory backend.
+fn create_exact_store_folder(fixture: &Fixture) {
+    let scope = fixture
+        .control
+        .file_scope(fixture.workspace_id)
+        .expect("workspace scope");
+    omgcode_platform::private_store::PrivateDirectory::create_in(
+        &fixture.workspace,
+        scope.workspace.native_identity(),
+        std::ffi::OsStr::new(".OMGCode"),
+    )
+    .expect("create an exactly private folder");
+}
+
+fn store_changed(error: &CheckpointError) -> &'static str {
+    match error {
+        CheckpointError::StoreChanged(message) => message,
+        other => panic!("expected a changed checkpoint store: {other:?}"),
+    }
+}
+
+const UNREGISTERED_PREFIX: &str = "an unregistered .OMGCode folder already exists";
+
+#[test]
+fn given_a_first_write_when_applied_then_a_private_self_ignoring_folder_is_bound() {
+    let mut fixture = Fixture::new();
+    assert_eq!(
+        fixture.inspect().expect("inspect unused").state,
+        crate::replacement::CheckpointState::Unused
+    );
+    assert!(!fixture.store_dir().exists());
+
+    let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+
+    let store = fixture.store_dir();
+    assert_eq!(
+        fs::read(store.join(".gitignore")).expect("ignore file"),
+        b"*\n"
+    );
+    assert_payloads(&fixture, id);
+    // Opening validates the owner-only access list or mode.
+    omgcode_platform::private_store::PrivateDirectory::open(&store).expect("private folder");
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&store)
+            .expect("folder metadata")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
+    );
+    let bound = fixture
+        .control
+        .workspace_store(fixture.workspace_id)
+        .expect("bound folder")
+        .live_path()
+        .expect("bound path");
+    assert_eq!(
+        fs::canonicalize(bound).expect("bound path"),
+        fs::canonicalize(&store).expect("store path")
+    );
+    assert!(head_path(&fixture).exists());
+    // The legacy data-directory store stays unused.
+    assert!(!fixture.data.join("replacement-v1").exists());
+    assert!(!fixture.data.join("replacement-init-v1.jsonl").exists());
+}
+
+#[test]
+fn given_a_deleted_folder_when_writing_then_the_store_is_missing_and_not_recreated() {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    fs::remove_dir_all(fixture.store_dir()).expect("delete the folder");
+
+    let error = checkpoint_error(apply_bytes(&mut fixture, PROPOSED, ORIGINAL));
+    assert!(matches!(error, CheckpointError::StoreMissing), "{error:?}");
+    assert_eq!(error.code(), "checkpoint_store_missing");
+    assert!(matches!(
+        checkpoint_error(fixture.inspect()),
+        CheckpointError::StoreMissing
+    ));
+    assert!(!fixture.store_dir().exists());
+    assert_eq!(source_bytes(&fixture), PROPOSED);
+}
+
+#[test]
+fn given_a_replaced_folder_when_writing_then_the_store_is_refused_as_changed() {
+    let mut fixture = Fixture::new();
+    let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let moved = fixture.workspace.join("moved-store");
+    fs::rename(fixture.store_dir(), &moved).expect("move the folder");
+    make_private_dir(&fixture.store_dir());
+
+    let error = checkpoint_error(apply_bytes(&mut fixture, PROPOSED, ORIGINAL));
+    assert_eq!(store_changed(&error), "the checkpoint folder was replaced");
+    assert_eq!(error.code(), "checkpoint_store_changed");
+    assert_eq!(
+        fs::read_dir(fixture.store_dir())
+            .expect("list new folder")
+            .count(),
+        0
+    );
+    assert_eq!(
+        fs::read(
+            moved
+                .join("replacement-v1")
+                .join(id.to_string())
+                .join("original")
+        )
+        .expect("moved evidence"),
+        ORIGINAL
+    );
+    assert_eq!(source_bytes(&fixture), PROPOSED);
+}
+
+#[test]
+fn given_a_rolled_back_ledger_or_a_missing_head_when_opening_then_the_store_is_refused() {
+    let mut fixture = Fixture::new();
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let ledger = ledger_path(&fixture);
+    let earlier = fs::read(&ledger).expect("earlier ledger");
+    let later = applied_id(&mut fixture, PROPOSED, ORIGINAL);
+
+    // Roll the folder back to its state before the second write.
+    fs::write(&ledger, &earlier).expect("roll the ledger back");
+    fs::remove_dir_all(fixture.operation_dir(later)).expect("remove the later entry");
+    let differs = "the checkpoint ledger differs from its recorded head";
+    assert_eq!(store_changed(&checkpoint_error(fixture.inspect())), differs);
+    let error = checkpoint_error(apply_bytes(&mut fixture, ORIGINAL, PROPOSED));
+    assert_eq!(store_changed(&error), differs);
+    assert_eq!(fs::read(&ledger).expect("ledger unchanged"), earlier);
+    assert_eq!(source_bytes(&fixture), ORIGINAL);
+
+    // A store whose head record is gone is refused too.
+    fs::remove_file(head_path(&fixture)).expect("remove the head record");
+    assert_eq!(
+        store_changed(&checkpoint_error(fixture.inspect())),
+        "the checkpoint ledger's head record is missing"
+    );
+}
+
+#[test]
+fn given_a_forgotten_store_when_writing_again_then_an_empty_folder_is_bound_anew() {
+    let mut fixture = Fixture::new();
+    let first = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    let old_store = fixture.inspect().expect("inspect").replacement_store_id;
+
+    let workspace_id = fixture.workspace_id;
+    assert!(
+        FileBroker::new(&mut fixture.control)
+            .checkpoint_forget_store(workspace_id)
+            .expect("forget")
+    );
+    assert!(
+        !FileBroker::new(&mut fixture.control)
+            .checkpoint_forget_store(workspace_id)
+            .expect("forget again")
+    );
+    assert!(fixture.control.workspace_store(workspace_id).is_none());
+    assert_eq!(
+        fixture.inspect().expect("inspect forgotten").state,
+        crate::replacement::CheckpointState::Unused
+    );
+
+    // The old folder stays, and blocks a new store until it is moved.
+    let error = checkpoint_error(apply_bytes(&mut fixture, PROPOSED, ORIGINAL));
+    assert!(
+        store_changed(&error).starts_with(UNREGISTERED_PREFIX),
+        "{error:?}"
+    );
+    assert!(fixture.control.workspace_store(workspace_id).is_none());
+    assert_eq!(source_bytes(&fixture), PROPOSED);
+
+    let moved = fixture.workspace.join("old-store");
+    fs::rename(fixture.store_dir(), &moved).expect("move the old folder");
+    let second = applied_id(&mut fixture, PROPOSED, ORIGINAL);
+    let inspection = fixture.inspect().expect("inspect new store");
+    assert_ne!(inspection.replacement_store_id, old_store);
+    assert_eq!(
+        inspection
+            .operations
+            .iter()
+            .map(|operation| operation.operation_id)
+            .collect::<Vec<_>>(),
+        vec![second]
+    );
+    assert!(
+        moved
+            .join("replacement-v1")
+            .join(first.to_string())
+            .join("original")
+            .exists()
+    );
+}
+
+#[test]
+fn given_an_existing_folder_when_first_writing_then_only_an_empty_private_one_is_adopted() {
+    let mut fixture = Fixture::new();
+    let folder = fixture.store_dir();
+
+    // A folder with ordinary inherited access is never adopted, even where
+    // the inherited DACL names only trusted principals.
+    fs::create_dir(&folder).expect("create an ordinary folder");
+    #[cfg(unix)]
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).expect("ordinary mode");
+    let error = checkpoint_error(apply_bytes(&mut fixture, ORIGINAL, PROPOSED));
+    assert!(
+        store_changed(&error).starts_with(UNREGISTERED_PREFIX),
+        "{error:?}"
+    );
+    fs::remove_dir(&folder).expect("remove the ordinary folder");
+
+    // On Windows, a protected DACL for the user alone is still refused when
+    // its entry is inheritable rather than the exact one creation applies.
+    #[cfg(windows)]
+    {
+        make_private_root(&folder);
+        let error = checkpoint_error(apply_bytes(&mut fixture, ORIGINAL, PROPOSED));
+        assert!(
+            store_changed(&error).starts_with(UNREGISTERED_PREFIX),
+            "{error:?}"
+        );
+        fs::remove_dir(&folder).expect("remove the inheritable folder");
+    }
+
+    // Neither is an exactly private folder that already holds something.
+    create_exact_store_folder(&fixture);
+    fs::write(folder.join("planted"), b"planted").expect("plant a file");
+    let error = checkpoint_error(apply_bytes(&mut fixture, ORIGINAL, PROPOSED));
+    assert!(
+        store_changed(&error).starts_with(UNREGISTERED_PREFIX),
+        "{error:?}"
+    );
+    assert_eq!(
+        fs::read(folder.join("planted")).expect("planted file"),
+        b"planted"
+    );
+    assert!(
+        fixture
+            .control
+            .workspace_store(fixture.workspace_id)
+            .is_none()
+    );
+    assert_eq!(source_bytes(&fixture), ORIGINAL);
+
+    // An empty private folder is adopted.
+    fs::remove_file(folder.join("planted")).expect("remove the planted file");
+    let id = applied_id(&mut fixture, ORIGINAL, PROPOSED);
+    assert_payloads(&fixture, id);
+    assert!(
+        fixture
+            .control
+            .workspace_store(fixture.workspace_id)
+            .is_some()
+    );
+}
+
+#[test]
+fn given_a_pending_legacy_operation_when_writing_then_admission_waits_and_restore_reads_it() {
+    let mut fixture = Fixture::new();
+    let binding = fixture.binding();
+    let target = fixture.target();
+    let legacy = FileBroker::new(&mut fixture.control)
+        .prepare_in(
+            CheckpointStore::Legacy,
+            &binding,
+            &target,
+            &artifact(ORIGINAL),
+            PROPOSED,
+        )
+        .expect("seed a legacy checkpoint")
+        .operation_id;
+    assert!(
+        fixture
+            .data
+            .join("replacement-v1")
+            .join(legacy.to_string())
+            .exists()
+    );
+    assert!(!fixture.store_dir().exists());
+
+    let error = checkpoint_error(apply_bytes(&mut fixture, ORIGINAL, PROPOSED));
+    assert!(
+        matches!(error, CheckpointError::Pending(id) if id == legacy),
+        "{error:?}"
+    );
+    assert!(!fixture.store_dir().exists());
+    assert_eq!(source_bytes(&fixture), ORIGINAL);
+
+    FileBroker::new(&mut fixture.control)
+        .checkpoint_acknowledge(CheckpointStore::Legacy, legacy)
+        .expect("acknowledge the legacy operation");
+    applied_id(&mut fixture, ORIGINAL, PROPOSED);
+
+    // A legacy checkpoint restores through a new workspace checkpoint.
+    let restored = restore(&mut fixture, legacy, PROPOSED)
+        .expect("restore a legacy checkpoint")
+        .operation_id
+        .expect("a restore is a new operation");
+    assert_eq!(source_bytes(&fixture), ORIGINAL);
+    assert!(fixture.operation_dir(restored).exists());
+    assert!(
+        !fixture
+            .data
+            .join("replacement-v1")
+            .join(restored.to_string())
+            .exists()
+    );
 }

@@ -127,7 +127,12 @@ replace an existing file on a Linux ext4, btrfs, XFS, tmpfs, or ZFS mount, or on
 a Windows NTFS or ReFS volume, under the file-access contract
 ([ADR-0069](docs/adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
 It requires the operator to stop other writers. No filesystem has a power-loss
-claim. Trusted CLI restore writes a retained
+claim. Checkpoints are kept in a protected `.OMGCode` folder in each workspace
+that Git ignores and the broker refuses; a missing or changed folder blocks
+the workspace until the trusted CLI forgets it. On Linux a contained run can
+change that folder, which is detected, not prevented
+([ADR-0070](docs/adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
+Trusted CLI restore writes a retained
 original back through the same apply path and a new checkpoint. Trusted CLI
 checkpoint deletion removes one resolved checkpoint and keeps its history.
 Neither is power-loss qualified. The ledger is compacted in place, by a trusted

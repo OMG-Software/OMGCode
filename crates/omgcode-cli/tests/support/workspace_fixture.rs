@@ -66,6 +66,11 @@ impl Fixture {
             session_id: Uuid::new_v4(),
         }
     }
+
+    /// The workspace's checkpoint folder (ADR-0070).
+    pub(crate) fn store_dir(&self) -> PathBuf {
+        self.workspace.join(".OMGCode")
+    }
 }
 
 /// Gives `data` the private ACL the Windows store requires of its root.
@@ -73,6 +78,14 @@ impl Fixture {
 /// Temporary directories inherit grants that the store correctly refuses.
 #[cfg(windows)]
 pub(crate) fn restrict_to_current_user(data: &std::path::Path) {
+    fs::create_dir(data).expect("application data");
+    restrict_existing_to_current_user(data);
+}
+
+/// Like [`restrict_to_current_user`], for a directory that already exists.
+/// Its children inherit the new grant in place of the old ones.
+#[cfg(windows)]
+pub(crate) fn restrict_existing_to_current_user(data: &std::path::Path) {
     use std::process::Command;
 
     use super::{CLI_DEADLINE, run_with_deadline};
@@ -93,7 +106,6 @@ pub(crate) fn restrict_to_current_user(data: &std::path::Path) {
         .expect("SID column")
         .trim_matches('"')
         .to_owned();
-    fs::create_dir(data).expect("application data");
     let mut icacls = Command::new("icacls");
     icacls
         .arg(data)

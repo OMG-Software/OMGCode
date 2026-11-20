@@ -1521,7 +1521,15 @@ fn an_approved_model_edit_applies_through_the_operator_flow() {
     let listed = run_cli(&fixture.data, &["approvals", "list"]);
     assert_success(&listed);
     assert_eq!(json_output(&listed)["approvals"][0]["state"], "consumed");
-    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let checkpoints = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&checkpoints);
     let operations = json_output(&checkpoints)["operations"].clone();
     assert_eq!(operations.as_array().expect("operations").len(), 1);
@@ -1667,7 +1675,15 @@ fn an_approved_model_multi_edit_applies_through_the_operator_flow() {
     let listed = run_cli(&fixture.data, &["approvals", "list"]);
     assert_success(&listed);
     assert_eq!(json_output(&listed)["approvals"][0]["state"], "consumed");
-    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let checkpoints = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&checkpoints);
     assert_eq!(
         json_output(&checkpoints)["operations"]
@@ -1757,7 +1773,15 @@ fn an_approved_model_create_makes_the_file_through_the_operator_flow() {
     let approvals = json_output(&listed)["approvals"].clone();
     assert_eq!(approvals.as_array().expect("approvals").len(), 1);
     assert_eq!(approvals[0]["state"], "consumed");
-    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let checkpoints = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&checkpoints);
     assert_eq!(
         json_output(&checkpoints)["operations"]
@@ -1856,7 +1880,15 @@ fn an_approved_model_rename_moves_the_file_through_the_operator_flow() {
     let approvals = json_output(&listed)["approvals"].clone();
     assert_eq!(approvals.as_array().expect("approvals").len(), 1);
     assert_eq!(approvals[0]["state"], "consumed");
-    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let checkpoints = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&checkpoints);
     assert_eq!(
         json_output(&checkpoints)["operations"]
@@ -1944,7 +1976,15 @@ fn an_approved_model_delete_removes_the_file_and_the_operator_restores_it() {
         "a second deletion is refused"
     );
 
-    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let checkpoints = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&checkpoints);
     let checkpoints = json_output(&checkpoints);
     let operations = checkpoints["operations"].as_array().expect("operations");
@@ -2003,7 +2043,15 @@ fn an_approved_model_delete_removes_the_file_and_the_operator_restores_it() {
         fs::read(fixture.workspace.join("note.txt")).expect("kept"),
         NOTE
     );
-    let after = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let after = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&after);
     assert_eq!(
         json_output(&after)["operations"]

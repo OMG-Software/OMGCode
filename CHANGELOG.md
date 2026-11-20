@@ -6,6 +6,35 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.49.0 keeps new checkpoints in a protected `.OMGCode` folder in
+  each workspace instead of the data directory (ADR-0070, accepted), so
+  model edit, multi-edit, and delete calls work when the workspace is on
+  another volume or mount than the data directory, such as a Dev Drive.
+  - **Core:** the first checkpoint creates the folder with the owner-only
+    DACL or mode 0700, writes a `.gitignore` containing `*`, and records
+    `workspace_store_bound` in the control journal. An empty folder with
+    exactly that owner-only shape is adopted; anything else at that name,
+    including a folder with an inherited DACL, is refused. A head record in
+    `<data-dir>/checkpoint-heads-v1/` is announced before and committed
+    after each ledger change. A missing folder is
+    `checkpoint_store_missing`; a replaced folder or a rewritten,
+    rolled-back, or extended ledger is `checkpoint_store_changed`. Either
+    blocks the workspace's broker operations until the operator acts.
+    Admission still checks the legacy data-directory store, and restore
+    reads a legacy checkpoint when the workspace store lacks its ID.
+  - **Platform:** the broker refuses `.OMGCode` at any depth and in any
+    letter case, lists it as blocked, and on Windows refuses a short-name
+    alias of it. `PrivateDirectory::create_in` creates one private
+    directory under a registered parent.
+  - **CLI:** `file checkpoints`, `acknowledge-checkpoint`,
+    `delete-checkpoint`, and `compact-checkpoints` take `--workspace`; without
+    it they use the legacy store. New `file forget-checkpoint-store
+    --workspace ID --abandon` unbinds a folder and leaves it in place.
+  - **Tests:** reserved-name, listing, and 8.3-alias refusal; folder
+    creation, adoption, deletion, replacement, ledger rollback, missing
+    head, forget, legacy admission and restore; `create_in` on both
+    systems; a CLI forget flow and a `git status` check. Existing
+    checkpoint tests now use the workspace store.
 - Version 0.48.0 accepts ReFS, including a Dev Drive, on Windows and btrfs,
   XFS, tmpfs, and ZFS on Linux for trusted apply, checkpoint storage, and
   Windows container grants (ADR-0069, accepted). Model edit, multi-edit, and

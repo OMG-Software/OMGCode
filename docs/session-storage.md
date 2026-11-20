@@ -18,6 +18,10 @@ The existing strict file-operation-v1,
 control-v1, and session schemas are unchanged. Checkpoint contents are never
 stored in conversation events or returned by ordinary checkpoint inspection.
 Session replay, archive, and restore cannot authorize or replay replacement.
+From 0.48.0 new checkpoints live in each workspace's `.OMGCode` folder, and
+the control journal records `workspace_store_bound` and
+`workspace_store_forgotten` events; session storage is unchanged
+([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
 
 ## Implemented prototype (v0.4.0)
 
