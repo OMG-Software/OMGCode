@@ -104,7 +104,11 @@ command and opens no dialogs.
   images, and text ellipses are not drawn, and glyph positions can differ
   slightly from the screen. It was compared with the screen in a Chromium
   browser pane against the mock backend, where a code line scrolled far past
-  the reply's edge was also painted wrapped inside the image.
+  the reply's edge was also painted wrapped inside the image. Those were
+  manual checks. The repository has no browser test runner, so the automated
+  tests cover the painter and the capture-only rules under jsdom, which does
+  no layout; a change that stopped wide code wrapping in the image, or moved
+  glyphs, would not fail a test.
 - A model server chooses the id shown as the label. A crafted id could read
   like another name; the reply's position and shading still mark it as a
   reply.

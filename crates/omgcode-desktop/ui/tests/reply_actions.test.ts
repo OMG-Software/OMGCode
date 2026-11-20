@@ -240,6 +240,11 @@ describe("plain text", () => {
     expect(text.split("\n").some((line) => line !== "" && line.trim() === "")).toBe(false);
   });
 
+  it("separates every block in an item, not only the second", () => {
+    const text = plainText(md("1. a\n\n   b\n\n   ```\n   c\n   ```\n\n   d"));
+    expect(text).toBe("1. a\n\n   b\n\n   c\n\n   d");
+  });
+
   it("keeps paragraphs in an item apart and a nested list on the next line", () => {
     expect(plainText(md("- one\n\n  two\n  - inner"))).toBe("• one\n\n  two\n  • inner");
   });
