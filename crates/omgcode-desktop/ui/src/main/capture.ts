@@ -8,8 +8,9 @@
  * position a `Range` reports for it. Nothing is fetched and no markup is parsed; the canvas only
  * ever holds pixels drawn here, so it is never tainted.
  *
- * It paints backgrounds, uniform borders with one corner radius, per-side borders without
- * radius, overflow clipping, text with its computed font and colour, and line-through. It does
+ * It paints backgrounds (per line fragment for an inline element), uniform borders with one
+ * corner radius, per-side borders without radius, overflow clipping, text with its computed
+ * font and colour, and line-through. It does
  * not paint shadows, gradients, images, outlines, or text ellipses; list markers, which are
  * pseudo-elements, are drawn from the list itself. Buttons and anything marked
  * `data-capture="skip"` are left out, so the image holds the reply without its controls.
@@ -130,19 +131,19 @@ export function paintElement(
   const box = element.getBoundingClientRect();
   const x = box.left - origin.x;
   const y = box.top - origin.y;
-  const radius = Math.min(px(style.borderTopLeftRadius), box.width / 2, box.height / 2);
-
-  if (visible(style.backgroundColor)) {
-    context.fillStyle = style.backgroundColor;
-    roundedPath(context, x, y, box.width, box.height, radius);
-    context.fill();
+  const inline = style.display === "inline";
+  // An inline element that wraps has one box per line. Its bounding box would also cover the
+  // text beside those lines, so each fragment is painted on its own.
+  const fragments = inline ? Array.from(element.getClientRects()) : [box];
+  for (const fragment of fragments) {
+    paintBox(context, style, fragment, origin);
   }
-  paintBorders(context, style, x, y, box.width, box.height, radius);
   if (element.tagName === "LI") {
     paintListMarker(context, element, style, x, origin);
   }
 
-  const clips = style.overflowX !== "visible" || style.overflowY !== "visible";
+  const radius = Math.min(px(style.borderTopLeftRadius), box.width / 2, box.height / 2);
+  const clips = !inline && (style.overflowX !== "visible" || style.overflowY !== "visible");
   if (clips) {
     context.save();
     roundedPath(context, x, y, box.width, box.height, radius);
@@ -215,6 +216,24 @@ function firstTextRect(node: Element): DOMRect | null {
 
 function font(style: CSSStyleDeclaration): string {
   return `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+}
+
+/** Paints one box's background and borders. */
+function paintBox(
+  context: CanvasRenderingContext2D,
+  style: CSSStyleDeclaration,
+  box: DOMRectReadOnly,
+  origin: Origin,
+): void {
+  const x = box.left - origin.x;
+  const y = box.top - origin.y;
+  const radius = Math.min(px(style.borderTopLeftRadius), box.width / 2, box.height / 2);
+  if (visible(style.backgroundColor)) {
+    context.fillStyle = style.backgroundColor;
+    roundedPath(context, x, y, box.width, box.height, radius);
+    context.fill();
+  }
+  paintBorders(context, style, x, y, box.width, box.height, radius);
 }
 
 function px(value: string): number {

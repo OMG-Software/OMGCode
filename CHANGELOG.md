@@ -41,6 +41,15 @@ Changes are recorded here before a release version is assigned.
     a side, 4096 × 4096 in area, and 50,000 text runs. No dependency or Rust
     command is added. The mock backend records a manifest for each mock turn,
     and its fixture now starts a turn before its manifest, as core does.
+  - **Review fixes:** an escaped marker or one inside inline code no longer
+    closes emphasis, and an escaped or code-span bracket or parenthesis no
+    longer ends a link; a linear pre-pass marks those positions as literal,
+    and link destinations drop their backslash escapes. Fence and list-item
+    lines are split by a scan instead of patterns that could backtrack. An
+    inline element's image background is painted per line fragment. Plain
+    text leaves blank lines inside a list item unindented. A copy action's
+    synchronous throw becomes a rejection through a promise executor, still
+    inside the click.
   - **Tests (reply actions):** model labels from manifests and their reset
     at a turn start, a hostile model id, the live entry label, the label in
     the window, each copy action, refusal and label reset, plain-text

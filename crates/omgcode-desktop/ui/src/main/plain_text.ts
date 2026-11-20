@@ -58,8 +58,11 @@ function listText(list: Element, ordered: boolean): string {
       const marker = ordered ? `${start + index}. ` : "• ";
       const indent = " ".repeat(marker.length);
       // Items of a tight list hold their blocks directly; keep them on adjacent lines.
-      const body = blocks(item).join("\n");
-      return marker + body.split("\n").join(`\n${indent}`);
+      // A blank line inside an item, as in a code block, stays empty rather than indented.
+      const lines = blocks(item).join("\n").split("\n");
+      return (
+        marker + lines.map((line, n) => (n === 0 || line === "" ? line : indent + line)).join("\n")
+      );
     })
     .join("\n");
 }

@@ -46,8 +46,10 @@ command and opens no dialogs.
    copied as shown.
 4. **Copy image** paints the whole entry, label and time included, onto a
    canvas and writes one PNG through `navigator.clipboard.write`.
-   `src/main/capture.ts` repaints from the computed layout: backgrounds,
-   borders with one corner radius, overflow clipping, text runs at the
+   `src/main/capture.ts` repaints from the computed layout: backgrounds and
+   borders with one corner radius (for an inline element, one per line
+   fragment, so a wrapped code span does not cover the text beside it),
+   overflow clipping, text runs at the
    positions `Range.getClientRects` reports with their computed font and
    colour, line-through, and list markers drawn from the list. Buttons and
    parts marked `data-capture="skip"` are left out; a `capturing` class

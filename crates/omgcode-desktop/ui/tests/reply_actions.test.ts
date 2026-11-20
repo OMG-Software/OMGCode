@@ -230,6 +230,12 @@ describe("plain text", () => {
     expect(text).toBe("a\tb\n1\t2\n\n  x\n\ty");
   });
 
+  it("leaves blank lines inside a list item unindented", () => {
+    const text = plainText(md("1. run\n\n   ```\n   a\n\n   b\n   ```"));
+    expect(text).toBe("1. run\n   a\n\n   b");
+    expect(text.split("\n").some((line) => line !== "" && line.trim() === "")).toBe(false);
+  });
+
   it("describes an image as the reply shows it", () => {
     expect(plainText(md("![cat](c.png)"))).toBe("[image: cat] (c.png)");
   });
@@ -319,6 +325,33 @@ describe("image painting", () => {
       `fillText(there,${124 - 90 + CAPTURE_PADDING},${50 - 40 + CAPTURE_PADDING + 10})`,
     );
     expect(calls.some((c) => c.includes("hidden") || c.includes("Copy"))).toBe(false);
+    root.remove();
+  });
+
+  it("paints each line of a wrapped inline element, not its bounding box", () => {
+    const root = document.createElement("p");
+    const code = document.createElement("code");
+    code.style.display = "inline";
+    code.style.backgroundColor = "rgb(38, 42, 47)";
+    code.append("wrapped code");
+    root.append("before ", code, " after");
+    document.body.append(root);
+    placeAt(root, 0, 0, 300, 40);
+    placeAt(code, 10, 0, 280, 40);
+    Object.defineProperty(code, "getClientRects", {
+      value: () => [
+        { left: 200, top: 0, width: 90, height: 20 },
+        { left: 10, top: 20, width: 60, height: 20 },
+      ],
+      configurable: true,
+    });
+    const { context, calls } = recordingContext();
+    paintElement(context, root, { x: 0, y: 0 }, { runs: 100 });
+    const rects = calls.filter((c) => c.startsWith("rect("));
+    expect(rects).toContain("rect(200,0,90,20)");
+    expect(rects).toContain("rect(10,20,60,20)");
+    expect(rects).not.toContain("rect(10,0,280,40)");
+    expect(calls.filter((c) => c === "fill rgb(38, 42, 47)")).toHaveLength(2);
     root.remove();
   });
 

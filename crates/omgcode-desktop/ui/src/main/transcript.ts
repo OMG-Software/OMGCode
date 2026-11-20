@@ -164,10 +164,7 @@ function messageBody(entry: MessageEntry): HTMLElement {
 }
 
 /** Renders one transcript entry. Every string is shown as text or inert Markdown elements. */
-export function renderEntry(
-  entry: TranscriptEntry,
-  context: EntryContext = { model: null },
-): HTMLElement {
+export function renderEntry(entry: TranscriptEntry, context?: EntryContext): HTMLElement {
   switch (entry.kind) {
     case "message": {
       const node = entryShell(entry, `bubble bubble-${entry.role}`);
@@ -178,7 +175,7 @@ export function renderEntry(
       }
       append(
         node,
-        head(replyLabel(context.model), entry, entry.source),
+        head(replyLabel(context?.model ?? null), entry, entry.source),
         body,
         replyActions(entry, node, body),
       );

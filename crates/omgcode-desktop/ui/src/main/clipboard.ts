@@ -65,13 +65,11 @@ export function feedbackButton(
         return;
       }
       running = true;
-      // The action runs inside the click so the webview sees the user's gesture.
-      let pending: Promise<void>;
-      try {
-        pending = action();
-      } catch (reason) {
-        pending = Promise.reject(reason);
-      }
+      // A promise executor runs at once, so the action still starts inside the click and the
+      // webview sees the user's gesture; a synchronous throw becomes a rejection.
+      const pending = new Promise<void>((resolve) => {
+        resolve(action());
+      });
       void pending.then(
         () => settle(done),
         () => settle("Copy failed"),

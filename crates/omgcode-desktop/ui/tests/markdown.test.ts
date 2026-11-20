@@ -204,6 +204,27 @@ describe("inline content", () => {
     expect(root.textContent).toBe("call my_func_name, 2 * 3 * 4, *not em*, a ~ b");
   });
 
+  it("does not close emphasis on an escaped marker or one inside inline code", () => {
+    const escaped = md("*a\\*b* and **c\\**d**");
+    expect([...escaped.querySelectorAll("em, strong")].map((n) => n.textContent)).toEqual([
+      "a*b",
+      "c**d",
+    ]);
+    const coded = md("*a `*` b* and _x `_` y_");
+    const ems = [...coded.querySelectorAll("em")];
+    expect(ems.map((n) => n.textContent)).toEqual(["a * b", "x _ y"]);
+    expect(ems.map((n) => n.querySelector("code")?.textContent)).toEqual(["*", "_"]);
+  });
+
+  it("does not match a bracket or parenthesis that is escaped or inside inline code", () => {
+    const root = md("[a\\]b](x) and [`]`](y) and [c](d\\)e)");
+    expect([...root.querySelectorAll(".md-link")].map((n) => n.textContent)).toEqual([
+      "a]b (x)",
+      "] (y)",
+      "c (d)e)",
+    ]);
+  });
+
   it("keeps the contents of a code span literal", () => {
     const root = md("use `` a `*b*` c `` here");
     expect(only(root, "code").textContent).toBe("a `*b*` c");

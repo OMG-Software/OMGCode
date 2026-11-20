@@ -29,15 +29,15 @@ export const MAX_TABLE_COLUMNS = 32;
 const MAX_LANGUAGE_CHARS = 32;
 const MAX_LINK_DESTINATION_CHARS = 2048;
 
-const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 const HEADING_OPEN = /^ {0,3}(#{1,6})(?:[ \t]|$)/;
 const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const BLOCK_QUOTE = /^ {0,3}> ?/;
-const LIST_ITEM = /^( {0,3})([-*+]|(\d{1,9})([.)]))(?:([ \t]+)(.*))?$/;
+const LIST_MARKER = /^([-*+]|(\d{1,9})([.)]))/;
 const DELIMITER_CELL = /^:?-+:?$/;
 const WHITESPACE = /\s/;
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
+const ESCAPED_PUNCTUATION = /\\([!-/:-@[-`{-~])/g;
 
 const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
@@ -106,18 +106,33 @@ interface Fence {
   info: string;
 }
 
+/** The number of leading spaces, not tabs, before the first other character. */
+function leadingSpaces(line: string): number {
+  let count = 0;
+  while (line.charAt(count) === " ") {
+    count += 1;
+  }
+  return count;
+}
+
+// The line scanners below walk each line once, so no pattern can backtrack over it.
 function fenceOpen(line: string): Fence | null {
-  const match = FENCE_OPEN.exec(line);
-  if (match === null) {
+  const indent = leadingSpaces(line);
+  const ch = line.charAt(indent);
+  if (indent > 3 || (ch !== "`" && ch !== "~")) {
     return null;
   }
-  const marker = match[2] ?? "";
-  const info = match[3] ?? "";
+  const length = runLength(line, indent, ch);
+  if (length < 3) {
+    return null;
+  }
+  const marker = ch.repeat(length);
+  const info = line.slice(indent + length);
   // A backtick fence's info string cannot hold a backtick, so "```a```" stays inline code.
   if (marker.startsWith("`") && info.includes("`")) {
     return null;
   }
-  return { indent: (match[1] ?? "").length, marker, info: info.trim() };
+  return { indent, marker, info: info.trim() };
 }
 
 function isFenceClose(line: string, fence: Fence): boolean {
@@ -143,22 +158,32 @@ interface ListMarker {
 }
 
 function listMarker(line: string): ListMarker | null {
-  const match = LIST_ITEM.exec(line);
+  const indent = leadingSpaces(line);
+  // The marker pattern is anchored and bounded; the spacing and content are split off by a scan.
+  const match = indent > 3 ? null : LIST_MARKER.exec(line.slice(indent));
   if (match === null || THEMATIC_BREAK.test(line)) {
     return null;
   }
-  const indent = (match[1] ?? "").length;
-  const marker = match[2] ?? "";
-  const digits = match[3];
-  const spacing = match[5] ?? "";
-  const rest = match[6] ?? "";
+  const marker = match[1] ?? "";
+  const digits = match[2];
   const markerEnd = indent + marker.length;
+  const after = line.slice(markerEnd);
+  let spacingLength = 0;
+  while (after.charAt(spacingLength) === " " || after.charAt(spacingLength) === "\t") {
+    spacingLength += 1;
+  }
+  // A marker must be followed by whitespace or the end of the line.
+  if (after !== "" && spacingLength === 0) {
+    return null;
+  }
+  const spacing = after.slice(0, spacingLength);
+  const rest = after.slice(spacingLength);
   // An empty item, or one whose content starts more than four columns out, takes one space.
   const contentIndent =
     rest === "" || spacing.length > 4 ? markerEnd + 1 : markerEnd + spacing.length;
   return {
     ordered: digits !== undefined,
-    kind: digits === undefined ? marker : (match[4] ?? "."),
+    kind: digits === undefined ? marker : (match[3] ?? "."),
     start: digits === undefined ? 1 : Number.parseInt(digits, 10),
     contentIndent,
     first: rest,
@@ -499,15 +524,55 @@ class CloserIndex {
   }
 }
 
-/** For each unescaped `[`, the index of its matching `]`, or -1. */
-function bracketPairs(source: string): Int32Array {
+/**
+ * Marks each position whose character is literal: escaped by a backslash, or inside a code span
+ * (its backtick runs included). Delimiters, brackets, and link ends at a marked position never
+ * match. It scans as `parseInline` does, so both agree on where code spans are, in linear time.
+ */
+function literalPositions(source: string): Uint8Array {
+  const literal = new Uint8Array(source.length);
+  const closers = new CloserIndex(source);
+  let i = 0;
+  while (i < source.length) {
+    const ch = source.charAt(i);
+    if (ch === "\\" && ASCII_PUNCTUATION.test(source.charAt(i + 1))) {
+      literal[i + 1] = 1;
+      i += 2;
+    } else if (ch === "`") {
+      const run = runLength(source, i, "`");
+      const close = codeSpanClose(source, i, run, closers);
+      if (close === -1) {
+        i += run;
+      } else {
+        literal.fill(1, i, close + run);
+        i = close + run;
+      }
+    } else {
+      i += 1;
+    }
+  }
+  return literal;
+}
+
+/** The start of the backtick run that closes a code span opened by `run` backticks at `at`. */
+function codeSpanClose(source: string, at: number, run: number, closers: CloserIndex): number {
+  return closers.find(
+    "`".repeat(run),
+    at + run,
+    (k) => source.charAt(k - 1) !== "`" && source.charAt(k + run) !== "`",
+  );
+}
+
+/** For each `[` that is not literal, the index of its matching `]`, or -1. */
+function bracketPairs(source: string, literal: Uint8Array): Int32Array {
   const pairs = new Int32Array(source.length).fill(-1);
   const open: number[] = [];
   for (let k = 0; k < source.length; k += 1) {
     const ch = source.charAt(k);
-    if (ch === "\\") {
-      k += 1;
-    } else if (ch === "[") {
+    if (literal[k] === 1) {
+      continue;
+    }
+    if (ch === "[") {
       open.push(k);
     } else if (ch === "]") {
       const at = open.pop();
@@ -541,7 +606,8 @@ function parseInline(source: string, depth: number): Node[] {
   }
   const out: Node[] = [];
   const closers = new CloserIndex(source);
-  const brackets = bracketPairs(source);
+  const literal = literalPositions(source);
+  const brackets = bracketPairs(source, literal);
   let buffer = "";
   const flush = (): void => {
     if (buffer !== "") {
@@ -562,14 +628,9 @@ function parseInline(source: string, depth: number): Node[] {
 
     if (ch === "`") {
       const run = runLength(source, i, "`");
-      const fence = "`".repeat(run);
-      const close = closers.find(
-        fence,
-        i + run,
-        (at) => source.charAt(at - 1) !== "`" && source.charAt(at + run) !== "`",
-      );
+      const close = codeSpanClose(source, i, run, closers);
       if (close === -1) {
-        buffer += fence;
+        buffer += "`".repeat(run);
       } else {
         flush();
         out.push(el("code", { text: codeSpanText(source.slice(i + run, close)) }));
@@ -580,7 +641,7 @@ function parseInline(source: string, depth: number): Node[] {
 
     if (ch === "[" || (ch === "!" && source.charAt(i + 1) === "[")) {
       const image = ch === "!";
-      const link = linkAt(source, image ? i + 1 : i, brackets, closers);
+      const link = linkAt(source, image ? i + 1 : i, brackets, literal, closers);
       if (link !== null) {
         flush();
         out.push(linkNode(link.label, link.destination, image, depth));
@@ -594,7 +655,7 @@ function parseInline(source: string, depth: number): Node[] {
 
     if (ch === "*" || ch === "_" || ch === "~") {
       const run = runLength(source, i, ch);
-      const span = emphasisAt(source, i, run, ch, closers);
+      const span = emphasisAt(source, i, run, ch, literal, closers);
       if (span === null) {
         buffer += ch.repeat(run);
         i += run;
@@ -626,6 +687,7 @@ function emphasisAt(
   at: number,
   run: number,
   ch: string,
+  literal: Uint8Array,
   closers: CloserIndex,
 ): { strength: number; close: number } | null {
   const after = source.charAt(at + run);
@@ -640,6 +702,10 @@ function emphasisAt(
   for (const strength of strengths) {
     const delimiter = ch.repeat(strength);
     const close = closers.find(delimiter, at + run, (k) => {
+      // An escaped marker, or one inside inline code, is text and closes nothing.
+      if (literal[k] === 1 || literal[k + strength - 1] === 1) {
+        return false;
+      }
       if (isSpace(source.charAt(k - 1)) || source.charAt(k - 1) === ch) {
         return false;
       }
@@ -668,13 +734,14 @@ function linkAt(
   source: string,
   open: number,
   brackets: Int32Array,
+  literal: Uint8Array,
   closers: CloserIndex,
 ): { label: string; destination: string; next: number } | null {
   const close = brackets[open] ?? -1;
   if (close === -1 || source.charAt(close + 1) !== "(") {
     return null;
   }
-  const end = closers.find(")", close + 2, () => true);
+  const end = closers.find(")", close + 2, (k) => literal[k] !== 1);
   if (end === -1) {
     return null;
   }
@@ -688,7 +755,11 @@ function linkAt(
     destination.startsWith("<") && destination.endsWith(">")
       ? destination.slice(1, -1)
       : destination;
-  return { label: source.slice(open + 1, close), destination: unwrapped, next: end + 1 };
+  return {
+    label: source.slice(open + 1, close),
+    destination: unwrapped.replace(ESCAPED_PUNCTUATION, "$1"),
+    next: end + 1,
+  };
 }
 
 /**
