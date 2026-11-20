@@ -55,14 +55,18 @@ permissions.
    never changed. The repair is refused, with `data_folder_not_repairable`,
    when the folder is a link or not an ordinary folder, is not on NTFS or
    ReFS, has an untrusted owner, or has an entry type the module does not
-   decode. It is also refused when the new DACL would not give this process
+   decode. It is also refused when the new DACL would not give the user
    every right the store asks for on its root: listing, traversal, reading
-   attributes and the descriptor, and adding files and folders. Windows'
-   own `AccessCheck` decides this against the process token, so group
-   memberships, kept deny entries, and the owner's implicit rights count
-   as they will when the store opens. The check uses the token of the
-   process that runs the repair, so an elevated run can pass where an
-   unelevated one would not.
+   attributes and the descriptor, and adding files and folders. Two checks
+   must both pass. First, the user's own entries on the folder, less the
+   user's own deny entries, must grant those rights. This check does not
+   depend on the token, so an elevated repair cannot approve a folder that
+   an unelevated launch could not open. CI showed why it is needed:
+   `AccessCheck` alone approved a READ_CONTROL-only user entry under an
+   elevated runner token. Second, Windows' own `AccessCheck` against the
+   process token must grant them, so a kept deny entry for one of the user's
+   groups counts. Access that comes only through a group is refused, which
+   is stricter than Windows but never locks the store out.
 5. **Children.** `SetSecurityInfo` passes the new inheritable entries to
    child folders whose DACL is not protected, such as `sessions`, so they
    lose the inherited grant too. The store's own children, such as

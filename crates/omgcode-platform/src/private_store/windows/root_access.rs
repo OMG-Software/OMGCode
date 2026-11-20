@@ -10,10 +10,12 @@
 //! parent cannot pass the grant down again. Deny entries are placed first, which
 //! only narrows access. The owner is never changed. A root with an untrusted
 //! owner or an entry type this module does not decode is not repaired. Nor is
-//! one whose new DACL would not give this process every right the store asks
-//! for on its root: Windows' own `AccessCheck` decides that against the
-//! process token, so group memberships, deny entries, and the owner's implicit
-//! rights count as they will when the store opens. Children whose DACL is not protected
+//! one whose new DACL would not give the user every right the store asks for
+//! on its root. Two checks decide that. The user's own entries on the folder,
+//! less the user's own deny entries, must grant those rights; this does not
+//! depend on the token, which may be elevated now and not when the store
+//! opens. Windows' own `AccessCheck` against the process token must also grant
+//! them, so a kept deny entry for one of the user's groups counts. Children whose DACL is not protected
 //! receive the new inheritable entries through the native propagation of
 //! `SetSecurityInfo`; the store's own children are protected and unchanged.
 
@@ -32,10 +34,10 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AccessCheck, AclSizeInformation, AddAce,
     DACL_SECURITY_INFORMATION, DuplicateToken, GENERIC_MAPPING, GetAce, GetAclInformation,
-    INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor, LookupAccountSidW,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR, SID_NAME_USE,
-    SecurityIdentification, SetSecurityDescriptorDacl, SetSecurityDescriptorGroup,
-    SetSecurityDescriptorOwner, TOKEN_DUPLICATE, TOKEN_QUERY,
+    INHERIT_ONLY_ACE, INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor,
+    LookupAccountSidW, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    SECURITY_DESCRIPTOR, SID_NAME_USE, SecurityIdentification, SetSecurityDescriptorDacl,
+    SetSecurityDescriptorGroup, SetSecurityDescriptorOwner, TOKEN_DUPLICATE, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ACCESS_RIGHTS, FILE_ALL_ACCESS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -164,11 +166,24 @@ fn plan(file: &File, principals: &Principals) -> io::Result<Result<Plan, &'stati
     }
     let mut grants = Vec::new();
     let (mut denies, mut allows) = (Vec::new(), Vec::new());
+    // Rights the user's own entries give on the folder itself, less those its
+    // own deny entries take away. Inherit-only entries apply only to children.
+    let (mut user_allowed, mut user_denied) = (0u32, 0u32);
     for (ace, bytes) in decoded.into_iter().zip(raw) {
         match ace {
             Ace::Allowed { sid, .. } if !principals.trusted(&sid) => grants.push(describe(&sid)?),
-            Ace::Allowed { .. } => allows.push(explicit(bytes)),
-            Ace::Denied { .. } => denies.push(explicit(bytes)),
+            Ace::Allowed { flags, mask, sid } => {
+                if flags & INHERIT_ONLY_ACE == 0 && principals.user.equals(&sid) {
+                    user_allowed |= mask;
+                }
+                allows.push(explicit(bytes));
+            }
+            Ace::Denied { flags, mask, sid } => {
+                if flags & INHERIT_ONLY_ACE == 0 && principals.user.equals(&sid) {
+                    user_denied |= mask;
+                }
+                denies.push(explicit(bytes));
+            }
             Ace::Other { .. } => return Ok(Err(UNKNOWN_ENTRY)),
         }
     }
@@ -176,7 +191,18 @@ fn plan(file: &File, principals: &Principals) -> io::Result<Result<Plan, &'stati
     grants.dedup_by(|left, right| left.sid == right.sid);
     denies.append(&mut allows);
     let mut acl = build_acl(&denies)?;
-    if !grants.is_empty() && !store_could_open(&owner, &mut acl)? {
+    if grants.is_empty() {
+        return Ok(Ok(Plan { grants, acl }));
+    }
+    // Two checks, both required. The user's own entries must grant the
+    // store's rights, whatever the token: `AccessCheck` judges this process,
+    // which may be elevated or hold privileges an ordinary launch does not.
+    // `AccessCheck` then applies what the first check cannot see, such as a
+    // kept deny entry for one of the user's groups.
+    let own = user_allowed & !user_denied;
+    if own & PRIVATE_DIRECTORY_ACCESS != PRIVATE_DIRECTORY_ACCESS
+        || !store_could_open(&owner, &mut acl)?
+    {
         return Ok(Err(NO_USER_ACCESS));
     }
     Ok(Ok(Plan { grants, acl }))

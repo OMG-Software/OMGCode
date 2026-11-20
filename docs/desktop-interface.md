@@ -949,8 +949,9 @@ revision check and validation (ADR-0064, ADR-0071).
   again. It keeps every other entry, makes inherited entries explicit, and
   stops the folder inheriting. A folder with nothing to remove succeeds with
   no dialog. A link, an untrusted owner, an unknown entry type, or a result
-  under which Windows' `AccessCheck` would not give this process the rights
-  the store needs on the folder is `data_folder_not_repairable`. After No or
+  that would not give the user the rights the store needs on the folder is
+  `data_folder_not_repairable`. Both the user's own entries and Windows'
+  `AccessCheck` must grant them. After No or
   `data_folder_changed` the button stays on offer. After a repair the
   window says that only the user, SYSTEM, and Administrators have access.
   The key field was already emptied, so the operator types the key again.

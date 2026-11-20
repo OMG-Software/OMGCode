@@ -22,10 +22,11 @@ Changes are recorded here before a release version is assigned.
     refuses if they changed. The new DACL is protected and keeps every
     trusted and deny entry, explicit and with denies first. The owner is not
     changed. A link, an untrusted owner, or an unknown entry type is
-    refused. So is a new DACL under which Windows' `AccessCheck`, run against
-    the process token, would not grant the rights the store asks for on its
-    root, so a direct entry with too few rights or a kept deny for one of the
-    user's groups cannot lock the store out.
+    refused. So is a new DACL that would not grant the rights the store asks
+    for on its root, both through the user's own entries and under Windows'
+    `AccessCheck` for the process token. A direct entry with too few rights
+    or a kept deny for one of the user's groups therefore cannot lock the
+    store out, even when the repair runs elevated.
   - **Core and CLI:** `credential_storage_not_private` is a new stable code.
     The CLI keeps the native reason in its message and has no repair
     command.
