@@ -565,6 +565,14 @@ fn classify_mount_type(filesystem: &[u8]) -> io::Result<LinuxFilesystem> {
     })
 }
 
+/// Returns the filesystem type from the one `proc_pid_mountinfo(5)` record
+/// whose first field is `expected`. A record is `id parent major:minor root
+/// mount-point options [optional fields...] - type source super-options`.
+/// The six fixed fields must be present, the ID and parent decimal, the
+/// device `major:minor`, exactly one `-` separator must follow them, and the
+/// type, source, and super-options must follow it. A missing, repeated, or
+/// malformed record fails
+/// closed, so a changed procfs layout refuses rather than misreads.
 fn mount_type_for_id<'a>(bytes: &'a [u8], expected: &[u8]) -> io::Result<&'a [u8]> {
     let mut matches = 0usize;
     let mut filesystem = None;

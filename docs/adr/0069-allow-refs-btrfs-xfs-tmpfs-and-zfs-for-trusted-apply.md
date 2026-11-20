@@ -23,7 +23,9 @@ Observed facts:
   case-preserved Unicode names, hard links, named streams, extended
   attributes, and open by file ID. NTFS reports the same required set.
 - File identity is the 128-bit `FILE_ID_INFO` everywhere on Windows, so ReFS
-  128-bit file IDs need no change.
+  128-bit file IDs need no change. Hard-link support does not widen it: a
+  source, stage, or private file must report one link, so a second name for
+  the same file ID is refused on ReFS as on NTFS.
 - The unchanged Windows platform suite (169 tests: replacement, private store,
   hard links, alternate streams, extended attributes, POSIX rename and delete,
   directory flush, container grants) passes with `TEMP` on that ReFS volume.
