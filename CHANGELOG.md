@@ -15,8 +15,8 @@ Changes are recorded here before a release version is assigned.
     separator between each pair (drag, arrow keys, Home, End, Enter, double
     click). The sessions panel is 200 to 480 pixels; the terminal panel is
     240 to 720 and starts collapsed; neither takes the conversation below
-    360 pixels, and the terminal panel gives way first when the window
-    narrows. A collapsed panel is a rail of icon buttons: the sessions rail
+    360 pixels: the terminal panel gives way first when the window narrows,
+    and expanding or widening a panel narrows the other one if it must. A collapsed panel is a rail of icon buttons: the sessions rail
     holds Expand, New session, Search, Sessions, Approvals with its count,
     and Settings. The terminal panel only says that no terminal is
     available; it starts no shell and calls no command. Widths are not kept

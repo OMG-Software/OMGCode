@@ -48,7 +48,8 @@ Constraints:
    terminal panel is 240 to 720 pixels, opens at 360 when expanded, and starts
    collapsed. Neither panel may take the conversation below 360 pixels. When
    the window narrows, the terminal panel gives way first, then the sessions
-   panel; each stops at its own minimum.
+   panel; each stops at its own minimum. When a panel expands or grows and
+   its own minimum leaves too little room, the other panel narrows instead.
 4. **Collapsed panels are rails.** A collapsed panel is a 44-pixel rail of
    icon buttons. The sessions rail holds Expand, New session, Search, Sessions,
    Approvals with the waiting count, and Settings. Search and Sessions expand

@@ -154,6 +154,7 @@ export function createShellLayout(parts: {
   function setWidth(state: PanelState, requested: number): void {
     state.width = clamp(Math.round(requested), state.limits.min, maxWidth(state));
     state.collapsed = false;
+    makeRoom(state);
     render(state);
     render(other(state));
   }
@@ -165,9 +166,22 @@ export function createShellLayout(parts: {
     state.collapsed = collapsed;
     if (!collapsed) {
       state.width = clamp(state.width, state.limits.min, maxWidth(state));
+      makeRoom(state);
     }
     render(state);
     render(other(state));
+  }
+
+  /**
+   * After `state` grows or expands, narrows the other panel so the conversation keeps its
+   * minimum. `state` alone cannot always give way: it never goes below its own minimum, which
+   * can be more than the room the other panel left it.
+   */
+  function makeRoom(state: PanelState): void {
+    const rest = other(state);
+    if (!rest.collapsed && rest.width > maxWidth(rest)) {
+      rest.width = maxWidth(rest);
+    }
   }
 
   /** Growing a panel moves its separator away from the panel's own edge of the window. */

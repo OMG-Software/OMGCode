@@ -357,6 +357,50 @@ describe("resizing with the pointer", () => {
 });
 
 describe("keeping room for the conversation", () => {
+  /** The conversation's width: the shell less both panel tracks and both separators. */
+  function centerWidth(shellPx: number): number {
+    const track = (side: "left" | "right") =>
+      shell().classList.contains(`${side}-collapsed`)
+        ? RAIL_WIDTH
+        : Number.parseInt(width(side), 10);
+    return shellPx - track("left") - track("right") - 2 * SEPARATOR_WIDTH;
+  }
+
+  it("takes room from the other panel when a panel expands", async () => {
+    await start();
+    shellWidth(900);
+    // With the terminal collapsed, the sessions panel can reach its own maximum.
+    key(separator("left"), "End");
+    expect(width("left")).toBe(`${LEFT_PANEL.max}px`);
+    byLabel("Show terminal panel").click();
+    expect(width("right")).toBe(`${RIGHT_PANEL.min}px`);
+    expect(width("left")).toBe(
+      `${900 - CENTER_MIN_WIDTH - RIGHT_PANEL.min - 2 * SEPARATOR_WIDTH}px`,
+    );
+    expect(centerWidth(900)).toBe(CENTER_MIN_WIDTH);
+    expect(separator("left").getAttribute("aria-valuenow")).toBe(
+      String(900 - CENTER_MIN_WIDTH - RIGHT_PANEL.min - 2 * SEPARATOR_WIDTH),
+    );
+  });
+
+  it("takes room from the other panel when a panel expands by keyboard or drag", async () => {
+    await start();
+    shellWidth(900);
+    byLabel("Show terminal panel").click();
+    key(separator("right"), "End");
+    byLabel("Collapse sessions panel").click();
+    key(separator("right"), "End");
+    expect(centerWidth(900)).toBe(CENTER_MIN_WIDTH);
+    // Expanding the sessions panel by key or by drag also leaves the conversation its minimum.
+    key(separator("left"), "Enter");
+    expect(centerWidth(900)).toBe(CENTER_MIN_WIDTH);
+    key(separator("left"), "Enter");
+    pointer(separator("left"), "pointerdown", RAIL_WIDTH);
+    pointer(document, "pointermove", 400);
+    pointer(document, "pointerup", 400);
+    expect(centerWidth(900)).toBeGreaterThanOrEqual(CENTER_MIN_WIDTH);
+  });
+
   it("does not let a panel take the conversation's minimum width", async () => {
     await start();
     shellWidth(1000);

@@ -326,8 +326,9 @@ The `main` window is laid out as follows.
   collapse or expand its panel. Dragging a panel more than 80 pixels below
   its minimum collapses it. The sessions panel is 200 to 480 pixels and opens
   at 260; the terminal panel is 240 to 720, opens at 360, and starts
-  collapsed. Neither may take the conversation below 360 pixels, and when the
-  window narrows the terminal panel gives way first. Widths and collapsed
+  collapsed. Neither may take the conversation below 360 pixels: when the
+  window narrows the terminal panel gives way first, and when a panel expands
+  or grows the other one narrows if it must. Widths and collapsed
   states last until the window closes. The shell's two width properties are
   the frontend's only inline style.
 - **Collapsed panels.** A collapsed panel is a 44-pixel rail of icon buttons,
@@ -1430,7 +1431,8 @@ ACLs the private store refuses, see the notes in
   moving focus, each rail button, the waiting count on the rail, the terminal
   panel's note and its absence of any command, keyboard and pointer resizing
   with limits, collapse by drag and by Enter, the conversation's minimum,
-  narrowing the window, the size observer, and disposal.
+  narrowing the window, expanding a panel beside a wide one, the size
+  observer, and disposal.
   `ui/tests/live_preview.test.ts` covers following the end: a send from
   higher up, scrolling up and back down, growth without a scroll, and a
   turn's end while pinned and while scrolled up. The security scan keeps
