@@ -1116,7 +1116,10 @@ impl ApiKeyText {
     /// `None` for an empty key, one over core's bound, or one containing a
     /// control character. The caller reports one fixed message for all three.
     pub(crate) fn into_secret(self) -> Option<omgcode_core::control::Secret> {
-        if self.0.chars().any(char::is_control) {
+        // The bound comes first, so an oversized key is neither scanned nor copied.
+        if self.0.len() > omgcode_core::control::MAX_SECRET_BYTES
+            || self.0.chars().any(char::is_control)
+        {
             return None;
         }
         omgcode_core::control::Secret::new(self.0.as_bytes().to_vec()).ok()

@@ -86,12 +86,26 @@ export function startSettings(root: HTMLElement): SettingsApp {
   const windowElement = el("main", { class: "settings-window" }, nav.element, content);
   let current: SettingsOverview | null = null;
   let working = false;
+  /**
+   * A read was asked for while another read or change ran. That one's answer may predate a scope
+   * the main window set meanwhile, so one more read follows it.
+   */
+  let readAgain = false;
 
   function setWorking(value: boolean): void {
     working = value;
     body.disabled = value;
     nav.setDisabled(value);
     allSettings.disabled = value;
+  }
+
+  /** Ends the current read or change, then makes the read that was asked for meanwhile. */
+  function finishWork(): void {
+    setWorking(false);
+    if (readAgain) {
+      readAgain = false;
+      void refresh();
+    }
   }
 
   function renderSection(id: SectionId, context: SectionContext): HTMLElement[] {
@@ -164,6 +178,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
 
   async function refresh(): Promise<void> {
     if (working) {
+      readAgain = true;
       return;
     }
     setWorking(true);
@@ -173,7 +188,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     } catch (reason) {
       report(reason);
     } finally {
-      setWorking(false);
+      finishWork();
     }
   }
 
@@ -200,7 +215,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
           report(again);
         }
       } finally {
-        setWorking(false);
+        finishWork();
       }
     })();
   }

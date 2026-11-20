@@ -920,7 +920,13 @@ revision check and validation (ADR-0064, ADR-0069).
   removed again in the same locked store and a binding it gained is deleted,
   so a failure leaves no profile without a key; the settings revision still
   advances by the two recorded events. If the profile cannot be removed,
-  the error is `credential_orphaned`. `settings_set_api_key` replaces the key
+  the error is `credential_orphaned`, with the opaque identifier of an item
+  that could not be deleted. A binding whose journal write failed may still be
+  recorded, so then neither the profile nor the new item is removed: the
+  error is `credential_binding_uncertain` and names the kept item's
+  identifier (and any item it replaced), as the CLI does, for the operator to
+  check with `provider-profile-show`. No error shows the key or native error
+  text. `settings_set_api_key` replaces the key
   of an `ollama_cloud` profile (and refuses any other kind or an unknown
   name) the way the CLI's `provider-credential-set` does: the new item is
   stored, then bound, then the old item is deleted. It shows no dialog,

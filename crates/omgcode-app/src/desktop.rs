@@ -103,6 +103,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
+use omgcode_core::control::ProviderKind;
 use omgcode_core::session_index::SessionIndex;
 use uuid::Uuid;
 
@@ -132,9 +133,10 @@ pub use self::wire::{
     WorkspaceChoice, WorkspaceGroup, WorkspaceList, WorkspaceRevisionRequest,
     WorkspaceSettingsView,
 };
+use crate::credential_source::resolve_connection_and_kind;
 use crate::{
     AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
-    resolve_local_connection, resolve_local_endpoint,
+    resolve_local_endpoint,
 };
 
 /// Fixed settings of one desktop process.
@@ -167,14 +169,14 @@ pub struct DesktopConfig {
 /// process environment and the credential store.
 ///
 /// [`DesktopService::open`] resolves `DesktopConfig::token_source` with
-/// [`resolve_local_connection`]; [`DesktopService::open_with_token_source`] uses this
+/// [`crate::resolve_local_connection`]; [`DesktopService::open_with_token_source`] uses this
 /// function instead and ignores the configured source.
 pub type InjectedTokenFn = fn() -> Result<Option<String>, AppError>;
 
 /// How a turn obtains its token.
 #[derive(Clone)]
 enum TokenResolver {
-    /// The production path: [`resolve_local_connection`].
+    /// The production path: [`crate::resolve_local_connection`].
     Source(TokenSource),
     /// A test or embedder supplier.
     Injected(InjectedTokenFn),
@@ -194,10 +196,22 @@ impl TokenResolver {
         data_root: &Path,
         launch_endpoint: &str,
     ) -> Result<LocalConnection, AppError> {
+        self.resolve_with_kind(data_root, launch_endpoint)
+            .map(|(connection, _)| connection)
+    }
+
+    /// [`Self::resolve`] with the kind of the selected profile, from the same
+    /// read of the settings store. `None` for the launch or default endpoint
+    /// and for a source fixed at launch, as [`Self::current_endpoint`] reports.
+    fn resolve_with_kind(
+        &self,
+        data_root: &Path,
+        launch_endpoint: &str,
+    ) -> Result<(LocalConnection, Option<ProviderKind>), AppError> {
         match self {
             Self::Source(source) => {
-                let connection =
-                    resolve_local_connection(data_root, &source.connection(launch_endpoint))?;
+                let (connection, kind) =
+                    resolve_connection_and_kind(data_root, &source.connection(launch_endpoint))?;
                 // An active source may change between turns; `chat_send`
                 // compares its endpoint with the one the window was shown.
                 if source.is_fixed() && connection.endpoint != launch_endpoint {
@@ -206,12 +220,15 @@ impl TokenResolver {
                         "endpoint_changed: the provider profile's endpoint changed since launch; restart the application",
                     ));
                 }
-                Ok(connection)
+                Ok((connection, if source.is_fixed() { None } else { kind }))
             }
-            Self::Injected(supplier) => Ok(LocalConnection {
-                endpoint: launch_endpoint.to_owned(),
-                token: supplier()?.map(LmToken::new),
-            }),
+            Self::Injected(supplier) => Ok((
+                LocalConnection {
+                    endpoint: launch_endpoint.to_owned(),
+                    token: supplier()?.map(LmToken::new),
+                },
+                None,
+            )),
         }
     }
 

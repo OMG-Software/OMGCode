@@ -241,33 +241,32 @@ pub fn resolve_local_connection(
     data_root: &Path,
     source: &ConnectionSource,
 ) -> Result<LocalConnection, AppError> {
+    resolve_connection_and_kind(data_root, source).map(|(connection, _)| connection)
+}
+
+/// [`resolve_local_connection`] together with the kind of the profile it used,
+/// or `None` for an environment or default endpoint. The kind is read from the
+/// same open settings store as the profile's endpoint and token, so a change to
+/// the selection in between cannot pair one profile's connection with another
+/// profile's kind.
+///
+/// # Errors
+///
+/// As [`resolve_local_connection`].
+pub(crate) fn resolve_connection_and_kind(
+    data_root: &Path,
+    source: &ConnectionSource,
+) -> Result<(LocalConnection, Option<ProviderKind>), AppError> {
     match source {
-        ConnectionSource::Environment { endpoint } => {
-            // The environment token is a local server's token. It is never
-            // sent to the hosted endpoint, whose key comes from a bound
-            // credential only (ADR-0069).
-            if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_cloud()) {
-                return Err(credential_error(
-                    "cloud_needs_profile: the Ollama Cloud endpoint is used only through an ollama_cloud provider profile".to_owned(),
-                ));
-            }
-            Ok(LocalConnection {
-                endpoint: endpoint.clone(),
-                token: read_lm_token()?.map(LmToken::new),
-            })
-        }
+        ConnectionSource::Environment { endpoint } => Ok((environment_connection(endpoint)?, None)),
         ConnectionSource::Profile(name) => {
             let control = open_settings(data_root, name)?;
-            profile_connection(control, data_root, name)
+            let kind = local_adapter(&control, name);
+            Ok((profile_connection(control, data_root, name)?, Some(kind)))
         }
         ConnectionSource::Active { default_endpoint } => {
             let Some(control) = open_settings_if_any(data_root)? else {
-                return resolve_local_connection(
-                    data_root,
-                    &ConnectionSource::Environment {
-                        endpoint: default_endpoint.clone(),
-                    },
-                );
+                return Ok((environment_connection(default_endpoint)?, None));
             };
             // The selection and the profile it names are read from one open
             // store, so a change in between cannot pair them wrongly.
@@ -275,19 +274,32 @@ pub fn resolve_local_connection(
                 .active_provider_profile()
                 .map(|status| status.profile().name().to_owned());
             match selected {
-                Some(name) => profile_connection(control, data_root, &name),
+                Some(name) => {
+                    let kind = local_adapter(&control, &name);
+                    Ok((profile_connection(control, data_root, &name)?, Some(kind)))
+                }
                 None => {
                     drop(control);
-                    resolve_local_connection(
-                        data_root,
-                        &ConnectionSource::Environment {
-                            endpoint: default_endpoint.clone(),
-                        },
-                    )
+                    Ok((environment_connection(default_endpoint)?, None))
                 }
             }
         }
     }
+}
+
+/// The launch or default endpoint with the environment's local server token.
+fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
+    // The environment token is a local server's token. It is never sent to the
+    // hosted endpoint, whose key comes from a bound credential only (ADR-0069).
+    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_cloud()) {
+        return Err(credential_error(
+            "cloud_needs_profile: the Ollama Cloud endpoint is used only through an ollama_cloud provider profile".to_owned(),
+        ));
+    }
+    Ok(LocalConnection {
+        endpoint: endpoint.to_owned(),
+        token: read_lm_token()?.map(LmToken::new),
+    })
 }
 
 /// One recorded profile resolved for a turn: its kind, its validated endpoint,

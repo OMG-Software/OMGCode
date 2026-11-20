@@ -9,7 +9,7 @@
 
 use std::fmt;
 
-use omgcode_core::control::{ControlError, CredentialError, ProviderCredentialError};
+use omgcode_core::control::{ControlError, CredentialError, CredentialId, ProviderCredentialError};
 use omgcode_core::session::SessionError;
 use omgcode_core::session_index::IndexError;
 use omgcode_core::turn::ReviewError;
@@ -264,10 +264,49 @@ impl DesktopError {
         match error {
             ProviderCredentialError::Control(error) => Self::from_control(error),
             ProviderCredentialError::Credential(error) => Self::from_credential(error),
-            ProviderCredentialError::Unrecorded { .. }
-            | ProviderCredentialError::Unstored { .. }
-            | ProviderCredentialError::BindingUncertain { .. } => Self::credential_orphaned(),
+            ProviderCredentialError::Unrecorded { credential_id, .. }
+            | ProviderCredentialError::Unstored { credential_id, .. } => {
+                Self::credential_item_orphaned(credential_id)
+            }
+            ProviderCredentialError::BindingUncertain {
+                credential_id,
+                replaced,
+                ..
+            } => Self::credential_binding_uncertain(credential_id, replaced.as_ref()),
         }
+    }
+
+    /// A new stored item that no profile names could not be deleted. Its
+    /// opaque identifier is reported so the operator can find it; the key and
+    /// the native error text are not.
+    fn credential_item_orphaned(credential_id: &CredentialId) -> Self {
+        Self::new(
+            "credential_orphaned",
+            format!(
+                "The stored API key {credential_id} could not be cleaned up and may remain in the operating system's credential store with no connection naming it. Delete it there."
+            ),
+        )
+    }
+
+    /// The new key was stored, but whether its binding was recorded is
+    /// unknown, so the key was kept, never deleted (security coding rules).
+    /// The opaque identifier, and the one it may have replaced, let the
+    /// operator check with the trusted CLI. The key itself is never shown.
+    pub(crate) fn credential_binding_uncertain(
+        credential_id: &CredentialId,
+        replaced: Option<&CredentialId>,
+    ) -> Self {
+        let replaced = replaced.map_or_else(String::new, |old| {
+            format!(
+                " If it is bound, the key it replaced, {old}, is no longer bound and was not deleted; delete it by hand."
+            )
+        });
+        Self::new(
+            "credential_binding_uncertain",
+            format!(
+                "The API key was stored as {credential_id}, but whether the connection names it is uncertain, so it was kept. Run `provider-profile-show` in the trusted CLI: if it shows this identifier, keep it or remove it with `provider-credential-remove`; otherwise delete the item by hand.{replaced}"
+            ),
+        )
     }
 
     /// A stored item may remain that no profile names, or the settings change
@@ -384,3 +423,74 @@ impl fmt::Display for DesktopError {
 }
 
 impl std::error::Error for DesktopError {}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use omgcode_core::control::{
+        ControlError, CredentialError, CredentialId, ProviderCredentialError,
+    };
+
+    use super::DesktopError;
+
+    const KEPT: &str = "0123456789ab4def8123456789abcdef";
+    const REPLACED: &str = "fedcba98765443218765fedcba987654";
+
+    fn id(text: &str) -> CredentialId {
+        CredentialId::parse(text).expect("a valid identifier")
+    }
+
+    fn io_error() -> ControlError {
+        // The native text must never reach the window, so it is made recognisable here.
+        ControlError::Io(io::Error::other("NATIVE-DETAIL"))
+    }
+
+    /// An uncertain binding keeps the new item, so the window must name it,
+    /// and the key it may have replaced, as the CLI does. No native text.
+    #[test]
+    fn an_uncertain_binding_reports_the_kept_and_replaced_identifiers() {
+        let error =
+            DesktopError::from_provider_credential(&ProviderCredentialError::BindingUncertain {
+                error: io_error(),
+                credential_id: id(KEPT),
+                replaced: Some(id(REPLACED)),
+            });
+        assert_eq!(error.code(), "credential_binding_uncertain");
+        assert!(error.message().contains(KEPT), "{}", error.message());
+        assert!(error.message().contains(REPLACED), "{}", error.message());
+        assert!(error.message().contains("was kept"), "{}", error.message());
+        assert!(!error.message().contains("NATIVE-DETAIL"));
+
+        let first =
+            DesktopError::from_provider_credential(&ProviderCredentialError::BindingUncertain {
+                error: io_error(),
+                credential_id: id(KEPT),
+                replaced: None,
+            });
+        assert!(first.message().contains(KEPT));
+        assert!(!first.message().contains("replaced"), "{}", first.message());
+    }
+
+    /// An orphaned item that could not be deleted is named by its identifier.
+    #[test]
+    fn an_orphaned_item_is_named_by_its_identifier() {
+        for error in [
+            ProviderCredentialError::Unrecorded {
+                error: io_error(),
+                credential_id: id(KEPT),
+                cleanup: CredentialError::Io(io::Error::other("NATIVE-DETAIL")),
+            },
+            ProviderCredentialError::Unstored {
+                error: CredentialError::Io(io::Error::other("NATIVE-DETAIL")),
+                credential_id: id(KEPT),
+                cleanup: CredentialError::Io(io::Error::other("NATIVE-DETAIL")),
+            },
+        ] {
+            let shown = DesktopError::from_provider_credential(&error);
+            assert_eq!(shown.code(), "credential_orphaned");
+            assert!(shown.message().contains(KEPT), "{}", shown.message());
+            assert!(!shown.message().contains("NATIVE-DETAIL"));
+        }
+    }
+}

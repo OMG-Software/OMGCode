@@ -162,6 +162,28 @@ Changes are recorded here before a release version is assigned.
 - The composer now warns while `connection_status` reports the saved
   per-session choices as unreadable. The session then follows the default
   connection, and the next choice replaces every session's saved choice.
+- An Ollama Cloud key whose binding write failed but may have been recorded is
+  no longer deleted with its profile. The desktop keeps both and reports
+  `credential_binding_uncertain` with the kept item's identifier, and any item
+  it replaced, as the CLI does. An item that could not be cleaned up is named
+  in `credential_orphaned`. No message shows the key or native error text.
+- A desktop API key over 16 KiB is refused before it is scanned or copied.
+- The global connection's endpoint, token, and kind come from one read of the
+  settings store, so `chat_models` cannot pair one profile's models with
+  another profile's kind.
+- `ModelEndpoint` is a struct with a private representation, so only
+  `ModelEndpoint::parse` makes one.
+- **Workspace settings** sends the newly opened session at once instead of
+  the previous one until the transcript loads.
+- The settings window reads the overview again when a read is asked for while
+  another read or change runs, so a scope set meanwhile is not lost.
+- The settings window's `[hidden]` rule is `!important`. It came first in the
+  stylesheet, so `.settings-nav { display: flex }` won and the sidebar stayed
+  visible in the scoped view; the test now checks the computed style.
+- The mock backend refuses an API key with a control character or over 16 KiB
+  on both key routes, and reports a session whose chosen profile was removed
+  or changed as stale, refusing its turns and model list until a provider is
+  chosen again.
 
 ### Added
 

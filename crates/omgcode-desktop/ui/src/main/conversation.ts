@@ -504,6 +504,8 @@ export function createConversation(deps: ConversationDeps): Conversation {
     empty.hidden = true;
     content.hidden = false;
     renderHeader();
+    // The Workspace settings button follows the header at once, not after the transcript loads.
+    composer.setSession(next.session_id);
     const page = await fetchPages(1, false);
     if (page !== null) {
       renderHeader();

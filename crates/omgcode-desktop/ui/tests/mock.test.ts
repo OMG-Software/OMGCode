@@ -246,6 +246,81 @@ describe("mock backend", () => {
     ).rejects.toMatchObject({ code: "control" });
   });
 
+  it("refuses an API key with a control character or over 16 KiB on both key routes", async () => {
+    const { invoke } = createMockBackend();
+    const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    const added = (await invoke("settings_add_connection", {
+      revision,
+      name: "cloud",
+      kind: "ollama_cloud",
+      endpoint: null,
+      api_key: "test-key-not-real",
+    })) as SettingsOverview;
+    // 16 KiB of UTF-8 bytes: 5462 three-byte characters is one byte over.
+    for (const key of ["a\nb", "a\u0000b", "k".repeat(16 * 1024 + 1), "€".repeat(5462)]) {
+      await expect(
+        invoke("settings_add_connection", {
+          revision: added.revision,
+          name: "other",
+          kind: "ollama_cloud",
+          endpoint: null,
+          api_key: key,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+      await expect(
+        invoke("settings_set_api_key", { revision: added.revision, name: "cloud", api_key: key }),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+    }
+    // Nothing was recorded by the refused calls.
+    const after = (await invoke("settings_overview", {})) as SettingsOverview;
+    expect(after.revision).toBe(added.revision);
+    await expect(
+      invoke("settings_set_api_key", {
+        revision: added.revision,
+        name: "cloud",
+        api_key: "k".repeat(16 * 1024),
+      }),
+    ).resolves.toMatchObject({ revision: added.revision + 1 });
+  });
+
+  it("keeps a session whose profile was removed stale until a provider is chosen again", async () => {
+    const { invoke } = createMockBackend();
+    const id = "00000000-0000-4000-8000-000000000001";
+    await invoke("connection_select", { session_id: id, profile: "ollama" });
+    const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    await invoke("settings_remove_connection", { revision, name: "ollama" });
+
+    const status = (await invoke("connection_status", { session_id: id })) as {
+      stale: boolean;
+      connection: { profile: string | null; endpoint: string };
+    };
+    expect(status.stale).toBe(true);
+    expect(status.connection).toMatchObject({
+      profile: "ollama",
+      endpoint: "http://127.0.0.1:11434/v1",
+    });
+    const { settings: defaults } = (await invoke("chat_defaults", {})) as {
+      settings: Record<string, unknown>;
+    };
+    const send = () =>
+      invoke("chat_send", {
+        session_id: id,
+        message: "hello",
+        settings: { ...defaults, model: "m", endpoint: status.connection.endpoint },
+        skills: [],
+      });
+    await expect(send()).rejects.toMatchObject({ code: "session_connection_stale" });
+    await expect(invoke("chat_models", { session_id: id })).rejects.toMatchObject({
+      code: "session_connection_stale",
+    });
+
+    // Choosing again clears it.
+    const chosen = (await invoke("connection_select", { session_id: id, profile: null })) as {
+      stale: boolean;
+    };
+    expect(chosen.stale).toBe(false);
+  });
+
   it("adds Ollama Cloud with a key, replaces the key, and removes a bound profile", async () => {
     const { invoke } = createMockBackend();
     let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;

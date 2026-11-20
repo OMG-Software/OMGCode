@@ -517,6 +517,32 @@ describe("workspace scope", () => {
     expect(heading()).toBe("/home/dev/a");
   });
 
+  it("reads again when the scope changes while an earlier read is still pending", async () => {
+    await start(() => overview());
+
+    // A read starts, and its answer will be the old, unscoped view.
+    let answerOld: (value: unknown) => void = () => undefined;
+    ipc.on(
+      "settings_overview",
+      () =>
+        new Promise((resolve) => {
+          answerOld = resolve;
+        }),
+    );
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    // The main window scopes the window and focuses it before that read answers.
+    ipc.on("settings_overview", () => scoped(A));
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+    answerOld(overview());
+    await settle();
+
+    expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
+    expect(heading()).toBe("/home/dev/a");
+  });
+
   it("still sends changes for the scoped workspace by its identifier", async () => {
     await start(() => scoped(B), { settings_set_permissions: () => scoped(B) });
     choose("Read", "deny");

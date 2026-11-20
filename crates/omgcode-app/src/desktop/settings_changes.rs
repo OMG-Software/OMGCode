@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
     ControlError, ControlStore, CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth,
-    ProviderKind, ProviderProfileDeclaration, delete_unbound_credential,
+    ProviderCredentialError, ProviderKind, ProviderProfileDeclaration, delete_unbound_credential,
 };
 use omgcode_core::policy::{Access, PermissionSet, WriteTool};
 use omgcode_core::provider::OLLAMA_CLOUD_ENDPOINT;
@@ -834,6 +834,9 @@ impl DesktopService {
     /// deleted), so a failure leaves no profile without its key. The
     /// settings revision still advances by the two recorded events. If the
     /// profile cannot be removed either, the error is `credential_orphaned`.
+    /// The exception is a binding write that failed but may be recorded: the
+    /// new item may then be the one the profile names, so neither is removed
+    /// and the error is `credential_binding_uncertain` with its identifier.
     /// The key, its length, and a digest of it appear in no response or error.
     ///
     /// # Errors
@@ -842,8 +845,9 @@ impl DesktopService {
     /// that is empty, too long, or has a control character; `control` with
     /// core's reason (a bad name, a duplicate, or an endpoint that is not
     /// `http://<loopback IP>:<port>/v1`); `credential_unavailable`,
-    /// `credential_locked`, `credential_io`, `credential_orphaned`;
-    /// `stale_revision`; `settings_change_running`; `busy`.
+    /// `credential_locked`, `credential_io`, `credential_orphaned`,
+    /// `credential_binding_uncertain`; `stale_revision`;
+    /// `settings_change_running`; `busy`.
     pub fn settings_add_connection(
         &self,
         request: ConnectionAddRequest,
@@ -918,6 +922,12 @@ impl DesktopService {
             match store.set_provider_credential(&credentials, &declaration.name, &secret, current) {
                 Ok(set) if set.orphan.is_none() => Ok(()),
                 Ok(_) => Err(DesktopError::credential_orphaned()),
+                // The binding may be recorded, so the new item may be the one the profile names.
+                // Removing the profile would delete it; both are kept and the identifier is
+                // reported (security coding rules).
+                Err(error @ ProviderCredentialError::BindingUncertain { .. }) => {
+                    Err(DesktopError::from_provider_credential(&error))
+                }
                 Err(error) => {
                     let clean = roll_back_profile(store, &credentials, &declaration.name);
                     Err(if clean {

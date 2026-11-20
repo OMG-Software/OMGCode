@@ -466,16 +466,12 @@ impl Inner {
 
     /// The global selection (or the default endpoint), as before ADR-0069.
     fn resolve_global(&self) -> Result<SessionConnection, DesktopError> {
-        let connection = self
+        // One read gives the endpoint, the token, and the kind, so they always
+        // describe the same profile even if the selection changes meanwhile.
+        let (connection, kind) = self
             .token
-            .resolve(&self.data_root, &self.endpoint)
+            .resolve_with_kind(&self.data_root, &self.endpoint)
             .map_err(|error| DesktopError::from_app(&error))?;
-        let kind = self
-            .token
-            .current_endpoint(&self.data_root, &self.endpoint)
-            .ok()
-            .and_then(|current| current.profile)
-            .map(|(_, kind)| kind);
         Ok(SessionConnection { connection, kind })
     }
 

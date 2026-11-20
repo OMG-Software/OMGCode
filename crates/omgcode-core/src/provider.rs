@@ -43,8 +43,16 @@ const MAX_RESPONSE_TOOL_CALLS: usize = 64;
 ///
 /// The cloud variant sends prompts, tool results, and command output off this
 /// computer, so a client built on it requires a token.
+///
+/// The representation is private, so [`ModelEndpoint::parse`] is the only
+/// constructor and every value has passed one of the two rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ModelEndpoint {
+pub struct ModelEndpoint(EndpointRule);
+
+/// Which rule admitted a [`ModelEndpoint`]. Private: a caller cannot pair a
+/// rule with a URL it did not pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum EndpointRule {
     /// A literal loopback IP, an explicit port, and the `/v1` path.
     Loopback(Url),
     /// Exactly `https://ollama.com/v1`, with or without one trailing `/`.
@@ -61,14 +69,14 @@ impl ModelEndpoint {
     /// `InvalidConfiguration` for any other text.
     pub fn parse(text: &str) -> Result<Self, ProviderError> {
         if let Ok(url) = validate_cloud_url(text) {
-            return Ok(Self::OllamaCloud(url));
+            return Ok(Self(EndpointRule::OllamaCloud(url)));
         }
-        validate_base_url(text).map(Self::Loopback)
+        validate_base_url(text).map(|url| Self(EndpointRule::Loopback(url)))
     }
 
     /// Whether this is the hosted Ollama Cloud endpoint.
     pub const fn is_cloud(&self) -> bool {
-        matches!(self, Self::OllamaCloud(_))
+        matches!(self.0, EndpointRule::OllamaCloud(_))
     }
 
     /// The endpoint text as validated. It is not a secret.
@@ -77,8 +85,8 @@ impl ModelEndpoint {
     }
 
     const fn url(&self) -> &Url {
-        match self {
-            Self::Loopback(url) | Self::OllamaCloud(url) => url,
+        match &self.0 {
+            EndpointRule::Loopback(url) | EndpointRule::OllamaCloud(url) => url,
         }
     }
 
@@ -1141,11 +1149,11 @@ mod tests {
     fn the_endpoint_type_accepts_loopback_or_exactly_the_cloud_endpoint() {
         assert!(matches!(
             ModelEndpoint::parse("http://127.0.0.1:1234/v1"),
-            Ok(ModelEndpoint::Loopback(_))
+            Ok(ModelEndpoint(EndpointRule::Loopback(_)))
         ));
         assert!(matches!(
             ModelEndpoint::parse("http://[::1]:1234/v1/"),
-            Ok(ModelEndpoint::Loopback(_))
+            Ok(ModelEndpoint(EndpointRule::Loopback(_)))
         ));
         for text in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
             let endpoint = ModelEndpoint::parse(text).expect(text);

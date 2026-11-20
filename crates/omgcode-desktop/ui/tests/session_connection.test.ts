@@ -413,4 +413,24 @@ describe("per-session provider and model", () => {
     await open("s-b");
     expect(warning()?.hidden).toBe(true);
   });
+
+  it("sends the newly opened session to Workspace settings before its transcript loads", async () => {
+    const handlers = backend();
+    await start({
+      ...handlers,
+      // Session B's transcript never answers in this test.
+      session_transcript: (args) =>
+        args.session_id === "s-b"
+          ? new Promise(() => undefined)
+          : handlers.session_transcript?.(args),
+    });
+    await open("s-a");
+    await open("s-b");
+
+    buttonByText(root, "Workspace settings").click();
+    await settle();
+    expect(ipc.callsTo("settings_show_workspace")).toEqual([
+      { command: "settings_show_workspace", args: { session_id: "s-b" } },
+    ]);
+  });
 });
