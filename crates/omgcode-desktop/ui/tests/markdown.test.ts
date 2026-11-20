@@ -4,6 +4,7 @@ import {
   MARKDOWN_MAX_CHARS,
   MAX_BLOCK_DEPTH,
   MAX_INLINE_DEPTH,
+  MAX_TABLE_CELLS,
   MAX_TABLE_COLUMNS,
   renderMarkdown,
 } from "../src/main/markdown";
@@ -177,6 +178,29 @@ describe("blocks", () => {
     const root = md(`${header}\n${delimiter}`);
     expect(root.querySelector("table")).toBeNull();
   });
+
+  it("closes a fence only on spaces and tabs after the marker", () => {
+    const nbsp = String.fromCharCode(0xa0);
+    const open = md(`\`\`\`\na\n\`\`\`${nbsp}\nb`);
+    expect(only(open, "pre").textContent).toBe(`a\n\`\`\`${nbsp}\nb`);
+    const closed = md("```\na\n   ``` \t\nb");
+    expect(only(closed, "pre").textContent).toBe("a");
+    expect(only(closed, ":scope > p").textContent).toBe("b");
+  });
+
+  it("measures a list item's content indent in columns after a tab", () => {
+    const outside = md("-\tfoo\n\n  bar");
+    expect(only(outside, "li").textContent).toBe("foo");
+    expect(only(outside, ":scope > p").textContent).toBe("bar");
+    const inside = md("-\tfoo\n\n    bar");
+    expect(only(inside, "li").querySelectorAll("p")).toHaveLength(2);
+  });
+
+  it("ends a list item at an unindented line while its code block is open", () => {
+    const root = md("- a\n  ```\n  code\nlazy");
+    expect(only(root, "li pre").textContent).toBe("code");
+    expect(only(root, ":scope > p").textContent).toBe("lazy");
+  });
 });
 
 describe("inline content", () => {
@@ -230,6 +254,20 @@ describe("inline content", () => {
     expect(only(root, "code").textContent).toBe("a `*b*` c");
     expect(root.querySelector("em")).toBeNull();
   });
+
+  it("reads a link's destination before any code span in it", () => {
+    const root = md("See [docs](https://example.com/a`b) and `file`.");
+    expect(only(root, ".md-link-url").textContent).toBe(" (https://example.com/a`b)");
+    expect(only(root, "code").textContent).toBe("file");
+    expect(root.textContent).toBe("See docs (https://example.com/a`b) and file.");
+  });
+
+  it("keeps an HTML-like tag whole, so delimiters inside it match nothing", () => {
+    const root = md('<span title="*a* `x">*b*</span> and `c`');
+    expect([...root.querySelectorAll("em")].map((n) => n.textContent)).toEqual(["b"]);
+    expect(only(root, "code").textContent).toBe("c");
+    expect(root.textContent).toBe('<span title="*a* `x">b</span> and c');
+  });
 });
 
 describe("untrusted content stays inert", () => {
@@ -270,6 +308,13 @@ describe("untrusted content stays inert", () => {
     expect(root.textContent).toBe("https://bank.example (https://evil.example)");
   });
 
+  it("hides a destination only when the label shows exactly it", () => {
+    const same = md("[`https://example.com`](https://example.com)");
+    expect(same.querySelector(".md-link-url")).toBeNull();
+    const styled = md("[*x*](*x*)");
+    expect(only(styled, ".md-link-url").textContent).toBe(" (*x*)");
+  });
+
   it("describes an image instead of loading it", () => {
     const root = md("![a cat](https://example.com/cat.png)");
     expect(root.querySelector("img")).toBeNull();
@@ -301,12 +346,33 @@ describe("bounds", () => {
     expect(lists.textContent).toContain("item 39");
   });
 
-  it("stops nesting emphasis at the depth limit and keeps the text", () => {
-    const depth = MAX_INLINE_DEPTH + 4;
-    const source = `${"*a ".repeat(depth)}x${" b*".repeat(depth)}`;
+  it("stops nesting links at the depth limit and keeps the rest as text", () => {
+    let source = "x";
+    for (let k = 0; k < 10; k += 1) {
+      source = `[${source}](u${k})`;
+    }
     const root = md(source);
-    expect(root.querySelectorAll("em").length).toBeLessThanOrEqual(MAX_INLINE_DEPTH);
-    expect(root.textContent).toContain("x");
+    const links = root.querySelectorAll(".md-link");
+    expect(links).toHaveLength(MAX_INLINE_DEPTH);
+    // Links u9 down to u2 are nested; the label of u2 is past the limit and stays as source.
+    const innermost = links[MAX_INLINE_DEPTH - 1];
+    expect(innermost?.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+    expect(innermost?.firstChild?.textContent).toBe("[[x](u0)](u1)");
+    expect(innermost?.querySelector(".md-link-url")?.textContent).toBe(" (u2)");
+  });
+
+  it("shows a table over the cell budget as text, whole", () => {
+    const columns = 32;
+    const rowCount = Math.ceil(MAX_TABLE_CELLS / columns) + 1;
+    const header = `|${"h|".repeat(columns)}`;
+    const delimiter = `|${"-|".repeat(columns)}`;
+    const rows = Array.from({ length: rowCount }, (_, n) => `r${n}`);
+    const big = md([header, delimiter, ...rows].join("\n"));
+    expect(big.querySelector("table")).toBeNull();
+    expect(big.textContent).toContain(`r${rowCount - 1}`);
+
+    const small = md(`${header}\n${delimiter}\nr0`);
+    expect(small.querySelectorAll("td")).toHaveLength(columns);
   });
 
   it.each([
@@ -318,6 +384,10 @@ describe("bounds", () => {
     ["spaces before a heading close", `# ${" ".repeat(90_000)}x`],
     ["a long rule-like line", `${"- ".repeat(45_000)}x`],
     ["table-like rows", `a|b\n-|-\n${"|".repeat(90_000)}`],
+    ["delimiter-like rows over the cell budget", "-|-\n".repeat(25_000)],
+    ["unclosed tags", "<a ".repeat(30_000)],
+    ["escaped link ends", `[a](${"\\)".repeat(45_000)}`],
+    ["link ends across many links", "[a](b".repeat(20_000)],
   ])("parses %s in bounded time", (_name, source) => {
     expect(source.length).toBeLessThanOrEqual(MARKDOWN_MAX_CHARS);
     const started = performance.now();

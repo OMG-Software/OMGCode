@@ -50,6 +50,17 @@ Changes are recorded here before a release version is assigned.
     text leaves blank lines inside a list item unindented. A copy action's
     synchronous throw becomes a rejection through a promise executor, still
     inside the click.
+  - **Second review fixes:** inline content is scanned once from the left, so
+    a backtick in a link destination no longer pairs with a later one, and
+    HTML-like tags are kept whole as text; code-span closers use a binary
+    search over backtick runs and destination ends a lookup table. A link's
+    destination is hidden only when its rendered label matches it. A closing
+    fence allows only trailing spaces and tabs, a list item's content indent
+    is counted in columns after a tab, an open fence in an item takes no lazy
+    line, and a reply holds at most 10,000 table cells. The image strikes
+    through text nested in a deletion, places wrapped words by grapheme, pads
+    with the colour behind the entry, and wraps wide code while captured.
+    Plain text separates blocks inside a list item with a blank line.
   - **Tests (reply actions):** model labels from manifests and their reset
     at a turn start, a hostile model id, the live entry label, the label in
     the window, each copy action, refusal and label reset, plain-text

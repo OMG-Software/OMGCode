@@ -480,6 +480,17 @@ mark {
   white-space: pre;
 }
 
+/* Copy image paints only what is laid out inside the entry, so a code block wider than the reply
+   wraps while it is captured rather than being cut at its scroll edge (ADR-0068). */
+.capturing .md-code pre {
+  overflow: visible;
+}
+
+.capturing .md-code pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .md .md-table {
   overflow-x: auto;
 }

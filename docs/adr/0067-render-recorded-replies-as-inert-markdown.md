@@ -43,15 +43,23 @@ defence, and efficiency.
    destination in a muted span. An image shows `[image: description]` and its
    source. No element gets an `href` or `src`, nothing navigates, and nothing
    loads. Showing the destination also stops a label such as a bank address
-   from posing as a different target.
+   from posing as a different target. The destination is left out only when
+   the label's rendered text is exactly the destination.
 4. **Bounded work.** A reply over 100,000 UTF-16 code units is shown as plain
    text. Recorded replies are already at most 16 KiB, so this bound is defence
    in depth. Block quotes and list items nest at most six deep and emphasis
    and link text at most eight; deeper source is shown as text. A table has
-   at most 32 columns. Closing-delimiter searches are cached per delimiter, so
-   a reply full of unmatched delimiters is parsed in close to linear time, and
-   the line patterns cannot backtrack across a line more than once. Tests
-   parse pathological replies under a time bound.
+   at most 32 columns, and one reply at most 10,000 table cells, padded cells
+   included; a table past that budget, and every later table, is shown whole
+   as text. Inline content is scanned once from the left, as CommonMark reads
+   it: escapes, code spans, and HTML-like tags (kept whole as text, at most
+   1,000 characters) are taken where they start, and a link destination is
+   read from the raw characters once its `]` is found, so a backtick in an
+   address opens no code span. Code-span closers are found by binary search
+   over backtick runs, a destination's end by a lookup table, and emphasis
+   closers through a per-delimiter cache, so a reply full of unmatched
+   delimiters is parsed in close to linear time. Line scanners walk each line
+   once. Tests parse pathological replies under a time bound.
 5. **Copy writes what is shown.** A fenced code block has a language label
    and a **Copy** button. The click handler writes the code element's text
    content through `navigator.clipboard.writeText`. That text is the
@@ -105,8 +113,9 @@ defence, and efficiency.
   contract still apply.
 - The parser is a subset. Setext headings, indented code blocks, reference
   links, HTML blocks, autolinks, and task-list checkboxes are not recognised
-  and stay text. A link destination ends at the first `)`, so a destination
-  that itself holds parentheses is cut short and the rest shown as text.
+  and stay text. A link destination ends at the first unescaped `)` on its
+  line, so a destination that itself holds parentheses is cut short and the
+  rest shown as text.
 - Copying has been checked under jsdom with a stubbed clipboard, and as a
   refused write in a Chromium browser pane, which shows "Copy failed". A
   successful copy in the WebView2 or WebKitGTK shell has not been exercised.

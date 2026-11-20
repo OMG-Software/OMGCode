@@ -57,12 +57,29 @@ function listText(list: Element, ordered: boolean): string {
     .map((item, index) => {
       const marker = ordered ? `${start + index}. ` : "• ";
       const indent = " ".repeat(marker.length);
-      // Items of a tight list hold their blocks directly; keep them on adjacent lines.
-      // A blank line inside an item, as in a code block, stays empty rather than indented.
-      const lines = blocks(item).join("\n").split("\n");
+      // A nested list follows its item's text on the next line; other blocks in one item, such as
+      // two paragraphs or a paragraph and a code block, are separated by a blank line as they
+      // are at the top level. A blank line stays empty rather than indented.
+      const lines = itemText(item).split("\n");
       return (
         marker + lines.map((line, n) => (n === 0 || line === "" ? line : indent + line)).join("\n")
       );
     })
     .join("\n");
+}
+
+function itemText(item: Element): string {
+  let out = "";
+  for (const child of Array.from(item.children)) {
+    const block = blockText(child);
+    if (block === null) {
+      continue;
+    }
+    if (out !== "") {
+      const tag = child.tagName.toLowerCase();
+      out += tag === "ul" || tag === "ol" ? "\n" : "\n\n";
+    }
+    out += block;
+  }
+  return out;
 }

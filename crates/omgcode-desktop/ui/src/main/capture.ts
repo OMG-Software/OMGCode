@@ -10,7 +10,7 @@
  *
  * It paints backgrounds (per line fragment for an inline element), uniform borders with one
  * corner radius, per-side borders without radius, overflow clipping, text with its computed
- * font and colour, and line-through. It does
+ * font and colour, and line-through, which also crosses the text of nested elements. It does
  * not paint shadows, gradients, images, outlines, or text ellipses; list markers, which are
  * pseudo-elements, are drawn from the list itself. Buttons and anything marked
  * `data-capture="skip"` are left out, so the image holds the reply without its controls.
@@ -100,7 +100,7 @@ function paint(element: HTMLElement): HTMLCanvasElement {
     throw new CaptureError("A canvas is not available.");
   }
   context.scale(scale, scale);
-  context.fillStyle = getComputedStyle(document.body).backgroundColor || "#000000";
+  context.fillStyle = backdrop(element);
   context.fillRect(0, 0, width, height);
   paintElement(
     context,
@@ -112,14 +112,31 @@ function paint(element: HTMLElement): HTMLCanvasElement {
 }
 
 /**
+ * The colour behind `element` on screen, for the padding around it: the background of its nearest
+ * ancestor that paints one, else black.
+ */
+export function backdrop(element: Element): string {
+  for (let node = element.parentElement; node !== null; node = node.parentElement) {
+    const colour = getComputedStyle(node).backgroundColor;
+    if (visible(colour)) {
+      return colour;
+    }
+  }
+  return "#000000";
+}
+
+/**
  * Paints `element` and its descendants onto `context`, relative to `origin` in viewport
- * coordinates. Exported for tests, which supply a recording context.
+ * coordinates. `struck` is set inside an element with a line-through, which CSS draws through
+ * the text of every descendant although the property is not inherited. Exported for tests,
+ * which supply a recording context.
  */
 export function paintElement(
   context: CanvasRenderingContext2D,
   element: Element,
   origin: Origin,
   budget: Budget,
+  struck = false,
 ): void {
   if (element.tagName === "BUTTON" || element.getAttribute("data-capture") === "skip") {
     return;
@@ -128,6 +145,7 @@ export function paintElement(
   if (style.display === "none" || style.visibility === "hidden") {
     return;
   }
+  const strike = struck || style.textDecorationLine.includes("line-through");
   const box = element.getBoundingClientRect();
   const x = box.left - origin.x;
   const y = box.top - origin.y;
@@ -151,9 +169,9 @@ export function paintElement(
   }
   for (const child of Array.from(element.childNodes)) {
     if (child.nodeType === Node.ELEMENT_NODE) {
-      paintElement(context, child as Element, origin, budget);
+      paintElement(context, child as Element, origin, budget, strike);
     } else if (child.nodeType === Node.TEXT_NODE) {
-      paintText(context, child as Text, style, origin, budget);
+      paintText(context, child as Text, style, origin, budget, strike);
     }
   }
   if (clips) {
@@ -337,6 +355,21 @@ function paintBorders(
 }
 
 const NON_SPACE = /\S+/g;
+const GRAPHEMES =
+  typeof Intl === "object" && typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+
+/**
+ * The user-perceived characters of `word`, so an emoji sequence or a letter with combining marks
+ * is placed as one glyph. Without `Intl.Segmenter` it falls back to code points.
+ */
+export function graphemes(word: string): string[] {
+  if (GRAPHEMES === null) {
+    return Array.from(word);
+  }
+  return Array.from(GRAPHEMES.segment(word), (part) => part.segment);
+}
 
 function paintText(
   context: CanvasRenderingContext2D,
@@ -344,6 +377,7 @@ function paintText(
   style: CSSStyleDeclaration,
   origin: Origin,
   budget: Budget,
+  strike: boolean,
 ): void {
   const value = node.data;
   if (value.trim() === "") {
@@ -355,7 +389,6 @@ function paintText(
   context.textAlign = "left";
   const metrics = context.measureText("Mg");
   const ascent = metrics.fontBoundingBoxAscent || px(style.fontSize) * 0.8;
-  const strike = style.textDecorationLine.includes("line-through");
   const range = document.createRange();
 
   for (const match of value.matchAll(NON_SPACE)) {
@@ -373,7 +406,7 @@ function paintText(
     }
     // The word wraps inside itself, as overflow-wrap allows; place each character on its own.
     let offset = 0;
-    for (const ch of word) {
+    for (const ch of graphemes(word)) {
       range.setStart(node, start + offset);
       range.setEnd(node, start + offset + ch.length);
       const rect = range.getClientRects()[0];

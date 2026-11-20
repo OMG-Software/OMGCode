@@ -39,7 +39,8 @@ command and opens no dialogs.
    place of bidirectional overrides, the same rule ADR-0067 applies to code
    blocks.
 3. **Copy text** writes the rendered reply as plain text, read from the
-   rendered elements by `plainText`: blocks separated by blank lines, "•"
+   rendered elements by `plainText`: blocks separated by blank lines, also
+   inside a list item, with a nested list on the line after its item, "•"
    bullets, ordered numbers, nested items indented, table cells separated by
    tabs, code exactly and without fences, and links with their shown
    destination. A reply shown as plain text, over the Markdown limit, is
@@ -51,10 +52,15 @@ command and opens no dialogs.
    fragment, so a wrapped code span does not cover the text beside it),
    overflow clipping, text runs at the
    positions `Range.getClientRects` reports with their computed font and
-   colour, line-through, and list markers drawn from the list. Buttons and
+   colour, line-through (also across nested elements, which do not inherit
+   the property), and list markers drawn from the list. A word that wraps
+   inside itself is placed one grapheme at a time, through `Intl.Segmenter`
+   where it exists. The padding takes the background of the entry's nearest
+   ancestor that paints one. Buttons and
    parts marked `data-capture="skip"` are left out; a `capturing` class
    removes them from layout for the synchronous paint, so the image has no
-   gap, and is removed before any frame is drawn. The canvas is at most 8,192
+   gap, and lets a code block wider than the reply wrap instead of being cut
+   at its scroll edge. It is removed before any frame is drawn. The canvas is at most 8,192
    pixels on a side and 4096 × 4096 in area, the device scale (at most 2) is
    reduced to fit, and at most 50,000 text runs are painted; a larger entry
    is refused. The PNG is passed to `ClipboardItem` as a pending blob, so the

@@ -26,6 +26,12 @@ export const MAX_BLOCK_DEPTH = 6;
 export const MAX_INLINE_DEPTH = 8;
 /** Widest table; a wider header row is shown as paragraph text. */
 export const MAX_TABLE_COLUMNS = 32;
+/**
+ * Most table cells in one reply, header cells and padded cells included. A table that would pass
+ * it is shown as paragraph text, whole, so a short row cannot be multiplied into many cells, and
+ * every later table in the reply is shown as text too.
+ */
+export const MAX_TABLE_CELLS = 10_000;
 const MAX_LANGUAGE_CHARS = 32;
 const MAX_LINK_DESTINATION_CHARS = 2048;
 
@@ -43,6 +49,11 @@ const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
 type Lines = readonly string[];
 
+/** What is left of the per-reply limits, shared by every nested block. */
+interface BlockBudget {
+  tableCells: number;
+}
+
 /**
  * Renders `source` as Markdown inside a `.bubble-text.md` container, or returns `null` when it
  * is too long to parse; the caller then shows it as plain text.
@@ -52,7 +63,11 @@ export function renderMarkdown(source: string): HTMLElement | null {
     return null;
   }
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  return el("div", { class: "bubble-text md" }, ...parseBlocks(lines, 0));
+  return el(
+    "div",
+    { class: "bubble-text md" },
+    ...parseBlocks(lines, 0, { tableCells: MAX_TABLE_CELLS }),
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -135,17 +150,41 @@ function fenceOpen(line: string): Fence | null {
   return { indent, marker, info: info.trim() };
 }
 
+function isSpaceOrTab(ch: string): boolean {
+  return ch === " " || ch === "\t";
+}
+
+/**
+ * Whether `line` closes `fence`: at most three columns of indentation, a run of the fence's
+ * character at least as long as its opener, then only spaces and tabs. Other whitespace, such as
+ * a no-break space, is content, so it does not end the block.
+ */
 function isFenceClose(line: string, fence: Fence): boolean {
   if (indentWidth(line) > 3) {
     return false;
   }
-  const body = line.trim();
-  const ch = fence.marker.charAt(0);
-  let run = 0;
-  while (body.charAt(run) === ch) {
-    run += 1;
+  let start = 0;
+  while (isSpaceOrTab(line.charAt(start))) {
+    start += 1;
   }
-  return run >= fence.marker.length && run === body.length;
+  const run = runLength(line, start, fence.marker.charAt(0));
+  if (run < fence.marker.length) {
+    return false;
+  }
+  for (let k = start + run; k < line.length; k += 1) {
+    if (!isSpaceOrTab(line.charAt(k))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The fence still open after `line`, given the fence open before it. */
+function fenceAfter(open: Fence | null, line: string): Fence | null {
+  if (open === null) {
+    return fenceOpen(line);
+  }
+  return isFenceClose(line, open) ? null : open;
 }
 
 interface ListMarker {
@@ -168,19 +207,22 @@ function listMarker(line: string): ListMarker | null {
   const digits = match[2];
   const markerEnd = indent + marker.length;
   const after = line.slice(markerEnd);
+  // The spacing is measured in columns, with a tab advancing to the next multiple of four, as
+  // continuation lines are; the indentation before the marker holds only spaces.
   let spacingLength = 0;
-  while (after.charAt(spacingLength) === " " || after.charAt(spacingLength) === "\t") {
+  let column = markerEnd;
+  while (isSpaceOrTab(after.charAt(spacingLength))) {
+    column += after.charAt(spacingLength) === "\t" ? 4 - (column % 4) : 1;
     spacingLength += 1;
   }
   // A marker must be followed by whitespace or the end of the line.
   if (after !== "" && spacingLength === 0) {
     return null;
   }
-  const spacing = after.slice(0, spacingLength);
   const rest = after.slice(spacingLength);
+  const spacingWidth = column - markerEnd;
   // An empty item, or one whose content starts more than four columns out, takes one space.
-  const contentIndent =
-    rest === "" || spacing.length > 4 ? markerEnd + 1 : markerEnd + spacing.length;
+  const contentIndent = rest === "" || spacingWidth > 4 ? markerEnd + 1 : column;
   return {
     ordered: digits !== undefined,
     kind: digits === undefined ? marker : (match[3] ?? "."),
@@ -205,7 +247,7 @@ function interruptsParagraph(line: string, depth: number): boolean {
   return item !== null && item.first.trim() !== "" && (!item.ordered || item.start === 1);
 }
 
-function parseBlocks(lines: Lines, depth: number): Node[] {
+function parseBlocks(lines: Lines, depth: number, budget: BlockBudget): Node[] {
   const out: Node[] = [];
   let paragraph: string[] = [];
   const flush = (): void => {
@@ -265,11 +307,11 @@ function parseBlocks(lines: Lines, depth: number): Node[] {
         body.push(lineAt(lines, i).replace(BLOCK_QUOTE, ""));
         i += 1;
       }
-      out.push(el("blockquote", {}, ...parseBlocks(body, depth + 1)));
+      out.push(el("blockquote", {}, ...parseBlocks(body, depth + 1, budget)));
       continue;
     }
 
-    const table = depth < MAX_BLOCK_DEPTH ? tableAt(lines, i, depth) : null;
+    const table = depth < MAX_BLOCK_DEPTH ? tableAt(lines, i, depth, budget) : null;
     if (table !== null) {
       flush();
       out.push(table.node);
@@ -280,7 +322,7 @@ function parseBlocks(lines: Lines, depth: number): Node[] {
     const item = depth < MAX_BLOCK_DEPTH ? listMarker(line) : null;
     if (item !== null && (paragraph.length === 0 || interruptsParagraph(line, depth))) {
       flush();
-      const list = listAt(lines, i, depth);
+      const list = listAt(lines, i, depth, budget);
       out.push(list.node);
       i = list.next;
       continue;
@@ -310,7 +352,12 @@ function headingText(line: string, openLength: number): string {
   return before === " " || before === "\t" ? body.slice(0, end).trimEnd() : body;
 }
 
-function listAt(lines: Lines, start: number, depth: number): { node: HTMLElement; next: number } {
+function listAt(
+  lines: Lines,
+  start: number,
+  depth: number,
+  budget: BlockBudget,
+): { node: HTMLElement; next: number } {
   const first = listMarker(lineAt(lines, start));
   const items: HTMLElement[] = [];
   let i = start;
@@ -320,6 +367,9 @@ function listAt(lines: Lines, start: number, depth: number): { node: HTMLElement
       break;
     }
     const body = [marker.first];
+    // A fence open in the item's body holds every indented line until it closes, and an
+    // unindented line ends the item rather than joining the code as a lazy continuation.
+    let fence = fenceAfter(null, marker.first);
     i += 1;
     while (i < lines.length) {
       const line = lineAt(lines, i);
@@ -338,8 +388,10 @@ function listAt(lines: Lines, start: number, depth: number): { node: HTMLElement
         break;
       }
       if (indentWidth(line) >= marker.contentIndent) {
-        body.push(stripIndent(line, marker.contentIndent));
-      } else if (listMarker(line) !== null || interruptsParagraph(line, depth)) {
+        const content = stripIndent(line, marker.contentIndent);
+        body.push(content);
+        fence = fenceAfter(fence, content);
+      } else if (fence !== null || listMarker(line) !== null || interruptsParagraph(line, depth)) {
         break;
       } else {
         // A lazy continuation line of the item's paragraph.
@@ -347,7 +399,7 @@ function listAt(lines: Lines, start: number, depth: number): { node: HTMLElement
       }
       i += 1;
     }
-    items.push(el("li", {}, ...parseBlocks(body, depth + 1)));
+    items.push(el("li", {}, ...parseBlocks(body, depth + 1, budget)));
 
     // Blank lines between items of the same list keep the list open.
     let next = i;
@@ -431,6 +483,7 @@ function tableAt(
   lines: Lines,
   start: number,
   depth: number,
+  budget: BlockBudget,
 ): { node: HTMLElement; next: number } | null {
   const headerLine = lineAt(lines, start);
   if (!headerLine.includes("|") || start + 1 >= lines.length) {
@@ -445,25 +498,36 @@ function tableAt(
     return null;
   }
   const columns = header.length;
+  // Count the cells before building any, so a table over the budget is not cut short. The count
+  // stops once it passes the budget, and a refused table spends the rest of it: otherwise each
+  // following line of a long run of delimiter-like rows would start the same long count again.
+  let end = start + 2;
+  while (end < lines.length && (end - start - 1) * columns <= budget.tableCells) {
+    const line = lineAt(lines, end);
+    if (isBlank(line) || interruptsParagraph(line, depth)) {
+      break;
+    }
+    end += 1;
+  }
+  const cells = (end - start - 1) * columns;
+  if (cells > budget.tableCells) {
+    budget.tableCells = 0;
+    return null;
+  }
+  budget.tableCells -= cells;
   const head = el(
     "tr",
     {},
     ...header.map((cell, column) => tableCell("th", cell, alignments[column] ?? null)),
   );
   const rows: HTMLElement[] = [];
-  let i = start + 2;
-  while (i < lines.length) {
-    const line = lineAt(lines, i);
-    if (isBlank(line) || interruptsParagraph(line, depth)) {
-      break;
-    }
-    const cells = tableCells(line);
+  for (let i = start + 2; i < end; i += 1) {
+    const values = tableCells(lineAt(lines, i));
     const row = el("tr");
     for (let column = 0; column < columns; column += 1) {
-      row.appendChild(tableCell("td", cells[column] ?? "", alignments[column] ?? null));
+      row.appendChild(tableCell("td", values[column] ?? "", alignments[column] ?? null));
     }
     rows.push(row);
-    i += 1;
   }
   const table = el(
     "table",
@@ -471,7 +535,7 @@ function tableAt(
     el("thead", {}, head),
     rows.length === 0 ? null : el("tbody", {}, ...rows),
   );
-  return { node: el("div", { class: "md-table" }, table), next: i };
+  return { node: el("div", { class: "md-table" }, table), next: end };
 }
 
 function codeBlock(info: string, content: string): HTMLElement {
@@ -501,9 +565,9 @@ function codeBlock(info: string, content: string): HTMLElement {
 // Inline content
 
 /**
- * Finds closing delimiters for one inline parse. A closer's validity depends only on its own
- * position, so the first valid closer at or after `from` is reusable for any later `from` up to
- * it. Each search then starts past the previous result and the total scan is linear per key.
+ * Finds closing emphasis delimiters for one inline parse. A closer's validity depends only on its
+ * own position, so the first valid closer at or after `from` is reusable for any later `from` up
+ * to it. Each search then starts past the previous result and the total scan is linear per key.
  */
 class CloserIndex {
   private readonly found = new Map<string, { from: number; at: number }>();
@@ -524,64 +588,202 @@ class CloserIndex {
   }
 }
 
+/** Longest HTML-like tag, from `<` to `>`, kept whole as literal text. */
+const MAX_TAG_CHARS = 1000;
+const TAG_NAME_START = /[A-Za-z]/;
+const TAG_NAME_CHAR = /[A-Za-z0-9-]/;
+
+/** Where one inline parse finds its literal text, code spans, tags, and links. */
+interface InlineScan {
+  /**
+   * 1 where a character is literal: escaped by a backslash, or inside a code span, an HTML-like
+   * tag, or a link destination. No delimiter or bracket at a literal position matches.
+   */
+  literal: Uint8Array;
+  /** For each `[` that is not literal, the index of its matching `]`, or -1. */
+  brackets: Int32Array;
+  /** For each `[` whose `]` is followed by a destination, the index of the destination's `)`. */
+  destinations: Int32Array;
+  /** At the first character of a code span or tag, the index just past its end; otherwise 0. */
+  spans: Int32Array;
+}
+
 /**
- * Marks each position whose character is literal: escaped by a backslash, or inside a code span
- * (its backtick runs included). Delimiters, brackets, and link ends at a marked position never
- * match. It scans as `parseInline` does, so both agree on where code spans are, in linear time.
+ * Scans `source` once from the left, as CommonMark reads inline content: an escape, a code span,
+ * or a tag is taken where it starts, and a link destination is read from the raw characters once
+ * its `]` is found, so a backtick inside an address never opens a code span. `parseInline` then
+ * follows this scan rather than finding the same things again, so the two cannot disagree. Every
+ * lookup is precomputed or bounded, so the scan is close to linear in the source length.
  */
-function literalPositions(source: string): Uint8Array {
-  const literal = new Uint8Array(source.length);
-  const closers = new CloserIndex(source);
+function scanInline(source: string): InlineScan {
+  const n = source.length;
+  const scan: InlineScan = {
+    literal: new Uint8Array(n),
+    brackets: new Int32Array(n).fill(-1),
+    destinations: new Int32Array(n).fill(-1),
+    spans: new Int32Array(n),
+  };
+  const runs = backtickRuns(source);
+  const ends = destinationEnds(source);
+  const open: number[] = [];
   let i = 0;
-  while (i < source.length) {
+  while (i < n) {
     const ch = source.charAt(i);
     if (ch === "\\" && ASCII_PUNCTUATION.test(source.charAt(i + 1))) {
-      literal[i + 1] = 1;
+      scan.literal[i + 1] = 1;
       i += 2;
     } else if (ch === "`") {
       const run = runLength(source, i, "`");
-      const close = codeSpanClose(source, i, run, closers);
-      if (close === -1) {
-        i += run;
+      const close = codeSpanClose(runs, i, run);
+      i = close === -1 ? i + run : markSpan(scan, i, close + run);
+    } else if (ch === "<") {
+      const close = tagEnd(source, i);
+      i = close === -1 ? i + 1 : markSpan(scan, i, close + 1);
+    } else if (ch === "[") {
+      open.push(i);
+      i += 1;
+    } else if (ch === "]") {
+      const at = open.pop();
+      const end = at === undefined ? -1 : destinationEnd(source, ends, i + 1);
+      if (at !== undefined) {
+        scan.brackets[at] = i;
+      }
+      if (at !== undefined && end !== -1) {
+        scan.destinations[at] = end;
+        scan.literal.fill(1, i + 1, end + 1);
+        i = end + 1;
       } else {
-        literal.fill(1, i, close + run);
-        i = close + run;
+        i += 1;
       }
     } else {
       i += 1;
     }
   }
-  return literal;
+  return scan;
 }
 
-/** The start of the backtick run that closes a code span opened by `run` backticks at `at`. */
-function codeSpanClose(source: string, at: number, run: number, closers: CloserIndex): number {
-  return closers.find(
-    "`".repeat(run),
-    at + run,
-    (k) => source.charAt(k - 1) !== "`" && source.charAt(k + run) !== "`",
-  );
+/** Marks `[start, end)` as one literal span and returns `end`. */
+function markSpan(scan: InlineScan, start: number, end: number): number {
+  scan.literal.fill(1, start, end);
+  scan.spans[start] = end;
+  return end;
 }
 
-/** For each `[` that is not literal, the index of its matching `]`, or -1. */
-function bracketPairs(source: string, literal: Uint8Array): Int32Array {
-  const pairs = new Int32Array(source.length).fill(-1);
-  const open: number[] = [];
-  for (let k = 0; k < source.length; k += 1) {
-    const ch = source.charAt(k);
-    if (literal[k] === 1) {
-      continue;
+/** The start of every maximal backtick run, grouped by run length, in ascending order. */
+function backtickRuns(source: string): Map<number, number[]> {
+  const runs = new Map<number, number[]>();
+  let at = source.indexOf("`");
+  while (at !== -1) {
+    const length = runLength(source, at, "`");
+    const starts = runs.get(length);
+    if (starts === undefined) {
+      runs.set(length, [at]);
+    } else {
+      starts.push(at);
     }
-    if (ch === "[") {
-      open.push(k);
-    } else if (ch === "]") {
-      const at = open.pop();
-      if (at !== undefined) {
-        pairs[at] = k;
-      }
+    at = source.indexOf("`", at + length);
+  }
+  return runs;
+}
+
+/**
+ * The start of the backtick run that closes a code span opened by `run` backticks at `at`: the
+ * first later maximal run of the same length, found by binary search, or -1.
+ */
+function codeSpanClose(runs: Map<number, number[]>, at: number, run: number): number {
+  const starts = runs.get(run);
+  if (starts === undefined) {
+    return -1;
+  }
+  let low = 0;
+  let high = starts.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((starts[middle] ?? 0) < at + run) {
+      low = middle + 1;
+    } else {
+      high = middle;
     }
   }
-  return pairs;
+  return starts[low] ?? -1;
+}
+
+/**
+ * For each position, the first unescaped `)` or line break at or after it, or -1. A `)` is
+ * escaped when an odd number of backslashes stands right before it. Built from the right in one
+ * pass, so a destination's end is a single lookup however many links a reply attempts.
+ */
+function destinationEnds(source: string): Int32Array {
+  const ends = new Int32Array(source.length);
+  let found = -1;
+  for (let k = source.length - 1; k >= 0; k -= 1) {
+    const ch = source.charAt(k);
+    if (ch === "\n" || (ch === ")" && !escapedAt(source, k))) {
+      found = k;
+    }
+    ends[k] = found;
+  }
+  return ends;
+}
+
+function escapedAt(source: string, at: number): boolean {
+  let backslashes = 0;
+  while (source.charAt(at - backslashes - 1) === "\\") {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+/**
+ * The index of the `)` that ends a link destination whose `(` is at `open`, or -1 when there is
+ * no `(`, the destination crosses a line, or it is longer than `MAX_LINK_DESTINATION_CHARS`.
+ */
+function destinationEnd(source: string, ends: Int32Array, open: number): number {
+  if (source.charAt(open) !== "(") {
+    return -1;
+  }
+  const end = ends[open + 1] ?? -1;
+  if (end === -1 || source.charAt(end) !== ")" || end - open - 1 > MAX_LINK_DESTINATION_CHARS) {
+    return -1;
+  }
+  return end;
+}
+
+/**
+ * The index of the `>` ending an HTML-like tag that starts at `at`: `<name>`, `</name>`, or a
+ * name followed by whitespace or `/` and up to `MAX_TAG_CHARS` characters without `<`. The tag
+ * is shown as text, but it is kept whole, so a delimiter inside it matches nothing outside it.
+ * Each search stops at the next `<`, so the searches never overlap.
+ */
+function tagEnd(source: string, at: number): number {
+  let k = at + 1;
+  if (source.charAt(k) === "/") {
+    k += 1;
+  }
+  if (!TAG_NAME_START.test(source.charAt(k))) {
+    return -1;
+  }
+  while (TAG_NAME_CHAR.test(source.charAt(k))) {
+    k += 1;
+  }
+  const next = source.charAt(k);
+  if (next === ">") {
+    return k;
+  }
+  if (next !== "/" && !isSpace(next)) {
+    return -1;
+  }
+  const limit = Math.min(source.length, at + MAX_TAG_CHARS);
+  for (; k < limit; k += 1) {
+    const ch = source.charAt(k);
+    if (ch === ">") {
+      return k;
+    }
+    if (ch === "<") {
+      return -1;
+    }
+  }
+  return -1;
 }
 
 function isSpace(ch: string): boolean {
@@ -606,8 +808,7 @@ function parseInline(source: string, depth: number): Node[] {
   }
   const out: Node[] = [];
   const closers = new CloserIndex(source);
-  const literal = literalPositions(source);
-  const brackets = bracketPairs(source, literal);
+  const scan = scanInline(source);
   let buffer = "";
   const flush = (): void => {
     if (buffer !== "") {
@@ -626,22 +827,30 @@ function parseInline(source: string, depth: number): Node[] {
       continue;
     }
 
+    const spanEnd = scan.spans[i] ?? 0;
     if (ch === "`") {
       const run = runLength(source, i, "`");
-      const close = codeSpanClose(source, i, run, closers);
-      if (close === -1) {
+      if (spanEnd === 0) {
         buffer += "`".repeat(run);
+        i += run;
       } else {
         flush();
-        out.push(el("code", { text: codeSpanText(source.slice(i + run, close)) }));
+        out.push(el("code", { text: codeSpanText(source.slice(i + run, spanEnd - run)) }));
+        i = spanEnd;
       }
-      i = close === -1 ? i + run : close + run;
+      continue;
+    }
+
+    if (ch === "<" && spanEnd !== 0) {
+      // An HTML-like tag is shown as the text it is.
+      buffer += source.slice(i, spanEnd);
+      i = spanEnd;
       continue;
     }
 
     if (ch === "[" || (ch === "!" && source.charAt(i + 1) === "[")) {
       const image = ch === "!";
-      const link = linkAt(source, image ? i + 1 : i, brackets, literal, closers);
+      const link = linkAt(source, image ? i + 1 : i, scan);
       if (link !== null) {
         flush();
         out.push(linkNode(link.label, link.destination, image, depth));
@@ -655,7 +864,7 @@ function parseInline(source: string, depth: number): Node[] {
 
     if (ch === "*" || ch === "_" || ch === "~") {
       const run = runLength(source, i, ch);
-      const span = emphasisAt(source, i, run, ch, literal, closers);
+      const span = emphasisAt(source, i, run, ch, scan.literal, closers);
       if (span === null) {
         buffer += ch.repeat(run);
         i += run;
@@ -702,7 +911,7 @@ function emphasisAt(
   for (const strength of strengths) {
     const delimiter = ch.repeat(strength);
     const close = closers.find(delimiter, at + run, (k) => {
-      // An escaped marker, or one inside inline code, is text and closes nothing.
+      // An escaped marker, or one inside inline code, a tag, or an address, closes nothing.
       if (literal[k] === 1 || literal[k + strength - 1] === 1) {
         return false;
       }
@@ -733,24 +942,19 @@ function emphasisNode(strength: number, ch: string, inner: string, depth: number
 function linkAt(
   source: string,
   open: number,
-  brackets: Int32Array,
-  literal: Uint8Array,
-  closers: CloserIndex,
+  scan: InlineScan,
 ): { label: string; destination: string; next: number } | null {
-  const close = brackets[open] ?? -1;
-  if (close === -1 || source.charAt(close + 1) !== "(") {
-    return null;
-  }
-  const end = closers.find(")", close + 2, (k) => literal[k] !== 1);
-  if (end === -1) {
-    return null;
-  }
-  const inside = source.slice(close + 2, end);
-  if (inside.includes("\n") || inside.length > MAX_LINK_DESTINATION_CHARS) {
+  const close = scan.brackets[open] ?? -1;
+  const end = scan.destinations[open] ?? -1;
+  if (close === -1 || end === -1) {
     return null;
   }
   // A title after the destination is dropped.
-  const destination = inside.trim().split(/\s/, 1)[0] ?? "";
+  const destination =
+    source
+      .slice(close + 2, end)
+      .trim()
+      .split(/\s/, 1)[0] ?? "";
   const unwrapped =
     destination.startsWith("<") && destination.endsWith(">")
       ? destination.slice(1, -1)
@@ -764,7 +968,8 @@ function linkAt(
 
 /**
  * A link or image as inert text: the label, then the destination in a muted span. The destination
- * is always shown, so a label cannot pose as a different address, and nothing is fetched.
+ * is shown unless the label already reads exactly as it, so a label cannot pose as a different
+ * address, and nothing is fetched.
  */
 function linkNode(label: string, destination: string, image: boolean, depth: number): HTMLElement {
   const node = el("span", { class: image ? "md-image" : "md-link" });
@@ -775,7 +980,11 @@ function linkNode(label: string, destination: string, image: boolean, depth: num
       node.appendChild(child);
     }
   }
-  if (destination !== "" && destination !== label) {
+  // Compare what the label shows, not its source: "[`x`](x)" shows "x", and "[*x*](*x*)" does not
+  // show "*x*". The label shows overrides as markers and the destination holds them raw, so an
+  // address with an override never matches and is always shown, through `text`.
+  const shown = image ? label : (node.textContent ?? "");
+  if (destination !== "" && destination !== shown) {
     node.appendChild(el("span", { class: "md-link-url", text: ` (${destination})` }));
   }
   return node;

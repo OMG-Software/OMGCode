@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptEntry } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
 import {
+  backdrop,
   CAPTURE_PADDING,
   CaptureError,
   captureScale,
+  graphemes,
   MAX_CANVAS_AREA,
   MAX_CANVAS_SIDE,
   MAX_TEXT_RUNS,
@@ -14,6 +16,7 @@ import { COPY_FEEDBACK_MS } from "../src/main/clipboard";
 import { renderMarkdown } from "../src/main/markdown";
 import { plainText } from "../src/main/plain_text";
 import { createLiveEntry, entryContexts, renderEntry, replyLabel } from "../src/main/transcript";
+import mainCss from "../src/styles/main.css?raw";
 import {
   installFakeIpc,
   mainHandlers,
@@ -230,10 +233,14 @@ describe("plain text", () => {
     expect(text).toBe("a\tb\n1\t2\n\n  x\n\ty");
   });
 
-  it("leaves blank lines inside a list item unindented", () => {
+  it("separates blocks inside a list item and leaves blank lines unindented", () => {
     const text = plainText(md("1. run\n\n   ```\n   a\n\n   b\n   ```"));
-    expect(text).toBe("1. run\n   a\n\n   b");
+    expect(text).toBe("1. run\n\n   a\n\n   b");
     expect(text.split("\n").some((line) => line !== "" && line.trim() === "")).toBe(false);
+  });
+
+  it("keeps paragraphs in an item apart and a nested list on the next line", () => {
+    expect(plainText(md("- one\n\n  two\n  - inner"))).toBe("• one\n\n  two\n  • inner");
   });
 
   it("describes an image as the reply shows it", () => {
@@ -365,6 +372,73 @@ describe("image painting", () => {
       .map((c) => c.split(",")[0]);
     expect(markers).toEqual(["fillText(3.", "fillText(4.", "fillText(◦"]);
     root.remove();
+  });
+
+  it("strikes through text nested inside a line-through element", () => {
+    const root = document.createElement("p");
+    const del = document.createElement("del");
+    del.style.textDecorationLine = "line-through";
+    const strong = document.createElement("strong");
+    strong.append("x");
+    del.append(strong);
+    root.append(del, " y");
+    document.body.append(root);
+    // The nested element's own computed style has no line-through, as in a browser.
+    expect(getComputedStyle(strong).textDecorationLine).not.toContain("line-through");
+    const { context, calls } = recordingContext();
+    paintElement(context, root, { x: 0, y: 0 }, { runs: 100 });
+    const strikes = calls.filter((c) => c.startsWith("fillRect(") && c.endsWith(",1)"));
+    // One line through "x", none through "y", which is outside the deletion.
+    expect(strikes).toEqual(["fillRect(100,58.8,8,1)"]);
+    root.remove();
+  });
+
+  it("places each user-perceived character of a wrapped word as one glyph", () => {
+    const accented = `e${String.fromCharCode(0x301)}`;
+    const thumb = String.fromCodePoint(0x1f44d, 0x1f3fd);
+    expect(graphemes(`${accented}${thumb}x`)).toEqual([accented, thumb, "x"]);
+
+    // A range over the whole word reports two line boxes, so the word is placed in pieces.
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value(this: Range) {
+        const length = this.endOffset - this.startOffset;
+        const rect = { left: 100 + this.startOffset * 8, top: 50, width: length * 8, height: 16 };
+        return length > 4 ? [rect, { ...rect, top: 66 }] : [rect];
+      },
+    });
+    const root = document.createElement("p");
+    root.append(`${accented}${thumb}x`);
+    document.body.append(root);
+    const { context, calls } = recordingContext();
+    paintElement(context, root, { x: 0, y: 0 }, { runs: 100 });
+    const glyphs = calls
+      .filter((c) => c.startsWith("fillText("))
+      .map((c) => c.slice("fillText(".length).split(",")[0]);
+    expect(glyphs).toEqual([accented, thumb, "x"]);
+    root.remove();
+  });
+
+  it("pads the image with the colour behind the entry", () => {
+    const pane = document.createElement("section");
+    pane.style.backgroundColor = "rgb(1, 2, 3)";
+    const wrapper = document.createElement("div");
+    const entry = document.createElement("article");
+    wrapper.append(entry);
+    pane.append(wrapper);
+    document.body.append(pane);
+    expect(backdrop(entry)).toBe("rgb(1, 2, 3)");
+    pane.style.backgroundColor = "";
+    expect(backdrop(entry)).toBe("#000000");
+    pane.remove();
+  });
+
+  it("lets a wide code block wrap while it is captured", () => {
+    const rules = mainCss.replace(/\s+/g, " ");
+    expect(rules).toContain(".capturing .md-code pre { overflow: visible; }");
+    expect(rules).toContain(
+      ".capturing .md-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }",
+    );
   });
 
   it("refuses an entry with more text runs than the budget", () => {
