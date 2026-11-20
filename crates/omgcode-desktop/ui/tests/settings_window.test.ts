@@ -890,6 +890,10 @@ describe("settings window", () => {
       let revision = 7;
       await start(() => choosable({ revision, provider_profiles: [] }));
       go("Model");
+      // The operator opens Add connection, as the form is collapsed until then.
+      const form = field("API key").closest("details") as HTMLDetailsElement;
+      form.open = true;
+      form.dispatchEvent(new Event("toggle"));
       chooseCloud();
       const key = field("API key");
       // The operator pasted a key, then left to find something and came back.
@@ -932,8 +936,33 @@ describe("settings window", () => {
       expect(again.value).toBe(KEY);
       expect((rowOf("hosted").querySelector("details") as HTMLDetailsElement).open).toBe(true);
 
-      // The connection was removed: its form is gone, and so is the key.
+      // Closing the form drops its key at once.
+      const open = rowOf("hosted").querySelector("details") as HTMLDetailsElement;
+      open.open = false;
+      open.dispatchEvent(new Event("toggle"));
+      expect(pageHolds(KEY)).toBe(false);
+
+      // A key left in a closed form is not carried into the redraw, and the form stays closed.
+      (rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement).value = KEY;
       revision = 9;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(pageHolds(KEY)).toBe(false);
+      expect((rowOf("hosted").querySelector("details") as HTMLDetailsElement).open).toBe(false);
+
+      // Typed again into the open form, it survives one more change.
+      const reopened = rowOf("hosted").querySelector("details") as HTMLDetailsElement;
+      reopened.open = true;
+      (rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement).value = KEY;
+      revision = 10;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(
+        (rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement).value,
+      ).toBe(KEY);
+
+      // The connection was removed: its form is gone, and so is the key.
+      revision = 11;
       profiles = [];
       window.dispatchEvent(new Event("focus"));
       await settle();

@@ -164,24 +164,41 @@ export function startSettings(root: HTMLElement): SettingsApp {
   /**
    * Takes every API key typed but not sent out of its field, by the field's id, which names the
    * form and its connection. The keys move from the old fields to the new ones and are never put
-   * in view state.
+   * in view state. A key in a closed form is cleared and not carried.
    */
   function takeUnsentKeys(): Map<string, string> {
     const unsent = new Map<string, string>();
     for (const input of Array.from(
       body.querySelectorAll<HTMLInputElement>('input[type="password"]'),
     )) {
-      if (input.id !== "" && input.value !== "") {
-        unsent.set(input.id, input.value);
-        input.value = "";
+      const value = input.value;
+      input.value = "";
+      if (input.id !== "" && value !== "" && input.closest("details")?.open !== false) {
+        unsent.set(input.id, value);
       }
     }
     return unsent;
   }
 
+  // Closing a form drops the key typed into it, so nothing hidden keeps a key or brings it back.
+  body.addEventListener(
+    "toggle",
+    (event) => {
+      const disclosure = event.target;
+      if (disclosure instanceof HTMLDetailsElement && !disclosure.open) {
+        for (const input of Array.from(
+          disclosure.querySelectorAll<HTMLInputElement>('input[type="password"]'),
+        )) {
+          input.value = "";
+        }
+      }
+    },
+    true,
+  );
+
   /**
-   * Puts each key back into the new field with the same id, opening its disclosure. A key whose
-   * form is gone (closed, or its connection removed or no longer hosted) is dropped.
+   * Puts each key back into the new field with the same id, opening its disclosure again. A key
+   * whose form is gone (its connection removed or no longer hosted) is dropped.
    */
   function restoreUnsentKeys(unsent: Map<string, string>): void {
     for (const [id, value] of unsent) {
