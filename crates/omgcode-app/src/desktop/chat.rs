@@ -75,7 +75,7 @@ impl DesktopService {
 
     /// List the models of the connection the session's next turn would use, so
     /// the composer offers a choice instead of a typed name (ADR-0066,
-    /// ADR-0069).
+    /// ADR-0070).
     ///
     /// The connection is resolved for the session exactly as
     /// [`chat_send`](Self::chat_send) resolves it, its credential included, and the one request goes only to

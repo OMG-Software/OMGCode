@@ -285,7 +285,7 @@ const fn provider_label(kind: ProviderKind) -> &'static str {
 
 /// What the confirmation adds for the hosted service. Prompts, tool results,
 /// and command output are the model's whole view of the workspace, so the
-/// operator is told before a turn can send them off this computer (ADR-0069).
+/// operator is told before a turn can send them off this computer (ADR-0070).
 const CLOUD_NOTICE: &str = "This is Ollama's hosted service. Prompts, workspace text read by tools, and command output leave this computer for ollama.com.";
 
 /// The confirmation for choosing a recorded profile. `subject` says whose chat
@@ -681,7 +681,7 @@ impl DesktopService {
     /// `settings` only. Choose the global default model connection: a
     /// selectable recorded profile by name (local, or `ollama_cloud` with a
     /// bound credential), or `None` for the default endpoint (ADR-0064,
-    /// ADR-0069). It applies to sessions that have no connection of their own. A
+    /// ADR-0070). It applies to sessions that have no connection of their own. A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///
@@ -717,7 +717,7 @@ impl DesktopService {
     }
 
     /// `main` only: the composer's and status bar's choice of model connection
-    /// for one session (ADR-0064, ADR-0069).
+    /// for one session (ADR-0064, ADR-0070).
     ///
     /// The window names a session and a profile, or none for the default, and
     /// nothing else. Every refusal comes before any dialog: a launch argument
@@ -783,7 +783,7 @@ impl DesktopService {
         })
     }
 
-    /// `main` only: record the model chosen for one session (ADR-0069). No
+    /// `main` only: record the model chosen for one session (ADR-0070). No
     /// dialog is shown: a model grants nothing, and the server still decides
     /// whether it exists. The model id passes the rule `chat_send` applies (at
     /// most 256 bytes, no control character); an empty id clears the choice. A
@@ -815,7 +815,7 @@ impl DesktopService {
     /// `settings` only. Record a connection through the same core call as the
     /// CLI's `provider-profile-add`: a local LM Studio or Ollama connection
     /// with no credential and a typed loopback endpoint, or Ollama Cloud with
-    /// its fixed endpoint and an API key (ADR-0069 decision 5). Recording it
+    /// its fixed endpoint and an API key (ADR-0070 decision 5). Recording it
     /// grants nothing and sends nothing; only selecting it does, after a
     /// confirmation. No dialog is shown.
     ///
@@ -1008,7 +1008,7 @@ impl DesktopService {
     /// changes where no turn goes, so no dialog is shown.
     ///
     /// A session that chose the removed profile refuses its next turn with
-    /// `session_connection_stale` (ADR-0069), because core no longer knows the
+    /// `session_connection_stale` (ADR-0070), because core no longer knows the
     /// profile.
     ///
     /// # Errors

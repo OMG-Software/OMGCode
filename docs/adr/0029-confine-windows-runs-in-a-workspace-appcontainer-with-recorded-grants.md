@@ -1,6 +1,8 @@
 # 0029: Confine Windows runs in a workspace AppContainer with recorded grants
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0069](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md),
+  which also accepts ReFS grant directories
 - Date: 2026-11-11
 
 ## Context

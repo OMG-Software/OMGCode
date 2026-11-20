@@ -15,7 +15,8 @@ use rustix::io::Errno;
 
 use crate::{DirectoryIdentity, directory_identity};
 
-mod ext4;
+mod attributes;
+pub(crate) use attributes::LinuxFilesystem;
 
 /// Check privacy on the opened file before returning its device/inode identity.
 /// This never reopens a path or takes ownership from the caller.
@@ -76,7 +77,7 @@ pub(crate) fn validate_replacement_attributes(file: &File) -> io::Result<()> {
             "file has unsupported statx attributes",
         ));
     }
-    ext4::validate_file_attributes(file)
+    attributes::validate_file_attributes(file)
 }
 
 /// A retained private directory. Owned handles close on drop.

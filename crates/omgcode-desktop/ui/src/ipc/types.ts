@@ -272,7 +272,7 @@ export interface ModelChoice {
   cloud_tag: boolean;
 }
 
-/** The models of a session's connection, sorted by id (ADR-0069). */
+/** The models of a session's connection, sorted by id (ADR-0070). */
 export interface ChatModels {
   /** The session that asked. An answer for a session that is no longer shown is discarded. */
   session_id: string;
@@ -336,11 +336,11 @@ export interface ConnectionChoice {
   active: boolean;
 }
 
-/** Where a session's connection comes from (ADR-0069). */
+/** Where a session's connection comes from (ADR-0070). */
 export type ConnectionOrigin = "launch" | "session" | "default";
 
 /**
- * A session's model connection (ADR-0064, ADR-0069). `choices` is empty when a launch argument
+ * A session's model connection (ADR-0064, ADR-0070). `choices` is empty when a launch argument
  * fixed the connection.
  */
 export interface ConnectionStatus {
@@ -387,7 +387,7 @@ export interface ProviderProfileView {
 /** A local provider the settings window may record (ADR-0064). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
 
-/** A provider the settings window may add: a local one, or hosted Ollama Cloud (ADR-0069). */
+/** A provider the settings window may add: a local one, or hosted Ollama Cloud (ADR-0070). */
 export type NewConnectionKind = LocalProviderKind | "ollama_cloud";
 
 export interface ToolchainProfileView {
@@ -429,6 +429,6 @@ export interface SettingsOverview {
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
   skills: SkillSettingView[];
-  /** The workspace the window is scoped to (ADR-0069), or `null` for the full view. Display only. */
+  /** The workspace the window is scoped to (ADR-0070), or `null` for the full view. Display only. */
   scope: { workspace_id: string } | null;
 }

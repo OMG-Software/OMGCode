@@ -686,7 +686,7 @@ mark {
   flex-wrap: wrap;
 }
 
-/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0069). */
+/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0070). */
 .toolbar-field {
   display: flex;
   gap: 4px;

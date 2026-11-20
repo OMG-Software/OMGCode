@@ -1,4 +1,4 @@
-//! Native DPAPI store tests on a temporary NTFS private root.
+//! Native DPAPI store tests on a temporary NTFS or ReFS private root.
 
 use super::*;
 use crate::credentials::CredentialStore;

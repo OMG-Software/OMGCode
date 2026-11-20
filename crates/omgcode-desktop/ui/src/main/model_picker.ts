@@ -8,7 +8,7 @@ export const CLOUD_SUFFIX = " (Ollama cloud)";
 /** Shown while a cloud-tagged model is chosen. */
 export const CLOUD_WARNING =
   "This Ollama model runs on Ollama's hosted service: prompts and workspace text sent to it leave this computer.";
-/** Added to every model of an Ollama Cloud connection (ADR-0069). */
+/** Added to every model of an Ollama Cloud connection (ADR-0070). */
 export const HOSTED_SUFFIX = " (hosted)";
 /** Shown while the session's connection is Ollama Cloud. */
 export const HOSTED_WARNING =
@@ -64,7 +64,7 @@ function option(value: string, label: string): HTMLOptionElement {
 }
 
 /**
- * Builds the model choice of the composer toolbar (ADR-0066, ADR-0069). The ids are untrusted
+ * Builds the model choice of the composer toolbar (ADR-0066, ADR-0070). The ids are untrusted
  * provider text: they are shown as text only, and choosing one grants nothing, since `chat_send`
  * validates the model as it validates any other. The list belongs to a session and a request, so
  * it is keyed on the session id and a request counter, never on endpoint text.

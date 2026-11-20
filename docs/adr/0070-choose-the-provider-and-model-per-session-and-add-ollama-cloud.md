@@ -1,4 +1,4 @@
-# 0069: Choose the provider and model per session and add Ollama Cloud
+# 0070: Choose the provider and model per session and add Ollama Cloud
 
 - Status: Accepted
 - Date: 2026-11-20

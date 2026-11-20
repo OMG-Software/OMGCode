@@ -4,10 +4,46 @@ Changes are recorded here before a release version is assigned.
 
 ## Unreleased
 
+### Changed
+
+- Version 0.48.0 accepts ReFS, including a Dev Drive, on Windows and btrfs,
+  XFS, tmpfs, and ZFS on Linux for trusted apply, checkpoint storage, and
+  Windows container grants (ADR-0069, accepted). Model edit, multi-edit, and
+  delete calls no longer fail with `native_error` on those volumes when the
+  data directory shares the volume or mount. No power-loss claim is made.
+  - **Platform (Windows):** one volume check replaces the NTFS name check for
+    the private store, the replacement target, and grant directories. It
+    accepts `NTFS` or `ReFS` only when the volume reports persistent ACLs,
+    POSIX unlink and rename, case-preserved Unicode names, and extended
+    attributes. A refusal names the role and filesystem, for example
+    `workspace volume uses exFAT; file writes require NTFS or ReFS`, instead
+    of `private storage requires NTFS on Windows`. Files carrying the ReFS
+    integrity-stream or no-scrub attribute are refused with their own message.
+  - **Platform (Linux):** apply accepts the `ext4`, `btrfs`, `xfs`, `tmpfs`,
+    and `zfs` mount types and refuses others as
+    `workspace mount uses nfs4; file writes require ext4, btrfs, XFS, tmpfs, or ZFS`.
+    The inode-attribute policy follows the open file's `statfs` magic: only
+    ext4 may carry the extents flag, `FSGETXATTR` may report no settable
+    flag or project (XFS's read-only attribute-fork bit and unflagged default
+    size hints are ignored), and only tmpfs may lack the attribute ioctls.
+    A missing ioctl elsewhere is now an `Unsupported` refusal rather than a
+    raw `ENOTTY` error.
+  - **CI:** a `filesystems` job mounts ReFS on Windows Server 2025 and
+    btrfs, XFS, tmpfs, and ZFS on Ubuntu 24.04, checks the temporary directory
+    is there through the opt-in `OMGCODE_TEST_EXPECT_FS` test, and reruns the
+    platform, core, and CLI file-access suites.
+  - **Tests:** volume and mount classification, per-filesystem attribute
+    policy, a supported-temporary-volume check on both systems, and a
+    cross-mount test that no longer assumes tmpfs is refused. The
+    package-fetch deadline test times the connection from its fixture
+    server and requires a timed-out error, so the synced control records
+    around the request, slow on a CI XFS loop mount, no longer count
+    against the one-second deadline.
+
 ### Added
 
-- Version 0.48.0 chooses the provider and model per session, adds Ollama Cloud
-  as a hosted provider, and adds a **Workspace settings** button (ADR-0069,
+- Version 0.49.0 chooses the provider and model per session, adds Ollama Cloud
+  as a hosted provider, and adds a **Workspace settings** button (ADR-0070,
   accepted).
   - **Core:** `OLLAMA_CLOUD_ENDPOINT` (`https://ollama.com/v1`) and
     `ModelEndpoint`, which is either the unchanged loopback rule or exactly
@@ -137,7 +173,7 @@ Changes are recorded here before a release version is assigned.
   connection changed in the `settings` window, or when `chat_defaults` fell
   back to the launch endpoint, and it left only the saved model on offer for
   LM Studio and Ollama. The list is now tied to the session and request it was
-  asked for (ADR-0069).
+  asked for (ADR-0070).
 - A desktop launch with `--provider-profile` for an Ollama Cloud profile no
   longer exits before a window opens. The launch check now keeps the profile's
   token while it validates the endpoint; `--endpoint` and the default endpoint

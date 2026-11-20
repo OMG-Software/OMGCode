@@ -1,4 +1,4 @@
-//! Windows NTFS-only handle-relative replacement publication.
+//! Windows handle-relative replacement publication on NTFS or ReFS (ADR-0069).
 //!
 //! The retained source handle denies write sharing, so ordinary writers are
 //! blocked for the whole operation. It permits delete sharing because the final
@@ -37,9 +37,9 @@ use super::{
 use crate::broker::{FileCapture, MAX_FILE_BYTES};
 use crate::directory_identity;
 use crate::private_store::windows::{
-    DIRECTORY_OPTIONS, FILE_OPTIONS, FILE_READ_ACCESS, STAGE_NAME, apply_security, is_private_file,
-    mark_for_deletion, read_native_security, require_ntfs, set_content_indexing,
-    split_native_security, validate_file_metadata,
+    DIRECTORY_OPTIONS, FILE_OPTIONS, FILE_READ_ACCESS, STAGE_NAME, VolumeRole, apply_security,
+    is_private_file, mark_for_deletion, read_native_security, require_supported_filesystem,
+    set_content_indexing, split_native_security, validate_file_metadata,
 };
 use crate::private_store::{
     NativeSecurity, PrivateDirectory, PrivateFileIdentity, StageMetadata, stage_metadata,
@@ -172,7 +172,7 @@ impl NativeWorkspace {
         let (handles, name) = self.open_parent(path)?;
         validate_component(&name)?;
         let directory = last_directory(&handles)?;
-        require_ntfs(directory)?;
+        require_supported_filesystem(directory, VolumeRole::ReplacementTarget)?;
         // Denying write sharing also fails here if a writer already has it open.
         let source = open_relative(
             directory,

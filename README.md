@@ -40,8 +40,8 @@ directory grants.
 > and renaming are not checkpointed. It has no model network, Git, or MCP
 > tools.
 > The trusted
-> CLI can replace or restore one existing file through a checkpoint on qualified
-> Linux ext4 or Windows NTFS, and can permanently delete one resolved checkpoint.
+> CLI can replace or restore one existing file through a checkpoint on Linux
+> ext4, btrfs, XFS, tmpfs, or ZFS, or on Windows NTFS or ReFS, and can permanently delete one resolved checkpoint.
 > The `file` commands cannot delete workspace files, though `file restore
 > --removed` recreates one that a model deletion removed. The trusted CLI `run`
 > command executes programs under native confinement, and those programs can
@@ -161,9 +161,10 @@ does not isolate hostile same-user processes or contain a process. A read-only
 The core also validates replacement journal bytes and can prepare protected
 Linux and Windows checkpoints through its authorized library API. The CLI can
 inspect and acknowledge existing checkpoint state. Trusted `file apply` can
-publish one checkpointed replacement on a qualified Linux ext4 mount or on
-Windows NTFS. Stop independent writers first: a content check and rename cannot
-guarantee no lost updates. Windows makes no power-loss claim. Trusted
+publish one checkpointed replacement on a Linux ext4, btrfs, XFS, tmpfs, or ZFS
+mount, or on a Windows NTFS or ReFS volume ([ADR-0069](docs/adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Stop independent
+writers first: a content check and rename cannot guarantee no lost updates. No
+filesystem has a power-loss claim. Trusted
 `file restore` writes a retained original back through a new checkpoint after
 an explicit current-content check. Trusted `file delete-checkpoint --permanent`
 removes one resolved checkpoint's files and keeps its ledger history until

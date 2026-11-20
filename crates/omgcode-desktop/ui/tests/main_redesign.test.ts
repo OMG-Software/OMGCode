@@ -259,7 +259,7 @@ describe("composer toolbar", () => {
     expect(settings.querySelector(".fixed-value")?.textContent).toBe(SETTINGS.endpoint);
     expect(settings.textContent).toContain("Follows the session's provider");
     expect(buttonByText(settings, "Save as defaults")).toBeDefined();
-    // The model and the provider moved to the toolbar (ADR-0069); nothing is typed (ADR-0066).
+    // The model and the provider moved to the toolbar (ADR-0070); nothing is typed (ADR-0066).
     expect(settings.querySelectorAll("input[type=text]")).toHaveLength(0);
     expect(settings.querySelectorAll("select")).toHaveLength(0);
     const tools = root.querySelector(".composer-tools") as HTMLElement;

@@ -41,7 +41,7 @@ pub struct ListedModel {
 /// List the models the local server at `base_url` reports, sorted by id.
 ///
 /// `base_url` must pass the same endpoint rule as a chat connection: the
-/// loopback rule (ADR-0048) or the fixed Ollama Cloud endpoint (ADR-0069),
+/// loopback rule (ADR-0048) or the fixed Ollama Cloud endpoint (ADR-0070),
 /// which also requires a token. `token`, when present, is sent exactly as a chat request
 /// sends it. The request is one `GET /v1/models` with no proxy, no redirect,
 /// no retry, a five-second connect timeout, a ten-second total deadline, and

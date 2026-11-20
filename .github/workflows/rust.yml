@@ -93,3 +93,136 @@ jobs:
         run: cargo test --workspace --all-targets --locked
       - name: Run documentation tests
         run: cargo test --workspace --doc --locked
+
+  # ADR-0069: rerun the file-access suites with the temporary directory, and so
+  # every fixture's data root and workspace, on each accepted filesystem. The
+  # runner's own disk covers NTFS and ext4 in the check job above.
+  filesystems:
+    name: Filesystem (${{ matrix.filesystem }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { filesystem: ReFS, os: windows-2025 }
+          - { filesystem: btrfs, os: ubuntu-24.04 }
+          - { filesystem: xfs, os: ubuntu-24.04 }
+          - { filesystem: tmpfs, os: ubuntu-24.04 }
+          - { filesystem: zfs, os: ubuntu-24.04 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      OMGCODE_TEST_EXPECT_FS: ${{ matrix.filesystem }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Mount a ReFS volume
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vhd = Join-Path $env:RUNNER_TEMP 'refs.vhdx'
+          $script = Join-Path $env:RUNNER_TEMP 'refs.txt'
+          @(
+            "create vdisk file=`"$vhd`" maximum=8192 type=expandable"
+            "select vdisk file=`"$vhd`""
+            'attach vdisk'
+            'convert gpt'
+            'create partition primary'
+            'assign letter=R'
+          ) | Set-Content -Encoding ascii $script
+          diskpart /s $script
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Format-Volume -DriveLetter R -FileSystem ReFS -Confirm:$false -Force | Out-Null
+          # A new volume root grants Authenticated Users Modify only. Give the
+          # test directory the per-user shape of %TEMP%, as the tests require.
+          New-Item -ItemType Directory R:\tmp | Out-Null
+          icacls R:\tmp /inheritance:r /grant:r "${env:USERDOMAIN}\${env:USERNAME}:(OI)(CI)F" `
+            'NT AUTHORITY\SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "TEMP=R:\tmp" >> $env:GITHUB_ENV
+          "TMP=R:\tmp" >> $env:GITHUB_ENV
+      - name: Mount a ${{ matrix.filesystem }} filesystem
+        if: runner.os == 'Linux'
+        env:
+          FILESYSTEM: ${{ matrix.filesystem }}
+        run: |
+          sudo mkdir -p /mnt/fs
+          image="$RUNNER_TEMP/fs.img"
+          case "$FILESYSTEM" in
+            btrfs|xfs)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends btrfs-progs xfsprogs
+              truncate -s 4G "$image"
+              "mkfs.$FILESYSTEM" -q "$image"
+              sudo mount -o loop "$image" /mnt/fs
+              ;;
+            zfs)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends zfsutils-linux
+              truncate -s 4G "$image"
+              sudo zpool create -m /mnt/fs omgcode "$image"
+              ;;
+            tmpfs)
+              sudo mount -t tmpfs -o size=4G,mode=0755 tmpfs /mnt/fs
+              ;;
+          esac
+          sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /mnt/fs/tmp
+          findmnt -T /mnt/fs/tmp
+          uname -r
+          echo "TMPDIR=/mnt/fs/tmp" >> "$GITHUB_ENV"
+      - name: Start a user service manager for delegated cgroups
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime_dir="/run/user/$(id -u)"
+          for _ in $(seq 1 50); do
+            [ -S "$runtime_dir/bus" ] && break
+            sleep 0.2
+          done
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus" >> "$GITHUB_ENV"
+      # The core unit tests include credential tests that need it.
+      - name: Start an unlocked Secret Service for credential tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnome-keyring
+          # One empty line is an empty password. It creates and unlocks the
+          # login collection, which becomes the default alias; empty input
+          # (no newline) creates no collection.
+          printf '\n' | gnome-keyring-daemon --unlock --components=secrets
+          for _ in $(seq 1 50); do
+            busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+              org.freedesktop.Secret.Service ReadAlias s default 2>/dev/null \
+              | grep -q '/collection/' && break
+            sleep 0.2
+          done
+          busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+            org.freedesktop.Secret.Service ReadAlias s default | grep '/collection/'
+      - name: Check that the temporary directory is on ${{ matrix.filesystem }}
+        shell: bash
+        run: |
+          cargo test -p omgcode-platform --lib --locked -- --ignored --exact \
+            "$(if [ "$RUNNER_OS" = Windows ]; then
+                 echo private_store::windows::volume::tests::the_temporary_directory_is_on_the_expected_filesystem
+               else
+                 echo broker::linux::replacement::tests::the_temporary_directory_is_on_the_expected_filesystem
+               fi)" | tee guard.log
+          grep -q '^test result: ok. 1 passed' guard.log
+      - name: Run the platform file-access and container grant tests
+        # A block scalar: in a plain scalar, `:: ` would start a mapping.
+        run: >-
+          cargo test -p omgcode-platform --lib --locked --
+          broker:: private_store:: container::
+      - name: Run the core file-access tests
+        run: >-
+          cargo test -p omgcode-core --locked --lib
+          --test checkpoint_storage --test file_broker --test replacement_records
+          --test turn_runtime --test approval_review --test workspace_listing
+      - name: Run the CLI file-access tests
+        run: >-
+          cargo test -p omgcode-cli --locked
+          --test replacement_apply --test checkpoint_lifecycle --test checkpoint_recovery
+          --test file_workflow --test model_tools

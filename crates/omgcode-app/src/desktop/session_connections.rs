@@ -1,4 +1,4 @@
-//! The connection and model chosen for each session (ADR-0069).
+//! The connection and model chosen for each session (ADR-0070).
 //!
 //! The file is `<data_root>/desktop-v1/session-connections.json`. It maps a
 //! session identifier to the provider the operator chose for that session and
@@ -412,7 +412,7 @@ impl Inner {
         update_record(&self.data_root, session_id, change, LOCK_WAIT)
     }
 
-    /// The connection for one session's next request (ADR-0069 decision 7).
+    /// The connection for one session's next request (ADR-0070 decision 7).
     ///
     /// Order: a launch argument fixes the connection for every session; else
     /// the session's recorded provider, re-resolved through core now; else the
@@ -464,7 +464,7 @@ impl Inner {
         }
     }
 
-    /// The global selection (or the default endpoint), as before ADR-0069.
+    /// The global selection (or the default endpoint), as before ADR-0070.
     fn resolve_global(&self) -> Result<SessionConnection, DesktopError> {
         // One read gives the endpoint, the token, and the kind, so they always
         // describe the same profile even if the selection changes meanwhile.

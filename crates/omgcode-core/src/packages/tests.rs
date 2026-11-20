@@ -707,7 +707,9 @@ fn concurrent_publication_never_replaces_the_winner() {
 /// A server that sends one body byte at a time, each inside a read timeout.
 struct TrickleFixture {
     address: SocketAddr,
-    task: JoinHandle<()>,
+    /// How long the client kept the connection open after its request
+    /// arrived, or `None` when every body byte was written.
+    task: JoinHandle<Option<Duration>>,
 }
 
 impl TrickleFixture {
@@ -733,19 +735,21 @@ impl TrickleFixture {
                 .set_nonblocking(false)
                 .expect("make accepted stream blocking");
             let head = read_head(&mut stream);
+            let requested = Instant::now();
             assert!(head.starts_with("GET "), "{head}");
             let response =
                 format!("HTTP/1.1 200 OK\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n");
             if stream.write_all(response.as_bytes()).is_err() {
-                return;
+                return Some(requested.elapsed());
             }
             for _ in 0..bytes {
                 if stream.write_all(b"x").is_err() {
-                    return;
+                    return Some(requested.elapsed());
                 }
                 let _ = stream.flush();
                 thread::sleep(interval);
             }
+            None
         });
         Self { address, task }
     }
@@ -754,13 +758,14 @@ impl TrickleFixture {
         format!("http://{}{path}", self.address)
     }
 
-    fn finish(self) {
+    /// Waits for the fixture and returns how long the connection lasted.
+    fn finish(self) -> Option<Duration> {
         let deadline = Instant::now() + Duration::from_secs(8);
         while !self.task.is_finished() {
             assert!(Instant::now() < deadline, "fixture finished");
             thread::sleep(Duration::from_millis(2));
         }
-        self.task.join().expect("fixture joined");
+        self.task.join().expect("fixture joined")
     }
 }
 
@@ -770,14 +775,20 @@ fn a_trickled_body_cannot_outlive_the_fetch_deadline() {
     let scene = Scene::new(&[format!("http://{}/fixtures/", fixture.address)]);
     let mut request = scene.request(fixture.url("/fixtures/slow.bin"), "slow.bin", 1024);
     request.timeout = Duration::from_secs(1);
-    let started = Instant::now();
     let error = fetch(&scene.data, &request).expect_err("the overall deadline must stop the fetch");
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the fetch ran past its deadline: {:?}",
-        started.elapsed()
+        matches!(&error, FetchError::Body(source) if source.kind() == io::ErrorKind::TimedOut),
+        "the deadline, not the body, must end the fetch: {error}"
     );
-    assert!(matches!(error, FetchError::Body(_)), "{error}");
     assert!(!scene.cache_file("slow.bin").exists());
-    fixture.finish();
+    // The deadline bounds the request, not the synced control records written
+    // before and after it, so the server times the connection. The 6.4-second
+    // body must be abandoned within the deadline plus the writes that notice.
+    let connected = fixture
+        .finish()
+        .expect("the client must close the connection before the body ends");
+    assert!(
+        connected < Duration::from_secs(2),
+        "the fetch ran past its deadline: {connected:?}"
+    );
 }

@@ -19,7 +19,7 @@ elements and text nodes; links and images stay inert text, and a code block's
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only
-([ADR-0068](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
+([ADR-0069](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
 also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and
@@ -65,7 +65,7 @@ token (ADR-0047, ADR-0048); an `ollama_local` profile has none. An
 `ollama_cloud` profile accepts only the fixed HTTPS endpoint
 `https://ollama.com/v1` and always needs a stored key; its chat, stream, and
 tool-call shapes were not verified with a real key
-([ADR-0069](docs/adr/0069-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
+([ADR-0070](docs/adr/0070-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
 No other cloud adapter or login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
@@ -115,7 +115,7 @@ write-only field. A **Workspace settings** button beside the composer shows
 the same window scoped to the open session's workspace. The provider and model
 are chosen per session in the composer; a provider change needs the native
 confirmation, and each turn re-checks the session's recorded endpoint
-(ADR-0069). A status bar at the bottom of the `main`
+(ADR-0070). A status bar at the bottom of the `main`
 window shows the open session's workspace and Git branch, read from `HEAD`
 without a Git process, and offers the same connection choice through the same
 native confirmation
@@ -132,9 +132,11 @@ implemented.
 The core validates replacement records and can prepare protected checkpoints on
 Linux and Windows through a live authorized binding. The CLI provides
 existing-only checkpoint inspection and acknowledgement. Trusted CLI apply can
-replace an existing file on a qualified Linux ext4 mount or on Windows NTFS
-under the file-access contract. It requires the operator to stop other writers.
-Windows makes no power-loss claim. Trusted CLI restore writes a retained
+replace an existing file on a Linux ext4, btrfs, XFS, tmpfs, or ZFS mount, or on
+a Windows NTFS or ReFS volume, under the file-access contract
+([ADR-0069](docs/adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
+It requires the operator to stop other writers. No filesystem has a power-loss
+claim. Trusted CLI restore writes a retained
 original back through the same apply path and a new checkpoint. Trusted CLI
 checkpoint deletion removes one resolved checkpoint and keeps its history.
 Neither is power-loss qualified. The ledger is compacted in place, by a trusted

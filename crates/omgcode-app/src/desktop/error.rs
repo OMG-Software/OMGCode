@@ -150,7 +150,7 @@ impl DesktopError {
     }
 
     /// The session's recorded connection can no longer be used as recorded
-    /// (ADR-0069). Nothing was sent.
+    /// (ADR-0070). Nothing was sent.
     pub(crate) fn session_connection_stale() -> Self {
         Self::new(
             "session_connection_stale",

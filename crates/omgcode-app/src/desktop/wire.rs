@@ -917,7 +917,7 @@ pub struct ProviderProfileView {
     /// Whether a stored credential is bound. The credential itself is never
     /// read for this view.
     pub credential_bound: bool,
-    /// Whether the profile can be chosen as a connection (ADR-0069): a local
+    /// Whether the profile can be chosen as a connection (ADR-0070): a local
     /// kind with a recorded endpoint, or an `ollama_cloud` profile with the
     /// cloud endpoint and a bound credential.
     pub selectable: bool,
@@ -925,7 +925,7 @@ pub struct ProviderProfileView {
     pub active: bool,
 }
 
-/// Where a session's effective connection comes from (ADR-0069).
+/// Where a session's effective connection comes from (ADR-0070).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionOrigin {
@@ -948,7 +948,7 @@ pub struct ConnectionStatusRequest {
 }
 
 /// The `main` window's view of a session's model connection (ADR-0064,
-/// ADR-0069).
+/// ADR-0070).
 ///
 /// It names connections only: a profile's name, provider kind, and endpoint,
 /// all display-safe. It never carries a credential or says whether one is
@@ -979,7 +979,7 @@ pub struct ConnectionStatus {
 }
 
 /// The models a session's connection reports, for the composer's model choice
-/// (ADR-0066, ADR-0069).
+/// (ADR-0066, ADR-0070).
 ///
 /// Every id is untrusted provider text, already refused by core when it is
 /// empty, over 256 bytes, or holds a control or bidirectional formatting
@@ -1078,7 +1078,7 @@ pub enum BranchState {
     Unavailable,
 }
 
-/// A provider the `settings` window may add (ADR-0064, ADR-0069).
+/// A provider the `settings` window may add (ADR-0064, ADR-0070).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum NewConnectionKind {
@@ -1278,7 +1278,7 @@ pub struct SettingsOverview {
 }
 
 /// The `settings` window's scope: one registered workspace chosen by the `main`
-/// window's **Workspace settings** button (ADR-0069).
+/// window's **Workspace settings** button (ADR-0070).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct SettingsScope {
     /// The workspace shown. It may have been unregistered since it was set.
