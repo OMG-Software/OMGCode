@@ -16,6 +16,10 @@ renders a recorded assistant reply as a bounded Markdown subset built from
 elements and text nodes; links and images stay inert text, and a code block's
 **Copy** button writes its shown text to the clipboard
 ([ADR-0067](docs/adr/0067-render-recorded-replies-as-inert-markdown.md)).
+Its sessions panel and a terminal panel resize and collapse to rails of
+icons; the terminal panel starts no shell and runs no command, and the
+transcript follows its end after a send until the operator scrolls up
+([ADR-0072](docs/adr/0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md)).
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only

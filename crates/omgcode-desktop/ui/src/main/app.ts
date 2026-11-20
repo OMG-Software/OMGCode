@@ -3,9 +3,11 @@ import { api } from "../ipc/client";
 import { createPoller } from "../poll";
 import { createConnectionModel } from "./connection_state";
 import { createConversation } from "./conversation";
+import { createShellLayout } from "./layout";
 import { createNewSessionDialog } from "./new_session";
 import { createSidebar } from "./sidebar";
 import { createStatusFooter } from "./status_footer";
+import { createTerminalPanel } from "./terminal_panel";
 
 export const APPROVALS_POLL_MS = 3000;
 
@@ -73,6 +75,18 @@ export function startMain(root: HTMLElement): MainApp {
     onNewSession: () => void newSession.show(),
     onShowApprovals: () => void showApprovals(),
     onShowSettings: () => void showSettings(),
+    onCollapse: () => layout.left.setCollapsed(true),
+    onExpand: () => layout.left.setCollapsed(false),
+  });
+  const terminal = createTerminalPanel({
+    onCollapse: () => layout.right.setCollapsed(true),
+    onExpand: () => layout.right.setCollapsed(false),
+  });
+  // Sessions, conversation, and terminal, with a resizable, collapsible panel each side (ADR-0072).
+  const layout = createShellLayout({
+    left: sidebar,
+    center: conversation.element,
+    right: terminal,
   });
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);
@@ -82,13 +96,7 @@ export function startMain(root: HTMLElement): MainApp {
     void sidebar.refresh();
   });
 
-  replaceChildren(
-    root,
-    el("div", { class: "shell" }, sidebar.element, conversation.element),
-    statusBar,
-    footer.element,
-    newSession.element,
-  );
+  replaceChildren(root, layout.element, statusBar, footer.element, newSession.element);
 
   const approvalsPoller = createPoller(async () => {
     const { pending } = await api.approvalsSummary();
@@ -103,6 +111,7 @@ export function startMain(root: HTMLElement): MainApp {
   return {
     dispose() {
       approvalsPoller.stop();
+      layout.dispose();
       conversation.dispose();
       sidebar.dispose();
       footer.dispose();

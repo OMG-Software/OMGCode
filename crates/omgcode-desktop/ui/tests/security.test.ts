@@ -78,6 +78,26 @@ describe("source scan", () => {
     expect(offenders, name).toEqual([]);
   });
 
+  it("sets inline style only for the two panel widths, in src/main/layout.ts (ADR-0072)", () => {
+    // A write: a call on `.style`, an assignment to `.style` or one of its properties, or another
+    // way to add style rules. Reading a computed style, as capture.ts does, is not one.
+    const write =
+      /\.style(\.[A-Za-z]+)?\s*(\(|=(?!=))|\.style\.[A-Za-z]+\s*\(|cssText|adoptedStyleSheets|CSSStyleSheet|setAttribute\(\s*["']style/;
+    const styled = Object.entries(sources)
+      .filter(([, text]) => write.test(text))
+      .map(([key]) => relative(key));
+    expect(styled).toEqual(["src/main/layout.ts"]);
+    const layout = sources["../src/main/layout.ts"] ?? "";
+    const writes = layout.match(/\.style\.[A-Za-z]+\([^)]*\)/g) ?? [];
+    expect(writes).toHaveLength(1);
+    // The property name is one of two sides and the value a computed whole number of pixels.
+    expect(writes[0]).toMatch(
+      /^\.style\.setProperty\(`--\$\{state\.side\}-width`, `\$\{state\.width\}px`\)$/,
+    );
+    expect(layout).toMatch(/type Side = "left" \| "right";/);
+    expect(layout).toMatch(/state\.width = clamp\(Math\.round\(requested\)/);
+  });
+
   it("imports @tauri-apps/api only in src/ipc/client.ts", () => {
     const importers = Object.entries(sources)
       .filter(([, text]) => /["']@tauri-apps\//.test(text))

@@ -2,16 +2,21 @@ import { button, el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { SearchHit, SessionSummary, SessionTree, TreeSort, TreeView } from "../ipc/types";
+import { iconButton } from "../ui/icons";
 import { createPopover } from "../ui/popover";
 import { segmented } from "../ui/segmented";
 import { SEARCH_LIMIT, SEARCH_MAX_CHARS } from "./model";
-import { enableTreeKeys, renderHits, renderTree } from "./tree";
+import { enableTreeKeys, renderHits, renderTree, visibleItems } from "./tree";
 
 export interface SidebarHandlers {
   onOpen(session: SessionSummary, folder: string, seq: number | null): void;
   onNewSession(): void;
   onShowApprovals(): void;
   onShowSettings(): void;
+  /** Asks the layout to collapse the panel to its rail of icons. */
+  onCollapse(): void;
+  /** Asks the layout to show the full panel again. */
+  onExpand(): void;
 }
 
 export interface Sidebar {
@@ -20,6 +25,8 @@ export interface Sidebar {
   refresh(): Promise<void>;
   setSelected(sessionId: string | null): void;
   setPending(count: number): void;
+  /** Shows the rail of icons instead of the full panel, or the full panel again. */
+  setCollapsed(collapsed: boolean): void;
   dispose(): void;
 }
 
@@ -28,6 +35,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 /**
  * Builds the sidebar: a title row with New session, the search box with a View menu (active or
  * archived, sort, direction), the session tree or hit list, and the Approvals and Settings rows.
+ * Collapsed, it shows a rail of icons for the same actions instead (ADR-0072).
  */
 export function createSidebar(handlers: SidebarHandlers): Sidebar {
   let view: TreeView = "active";
@@ -135,18 +143,78 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
       "div",
       { class: "sidebar-title-row" },
       el("h1", { text: "OMGCode" }),
-      button("New session", handlers.onNewSession, { class: "primary" }),
+      el(
+        "div",
+        { class: "sidebar-title-actions" },
+        button("New session", handlers.onNewSession, { class: "primary" }),
+        iconButton("panelLeft", "Collapse sessions panel", handlers.onCollapse),
+      ),
     ),
     el("div", { class: "search-row" }, search, viewMenu.element),
   );
-  const element = el(
-    "nav",
-    { class: "sidebar", attrs: { "aria-label": "Sessions" } },
+  const full = el(
+    "div",
+    { class: "sidebar-full" },
     header,
     body,
     el("div", { class: "sidebar-footer" }, approvalsButton, settingsButton),
   );
+
+  // The rail repeats the panel's actions as icons. Search and Sessions expand the panel first.
+  const railBadge = el("span", { class: "badge rail-badge", text: "0" });
+  railBadge.hidden = true;
+  const railApprovals = iconButton("approvals", "Approvals", handlers.onShowApprovals);
+  railApprovals.appendChild(railBadge);
+  const railExpand = iconButton("panelLeft", "Expand sessions panel", handlers.onExpand);
+  const rail = el(
+    "div",
+    { class: "panel-rail sidebar-rail" },
+    railExpand,
+    iconButton("plus", "New session", handlers.onNewSession),
+    iconButton("search", "Search sessions", () => {
+      handlers.onExpand();
+      search.focus();
+    }),
+    iconButton("sessions", "Sessions", () => {
+      handlers.onExpand();
+      focusCurrentItem();
+    }),
+    el("div", { class: "rail-spacer" }),
+    railApprovals,
+    iconButton("settings", "Settings", handlers.onShowSettings),
+  );
+  rail.hidden = true;
+
+  const element = el(
+    "nav",
+    { class: "sidebar", attrs: { id: "sessions-panel", "aria-label": "Sessions" } },
+    full,
+    rail,
+  );
   syncControls();
+
+  /**
+   * Focuses the open session's row, or the collapsed group that holds it, or the tree's first
+   * visible row, or the search box. A row inside a collapsed group cannot take focus. The focused
+   * row becomes the tree's one tab stop.
+   */
+  function focusCurrentItem(): void {
+    const rows = visibleItems(body);
+    const selected = body.querySelector<HTMLElement>('[role=treeitem][aria-selected="true"]');
+    const item =
+      rows.find((row) => row === selected) ??
+      rows.find((row) => selected !== null && row.contains(selected)) ??
+      rows[0];
+    if (item === undefined) {
+      search.focus();
+      return;
+    }
+    for (const row of body.querySelectorAll<HTMLElement>("[role=treeitem]")) {
+      row.tabIndex = -1;
+    }
+    item.tabIndex = 0;
+    item.focus();
+  }
 
   function showError(reason: unknown): void {
     const error = toIpcError(reason);
@@ -246,6 +314,25 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     setPending(count) {
       approvalsBadge.hidden = count <= 0;
       replaceChildren(approvalsBadge, String(count));
+      railBadge.hidden = count <= 0;
+      replaceChildren(railBadge, String(count));
+      const label = count > 0 ? `Approvals, ${count} waiting` : "Approvals";
+      railApprovals.setAttribute("aria-label", label);
+      railApprovals.title = label;
+    },
+    setCollapsed(collapsed) {
+      if (rail.hidden === !collapsed) {
+        return;
+      }
+      // Focus inside the view being hidden would fall to the page; move it to the other view.
+      const hadFocus = (collapsed ? full : rail).contains(document.activeElement);
+      full.hidden = collapsed;
+      rail.hidden = !collapsed;
+      if (hadFocus && collapsed) {
+        railExpand.focus();
+      } else if (hadFocus) {
+        focusCurrentItem();
+      }
     },
     dispose() {
       viewMenu.dispose();

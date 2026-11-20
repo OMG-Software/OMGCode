@@ -86,3 +86,4 @@ meaningful alternative does not need an ADR.
 | [0069: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) | Accepted | 2026-11-20 |
 | [0070: Keep checkpoints in a protected per-workspace `.OMGCode` folder](0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md) | Accepted | 2026-11-20 |
 | [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted | 2026-11-20 |
+| [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted | 2026-11-20 |

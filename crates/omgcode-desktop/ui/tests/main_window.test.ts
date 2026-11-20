@@ -102,7 +102,9 @@ describe("session tree", () => {
     expect(itemFor("s-bad").textContent).toContain("journal_hash_mismatch");
     expect(itemFor("s-bad").textContent).toContain("unknown");
     expect(root.textContent).toContain("2 entries in session storage were skipped.");
-    expect(root.querySelectorAll("[title]")).toHaveLength(0);
+    // Session titles and folders never reach a tooltip. The window's icon buttons carry fixed
+    // tooltips of their own (ADR-0072), so the check covers the session tree.
+    expect(root.querySelector(".sidebar-body")?.querySelectorAll("[title]")).toHaveLength(0);
   });
 
   it("explains an empty store and an empty archive", async () => {
@@ -283,7 +285,11 @@ describe("hostile content", () => {
     for (const tag of ["img", "script", "a"]) {
       expect(document.querySelectorAll(tag)).toHaveLength(0);
     }
-    expect(document.querySelectorAll("[onerror], [style], [href]")).toHaveLength(0);
+    expect(document.querySelectorAll("[onerror], [href]")).toHaveLength(0);
+    // The only inline style is the shell's two panel widths (ADR-0072); no content has one.
+    expect(document.querySelectorAll("[style]:not(.shell)")).toHaveLength(0);
+    const shell = document.querySelector(".shell") as HTMLElement;
+    expect(Array.from(shell.style).sort()).toEqual(["--left-width", "--right-width"]);
   });
 });
 
