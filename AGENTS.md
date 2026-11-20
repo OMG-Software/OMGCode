@@ -11,7 +11,15 @@ preferences never authorize execution. A prototype Tauri desktop shell adds a
 session tree, full-text search, chat, and an isolated approvals window. It is
 without an installer, has run only on Windows, and gives the webview no authority: the
 Rust side authorizes every command and the trusted CLI remains. Follow the
-[desktop interface](docs/desktop-interface.md) contract.
+[desktop interface](docs/desktop-interface.md) contract. The `main` window
+renders a recorded assistant reply as a bounded Markdown subset built from
+elements and text nodes; links and images stay inert text, and a code block's
+**Copy** button writes its shown text to the clipboard
+([ADR-0067](docs/adr/0067-render-recorded-replies-as-inert-markdown.md)).
+A reply is labelled with the model from its turn's request manifest and can be
+copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
+the clipboard only
+([ADR-0068](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
 also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and

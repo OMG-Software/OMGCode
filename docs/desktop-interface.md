@@ -318,7 +318,21 @@ The `main` window is laid out as follows.
   window, with **Dismiss**; the earlier "An approval is waiting." banner is
   gone.
 - **Transcript.** The operator's messages are right-aligned bubbles and the
-  assistant's replies plain text, each at most about 72 characters wide. A
+  assistant's replies sit in a response block one shade lighter than the
+  transcript, each at most about 72 characters wide. A recorded reply is
+  rendered as a Markdown subset (ADR-0067): paragraphs, headings, rules, block
+  quotes, nested lists, tables, inline code, strong, emphasis, and
+  strikethrough. A fenced code block is a darker monospace block with its
+  language label and a **Copy** button that writes the block's shown text to
+  the clipboard. Links and images are inert text that show their destination.
+  A reply over 100,000 UTF-16 code units is shown as plain text. A reply is
+  labelled with the model id from its turn's request manifest, or "Assistant"
+  when none is loaded (ADR-0068). Under it, **Copy Markdown** copies the
+  recorded text, **Copy text** copies the rendered reply without Markdown
+  symbols, and **Copy image** copies a PNG of the whole reply without its
+  buttons, repainted on a canvas from the computed layout and bounded at
+  8,192 pixels on a side, 4096 × 4096 in area, and 50,000 text runs. Each
+  writes to the clipboard on a click and nothing reads it. A
   tool request is a collapsed row whose summary shows the tool name and a
   one-line preview of its arguments (whitespace collapsed, cut at 160 UTF-16
   code units without splitting a surrogate pair); opening it shows the full
@@ -575,9 +589,12 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   at most 16 KiB; at the bound it sends `preview_truncated` and no more deltas
   for that request. A new subscription replaces the old one and first replays
   the preview of every running turn. The open session shows one live entry
-  labelled "Assistant (generating, not saved yet)", updated at most once per
-  animation frame. The frontend removes it when the turn settles and shows the
-  recorded transcript, and shows a note when the preview was cut off. It keeps
+  labelled "<model> (generating, not saved yet)", with the model this window
+  sent or the loaded last turn's, else "Assistant", updated at most once per
+  animation frame. The preview is plain text; Markdown is rendered only once
+  the recorded reply replaces it. The frontend removes it when the turn
+  settles and shows the recorded transcript, and shows a note when the
+  preview was cut off. It keeps
   previews for up to 4 sessions it is not tracking, each bounded at 64 KiB of
   UTF-16 code units. The preview is provisional: a later failure discards it,
   and a reply over the 16 KiB session message limit is shown in part and then
@@ -976,7 +993,12 @@ What the design does:
   `about:blank` is denied.
 - **Text-only rendering.** The frontend builds its document from elements and
   text nodes. Tests scan the source for markup-injecting interfaces, inline
-  script or style, remote resources, and browser storage.
+  script or style, remote resources, and browser storage. The Markdown
+  renderer for recorded replies (ADR-0067) builds elements the same way: raw
+  HTML stays literal text, no element gets an `href` or `src`, and a link
+  always shows its destination. Its parse is bounded in input size, nesting
+  depth, and delimiter search, and tests cover hostile and pathological
+  replies.
 - **Decisions only from `approvals`.** The approvals window loads a separate,
   smaller bundle. The main bundle contains neither `approval_decide` nor
   `approval_detail`. The command name `chat_subscribe` lives in
@@ -1021,7 +1043,19 @@ What it does not do:
 - The default WebView2 context menu stays enabled. Developer tools are enabled
   in debug builds only.
 - Transcript text is shown as recorded. Only text rendering and the content
-  security policy stand between it and the page. Preview text is returned as
+  security policy stand between it and the page. Markdown formatting is chosen
+  by the model: a reply can make text look like a heading, a quote, or a code
+  block that the operator did not write. A code block's **Copy** button writes
+  what the block shows, including any command the model chose; it is
+  user-initiated and write-only. Visible markers replace bidirectional
+  overrides, but zero-width and other invisible characters are neither marked
+  nor removed, so they are copied too. A reply's **Copy Markdown**, **Copy
+  text**, and **Copy image** buttons follow the same rule (ADR-0068). A
+  reply's label is the model id from the turn's request manifest, which the
+  model server chooses; it names the model asked, not an identity. Copying has
+  been checked under jsdom with stubbed clipboard, canvas, and layout, and as
+  a refused write in a Chromium pane; a successful copy of text or an image in
+  WebView2 or WebKitGTK has not been exercised. Preview text is returned as
   received after token redaction, like transcript text. The frontend renders
   it as text and marks bidirectional overrides.
 - Core's approval checks, the trusted runner, and checkpointed apply apply

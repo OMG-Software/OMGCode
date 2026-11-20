@@ -65,6 +65,19 @@ checks their contrast. Window stylesheets use the tokens and add no colours of t
 - Untrusted text is rendered only as text nodes through `src/dom.ts`. Bidirectional override
   characters are replaced by visible `[U+XXXX]` markers. No `innerHTML`, `eval`, string timers,
   computed dynamic imports, `window.open`, links, or web storage. A test scans `src/`.
+- A recorded assistant reply is rendered as a Markdown subset by `src/main/markdown.ts`
+  (ADR-0067), which builds elements through `el` and text through `text`. Raw HTML stays
+  literal text; a link shows its text and destination and an image its description and
+  source, and neither is live. A reply over 100,000 UTF-16 code units, the operator's
+  messages, tool messages, summaries, and the live preview stay plain text. A code block's
+  **Copy** button writes the block's shown text, with its visible markers, through
+  `src/main/clipboard.ts`; nothing reads the clipboard.
+- A recorded reply is labelled with the model from its turn's request manifest (ADR-0068) and
+  has **Copy Markdown**, **Copy text** (`src/main/plain_text.ts`), and **Copy image** buttons.
+  `src/main/capture.ts` repaints the entry on a canvas from the computed layout, because the
+  content security policy refuses the `data:` and `blob:` images that HTML-to-image libraries
+  use. Mark a control `data-capture="skip"` to leave it out of the image; buttons are always
+  left out.
 - No inline script or style, and no remote resources. The build must run under
   `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self';
   connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
