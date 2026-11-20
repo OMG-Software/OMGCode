@@ -36,7 +36,7 @@ export interface Actions {
 }
 
 /**
- * The workspace the window is scoped to (ADR-0070), or `null` when it shows every workspace: no
+ * The workspace the window is scoped to (ADR-0071), or `null` when it shows every workspace: no
  * scope is set, or the scoped workspace is no longer registered. The scope is display state only.
  */
 export function scopedWorkspace(overview: SettingsOverview): WorkspaceSettingsView | null {

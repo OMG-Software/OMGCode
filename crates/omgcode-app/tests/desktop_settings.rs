@@ -451,7 +451,7 @@ fn session_context_reads_the_workspace_branch_for_display() {
     assert_eq!(unknown.code(), "not_found");
 }
 
-/// The `settings` window's scope (ADR-0070) comes from the session's recorded
+/// The `settings` window's scope (ADR-0071) comes from the session's recorded
 /// workspace, is carried by every overview, and is cleared on request.
 #[test]
 fn the_settings_scope_follows_the_session_and_is_cleared_on_request() {

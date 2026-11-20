@@ -688,7 +688,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         }
         return connectionStatus(id);
       }
-      // One session's provider (ADR-0070). The native confirmation is accepted here; a model
+      // One session's provider (ADR-0071). The native confirmation is accepted here; a model
       // belongs to one server, so the choice clears it.
       case "connection_select": {
         const id = str(args, "session_id");
@@ -879,7 +879,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
 
   /**
    * Whether a session's own choice can no longer be used as recorded: its profile is gone, cannot
-   * be chosen, or has another endpoint (ADR-0070 decision 7). Rust then refuses its turns.
+   * be chosen, or has another endpoint (ADR-0071 decision 7). Rust then refuses its turns.
    */
   function staleChoice(sessionId: string | null): boolean {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
@@ -910,7 +910,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** What the composer and the status bar read for a session (ADR-0070). */
+  /** What the composer and the status bar read for a session (ADR-0071). */
   function connectionStatus(sessionId: string | null): ConnectionStatus {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
     const view = effectiveConnection(sessionId);

@@ -575,6 +575,58 @@ impl WindowsPrivateDirectory {
         Ok(root)
     }
 
+    /// Exclusively creates `name` as a new private root inside `parent`.
+    ///
+    /// `parent` is opened without following a final reparse point and must
+    /// have `parent_identity`. The new directory gets the protected
+    /// current-user DACL, so entries inherited by the parent, such as an
+    /// AppContainer grant, do not reach it. The parent is flushed. An
+    /// existing entry fails with `AlreadyExists`; nothing is replaced,
+    /// retried, or removed.
+    pub fn create_in(
+        parent: &Path,
+        parent_identity: DirectoryIdentity,
+        name: &OsStr,
+    ) -> io::Result<Self> {
+        validate_name(name)?;
+        let parent = open_root_handle(parent)?;
+        if directory_identity(&parent)? != parent_identity {
+            return Err(invalid_data(
+                "parent directory differs from its registration",
+            ));
+        }
+        let volume = query_identity(&parent)?.VolumeSerialNumber;
+        validate_directory(&parent, volume)?;
+        require_supported_filesystem(&parent, VolumeRole::PrivateStore)?;
+        let principals = Principals::current()?;
+        let security = ExplicitDescriptor::private_to(&principals.user)?;
+        let file = create_relative_secured(
+            &parent,
+            name,
+            PRIVATE_DIRECTORY_ACCESS,
+            DIRECTORY_OPTIONS,
+            SHARE_READ_WRITE,
+            FILE_ATTRIBUTE_DIRECTORY,
+            &security.descriptor,
+        )?;
+        let directory = Self {
+            file,
+            volume,
+            scope: Scope::Root,
+            principals,
+        };
+        directory.validate()?;
+        parent.sync_all()?;
+        Ok(directory)
+    }
+
+    /// Requires the exact protected, owner-only DACL that [`Self::create_in`]
+    /// applies, not merely a DACL limited to trusted principals.
+    pub fn require_owner_only(&self) -> io::Result<()> {
+        validate_directory(&self.file, self.volume)?;
+        require_private(&self.file, &self.principals)
+    }
+
     /// Returns the opened directory identity after rechecking its ACL.
     pub fn identity(&self) -> io::Result<DirectoryIdentity> {
         self.validate()?;
@@ -1585,5 +1637,50 @@ pub(crate) mod tests {
         let first_identity = file_identity(&first).expect("identity");
         assert_eq!(first_identity, file_identity(&first).expect("repeatable"));
         assert_ne!(first_identity, file_identity(&second).expect("identity"));
+    }
+    #[test]
+    fn given_an_ordinary_parent_when_creating_in_it_then_the_folder_is_private_and_exclusive() {
+        let temporary = tempfile::tempdir().expect("ordinary parent");
+        let parent = temporary.path();
+        let identity =
+            directory_identity(&open_root_handle(parent).expect("parent")).expect("identity");
+        let name = OsStr::new(".OMGCode");
+
+        let created =
+            WindowsPrivateDirectory::create_in(parent, identity, name).expect("create folder");
+        assert_exact_private_sddl(&sddl(&created.file));
+        assert_eq!(
+            created.identity().expect("created identity"),
+            directory_identity(&open_root_handle(&parent.join(name)).expect("reopen"))
+                .expect("reopened identity")
+        );
+        drop(created);
+        WindowsPrivateDirectory::open(&parent.join(name))
+            .expect("reopen as a private root")
+            .require_owner_only()
+            .expect("the created folder is exactly owner-only");
+
+        // An inherited DACL is never exactly owner-only, whether or not it
+        // passes the trusted-root check.
+        let plain = parent.join("plain");
+        fs::create_dir(&plain).expect("plain folder");
+        assert!(
+            WindowsPrivateDirectory::open(&plain)
+                .and_then(|directory| directory.require_owner_only())
+                .is_err()
+        );
+
+        let error = WindowsPrivateDirectory::create_in(parent, identity, name)
+            .err()
+            .expect("an existing folder is never replaced");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+
+        let other = parent.join("other");
+        fs::create_dir(&other).expect("other parent");
+        let error = WindowsPrivateDirectory::create_in(&other, identity, name)
+            .err()
+            .expect("a different parent is refused");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!other.join(name).exists());
     }
 }

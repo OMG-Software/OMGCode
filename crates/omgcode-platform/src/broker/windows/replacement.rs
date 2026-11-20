@@ -634,8 +634,17 @@ fn require_exact_name(file: &File, expected: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-#[allow(unsafe_code)]
 fn has_exact_name(file: &File, expected: &OsStr) -> io::Result<bool> {
+    Ok(normalized_final_name(file)?
+        .iter()
+        .copied()
+        .eq(expected.encode_wide()))
+}
+
+/// The last component of the open object's normalized name: its long name,
+/// in its stored letter case, whatever alias opened it.
+#[allow(unsafe_code)]
+pub(in crate::broker) fn normalized_final_name(file: &File) -> io::Result<Vec<u16>> {
     let mut storage = vec![0u64; NAME_BUFFER_BYTES / size_of::<u64>()];
     let length =
         u32::try_from(NAME_BUFFER_BYTES).map_err(|_| invalid_data("name buffer is too large"))?;
@@ -654,10 +663,7 @@ fn has_exact_name(file: &File, expected: &OsStr) -> io::Result<bool> {
     // SAFETY: the buffer is fully initialized and this view does not outlive it.
     let bytes =
         unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), NAME_BUFFER_BYTES) };
-    Ok(final_component(bytes)?
-        .iter()
-        .copied()
-        .eq(expected.encode_wide()))
+    final_component(bytes)
 }
 
 /// Parse a `FILE_NAME_INFO` record and return its last path component.

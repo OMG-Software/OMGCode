@@ -8,6 +8,7 @@ use omgcode_core::control::ControlStore;
 use omgcode_core::edit::{self, EditError};
 use omgcode_core::files::{FileBroker, FileError, FileTarget};
 use omgcode_core::policy::WorkspaceId;
+use omgcode_core::replacement::CheckpointStore;
 #[cfg(any(target_os = "linux", windows))]
 use omgcode_core::replacement::RecordedArtifact;
 use serde_json::json;
@@ -140,15 +141,24 @@ pub(crate) enum FileCommand {
     /// Record inspection of an uncertain operation, without retrying or repairing it.
     Acknowledge { operation_id: Uuid },
     /// Inspect existing checkpoint metadata without creating storage or applying changes.
-    Checkpoints,
+    Checkpoints {
+        #[command(flatten)]
+        store: StoreChoice,
+    },
     /// Record inspection of one checkpoint operation without applying or replaying it.
-    AcknowledgeCheckpoint { operation_id: Uuid },
+    AcknowledgeCheckpoint {
+        operation_id: Uuid,
+        #[command(flatten)]
+        store: StoreChoice,
+    },
     /// Permanently delete one resolved checkpoint entry; its ledger history stays.
     ///
     /// Repeat the same command to finish an interrupted deletion. No workspace
     /// file is opened or changed.
     DeleteCheckpoint {
         operation_id: Uuid,
+        #[command(flatten)]
+        store: StoreChoice,
         /// Acknowledge that the deleted bytes can no longer be restored.
         #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
         permanent: bool,
@@ -159,10 +169,42 @@ pub(crate) enum FileCommand {
     /// size, digest, and record count remain. No checkpoint entry or
     /// workspace file is opened or changed.
     CompactCheckpoints {
+        #[command(flatten)]
+        store: StoreChoice,
         /// Acknowledge that deleted checkpoints' history is discarded.
         #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
         discard_history: bool,
     },
+    /// Abandon a workspace's `.OMGCode` checkpoint folder after it went
+    /// missing or changed outside OMGCode.
+    ///
+    /// Only the settings journal changes; the folder is left in place. Move,
+    /// delete, or empty it before the next file write, which creates a new
+    /// one. Checkpoints in the old folder can no longer be listed or restored.
+    ForgetCheckpointStore {
+        /// Registered workspace whose checkpoint folder is abandoned.
+        #[arg(long)]
+        workspace: WorkspaceId,
+        /// Acknowledge that the folder's checkpoints become unreachable.
+        #[arg(long, required = true, action = clap::ArgAction::SetTrue)]
+        abandon: bool,
+    },
+}
+
+/// Which checkpoint store a command uses.
+#[derive(Args)]
+pub(crate) struct StoreChoice {
+    /// Use this workspace's `.OMGCode` folder. Without it, the command uses
+    /// the legacy store in the data directory, written before 0.49.0.
+    #[arg(long)]
+    workspace: Option<WorkspaceId>,
+}
+
+impl StoreChoice {
+    fn store(&self) -> CheckpointStore {
+        self.workspace
+            .map_or(CheckpointStore::Legacy, CheckpointStore::Workspace)
+    }
 }
 
 /// Restore output: the new operation's receipt and the checkpoint it read.
@@ -384,14 +426,17 @@ pub(crate) fn run(command: FileCommand, data_root: &Path) -> Result<(), CliError
                 .map_err(file_error)?;
             print_json(&json!({"acknowledged_operation": operation_id, "replayed": false}))
         }
-        FileCommand::Checkpoints => print_json(
+        FileCommand::Checkpoints { store } => print_json(
             &FileBroker::new(&mut control)
-                .checkpoint_inspect()
+                .checkpoint_inspect(store.store())
                 .map_err(file_error)?,
         ),
-        FileCommand::AcknowledgeCheckpoint { operation_id } => {
+        FileCommand::AcknowledgeCheckpoint {
+            operation_id,
+            store,
+        } => {
             FileBroker::new(&mut control)
-                .checkpoint_acknowledge(operation_id)
+                .checkpoint_acknowledge(store.store(), operation_id)
                 .map_err(file_error)?;
             print_json(&json!({
                 "acknowledged_checkpoint": operation_id,
@@ -401,17 +446,34 @@ pub(crate) fn run(command: FileCommand, data_root: &Path) -> Result<(), CliError
         }
         FileCommand::DeleteCheckpoint {
             operation_id,
+            store,
             permanent: _,
         } => print_json(
             &FileBroker::new(&mut control)
-                .checkpoint_delete(operation_id)
+                .checkpoint_delete(store.store(), operation_id)
                 .map_err(file_error)?,
         ),
-        FileCommand::CompactCheckpoints { discard_history: _ } => print_json(
+        FileCommand::CompactCheckpoints {
+            store,
+            discard_history: _,
+        } => print_json(
             &FileBroker::new(&mut control)
-                .checkpoint_compact()
+                .checkpoint_compact(store.store())
                 .map_err(file_error)?,
         ),
+        FileCommand::ForgetCheckpointStore {
+            workspace,
+            abandon: _,
+        } => {
+            let forgotten = FileBroker::new(&mut control)
+                .checkpoint_forget_store(workspace)
+                .map_err(file_error)?;
+            print_json(&json!({
+                "workspace": workspace,
+                "forgotten": forgotten,
+                "folder_changed": false,
+            }))
+        }
     }
 }
 

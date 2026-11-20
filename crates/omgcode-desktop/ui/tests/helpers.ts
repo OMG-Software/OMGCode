@@ -58,7 +58,7 @@ export function installFakeIpc(handlers: Record<string, Handler> = {}): FakeIpc 
   };
 }
 
-/** The default-connection status the main window reads for a session (ADR-0070). */
+/** The default-connection status the main window reads for a session (ADR-0071). */
 export function connectionStatus(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
   return {
     connection: {

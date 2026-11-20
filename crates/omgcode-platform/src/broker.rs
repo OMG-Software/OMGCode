@@ -115,6 +115,7 @@ impl RelativePath {
                     name.len(),
                     name == b"." || name == b".." || name.contains(&0),
                 )?;
+                refuse_reserved(name.eq_ignore_ascii_case(RESERVED_STORE_NAME.as_bytes()))?;
                 components.push(OsString::from_vec(name.to_vec()));
                 validate_depth(components.len())?;
             }
@@ -137,6 +138,7 @@ impl RelativePath {
             let mut components = Vec::new();
             for name in units.split(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/')) {
                 validate_component(name.len(), invalid_windows_name(name))?;
+                refuse_reserved(is_reserved_units(name))?;
                 components.push(OsString::from_wide(name));
                 validate_depth(components.len())?;
             }
@@ -172,6 +174,65 @@ fn validate_length(length: usize) -> io::Result<()> {
 fn validate_component(length: usize, invalid_name: bool) -> io::Result<()> {
     if length == 0 || length > MAX_COMPONENT_UNITS || invalid_name {
         return Err(invalid("invalid relative path component"));
+    }
+    Ok(())
+}
+
+/// The workspace folder that holds checkpoint storage (ADR-0070).
+///
+/// The broker refuses this name as any path component, at any depth and in
+/// any letter case, and lists it as [`EntryKind::Blocked`]. On Windows an
+/// opened directory whose normalized name is reserved is refused too, which
+/// covers a short-name alias.
+pub const RESERVED_STORE_NAME: &str = ".OMGCode";
+
+/// Whether `name` is [`RESERVED_STORE_NAME`], ignoring ASCII letter case.
+///
+/// The name is ASCII and contains no letter that a non-ASCII character
+/// folds to on NTFS or a case-folding Linux directory, so ASCII folding is
+/// complete. This classifies a name; it grants nothing.
+pub fn is_reserved_name(name: &std::ffi::OsStr) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        name.as_bytes()
+            .eq_ignore_ascii_case(RESERVED_STORE_NAME.as_bytes())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let units: Vec<u16> = name
+            .encode_wide()
+            .take(RESERVED_STORE_NAME.len() + 1)
+            .collect();
+        is_reserved_units(&units)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = name;
+        false
+    }
+}
+
+/// Compare UTF-16 units with [`RESERVED_STORE_NAME`], ignoring ASCII case.
+#[cfg(windows)]
+pub(crate) fn is_reserved_units(name: &[u16]) -> bool {
+    name.len() == RESERVED_STORE_NAME.len()
+        && name
+            .iter()
+            .zip(RESERVED_STORE_NAME.bytes())
+            .all(|(unit, expected)| {
+                u8::try_from(*unit).is_ok_and(|byte| byte.eq_ignore_ascii_case(&expected))
+            })
+}
+
+/// Refuse the reserved checkpoint folder before any native open.
+fn refuse_reserved(reserved: bool) -> io::Result<()> {
+    if reserved {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the .OMGCode folder is reserved for checkpoint storage",
+        ));
     }
     Ok(())
 }
@@ -557,6 +618,41 @@ mod tests {
             "a?",
         ] {
             assert!(RelativePath::new(Path::new(name)).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn given_the_store_name_in_any_case_or_depth_when_validated_then_it_is_refused() {
+        for name in [
+            ".OMGCode",
+            ".omgcode",
+            ".OMGCODE",
+            "src/.OmGcOdE",
+            "a/.OMGCode/b",
+            ".OMGCode/ledger",
+        ] {
+            let error = RelativePath::new(Path::new(name)).expect_err(name);
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{name:?}");
+            assert_eq!(
+                error.to_string(),
+                "the .OMGCode folder is reserved for checkpoint storage"
+            );
+            assert!(
+                Path::new(name)
+                    .components()
+                    .any(|part| is_reserved_name(part.as_os_str())),
+                "{name:?}"
+            );
+        }
+        for name in [
+            ".OMGCode2",
+            "OMGCode",
+            ".OMGCod",
+            "x.OMGCode",
+            ".OMGCode.txt",
+        ] {
+            assert!(RelativePath::new(Path::new(name)).is_ok(), "{name:?}");
+            assert!(!is_reserved_name(std::ffi::OsStr::new(name)), "{name:?}");
         }
     }
 }

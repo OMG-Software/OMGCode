@@ -524,7 +524,7 @@ impl<'a> FileBroker<'a> {
         if !decision.configured_allowed() {
             return Err(FileError::Denied(decision.reason()));
         }
-        crate::replacement::store::check_admission(self.control)?;
+        crate::replacement::store::check_admission(self.control, target.workspace_id)?;
         let scope = self.control.file_scope(target.workspace_id)?;
         let root_path = scope.root.live_path().map_err(FileError::Native)?;
         let workspace_path = scope.workspace.live_path().map_err(FileError::Native)?;

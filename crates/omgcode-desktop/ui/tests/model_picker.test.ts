@@ -218,7 +218,7 @@ describe("model choice", () => {
     expect(note()).toBe(EMPTY_NOTE);
   });
 
-  // Regression (ADR-0070 decision 10): the list used to be dropped whenever the endpoint the
+  // Regression (ADR-0071 decision 10): the list used to be dropped whenever the endpoint the
   // answer named differed from the endpoint the composer had cached from `chat_defaults`,
   // which happens after the connection changes outside this window's footer.
   it("keeps the list when the answer names another endpoint than the cached one", async () => {

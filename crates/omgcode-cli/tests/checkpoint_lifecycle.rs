@@ -130,15 +130,31 @@ fn restore_and_delete_round_trip_through_the_cli() {
     assert_ne!(restored, applied);
     assert_eq!(fs::read(&target).expect("restored bytes"), ORIGINAL);
 
-    let entry = fixture.data.join("replacement-v1").join(&applied);
-    let output = run_cli(&fixture.data, &["file", "delete-checkpoint", &applied]);
+    let entry = fixture.store_dir().join("replacement-v1").join(&applied);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "delete-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &applied,
+        ],
+    );
     assert!(!output.status.success(), "missing acknowledgement accepted");
     assert!(String::from_utf8_lossy(&output.stderr).contains("--permanent"));
     assert!(entry.join("original").exists());
 
     let output = run_cli(
         &fixture.data,
-        &["file", "delete-checkpoint", &applied, "--permanent"],
+        &[
+            "file",
+            "delete-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &applied,
+            "--permanent",
+        ],
     );
     assert_success(&output);
     let deletion = json_output(&output);
@@ -147,7 +163,15 @@ fn restore_and_delete_round_trip_through_the_cli() {
     assert!(!entry.exists());
     assert_eq!(fs::read(&target).expect("target untouched"), ORIGINAL);
 
-    let output = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&output);
     let view = json_output(&output);
     assert_eq!(view["pending"], Value::Null);
@@ -164,7 +188,14 @@ fn restore_and_delete_round_trip_through_the_cli() {
     assert_error_code(&output, "checkpoint_unavailable");
     let output = run_cli(
         &fixture.data,
-        &["file", "delete-checkpoint", &applied, "--permanent"],
+        &[
+            "file",
+            "delete-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &applied,
+            "--permanent",
+        ],
     );
     assert_error_code(&output, "checkpoint_unavailable");
 }
@@ -185,11 +216,23 @@ fn deleting_from_unused_storage_creates_nothing() {
     let id = Uuid::new_v4().to_string();
     let output = run_cli(
         &fixture.data,
-        &["file", "delete-checkpoint", &id, "--permanent"],
+        &[
+            "file",
+            "delete-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &id,
+            "--permanent",
+        ],
     );
     assert_error_code(&output, "checkpoint_unavailable");
-    assert!(!fixture.data.join("replacement-v1").exists());
-    assert!(!fixture.data.join("replacement-init-v1.jsonl").exists());
+    assert!(!fixture.store_dir().join("replacement-v1").exists());
+    assert!(
+        !fixture
+            .store_dir()
+            .join("replacement-init-v1.jsonl")
+            .exists()
+    );
     assert_eq!(
         fs::read(fixture.workspace.join("note.txt")).expect("unchanged"),
         ORIGINAL
@@ -204,19 +247,43 @@ fn compaction_drops_deleted_history_through_the_cli() {
     let retained = fixture.apply_bytes(ORIGINAL);
     assert_success(&run_cli(
         &fixture.data,
-        &["file", "delete-checkpoint", &deleted, "--permanent"],
+        &[
+            "file",
+            "delete-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &deleted,
+            "--permanent",
+        ],
     ));
-    let ledger = fixture.data.join("replacement-v1").join("ledger.jsonl");
+    let ledger = fixture
+        .store_dir()
+        .join("replacement-v1")
+        .join("ledger.jsonl");
     let before = fs::read(&ledger).expect("ledger");
 
-    let output = run_cli(&fixture.data, &["file", "compact-checkpoints"]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "compact-checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert!(!output.status.success(), "missing acknowledgement accepted");
     assert!(String::from_utf8_lossy(&output.stderr).contains("--discard-history"));
     assert_eq!(fs::read(&ledger).expect("unchanged ledger"), before);
 
     let output = run_cli(
         &fixture.data,
-        &["file", "compact-checkpoints", "--discard-history"],
+        &[
+            "file",
+            "compact-checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            "--discard-history",
+        ],
     );
     assert_success(&output);
     let result = json_output(&output);
@@ -226,7 +293,15 @@ fn compaction_drops_deleted_history_through_the_cli() {
     assert_eq!(result["previous_bytes"], before.len());
     assert_eq!(result["records"], 3);
 
-    let output = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&output);
     let view = json_output(&output);
     let operations = view["operations"].as_array().expect("operations");
@@ -241,7 +316,13 @@ fn compaction_drops_deleted_history_through_the_cli() {
 
     let output = run_cli(
         &fixture.data,
-        &["file", "compact-checkpoints", "--discard-history"],
+        &[
+            "file",
+            "compact-checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            "--discard-history",
+        ],
     );
     assert_success(&output);
     assert_eq!(json_output(&output)["compacted"], false);
@@ -256,11 +337,22 @@ fn compacting_unused_storage_creates_nothing() {
     let fixture = Fixture::new(ORIGINAL);
     let output = run_cli(
         &fixture.data,
-        &["file", "compact-checkpoints", "--discard-history"],
+        &[
+            "file",
+            "compact-checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            "--discard-history",
+        ],
     );
     assert_error_code(&output, "checkpoint_unavailable");
-    assert!(!fixture.data.join("replacement-v1").exists());
-    assert!(!fixture.data.join("replacement-init-v1.jsonl").exists());
+    assert!(!fixture.store_dir().join("replacement-v1").exists());
+    assert!(
+        !fixture
+            .store_dir()
+            .join("replacement-init-v1.jsonl")
+            .exists()
+    );
 }
 
 /// `--removed` restores only the checkpoint of a removed file, so a

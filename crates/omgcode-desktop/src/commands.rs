@@ -120,7 +120,7 @@ pub fn approvals_show_window(webview: Webview) -> Result<(), CommandError> {
 
 /// `main` only. Shows, unminimizes, and focuses the existing `settings` window
 /// (ADR-0059). It creates no window and navigates nothing. It first clears the
-/// window's workspace scope, so the window shows every workspace (ADR-0070).
+/// window's workspace scope, so the window shows every workspace (ADR-0071).
 ///
 /// # Errors
 ///
@@ -138,7 +138,7 @@ pub async fn settings_show_window(
 }
 
 /// `main` only. Scopes the `settings` window to the workspace the named session
-/// was recorded in, then shows, unminimizes, and focuses it (ADR-0070). The
+/// was recorded in, then shows, unminimizes, and focuses it (ADR-0071). The
 /// workspace is resolved by Rust from the session index and the settings
 /// store; the webview names only the session. The scope is display state: it
 /// grants and removes no access.

@@ -91,7 +91,7 @@ impl ProviderKind {
 
     /// Whether the model adapter that speaks the OpenAI-compatible Chat
     /// Completions API serves this kind: the local kinds and Ollama Cloud
-    /// (ADR-0070). A profile of such a kind can record an endpoint and read a
+    /// (ADR-0071). A profile of such a kind can record an endpoint and read a
     /// stored credential through `provider_credential_binding`.
     pub const fn uses_model_adapter(self) -> bool {
         self.is_local() || matches!(self, Self::OllamaCloud)
@@ -293,7 +293,7 @@ impl ControlStore {
     }
 
     /// Check that the named profile can be chosen as a connection now
-    /// (ADR-0070): a local kind that records an endpoint, or an `ollama_cloud`
+    /// (ADR-0071): a local kind that records an endpoint, or an `ollama_cloud`
     /// profile with the cloud endpoint and a bound credential. It reads no
     /// native storage and so cannot show that the stored secret still exists;
     /// a turn without a usable credential fails with the `credential` errors.
@@ -471,7 +471,7 @@ pub(super) fn apply(
 /// Whether a profile can be the active connection: a local kind that records
 /// the endpoint its turns use, or an `ollama_cloud` profile, whose recorded
 /// endpoint replay has already checked against the fixed cloud endpoint
-/// (ADR-0070). Replay applies exactly this; the credential is not read there.
+/// (ADR-0071). Replay applies exactly this; the credential is not read there.
 fn selectable(profile: &ProviderProfile) -> bool {
     profile.kind.uses_model_adapter() && profile.endpoint.is_some()
 }

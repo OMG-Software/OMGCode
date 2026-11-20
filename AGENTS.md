@@ -65,7 +65,7 @@ token (ADR-0047, ADR-0048); an `ollama_local` profile has none. An
 `ollama_cloud` profile accepts only the fixed HTTPS endpoint
 `https://ollama.com/v1` and always needs a stored key; its chat, stream, and
 tool-call shapes were not verified with a real key
-([ADR-0070](docs/adr/0070-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
+([ADR-0071](docs/adr/0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
 No other cloud adapter or login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
@@ -115,7 +115,7 @@ write-only field. A **Workspace settings** button beside the composer shows
 the same window scoped to the open session's workspace. The provider and model
 are chosen per session in the composer; a provider change needs the native
 confirmation, and each turn re-checks the session's recorded endpoint
-(ADR-0070). A status bar at the bottom of the `main`
+(ADR-0071). A status bar at the bottom of the `main`
 window shows the open session's workspace and Git branch, read from `HEAD`
 without a Git process, and offers the same connection choice through the same
 native confirmation
@@ -136,7 +136,12 @@ replace an existing file on a Linux ext4, btrfs, XFS, tmpfs, or ZFS mount, or on
 a Windows NTFS or ReFS volume, under the file-access contract
 ([ADR-0069](docs/adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
 It requires the operator to stop other writers. No filesystem has a power-loss
-claim. Trusted CLI restore writes a retained
+claim. Checkpoints are kept in a protected `.OMGCode` folder in each workspace
+that Git ignores and the broker refuses; a missing or changed folder blocks
+the workspace until the trusted CLI forgets it. On Linux a contained run can
+change that folder, which is detected, not prevented
+([ADR-0070](docs/adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
+Trusted CLI restore writes a retained
 original back through the same apply path and a new checkpoint. Trusted CLI
 checkpoint deletion removes one resolved checkpoint and keeps its history.
 Neither is power-loss qualified. The ledger is compacted in place, by a trusted

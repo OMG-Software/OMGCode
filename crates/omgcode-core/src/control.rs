@@ -258,6 +258,10 @@ pub struct ControlSnapshot {
     /// application storage and the development root.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     package_cache_roots: Vec<PackageCacheRootStatus>,
+    /// Each workspace's bound `.OMGCode` checkpoint folder (ADR-0070). A
+    /// record is identity evidence for comparison, never authority.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    workspace_stores: Vec<WorkspaceStoreStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     provider_profiles: Vec<ProviderProfileStatus>,
     /// The recorded local provider profile a desktop process started without
@@ -289,6 +293,13 @@ pub struct ControlSnapshot {
     /// with the count when it loaded the skill.
     #[serde(skip)]
     skill_enablement_changes: BTreeMap<Uuid, u64>,
+}
+
+/// One workspace's bound checkpoint folder.
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkspaceStoreStatus {
+    workspace_id: WorkspaceId,
+    directory: DirectoryRecord,
 }
 
 /// One workspace's selected fetched-package cache root.
@@ -437,6 +448,19 @@ enum Action {
         #[serde(deserialize_with = "deserialize_workspace_id")]
         workspace_id: WorkspaceId,
     },
+    /// A workspace's `.OMGCode` checkpoint folder was created or adopted
+    /// (ADR-0070). Operational state; it keeps the settings revision.
+    WorkspaceStoreBound {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
+        directory: DirectoryRecord,
+    },
+    /// The operator abandoned a workspace's checkpoint folder. The folder is
+    /// left in place; the next write needs it moved, deleted, or empty.
+    WorkspaceStoreForgotten {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
+    },
     ProviderProfileAdded {
         profile: ProviderProfile,
     },
@@ -562,6 +586,65 @@ impl ControlStore {
     pub(crate) fn replacement_context(&self) -> Result<(DirectoryRecord, Uuid), ControlError> {
         self.file_audit_context()?;
         Ok((self.data_directory.clone(), self.snapshot.store_id))
+    }
+
+    /// The bound `.OMGCode` checkpoint folder of one workspace, if any.
+    /// Identity evidence for comparison with an opened handle; never a grant.
+    pub(crate) fn workspace_store(&self, workspace_id: WorkspaceId) -> Option<&DirectoryRecord> {
+        self.snapshot
+            .workspace_stores
+            .iter()
+            .find(|status| status.workspace_id == workspace_id)
+            .map(|status| &status.directory)
+    }
+
+    /// Record a workspace's newly created or adopted checkpoint folder.
+    ///
+    /// The folder must be the workspace directory's direct `.OMGCode` child
+    /// on the same volume. A workspace has at most one bound folder.
+    pub(crate) fn bind_workspace_store(
+        &mut self,
+        workspace_id: WorkspaceId,
+        directory: DirectoryRecord,
+    ) -> Result<(), ControlError> {
+        let workspace = self
+            .workspace(workspace_id)
+            .ok_or(ControlError::UnknownWorkspace)?;
+        let expected = workspace
+            .directory
+            .live_path()?
+            .join(omgcode_platform::broker::RESERVED_STORE_NAME);
+        if directory.live_path()? != expected || directory.volume != workspace.directory.volume {
+            return Err(ControlError::Invalid(
+                "a checkpoint folder must be the workspace's own .OMGCode folder",
+            ));
+        }
+        self.append(
+            Action::WorkspaceStoreBound {
+                workspace_id,
+                directory,
+            },
+            self.revision(),
+        )
+    }
+
+    /// Abandon a workspace's bound checkpoint folder. Nothing on disk is
+    /// changed. Returns whether a folder was bound.
+    pub fn forget_workspace_store(
+        &mut self,
+        workspace_id: WorkspaceId,
+    ) -> Result<bool, ControlError> {
+        if self.workspace(workspace_id).is_none() {
+            return Err(ControlError::UnknownWorkspace);
+        }
+        if self.workspace_store(workspace_id).is_none() {
+            return Ok(false);
+        }
+        self.append(
+            Action::WorkspaceStoreForgotten { workspace_id },
+            self.revision(),
+        )?;
+        Ok(true)
     }
 
     /// The control journal path inside `data_directory`. Its length changes
@@ -710,6 +793,7 @@ impl ControlStore {
                 profiles: Vec::new(),
                 package_profiles: Vec::new(),
                 package_cache_roots: Vec::new(),
+                workspace_stores: Vec::new(),
                 provider_profiles: Vec::new(),
                 active_provider: None,
                 skills: Vec::new(),
@@ -1372,6 +1456,8 @@ impl ControlStore {
                 | Action::ApprovalRequested { .. }
                 | Action::ApprovalDecided { .. }
                 | Action::ApprovalConsumed { .. }
+                | Action::WorkspaceStoreBound { .. }
+                | Action::WorkspaceStoreForgotten { .. }
         );
         let revision = if configuration_change {
             state
@@ -1508,6 +1594,37 @@ impl ControlStore {
                         "clearing an unknown package cache root",
                     ))?;
                 state.package_cache_roots.remove(index);
+            }
+            Action::WorkspaceStoreBound {
+                workspace_id,
+                directory,
+            } => {
+                if !directory.validate_shape()
+                    || !state
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.id == *workspace_id)
+                    || state
+                        .workspace_stores
+                        .iter()
+                        .any(|status| status.workspace_id == *workspace_id)
+                {
+                    return Err(ControlError::Invalid("invalid workspace checkpoint store"));
+                }
+                state.workspace_stores.push(WorkspaceStoreStatus {
+                    workspace_id: *workspace_id,
+                    directory: directory.clone(),
+                });
+            }
+            Action::WorkspaceStoreForgotten { workspace_id } => {
+                let index = state
+                    .workspace_stores
+                    .iter()
+                    .position(|status| status.workspace_id == *workspace_id)
+                    .ok_or(ControlError::Invalid(
+                        "forgetting an unknown workspace checkpoint store",
+                    ))?;
+                state.workspace_stores.remove(index);
             }
             Action::ProviderProfileAdded { .. }
             | Action::ProviderProfileRemoved { .. }

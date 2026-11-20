@@ -12,7 +12,7 @@ use omgcode_core::policy::{Access, PermissionSet};
 use omgcode_core::policy::{SessionBinding, WorkspaceId};
 #[cfg(target_os = "linux")]
 use omgcode_core::replacement::ReplacementProgress;
-use omgcode_core::replacement::{CheckpointState, RecordedArtifact};
+use omgcode_core::replacement::{CheckpointState, CheckpointStore, RecordedArtifact};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -67,12 +67,17 @@ impl Fixture {
             .expect("bind workspace session")
     }
 
+    /// The workspace's checkpoint folder (ADR-0070).
+    fn store_dir(&self) -> PathBuf {
+        self.workspace.join(".OMGCode")
+    }
+
     /// Lists the anchor, ledger, and payload directory whose absence is asserted.
     fn replacement_paths(&self) -> [PathBuf; 3] {
         [
-            self.data.join(INITIALIZATION_LOG),
-            self.data.join(LEDGER),
-            self.data.join(PREPARED_ROOT),
+            self.store_dir().join(INITIALIZATION_LOG),
+            self.store_dir().join(LEDGER),
+            self.store_dir().join(PREPARED_ROOT),
         ]
     }
 }
@@ -125,9 +130,9 @@ fn entry_paths(directory: &Path) -> Vec<PathBuf> {
 fn managed_file_bytes(fixture: &Fixture, expected_operations: usize) -> u64 {
     use std::ffi::OsStr;
 
-    let store_path = fixture.data.join(PREPARED_ROOT);
-    let ledger_path = fixture.data.join(LEDGER);
-    let anchor_path = fixture.data.join(INITIALIZATION_LOG);
+    let store_path = fixture.store_dir().join(PREPARED_ROOT);
+    let ledger_path = fixture.store_dir().join(LEDGER);
+    let anchor_path = fixture.store_dir().join(INITIALIZATION_LOG);
     let mut total = fs::metadata(&ledger_path)
         .expect("stat checkpoint ledger")
         .len()
@@ -205,7 +210,7 @@ fn existing_reads_do_not_initialize_replacement_storage() {
     let binding = fixture.binding();
 
     let inspection = FileBroker::new(&mut fixture.control)
-        .checkpoint_inspect()
+        .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
         .expect("inspect unused replacement storage");
     assert_eq!(inspection.state, CheckpointState::Unused);
     assert_eq!(inspection.managed_bytes, 0);
@@ -250,7 +255,7 @@ fn prepare_retains_exact_private_payload_and_acknowledgement_does_not_apply_it()
     );
 
     let operation_dir = fixture
-        .data
+        .store_dir()
         .join(PREPARED_ROOT)
         .join(receipt.operation_id.to_string());
     let original_path = operation_dir.join("original");
@@ -278,7 +283,7 @@ fn prepare_retains_exact_private_payload_and_acknowledgement_does_not_apply_it()
         0o700
     );
     assert_eq!(
-        fs::metadata(fixture.data.join(PREPARED_ROOT))
+        fs::metadata(fixture.store_dir().join(PREPARED_ROOT))
             .unwrap()
             .permissions()
             .mode()
@@ -319,12 +324,12 @@ fn prepare_retains_exact_private_payload_and_acknowledgement_does_not_apply_it()
 
     drop(fixture.control);
     fixture.control = ControlStore::open(&fixture.data).expect("reopen control store");
-    let ledger_path = fixture.data.join(LEDGER);
-    let anchor_path = fixture.data.join(INITIALIZATION_LOG);
+    let ledger_path = fixture.store_dir().join(LEDGER);
+    let anchor_path = fixture.store_dir().join(INITIALIZATION_LOG);
     let ledger_before_inspection = fs::read(&ledger_path).expect("read ledger before inspection");
     let anchor_before_inspection = fs::read(&anchor_path).expect("read anchor before inspection");
     let inspection = FileBroker::new(&mut fixture.control)
-        .checkpoint_inspect()
+        .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
         .expect("inspect pending checkpoint after reopen");
     assert_eq!(fs::read(&ledger_path).unwrap(), ledger_before_inspection);
     assert_eq!(fs::read(&anchor_path).unwrap(), anchor_before_inspection);
@@ -344,7 +349,10 @@ fn prepare_retains_exact_private_payload_and_acknowledgement_does_not_apply_it()
     assert!(!inspection_json.contains("replacement bytes"));
 
     FileBroker::new(&mut fixture.control)
-        .checkpoint_acknowledge(receipt.operation_id)
+        .checkpoint_acknowledge(
+            CheckpointStore::Workspace(fixture.workspace_id),
+            receipt.operation_id,
+        )
         .expect("acknowledge recorded blocker");
     assert_eq!(
         fs::read(fixture.workspace.join("source.bin")).unwrap(),
@@ -353,7 +361,10 @@ fn prepare_retains_exact_private_payload_and_acknowledgement_does_not_apply_it()
     read_bytes_are_unchanged(&mut fixture, &binding, original);
     assert!(
         FileBroker::new(&mut fixture.control)
-            .checkpoint_acknowledge(receipt.operation_id)
+            .checkpoint_acknowledge(
+                CheckpointStore::Workspace(fixture.workspace_id),
+                receipt.operation_id
+            )
             .is_err()
     );
 }
@@ -368,7 +379,7 @@ fn wrong_acknowledgement_id_does_not_create_or_clear_checkpoint_state() {
 
     assert!(
         FileBroker::new(&mut fixture.control)
-            .checkpoint_acknowledge(wrong_id)
+            .checkpoint_acknowledge(CheckpointStore::Workspace(fixture.workspace_id), wrong_id)
             .is_err()
     );
     for path in fixture.replacement_paths() {
@@ -376,7 +387,7 @@ fn wrong_acknowledgement_id_does_not_create_or_clear_checkpoint_state() {
     }
     assert!(
         FileBroker::new(&mut fixture.control)
-            .checkpoint_inspect()
+            .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
             .expect("inspect unused storage")
             .operations
             .is_empty()
@@ -603,7 +614,7 @@ fn corrupt_or_missing_payload_blocks_operations_and_is_never_recreated() {
             )
             .expect("prepare checkpoint");
         let proposed_path = fixture
-            .data
+            .store_dir()
             .join(PREPARED_ROOT)
             .join(receipt.operation_id.to_string())
             .join("proposed");
@@ -615,7 +626,7 @@ fn corrupt_or_missing_payload_blocks_operations_and_is_never_recreated() {
 
         assert!(
             FileBroker::new(&mut fixture.control)
-                .checkpoint_inspect()
+                .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
                 .is_err()
         );
         assert!(
@@ -664,7 +675,7 @@ fn unsafe_private_directory_file_mode_and_unknown_entry_fail_closed() {
                 b"proposed source",
             )
             .expect("prepare checkpoint");
-        let store_path = fixture.data.join(PREPARED_ROOT);
+        let store_path = fixture.store_dir().join(PREPARED_ROOT);
         let operation_dir = store_path.join(receipt.operation_id.to_string());
         let tampered_file = operation_dir.join("proposed");
         match tamper {
@@ -676,12 +687,12 @@ fn unsafe_private_directory_file_mode_and_unknown_entry_fail_closed() {
                 .expect("add unknown store entry"),
             _ => unreachable!("tamper cases are fixed in this test"),
         }
-        let ledger_path = fixture.data.join(LEDGER);
+        let ledger_path = fixture.store_dir().join(LEDGER);
         let ledger_before = fs::read(&ledger_path).expect("read ledger before refusal");
 
         assert!(
             FileBroker::new(&mut fixture.control)
-                .checkpoint_inspect()
+                .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
                 .is_err(),
             "unsafe {tamper} must refuse inspection"
         );
@@ -749,12 +760,15 @@ fn sixty_four_acknowledged_checkpoints_are_retained_and_refuse_the_sixty_fifth()
             )
             .expect("prepare one retained small checkpoint");
         FileBroker::new(&mut fixture.control)
-            .checkpoint_acknowledge(receipt.operation_id)
+            .checkpoint_acknowledge(
+                CheckpointStore::Workspace(fixture.workspace_id),
+                receipt.operation_id,
+            )
             .expect("acknowledge retained checkpoint");
     }
 
-    let store_path = fixture.data.join(PREPARED_ROOT);
-    let ledger_path = fixture.data.join(LEDGER);
+    let store_path = fixture.store_dir().join(PREPARED_ROOT);
+    let ledger_path = fixture.store_dir().join(LEDGER);
     let ledger_before_refusal = fs::read(&ledger_path).expect("read ledger before limit");
     let entries_before_refusal = entry_paths(&store_path);
     let refusal = FileBroker::new(&mut fixture.control)
@@ -770,7 +784,7 @@ fn sixty_four_acknowledged_checkpoints_are_retained_and_refuse_the_sixty_fifth()
     assert_eq!(entry_paths(&store_path), entries_before_refusal);
 
     let inspection = FileBroker::new(&mut fixture.control)
-        .checkpoint_inspect()
+        .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
         .expect("inspect retained operations after refusal");
     assert_eq!(inspection.operations.len(), 64);
     assert_eq!(inspection.pending, None);
@@ -820,8 +834,8 @@ fn aggregate_checkpoint_storage_refuses_before_exceeding_one_hundred_twenty_eigh
         bytes: u64::try_from(original.len()).unwrap(),
         sha256: digest(&original),
     };
-    let store_path = fixture.data.join(PREPARED_ROOT);
-    let ledger_path = fixture.data.join(LEDGER);
+    let store_path = fixture.store_dir().join(PREPARED_ROOT);
+    let ledger_path = fixture.store_dir().join(LEDGER);
     let mut successes = 0;
     let mut refused = false;
 
@@ -841,7 +855,10 @@ fn aggregate_checkpoint_storage_refuses_before_exceeding_one_hundred_twenty_eigh
             Ok(receipt) => {
                 successes += 1;
                 FileBroker::new(&mut fixture.control)
-                    .checkpoint_acknowledge(receipt.operation_id)
+                    .checkpoint_acknowledge(
+                        CheckpointStore::Workspace(fixture.workspace_id),
+                        receipt.operation_id,
+                    )
                     .expect("acknowledge full-size checkpoint");
             }
             Err(FileError::Checkpoint(error)) if error.code() == "checkpoint_limit" => {
@@ -869,7 +886,7 @@ fn aggregate_checkpoint_storage_refuses_before_exceeding_one_hundred_twenty_eigh
     assert_eq!(entry_paths(&store_path).len(), successes + 1);
 
     let inspection = FileBroker::new(&mut fixture.control)
-        .checkpoint_inspect()
+        .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
         .expect("inspect full retained checkpoint store");
     assert_eq!(inspection.operations.len(), successes);
     assert_eq!(inspection.pending, None);
@@ -909,7 +926,7 @@ fn legacy_world_accessible_data_directory_keeps_no_state_reads_available() {
         .expect_err("legacy world-accessible data root cannot initialize storage");
     assert!(matches!(refusal, FileError::Checkpoint(_)));
     let inspection = FileBroker::new(&mut fixture.control)
-        .checkpoint_inspect()
+        .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
         .expect("inspect unused replacement state");
     assert_eq!(inspection.state, CheckpointState::Unused);
     assert!(inspection.operations.is_empty());
@@ -930,7 +947,7 @@ fn windows_refuses_an_untrusted_data_root_before_creating_files() {
     let binding = fixture.binding();
 
     let inspection = FileBroker::new(&mut fixture.control)
-        .checkpoint_inspect()
+        .checkpoint_inspect(CheckpointStore::Workspace(fixture.workspace_id))
         .expect("inspect unused storage");
     assert_eq!(inspection.state, CheckpointState::Unused);
     assert!(inspection.operations.is_empty());

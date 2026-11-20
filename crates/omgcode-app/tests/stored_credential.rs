@@ -25,7 +25,7 @@ const STORED: &str = "fake-stored-token-4c19e7a2";
 const ROTATED: &str = "fake-rotated-token-90b3d1f6";
 /// An endpoint for a profile whose test sends no request.
 const RECORDED: &str = "http://127.0.0.1:1/v1";
-/// The one hosted endpoint (ADR-0070); no test connects to it.
+/// The one hosted endpoint (ADR-0071); no test connects to it.
 const CLOUD: &str = "https://ollama.com/v1";
 
 fn profile(name: &str) -> ConnectionSource {
@@ -434,7 +434,7 @@ fn a_tool_call_containing_the_stored_token_is_refused() {
 
 /// An `ollama_cloud` profile resolves like an `lm_studio` one: its fixed
 /// endpoint as a validated type and the stored key, and a key bound to a
-/// local profile is never taken for it (ADR-0070). No request is sent.
+/// local profile is never taken for it (ADR-0071). No request is sent.
 #[test]
 fn an_ollama_cloud_profile_resolves_its_endpoint_and_stored_key() {
     let fixture = Fixture::new();

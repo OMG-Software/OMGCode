@@ -1,6 +1,8 @@
 # 0053: Compact the checkpoint ledger in place
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0070](0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md),
+  which records the ledger head before and after each compaction
 - Date: 2026-11-17
 
 ## Context

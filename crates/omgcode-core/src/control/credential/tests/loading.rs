@@ -233,7 +233,7 @@ fn a_missing_native_item_is_a_typed_not_found() {
 }
 
 /// An `ollama_cloud` profile is a stored-credential adapter beside
-/// `lm_studio` (ADR-0070): it returns its recorded endpoint with the secret,
+/// `lm_studio` (ADR-0071): it returns its recorded endpoint with the secret,
 /// is refused for the wrong adapter in both directions, and is refused with
 /// the typed cause when it records no endpoint or has no binding.
 #[test]

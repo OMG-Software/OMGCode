@@ -1999,7 +1999,9 @@ impl Fixture {
             .expect("open control")
             .expect("control store");
         omgcode_core::files::FileBroker::new(&mut control)
-            .checkpoint_inspect()
+            .checkpoint_inspect(omgcode_core::replacement::CheckpointStore::Workspace(
+                self.workspace_id,
+            ))
             .expect("inspect checkpoints")
             .operations
             .len()
@@ -3244,7 +3246,9 @@ impl Fixture {
             .expect("open control")
             .expect("control store");
         omgcode_core::files::FileBroker::new(&mut control)
-            .checkpoint_inspect()
+            .checkpoint_inspect(omgcode_core::replacement::CheckpointStore::Workspace(
+                self.workspace_id,
+            ))
             .expect("inspect checkpoints")
             .operations
             .into_iter()
@@ -3647,7 +3651,9 @@ fn an_approved_delete_removes_the_file_once_after_a_checkpoint() {
             .expect("open control")
             .expect("control store");
         omgcode_core::files::FileBroker::new(&mut control)
-            .checkpoint_inspect()
+            .checkpoint_inspect(omgcode_core::replacement::CheckpointStore::Workspace(
+                fixture.workspace_id,
+            ))
             .expect("inspect")
             .operations[0]
             .operation_id

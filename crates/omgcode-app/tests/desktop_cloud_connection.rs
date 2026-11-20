@@ -1,5 +1,5 @@
 //! Adding Ollama Cloud and its API key, replacing the key, and removing a
-//! connection with a stored key from the desktop `settings` window (ADR-0070
+//! connection with a stored key from the desktop `settings` window (ADR-0071
 //! decision 5, ADR-0059 decision 6), against the real settings store and the
 //! real native credential store. Keys are obviously fake. A `Vault` deletes
 //! only the native items these tests created, including after a failed

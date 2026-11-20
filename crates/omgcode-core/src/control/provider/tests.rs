@@ -575,7 +575,7 @@ fn replay_rejects_an_invalid_active_connection() {
 const CLOUD_ENDPOINT: &str = "https://ollama.com/v1";
 
 /// An `ollama_cloud` profile accepts exactly the fixed cloud endpoint, with or
-/// without one trailing slash, stores it as given, and replays it (ADR-0070).
+/// without one trailing slash, stores it as given, and replays it (ADR-0071).
 #[test]
 fn an_ollama_cloud_profile_records_exactly_the_cloud_endpoint_and_replays_it() {
     let (_directory, data, mut store) = store();
@@ -718,7 +718,7 @@ fn replay_rejects_an_ollama_cloud_profile_with_another_endpoint() {
 }
 
 /// An `ollama_cloud` profile with the cloud endpoint is selectable once a
-/// credential is bound; replay checks the endpoint rule only (ADR-0070).
+/// credential is bound; replay checks the endpoint rule only (ADR-0071).
 #[test]
 fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check() {
     let (_directory, data, mut store) = store();

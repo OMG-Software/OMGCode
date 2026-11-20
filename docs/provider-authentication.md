@@ -19,7 +19,7 @@ billing or defer it.
 | Anthropic API | User API key; API-account billing | Planned; not implemented |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
-| Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0070); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
+| Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0071); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
 | OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
 | LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
 
@@ -141,7 +141,7 @@ a separately billed Anthropic API connection remains a different profile.
 and an authentication mode. Kinds are `openai`, `anthropic`, `ollama_local`,
 `ollama_cloud`, `open_router`, and `lm_studio`; modes are `subscription`,
 `api_key`, and `none`. Subscription is accepted only for OpenAI and Anthropic.
-API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio. Since ADR-0070 an `ollama_cloud` profile also accepts its one fixed endpoint.
+API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio. Since ADR-0071 an `ollama_cloud` profile also accepts its one fixed endpoint.
 Ollama Local accepts only `none`.
 
 A profile stores no account, token, password, certificate, or other
@@ -272,12 +272,12 @@ OpenAI-compatible APIs, and both returned
   `/v1/models` does not report. Embedding models are listed.
 
 `capabilities` reports `streaming_adapters` and `cancellable_adapters` as
-`["lm_studio", "ollama_local", "ollama_cloud"]` since ADR-0070, and
+`["lm_studio", "ollama_local", "ollama_cloud"]` since ADR-0071, and
 `stored_credential_adapters` is `["lm_studio", "ollama_cloud"]`.
 
-## Ollama Cloud (ADR-0070)
+## Ollama Cloud (ADR-0071)
 
-[ADR-0070](adr/0070-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)
+[ADR-0071](adr/0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)
 adds a direct connection to Ollama's hosted service. It reuses the local
 adapter's Chat Completions client, stream parser, cancellation, and model list.
 

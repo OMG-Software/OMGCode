@@ -1,4 +1,4 @@
-//! The provider and model chosen per session (ADR-0070 decisions 6 to 11): the
+//! The provider and model chosen per session (ADR-0071 decisions 6 to 11): the
 //! recorded choice, its native confirmation, its re-check on every turn, and
 //! the per-session model list. A scripted prompt stands in for the native
 //! confirmation, and loopback servers stand in for the model servers.
