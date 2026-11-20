@@ -189,6 +189,26 @@ describe("the sessions panel", () => {
     expect(item.dataset.sessionId).toBe("s-one");
   });
 
+  it("focuses a visible row when the open session is inside a collapsed group", async () => {
+    await start();
+    (root.querySelector('[data-session-id="s-one"]') as HTMLElement).click();
+    await settle();
+    const group = root.querySelector('[data-kind="group"]') as HTMLElement;
+    group.focus();
+    key(group, "Enter");
+    expect(root.querySelector('[data-kind="group"]')?.getAttribute("aria-expanded")).toBe("false");
+    byLabel("Collapse sessions panel").click();
+    byLabel("Sessions").click();
+    const focused = document.activeElement as HTMLElement;
+    expect(focused.dataset.kind).toBe("group");
+    expect(focused.tabIndex).toBe(0);
+    // One tab stop in the tree: every other row is out of the tab order.
+    const stops = Array.from(root.querySelectorAll<HTMLElement>("[role=treeitem]")).filter(
+      (row) => row.tabIndex === 0,
+    );
+    expect(stops).toEqual([focused]);
+  });
+
   it("starts a session, and opens the approvals and settings windows, from the rail", async () => {
     await start();
     byLabel("Collapse sessions panel").click();
@@ -383,6 +403,22 @@ describe("keeping room for the conversation", () => {
     );
   });
 
+  it("collapses the other panel when both minimums do not leave the conversation room", async () => {
+    await start();
+    shellWidth(800);
+    byLabel("Show terminal panel").click();
+    expect(shell().classList.contains("left-collapsed")).toBe(true);
+    expect(shell().classList.contains("right-collapsed")).toBe(false);
+    // With the sessions panel a rail, the terminal panel keeps its own width.
+    expect(width("right")).toBe(`${RIGHT_PANEL.initial}px`);
+    expect(centerWidth(800)).toBeGreaterThanOrEqual(CENTER_MIN_WIDTH);
+    // Expanding the sessions panel again collapses the terminal panel in turn.
+    byLabel("Expand sessions panel").click();
+    expect(shell().classList.contains("right-collapsed")).toBe(true);
+    expect(width("left")).toBe(`${LEFT_PANEL.initial}px`);
+    expect(centerWidth(800)).toBeGreaterThanOrEqual(CENTER_MIN_WIDTH);
+  });
+
   it("takes room from the other panel when a panel expands by keyboard or drag", async () => {
     await start();
     shellWidth(900);
@@ -455,9 +491,19 @@ describe("keeping room for the conversation", () => {
     Object.defineProperty(layout.element, "clientWidth", { configurable: true, value: 800 });
     expect(callbacks).toHaveLength(1);
     callbacks[0]?.();
-    expect(layout.right.width()).toBe(RIGHT_PANEL.min);
-    expect(layout.left.width()).toBe(LEFT_PANEL.min);
-    expect(right.setCollapsed).toHaveBeenLastCalledWith(false);
+    // At 800 pixels both panels at their minimums would leave the conversation 358 pixels, so
+    // the terminal panel collapses, and the sessions panel keeps its width.
+    expect(800 - LEFT_PANEL.min - RIGHT_PANEL.min - 2 * SEPARATOR_WIDTH).toBeLessThan(
+      CENTER_MIN_WIDTH,
+    );
+    expect(layout.right.isCollapsed()).toBe(true);
+    expect(right.setCollapsed).toHaveBeenLastCalledWith(true);
+    expect(layout.left.isCollapsed()).toBe(false);
+    expect(layout.left.width()).toBe(LEFT_PANEL.initial);
+    // Wider again, the terminal panel stays collapsed until the operator expands it.
+    Object.defineProperty(layout.element, "clientWidth", { configurable: true, value: 1200 });
+    callbacks[0]?.();
+    expect(layout.right.isCollapsed()).toBe(true);
     layout.dispose();
   });
 

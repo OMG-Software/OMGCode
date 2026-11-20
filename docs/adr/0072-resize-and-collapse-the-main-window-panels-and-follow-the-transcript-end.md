@@ -48,8 +48,11 @@ Constraints:
    terminal panel is 240 to 720 pixels, opens at 360 when expanded, and starts
    collapsed. Neither panel may take the conversation below 360 pixels. When
    the window narrows, the terminal panel gives way first, then the sessions
-   panel; each stops at its own minimum. When a panel expands or grows and
-   its own minimum leaves too little room, the other panel narrows instead.
+   panel. When a panel expands or grows, the other panel narrows to the room
+   left. When both panels at their minimums would leave the conversation less
+   than 360 pixels, as in an 800-pixel window, the other panel collapses
+   instead; on narrowing, the terminal panel collapses first. A panel
+   collapsed this way stays collapsed when the window widens.
 4. **Collapsed panels are rails.** A collapsed panel is a 44-pixel rail of
    icon buttons. The sessions rail holds Expand, New session, Search, Sessions,
    Approvals with the waiting count, and Settings. Search and Sessions expand
@@ -78,8 +81,9 @@ Constraints:
    that moves up and leaves the end unpins it; one that reaches the end pins
    it again. Growth alone fires no scroll event, so it cannot unpin. Opening
    another session or a search hit starts unpinned, and it pins once it is at
-   its end. **Load more** unpins, so the next page is read from where the
-   operator is.
+   its end. **Load more** unpins when it is pressed, not when its page
+   arrives, so the next page is read from where the operator is and a send
+   made while the page loads still follows the end.
 
 No command, IPC shape, permission, or Rust authority check changes.
 

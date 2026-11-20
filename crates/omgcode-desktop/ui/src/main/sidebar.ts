@@ -6,7 +6,7 @@ import { iconButton } from "../ui/icons";
 import { createPopover } from "../ui/popover";
 import { segmented } from "../ui/segmented";
 import { SEARCH_LIMIT, SEARCH_MAX_CHARS } from "./model";
-import { enableTreeKeys, renderHits, renderTree } from "./tree";
+import { enableTreeKeys, renderHits, renderTree, visibleItems } from "./tree";
 
 export interface SidebarHandlers {
   onOpen(session: SessionSummary, folder: string, seq: number | null): void;
@@ -193,14 +193,24 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
   );
   syncControls();
 
-  /** Focuses the open session's row, or the tree's first row, or the search box. */
+  /**
+   * Focuses the open session's row, or the collapsed group that holds it, or the tree's first
+   * visible row, or the search box. A row inside a collapsed group cannot take focus. The focused
+   * row becomes the tree's one tab stop.
+   */
   function focusCurrentItem(): void {
+    const rows = visibleItems(body);
+    const selected = body.querySelector<HTMLElement>('[role=treeitem][aria-selected="true"]');
     const item =
-      body.querySelector<HTMLElement>('[role=treeitem][aria-selected="true"]') ??
-      body.querySelector<HTMLElement>("[role=treeitem]");
-    if (item === null) {
+      rows.find((row) => row === selected) ??
+      rows.find((row) => selected !== null && row.contains(selected)) ??
+      rows[0];
+    if (item === undefined) {
       search.focus();
       return;
+    }
+    for (const row of body.querySelectorAll<HTMLElement>("[role=treeitem]")) {
+      row.tabIndex = -1;
     }
     item.tabIndex = 0;
     item.focus();

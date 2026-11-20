@@ -407,6 +407,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
       return;
     }
     const token = ++loadToken;
+    // The operator asked to read the next page from where they are, not to jump past it. This is
+    // decided now, not when the page arrives, so a send made meanwhile keeps following the end.
+    pinned = false;
     try {
       const page = await api.sessionTranscript(session.session_id, nextAfter, TRANSCRIPT_PAGE_SIZE);
       if (token !== loadToken) {
@@ -416,8 +419,6 @@ export function createConversation(deps: ConversationDeps): Conversation {
       nextAfter = page.next_after_seq;
       incompleteTail = page.incomplete_tail;
       session = page.session;
-      // The operator asked to read the next page from where they are, not to jump past it.
-      pinned = false;
       renderHeader();
       renderBody();
     } catch (reason) {

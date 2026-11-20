@@ -326,4 +326,42 @@ describe("following the end of the transcript", () => {
     await emit({ kind: "finished", session_id: "s-live" });
     expect(state.top).toBe(300);
   });
+
+  it("keeps following a send made while Load more is still loading", async () => {
+    let release: (() => void) | null = null;
+    await start({
+      session_transcript: (args) =>
+        args.after_seq === 1
+          ? new Promise((resolve) => {
+              release = () => resolve(page(s, [userMessage(2, "older")]));
+            })
+          : page(s, [userMessage(1, "hi")], { next_after_seq: 1 }),
+    });
+    const state = fakeScroll(1000);
+    buttonByText(root, "Load more").click();
+    await settle();
+    await send();
+    expect(state.top).toBe(800);
+    // The page that was asked for before the send arrives after it.
+    (release as (() => void) | null)?.();
+    await settle();
+    state.height = 1400;
+    await emit(delta("reply"));
+    expect(state.top).toBe(1200);
+  });
+
+  it("keeps the place when Load more adds a page", async () => {
+    await start({
+      session_transcript: (args) =>
+        args.after_seq === 1
+          ? page(s, [userMessage(2, "older")])
+          : page(s, [userMessage(1, "hi")], { next_after_seq: 1 }),
+    });
+    const state = fakeScroll(1000);
+    scrollToBottom(state);
+    buttonByText(root, "Load more").click();
+    state.height = 1400;
+    await settle();
+    expect(state.top).toBe(800);
+  });
 });

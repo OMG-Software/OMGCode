@@ -16,7 +16,8 @@ Changes are recorded here before a release version is assigned.
     click). The sessions panel is 200 to 480 pixels; the terminal panel is
     240 to 720 and starts collapsed; neither takes the conversation below
     360 pixels: the terminal panel gives way first when the window narrows,
-    and expanding or widening a panel narrows the other one if it must. A collapsed panel is a rail of icon buttons: the sessions rail
+    expanding or widening a panel narrows the other one, and when both
+    minimums do not fit (an 800-pixel window) the other panel collapses. A collapsed panel is a rail of icon buttons: the sessions rail
     holds Expand, New session, Search, Sessions, Approvals with its count,
     and Settings. The terminal panel only says that no terminal is
     available; it starts no shell and calls no command. Widths are not kept
@@ -27,6 +28,8 @@ Changes are recorded here before a release version is assigned.
     is centred too. Sending scrolls to the end and follows new content until
     the operator scrolls up; scrolling back to the end follows again. A
     turn's end no longer jumps to the end after the operator scrolled up.
+    **Load more** keeps the place, and a send made while it loads still
+    follows the end.
   - **Tests:** `ui/tests/layout.test.ts` (new) covers the columns, rails,
     keyboard and pointer resizing, limits, narrowing, and disposal.
     `live_preview.test.ts` adds four following tests, which failed against

@@ -97,7 +97,8 @@ export function renderTree(
   return { element: root, notes };
 }
 
-function visibleItems(root: HTMLElement): HTMLElement[] {
+/** The tree's rows that are not inside a collapsed group, in order. */
+export function visibleItems(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>('[role="treeitem"]')).filter(
     (item) => item.parentElement?.closest('[aria-expanded="false"]') === null,
   );

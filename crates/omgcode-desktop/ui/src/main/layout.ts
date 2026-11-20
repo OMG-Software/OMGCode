@@ -151,37 +151,59 @@ export function createShellLayout(parts: {
     state.panel.setCollapsed(state.collapsed);
   }
 
-  function setWidth(state: PanelState, requested: number): void {
-    state.width = clamp(Math.round(requested), state.limits.min, maxWidth(state));
+  /**
+   * True when the expanded panels at their minimums, and the collapsed ones as rails, leave the
+   * conversation less than its minimum. Unknown when the shell is not laid out: then false.
+   */
+  function minimumsOverflow(): boolean {
+    const shellWidth = element.clientWidth;
+    if (shellWidth <= 0) {
+      return false;
+    }
+    const least = (state: PanelState) => (state.collapsed ? RAIL_WIDTH : state.limits.min);
+    return shellWidth - least(left) - least(right) - 2 * SEPARATOR_WIDTH < CENTER_MIN_WIDTH;
+  }
+
+  /** Narrows an expanded panel to the room the conversation and the other panel leave it. */
+  function shrinkToFit(state: PanelState): void {
+    if (!state.collapsed && state.width > maxWidth(state)) {
+      state.width = maxWidth(state);
+    }
+  }
+
+  /**
+   * Expands `state` to `requested` pixels, or to its kept width. The other panel gives way: it
+   * collapses when even both minimums leave the conversation too little, and otherwise narrows
+   * to the room left. `state` cannot always give way itself, because it never goes below its
+   * own minimum.
+   */
+  function expand(state: PanelState, requested: number): void {
     state.collapsed = false;
-    makeRoom(state);
+    const rest = other(state);
+    if (!rest.collapsed && minimumsOverflow()) {
+      rest.collapsed = true;
+    }
+    state.width = clamp(Math.round(requested), state.limits.min, maxWidth(state));
+    shrinkToFit(rest);
     render(state);
-    render(other(state));
+    render(rest);
+  }
+
+  function setWidth(state: PanelState, requested: number): void {
+    expand(state, requested);
   }
 
   function setCollapsed(state: PanelState, collapsed: boolean): void {
     if (state.collapsed === collapsed) {
       return;
     }
-    state.collapsed = collapsed;
     if (!collapsed) {
-      state.width = clamp(state.width, state.limits.min, maxWidth(state));
-      makeRoom(state);
+      expand(state, state.width);
+      return;
     }
+    state.collapsed = true;
     render(state);
     render(other(state));
-  }
-
-  /**
-   * After `state` grows or expands, narrows the other panel so the conversation keeps its
-   * minimum. `state` alone cannot always give way: it never goes below its own minimum, which
-   * can be more than the room the other panel left it.
-   */
-  function makeRoom(state: PanelState): void {
-    const rest = other(state);
-    if (!rest.collapsed && rest.width > maxWidth(rest)) {
-      rest.width = maxWidth(rest);
-    }
   }
 
   /** Growing a panel moves its separator away from the panel's own edge of the window. */
@@ -266,13 +288,19 @@ export function createShellLayout(parts: {
     state.separator.addEventListener("dblclick", () => setCollapsed(state, !state.collapsed));
   }
 
-  /** Narrows the panels after the window narrows: the terminal panel gives way first. */
+  /**
+   * Fits the panels after the shell's width changes, the terminal panel giving way first: a
+   * panel collapses while both minimums leave the conversation too little, then each expanded
+   * panel narrows to the room left. A panel collapsed here stays collapsed when the window widens.
+   */
   function fit(): void {
     for (const state of [right, left]) {
-      if (!state.collapsed && state.width > maxWidth(state)) {
-        state.width = maxWidth(state);
+      if (!state.collapsed && minimumsOverflow()) {
+        state.collapsed = true;
       }
     }
+    shrinkToFit(right);
+    shrinkToFit(left);
     render(left);
     render(right);
   }

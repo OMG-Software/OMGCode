@@ -328,7 +328,10 @@ The `main` window is laid out as follows.
   at 260; the terminal panel is 240 to 720, opens at 360, and starts
   collapsed. Neither may take the conversation below 360 pixels: when the
   window narrows the terminal panel gives way first, and when a panel expands
-  or grows the other one narrows if it must. Widths and collapsed
+  or grows the other one narrows if it must. When both minimums do not fit,
+  as at the 800-pixel minimum window width, the other panel collapses to its
+  rail (on narrowing, the terminal panel first) and stays collapsed until the
+  operator expands it. Widths and collapsed
   states last until the window closes. The shell's two width properties are
   the frontend's only inline style.
 - **Collapsed panels.** A collapsed panel is a 44-pixel rail of icon buttons,
@@ -503,8 +506,9 @@ Since 0.51.0 (ADR-0072) the transcript follows its end:
   while content arrives. Scrolling back to the end pins it again. Content
   growth alone fires no scroll event, so it never unpins.
 - Opening another session, or a search hit, starts unpinned; the transcript
-  pins once it is at its end. **Load more** unpins it, so the next page is
-  read from where the operator is.
+  pins once it is at its end. **Load more** unpins it when pressed, so the
+  next page is read from where the operator is, and a send made while the
+  page loads still follows the end.
 
 ## Chat
 
@@ -1431,11 +1435,13 @@ ACLs the private store refuses, see the notes in
   moving focus, each rail button, the waiting count on the rail, the terminal
   panel's note and its absence of any command, keyboard and pointer resizing
   with limits, collapse by drag and by Enter, the conversation's minimum,
-  narrowing the window, expanding a panel beside a wide one, the size
-  observer, and disposal.
+  narrowing the window, expanding a panel beside a wide one, collapsing the
+  other panel when both minimums do not fit, the size observer, focus on a
+  visible row when the open session is in a collapsed group, and disposal.
   `ui/tests/live_preview.test.ts` covers following the end: a send from
-  higher up, scrolling up and back down, growth without a scroll, and a
-  turn's end while pinned and while scrolled up. The security scan keeps
+  higher up, scrolling up and back down, growth without a scroll, a turn's
+  end while pinned and while scrolled up, and **Load more**, including a
+  send made while its page loads. The security scan keeps
   inline style to the two width properties in `src/main/layout.ts`.
   Vitest processes CSS, so the stylesheet scans read the real source and
   assert it is non-empty.
