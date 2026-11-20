@@ -50,7 +50,7 @@ use super::Inner;
 use super::error::DesktopError;
 use super::preferences::MAX_MODEL_BYTES;
 use crate::{
-    AppError, ConnectionSource, LocalConnection, check_profile_selectable,
+    ConnectionSource, LocalConnection, ProfileCheckError, profile_selectability,
     resolve_local_connection, resolve_profile_connection,
 };
 
@@ -424,12 +424,14 @@ impl Inner {
         name: &str,
         recorded: &str,
     ) -> Result<SessionConnection, DesktopError> {
-        match check_profile_selectable(&self.data_root, name) {
+        match profile_selectability(&self.data_root, name) {
             Ok(()) => {}
-            Err(error) if refused_as_stale(&error) => {
+            Err(ProfileCheckError::NotSelectable(_)) => {
                 return Err(DesktopError::session_connection_stale());
             }
-            Err(error) => return Err(DesktopError::from_app(&error)),
+            Err(ProfileCheckError::Unavailable(error)) => {
+                return Err(DesktopError::from_app(&error));
+            }
         }
         let resolved = resolve_profile_connection(&self.data_root, name)
             .map_err(|error| DesktopError::from_app(&error))?;
@@ -444,13 +446,6 @@ impl Inner {
             kind: Some(resolved.kind),
         })
     }
-}
-
-/// Whether the application layer refused a profile because it is gone or can no
-/// longer be chosen, as opposed to a busy or unusable settings store.
-fn refused_as_stale(error: &AppError) -> bool {
-    let message = error.message();
-    message.starts_with("not_selectable") || message.starts_with("no settings store exists")
 }
 
 /// The endpoint text a session record keeps for a profile: the shared rule's

@@ -115,14 +115,14 @@ use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
 pub use self::wire::{
-    ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
-    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, BranchState,
-    BranchView, ChatDefaults, ChatEvent, ChatModels, ChatOutcome, ChatPreferencesDto,
-    ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
-    ConnectionChoice, ConnectionChooseRequest, ConnectionOrigin, ConnectionRemoveRequest,
-    ConnectionSelectRequest, ConnectionSourceView, ConnectionStatus, ConnectionStatusRequest,
-    ConnectionView, ContainerGrantView, ContextMeterDto, Decision, EntryKind,
-    LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto, ModelChoice, PackageProfileView,
+    ApiKeySetRequest, ApiKeyText, ApprovalDecideRequest, ApprovalDetail, ApprovalField,
+    ApprovalList, ApprovalOperationDto, ApprovalRequest, ApprovalStateDto, ApprovalView,
+    ApprovalsSummary, Binding, BranchState, BranchView, ChatDefaults, ChatEvent, ChatModels,
+    ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
+    ChatState, ChatStatus, ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest,
+    ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView,
+    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView, ContextMeterDto,
+    Decision, EntryKind, MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView,
     PermissionFlags, PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit,
     SearchRequest, SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest,
     SessionModelSelectRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,

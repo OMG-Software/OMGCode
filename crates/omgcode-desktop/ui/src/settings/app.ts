@@ -47,8 +47,9 @@ const ACTIONS: Actions = {
   clearPackageCache: (workspaceId) => (revision) =>
     settingsApi.clearPackageCache(workspaceId, revision),
   selectConnection: (profile) => (revision) => settingsApi.selectConnection(revision, profile),
-  addLocalConnection: (name, kind, endpoint) => (revision) =>
-    settingsApi.addLocalConnection(revision, name, kind, endpoint),
+  addConnection: (name, kind, endpoint, apiKey) => (revision) =>
+    settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
+  setApiKey: (name, apiKey) => (revision) => settingsApi.setApiKey(revision, name, apiKey),
   removeConnection: (name) => (revision) => settingsApi.removeConnection(revision, name),
 };
 

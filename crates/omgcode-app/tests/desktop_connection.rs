@@ -89,7 +89,7 @@ fn add(
     kind: &str,
     endpoint: &str,
 ) -> Result<SettingsOverview, DesktopError> {
-    service.settings_add_local_connection(wire(json!({
+    service.settings_add_connection(wire(json!({
         "revision": revision(fixture),
         "name": name,
         "kind": kind,
@@ -288,7 +288,7 @@ fn an_invalid_connection_is_refused_by_core_or_the_wire() {
         );
     }
     assert_eq!(revision(&fixture), before);
-    let unknown_kind = serde_json::from_value::<omgcode_app::desktop::LocalConnectionAddRequest>(
+    let unknown_kind = serde_json::from_value::<omgcode_app::desktop::ConnectionAddRequest>(
         json!({"revision": before, "name": "x", "kind": "openai", "endpoint": "http://127.0.0.1:1/v1"}),
     );
     assert!(
@@ -366,12 +366,13 @@ fn removing_the_active_connection_returns_to_the_default() {
     let mut vault = Vault::new(&fixture.data);
     vault.add_profile_at("keyed", "lm_studio", "api_key", "http://127.0.0.1:1234/v1");
     vault.bind("keyed", b"fake-connection-token-41c9");
-    let quiet = Answers::with(&[]);
+    // A profile with a stored credential asks first, and No keeps it.
+    let declined = Answers::with(&[false]);
     assert_eq!(
-        code(remove(&service, &fixture, "keyed", &quiet)),
-        "credential_bound"
+        code(remove(&service, &fixture, "keyed", &declined)),
+        "cancelled"
     );
-    assert!(quiet.shown().is_empty());
+    assert_eq!(declined.shown().len(), 1);
     assert!(
         ControlStore::open(&fixture.data)
             .expect("store")

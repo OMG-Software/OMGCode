@@ -1078,14 +1078,55 @@ pub enum BranchState {
     Unavailable,
 }
 
-/// A local provider the `settings` window may add (ADR-0064).
+/// A provider the `settings` window may add (ADR-0064, ADR-0067).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum LocalProviderKind {
+pub enum NewConnectionKind {
     /// LM Studio's local server.
     LmStudio,
     /// Ollama on this computer.
     OllamaLocal,
+    /// Ollama's hosted service at its one fixed endpoint, with an API key.
+    OllamaCloud,
+}
+
+/// A secret typed into a write-only field of the `settings` window (ADR-0059
+/// decision 6).
+///
+/// The text is zeroed when dropped and its `Debug` form is fixed text, so no
+/// log, assertion message, or error built from a request can show it. It has
+/// no `Serialize` implementation and no accessor outside the service, which
+/// moves it into core's zeroing `Secret`. Zeroing reduces, but cannot
+/// guarantee, the removal of copies that the IPC layer or the operating system
+/// make before the text reaches this type.
+pub struct ApiKeyText(zeroize::Zeroizing<String>);
+
+impl<'de> Deserialize<'de> for ApiKeyText {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|text| Self(zeroize::Zeroizing::new(text)))
+    }
+}
+
+impl ApiKeyText {
+    /// Copy the text into core's zeroing secret type, which applies the
+    /// non-empty and size bounds the CLI applies. Text with a control
+    /// character is refused: it could not be a bearer token, and a header
+    /// value must not carry one. The original is zeroed when `self` drops.
+    ///
+    /// `None` for an empty key, one over core's bound, or one containing a
+    /// control character. The caller reports one fixed message for all three.
+    pub(crate) fn into_secret(self) -> Option<omgcode_core::control::Secret> {
+        if self.0.chars().any(char::is_control) {
+            return None;
+        }
+        omgcode_core::control::Secret::new(self.0.as_bytes().to_vec()).ok()
+    }
+}
+
+impl std::fmt::Debug for ApiKeyText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ApiKeyText(<redacted>)")
+    }
 }
 
 /// Arguments of `settings_select_connection`.
@@ -1098,19 +1139,40 @@ pub struct ConnectionSelectRequest {
     pub profile: Option<String>,
 }
 
-/// Arguments of `settings_add_local_connection`. Core validates every value
-/// with the rule the CLI's `provider-profile-add` uses.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// Arguments of `settings_add_connection`. Core validates every value with
+/// the rule the CLI's `provider-profile-add` uses.
+///
+/// A local kind needs `endpoint` and takes no `api_key`. `ollama_cloud` takes
+/// an `api_key` and no `endpoint`: Rust supplies the one fixed endpoint. A
+/// request that breaks either rule is refused as `invalid_request` before
+/// anything is recorded. `Debug` never shows the key.
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LocalConnectionAddRequest {
+pub struct ConnectionAddRequest {
     /// The settings revision the window last read.
     pub revision: u64,
     /// The new profile name.
     pub name: String,
-    /// The local provider.
-    pub kind: LocalProviderKind,
-    /// A loopback `http://<IP>:<port>/v1` endpoint.
-    pub endpoint: String,
+    /// The provider.
+    pub kind: NewConnectionKind,
+    /// A loopback `http://<IP>:<port>/v1` endpoint, for a local kind only.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// The API key, for `ollama_cloud` only.
+    #[serde(default)]
+    pub api_key: Option<ApiKeyText>,
+}
+
+/// Arguments of `settings_set_api_key`. `Debug` never shows the key.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeySetRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// A recorded `ollama_cloud` profile.
+    pub name: String,
+    /// The new API key.
+    pub api_key: ApiKeyText,
 }
 
 /// Arguments of `settings_remove_connection`.

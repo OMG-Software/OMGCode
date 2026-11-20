@@ -387,6 +387,9 @@ export interface ProviderProfileView {
 /** A local provider the settings window may record (ADR-0064). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
 
+/** A provider the settings window may add: a local one, or hosted Ollama Cloud (ADR-0067). */
+export type NewConnectionKind = LocalProviderKind | "ollama_cloud";
+
 export interface ToolchainProfileView {
   name: string;
   platform: "linux" | "windows";

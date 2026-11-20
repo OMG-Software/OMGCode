@@ -74,14 +74,15 @@ pub enum Command {
     SettingsChoosePackageCache,
     SettingsClearPackageCache,
     SettingsSelectConnection,
-    SettingsAddLocalConnection,
+    SettingsAddConnection,
     SettingsRemoveConnection,
+    SettingsSetApiKey,
     SettingsClearScope,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -117,8 +118,9 @@ impl Command {
         Self::SettingsChoosePackageCache,
         Self::SettingsClearPackageCache,
         Self::SettingsSelectConnection,
-        Self::SettingsAddLocalConnection,
+        Self::SettingsAddConnection,
         Self::SettingsRemoveConnection,
+        Self::SettingsSetApiKey,
         Self::SettingsClearScope,
     ];
 
@@ -161,8 +163,9 @@ impl Command {
             Self::SettingsChoosePackageCache => "settings_choose_package_cache",
             Self::SettingsClearPackageCache => "settings_clear_package_cache",
             Self::SettingsSelectConnection => "settings_select_connection",
-            Self::SettingsAddLocalConnection => "settings_add_local_connection",
+            Self::SettingsAddConnection => "settings_add_connection",
             Self::SettingsRemoveConnection => "settings_remove_connection",
+            Self::SettingsSetApiKey => "settings_set_api_key",
             Self::SettingsClearScope => "settings_clear_scope",
         }
     }
@@ -181,8 +184,9 @@ impl Command {
             | Self::SettingsChoosePackageCache
             | Self::SettingsClearPackageCache
             | Self::SettingsSelectConnection
-            | Self::SettingsAddLocalConnection
+            | Self::SettingsAddConnection
             | Self::SettingsRemoveConnection
+            | Self::SettingsSetApiKey
             | Self::SettingsClearScope => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
@@ -246,10 +250,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 38);
+        assert_eq!(Command::ALL.len(), 39);
         assert_eq!(with_window(WindowLabel::Main).len(), 25);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 10);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 11);
     }
 
     #[test]
@@ -334,8 +338,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_thirty_seven_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 38);
-        assert_eq!(shared.len(), 38);
+        assert_eq!(COMMAND_NAMES.len(), 39);
+        assert_eq!(shared.len(), 39);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

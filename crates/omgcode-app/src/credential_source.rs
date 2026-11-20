@@ -344,11 +344,53 @@ pub fn resolve_profile_connection(
 /// A `credential` error when the settings store is missing or busy, or when
 /// core refuses the profile.
 pub fn check_profile_selectable(data_root: &Path, name: &str) -> Result<(), AppError> {
-    let control = open_settings(data_root, name)?;
+    profile_selectability(data_root, name).map_err(ProfileCheckError::into_app_error)
+}
+
+/// Why [`profile_selectability`] refused, as a type a caller can branch on
+/// without reading the message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProfileCheckError {
+    /// The profile is gone, or can no longer be chosen: no settings store
+    /// exists, the name is unknown, or core refuses the profile (an
+    /// `ollama_cloud` profile without a bound credential, for example).
+    NotSelectable(AppError),
+    /// The settings store is busy or unusable, so nothing is known about the
+    /// profile.
+    Unavailable(AppError),
+}
+
+impl ProfileCheckError {
+    /// The underlying application error, with its `credential` code.
+    #[must_use]
+    pub fn into_app_error(self) -> AppError {
+        match self {
+            Self::NotSelectable(error) | Self::Unavailable(error) => error,
+        }
+    }
+}
+
+/// As [`check_profile_selectable`], with a typed refusal: a profile that is
+/// gone or cannot be chosen is [`ProfileCheckError::NotSelectable`], and a
+/// busy or unusable settings store is [`ProfileCheckError::Unavailable`].
+///
+/// # Errors
+///
+/// See [`ProfileCheckError`].
+pub fn profile_selectability(data_root: &Path, name: &str) -> Result<(), ProfileCheckError> {
+    let control = open_settings_if_any(data_root)
+        .map_err(ProfileCheckError::Unavailable)?
+        .ok_or_else(|| {
+            ProfileCheckError::NotSelectable(credential_error(format!(
+                "no settings store exists, so provider profile {name} cannot be used"
+            )))
+        })?;
     control
         .check_provider_selectable(name)
         .map(|_| ())
-        .map_err(|error| credential_error(format!("not_selectable: {error}")))
+        .map_err(|error| {
+            ProfileCheckError::NotSelectable(credential_error(format!("not_selectable: {error}")))
+        })
 }
 
 /// Resolve one profile's endpoint and token from an open settings store.

@@ -223,7 +223,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 38 commands. No other command exists.
+The shell has three webview windows and 39 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -264,8 +264,9 @@ their registered identifier, and approvals by identifier.
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
-| `settings_add_local_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential |
-| `settings_remove_connection` | settings | Remove a provider profile that has no bound credential; removing the active one needs a native confirmation |
+| `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, or an `ollama_cloud` profile with its fixed endpoint and a write-only API key |
+| `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
+| `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
@@ -675,15 +676,20 @@ waits. The window shows:
 
 - **Model.** The connection the next turn uses, with a **Model provider**
   dropdown, and its provider, endpoint, and source. The dropdown lists the
-  default LM Studio endpoint and every `lm_studio` or `ollama_local` profile
-  with an endpoint; when a launch argument fixed the connection, it is
-  disabled and says so. Then one row per provider profile, with its name, an
-  **Active** chip, its provider, endpoint, and authentication, whether a
-  credential is bound, and **Remove**, disabled for a profile with a
-  credential. Then **Add connection**, a disclosure with labelled provider
-  (`Ollama` or `LM Studio`), name, and loopback endpoint fields, the endpoint
-  prefilled with the provider's usual address (`http://127.0.0.1:11434/v1` or
-  `http://127.0.0.1:1234/v1`).
+  default LM Studio endpoint and every selectable profile; when a launch
+  argument fixed the connection, it is disabled and says so. Then one row per
+  provider profile, with its name, an **Active** chip, its provider,
+  endpoint, and authentication, whether a credential is bound, and
+  **Remove**. An `ollama_cloud` profile also has a **Hosted** chip, a line
+  saying that prompts, workspace text read by tools, and command output leave
+  this computer for ollama.com, and a **Set key…** disclosure with a
+  password field and **Save key**. Then **Add connection**, a disclosure with
+  labelled provider (`Ollama`, `LM Studio`, or `Ollama Cloud (hosted)`),
+  name, and loopback endpoint fields, the endpoint prefilled with the
+  provider's usual address (`http://127.0.0.1:11434/v1` or
+  `http://127.0.0.1:1234/v1`). For Ollama Cloud the endpoint field is hidden
+  and the fixed endpoint `https://ollama.com/v1` is shown as read-only text,
+  and a labelled **API key** password field (`autocomplete="off"`) appears.
 - **Workspaces.** The meaning of Deny, Prompt, and Allow, stated once. The
   development root, with **Choose folder…** or **Change…**, and
   **Register workspace…**, which is disabled until a root is set. With two or
@@ -853,11 +859,11 @@ that follows the default connection, so choosing a model never pins a
 provider the operator did not confirm.
 The `settings` window's `settings_select_connection` keeps choosing the
 **global default**, which sessions without their own choice follow; it uses
-the same checks and dialog. The three `settings` connection commands call
+the same checks and dialog. The `settings` connection commands call
 the same `ControlStore` functions as the
-CLI's `workspace provider-profile-select`, `provider-profile-add`, and
-`provider-profile-remove`, with the same revision check and validation
-(ADR-0064).
+CLI's `workspace provider-profile-select`, `provider-profile-add`,
+`provider-credential-set`, and `provider-profile-remove`, with the same
+revision check and validation (ADR-0064, ADR-0067).
 
 - **Selecting needs a native confirmation.** `settings_select_connection`
   takes the revision and a profile name, or none for the default. The
@@ -870,21 +876,56 @@ CLI's `workspace provider-profile-select`, `provider-profile-add`, and
   and records the choice only on Yes. It applies to turns of sessions
   without their own choice that start afterwards. When a launch argument fixed the connection, the command is
   refused with `connection_fixed`.
-- **Adding needs no dialog.** `settings_add_local_connection` takes a name of
-  at most 256 bytes, the kind `lm_studio` or `ollama_local`, and an endpoint.
-  It records a profile with authentication `none`. Core refuses an endpoint
-  that is not `http://<loopback IP>:<port>/v1`. A new profile is not used
+- **Adding needs no dialog.** `settings_add_connection` takes a name of at
+  most 256 bytes and a kind. For `lm_studio` or `ollama_local` it takes an
+  endpoint and no key, and records a profile with authentication `none`;
+  core refuses an endpoint that is not `http://<loopback IP>:<port>/v1`. For
+  `ollama_cloud` it takes an `api_key` and no endpoint: Rust supplies the one
+  fixed endpoint `https://ollama.com/v1` and records authentication
+  `api_key`. A request that gives a local kind a key, gives the cloud an
+  endpoint, or omits the field its kind needs is refused as
+  `invalid_request` before anything is recorded. A new profile is not used
   until it is selected.
-- **Removing the active connection is confirmed.**
-  `settings_remove_connection` removes a profile without a bound credential.
-  Removing an inactive profile shows no dialog. Removing the selected
-  profile returns new turns to the default endpoint, which receives
-  `OMGCODE_LM_TOKEN` when it is set, so Rust first asks "Remove the
-  connection `<name>` and send new chat turns to the default connection?"
-  with the default endpoint, unless a launch argument fixed the connection.
-  No keeps the profile and its selection. A profile with a stored credential is
-  refused with `credential_bound`; remove it with the trusted CLI, which also
-  deletes the credential.
+- **The API key is write-only** (ADR-0059 decision 6, ADR-0067 decision 5).
+  The key is typed into a password field, sent once in `settings_add_connection` or
+  `settings_set_api_key`, and the field is emptied as the button is pressed,
+  whether the answer is success or failure. The window keeps it in no state
+  object, log, or message. In Rust the request type moves it into a zeroing
+  buffer on arrival, its `Debug` form is fixed text, and core's secret type
+  refuses an empty key, one over 16 KiB, and (in the desktop) one with a
+  control character, as one fixed `invalid_request` message that never
+  repeats the key or its length. Core's credential store keeps the key in
+  DPAPI or the Secret Service and binds it to the profile; no command returns
+  the key, its length, or a digest of it. Because a profile cannot be bound
+  before it exists, Rust opens the native store first (an unavailable or locked
+  store refuses the request before anything is recorded), records the profile,
+  then stores and binds the key. If storing or binding fails, the profile is
+  removed again in the same locked store and a binding it gained is deleted,
+  so a failure leaves no profile without a key; the settings revision still
+  advances by the two recorded events. If the profile cannot be removed,
+  the error is `credential_orphaned`. `settings_set_api_key` replaces the key
+  of an `ollama_cloud` profile (and refuses any other kind or an unknown
+  name) the way the CLI's `provider-credential-set` does: the new item is
+  stored, then bound, then the old item is deleted. It shows no dialog,
+  because the key goes only to the same fixed host the profile already names
+  and choosing the connection stays confirmed separately; a failure to delete
+  the old item is reported as `credential_orphaned`.
+- **Removing a connection with a stored key, or the active one, is
+  confirmed.** `settings_remove_connection` removes a profile and, through
+  the same core path as the CLI's `provider-profile-remove`, deletes its
+  bound credential. A profile with a stored key first asks "Remove the
+  connection `<name>` and delete its stored API key?", and, when it is the
+  selected profile and no launch argument fixed the connection, adds that new
+  turns for sessions without their own connection go to the default
+  connection and its endpoint. Removing the selected profile without a key asks
+  the ADR-0064 question about the default endpoint, which receives
+  `OMGCODE_LM_TOKEN` when it is set. Removing any other profile shows no
+  dialog. No keeps the profile, its key, and its selection. The native store is
+  opened before anything is removed, so an unavailable one refuses the
+  removal; a native item that cannot be deleted after the profile is gone is
+  reported as `credential_orphaned`. A session that chose the removed profile
+  refuses its next turn with `session_connection_stale` until the provider is
+  chosen again.
 - **Ollama context length.** OMGCode cannot set Ollama's context length over
   this API. Set it in Ollama, for example with `OLLAMA_CONTEXT_LENGTH`, and
   give the composer the same context size.
@@ -1035,8 +1076,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the six settings-window
-  commands. The `settings` file grants only those six. Every handler also calls the Rust
+  not grant the three approval commands or any of the eleven settings-window
+  commands. The `settings` file grants only those eleven. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -1056,6 +1097,24 @@ What the design does:
   (ADR-0064, ADR-0067). The `settings` window chooses the global default
   through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
+- **An API key crosses the `settings` webview once.** The operator types an
+  Ollama Cloud key into a password field of the `settings` window (ADR-0059
+  decision 6, ADR-0067 decision 5). The key is in that webview's memory
+  while it is typed and in one IPC message (`settings_add_connection` or
+  `settings_set_api_key`); the field is emptied as the button is pressed,
+  whether the command succeeds or fails, and the window holds the key in no
+  state object, storage, log, or message. That is a weaker boundary than the
+  CLI's standard input, and it is the cost the operator chose over a native
+  prompt. The window renders no model- or repository-controlled text, which
+  narrows who can reach it. Rust moves the key into a zeroing buffer on
+  arrival (zeroing reduces, and cannot guarantee, the removal of copies the IPC layer
+  or the operating system make), applies the CLI's checks, stores it in the
+  native credential store, and returns nothing derived from it: no key, length,
+  or digest, and no error text that repeats it. The `main` window has no
+  command that carries or reads a key. A key replaced by a compromised
+  `settings` webview still reaches only the fixed host `ollama.com`; choosing
+  that connection for a session or as the default stays behind a native
+  confirmation, which is why replacing a key shows none.
 - **Per-session choices are re-checked and not tamper-evident.**
   `<data root>/desktop-v1/session-connections.json` maps a session id to the
   provider chosen for it and its model. Only Rust writes it, atomically, under
@@ -1153,7 +1212,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 38 |
+| Commands | 39 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
@@ -1264,6 +1323,12 @@ private store refuses, see the notes in
   cleared and disabled until the list arrives), the footer and the composer
   staying in step, a status or list that arrives for a session that was left,
   the hosted warning, launch-fixed connections, and a stale choice.
+  `ui/tests/settings_window.test.ts` and `ui/tests/settings_sections.test.ts`
+  also cover the Ollama Cloud form (the endpoint hidden and the fixed one
+  shown, a password field, the key sent once and the field cleared after a
+  success and after a refusal, and absent from the page and from every other
+  call), **Set key…**, **Remove** for a profile with a stored key, and the
+  hosted label.
   Vitest processes CSS, so the stylesheet scans read the real source and
   assert it is non-empty.
 - **Shell (no webview).** The policy table; the capability files against the
@@ -1281,7 +1346,14 @@ private store refuses, see the notes in
   the per-session choice: the confirmation, the recorded choice and model, the
   model list and turn for that session, the launch argument winning, a removed
   or re-added profile making the choice stale, refusals before any dialog, the
-  Ollama Cloud dialog text, model validation, and a damaged file. Unit tests in
+  Ollama Cloud dialog text, model validation, and a damaged file.
+  `crates/omgcode-app/tests/desktop_cloud_connection.rs` covers adding Ollama
+  Cloud with a key against the real settings and native credential stores
+  (the profile, the fixed endpoint, the bound item, selectability), refusals
+  that record nothing and never repeat the key, that a request never prints
+  its key, replacing a key, removing a bound profile with a declined and an
+  accepted dialog (the native item is deleted), the active-profile dialog
+  text, and a session that chose a removed profile becoming stale. Unit tests in
   `session_connections.rs` cover the file's round trip, bounds, and damage. The desktop chat and event tests also cover cancelling
   a streamed turn and shutting down while one runs, and cancelling a turn
   whose request is not streamed.

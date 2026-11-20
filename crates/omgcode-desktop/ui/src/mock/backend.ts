@@ -695,15 +695,25 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         });
         return connectionStatus(id);
       }
-      case "settings_add_local_connection":
+      case "settings_add_connection":
         return changeSettings(args, () => {
           const name = str(args, "name");
           const kind = str(args, "kind");
-          const endpoint = str(args, "endpoint");
-          if (kind !== "lm_studio" && kind !== "ollama_local") {
+          const endpoint = args.endpoint ?? null;
+          const apiKey = args.api_key ?? null;
+          if (kind !== "lm_studio" && kind !== "ollama_local" && kind !== "ollama_cloud") {
             fail("invalid_argument", "Bad kind.");
           }
-          if (!isLocalEndpoint(endpoint)) {
+          if (kind === "ollama_cloud") {
+            if (endpoint !== null || typeof apiKey !== "string") {
+              fail("invalid_request", "Ollama Cloud takes an API key and no endpoint.");
+            }
+            if (apiKey === "") {
+              fail("invalid_request", "The API key is empty, longer than 16 KiB, or invalid.");
+            }
+          } else if (typeof endpoint !== "string" || apiKey !== null) {
+            fail("invalid_request", "A local connection takes an endpoint and no API key.");
+          } else if (!isLocalEndpoint(endpoint)) {
             fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
           }
           if (settings.provider_profiles.some((p) => p.name === name)) {
@@ -712,12 +722,27 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           settings.provider_profiles.push({
             name,
             kind,
-            auth: "none",
-            endpoint,
-            credential_bound: false,
+            auth: kind === "ollama_cloud" ? "api_key" : "none",
+            endpoint: kind === "ollama_cloud" ? "https://ollama.com/v1" : (endpoint as string),
+            credential_bound: kind === "ollama_cloud",
             selectable: true,
             active: false,
           });
+        });
+      case "settings_set_api_key":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const profile = settings.provider_profiles.find((p) => p.name === name);
+          if (profile === undefined) {
+            fail("control", "unknown provider profile");
+          }
+          if (profile.kind !== "ollama_cloud") {
+            fail("invalid_request", "Only an Ollama Cloud connection has an API key set here.");
+          }
+          if (typeof args.api_key !== "string" || args.api_key === "") {
+            fail("invalid_request", "The API key is empty, longer than 16 KiB, or invalid.");
+          }
+          profile.credential_bound = true;
         });
       case "settings_remove_connection":
         return changeSettings(args, () => {
@@ -727,9 +752,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (profile === undefined) {
             fail("control", "unknown provider profile");
           }
-          if (profile.credential_bound) {
-            fail("credential_bound", "This connection has a stored credential.");
-          }
+          // Rust asks a native Yes/No first when a key is stored, then deletes both.
           settings.provider_profiles.splice(index, 1);
           if (profile.active) {
             settings.connection = {

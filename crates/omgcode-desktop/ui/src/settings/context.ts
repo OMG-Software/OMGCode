@@ -1,5 +1,5 @@
 import type {
-  LocalProviderKind,
+  NewConnectionKind,
   PermissionFlags,
   SettingsOverview,
   WorkspaceSettingsView,
@@ -23,7 +23,15 @@ export interface Actions {
   choosePackageCache(workspaceId: string): Change;
   clearPackageCache(workspaceId: string): Change;
   selectConnection(profile: string | null): Change;
-  addLocalConnection(name: string, kind: LocalProviderKind, endpoint: string): Change;
+  /** `endpoint` is for a local kind; `apiKey` is for Ollama Cloud. The other is `null`. */
+  addConnection(
+    name: string,
+    kind: NewConnectionKind,
+    endpoint: string | null,
+    apiKey: string | null,
+  ): Change;
+  /** Replaces an Ollama Cloud profile's stored API key. */
+  setApiKey(name: string, apiKey: string): Change;
   removeConnection(name: string): Change;
 }
 
@@ -52,8 +60,9 @@ export interface ViewState {
   connectionDraft: ConnectionDraft;
 }
 
+/** The add-connection form's values. It never holds an API key: that stays in its input. */
 export interface ConnectionDraft {
-  kind: LocalProviderKind;
+  kind: NewConnectionKind;
   name: string;
   endpoint: string;
 }

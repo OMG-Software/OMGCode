@@ -10,8 +10,9 @@ use std::fs;
 
 use omgcode_app::{
     AppError, ChatHooks, ChatSettings, ChatTurnInput, ConnectionSource, ErrorKind, LmToken,
-    check_profile_selectable, create_session, read_lm_token, redact_known_secret,
-    resolve_local_connection, resolve_profile_connection, run_chat_turn,
+    ProfileCheckError, check_profile_selectable, create_session, profile_selectability,
+    read_lm_token, redact_known_secret, resolve_local_connection, resolve_profile_connection,
+    run_chat_turn,
 };
 use omgcode_core::control::{ControlStore, ProviderKind};
 use serde_json::json;
@@ -460,6 +461,18 @@ fn an_ollama_cloud_profile_resolves_its_endpoint_and_stored_key() {
     assert!(message.starts_with("not_bound:"), "{message}");
     assert!(check_profile_selectable(&fixture.data, "cloud").is_ok());
     assert!(check_profile_selectable(&fixture.data, "unbound").is_err());
+    // The typed check separates a profile that cannot be chosen from an
+    // unusable store, without reading a message.
+    assert!(profile_selectability(&fixture.data, "cloud").is_ok());
+    for name in ["unbound", "missing"] {
+        assert!(
+            matches!(
+                profile_selectability(&fixture.data, name),
+                Err(ProfileCheckError::NotSelectable(_))
+            ),
+            "{name}"
+        );
+    }
 }
 
 /// The environment token is never sent to the hosted endpoint, so the cloud

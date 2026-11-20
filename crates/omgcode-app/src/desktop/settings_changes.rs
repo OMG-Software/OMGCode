@@ -44,10 +44,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
-    ControlError, ControlStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth, ProviderKind,
-    ProviderProfileDeclaration,
+    ControlError, ControlStore, CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth,
+    ProviderKind, ProviderProfileDeclaration, delete_unbound_credential,
 };
 use omgcode_core::policy::{Access, PermissionSet, WriteTool};
+use omgcode_core::provider::OLLAMA_CLOUD_ENDPOINT;
 use omgcode_core::run::{self, REVOCATION_WAIT};
 use omgcode_core::turn::display_safe_line;
 
@@ -57,10 +58,10 @@ use super::session_connections::{ChosenConnection, SessionRecord, check_model, r
 use super::settings::overview_of;
 use super::state::folder_of_directory;
 use super::wire::{
-    ConnectionChooseRequest, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionStatus,
-    ConnectionStatusRequest, LocalConnectionAddRequest, LocalProviderKind, PermissionFlags,
-    PermissionsChangeRequest, SessionModelSelectRequest, SettingsOverview, SettingsRevisionRequest,
-    WorkspaceRevisionRequest,
+    ApiKeySetRequest, ConnectionAddRequest, ConnectionChooseRequest, ConnectionRemoveRequest,
+    ConnectionSelectRequest, ConnectionStatus, ConnectionStatusRequest, NewConnectionKind,
+    PermissionFlags, PermissionsChangeRequest, SessionModelSelectRequest, SettingsOverview,
+    SettingsRevisionRequest, WorkspaceRevisionRequest,
 };
 
 /// What the operator is asked to choose a folder for. The shell uses it for
@@ -460,6 +461,20 @@ fn current_choice(
     }
 }
 
+/// Undo a profile recorded for a key that could not be stored: remove it, and
+/// delete a binding it gained if the binding was recorded after all. `true`
+/// when the profile is gone and no bound item remains.
+fn roll_back_profile(store: &mut ControlStore, credentials: &CredentialStore, name: &str) -> bool {
+    let revision = store.revision();
+    match store.remove_provider_profile(name, revision) {
+        Ok(removal) => removal
+            .credential
+            .as_ref()
+            .is_none_or(|binding| delete_unbound_credential(credentials, binding).is_none()),
+        Err(_) => false,
+    }
+}
+
 fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopError> {
     if store.revision() == expected {
         Ok(())
@@ -797,101 +812,287 @@ impl DesktopService {
         })
     }
 
-    /// `settings` only. Record a local LM Studio or Ollama connection with no
-    /// credential, through the same core call as the CLI's
-    /// `provider-profile-add --auth none --endpoint`. Recording it grants
-    /// nothing and sends nothing; only selecting it does, after a
-    /// confirmation.
+    /// `settings` only. Record a connection through the same core call as the
+    /// CLI's `provider-profile-add`: a local LM Studio or Ollama connection
+    /// with no credential and a typed loopback endpoint, or Ollama Cloud with
+    /// its fixed endpoint and an API key (ADR-0067 decision 5). Recording it
+    /// grants nothing and sends nothing; only selecting it does, after a
+    /// confirmation. No dialog is shown.
+    ///
+    /// A local kind needs `endpoint` and no `api_key`; `ollama_cloud` needs an
+    /// `api_key` and no `endpoint`. Either mismatch is refused as
+    /// `invalid_request` before anything is read or recorded.
+    ///
+    /// For Ollama Cloud the key is moved into core's zeroing `Secret`
+    /// immediately and checked as the CLI checks it (non-empty, at most 16
+    /// KiB). The native credential store is opened first, so an unavailable
+    /// or locked store refuses the request before any profile exists. A
+    /// profile cannot be bound before it exists, so the profile is recorded
+    /// first, then the key is stored and bound through
+    /// `ControlStore::set_provider_credential`. If that fails, the profile is
+    /// removed again in the same locked store (and any binding it gained is
+    /// deleted), so a failure leaves no profile without its key. The
+    /// settings revision still advances by the two recorded events. If the
+    /// profile cannot be removed either, the error is `credential_orphaned`.
+    /// The key, its length, and a digest of it appear in no response or error.
     ///
     /// # Errors
     ///
-    /// `invalid_request` for an oversized value; `control` with core's reason
-    /// (a bad name, a duplicate, or an endpoint that is not
-    /// `http://<loopback IP>:<port>/v1`); `stale_revision`;
-    /// `settings_change_running`; `busy`.
-    pub fn settings_add_local_connection(
+    /// `invalid_request` for an oversized value, a mismatched field, or a key
+    /// that is empty, too long, or has a control character; `control` with
+    /// core's reason (a bad name, a duplicate, or an endpoint that is not
+    /// `http://<loopback IP>:<port>/v1`); `credential_unavailable`,
+    /// `credential_locked`, `credential_io`, `credential_orphaned`;
+    /// `stale_revision`; `settings_change_running`; `busy`.
+    pub fn settings_add_connection(
         &self,
-        request: LocalConnectionAddRequest,
+        request: ConnectionAddRequest,
     ) -> Result<SettingsOverview, DesktopError> {
-        if request.name.len() > MAX_NAME_INPUT_BYTES
-            || request.endpoint.len() > MAX_PROVIDER_ENDPOINT_BYTES
+        let ConnectionAddRequest {
+            revision,
+            name,
+            kind,
+            endpoint,
+            api_key,
+        } = request;
+        if name.len() > MAX_NAME_INPUT_BYTES
+            || endpoint
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_PROVIDER_ENDPOINT_BYTES)
         {
             return Err(DesktopError::invalid_request("A value is too long."));
         }
+        let (kind, endpoint, auth, secret) = match (kind, endpoint, api_key) {
+            (NewConnectionKind::OllamaCloud, None, Some(key)) => {
+                let secret = key
+                    .into_secret()
+                    .ok_or_else(DesktopError::api_key_invalid)?;
+                (
+                    ProviderKind::OllamaCloud,
+                    OLLAMA_CLOUD_ENDPOINT.to_owned(),
+                    ProviderAuth::ApiKey,
+                    Some(secret),
+                )
+            }
+            (NewConnectionKind::OllamaCloud, _, _) => {
+                return Err(DesktopError::invalid_request(
+                    "Ollama Cloud takes an API key and no endpoint.",
+                ));
+            }
+            (local, Some(endpoint), None) => {
+                let kind = match local {
+                    NewConnectionKind::LmStudio => ProviderKind::LmStudio,
+                    _ => ProviderKind::OllamaLocal,
+                };
+                (kind, endpoint, ProviderAuth::None, None)
+            }
+            (_, _, _) => {
+                return Err(DesktopError::invalid_request(
+                    "A local connection takes an endpoint and no API key.",
+                ));
+            }
+        };
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        let kind = match request.kind {
-            LocalProviderKind::LmStudio => ProviderKind::LmStudio,
-            LocalProviderKind::OllamaLocal => ProviderKind::OllamaLocal,
+        let credentials = if secret.is_some() {
+            Some(
+                CredentialStore::open(&self.inner.data_root)
+                    .map_err(|error| DesktopError::from_credential(&error))?,
+            )
+        } else {
+            None
         };
         let declaration = ProviderProfileDeclaration {
-            name: request.name,
+            name,
             kind: kind.as_str().to_owned(),
-            auth: ProviderAuth::None.as_str().to_owned(),
-            endpoint: Some(request.endpoint),
+            auth: auth.as_str().to_owned(),
+            endpoint: Some(endpoint),
         };
-        self.apply(|store| {
+        self.apply_checked(|store| {
             store
-                .add_provider_profile(&declaration, request.revision)
-                .map(drop)
+                .add_provider_profile(&declaration, revision)
+                .map_err(|error| DesktopError::from_control(&error))?;
+            let (Some(credentials), Some(secret)) = (credentials, secret) else {
+                return Ok(());
+            };
+            let current = store.revision();
+            match store.set_provider_credential(&credentials, &declaration.name, &secret, current) {
+                Ok(set) if set.orphan.is_none() => Ok(()),
+                Ok(_) => Err(DesktopError::credential_orphaned()),
+                Err(error) => {
+                    let clean = roll_back_profile(store, &credentials, &declaration.name);
+                    Err(if clean {
+                        DesktopError::from_provider_credential(&error)
+                    } else {
+                        DesktopError::credential_orphaned()
+                    })
+                }
+            }
         })
     }
 
-    /// `settings` only. Remove a recorded provider profile that has no stored
-    /// credential. A profile with a bound credential stays with the trusted
-    /// CLI, which also deletes the native item.
+    /// `settings` only. Replace the stored API key of a recorded
+    /// `ollama_cloud` profile through `ControlStore::set_provider_credential`,
+    /// as the CLI's `provider-credential-set` does: the new item is stored,
+    /// then bound, then the replaced item is deleted. The key is handled as in
+    /// [`settings_add_connection`](Self::settings_add_connection).
     ///
-    /// Removing the active connection returns to the default endpoint in the
-    /// same recorded event, and the default receives `OMGCODE_LM_TOKEN` when
-    /// it is set. Unless a launch argument fixed the connection, that removal
-    /// therefore asks the same native Yes/No as choosing the default
-    /// (ADR-0064). Removing any other profile changes where no turn goes, so
-    /// no dialog is shown.
+    /// No dialog is shown (ADR-0059 decision 6 asks for none). The key goes
+    /// only to the same fixed host the connection already names, so the
+    /// audience of a turn is unchanged; the profile's endpoint is not
+    /// editable, and choosing the connection stays confirmed separately.
     ///
     /// # Errors
     ///
-    /// `credential_bound`; `control` for an unknown profile; `cancelled`;
-    /// `stale_revision`; `settings_change_running`; `busy`.
+    /// `invalid_request` for a profile that is not an `ollama_cloud` profile
+    /// or a key that is empty, too long, or has a control character; `control`
+    /// for an unknown profile; `credential_unavailable`, `credential_locked`,
+    /// `credential_io`, `credential_orphaned` (the new key is bound but the
+    /// replaced item could not be deleted); `stale_revision`;
+    /// `settings_change_running`; `busy`.
+    pub fn settings_set_api_key(
+        &self,
+        request: ApiKeySetRequest,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let ApiKeySetRequest {
+            revision,
+            name,
+            api_key,
+        } = request;
+        if name.len() > MAX_NAME_INPUT_BYTES {
+            return Err(DesktopError::invalid_request("A value is too long."));
+        }
+        let secret = api_key
+            .into_secret()
+            .ok_or_else(DesktopError::api_key_invalid)?;
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        let credentials = CredentialStore::open(&self.inner.data_root)
+            .map_err(|error| DesktopError::from_credential(&error))?;
+        self.apply_checked(|store| {
+            let status = store
+                .provider_profile(&name)
+                .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
+            if status.profile().kind() != ProviderKind::OllamaCloud {
+                return Err(DesktopError::invalid_request(
+                    "Only an Ollama Cloud connection has an API key set here.",
+                ));
+            }
+            match store.set_provider_credential(&credentials, &name, &secret, revision) {
+                Ok(set) if set.orphan.is_none() => Ok(()),
+                Ok(_) => Err(DesktopError::credential_orphaned()),
+                Err(error) => Err(DesktopError::from_provider_credential(&error)),
+            }
+        })
+    }
+
+    /// `settings` only. Remove a recorded provider profile. A profile with a
+    /// stored credential is removed together with it, as the CLI's
+    /// `provider-profile-remove` does: core records the removal and the end of
+    /// the binding in one event, then the native item is deleted.
+    ///
+    /// A profile with a stored key first asks a native Yes/No that says the
+    /// connection and its stored API key will be deleted, and, when it is the
+    /// active selection and a launch argument did not fix the connection,
+    /// that new turns for sessions without their own connection go to the
+    /// default endpoint. Removing an active profile without a key asks the
+    /// ADR-0064 Yes/No about the default endpoint. Removing any other profile
+    /// changes where no turn goes, so no dialog is shown.
+    ///
+    /// A session that chose the removed profile refuses its next turn with
+    /// `session_connection_stale` (ADR-0067), because core no longer knows the
+    /// profile.
+    ///
+    /// # Errors
+    ///
+    /// `control` for an unknown profile; `cancelled`; `stale_revision`;
+    /// `credential_unavailable` or `credential_locked` (the native store is
+    /// checked before anything is removed); `credential_orphaned` (the
+    /// profile is removed but its native item was not deleted);
+    /// `settings_change_running`; `busy`.
     pub fn settings_remove_connection(
         &self,
         request: ConnectionRemoveRequest,
         prompt: &dyn SettingsPrompt,
     ) -> Result<SettingsOverview, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        let confirmation = {
+        let (confirmation, bound) = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let status = store
                 .provider_profile(&request.name)
                 .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
-            if status.credential().is_some() {
-                return Err(DesktopError::credential_bound());
-            }
+            let bound = status.credential().is_some();
             let active = store
                 .active_provider_profile()
                 .is_some_and(|active| active.profile().id() == status.profile().id());
-            (active && !self.inner.token.is_fixed()).then(|| Confirmation {
-                title: "Remove the active model connection",
-                message: format!(
-                    "Remove the connection {} and send new chat turns to the default connection?
-
-{}
-
-The OMGCODE_LM_TOKEN environment variable is sent to it when set.",
-                    display_safe_line(&request.name),
+            let default_note = if active && !self.inner.token.is_fixed() {
+                Some(format!(
+                    "New chat turns for sessions without their own connection go to the default connection {}, which receives OMGCODE_LM_TOKEN when it is set.",
                     display_safe_line(&self.inner.endpoint)
-                ),
-            })
+                ))
+            } else {
+                None
+            };
+            let confirmation = match (bound, default_note) {
+                (true, note) => Some(Confirmation {
+                    title: "Remove the model connection and its API key",
+                    message: format!(
+                        "Remove the connection {} and delete its stored API key?\n\nThe key is deleted from this computer's credential store and cannot be recovered here.{}",
+                        display_safe_line(&request.name),
+                        note.map(|text| format!("\n\n{text}")).unwrap_or_default(),
+                    ),
+                }),
+                (false, Some(note)) => Some(Confirmation {
+                    title: "Remove the active model connection",
+                    message: format!(
+                        "Remove the connection {}?\n\n{note}",
+                        display_safe_line(&request.name),
+                    ),
+                }),
+                (false, None) => None,
+            };
+            (confirmation, bound)
         };
         if let Some(confirmation) = confirmation {
             confirm(prompt, &confirmation)?;
         }
+        // Open the native store before anything is removed, so an unavailable
+        // or locked store refuses the removal instead of stranding the item.
+        let credentials = if bound {
+            Some(
+                CredentialStore::open(&self.inner.data_root)
+                    .map_err(|error| DesktopError::from_credential(&error))?,
+            )
+        } else {
+            None
+        };
         // Core checks the same revision again, so a credential bound after the
         // check above makes the removal a revision conflict, not a removal
         // that strands the native item.
-        self.apply(|store| {
-            store
+        self.apply_checked(|store| {
+            let removal = store
                 .remove_provider_profile(&request.name, request.revision)
-                .map(drop)
+                .map_err(|error| DesktopError::from_control(&error))?;
+            match (&removal.credential, &credentials) {
+                (Some(binding), Some(credentials)) => {
+                    match delete_unbound_credential(credentials, binding) {
+                        None => Ok(()),
+                        Some(_) => Err(DesktopError::credential_orphaned()),
+                    }
+                }
+                (Some(_), None) => Err(DesktopError::credential_orphaned()),
+                (None, _) => Ok(()),
+            }
+        })
+    }
+
+    /// As [`apply_checked`](Self::apply_checked) for a change that fails only
+    /// with a core settings error.
+    fn apply(
+        &self,
+        change: impl FnOnce(&mut ControlStore) -> Result<(), ControlError>,
+    ) -> Result<SettingsOverview, DesktopError> {
+        self.apply_checked(|store| {
+            change(store).map_err(|error| DesktopError::from_control(&error))
         })
     }
 
@@ -904,13 +1105,13 @@ The OMGCODE_LM_TOKEN environment variable is sent to it when set.",
     /// them from the wait. Their watchers stop them even then, because a
     /// watcher checks every settings state recorded since it last read them
     /// (ADR-0061).
-    fn apply(
+    fn apply_checked(
         &self,
-        change: impl FnOnce(&mut ControlStore) -> Result<(), ControlError>,
+        change: impl FnOnce(&mut ControlStore) -> Result<(), DesktopError>,
     ) -> Result<SettingsOverview, DesktopError> {
         let listed = {
             let mut store = self.inner.open_or_create_control()?;
-            change(&mut store).map_err(|error| DesktopError::from_control(&error))?;
+            change(&mut store)?;
             run::withdrawn_runs(&store)
         };
         // An unreadable run journal never undoes the recorded change, and the

@@ -9,7 +9,7 @@
 
 use std::fmt;
 
-use omgcode_core::control::ControlError;
+use omgcode_core::control::{ControlError, CredentialError, ProviderCredentialError};
 use omgcode_core::session::SessionError;
 use omgcode_core::session_index::IndexError;
 use omgcode_core::turn::ReviewError;
@@ -220,12 +220,63 @@ impl DesktopError {
         )
     }
 
-    /// The profile has a stored credential, whose removal stays with the
-    /// trusted CLI.
-    pub(crate) fn credential_bound() -> Self {
+    /// The API key is empty, too long, or has a control character. The message
+    /// is fixed and never repeats the key or its length.
+    pub(crate) fn api_key_invalid() -> Self {
         Self::new(
-            "credential_bound",
-            "This connection has a stored credential. Remove it with the trusted CLI `provider-profile-remove`.",
+            "invalid_request",
+            "The API key is empty, longer than 16 KiB, or contains a control character.",
+        )
+    }
+
+    /// The native credential store refused. Each message is fixed text, so
+    /// neither a secret nor an operating-system detail is repeated.
+    pub(crate) fn from_credential(error: &CredentialError) -> Self {
+        let (code, message) = match error {
+            CredentialError::Unavailable(_) => (
+                "credential_unavailable",
+                "No protected credential store is available on this computer.",
+            ),
+            CredentialError::Locked => (
+                "credential_locked",
+                "The credential store is locked. Unlock it outside OMGCode and try again.",
+            ),
+            CredentialError::TooLarge | CredentialError::Invalid(_) => {
+                return Self::api_key_invalid();
+            }
+            CredentialError::PromptRequired => (
+                "credential_prompt_required",
+                "The credential store asked for interactive confirmation, which OMGCode never shows.",
+            ),
+            CredentialError::NotFound
+            | CredentialError::AlreadyExists
+            | CredentialError::Corrupt(_)
+            | CredentialError::Io(_) => (
+                "credential_io",
+                "The credential store could not store or delete the key.",
+            ),
+        };
+        Self::new(code, message)
+    }
+
+    /// Map a failure of core's store-and-bind call.
+    pub(crate) fn from_provider_credential(error: &ProviderCredentialError) -> Self {
+        match error {
+            ProviderCredentialError::Control(error) => Self::from_control(error),
+            ProviderCredentialError::Credential(error) => Self::from_credential(error),
+            ProviderCredentialError::Unrecorded { .. }
+            | ProviderCredentialError::Unstored { .. }
+            | ProviderCredentialError::BindingUncertain { .. } => Self::credential_orphaned(),
+        }
+    }
+
+    /// A stored item may remain that no profile names, or the settings change
+    /// was recorded but its stored key was not deleted. The operator removes
+    /// it with the operating system's credential manager.
+    pub(crate) fn credential_orphaned() -> Self {
+        Self::new(
+            "credential_orphaned",
+            "A stored API key could not be cleaned up and may remain in the operating system's credential store. Delete it there, or check the connection in the trusted CLI with `provider-profile-show`.",
         )
     }
 

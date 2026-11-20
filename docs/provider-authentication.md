@@ -299,6 +299,25 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
   `session compact`, `models`, and the desktop launch. `OMGCODE_LM_TOKEN` is
   never read for it, and `--endpoint https://ollama.com/v1` without a profile
   is refused (`cloud_needs_profile`).
+- **Desktop key entry.** The desktop `settings` window can add an
+  `ollama_cloud` profile and its key in one step (**Add connection**, Ollama
+  Cloud) and replace the key later (**Set key…**), as the write-only field of
+  ADR-0059 decision 6 describes. The window sends the key once, in
+  `settings_add_connection` or `settings_set_api_key`, and clears the field.
+  Rust moves it into the zeroing `Secret`, applies the same size bound as the
+  CLI (16 KiB, not empty; the desktop also refuses a control character), and
+  uses the same core calls: `add_provider_profile`, then
+  `set_provider_credential`, which stores the item, binds it, and deletes a
+  replaced item. The profile must exist before it can be bound, so Rust opens
+  the native store first and, if storing or binding fails, removes the
+  profile again. The endpoint is not typed: Rust supplies
+  `OLLAMA_CLOUD_ENDPOINT`. No response or error carries the key, its length,
+  or a digest. The key passes through the `settings` webview's memory and one
+  IPC message, which is a weaker boundary than the CLI's standard input.
+  Removing the profile in the window asks a native Yes/No that says the stored
+  key is deleted, then removes the profile and deletes the item as `provider-profile-remove`
+  does. Replacing a key shows no dialog, because the audience is unchanged.
+  See the [desktop interface](desktop-interface.md#choosing-the-model-connection).
 - **Transport.** HTTPS only, with the platform's certificate validation
   (`native-tls`); no proxy, redirect, or retry; the same timeouts and body
   limits as a local request. A request to the cloud endpoint without a token

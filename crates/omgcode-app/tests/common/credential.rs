@@ -73,6 +73,12 @@ impl Vault {
         id
     }
 
+    /// Delete this item when the vault drops, for a credential the service
+    /// under test bound rather than [`Vault::bind`].
+    pub fn track(&mut self, id: CredentialId) {
+        self.created.push(id);
+    }
+
     /// Remove a profile and its credential, as `provider-profile-remove` does.
     pub fn remove_profile(&self, name: &str) {
         let mut control = ControlStore::open(&self.data).expect("settings store");

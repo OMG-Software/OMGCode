@@ -1,5 +1,5 @@
 import { invokeCommand } from "./client";
-import type { LocalProviderKind, PermissionFlags, SettingsOverview } from "./types";
+import type { NewConnectionKind, PermissionFlags, SettingsOverview } from "./types";
 
 /**
  * Commands that only the settings window may call (ADR-0059, ADR-0060, ADR-0064). Imported by
@@ -32,12 +32,31 @@ export const settingsApi = {
   /** Chooses the active model connection: a recorded profile, or `null` for the default. */
   selectConnection: (revision: number, profile: string | null) =>
     invokeCommand<SettingsOverview>("settings_select_connection", { revision, profile }),
-  addLocalConnection: (revision: number, name: string, kind: LocalProviderKind, endpoint: string) =>
-    invokeCommand<SettingsOverview>("settings_add_local_connection", {
+  /**
+   * Records a connection. A local kind sends `endpoint` and a `null` key; Ollama Cloud sends a
+   * `null` endpoint (Rust uses the fixed one) and the API key. The key is write-only: this is
+   * the one place it is sent, and nothing here keeps it.
+   */
+  addConnection: (
+    revision: number,
+    name: string,
+    kind: NewConnectionKind,
+    endpoint: string | null,
+    apiKey: string | null,
+  ) =>
+    invokeCommand<SettingsOverview>("settings_add_connection", {
       revision,
       name,
       kind,
       endpoint,
+      api_key: apiKey,
+    }),
+  /** Replaces an Ollama Cloud profile's stored API key. Write-only, like the add command. */
+  setApiKey: (revision: number, name: string, apiKey: string) =>
+    invokeCommand<SettingsOverview>("settings_set_api_key", {
+      revision,
+      name,
+      api_key: apiKey,
     }),
   /** Clears the window's workspace scope and returns the unscoped overview (ADR-0067). */
   clearScope: () => invokeCommand<SettingsOverview>("settings_clear_scope", {}),

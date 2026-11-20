@@ -421,6 +421,35 @@ describe("advanced section", () => {
     expect(text).toContain("not set (disabled)");
   });
 
+  it("labels a hosted profile, offers Set key, and keeps Remove for a stored key", async () => {
+    await start(() =>
+      overview({
+        provider_profiles: [
+          profile(),
+          profile({
+            name: "hosted",
+            kind: "ollama_cloud",
+            auth: "api_key",
+            endpoint: "https://ollama.com/v1",
+            credential_bound: true,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const rows = Array.from(root.querySelectorAll<HTMLElement>(".row"));
+    const hosted = rows.find((row) => row.textContent?.includes("hosted"));
+    const local = rows.find((row) => row.querySelector(".row-title")?.textContent === "ollama");
+    expect(hosted?.textContent).toContain("Hosted");
+    expect(hosted?.textContent).toContain("leave this computer");
+    expect(hosted?.textContent).toContain("Set key");
+    expect(hosted?.querySelector("input[type=password]")).not.toBeNull();
+    expect(hosted?.querySelector<HTMLButtonElement>("button:not(summary)")?.disabled).toBe(false);
+    // A local profile has neither the hosted label nor a key field.
+    expect(local?.textContent).not.toContain("Hosted");
+    expect(local?.querySelector("input")).toBeNull();
+  });
+
   it("gives each empty group one line", async () => {
     await start(() => overview());
     go("Advanced");

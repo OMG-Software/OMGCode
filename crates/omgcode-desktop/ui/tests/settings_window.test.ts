@@ -260,7 +260,8 @@ describe("settings window", () => {
   it("types no path and offers exactly three access states everywhere", async () => {
     await start(() => overview());
     // No control takes a typed path: folders come only from the system dialog. The only typed
-    // values are a new connection name and loopback URL (ADR-0064).
+    // values are a new connection name, a loopback URL (ADR-0064), and the write-only API key
+    // of an Ollama Cloud connection (ADR-0067).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);
@@ -271,7 +272,7 @@ describe("settings window", () => {
         }
       }
     }
-    expect(typed).toEqual(["New connection name", "New connection endpoint"]);
+    expect(typed).toEqual(["New connection name", "New connection endpoint", "API key"]);
     // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
     // group, and the three labels are the same everywhere.
     go("Model");
@@ -671,7 +672,7 @@ describe("settings window", () => {
 
   it("adds an Ollama connection with its usual address and follows the provider choice", async () => {
     await start(() => choosable({ provider_profiles: [] }), {
-      settings_add_local_connection: () => choosable({ revision: 8 }),
+      settings_add_connection: () => choosable({ revision: 8 }),
     });
     go("Model");
     expect(picker("New connection provider").value).toBe("ollama_local");
@@ -693,11 +694,12 @@ describe("settings window", () => {
     field("New connection name").value = "  local  ";
     buttonByText(root, "Add connection").click();
     await settle();
-    expect(ipc.callsTo("settings_add_local_connection")[0]?.args).toEqual({
+    expect(ipc.callsTo("settings_add_connection")[0]?.args).toEqual({
       revision: 7,
       name: "local",
       kind: "ollama_local",
       endpoint: "http://127.0.0.1:4000/v1",
+      api_key: null,
     });
     expect(root.textContent).toContain("Revision 8");
   });
@@ -705,7 +707,7 @@ describe("settings window", () => {
   it("keeps a typed connection across redraws, after a refusal, and clears it after an add", async () => {
     let refuse = true;
     await start(() => choosable({ provider_profiles: [] }), {
-      settings_add_local_connection: () =>
+      settings_add_connection: () =>
         refuse ? rejection("invalid_endpoint", "Bad.") : choosable({ revision: 8 }),
     });
     go("Model");
@@ -733,13 +735,14 @@ describe("settings window", () => {
     expect(field("New connection endpoint").value).toBe(DEFAULT_ENDPOINTS.ollama_local);
   });
 
-  it("removes a connection without a credential and leaves a stored one to the CLI", async () => {
+  it("removes a connection, including one with a stored credential", async () => {
     await start(() => choosable(), {
       settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [lms()] }),
     });
     go("Model");
-    expect(buttonByText(rowOf("lms"), "Remove").disabled).toBe(true);
-    expect(rowOf("lms").textContent).toContain("remove with the trusted CLI");
+    // A bound profile can be removed: Rust asks a system Yes/No and deletes the key with it.
+    expect(buttonByText(rowOf("lms"), "Remove").disabled).toBe(false);
+    expect(rowOf("lms").textContent).toContain("Credential stored");
     buttonByText(rowOf("ollama"), "Remove").click();
     await settle();
     expect(ipc.callsTo("settings_remove_connection")[0]?.args).toEqual({
@@ -747,6 +750,182 @@ describe("settings window", () => {
       name: "ollama",
     });
     expect(() => rowOf("ollama")).toThrow();
+  });
+
+  describe("Ollama Cloud", () => {
+    const KEY = "test-key-not-real";
+
+    function cloud(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
+      return {
+        name: "hosted",
+        kind: "ollama_cloud",
+        auth: "api_key",
+        endpoint: "https://ollama.com/v1",
+        credential_bound: true,
+        selectable: true,
+        active: false,
+        ...overrides,
+      };
+    }
+
+    /** Every place the page could hold the key: text, attributes, and each field's value. */
+    function pageHolds(text: string): boolean {
+      const fields = Array.from(root.querySelectorAll("input, textarea")).map(
+        (input) => (input as HTMLInputElement).value,
+      );
+      return root.innerHTML.includes(text) || fields.some((value) => value.includes(text));
+    }
+
+    function chooseCloud(): void {
+      const kind = picker("New connection provider");
+      kind.value = "ollama_cloud";
+      kind.dispatchEvent(new Event("change"));
+    }
+
+    function type(label: string, value: string): void {
+      field(label).value = value;
+      field(label).dispatchEvent(new Event("input"));
+    }
+
+    it("hides the endpoint, shows the fixed one, and takes the key in a password field", async () => {
+      await start(() => choosable({ provider_profiles: [] }));
+      go("Model");
+      const endpoint = field("New connection endpoint");
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
+      chooseCloud();
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(true);
+      const key = field("API key");
+      expect(key.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(key.type).toBe("password");
+      expect(key.getAttribute("autocomplete")).toBe("off");
+      expect(root.querySelector("#new-connection-fixed-endpoint")?.textContent).toContain(
+        "https://ollama.com/v1",
+      );
+      expect(root.textContent).toContain("leave this computer for ollama.com");
+      expect(field("New connection name").value).toBe("ollama-cloud");
+      // Switching back shows the endpoint again and hides the key.
+      const kind = picker("New connection provider");
+      kind.value = "ollama_local";
+      kind.dispatchEvent(new Event("change"));
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
+    });
+
+    it("sends the key once, with no endpoint, and clears the field after a success", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () => choosable({ revision: 8, provider_profiles: [cloud()] }),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      // The field is empty before the answer arrives.
+      expect(field("API key").value).toBe("");
+      await settle();
+      expect(ipc.callsTo("settings_add_connection")).toHaveLength(1);
+      expect(ipc.callsTo("settings_add_connection")[0]?.args).toEqual({
+        revision: 7,
+        name: "hosted",
+        kind: "ollama_cloud",
+        endpoint: null,
+        api_key: KEY,
+      });
+      expect(field("API key").value).toBe("");
+      expect(pageHolds(KEY)).toBe(false);
+      // No other call carried it.
+      const carrying = ipc.calls.filter((call) => JSON.stringify(call.args).includes(KEY));
+      expect(carrying).toHaveLength(1);
+      expect(rowOf("hosted").textContent).toContain("API key stored");
+      expect(rowOf("hosted").textContent).toContain("leave this computer for ollama.com");
+      expect(root.textContent).toContain("Revision 8");
+    });
+
+    it("clears the key after a refusal and never shows it in the error", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection("credential_locked", "The credential store is locked."),
+      });
+      go("Model");
+      chooseCloud();
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      expect(field("API key").value).toBe("");
+      await settle();
+      expect(root.textContent).toContain("credential_locked");
+      expect(field("API key").value).toBe("");
+      expect(pageHolds(KEY)).toBe(false);
+      // The form keeps its choice of provider and name, but never the key.
+      expect(picker("New connection provider").value).toBe("ollama_cloud");
+    });
+
+    it("sets a new key from the row, once, and clears the field either way", async () => {
+      let refuse = false;
+      await start(() => choosable({ provider_profiles: [cloud()] }), {
+        settings_set_api_key: () =>
+          refuse
+            ? rejection("invalid_request", "The API key is empty.")
+            : choosable({ revision: 8, provider_profiles: [cloud()] }),
+      });
+      go("Model");
+      const row = rowOf("hosted");
+      expect(row.textContent).toContain("Set key\u2026");
+      expect(row.textContent).toContain("Hosted");
+      const input = row.querySelector<HTMLInputElement>("input[type=password]");
+      expect(input?.getAttribute("autocomplete")).toBe("off");
+      if (input === null) {
+        throw new Error("No key field");
+      }
+      input.value = KEY;
+      buttonByText(row, "Save key").click();
+      expect(input.value).toBe("");
+      await settle();
+      expect(ipc.callsTo("settings_set_api_key")).toHaveLength(1);
+      expect(ipc.callsTo("settings_set_api_key")[0]?.args).toEqual({
+        revision: 7,
+        name: "hosted",
+        api_key: KEY,
+      });
+      expect(pageHolds(KEY)).toBe(false);
+      expect(root.textContent).toContain("Revision 8");
+
+      refuse = true;
+      const again = rowOf("hosted").querySelector<HTMLInputElement>("input[type=password]");
+      if (again === null) {
+        throw new Error("No key field");
+      }
+      again.value = KEY;
+      buttonByText(rowOf("hosted"), "Save key").click();
+      expect(again.value).toBe("");
+      await settle();
+      expect(root.textContent).toContain("invalid_request");
+      expect(pageHolds(KEY)).toBe(false);
+      expect(ipc.callsTo("settings_set_api_key")).toHaveLength(2);
+    });
+
+    it("offers Remove for a profile with a stored key and sends the removal", async () => {
+      await start(() => choosable({ provider_profiles: [cloud()] }), {
+        settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [] }),
+      });
+      go("Model");
+      const remove = buttonByText(rowOf("hosted"), "Remove");
+      expect(remove.disabled).toBe(false);
+      remove.click();
+      await settle();
+      expect(ipc.callsTo("settings_remove_connection")[0]?.args).toEqual({
+        revision: 7,
+        name: "hosted",
+      });
+      expect(() => rowOf("hosted")).toThrow();
+    });
+
+    it("has no Set key control on a local profile", async () => {
+      await start(() => choosable());
+      go("Model");
+      expect(rowOf("lms").textContent).not.toContain("Set key");
+      expect(rowOf("lms").querySelector("input")).toBeNull();
+    });
   });
 
   it("keeps the active connection when its removal is declined", async () => {

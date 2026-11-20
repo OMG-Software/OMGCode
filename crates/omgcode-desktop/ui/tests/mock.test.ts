@@ -228,7 +228,7 @@ describe("mock backend", () => {
   it("records an IPv6 loopback connection and refuses port 0", async () => {
     const { invoke } = createMockBackend();
     let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
-    const added = (await invoke("settings_add_local_connection", {
+    const added = (await invoke("settings_add_connection", {
       revision,
       name: "v6",
       kind: "ollama_local",
@@ -237,13 +237,73 @@ describe("mock backend", () => {
     expect(added.provider_profiles.some((p) => p.name === "v6")).toBe(true);
     revision = added.revision;
     await expect(
-      invoke("settings_add_local_connection", {
+      invoke("settings_add_connection", {
         revision,
         name: "zero",
         kind: "lm_studio",
         endpoint: "http://127.0.0.1:0/v1",
       }),
     ).rejects.toMatchObject({ code: "control" });
+  });
+
+  it("adds Ollama Cloud with a key, replaces the key, and removes a bound profile", async () => {
+    const { invoke } = createMockBackend();
+    let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    const cloud = (fields: Record<string, unknown>) =>
+      invoke("settings_add_connection", {
+        revision,
+        name: "cloud",
+        kind: "ollama_cloud",
+        endpoint: null,
+        api_key: "test-key-not-real",
+        ...fields,
+      });
+    // Like Rust: a key and no endpoint for the cloud, an endpoint and no key for a local kind.
+    await expect(cloud({ api_key: null })).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(cloud({ endpoint: "https://example.com/v1" })).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+    await expect(
+      invoke("settings_add_connection", {
+        revision,
+        name: "box",
+        kind: "ollama_local",
+        endpoint: "http://127.0.0.1:11500/v1",
+        api_key: "test-key-not-real",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const added = (await cloud({})) as SettingsOverview;
+    expect(added.provider_profiles.at(-1)).toEqual({
+      name: "cloud",
+      kind: "ollama_cloud",
+      auth: "api_key",
+      endpoint: "https://ollama.com/v1",
+      credential_bound: true,
+      selectable: true,
+      active: false,
+    });
+    // Nothing returned holds the key.
+    expect(JSON.stringify(added)).not.toContain("test-key-not-real");
+    revision = added.revision;
+
+    await expect(
+      invoke("settings_set_api_key", { revision, name: "ollama", api_key: "test-key-not-real" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      invoke("settings_set_api_key", { revision, name: "missing", api_key: "test-key-not-real" }),
+    ).rejects.toMatchObject({ code: "control" });
+    const rotated = (await invoke("settings_set_api_key", {
+      revision,
+      name: "cloud",
+      api_key: "test-key-not-real-2",
+    })) as SettingsOverview;
+    expect(JSON.stringify(rotated)).not.toContain("test-key-not-real");
+
+    const removed = (await invoke("settings_remove_connection", {
+      revision: rotated.revision,
+      name: "cloud",
+    })) as SettingsOverview;
+    expect(removed.provider_profiles.some((p) => p.name === "cloud")).toBe(false);
   });
 
   it("refuses a chat request without a skills list, like the Rust command", async () => {
@@ -425,7 +485,7 @@ describe("mock backend", () => {
       const { invoke } = createMockBackend();
       let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
       const add = (fields: Record<string, unknown>) =>
-        invoke("settings_add_local_connection", {
+        invoke("settings_add_connection", {
           revision,
           name: "box",
           kind: "ollama_local",
@@ -467,9 +527,6 @@ describe("mock backend", () => {
       await expect(
         invoke("settings_remove_connection", { revision, name: "missing" }),
       ).rejects.toMatchObject({ code: "control" });
-      await expect(
-        invoke("settings_remove_connection", { revision, name: "lms" }),
-      ).rejects.toMatchObject({ code: "credential_bound" });
       // Removing the active connection returns to the default, as core's event does.
       const removed = (await invoke("settings_remove_connection", {
         revision,
