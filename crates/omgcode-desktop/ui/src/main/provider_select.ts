@@ -16,7 +16,7 @@ export interface ProviderSelect {
 }
 
 /**
- * A provider dropdown over the shared connection state (ADR-0067 decision 11). The composer and
+ * A provider dropdown over the shared connection state (ADR-0069 decision 11). The composer and
  * the footer each build one, and both render from the same state, so they always agree. Choosing
  * an entry only names a profile: Rust asks for a native Yes/No confirmation before anything is
  * recorded, so this window cannot switch on its own.

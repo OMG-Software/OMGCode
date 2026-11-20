@@ -261,7 +261,7 @@ describe("settings window", () => {
     await start(() => overview());
     // No control takes a typed path: folders come only from the system dialog. The only typed
     // values are a new connection name, a loopback URL (ADR-0064), and the write-only API key
-    // of an Ollama Cloud connection (ADR-0067).
+    // of an Ollama Cloud connection (ADR-0069).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);

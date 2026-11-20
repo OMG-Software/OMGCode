@@ -35,7 +35,7 @@
 //! | `reviews` | outstanding single-use approval review tokens |
 //! | `events` | the one chat event subscriber and the running turns' previews |
 //! | `pending_cache` | an atomic copy of the last pending-approval count read |
-//! | `session_choices` | the read-modify-write of `session-connections.json` (ADR-0067) |
+//! | `session_choices` | the read-modify-write of `session-connections.json` (ADR-0069) |
 //!
 //! **Lock order** when two are ever needed: `turns`, then `index`, then
 //! `reviews`. The code takes one at a time. The `events` lock is never held
@@ -271,7 +271,7 @@ struct Inner {
     /// and removes no access. Keep every critical section to one read or write.
     settings_scope: Mutex<Option<Uuid>>,
     /// Serializes the read-modify-write cycles of the per-session choices file
-    /// (ADR-0067). Held for file input and output only.
+    /// (ADR-0069). Held for file input and output only.
     session_choices: Mutex<()>,
 }
 

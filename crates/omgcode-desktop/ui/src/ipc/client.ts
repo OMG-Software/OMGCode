@@ -104,7 +104,7 @@ export const api = {
   sessionCreate: (workspaceId: string, title: string) =>
     invokeCommand<SessionSummary>("session_create", { workspace_id: workspaceId, title }),
   chatDefaults: () => invokeCommand<ChatDefaults>("chat_defaults", {}),
-  /** The models the session's connection reports (ADR-0066, ADR-0067). */
+  /** The models the session's connection reports (ADR-0066, ADR-0069). */
   chatModels: (sessionId: string) =>
     invokeCommand<ChatModels>("chat_models", { session_id: sessionId }),
   chatPreferencesSave: (preferences: ChatPreferences) =>

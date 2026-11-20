@@ -23,7 +23,7 @@ import {
   userMessage,
 } from "./helpers";
 
-// The provider and the model belong to the open session (ADR-0067 decisions 8 to 11).
+// The provider and the model belong to the open session (ADR-0069 decisions 8 to 11).
 
 const LMS = "http://127.0.0.1:1234/v1";
 const OLLAMA = "http://127.0.0.1:11434/v1";

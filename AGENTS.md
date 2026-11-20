@@ -11,7 +11,15 @@ preferences never authorize execution. A prototype Tauri desktop shell adds a
 session tree, full-text search, chat, and an isolated approvals window. It is
 without an installer, has run only on Windows, and gives the webview no authority: the
 Rust side authorizes every command and the trusted CLI remains. Follow the
-[desktop interface](docs/desktop-interface.md) contract.
+[desktop interface](docs/desktop-interface.md) contract. The `main` window
+renders a recorded assistant reply as a bounded Markdown subset built from
+elements and text nodes; links and images stay inert text, and a code block's
+**Copy** button writes its shown text to the clipboard
+([ADR-0067](docs/adr/0067-render-recorded-replies-as-inert-markdown.md)).
+A reply is labelled with the model from its turn's request manifest and can be
+copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
+the clipboard only
+([ADR-0068](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
 also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
 create, rename, and delete); and, when it also enables `execute`, `read`, and
@@ -57,7 +65,7 @@ token (ADR-0047, ADR-0048); an `ollama_local` profile has none. An
 `ollama_cloud` profile accepts only the fixed HTTPS endpoint
 `https://ollama.com/v1` and always needs a stored key; its chat, stream, and
 tool-call shapes were not verified with a real key
-([ADR-0067](docs/adr/0067-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
+([ADR-0069](docs/adr/0069-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
 No other cloud adapter or login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
@@ -107,7 +115,7 @@ write-only field. A **Workspace settings** button beside the composer shows
 the same window scoped to the open session's workspace. The provider and model
 are chosen per session in the composer; a provider change needs the native
 confirmation, and each turn re-checks the session's recorded endpoint
-(ADR-0067). A status bar at the bottom of the `main`
+(ADR-0069). A status bar at the bottom of the `main`
 window shows the open session's workspace and Git branch, read from `HEAD`
 without a Git process, and offers the same connection choice through the same
 native confirmation

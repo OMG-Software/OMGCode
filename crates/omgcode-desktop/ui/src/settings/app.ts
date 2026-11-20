@@ -73,7 +73,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
   // A disabled fieldset disables every control inside it without touching their own state.
   const body = el("fieldset", { class: "settings-body" });
   // The one scroll container for every section.
-  // Shown only while the window is scoped to one workspace (ADR-0067).
+  // Shown only while the window is scoped to one workspace (ADR-0069).
   const allSettings = button("All settings", () => submit(() => settingsApi.clearScope()));
   const scopeBar = el("div", { class: "scope-bar" }, allSettings);
   scopeBar.hidden = true;

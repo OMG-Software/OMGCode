@@ -5,7 +5,7 @@ import type { ConnectionModel } from "./connection_state";
 import { createProviderSelect } from "./provider_select";
 
 export interface StatusFooterDeps {
-  /** The open session's provider and model, shared with the composer (ADR-0067). */
+  /** The open session's provider and model, shared with the composer (ADR-0069). */
   connection: ConnectionModel;
   /** Called when the operator chooses Review in the approvals segment. */
   onShowApprovals(): void;
@@ -42,7 +42,7 @@ export function branchText(branch: BranchView): string {
 /**
  * The bar along the bottom of the main window (ADR-0064): the open session's workspace, its Git
  * branch, and the model provider. The provider dropdown shares the open session's connection with
- * the composer's (ADR-0067). Choosing a provider names a profile only; Rust asks for a native
+ * the composer's (ADR-0069). Choosing a provider names a profile only; Rust asks for a native
  * Yes/No confirmation before anything changes, so this window cannot switch on its own.
  */
 export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {

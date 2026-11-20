@@ -171,7 +171,7 @@ pub struct LocalConnection {
 }
 
 /// The profile kind the model adapter reads `name` as (local kinds and
-/// `ollama_cloud`, ADR-0067). A profile of another
+/// `ollama_cloud`, ADR-0069). A profile of another
 /// kind is read as `lm_studio`, so core refuses it as a different provider.
 fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
     control
@@ -245,7 +245,7 @@ pub fn resolve_local_connection(
         ConnectionSource::Environment { endpoint } => {
             // The environment token is a local server's token. It is never
             // sent to the hosted endpoint, whose key comes from a bound
-            // credential only (ADR-0067).
+            // credential only (ADR-0069).
             if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_cloud()) {
                 return Err(credential_error(
                     "cloud_needs_profile: the Ollama Cloud endpoint is used only through an ollama_cloud provider profile".to_owned(),
@@ -308,7 +308,7 @@ pub struct ProfileConnection {
 
 /// Resolve the named profile for one turn: its kind, validated endpoint, and
 /// credential, read as [`resolve_local_connection`] reads a profile
-/// (ADR-0047, ADR-0048, ADR-0067). Nothing is cached.
+/// (ADR-0047, ADR-0048, ADR-0069). Nothing is cached.
 ///
 /// # Errors
 ///
@@ -334,7 +334,7 @@ pub fn resolve_profile_connection(
 }
 
 /// Check that a profile can be chosen as a connection now, for a front end
-/// that offers a choice (ADR-0067): core's
+/// that offers a choice (ADR-0069): core's
 /// [`ControlStore::check_provider_selectable`] on the existing settings store,
 /// which for an `ollama_cloud` profile also needs a bound credential. No
 /// native storage is read.

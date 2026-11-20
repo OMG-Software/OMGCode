@@ -18,7 +18,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
 
-/// The one hosted endpoint a provider may use (ADR-0067): Ollama Cloud's
+/// The one hosted endpoint a provider may use (ADR-0069): Ollama Cloud's
 /// OpenAI-compatible base URL. No other non-loopback destination is accepted.
 pub const OLLAMA_CLOUD_ENDPOINT: &str = "https://ollama.com/v1";
 
@@ -39,7 +39,7 @@ const MAX_RESPONSE_TOOL_CALLS: usize = 64;
 
 /// A validated model endpoint: a literal loopback HTTP endpoint
 /// ([`validate_base_url`], ADR-0048) or the fixed Ollama Cloud endpoint
-/// ([`OLLAMA_CLOUD_ENDPOINT`], ADR-0067). There is no other destination.
+/// ([`OLLAMA_CLOUD_ENDPOINT`], ADR-0069). There is no other destination.
 ///
 /// The cloud variant sends prompts, tool results, and command output off this
 /// computer, so a client built on it requires a token.
@@ -831,7 +831,7 @@ pub(crate) fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
     Ok(parsed)
 }
 
-/// The one implementation of the Ollama Cloud endpoint rule (ADR-0067): the
+/// The one implementation of the Ollama Cloud endpoint rule (ADR-0069): the
 /// exact text of [`OLLAMA_CLOUD_ENDPOINT`], with or without one trailing `/`.
 /// A provider profile applies it before it records an endpoint, and the
 /// client applies it to every request configuration.
@@ -1136,7 +1136,7 @@ mod tests {
     }
 
     /// The endpoint type accepts a loopback endpoint or exactly the cloud
-    /// endpoint, and refuses every variant of the cloud text (ADR-0067).
+    /// endpoint, and refuses every variant of the cloud text (ADR-0069).
     #[test]
     fn the_endpoint_type_accepts_loopback_or_exactly_the_cloud_endpoint() {
         assert!(matches!(

@@ -6,8 +6,8 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.47.0 chooses the provider and model per session, adds Ollama Cloud
-  as a hosted provider, and adds a **Workspace settings** button (ADR-0067,
+- Version 0.48.0 chooses the provider and model per session, adds Ollama Cloud
+  as a hosted provider, and adds a **Workspace settings** button (ADR-0069,
   accepted).
   - **Core:** `OLLAMA_CLOUD_ENDPOINT` (`https://ollama.com/v1`) and
     `ModelEndpoint`, which is either the unchanged loopback rule or exactly
@@ -56,6 +56,80 @@ Changes are recorded here before a release version is assigned.
   - The policy has 39 commands: 25 for `main`, 3 for `approvals`, and 11 for
     `settings`.
 
+- Version 0.47.0 renders recorded assistant replies as Markdown in the
+  desktop `main` window (ADR-0067, accepted).
+  - **Desktop:** a reply sits in a response block one shade lighter than the
+    transcript. `src/main/markdown.ts` parses a subset (paragraphs, headings,
+    rules, block quotes, nested lists, tables, inline code, strong, emphasis,
+    strikethrough, escapes) into elements and text nodes through `src/dom.ts`;
+    no dependency is added. A fenced code block is a darker monospace block
+    with its language label and a **Copy** button that writes the block's
+    shown text, with visible markers in place of bidirectional overrides,
+    through `navigator.clipboard.writeText`. Raw HTML stays literal text.
+    Links and images are inert: each shows its destination, and no element
+    gets an `href` or `src`. A reply over 100,000 UTF-16 code units, the
+    operator's messages, tool messages, summaries, and the live preview stay
+    plain text. Nesting is limited to six block levels and eight inline
+    levels, tables to 32 columns, and delimiter searches are cached so
+    unmatched delimiters parse in close to linear time.
+  - **Tests:** Vitest tests for the reply from the request, each block and
+    inline form, copy success, refusal, and absence, copying a bidirectional
+    override as its marker, hostile HTML in every position, inert links and
+    images, the size and depth bounds, eight pathological replies under a
+    time bound, and plain text for other roles. The mock transcript holds a
+    Markdown reply for the dev server.
+  - **Reply label and copy actions (ADR-0068, accepted):** a reply is
+    labelled with the model id from its turn's request manifest instead of
+    "Assistant", which remains the fallback; the live entry uses the model
+    the send asked for. Each recorded reply has **Copy Markdown** (the
+    recorded text, overrides as visible markers), **Copy text** (the rendered
+    reply without Markdown symbols: "•" bullets, kept numbers, tab-separated
+    table cells, code without fences), and **Copy image** (a PNG of the whole
+    entry without its buttons, written through `ClipboardItem`).
+    `src/main/capture.ts` repaints the entry on a canvas from the computed
+    layout, with list markers drawn from the list, bounded at 8,192 pixels on
+    a side, 4096 × 4096 in area, and 50,000 text runs. No dependency or Rust
+    command is added. The mock backend records a manifest for each mock turn,
+    and its fixture now starts a turn before its manifest, as core does.
+  - **Review fixes:** an escaped marker or one inside inline code no longer
+    closes emphasis, and an escaped or code-span bracket or parenthesis no
+    longer ends a link; a linear pre-pass marks those positions as literal,
+    and link destinations drop their backslash escapes. Fence and list-item
+    lines are split by a scan instead of patterns that could backtrack. An
+    inline element's image background is painted per line fragment. Plain
+    text leaves blank lines inside a list item unindented. A copy action's
+    synchronous throw becomes a rejection through a promise executor, still
+    inside the click.
+  - **Second review fixes:** inline content is scanned once from the left, so
+    a backtick in a link destination no longer pairs with a later one, and
+    HTML-like tags are kept whole as text; code-span closers use a binary
+    search over backtick runs and destination ends a lookup table. A link's
+    destination is hidden only when its rendered label matches it. A closing
+    fence allows only trailing spaces and tabs, a list item's content indent
+    is counted in columns after a tab, an open fence in an item takes no lazy
+    line, and a reply holds at most 10,000 table cells. The image strikes
+    through text nested in a deletion, places wrapped words by grapheme, pads
+    with the colour behind the entry, and wraps wide code while captured.
+    Plain text separates blocks inside a list item with a blank line. A lazy
+    line continues only an item's open paragraph, so an item that starts
+    empty, as in `-` then ` foo`, ends before an under-indented line.
+    Without `Intl.Segmenter`, the image paints each line's part of a wrapped
+    word whole, with a line-through across all of it, so no grapheme
+    cluster is split in any script, and padding
+    with nothing behind it stays transparent rather than black. A `>`
+    inside a quoted attribute value no longer ends an HTML-like tag.
+  - **Tests (reply actions):** model labels from manifests and their reset
+    at a turn start, a hostile model id, the live entry label, the label in
+    the window, each copy action, refusal and label reset, plain-text
+    conversion, the painter's backgrounds, text positions, list markers,
+    skipped controls, run budget, and scale bounds, and an image copy through
+    a stubbed canvas and `ClipboardItem`. The live preview test now expects
+    the sent model's name.
+  - **Not verified:** a successful copy of text or an image in the WebView2
+    or WebKitGTK shell. A Chromium browser pane refused every clipboard
+    write and showed "Copy failed". The painted image was compared with the
+    screen in that pane against the mock backend.
+
 ### Fixed
 
 - The composer no longer discards the whole model list when the endpoint it
@@ -63,7 +137,7 @@ Changes are recorded here before a release version is assigned.
   connection changed in the `settings` window, or when `chat_defaults` fell
   back to the launch endpoint, and it left only the saved model on offer for
   LM Studio and Ollama. The list is now tied to the session and request it was
-  asked for (ADR-0067).
+  asked for (ADR-0069).
 - A desktop launch with `--provider-profile` for an Ollama Cloud profile no
   longer exits before a window opens. The launch check now keeps the profile's
   token while it validates the endpoint; `--endpoint` and the default endpoint

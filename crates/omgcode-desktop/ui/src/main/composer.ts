@@ -59,7 +59,7 @@ function numberInput(label: string, value: number, min: number): [HTMLElement, H
 /**
  * Builds the composer. The numeric chat settings are kept in this closure for the app run and are
  * filled from `chat_defaults` the first time they are available. The provider, the endpoint, and
- * the model belong to the open session (ADR-0067): they come from `connection`, which the footer's
+ * the model belong to the open session (ADR-0069): they come from `connection`, which the footer's
  * provider dropdown shares.
  */
 export function createComposer(handlers: ComposerHandlers, connection: ConnectionModel): Composer {
@@ -77,7 +77,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   const runningLabel = el("span", { class: "running", text: "Running…" });
   runningLabel.hidden = true;
 
-  // The open session, for the Workspace settings button (ADR-0067). Rust resolves its workspace.
+  // The open session, for the Workspace settings button (ADR-0069). Rust resolves its workspace.
   let sessionId: string | null = null;
   let workspaceError: string | null = null;
   const workspaceButton = button("Workspace settings", () => {
@@ -318,7 +318,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   }
 
   /**
-   * Follows the shared connection (ADR-0067 decision 11). A different session, a confirmed
+   * Follows the shared connection (ADR-0069 decision 11). A different session, a confirmed
    * provider choice, or a changed connection clears the model and lists the new session's models;
    * the model shown is always the one the connection holds for the session.
    */

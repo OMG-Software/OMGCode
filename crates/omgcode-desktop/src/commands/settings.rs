@@ -184,7 +184,7 @@ pub async fn settings_select_connection(
     .await
 }
 
-/// `settings` only. Records a connection (ADR-0064, ADR-0067): a local LM
+/// `settings` only. Records a connection (ADR-0064, ADR-0069): a local LM
 /// Studio or Ollama connection with a loopback `endpoint`, or `ollama_cloud`
 /// with an `api_key` and no endpoint. Recording it grants nothing, so no
 /// dialog is shown. The key is moved into a zeroing type on arrival and is
@@ -246,7 +246,7 @@ pub async fn settings_set_api_key(
 /// `settings` only. Removes a recorded provider profile. A profile with a
 /// stored API key first asks a native Yes/No saying the connection and its
 /// key will be deleted; removing the active connection also says where new
-/// turns go (ADR-0064, ADR-0067).
+/// turns go (ADR-0064, ADR-0069).
 ///
 /// # Errors
 ///
@@ -269,7 +269,7 @@ pub async fn settings_remove_connection(
 }
 
 /// `settings` only. Clears the window's workspace scope and returns the
-/// unscoped overview (ADR-0067). The scope is display state; clearing it
+/// unscoped overview (ADR-0069). The scope is display state; clearing it
 /// changes no setting.
 ///
 /// # Errors

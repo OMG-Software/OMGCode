@@ -306,6 +306,14 @@ mark {
   color: var(--text);
 }
 
+/* A reply's label is the model id, which can be long; it is cut with its full text as a title. */
+.bubble-assistant .entry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .entry-time {
   margin-left: auto;
   color: var(--muted);
@@ -324,8 +332,12 @@ mark {
   border-radius: var(--radius-lg);
 }
 
+/* A reply sits in a response block one shade lighter than the transcript (ADR-0067). */
 .bubble-assistant {
-  padding: 2px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
 .bubble-tool {
@@ -336,7 +348,6 @@ mark {
 }
 
 .bubble-live {
-  padding: 2px 10px;
   border-left: 2px dashed var(--accent-fg);
 }
 
@@ -344,6 +355,168 @@ mark {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   unicode-bidi: isolate;
+}
+
+/* Markdown in a recorded reply. Line breaks inside a paragraph are kept. */
+.bubble-text.md {
+  white-space: normal;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md li,
+.md th,
+.md td,
+.md .md-heading {
+  white-space: pre-line;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md .md-code,
+.md .md-table {
+  margin: 0 0 8px;
+}
+
+.md .md-heading {
+  margin: 12px 0 6px;
+  font-size: 14px;
+}
+
+.md h1.md-heading {
+  font-size: 17px;
+}
+
+.md h2.md-heading {
+  font-size: 15px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 22px;
+}
+
+.md li > p,
+.md li > ul,
+.md li > ol {
+  margin: 0;
+}
+
+.md blockquote {
+  padding: 0 10px;
+  border-left: 3px solid var(--control-border);
+  color: var(--muted);
+}
+
+.md hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.md code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.md :not(pre) > code {
+  padding: 1px 4px;
+  background: var(--surface-3);
+  border-radius: 4px;
+}
+
+.md-link-url {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* A code block is darker than the reply around it, with its language and a copy button. */
+.md .md-code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 2px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.md-code-lang {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.md-copy {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.md-code pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+.md-code pre code {
+  white-space: pre;
+}
+
+/* Copy image paints only what is laid out inside the entry, so a code block wider than the reply
+   wraps while it is captured rather than being cut at its scroll edge (ADR-0068). */
+.capturing .md-code pre {
+  overflow: visible;
+}
+
+.capturing .md-code pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md .md-table {
+  overflow-x: auto;
+}
+
+.md table {
+  border-collapse: collapse;
+}
+
+.md th,
+.md td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md th {
+  background: var(--surface-2);
+}
+
+.md .md-align-center {
+  text-align: center;
+}
+
+.md .md-align-right {
+  text-align: right;
 }
 
 .summary-block {
@@ -513,7 +686,7 @@ mark {
   flex-wrap: wrap;
 }
 
-/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0067). */
+/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0069). */
 .toolbar-field {
   display: flex;
   gap: 4px;
@@ -739,4 +912,24 @@ mark {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Copy actions under a recorded reply (ADR-0068). They are left out of the reply's image. */
+.reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.reply-action {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* While a reply is painted into an image, its controls leave the layout (src/main/capture.ts). */
+.capturing [data-capture="skip"] {
+  display: none;
 }

@@ -178,7 +178,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
 
 impl DesktopService {
     /// Scope the `settings` window to the registered workspace a session was
-    /// recorded in (ADR-0067). The identifier comes from the session index and
+    /// recorded in (ADR-0069). The identifier comes from the session index and
     /// the settings store, never from the caller. The scope is display state:
     /// it grants and removes no access.
     ///
@@ -262,7 +262,7 @@ impl DesktopService {
 
     /// The connection a session's next turn uses, where that choice comes from,
     /// the session's model, and the connections that may be chosen, for the
-    /// `main` window's composer and status bar (ADR-0064, ADR-0067). With no
+    /// `main` window's composer and status bar (ADR-0064, ADR-0069). With no
     /// session it describes the default: the global selection, or the launch
     /// endpoint. It names profiles, kinds, and endpoints only, never a
     /// credential, and reads no native credential store.

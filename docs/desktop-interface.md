@@ -322,7 +322,21 @@ The `main` window is laid out as follows.
   window, with **Dismiss**; the earlier "An approval is waiting." banner is
   gone.
 - **Transcript.** The operator's messages are right-aligned bubbles and the
-  assistant's replies plain text, each at most about 72 characters wide. A
+  assistant's replies sit in a response block one shade lighter than the
+  transcript, each at most about 72 characters wide. A recorded reply is
+  rendered as a Markdown subset (ADR-0067): paragraphs, headings, rules, block
+  quotes, nested lists, tables, inline code, strong, emphasis, and
+  strikethrough. A fenced code block is a darker monospace block with its
+  language label and a **Copy** button that writes the block's shown text to
+  the clipboard. Links and images are inert text that show their destination.
+  A reply over 100,000 UTF-16 code units is shown as plain text. A reply is
+  labelled with the model id from its turn's request manifest, or "Assistant"
+  when none is loaded (ADR-0068). Under it, **Copy Markdown** copies the
+  recorded text, **Copy text** copies the rendered reply without Markdown
+  symbols, and **Copy image** copies a PNG of the whole reply without its
+  buttons, repainted on a canvas from the computed layout and bounded at
+  8,192 pixels on a side, 4096 × 4096 in area, and 50,000 text runs. Each
+  writes to the clipboard on a click and nothing reads it. A
   tool request is a collapsed row whose summary shows the tool name and a
   one-line preview of its arguments (whitespace collapsed, cut at 160 UTF-16
   code units without splitting a surrogate pair); opening it shows the full
@@ -478,7 +492,7 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
   outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Model choice.** Since 0.46.0 (ADR-0066) the model is a dropdown with a
-  **Refresh** button, in the composer toolbar since ADR-0067. `chat_models`
+  **Refresh** button, in the composer toolbar since ADR-0069. `chat_models`
   takes the session id, resolves that session's connection exactly as
   `chat_send` does, stored credential included, and sends one
   `GET /v1/models` to its endpoint, which is a loopback endpoint or the fixed
@@ -511,7 +525,7 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   is chosen automatically: with no saved model, Send stays disabled until a
   model is chosen. Choosing a model grants nothing; `chat_send` validates it
   as before. Embedding models are listed too and cannot answer a turn.
-- **Provider and model per session** (ADR-0067 decisions 6 to 11). The
+- **Provider and model per session** (ADR-0069 decisions 6 to 11). The
   provider and the model belong to the open session. The composer's
   **Provider** dropdown and the footer's provider dropdown both render one
   shared state read from `connection_status` for the session, so they cannot
@@ -616,9 +630,12 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   at most 16 KiB; at the bound it sends `preview_truncated` and no more deltas
   for that request. A new subscription replaces the old one and first replays
   the preview of every running turn. The open session shows one live entry
-  labelled "Assistant (generating, not saved yet)", updated at most once per
-  animation frame. The frontend removes it when the turn settles and shows the
-  recorded transcript, and shows a note when the preview was cut off. It keeps
+  labelled "<model> (generating, not saved yet)", with the model this window
+  sent or the loaded last turn's, else "Assistant", updated at most once per
+  animation frame. The preview is plain text; Markdown is rendered only once
+  the recorded reply replaces it. The frontend removes it when the turn
+  settles and shows the recorded transcript, and shows a note when the
+  preview was cut off. It keeps
   previews for up to 4 sessions it is not tracking, each bounded at 64 KiB of
   UTF-16 code units. The preview is provisional: a later failure discards it,
   and a reply over the 16 KiB session message limit is shown in part and then
@@ -711,7 +728,7 @@ waits. The window shows:
   their folder, access, and state; and each imported skill's name, its
   application setting, and its workspace overrides, with the workspace shown
   by its folder. A line says these change only through the trusted CLI.
-- **Workspace scope** (ADR-0067). **Workspace settings**, next to **Chat
+- **Workspace scope** (ADR-0069). **Workspace settings**, next to **Chat
   settings** in the composer toolbar, calls `settings_show_workspace` with
   the open session's identifier and nothing else; it is disabled until a
   session is open. Rust resolves the workspace the session was recorded in
@@ -741,7 +758,7 @@ waits. The window shows:
   selectable profile, from `connection_status`, labelled with provider,
   profile name, and endpoint. A profile is selectable when it is a local
   profile with a recorded endpoint, or an `ollama_cloud` profile with the
-  cloud endpoint and a bound credential. Since ADR-0067 the dropdown acts on
+  cloud endpoint and a bound credential. Since ADR-0069 the dropdown acts on
   the open session and is the same control, over the same state, as the
   composer's **Provider** dropdown: choosing one calls `connection_select`
   with the session id and the profile name only. Rust refuses an unknown
@@ -838,7 +855,7 @@ by the same re-read.
 ### Choosing the model connection
 
 The `main` window's `connection_select` chooses the provider of **one
-session** (ADR-0067). It takes the session id and a profile name, or `null` for
+session** (ADR-0069). It takes the session id and a profile name, or `null` for
 the default, and nothing else. Rust refuses, before any dialog, a launch
 argument that fixed the connection (`connection_fixed`), an unknown session
 (`not_found`), a profile core would not accept (`control`), and a choice the
@@ -863,7 +880,7 @@ the same checks and dialog. The `settings` connection commands call
 the same `ControlStore` functions as the
 CLI's `workspace provider-profile-select`, `provider-profile-add`,
 `provider-credential-set`, and `provider-profile-remove`, with the same
-revision check and validation (ADR-0064, ADR-0067).
+revision check and validation (ADR-0064, ADR-0069).
 
 - **Selecting needs a native confirmation.** `settings_select_connection`
   takes the revision and a profile name, or none for the default. The
@@ -886,7 +903,7 @@ revision check and validation (ADR-0064, ADR-0067).
   endpoint, or omits the field its kind needs is refused as
   `invalid_request` before anything is recorded. A new profile is not used
   until it is selected.
-- **The API key is write-only** (ADR-0059 decision 6, ADR-0067 decision 5).
+- **The API key is write-only** (ADR-0059 decision 6, ADR-0069 decision 5).
   The key is typed into a password field, sent once in `settings_add_connection` or
   `settings_set_api_key`, and the field is emptied as the button is pressed,
   whether the answer is success or failure. The window keeps it in no state
@@ -1094,12 +1111,12 @@ What the design does:
   request a recorded profile, or the default, for one session with
   `connection_select`; Rust records it only after the operator confirms a
   native dialog, and not at all when a launch argument fixed the connection
-  (ADR-0064, ADR-0067). The `settings` window chooses the global default
+  (ADR-0064, ADR-0069). The `settings` window chooses the global default
   through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
 - **An API key crosses the `settings` webview once.** The operator types an
   Ollama Cloud key into a password field of the `settings` window (ADR-0059
-  decision 6, ADR-0067 decision 5). The key is in that webview's memory
+  decision 6, ADR-0069 decision 5). The key is in that webview's memory
   while it is typed and in one IPC message (`settings_add_connection` or
   `settings_set_api_key`); the field is emptied as the button is pressed,
   whether the command succeeds or fails, and the window holds the key in no
@@ -1155,7 +1172,12 @@ What the design does:
   `about:blank` is denied.
 - **Text-only rendering.** The frontend builds its document from elements and
   text nodes. Tests scan the source for markup-injecting interfaces, inline
-  script or style, remote resources, and browser storage.
+  script or style, remote resources, and browser storage. The Markdown
+  renderer for recorded replies (ADR-0067) builds elements the same way: raw
+  HTML stays literal text, no element gets an `href` or `src`, and a link
+  always shows its destination. Its parse is bounded in input size, nesting
+  depth, and delimiter search, and tests cover hostile and pathological
+  replies.
 - **Decisions only from `approvals`.** The approvals window loads a separate,
   smaller bundle. The main bundle contains neither `approval_decide` nor
   `approval_detail`. The command name `chat_subscribe` lives in
@@ -1200,7 +1222,19 @@ What it does not do:
 - The default WebView2 context menu stays enabled. Developer tools are enabled
   in debug builds only.
 - Transcript text is shown as recorded. Only text rendering and the content
-  security policy stand between it and the page. Preview text is returned as
+  security policy stand between it and the page. Markdown formatting is chosen
+  by the model: a reply can make text look like a heading, a quote, or a code
+  block that the operator did not write. A code block's **Copy** button writes
+  what the block shows, including any command the model chose; it is
+  user-initiated and write-only. Visible markers replace bidirectional
+  overrides, but zero-width and other invisible characters are neither marked
+  nor removed, so they are copied too. A reply's **Copy Markdown**, **Copy
+  text**, and **Copy image** buttons follow the same rule (ADR-0068). A
+  reply's label is the model id from the turn's request manifest, which the
+  model server chooses; it names the model asked, not an identity. Copying has
+  been checked under jsdom with stubbed clipboard, canvas, and layout, and as
+  a refused write in a Chromium pane; a successful copy of text or an image in
+  WebView2 or WebKitGTK has not been exercised. Preview text is returned as
   received after token redaction, like transcript text. The frontend renders
   it as text and marks bidirectional overrides.
 - Core's approval checks, the trusted runner, and checkpointed apply apply
@@ -1319,7 +1353,7 @@ private store refuses, see the notes in
   permission rows, and the read-only Advanced section; and
   `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
   segment, the composer menus and counter, and the compact transcript rows.
-  Since ADR-0067: `ui/tests/model_picker.test.ts` covers the model
+  Since ADR-0069: `ui/tests/model_picker.test.ts` covers the model
   list, including the regression that the list is kept when its endpoint
   differs from the composer's; `ui/tests/session_connection.test.ts` covers
   reading a session's provider and model when it opens, switching sessions

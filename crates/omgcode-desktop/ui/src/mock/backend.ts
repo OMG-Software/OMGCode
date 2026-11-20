@@ -289,6 +289,20 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     item.summary.updated_at = new Date(now()).toISOString();
   }
 
+  /** Records the request manifest, so a reply is labelled with the model as in a real journal. */
+  function appendManifest(item: FixtureSession, model: string): void {
+    const last = item.entries[item.entries.length - 1];
+    item.entries.push({
+      seq: (last?.seq ?? 0) + 1,
+      timestamp: new Date(now()).toISOString(),
+      kind: "request_manifest",
+      request_id: `mock-${item.entries.length}`,
+      model,
+      prompt_version: "mock",
+      tools: [],
+    });
+  }
+
   function settle(id: string, record: ChatRecord, modelFails: boolean, cancelled: boolean): void {
     finishTurn(id, record, modelFails, cancelled);
     emit({ kind: "finished", session_id: id });
@@ -348,6 +362,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     if (message.trim() === "" || settings.model.trim() === "") {
       fail("invalid_argument", "A message and a model are required.");
     }
+    appendManifest(item, settings.model);
     append(item, "user", message);
     item.summary.status = "running";
     const record: ChatRecord = {
@@ -658,7 +673,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         }
         return connectionStatus(id);
       }
-      // One session's provider (ADR-0067). The native confirmation is accepted here; a model
+      // One session's provider (ADR-0069). The native confirmation is accepted here; a model
       // belongs to one server, so the choice clears it.
       case "connection_select": {
         const id = str(args, "session_id");
@@ -861,7 +876,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** What the composer and the status bar read for a session (ADR-0067). */
+  /** What the composer and the status bar read for a session (ADR-0069). */
   function connectionStatus(sessionId: string | null): ConnectionStatus {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
     const view = effectiveConnection(sessionId);

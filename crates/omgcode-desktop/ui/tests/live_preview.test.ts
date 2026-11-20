@@ -121,7 +121,7 @@ describe("live assistant preview", () => {
     await emit(delta("Hel"), delta("lo"));
     expect(liveText().textContent).toBe("Hello");
     expect(liveText().getAttribute("aria-live")).toBe("polite");
-    expect(liveEntries()[0]?.textContent).toContain("Assistant (generating, not saved yet)");
+    expect(liveEntries()[0]?.textContent).toContain("test-model (generating, not saved yet)");
     expect(root.querySelector(".transcript")?.lastElementChild).toBe(liveEntries()[0]);
   });
 

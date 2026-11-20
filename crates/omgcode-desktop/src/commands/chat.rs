@@ -89,7 +89,7 @@ pub async fn session_context(
 /// `main` only. The connection a session's next turn uses, where that choice
 /// comes from, the session's model, and the connections that may be chosen.
 /// With no open session (`null`) it describes the default. Names and endpoints
-/// only, never a credential (ADR-0067).
+/// only, never a credential (ADR-0069).
 ///
 /// # Errors
 ///
@@ -110,7 +110,7 @@ pub async fn connection_status(
 /// `main` only. Asks to choose a recorded profile (or the default, for a
 /// `null` profile) as one session's model connection. Rust shows a native
 /// Yes/No dialog, modal to the main window, naming the provider and endpoint,
-/// and records the choice only on Yes (ADR-0067).
+/// and records the choice only on Yes (ADR-0069).
 ///
 /// # Errors
 ///
@@ -136,7 +136,7 @@ pub async fn connection_select(
 }
 
 /// `main` only. Records the model chosen for one session. No dialog: a model
-/// grants nothing, and the server still decides whether it exists (ADR-0067).
+/// grants nothing, and the server still decides whether it exists (ADR-0069).
 ///
 /// # Errors
 ///
@@ -155,7 +155,7 @@ pub async fn session_model_select(
 }
 
 /// `main` only. Lists the models a session's connection reports, for the
-/// composer's model choice (ADR-0066, ADR-0067). Ids only; the list grants
+/// composer's model choice (ADR-0066, ADR-0069). Ids only; the list grants
 /// nothing.
 ///
 /// # Errors

@@ -95,7 +95,7 @@ function activeConnection(ctx: SectionContext): HTMLElement {
   );
 }
 
-/** What every hosted-profile row and the add form say about where prompts go (ADR-0067). */
+/** What every hosted-profile row and the add form say about where prompts go (ADR-0069). */
 export const HOSTED_NOTICE =
   "Hosted by Ollama: prompts, workspace text read by tools, and command output leave this computer for ollama.com.";
 

@@ -303,7 +303,7 @@ export const SCOPE_GONE =
 export function renderWorkspaces(ctx: SectionContext): HTMLElement[] {
   const scoped = scopedWorkspace(ctx.overview);
   if (scoped !== null) {
-    // One workspace: no root, no registration, and no chooser (ADR-0067).
+    // One workspace: no root, no registration, and no chooser (ADR-0069).
     ctx.view.workspaceId = scoped.workspace_id;
     return [
       ...sectionHead("Workspace settings", SCOPED_HELP),
