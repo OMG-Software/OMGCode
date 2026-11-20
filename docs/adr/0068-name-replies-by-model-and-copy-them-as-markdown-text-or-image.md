@@ -55,7 +55,9 @@ command and opens no dialogs.
    colour, line-through (also across nested elements, which do not inherit
    the property), and list markers drawn from the list. A word that wraps
    inside itself is placed one grapheme at a time, through `Intl.Segmenter`
-   where it exists. The padding takes the background of the entry's nearest
+   where it exists, and otherwise by joining combining marks, emoji
+   modifiers, variation selectors, zero-width-joiner sequences, and flag
+   pairs to the code point before them. The padding takes the background of the entry's nearest
    ancestor that paints one. Buttons and
    parts marked `data-capture="skip"` are left out; a `capturing` class
    removes them from layout for the synchronous paint, so the image has no

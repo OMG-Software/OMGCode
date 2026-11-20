@@ -6,6 +6,7 @@ import {
   CAPTURE_PADDING,
   CaptureError,
   captureScale,
+  codePointClusters,
   graphemes,
   MAX_CANVAS_AREA,
   MAX_CANVAS_SIDE,
@@ -417,6 +418,20 @@ describe("image painting", () => {
       .map((c) => c.slice("fillText(".length).split(",")[0]);
     expect(glyphs).toEqual([accented, thumb, "x"]);
     root.remove();
+  });
+
+  it("keeps joined glyphs whole without Intl.Segmenter", () => {
+    const accented = `e${String.fromCharCode(0x301)}`;
+    const thumb = String.fromCodePoint(0x1f44d, 0x1f3fd);
+    const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467);
+    const heart = String.fromCodePoint(0x2764, 0xfe0f);
+    const britain = String.fromCodePoint(0x1f1ec, 0x1f1e7);
+    const france = String.fromCodePoint(0x1f1eb, 0x1f1f7);
+    const word = `${accented}${thumb}${family}${heart}${britain}${france}ab`;
+    const expected = [accented, thumb, family, heart, britain, france, "a", "b"];
+    expect(codePointClusters(word)).toEqual(expected);
+    // The fallback agrees with the segmenter on these clusters.
+    expect(graphemes(word)).toEqual(expected);
   });
 
   it("pads the image with the colour behind the entry", () => {

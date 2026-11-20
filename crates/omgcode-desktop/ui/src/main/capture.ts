@@ -362,13 +362,48 @@ const GRAPHEMES =
 
 /**
  * The user-perceived characters of `word`, so an emoji sequence or a letter with combining marks
- * is placed as one glyph. Without `Intl.Segmenter` it falls back to code points.
+ * is placed as one glyph. Without `Intl.Segmenter` it falls back to `codePointClusters`.
  */
 export function graphemes(word: string): string[] {
   if (GRAPHEMES === null) {
-    return Array.from(word);
+    return codePointClusters(word);
   }
   return Array.from(GRAPHEMES.segment(word), (part) => part.segment);
+}
+
+const ZERO_WIDTH_JOINER = String.fromCharCode(0x200d);
+const EXTENDS_CLUSTER = /^[\p{M}\p{Emoji_Modifier}\p{Variation_Selector}]$/u;
+const REGIONAL_INDICATOR = /^\p{Regional_Indicator}$/u;
+
+/**
+ * An approximation of grapheme clusters for a webview without `Intl.Segmenter`: a code point
+ * joins the one before it when it is a combining mark, an emoji modifier, a variation selector,
+ * or a zero-width joiner, or follows a joiner, and two regional indicators form one flag. It does
+ * not cover every rule, such as Hangul syllable sequences, but keeps the common joined glyphs
+ * whole.
+ */
+export function codePointClusters(word: string): string[] {
+  const out: string[] = [];
+  let joined = false;
+  let loneRegional = false;
+  for (const point of word) {
+    const regional = REGIONAL_INDICATOR.test(point);
+    const extendsLast =
+      joined ||
+      point === ZERO_WIDTH_JOINER ||
+      EXTENDS_CLUSTER.test(point) ||
+      (regional && loneRegional);
+    const last = out.length - 1;
+    if (extendsLast && last >= 0) {
+      out[last] += point;
+      loneRegional = false;
+    } else {
+      out.push(point);
+      loneRegional = regional;
+    }
+    joined = point === ZERO_WIDTH_JOINER;
+  }
+  return out;
 }
 
 function paintText(
