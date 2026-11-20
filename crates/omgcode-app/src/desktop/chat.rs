@@ -12,6 +12,7 @@ use omgcode_core::turn::ApprovalWaitSlot;
 use super::ChatEventSink;
 use super::error::DesktopError;
 use super::preferences;
+use super::session_connections::SessionConnection;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
     ChatDefaults, ChatModels, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest,
@@ -22,6 +23,7 @@ use super::{DesktopService, Inner};
 use crate::{
     AppError, ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection,
 };
+use omgcode_core::control::ProviderKind;
 use omgcode_core::provider::list_local_models;
 
 /// Largest message accepted before core applies its own, smaller bound. It only
@@ -71,32 +73,38 @@ impl DesktopService {
         }
     }
 
-    /// List the models of the connection the next turn would use, so the
-    /// composer offers a choice instead of a typed name (ADR-0066).
+    /// List the models of the connection the session's next turn would use, so
+    /// the composer offers a choice instead of a typed name (ADR-0066,
+    /// ADR-0067).
     ///
-    /// The connection is resolved exactly as [`chat_send`](Self::chat_send)
-    /// resolves it, its credential included, and the one request goes only to
-    /// its validated loopback endpoint. The list is untrusted provider text and
+    /// The connection is resolved for the session exactly as
+    /// [`chat_send`](Self::chat_send) resolves it, its credential included, and the one request goes only to
+    /// its validated endpoint, loopback or the fixed Ollama Cloud one. The list is untrusted provider text and
     /// grants nothing; `chat_send` still validates the chosen model. The call
     /// blocks for at most the core's ten-second deadline, so run it on a
     /// blocking task.
     ///
     /// # Errors
     ///
-    /// The application layer's `configuration` and `credential` codes for an
-    /// unusable connection, and `provider` for a refused endpoint, a server
+    /// `not_found` for an unknown session, `session_connection_stale` for a
+    /// recorded choice that no longer holds, the application layer's
+    /// `configuration` and `credential` codes for an unusable connection, and `provider` for a refused endpoint, a server
     /// that cannot be reached in time, a failure status, or a list outside the
     /// supported schema.
-    pub fn chat_models(&self) -> Result<ChatModels, DesktopError> {
+    pub fn chat_models(&self, request: SessionRequest) -> Result<ChatModels, DesktopError> {
         let inner = &self.inner;
-        let LocalConnection { endpoint, token } = inner
-            .token
-            .resolve(&inner.data_root, &inner.endpoint)
-            .map_err(|error| DesktopError::from_app(&error))?;
+        inner.resolve_path(request.session_id)?;
+        let SessionConnection {
+            connection: LocalConnection { endpoint, token },
+            kind,
+            ..
+        } = inner.resolve_session(request.session_id)?;
         let models = list_local_models(&endpoint, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&AppError::provider(error)))?;
         Ok(ChatModels {
+            session_id: request.session_id,
             endpoint,
+            kind: kind.map(ProviderKind::as_str),
             models: models
                 .into_iter()
                 .map(|model| ModelChoice {
@@ -195,10 +203,10 @@ impl DesktopService {
         // endpoint, which was compared with the request above. The active
         // connection must equal what the window sent, so a change made in
         // `settings` after the window read it is never used unseen.
-        let LocalConnection { endpoint, token } = inner
-            .token
-            .resolve(&inner.data_root, &inner.endpoint)
-            .map_err(|error| DesktopError::from_app(&error))?;
+        let SessionConnection {
+            connection: LocalConnection { endpoint, token },
+            ..
+        } = inner.resolve_session(session_id)?;
         if endpoint != request.settings.endpoint {
             return Err(DesktopError::connection_changed());
         }

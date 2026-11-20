@@ -53,12 +53,14 @@ use omgcode_core::turn::display_safe_line;
 
 use super::DesktopService;
 use super::error::DesktopError;
+use super::session_connections::{ChosenConnection, SessionRecord, check_model, recorded_endpoint};
 use super::settings::overview_of;
 use super::state::folder_of_directory;
 use super::wire::{
     ConnectionChooseRequest, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionStatus,
-    LocalConnectionAddRequest, LocalProviderKind, PermissionFlags, PermissionsChangeRequest,
-    SettingsOverview, SettingsRevisionRequest, WorkspaceRevisionRequest,
+    ConnectionStatusRequest, LocalConnectionAddRequest, LocalProviderKind, PermissionFlags,
+    PermissionsChangeRequest, SessionModelSelectRequest, SettingsOverview, SettingsRevisionRequest,
+    WorkspaceRevisionRequest,
 };
 
 /// What the operator is asked to choose a folder for. The shell uses it for
@@ -271,17 +273,53 @@ fn raise_confirmation(
 /// Largest profile name accepted before core applies its own, smaller bound.
 const MAX_NAME_INPUT_BYTES: usize = 256;
 
-/// How the confirmation names a local provider.
+/// How the confirmation names a provider.
 const fn provider_label(kind: ProviderKind) -> &'static str {
     match kind {
         ProviderKind::OllamaLocal => "Ollama",
+        ProviderKind::OllamaCloud => "Ollama Cloud",
         _ => "LM Studio",
     }
 }
 
-/// The confirmation for choosing the active connection, composed from fixed
-/// text and core's display-safe values. A choice core would refuse is refused
-/// here first, with core's own error, so no dialog is shown for it.
+/// What the confirmation adds for the hosted service. Prompts, tool results,
+/// and command output are the model's whole view of the workspace, so the
+/// operator is told before a turn can send them off this computer (ADR-0067).
+const CLOUD_NOTICE: &str = "This is Ollama's hosted service. Prompts, workspace text read by tools, and command output leave this computer for ollama.com.";
+
+/// The confirmation for choosing a recorded profile. `subject` says whose chat
+/// turns are sent there. Every word is fixed text or a display-safe value.
+fn profile_confirmation(
+    subject: &str,
+    kind: ProviderKind,
+    name: &str,
+    endpoint: &str,
+    credential_bound: bool,
+) -> Confirmation {
+    let hosted = if kind == ProviderKind::OllamaCloud {
+        format!("\n\n{CLOUD_NOTICE}")
+    } else {
+        String::new()
+    };
+    let credential = if credential_bound {
+        "\n\nIts stored credential is sent with each request."
+    } else {
+        ""
+    };
+    Confirmation {
+        title: "Choose the model connection",
+        message: format!(
+            "Send {subject} to {} through the connection {}?\n\n{}\n\nEach turn's messages, instructions, selected skills, and tool results go to this server.{hosted}{credential}",
+            provider_label(kind),
+            display_safe_line(name),
+            display_safe_line(endpoint),
+        ),
+    }
+}
+
+/// The confirmation for choosing the global default connection, composed from
+/// fixed text and core's display-safe values. A choice core would refuse is
+/// refused here first, with core's own error, so no dialog is shown for it.
 fn selection_confirmation(
     store: &ControlStore,
     name: Option<&str>,
@@ -299,39 +337,127 @@ fn selection_confirmation(
         return Ok(Confirmation {
             title: "Choose the model connection",
             message: format!(
-                "Send new chat turns to the default connection?\n\n{}\n\nThe OMGCODE_LM_TOKEN environment variable is sent to it when set.",
+                "Send chat turns of sessions that have no connection of their own to the default connection?\n\n{}\n\nThe OMGCODE_LM_TOKEN environment variable is sent to it when set.",
                 display_safe_line(default_endpoint)
             ),
         });
     };
-    let status = store
-        .provider_profile(name)
-        .ok_or(ControlError::UnknownProvider)?;
+    let status = store.check_provider_selectable(name)?;
     let profile = status.profile();
-    let Some(endpoint) = profile.endpoint().filter(|_| profile.kind().is_local()) else {
-        return Err(ControlError::ProviderRefused(
-            "only an lm_studio or ollama_local profile with a recorded endpoint can be the active connection",
-        ));
-    };
+    let endpoint = profile.endpoint().ok_or(ControlError::ProviderRefused(
+        "only a profile with a recorded endpoint can be the active connection",
+    ))?;
     if current == Some(profile.id()) {
         return Err(ControlError::ProviderRefused(
             "this is already the active connection",
         ));
     }
-    let credential = if status.credential().is_some() {
-        "\n\nIts stored credential is sent with each request."
-    } else {
-        ""
+    Ok(profile_confirmation(
+        "chat turns of sessions that have no connection of their own",
+        profile.kind(),
+        profile.name(),
+        endpoint.as_str(),
+        status.credential().is_some(),
+    ))
+}
+
+/// A connection chosen for one session, as it is recorded after Yes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Choice {
+    /// The launch default endpoint with `OMGCODE_LM_TOKEN`.
+    Default,
+    /// A recorded profile and the endpoint shown in the confirmation.
+    Profile { name: String, endpoint: String },
+}
+
+impl Choice {
+    fn record(&self, default_endpoint: &str) -> ChosenConnection {
+        match self {
+            Self::Default => ChosenConnection::Default {
+                endpoint: default_endpoint.to_owned(),
+            },
+            Self::Profile { name, endpoint } => ChosenConnection::Profile {
+                name: name.clone(),
+                endpoint: endpoint.clone(),
+            },
+        }
+    }
+}
+
+/// The choice naming `name` and the confirmation for it, from an open store.
+/// Core refuses an unknown or unselectable profile, with its own error.
+fn requested_choice(
+    store: Option<&ControlStore>,
+    name: Option<&str>,
+    default_endpoint: &str,
+) -> Result<(Choice, Confirmation), ControlError> {
+    let Some(name) = name else {
+        return Ok((
+            Choice::Default,
+            Confirmation {
+                title: "Choose the model connection",
+                message: format!(
+                    "Send this session's chat turns to the default connection?\n\n{}\n\nThe OMGCODE_LM_TOKEN environment variable is sent to it when set.",
+                    display_safe_line(default_endpoint)
+                ),
+            },
+        ));
     };
-    Ok(Confirmation {
-        title: "Choose the model connection",
-        message: format!(
-            "Send new chat turns to {} through the connection {}?\n\n{}\n\nEach turn's messages, instructions, selected skills, and tool results go to this server.{credential}",
-            provider_label(profile.kind()),
-            display_safe_line(profile.name()),
-            display_safe_line(endpoint.as_str()),
-        ),
-    })
+    let store = store.ok_or(ControlError::UnknownProvider)?;
+    let status = store.check_provider_selectable(name)?;
+    let endpoint = recorded_endpoint(store, name).ok_or(ControlError::ProviderRefused(
+        "the recorded endpoint cannot be used",
+    ))?;
+    let confirmation = profile_confirmation(
+        "this session's chat turns",
+        status.profile().kind(),
+        status.profile().name(),
+        &endpoint,
+        status.credential().is_some(),
+    );
+    Ok((
+        Choice::Profile {
+            name: status.profile().name().to_owned(),
+            endpoint,
+        },
+        confirmation,
+    ))
+}
+
+/// The choice a session currently has, or `None` when what is recorded no
+/// longer holds, so choosing it again is a change that is confirmed.
+fn current_choice(
+    store: Option<&ControlStore>,
+    record: Option<&SessionRecord>,
+    default_endpoint: &str,
+) -> Option<Choice> {
+    match record.map(|record| &record.connection) {
+        Some(ChosenConnection::Default { endpoint }) => {
+            (endpoint == default_endpoint).then_some(Choice::Default)
+        }
+        Some(ChosenConnection::Profile { name, endpoint }) => {
+            let store = store?;
+            store.check_provider_selectable(name).ok()?;
+            (recorded_endpoint(store, name).as_deref() == Some(endpoint.as_str())).then(|| {
+                Choice::Profile {
+                    name: name.clone(),
+                    endpoint: endpoint.clone(),
+                }
+            })
+        }
+        None | Some(ChosenConnection::Follow {}) => {
+            let name = store?
+                .active_provider_profile()
+                .map(|status| status.profile().name().to_owned());
+            match name {
+                None => Some(Choice::Default),
+                Some(name) => {
+                    let endpoint = recorded_endpoint(store?, &name)?;
+                    Some(Choice::Profile { name, endpoint })
+                }
+            }
+        }
+    }
 }
 
 fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopError> {
@@ -537,8 +663,10 @@ impl DesktopService {
         })
     }
 
-    /// `settings` only. Choose the active model connection: a recorded local
-    /// profile by name, or `None` for the default endpoint (ADR-0064). A
+    /// `settings` only. Choose the global default model connection: a
+    /// selectable recorded profile by name (local, or `ollama_cloud` with a
+    /// bound credential), or `None` for the default endpoint (ADR-0064,
+    /// ADR-0067). It applies to sessions that have no connection of their own. A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///
@@ -573,45 +701,100 @@ impl DesktopService {
         })
     }
 
-    /// `main` only: the status bar's choice of model connection (ADR-0064).
+    /// `main` only: the composer's and status bar's choice of model connection
+    /// for one session (ADR-0064, ADR-0067).
     ///
-    /// The window names a profile, or none for the default, and nothing
-    /// else. Rust reads the current settings revision and then follows
-    /// [`Self::settings_select_connection`]: the same checks, the same native
-    /// Yes/No confirmation naming the provider and endpoint, which no webview
-    /// can answer, and the same core call. A change recorded while the dialog
-    /// is open makes this fail with `stale_revision`.
+    /// The window names a session and a profile, or none for the default, and
+    /// nothing else. Every refusal comes before any dialog: a launch argument
+    /// that fixed the connection, an unknown session, a profile core would
+    /// not accept, and a choice the session already has. Rust then shows the
+    /// native Yes/No confirmation naming the provider and endpoint (and, for
+    /// Ollama Cloud, that prompts and tool output leave this computer), which
+    /// no webview can answer. Only on Yes is the choice recorded for the
+    /// session, and its model is cleared because model ids belong to one
+    /// server. The settings store is read again after Yes, so a profile
+    /// removed, or given another endpoint, while the dialog was open records
+    /// nothing. No settings revision is involved: the global selection is not
+    /// changed.
     ///
     /// # Errors
     ///
-    /// `connection_fixed` when a launch argument fixed the connection;
-    /// `invalid_request` when no settings store exists yet; `cancelled`;
-    /// `control` for an unknown, unselectable, or unchanged choice;
-    /// `stale_revision`; `settings_change_running`; `busy`.
+    /// `connection_fixed`; `not_found`; `control` for an unknown, unselectable,
+    /// or unchanged choice; `cancelled`; `stale_revision` when the profile
+    /// changed during the dialog; `settings_change_running`; `busy`;
+    /// `session_choices` when the choice cannot be saved.
     pub fn connection_select(
         &self,
         request: ConnectionChooseRequest,
         prompt: &dyn SettingsPrompt,
     ) -> Result<ConnectionStatus, DesktopError> {
-        if self.inner.token.is_fixed() {
+        let inner = &self.inner;
+        let _guard = ChangeGuard::take(&inner.settings_change)?;
+        if inner.token.is_fixed() {
             return Err(DesktopError::connection_fixed());
         }
-        let revision = match self.inner.open_control()? {
-            Some(store) => store.revision(),
-            None => {
-                return Err(DesktopError::invalid_request(
-                    "No settings are recorded yet. Add a connection in Settings first.",
-                ));
+        let session_id = request.session_id;
+        inner.resolve_path(session_id)?;
+        let (records, _) = inner.session_records();
+        let (choice, confirmation) = {
+            let store = inner.open_control()?;
+            let requested =
+                requested_choice(store.as_ref(), request.profile.as_deref(), &inner.endpoint)
+                    .map_err(|error| DesktopError::from_control(&error))?;
+            let current = current_choice(store.as_ref(), records.get(&session_id), &inner.endpoint);
+            if current.as_ref() == Some(&requested.0) {
+                return Err(DesktopError::from_control(&ControlError::ProviderRefused(
+                    "this is already the connection of this session",
+                )));
             }
+            requested
         };
-        self.settings_select_connection(
-            ConnectionSelectRequest {
-                revision,
-                profile: request.profile,
-            },
-            prompt,
-        )?;
-        self.connection_status()
+        confirm(prompt, &confirmation)?;
+        // What was confirmed must still be what is recorded.
+        let again = {
+            let store = inner.open_control()?;
+            requested_choice(store.as_ref(), request.profile.as_deref(), &inner.endpoint)
+                .map_err(|error| DesktopError::from_control(&error))?
+        };
+        if again.0 != choice {
+            return Err(DesktopError::stale_revision());
+        }
+        inner.update_session_record(session_id, |_| SessionRecord {
+            connection: choice.record(&inner.endpoint),
+            model: String::new(),
+        })?;
+        self.connection_status(ConnectionStatusRequest {
+            session_id: Some(session_id),
+        })
+    }
+
+    /// `main` only: record the model chosen for one session (ADR-0067). No
+    /// dialog is shown: a model grants nothing, and the server still decides
+    /// whether it exists. The model id passes the rule `chat_send` applies (at
+    /// most 256 bytes, no control character); an empty id clears the choice. A
+    /// session with no record gets one that follows the default connection, so
+    /// choosing a model never pins a provider the operator did not confirm.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request` for a model name that is not valid; `not_found`;
+    /// `session_choices` when the choice cannot be saved.
+    pub fn session_model_select(
+        &self,
+        request: SessionModelSelectRequest,
+    ) -> Result<ConnectionStatus, DesktopError> {
+        check_model(&request.model)?;
+        self.inner.resolve_path(request.session_id)?;
+        self.inner
+            .update_session_record(request.session_id, |existing| SessionRecord {
+                connection: existing.map_or(ChosenConnection::Follow {}, |record| {
+                    record.connection.clone()
+                }),
+                model: request.model,
+            })?;
+        self.connection_status(ConnectionStatusRequest {
+            session_id: Some(request.session_id),
+        })
     }
 
     /// `settings` only. Record a local LM Studio or Ollama connection with no

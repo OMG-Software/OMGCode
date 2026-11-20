@@ -9,6 +9,7 @@ import { HOSTILE } from "../src/mock/fixtures";
 import {
   buttonByText,
   choose,
+  connectionStatus,
   type FakeIpc,
   type Handler,
   hasButton,
@@ -483,16 +484,15 @@ describe("chat lifecycle", () => {
     expect(ipc.callsTo("chat_status")).toHaveLength(2);
   });
 
-  it("shows the endpoint as fixed text and sends back exactly what chat_defaults returned", async () => {
+  it("shows the endpoint as fixed text and sends back exactly what the session's connection returned", async () => {
     const endpoint = "http://127.0.0.1:4321/v1";
     await start({
       session_tree: treeOf(s),
       session_transcript: () => page(s, [userMessage(1, "hi")]),
-      chat_defaults: () => ({
-        settings: { ...SETTINGS, endpoint },
-        preferences: "defaults",
-        enter_to_send: true,
-      }),
+      connection_status: () =>
+        connectionStatus({
+          connection: { endpoint, source: "active", profile: null, kind: null, selectable: true },
+        }),
       chat_send: () => running,
     });
     itemFor("s-chat").click();
@@ -500,7 +500,7 @@ describe("chat lifecycle", () => {
     const settings = root.querySelector(".settings") as HTMLElement;
     expect(settings.textContent).toContain(endpoint);
     expect(settings.textContent).toContain(
-      "Chosen in the Settings window, or fixed when OMGCode starts.",
+      "Follows the session's provider, or is fixed when OMGCode starts.",
     );
     const editable = Array.from(settings.querySelectorAll<HTMLInputElement>("input, textarea"));
     expect(editable.some((field) => field.value === endpoint)).toBe(false);
@@ -514,15 +514,30 @@ describe("chat lifecycle", () => {
     const before = "http://127.0.0.1:1234/v1";
     const after = "http://127.0.0.1:11434/v1";
     let current = before;
+    // The core keeps the session's model, as a recorded choice does.
+    let model: string = SETTINGS.model;
     await start({
       session_tree: treeOf(s),
       session_transcript: () => page(s, [userMessage(1, "hi")]),
-      chat_defaults: () => ({
-        settings: { ...SETTINGS, endpoint: current },
-        preferences: "defaults",
-      }),
-      chat_models: () => ({
+      session_model_select: (args) => {
+        model = args.model as string;
+        return connectionStatus({ model });
+      },
+      connection_status: () =>
+        connectionStatus({
+          model,
+          connection: {
+            endpoint: current,
+            source: "active",
+            profile: null,
+            kind: null,
+            selectable: true,
+          },
+        }),
+      chat_models: (args) => ({
+        session_id: args.session_id as string,
         endpoint: current,
+        kind: null,
         models: [
           { id: "lfm2.5:latest", cloud_tag: false },
           { id: SETTINGS.model, cloud_tag: false },
@@ -921,8 +936,10 @@ describe("settings window, saved defaults, and per-turn skills", () => {
   it("saves the model settings as defaults without the endpoint", async () => {
     const saved = { ...SETTINGS, model: "saved-model" };
     await open({
-      chat_models: () => ({
+      chat_models: (args) => ({
+        session_id: args.session_id as string,
         endpoint: SETTINGS.endpoint,
+        kind: null,
         models: [
           { id: "saved-model", cloud_tag: false },
           { id: SETTINGS.model, cloud_tag: false },
@@ -1094,8 +1111,10 @@ describe("settings window, saved defaults, and per-turn skills", () => {
           finish = resolve;
         }),
     });
-    ipc.on("chat_models", () => ({
+    ipc.on("chat_models", (args) => ({
+      session_id: args.session_id as string,
       endpoint: SETTINGS.endpoint,
+      kind: null,
       models: [
         { id: "first", cloud_tag: false },
         { id: "second", cloud_tag: false },
@@ -1235,6 +1254,10 @@ describe("status bar", () => {
         kind,
         selectable,
       },
+      origin: selectable ? "default" : "launch",
+      model: SETTINGS.model,
+      stale: false,
+      session_choices_unreadable: false,
       choices: selectable
         ? [
             { name: "lms", kind: "lm_studio", endpoint: LMS, active: active === "lms" },
@@ -1253,7 +1276,13 @@ describe("status bar", () => {
   });
 
   it("lists the default and each local connection and marks the active one", async () => {
-    await start({ connection_status: () => status("ollama") });
+    await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
+      connection_status: () => status("ollama"),
+    });
+    itemFor("s-foot").click();
+    await settle();
     expect(optionTexts()).toEqual([
       `LM Studio: default (${LMS})`,
       `LM Studio: lms (${LMS})`,
@@ -1275,10 +1304,6 @@ describe("status bar", () => {
         active = args.profile as string | null;
         return status(active);
       },
-      chat_defaults: () => ({
-        settings: { ...SETTINGS, endpoint: active === "ollama" ? OLLAMA : LMS },
-        preferences: "defaults",
-      }),
     });
     itemFor("s-foot").click();
     await settle();
@@ -1288,22 +1313,29 @@ describe("status bar", () => {
     choose("ollama");
     await settle();
     expect(ipc.callsTo("connection_select").map((call) => call.args)).toEqual([
-      { profile: "ollama" },
+      { session_id: "s-foot", profile: "ollama" },
     ]);
     expect(provider().value).toBe("ollama");
     expect(settings.textContent).toContain(OLLAMA);
 
     choose("");
     await settle();
-    expect(ipc.callsTo("connection_select")[1]?.args).toEqual({ profile: null });
+    expect(ipc.callsTo("connection_select")[1]?.args).toEqual({
+      session_id: "s-foot",
+      profile: null,
+    });
     expect(provider().value).toBe("");
   });
 
   it("changes nothing when the operator answers No", async () => {
     await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
       connection_status: () => status("lms"),
       connection_select: () => rejection("cancelled", "The change was not confirmed."),
     });
+    itemFor("s-foot").click();
+    await settle();
     const reads = ipc.callsTo("connection_status").length;
     choose("ollama");
     await settle();
@@ -1316,9 +1348,13 @@ describe("status bar", () => {
 
   it("shows the core error and code when a switch fails", async () => {
     await start({
+      session_tree: treeOf(s),
+      session_transcript: () => page(s, []),
       connection_status: () => status(null),
       connection_select: () => rejection("busy", "Another settings change is in progress."),
     });
+    itemFor("s-foot").click();
+    await settle();
     choose("lms");
     await settle();
     expect(footer().textContent).toContain("Another settings change is in progress. (busy)");

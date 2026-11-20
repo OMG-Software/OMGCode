@@ -35,6 +35,7 @@
 //! | `reviews` | outstanding single-use approval review tokens |
 //! | `events` | the one chat event subscriber and the running turns' previews |
 //! | `pending_cache` | an atomic copy of the last pending-approval count read |
+//! | `session_choices` | the read-modify-write of `session-connections.json` (ADR-0067) |
 //!
 //! **Lock order** when two are ever needed: `turns`, then `index`, then
 //! `reviews`. The code takes one at a time. The `events` lock is never held
@@ -89,6 +90,7 @@ mod error;
 mod events;
 mod preferences;
 mod review_tokens;
+mod session_connections;
 mod sessions;
 mod settings;
 mod settings_changes;
@@ -117,12 +119,13 @@ pub use self::wire::{
     ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, BranchState,
     BranchView, ChatDefaults, ChatEvent, ChatModels, ChatOutcome, ChatPreferencesDto,
     ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
-    ConnectionChoice, ConnectionChooseRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
-    ConnectionSourceView, ConnectionStatus, ConnectionView, ContainerGrantView, ContextMeterDto,
-    Decision, EntryKind, LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto, ModelChoice,
-    PackageProfileView, PermissionFlags, PermissionsChangeRequest, PreferencesSource,
-    ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto, SessionContext,
-    SessionCreateRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
+    ConnectionChoice, ConnectionChooseRequest, ConnectionOrigin, ConnectionRemoveRequest,
+    ConnectionSelectRequest, ConnectionSourceView, ConnectionStatus, ConnectionStatusRequest,
+    ConnectionView, ContainerGrantView, ContextMeterDto, Decision, EntryKind,
+    LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto, ModelChoice, PackageProfileView,
+    PermissionFlags, PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit,
+    SearchRequest, SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest,
+    SessionModelSelectRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
     SessionTree, SettingsOverview, SettingsRevisionRequest, SettingsScope, SkillOverrideView,
     SkillSettingView, SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode,
     TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
@@ -267,6 +270,9 @@ struct Inner {
     /// window's **Workspace settings** button. Display state only: it grants
     /// and removes no access. Keep every critical section to one read or write.
     settings_scope: Mutex<Option<Uuid>>,
+    /// Serializes the read-modify-write cycles of the per-session choices file
+    /// (ADR-0067). Held for file input and output only.
+    session_choices: Mutex<()>,
 }
 
 /// The desktop command service. See the [module documentation](self).
@@ -322,6 +328,7 @@ impl DesktopService {
                 pending_cache: AtomicU64::new(0),
                 settings_change: AtomicBool::new(false),
                 settings_scope: Mutex::new(None),
+                session_choices: Mutex::new(()),
             }),
         })
     }

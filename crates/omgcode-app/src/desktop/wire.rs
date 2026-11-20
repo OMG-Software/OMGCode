@@ -898,8 +898,8 @@ pub struct ConnectionView {
     pub profile: Option<String>,
     /// That profile's provider kind, as the CLI names it, or `null`.
     pub kind: Option<&'static str>,
-    /// Whether the `settings` window may choose the active connection: only
-    /// when no launch argument fixed it.
+    /// Whether the connection can be chosen: only when no launch argument
+    /// fixed it.
     pub selectable: bool,
 }
 
@@ -917,29 +917,69 @@ pub struct ProviderProfileView {
     /// Whether a stored credential is bound. The credential itself is never
     /// read for this view.
     pub credential_bound: bool,
-    /// Whether the profile can be the active connection: a local kind
-    /// (`lm_studio` or `ollama_local`) with a recorded endpoint.
+    /// Whether the profile can be chosen as a connection (ADR-0067): a local
+    /// kind with a recorded endpoint, or an `ollama_cloud` profile with the
+    /// cloud endpoint and a bound credential.
     pub selectable: bool,
     /// Whether it is the recorded active connection.
     pub active: bool,
 }
 
-/// The `main` window's status bar view of the model connection (ADR-0064).
+/// Where a session's effective connection comes from (ADR-0067).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionOrigin {
+    /// A launch argument fixed the connection for every session.
+    Launch,
+    /// The operator chose this connection for the session and confirmed it.
+    Session,
+    /// The session has no connection of its own: the default endpoint or the
+    /// global selection made in `settings`.
+    Default,
+}
+
+/// Arguments of `connection_status`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionStatusRequest {
+    /// The open session, or `null` when none is open, which describes the
+    /// default connection.
+    pub session_id: Option<Uuid>,
+}
+
+/// The `main` window's view of a session's model connection (ADR-0064,
+/// ADR-0067).
 ///
 /// It names connections only: a profile's name, provider kind, and endpoint,
 /// all display-safe. It never carries a credential or says whether one is
 /// stored.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConnectionStatus {
-    /// The connection the next turn uses.
+    /// The connection the session's next turn uses. When `stale` is set it is
+    /// the connection that was recorded for the session, which the next turn
+    /// refuses.
     pub connection: ConnectionView,
-    /// The local profiles with an endpoint that can be chosen, in recorded
-    /// order. Empty when a launch argument fixed the connection.
+    /// Where `connection` comes from.
+    pub origin: ConnectionOrigin,
+    /// The model chosen for the session, or the saved chat preference's model
+    /// when the session has none. Empty when neither exists.
+    pub model: String,
+    /// Whether the session's recorded connection can no longer be used as
+    /// recorded (its profile is gone, not selectable, or has another
+    /// endpoint). The next turn is refused with `session_connection_stale`
+    /// until the operator chooses again.
+    pub stale: bool,
+    /// Whether `session-connections.json` could not be read. It is then treated
+    /// as empty and replaced by the next recorded choice.
+    pub session_choices_unreadable: bool,
+    /// The profiles that can be chosen, in recorded order: local profiles with
+    /// an endpoint, and `ollama_cloud` profiles with a bound credential. Empty
+    /// when a launch argument fixed the connection.
     pub choices: Vec<ConnectionChoice>,
 }
 
-/// The models the next turn's connection reports, for the composer's model
-/// choice (ADR-0066).
+/// The models a session's connection reports, for the composer's model choice
+/// (ADR-0066, ADR-0067).
 ///
 /// Every id is untrusted provider text, already refused by core when it is
 /// empty, over 256 bytes, or holds a control or bidirectional formatting
@@ -947,9 +987,14 @@ pub struct ConnectionStatus {
 /// as it validates a typed one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ChatModels {
-    /// The endpoint that was asked. The window compares it with the endpoint
-    /// it shows, so a list from another connection is never offered for it.
+    /// The session that asked. The window keeps an answer only for the session
+    /// and request it is still showing.
+    pub session_id: Uuid,
+    /// The endpoint that was asked, for display.
     pub endpoint: String,
+    /// The provider kind of the profile that was asked, or `null` for the
+    /// launch or default endpoint.
+    pub kind: Option<&'static str>,
     /// The reported models, sorted by id.
     pub models: Vec<ModelChoice>,
 }
@@ -969,21 +1014,33 @@ pub struct ModelChoice {
 pub struct ConnectionChoice {
     /// The profile name.
     pub name: String,
-    /// `lm_studio` or `ollama_local`.
+    /// `lm_studio`, `ollama_local`, or `ollama_cloud`.
     pub kind: &'static str,
-    /// The recorded loopback endpoint.
+    /// The recorded endpoint.
     pub endpoint: String,
-    /// Whether it is the recorded active connection.
+    /// Whether it is the session's current connection.
     pub active: bool,
 }
 
 /// Arguments of `connection_select`, from the `main` window. It names a
-/// profile only; Rust reads the revision and asks for a native confirmation.
+/// session and a profile only; Rust asks for a native confirmation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionChooseRequest {
+    /// The session the choice is for.
+    pub session_id: Uuid,
     /// A recorded profile name, or `null` for the default endpoint.
     pub profile: Option<String>,
+}
+
+/// Arguments of `session_model_select`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SessionModelSelectRequest {
+    /// The session the model is for.
+    pub session_id: Uuid,
+    /// The model id. Empty clears the session's model.
+    pub model: String,
 }
 
 /// What the status bar shows about a session's workspace (ADR-0064).

@@ -4,6 +4,7 @@ import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { ChatDefaults, ChatPreferences, ChatSettings } from "../ipc/types";
 import { createPopover } from "../ui/popover";
+import type { ConnectionChange, ConnectionModel } from "./connection_state";
 import {
   type ComposerState,
   isSendKey,
@@ -12,6 +13,7 @@ import {
   settingsValid,
 } from "./model";
 import { createModelPicker } from "./model_picker";
+import { createProviderSelect } from "./provider_select";
 
 /** The most skills one turn may load; the core enforces the same bound (ADR-0057). */
 export const SKILLS_PER_TURN = 4;
@@ -40,13 +42,6 @@ export interface Composer {
   readSettings(): ChatSettings;
   /** Offers these skill names for the next turn; an empty list hides the choice. */
   setSkills(names: readonly string[]): void;
-  /**
-   * Reads the current endpoint again after the settings window chose another
-   * connection, and lists that connection's models. The chosen model and the
-   * other inputs keep the operator's values; a model the new server does not
-   * report stays chosen and is marked, so the operator sees it must change.
-   */
-  refreshEndpoint(): Promise<void>;
   /** Removes the listeners the two menus put on the document. */
   dispose(): void;
 }
@@ -62,10 +57,12 @@ function numberInput(label: string, value: number, min: number): [HTMLElement, H
 }
 
 /**
- * Builds the composer. Chat settings are kept in this closure for the app run and are
- * filled from `chat_defaults` the first time they are available.
+ * Builds the composer. The numeric chat settings are kept in this closure for the app run and are
+ * filled from `chat_defaults` the first time they are available. The provider, the endpoint, and
+ * the model belong to the open session (ADR-0067): they come from `connection`, which the footer's
+ * provider dropdown shares.
  */
-export function createComposer(handlers: ComposerHandlers): Composer {
+export function createComposer(handlers: ComposerHandlers, connection: ConnectionModel): Composer {
   const box = el("textarea", {
     class: "message-box",
     attrs: { rows: "3", "aria-label": "Message", placeholder: PLACEHOLDER_ENTER },
@@ -97,7 +94,15 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   });
 
   const endpointValue = el("span", { class: "fixed-value" });
-  const model = createModelPicker(() => refresh());
+  const providerNote = el("span", { class: "muted", attrs: { role: "status" } });
+  providerNote.hidden = true;
+  const model = createModelPicker(
+    () => refresh(),
+    (id) => void connection.chooseModel(id),
+  );
+  const providerSelect = createProviderSelect(connection, "Provider");
+  /** What the model list was last requested for, so only a real change reloads it. */
+  let loadedKey: string | null = null;
   const [contextField, contextTokens] = numberInput("Context tokens", 0, 0);
   const [outputField, maxOutput] = numberInput("Max output tokens", 0, 0);
   const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
@@ -124,10 +129,9 @@ export function createComposer(handlers: ComposerHandlers): Composer {
         endpointValue,
         el("span", {
           class: "muted",
-          text: "Chosen in the Settings window, or fixed when OMGCode starts.",
+          text: "Follows the session's provider, or is fixed when OMGCode starts.",
         }),
       ),
-      model.element,
       contextField,
       outputField,
       compactField,
@@ -163,7 +167,7 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   let state: ComposerState = { visible: false, enabled: false, reason: null };
   let running = false;
   let defaultsError: string | null = null;
-  /** Loaded once from `chat_defaults`; the operator cannot change it. */
+  /** The open session's endpoint from the connection, or the launch default until it arrives. */
   let fixedEndpoint = "";
 
   function readSettings(): ChatSettings {
@@ -215,7 +219,6 @@ export function createComposer(handlers: ComposerHandlers): Composer {
 
   function applyDefaults(defaults: ChatDefaults): void {
     writeSettings(defaults.settings);
-    void model.load(fixedEndpoint);
     if (!enterToSendChanged) {
       enterToSend.checked = defaults.enter_to_send;
       showSendKey();
@@ -244,10 +247,12 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     }
   }
 
+  /** Fills the numeric settings. The endpoint and model come from the session's connection. */
   function writeSettings(settings: ChatSettings): void {
-    fixedEndpoint = settings.endpoint;
-    replaceChildren(endpointValue, settings.endpoint);
-    model.setValue(settings.model);
+    if (connection.status() === null) {
+      fixedEndpoint = settings.endpoint;
+      replaceChildren(endpointValue, settings.endpoint);
+    }
     contextTokens.value = String(settings.context_tokens);
     maxOutput.value = String(settings.max_output_tokens);
     compactThreshold.value = String(settings.compact_threshold);
@@ -256,6 +261,13 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   }
 
   function currentProblem(): string | null {
+    const status = connection.status();
+    if (status === null) {
+      return "The session's provider is being read.";
+    }
+    if (status.stale) {
+      return "The provider chosen for this session changed. Choose the provider again.";
+    }
     if (!settingsValid(readSettings())) {
       return "Choose a model and set a positive context size in Chat settings.";
     }
@@ -282,7 +294,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     replaceChildren(problem, shown ?? "");
     problem.hidden = shown === null;
     workspaceButton.disabled = sessionId === null;
-    model.setDisabled(!state.enabled);
+    model.setDisabled(!state.enabled || connection.busy());
+    providerSelect.setLocked(!state.enabled);
+    replaceChildren(providerNote, connection.message());
+    providerNote.hidden = connection.message() === "";
     for (const input of [contextTokens, maxOutput, compactThreshold, autoCompact, instructions]) {
       input.disabled = !state.enabled;
     }
@@ -301,6 +316,44 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     }
     handlers.onSend(box.value, readSettings(), selectedSkills());
   }
+
+  /**
+   * Follows the shared connection (ADR-0067 decision 11). A different session, a confirmed
+   * provider choice, or a changed connection clears the model and lists the new session's models;
+   * the model shown is always the one the connection holds for the session.
+   */
+  function onConnection(change: ConnectionChange): void {
+    providerSelect.render();
+    const status = connection.status();
+    const id = connection.sessionId();
+    if (change === "opening") {
+      loadedKey = null;
+      model.reset();
+      model.setHosted(false);
+    } else if (status !== null && id !== null && change !== "busy" && change !== "message") {
+      fixedEndpoint = status.connection.endpoint;
+      replaceChildren(endpointValue, fixedEndpoint);
+      model.setHosted(status.connection.kind === "ollama_cloud");
+      const key = [
+        id,
+        status.connection.profile ?? "",
+        status.connection.endpoint,
+        status.origin,
+        String(status.stale),
+      ].join("|");
+      if (change === "selected" || key !== loadedKey) {
+        loadedKey = key;
+        model.reset();
+        model.setValue(status.model);
+        void model.load(id);
+      } else {
+        model.setValue(status.model);
+      }
+    }
+    refresh();
+  }
+  const unsubscribe = connection.subscribe(onConnection);
+  providerSelect.render();
 
   box.addEventListener("input", refresh);
   contextTokens.addEventListener("input", refresh);
@@ -333,11 +386,19 @@ export function createComposer(handlers: ComposerHandlers): Composer {
         "div",
         { class: "composer-tools" },
         skillsMenu.element,
+        el(
+          "label",
+          { class: "toolbar-field" },
+          el("span", { text: "Provider" }),
+          providerSelect.element,
+        ),
+        el("div", { class: "toolbar-field" }, el("span", { text: "Model" }), model.element),
         settingsMenu.element,
         workspaceButton,
       ),
       el("div", { class: "composer-send" }, counter, runningLabel, cancelButton, sendButton),
     ),
+    el("div", { class: "composer-model-status" }, model.note, model.warning, providerNote),
     reason,
     problem,
   );
@@ -378,15 +439,9 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     readSettings,
     setSkills,
     dispose() {
+      unsubscribe();
       settingsMenu.dispose();
       skillsMenu.dispose();
-    },
-    async refreshEndpoint() {
-      const defaults = await api.chatDefaults();
-      fixedEndpoint = defaults.settings.endpoint;
-      replaceChildren(endpointValue, fixedEndpoint);
-      void model.load(fixedEndpoint);
-      refresh();
     },
   };
 }

@@ -272,10 +272,14 @@ export interface ModelChoice {
   cloud_tag: boolean;
 }
 
-/** The models of the connection the next turn uses, sorted by id. */
+/** The models of a session's connection, sorted by id (ADR-0067). */
 export interface ChatModels {
-  /** The endpoint that was asked; a list for another endpoint is not offered. */
+  /** The session that asked. An answer for a session that is no longer shown is discarded. */
+  session_id: string;
+  /** The endpoint that was asked, for display only. Never compared with another endpoint. */
   endpoint: string;
+  /** The provider kind of the profile that was asked, or `null` for the launch or default endpoint. */
+  kind: string | null;
   models: ModelChoice[];
 }
 
@@ -326,15 +330,28 @@ export interface ConnectionView {
 /** One connection the main window's status bar may offer (ADR-0064). Never a credential. */
 export interface ConnectionChoice {
   name: string;
-  /** `lm_studio` or `ollama_local`. */
+  /** `lm_studio`, `ollama_local`, or `ollama_cloud`. */
   kind: string;
   endpoint: string;
   active: boolean;
 }
 
-/** The status bar's view of the model connection. `choices` is empty when a launch argument fixed it. */
+/** Where a session's connection comes from (ADR-0067). */
+export type ConnectionOrigin = "launch" | "session" | "default";
+
+/**
+ * A session's model connection (ADR-0064, ADR-0067). `choices` is empty when a launch argument
+ * fixed the connection.
+ */
 export interface ConnectionStatus {
   connection: ConnectionView;
+  origin: ConnectionOrigin;
+  /** The model chosen for the session, or the saved chat preference's model when it has none. */
+  model: string;
+  /** The recorded choice no longer holds; the next turn is refused until the operator chooses again. */
+  stale: boolean;
+  /** The per-session choices file could not be read and is treated as empty. */
+  session_choices_unreadable: boolean;
   choices: ConnectionChoice[];
 }
 

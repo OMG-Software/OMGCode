@@ -349,7 +349,7 @@ fn removing_the_active_connection_returns_to_the_default() {
     assert_eq!(revision(&fixture), before);
     assert_eq!(
         service
-            .connection_status()
+            .connection_status(wire(json!({ "session_id": null })))
             .expect("status")
             .connection
             .profile
@@ -429,107 +429,6 @@ fn the_active_source_resolves_the_selection_each_time() {
     assert_eq!(named.endpoint, "http://127.0.0.1:11434/v1");
 }
 
-/// The `main` window's status bar (ADR-0064): it lists only local connections
-/// with an endpoint, switches only after the same native confirmation as the
-/// `settings` window, and offers nothing when a launch argument fixed the
-/// connection.
-#[test]
-fn the_status_bar_switches_only_after_a_confirmation() {
-    let fixture = Fixture::new();
-    let service = active_service(&fixture, &unused_endpoint());
-    add(
-        &service,
-        &fixture,
-        "lms",
-        "lm_studio",
-        "http://127.0.0.1:1234/v1",
-    )
-    .expect("record");
-    add(
-        &service,
-        &fixture,
-        "ollama",
-        "ollama_local",
-        "http://127.0.0.1:11434/v1",
-    )
-    .expect("record");
-    let vault = Vault::new(&fixture.data);
-    vault.add_profile("cloud", "openai", "api_key");
-    vault.add_profile("bare", "lm_studio", "none");
-
-    // A cloud profile and one without an endpoint are not offered.
-    let status = service.connection_status().expect("status");
-    assert!(status.connection.selectable);
-    assert_eq!(status.connection.profile, None);
-    let names: Vec<&str> = status.choices.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["lms", "ollama"]);
-    assert!(status.choices.iter().all(|choice| !choice.active));
-    assert_eq!(status.choices[1].kind, "ollama_local");
-    assert_eq!(status.choices[1].endpoint, "http://127.0.0.1:11434/v1");
-
-    // Yes switches; the confirmation names the connection.
-    let prompt = Answers::with(&[true]);
-    let chosen = service
-        .connection_select(wire(json!({ "profile": "ollama" })), &prompt)
-        .expect("switch");
-    let shown = prompt.shown();
-    assert_eq!(shown.len(), 1);
-    assert!(shown[0].message.contains("ollama"), "{}", shown[0].message);
-    assert_eq!(chosen.connection.profile.as_deref(), Some("ollama"));
-    assert_eq!(chosen.connection.endpoint, "http://127.0.0.1:11434/v1");
-    let active: Vec<&str> = chosen
-        .choices
-        .iter()
-        .filter(|choice| choice.active)
-        .map(|choice| choice.name.as_str())
-        .collect();
-    assert_eq!(active, ["ollama"]);
-
-    // No changes nothing, and a refused choice shows no dialog.
-    let before = revision(&fixture);
-    let prompt = Answers::with(&[false]);
-    let declined = service.connection_select(wire(json!({ "profile": null })), &prompt);
-    assert_eq!(code(declined), "cancelled");
-    assert_eq!(prompt.shown().len(), 1);
-    let prompt = Answers::with(&[]);
-    for name in ["cloud", "bare", "missing", "ollama"] {
-        let refused = service.connection_select(wire(json!({ "profile": name })), &prompt);
-        assert_eq!(code(refused), "control", "{name}");
-    }
-    assert!(prompt.shown().is_empty());
-    assert_eq!(revision(&fixture), before);
-    assert_eq!(
-        service
-            .connection_status()
-            .expect("status")
-            .connection
-            .profile
-            .as_deref(),
-        Some("ollama")
-    );
-
-    // A launch argument fixes the connection: nothing is offered or switched.
-    let fixed = DesktopService::open(DesktopConfig {
-        data_root: fixture.data.clone(),
-        endpoint: unused_endpoint(),
-        token_source: TokenSource::Environment,
-        stream: false,
-    })
-    .expect("fixed service");
-    let status = fixed.connection_status().expect("status");
-    assert!(!status.connection.selectable);
-    assert!(status.choices.is_empty());
-    let prompt = Answers::with(&[]);
-    let refused = fixed.connection_select(wire(json!({ "profile": "lms" })), &prompt);
-    assert_eq!(code(refused), "connection_fixed");
-    assert!(prompt.shown().is_empty());
-
-    // The request names a profile and nothing else.
-    let extra: Result<omgcode_app::desktop::ConnectionChooseRequest, _> =
-        serde_json::from_value(json!({ "profile": "lms", "endpoint": "http://evil" }));
-    assert!(extra.is_err());
-}
-
 /// With a launch argument the active selection does not decide where turns
 /// go, so removing the selected profile asks nothing.
 #[test]
@@ -558,13 +457,14 @@ fn removing_the_selected_profile_under_a_launch_argument_asks_nothing() {
     assert!(overview.provider_profiles.is_empty());
 }
 
-/// The composer's model list (ADR-0066) asks the connection the next turn
-/// would use: the default endpoint first, then the Ollama connection chosen in
+/// The composer's model list (ADR-0066) asks the connection the session's next
+/// turn would use: the default endpoint first, then the Ollama connection chosen in
 /// `settings`, each with one GET and no token. A server that cannot be
 /// reached is a `provider` error, and the list carries Ollama's cloud tag.
 #[test]
 fn the_model_list_follows_the_chosen_connection() {
     let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
     let default = MockServer::start(vec![Step::reply(json!({
         "object": "list",
         "data": [{"id": "omnicoder-9b", "object": "model"}, {"id": "google/gemma-4-e4b", "object": "model"}],
@@ -574,8 +474,14 @@ fn the_model_list_follows_the_chosen_connection() {
         "data": [{"id": "lfm2.5:latest"}, {"id": "kimi-k3:cloud"}],
     }))]);
     let service = active_service(&fixture, &default.endpoint);
+    let session = service
+        .session_create(wire(json!({"workspace_id": workspace.id, "title": "t"})))
+        .expect("session")
+        .session_id;
+    let ask = || service.chat_models(wire(json!({ "session_id": session })));
 
-    let listed = service.chat_models().expect("default list");
+    let listed = ask().expect("default list");
+    assert_eq!(listed.session_id, session);
     assert_eq!(listed.endpoint, default.endpoint);
     let ids: Vec<&str> = listed.models.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, ["google/gemma-4-e4b", "omnicoder-9b"]);
@@ -590,7 +496,7 @@ fn the_model_list_follows_the_chosen_connection() {
     )
     .expect("record");
     select(&service, &fixture, Some("ollama"), &Answers::with(&[true])).expect("select");
-    let listed = service.chat_models().expect("ollama list");
+    let listed = ask().expect("ollama list");
     assert_eq!(listed.endpoint, ollama.endpoint);
     assert_eq!(
         serde_json::to_value(&listed.models).expect("JSON"),
@@ -611,6 +517,21 @@ fn the_model_list_follows_the_chosen_connection() {
         assert_eq!(recorded[0].header("authorization"), None);
     }
 
-    let unreachable = active_service(&Fixture::new(), &unused_endpoint());
-    assert_eq!(code(unreachable.chat_models()), "provider");
+    let other = Fixture::new();
+    let other_workspace = other.workspace("project", text_only());
+    let unreachable = active_service(&other, &unused_endpoint());
+    let other_session = unreachable
+        .session_create(wire(
+            json!({"workspace_id": other_workspace.id, "title": "t"}),
+        ))
+        .expect("session")
+        .session_id;
+    assert_eq!(
+        code(unreachable.chat_models(wire(json!({ "session_id": other_session })))),
+        "provider"
+    );
+    assert_eq!(
+        code(unreachable.chat_models(wire(json!({ "session_id": Uuid::new_v4() })))),
+        "not_found"
+    );
 }

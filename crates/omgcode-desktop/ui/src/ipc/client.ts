@@ -104,8 +104,9 @@ export const api = {
   sessionCreate: (workspaceId: string, title: string) =>
     invokeCommand<SessionSummary>("session_create", { workspace_id: workspaceId, title }),
   chatDefaults: () => invokeCommand<ChatDefaults>("chat_defaults", {}),
-  /** The models the next turn's connection reports (ADR-0066). */
-  chatModels: () => invokeCommand<ChatModels>("chat_models", {}),
+  /** The models the session's connection reports (ADR-0066, ADR-0067). */
+  chatModels: (sessionId: string) =>
+    invokeCommand<ChatModels>("chat_models", { session_id: sessionId }),
   chatPreferencesSave: (preferences: ChatPreferences) =>
     invokeCommand<ChatDefaults>("chat_preferences_save", { preferences }),
   chatSend: (sessionId: string, message: string, settings: ChatSettings, skills: string[]) =>
@@ -114,10 +115,18 @@ export const api = {
     invokeCommand<SessionSkills>("session_skills", { session_id: sessionId }),
   sessionContext: (sessionId: string) =>
     invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
-  connectionStatus: () => invokeCommand<ConnectionStatus>("connection_status", {}),
-  /** Names a profile, or `null` for the default; Rust asks for a native confirmation first. */
-  connectionSelect: (profile: string | null) =>
-    invokeCommand<ConnectionStatus>("connection_select", { profile }),
+  /** The session's connection and model; `null` describes the default when no session is open. */
+  connectionStatus: (sessionId: string | null) =>
+    invokeCommand<ConnectionStatus>("connection_status", { session_id: sessionId }),
+  /**
+   * Names a profile, or `null` for the default, for one session; Rust asks for a native
+   * confirmation first and records the choice only on Yes.
+   */
+  connectionSelect: (sessionId: string, profile: string | null) =>
+    invokeCommand<ConnectionStatus>("connection_select", { session_id: sessionId, profile }),
+  /** Records the session's model. No dialog: a model grants nothing. */
+  sessionModelSelect: (sessionId: string, model: string) =>
+    invokeCommand<ConnectionStatus>("session_model_select", { session_id: sessionId, model }),
   chatStatus: (sessionId: string) =>
     invokeCommand<ChatStatus>("chat_status", { session_id: sessionId }),
   chatCancel: (sessionId: string) =>

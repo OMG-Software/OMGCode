@@ -509,6 +509,36 @@ mark {
   align-items: center;
 }
 
+.composer-tools {
+  flex-wrap: wrap;
+}
+
+/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0067). */
+.toolbar-field {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.toolbar-field select {
+  max-width: 220px;
+  font-size: 12px;
+  padding: 1px 4px;
+}
+
+.composer-model-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+.composer-model-status:empty {
+  display: none;
+}
+
 .composer-panel {
   max-height: min(60vh, 460px);
   overflow: auto;

@@ -5,6 +5,9 @@ export const CANCELLED_CODE = "cancelled";
 /** The settings window chose another model connection after this window read its endpoint. */
 export const CONNECTION_CHANGED_CODE = "connection_changed";
 
+/** The connection recorded for the session no longer matches its profile; the operator must choose again. */
+export const SESSION_CONNECTION_STALE_CODE = "session_connection_stale";
+
 /** Error thrown by every IPC call. `code` and `message` come from the Rust core. */
 export class IpcFailure extends Error {
   readonly code: string;

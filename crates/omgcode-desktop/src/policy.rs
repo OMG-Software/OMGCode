@@ -65,6 +65,7 @@ pub enum Command {
     SessionContext,
     ConnectionStatus,
     ConnectionSelect,
+    SessionModelSelect,
     ChatModels,
     SettingsOverview,
     SettingsChooseRoot,
@@ -80,7 +81,7 @@ pub enum Command {
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -107,6 +108,7 @@ impl Command {
         Self::SessionContext,
         Self::ConnectionStatus,
         Self::ConnectionSelect,
+        Self::SessionModelSelect,
         Self::ChatModels,
         Self::SettingsOverview,
         Self::SettingsChooseRoot,
@@ -150,6 +152,7 @@ impl Command {
             Self::SessionContext => "session_context",
             Self::ConnectionStatus => "connection_status",
             Self::ConnectionSelect => "connection_select",
+            Self::SessionModelSelect => "session_model_select",
             Self::ChatModels => "chat_models",
             Self::SettingsOverview => "settings_overview",
             Self::SettingsChooseRoot => "settings_choose_root",
@@ -204,6 +207,7 @@ impl Command {
             | Self::SessionContext
             | Self::ConnectionStatus
             | Self::ConnectionSelect
+            | Self::SessionModelSelect
             | Self::ChatModels => WindowLabel::Main,
         }
     }
@@ -242,8 +246,8 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 37);
-        assert_eq!(with_window(WindowLabel::Main).len(), 24);
+        assert_eq!(Command::ALL.len(), 38);
+        assert_eq!(with_window(WindowLabel::Main).len(), 25);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
         assert_eq!(with_window(WindowLabel::Settings).len(), 10);
     }
@@ -330,8 +334,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_thirty_seven_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 37);
-        assert_eq!(shared.len(), 37);
+        assert_eq!(COMMAND_NAMES.len(), 38);
+        assert_eq!(shared.len(), 38);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

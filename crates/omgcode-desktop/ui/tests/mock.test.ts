@@ -129,33 +129,72 @@ describe("mock backend", () => {
     ).rejects.toMatchObject({ code: "stale_revision" });
   });
 
-  it("serves the status bar's connection choice and branch, like core", async () => {
+  it("serves a session's own connection and model, like core", async () => {
     const { invoke } = createMockBackend();
-    const before = (await invoke("connection_status", {})) as {
-      connection: { profile: string | null };
+    const id = "00000000-0000-4000-8000-000000000001";
+    const other = "00000000-0000-4000-8000-000000000002";
+    type Status = {
+      connection: { profile: string | null; endpoint: string };
+      origin: string;
+      model: string;
       choices: Array<{ name: string; active: boolean }>;
     };
+    const before = (await invoke("connection_status", { session_id: id })) as Status;
     expect(before.connection.profile).toBeNull();
+    expect(before.origin).toBe("default");
     expect(before.choices.map((choice) => choice.name)).toContain("ollama");
     expect(before.choices.every((choice) => !choice.active)).toBe(true);
 
-    const after = (await invoke("connection_select", { profile: "ollama" })) as typeof before;
+    // A model alone keeps following the default; a provider choice is the session's own.
+    await invoke("session_model_select", { session_id: id, model: "pre" });
+    const after = (await invoke("connection_select", {
+      session_id: id,
+      profile: "ollama",
+    })) as Status;
     expect(after.connection.profile).toBe("ollama");
+    expect(after.origin).toBe("session");
+    expect(after.model).toBe("");
     expect(after.choices.find((choice) => choice.active)?.name).toBe("ollama");
+    const listed = (await invoke("chat_models", { session_id: id })) as {
+      session_id: string;
+      endpoint: string;
+      kind: string;
+    };
+    expect(listed).toMatchObject({
+      session_id: id,
+      endpoint: "http://127.0.0.1:11434/v1",
+      kind: "ollama_local",
+    });
+
+    // The other session and the global default are untouched.
+    const untouched = (await invoke("connection_status", { session_id: other })) as Status;
+    expect(untouched.connection.profile).toBeNull();
     const { settings } = (await invoke("chat_defaults", {})) as {
       settings: { endpoint: string };
     };
-    expect(settings.endpoint).toBe("http://127.0.0.1:11434/v1");
-    await expect(invoke("connection_select", { profile: "missing" })).rejects.toMatchObject({
-      code: "control",
-    });
-    // The settings window's revision moves on, as a change through core would.
-    const overview = (await invoke("settings_overview", {})) as { revision: number };
-    expect(overview.revision).toBeGreaterThan(12);
+    expect(settings.endpoint).toBe("http://127.0.0.1:1234/v1");
 
+    const chosen = (await invoke("session_model_select", {
+      session_id: id,
+      model: "lfm2.5:latest",
+    })) as Status;
+    expect(chosen.model).toBe("lfm2.5:latest");
     await expect(
-      invoke("session_context", { session_id: "00000000-0000-4000-8000-000000000001" }),
-    ).resolves.toMatchObject({ branch: { state: "branch", name: "main" } });
+      invoke("session_model_select", { session_id: id, model: "a\nb" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      invoke("connection_select", { session_id: id, profile: "missing" }),
+    ).rejects.toMatchObject({ code: "control" });
+    await expect(
+      invoke("connection_select", { session_id: id, profile: "ollama" }),
+    ).rejects.toMatchObject({ code: "control" });
+    await expect(
+      invoke("connection_select", { session_id: "nope", profile: null }),
+    ).rejects.toMatchObject({ code: "not_found" });
+
+    await expect(invoke("session_context", { session_id: id })).resolves.toMatchObject({
+      branch: { state: "branch", name: "main" },
+    });
   });
 
   // The cases core's `validate_base_url` decides (crates/omgcode-core/src/provider.rs tests).

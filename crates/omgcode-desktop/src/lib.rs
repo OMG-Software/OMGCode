@@ -162,6 +162,7 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::chat::session_context,
             commands::chat::connection_status,
             commands::chat::connection_select,
+            commands::chat::session_model_select,
             commands::chat::chat_models,
             commands::settings::settings_overview,
             commands::settings::settings_choose_root,

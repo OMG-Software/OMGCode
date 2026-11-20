@@ -141,6 +141,23 @@ impl DesktopError {
         Self::new("preferences", "The chat preferences could not be saved.")
     }
 
+    /// The per-session connection and model choices could not be saved.
+    pub(crate) fn session_choices() -> Self {
+        Self::new(
+            "session_choices",
+            "The choice for this session could not be saved.",
+        )
+    }
+
+    /// The session's recorded connection can no longer be used as recorded
+    /// (ADR-0067). Nothing was sent.
+    pub(crate) fn session_connection_stale() -> Self {
+        Self::new(
+            "session_connection_stale",
+            "The connection chosen for this session changed or was removed. Choose the provider again, then send.",
+        )
+    }
+
     /// The operator closed a folder dialog or declined a confirmation. Nothing
     /// changed.
     pub(crate) fn cancelled() -> Self {

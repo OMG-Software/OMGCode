@@ -4,7 +4,8 @@
 use omgcode_app::desktop::{
     ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesDto,
     ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatStatus,
-    ConnectionChooseRequest, ConnectionStatus, SessionContext, SessionRequest, SessionSkills,
+    ConnectionChooseRequest, ConnectionStatus, ConnectionStatusRequest, SessionContext,
+    SessionModelSelectRequest, SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
@@ -85,8 +86,10 @@ pub async fn session_context(
     blocking(&state, move |service| service.session_context(request)).await
 }
 
-/// `main` only. The connection the next turn uses and the local connections
-/// the status bar may offer. Names and endpoints only, never a credential.
+/// `main` only. The connection a session's next turn uses, where that choice
+/// comes from, the session's model, and the connections that may be chosen.
+/// With no open session (`null`) it describes the default. Names and endpoints
+/// only, never a credential (ADR-0067).
 ///
 /// # Errors
 ///
@@ -95,46 +98,79 @@ pub async fn session_context(
 pub async fn connection_status(
     webview: Webview,
     state: Service<'_>,
+    session_id: Option<Uuid>,
 ) -> Result<ConnectionStatus, CommandError> {
     authorize(Command::ConnectionStatus, webview.label())?;
-    blocking(&state, |service| service.connection_status()).await
+    blocking(&state, move |service| {
+        service.connection_status(ConnectionStatusRequest { session_id })
+    })
+    .await
 }
 
-/// `main` only. Asks to make a recorded local profile (or the default, for a
-/// `null` profile) the model connection. Rust shows a native Yes/No dialog,
-/// modal to the main window, naming the provider and endpoint, and records the
-/// choice only on Yes (ADR-0064).
+/// `main` only. Asks to choose a recorded profile (or the default, for a
+/// `null` profile) as one session's model connection. Rust shows a native
+/// Yes/No dialog, modal to the main window, naming the provider and endpoint,
+/// and records the choice only on Yes (ADR-0067).
 ///
 /// # Errors
 ///
-/// `forbidden_window`, or the service's error (`connection_fixed`,
-/// `cancelled`, `control`, `stale_revision`).
+/// `forbidden_window`, or the service's error (`not_found`,
+/// `connection_fixed`, `cancelled`, `control`, `settings_change_running`).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn connection_select(
     webview: Webview,
     state: Service<'_>,
+    session_id: Uuid,
     profile: Option<String>,
 ) -> Result<ConnectionStatus, CommandError> {
     authorize(Command::ConnectionSelect, webview.label())?;
     let prompt = NativePrompt::new(webview.window());
-    let request = ConnectionChooseRequest { profile };
+    let request = ConnectionChooseRequest {
+        session_id,
+        profile,
+    };
     blocking(&state, move |service| {
         service.connection_select(request, &prompt)
     })
     .await
 }
 
-/// `main` only. Lists the models the next turn's connection reports, for the
-/// composer's model choice (ADR-0066). Ids only; the list grants nothing.
+/// `main` only. Records the model chosen for one session. No dialog: a model
+/// grants nothing, and the server still decides whether it exists (ADR-0067).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `not_found`, `preferences`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn session_model_select(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+    model: String,
+) -> Result<ConnectionStatus, CommandError> {
+    authorize(Command::SessionModelSelect, webview.label())?;
+    let request = SessionModelSelectRequest { session_id, model };
+    blocking(&state, move |service| service.session_model_select(request)).await
+}
+
+/// `main` only. Lists the models a session's connection reports, for the
+/// composer's model choice (ADR-0066, ADR-0067). Ids only; the list grants
+/// nothing.
 ///
 /// # Errors
 ///
 /// `forbidden_window`, or the service's error (`provider`, `configuration`,
-/// `credential`).
+/// `credential`, `session_connection_stale`, `not_found`).
 #[tauri::command(rename_all = "snake_case")]
-pub async fn chat_models(webview: Webview, state: Service<'_>) -> Result<ChatModels, CommandError> {
+pub async fn chat_models(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+) -> Result<ChatModels, CommandError> {
     authorize(Command::ChatModels, webview.label())?;
-    blocking(&state, |service| service.chat_models()).await
+    let request = SessionRequest { session_id };
+    blocking(&state, move |service| service.chat_models(request)).await
 }
 
 /// `main` only. Starts one chat turn on a service thread and returns at once.

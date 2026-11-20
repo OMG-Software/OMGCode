@@ -30,6 +30,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "session_context",
     "connection_status",
     "connection_select",
+    "session_model_select",
     "chat_models",
     "settings_overview",
     "settings_choose_root",

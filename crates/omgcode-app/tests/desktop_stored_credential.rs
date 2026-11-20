@@ -270,8 +270,12 @@ fn the_model_list_sends_the_stored_credential_and_never_returns_it() {
     vault.add_profile_at("lms", "lm_studio", "api_key", &server.endpoint);
     let id = vault.bind("lms", STORED.as_bytes());
     let service = service(&fixture, &server.endpoint, "lms");
+    let workspace = fixture.workspace("project", text_only());
+    let session = new_session(&service, workspace.id);
 
-    let listed = service.chat_models().expect("list");
+    let listed = service
+        .chat_models(wire(session_request(session)))
+        .expect("list");
     assert_eq!(listed.endpoint, server.endpoint);
     assert!(!text_of(&listed).contains(STORED));
     let (served, requests) = server.finish_recorded();
@@ -283,7 +287,9 @@ fn the_model_list_sends_the_stored_credential_and_never_returns_it() {
     );
 
     vault.delete_native(&id);
-    let error = service.chat_models().expect_err("refused");
+    let error = service
+        .chat_models(wire(session_request(session)))
+        .expect_err("refused");
     assert_eq!(error.code(), "credential");
     assert!(!text_of(&error).contains(STORED));
 }
