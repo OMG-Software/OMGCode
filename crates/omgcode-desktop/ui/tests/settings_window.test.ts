@@ -883,6 +883,41 @@ describe("settings window", () => {
       expect(pageHolds(KEY)).toBe(false);
     });
 
+    it("keeps a change's error when a read queued during the change follows it", async () => {
+      let fail: (reason: unknown) => void = () => undefined;
+      await start(() => choosable({ provider_profiles: [cloud()] }), {
+        settings_set_api_key: () =>
+          new Promise((_, reject) => {
+            fail = reject;
+          }),
+      });
+      go("Model");
+      const input = rowOf("hosted").querySelector<HTMLInputElement>("input[type=password]");
+      if (input === null) {
+        throw new Error("No key field");
+      }
+      input.value = KEY;
+      buttonByText(rowOf("hosted"), "Save key").click();
+      await settle();
+      // Focus returns while the change runs, as it does when a native dialog closes.
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      const reads = ipc.callsTo("settings_overview").length;
+      fail({
+        code: "credential_binding_uncertain",
+        message: "The API key was stored as 0123456789ab4def8123456789abcdef, but it was kept.",
+      });
+      await settle();
+
+      // The queued read ran, and the change's error, with the identifier, is still shown.
+      expect(ipc.callsTo("settings_overview").length).toBeGreaterThan(reads);
+      const problem = Array.from(root.querySelectorAll<HTMLElement>("[role=alert]")).find((node) =>
+        node.textContent?.includes("credential_binding_uncertain"),
+      );
+      expect(problem?.hidden).toBe(false);
+      expect(problem?.textContent).toContain("0123456789ab4def8123456789abcdef");
+    });
+
     it("sets a new key from the row, once, and clears the field either way", async () => {
       let refuse = false;
       await start(() => choosable({ provider_profiles: [cloud()] }), {

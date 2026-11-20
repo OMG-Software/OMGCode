@@ -165,7 +165,16 @@ export function startSettings(root: HTMLElement): SettingsApp {
     draw();
   }
 
-  function report(reason: unknown): void {
+  /**
+   * Whether the message shown came from a read. A read clears only a read's own failure: the
+   * outcome of a change (an error, credential cleanup instructions, or "nothing changed") stays
+   * until the operator starts another change, even when a queued read follows it at once, as
+   * one does when a native dialog returns focus to this window.
+   */
+  let messageFromRead = false;
+
+  function report(reason: unknown, fromRead = false): void {
+    messageFromRead = fromRead;
     const error = toIpcError(reason);
     if (error.code === CANCELLED_CODE) {
       replaceChildren(notice, NOTHING_CHANGED);
@@ -179,6 +188,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
   function clearMessages(): void {
     problem.hidden = true;
     notice.hidden = true;
+    messageFromRead = false;
   }
 
   async function refresh(): Promise<void> {
@@ -195,9 +205,11 @@ export function startSettings(root: HTMLElement): SettingsApp {
       if (!sameOverview(overview, current)) {
         show(overview);
       }
-      clearMessages();
+      if (messageFromRead) {
+        clearMessages();
+      }
     } catch (reason) {
-      report(reason);
+      report(reason, true);
     } finally {
       finishWork();
     }
