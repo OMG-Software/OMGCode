@@ -6,12 +6,12 @@ import {
   CAPTURE_PADDING,
   CaptureError,
   captureScale,
-  codePointClusters,
   graphemes,
   MAX_CANVAS_AREA,
   MAX_CANVAS_SIDE,
   MAX_TEXT_RUNS,
   paintElement,
+  wrappedPieces,
 } from "../src/main/capture";
 import { COPY_FEEDBACK_MS } from "../src/main/clipboard";
 import { renderMarkdown } from "../src/main/markdown";
@@ -397,7 +397,8 @@ describe("image painting", () => {
   it("places each user-perceived character of a wrapped word as one glyph", () => {
     const accented = `e${String.fromCharCode(0x301)}`;
     const thumb = String.fromCodePoint(0x1f44d, 0x1f3fd);
-    expect(graphemes(`${accented}${thumb}x`)).toEqual([accented, thumb, "x"]);
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    expect(graphemes(`${accented}${thumb}x`, segmenter)).toEqual([accented, thumb, "x"]);
 
     // A range over the whole word reports two line boxes, so the word is placed in pieces.
     Object.defineProperty(Range.prototype, "getClientRects", {
@@ -420,18 +421,31 @@ describe("image painting", () => {
     root.remove();
   });
 
-  it("keeps joined glyphs whole without Intl.Segmenter", () => {
-    const accented = `e${String.fromCharCode(0x301)}`;
-    const thumb = String.fromCodePoint(0x1f44d, 0x1f3fd);
-    const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467);
-    const heart = String.fromCodePoint(0x2764, 0xfe0f);
-    const britain = String.fromCodePoint(0x1f1ec, 0x1f1e7);
-    const france = String.fromCodePoint(0x1f1eb, 0x1f1f7);
-    const word = `${accented}${thumb}${family}${heart}${britain}${france}ab`;
-    const expected = [accented, thumb, family, heart, britain, france, "a", "b"];
-    expect(codePointClusters(word)).toEqual(expected);
-    // The fallback agrees with the segmenter on these clusters.
-    expect(graphemes(word)).toEqual(expected);
+  it("keeps each line's part of a wrapped word whole without Intl.Segmenter", () => {
+    // A Hangul syllable written as two jamo, and a family emoji joined by zero-width joiners.
+    const hangul = String.fromCharCode(0x1100, 0x1161);
+    const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469);
+    const word = `ab${hangul}cd${family}`;
+    // The browser breaks the line after the syllable, at offset 4, never inside a cluster.
+    // The code point at offset 0 reports no box, so the run takes the next one.
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value(this: Range) {
+        if (this.startOffset === 0) {
+          return [];
+        }
+        const line = this.startOffset < 4 ? 0 : 1;
+        const column = line === 0 ? this.startOffset : this.startOffset - 4;
+        return [{ left: 100 + column * 8, top: 50 + line * 16, width: 8, height: 16 }];
+      },
+    });
+    const node = document.createTextNode(word);
+    const pieces = wrappedPieces(node, 0, word, document.createRange(), null);
+    expect(pieces.map((piece) => piece.text)).toEqual([`ab${hangul}`, `cd${family}`]);
+    expect(pieces.map((piece) => [piece.rect.left, piece.rect.top])).toEqual([
+      [108, 50],
+      [100, 66],
+    ]);
   });
 
   it("pads the image with the colour behind the entry", () => {
@@ -444,7 +458,8 @@ describe("image painting", () => {
     document.body.append(pane);
     expect(backdrop(entry)).toBe("rgb(1, 2, 3)");
     pane.style.backgroundColor = "";
-    expect(backdrop(entry)).toBe("#000000");
+    // Nothing behind it paints a background, so the padding stays transparent.
+    expect(backdrop(entry)).toBeNull();
     pane.remove();
   });
 

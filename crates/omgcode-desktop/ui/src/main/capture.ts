@@ -100,8 +100,11 @@ function paint(element: HTMLElement): HTMLCanvasElement {
     throw new CaptureError("A canvas is not available.");
   }
   context.scale(scale, scale);
-  context.fillStyle = backdrop(element);
-  context.fillRect(0, 0, width, height);
+  const behind = backdrop(element);
+  if (behind !== null) {
+    context.fillStyle = behind;
+    context.fillRect(0, 0, width, height);
+  }
   paintElement(
     context,
     element,
@@ -113,16 +116,16 @@ function paint(element: HTMLElement): HTMLCanvasElement {
 
 /**
  * The colour behind `element` on screen, for the padding around it: the background of its nearest
- * ancestor that paints one, else black.
+ * ancestor that paints one, or null when none does and the padding stays transparent.
  */
-export function backdrop(element: Element): string {
+export function backdrop(element: Element): string | null {
   for (let node = element.parentElement; node !== null; node = node.parentElement) {
     const colour = getComputedStyle(node).backgroundColor;
     if (visible(colour)) {
       return colour;
     }
   }
-  return "#000000";
+  return null;
 }
 
 /**
@@ -362,48 +365,67 @@ const GRAPHEMES =
 
 /**
  * The user-perceived characters of `word`, so an emoji sequence or a letter with combining marks
- * is placed as one glyph. Without `Intl.Segmenter` it falls back to `codePointClusters`.
+ * is placed as one glyph.
  */
-export function graphemes(word: string): string[] {
-  if (GRAPHEMES === null) {
-    return codePointClusters(word);
-  }
-  return Array.from(GRAPHEMES.segment(word), (part) => part.segment);
+export function graphemes(word: string, segmenter: Intl.Segmenter): string[] {
+  return Array.from(segmenter.segment(word), (part) => part.segment);
 }
 
-const ZERO_WIDTH_JOINER = String.fromCharCode(0x200d);
-const EXTENDS_CLUSTER = /^[\p{M}\p{Emoji_Modifier}\p{Variation_Selector}]$/u;
-const REGIONAL_INDICATOR = /^\p{Regional_Indicator}$/u;
+export interface Piece {
+  text: string;
+  rect: DOMRect;
+}
 
 /**
- * An approximation of grapheme clusters for a webview without `Intl.Segmenter`: a code point
- * joins the one before it when it is a combining mark, an emoji modifier, a variation selector,
- * or a zero-width joiner, or follows a joiner, and two regional indicators form one flag. It does
- * not cover every rule, such as Hangul syllable sequences, but keeps the common joined glyphs
- * whole.
+ * Where to paint each piece of a word that wraps inside itself, as overflow-wrap allows. With a
+ * segmenter, each grapheme is placed at its own box. Without one, each line's part of the word is
+ * kept whole and placed at its first box: a browser never breaks a line inside a grapheme
+ * cluster, so grouping code points by the line their box is on cannot split one, in any script.
+ * Exported for tests, which pass no segmenter.
  */
-export function codePointClusters(word: string): string[] {
-  const out: string[] = [];
-  let joined = false;
-  let loneRegional = false;
-  for (const point of word) {
-    const regional = REGIONAL_INDICATOR.test(point);
-    const extendsLast =
-      joined ||
-      point === ZERO_WIDTH_JOINER ||
-      EXTENDS_CLUSTER.test(point) ||
-      (regional && loneRegional);
-    const last = out.length - 1;
-    if (extendsLast && last >= 0) {
-      out[last] += point;
-      loneRegional = false;
-    } else {
-      out.push(point);
-      loneRegional = regional;
+export function wrappedPieces(
+  node: Text,
+  start: number,
+  word: string,
+  range: Range,
+  segmenter: Intl.Segmenter | null,
+): Piece[] {
+  const pieces: Piece[] = [];
+  let offset = 0;
+  if (segmenter !== null) {
+    for (const part of graphemes(word, segmenter)) {
+      const rect = boxOf(range, node, start + offset, part.length);
+      if (rect !== undefined) {
+        pieces.push({ text: part, rect });
+      }
+      offset += part.length;
     }
-    joined = point === ZERO_WIDTH_JOINER;
+    return pieces;
   }
-  return out;
+  let text = "";
+  let rect: DOMRect | undefined;
+  for (const point of word) {
+    const box = boxOf(range, node, start + offset, point.length);
+    // A box at least half a line below the run's first box starts the next line's run.
+    if (box !== undefined && rect !== undefined && box.top >= rect.top + rect.height / 2) {
+      pieces.push({ text, rect });
+      text = "";
+      rect = undefined;
+    }
+    rect ??= box;
+    text += point;
+    offset += point.length;
+  }
+  if (rect !== undefined && text !== "") {
+    pieces.push({ text, rect });
+  }
+  return pieces;
+}
+
+function boxOf(range: Range, node: Text, at: number, length: number): DOMRect | undefined {
+  range.setStart(node, at);
+  range.setEnd(node, at + length);
+  return range.getClientRects()[0];
 }
 
 function paintText(
@@ -439,16 +461,8 @@ function paintText(
       }
       continue;
     }
-    // The word wraps inside itself, as overflow-wrap allows; place each character on its own.
-    let offset = 0;
-    for (const ch of graphemes(word)) {
-      range.setStart(node, start + offset);
-      range.setEnd(node, start + offset + ch.length);
-      const rect = range.getClientRects()[0];
-      if (rect !== undefined) {
-        paintRun(context, ch, rect, origin, ascent, strike, budget);
-      }
-      offset += ch.length;
+    for (const piece of wrappedPieces(node, start, word, range, GRAPHEMES)) {
+      paintRun(context, piece.text, piece.rect, origin, ascent, strike, budget);
     }
   }
 }

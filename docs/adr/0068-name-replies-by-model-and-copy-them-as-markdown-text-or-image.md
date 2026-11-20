@@ -55,10 +55,11 @@ command and opens no dialogs.
    colour, line-through (also across nested elements, which do not inherit
    the property), and list markers drawn from the list. A word that wraps
    inside itself is placed one grapheme at a time, through `Intl.Segmenter`
-   where it exists, and otherwise by joining combining marks, emoji
-   modifiers, variation selectors, zero-width-joiner sequences, and flag
-   pairs to the code point before them. The padding takes the background of the entry's nearest
-   ancestor that paints one. Buttons and
+   where it exists. Otherwise each line's part of the word is painted whole
+   at its first box: a browser never breaks a line inside a grapheme
+   cluster, so grouping code points by line cannot split one in any script.
+   The padding takes the background of the entry's nearest ancestor that
+   paints one, and stays transparent when none does. Buttons and
    parts marked `data-capture="skip"` are left out; a `capturing` class
    removes them from layout for the synchronous paint, so the image has no
    gap, and lets a code block wider than the reply wrap instead of being cut
