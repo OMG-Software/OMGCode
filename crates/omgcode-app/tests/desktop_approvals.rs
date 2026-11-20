@@ -125,8 +125,20 @@ impl Setup {
         self.finish(session);
     }
 
+    /// The approval list. `busy` is the list's documented answer while a
+    /// running turn holds the settings store, so it is read again until the
+    /// shared deadline; any other error, or a store that stays held, fails.
     fn list(&self) -> Vec<ApprovalView> {
-        self.service.approvals_list().expect("approvals").approvals
+        let deadline = Instant::now() + PENDING_DEADLINE;
+        loop {
+            match self.service.approvals_list() {
+                Ok(list) => return list.approvals,
+                Err(error) if error.code() == "busy" && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("approvals: {error:?}"),
+            }
+        }
     }
 
     fn pending(&self) -> Vec<ApprovalView> {
