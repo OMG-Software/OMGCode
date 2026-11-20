@@ -66,8 +66,12 @@ export function startSettings(root: HTMLElement): SettingsApp {
     addConnectionOpen: false,
     connectionDraft: newConnectionDraft(),
   };
-  const problem = el("p", { class: "error", attrs: { role: "alert" } });
+  // A change's error stays until the next change starts; a read's failure until a read succeeds.
+  // Two elements, so neither outcome can overwrite or clear the other.
+  const problem = el("p", { class: "error change-error", attrs: { role: "alert" } });
   problem.hidden = true;
+  const readProblem = el("p", { class: "error read-error", attrs: { role: "alert" } });
+  readProblem.hidden = true;
   const notice = el("p", { class: "notice", attrs: { role: "status" } });
   notice.hidden = true;
   // A disabled fieldset disables every control inside it without touching their own state.
@@ -77,7 +81,15 @@ export function startSettings(root: HTMLElement): SettingsApp {
   const allSettings = button("All settings", () => submit(() => settingsApi.clearScope()));
   const scopeBar = el("div", { class: "scope-bar" }, allSettings);
   scopeBar.hidden = true;
-  const content = el("div", { class: "settings-content" }, scopeBar, problem, notice, body);
+  const content = el(
+    "div",
+    { class: "settings-content" },
+    scopeBar,
+    problem,
+    readProblem,
+    notice,
+    body,
+  );
   const nav = createNav(
     view.section,
     (id) => select(id),
@@ -166,15 +178,11 @@ export function startSettings(root: HTMLElement): SettingsApp {
   }
 
   /**
-   * Whether the message shown came from a read. A read clears only a read's own failure: the
-   * outcome of a change (an error, credential cleanup instructions, or "nothing changed") stays
-   * until the operator starts another change, even when a queued read follows it at once, as
-   * one does when a native dialog returns focus to this window.
+   * Shows the outcome of a change: its error (perhaps credential cleanup instructions) or
+   * "nothing changed". It stays until the operator starts another change, even when a read
+   * queued meanwhile follows at once, as one does when a native dialog returns focus here.
    */
-  let messageFromRead = false;
-
-  function report(reason: unknown, fromRead = false): void {
-    messageFromRead = fromRead;
+  function reportChange(reason: unknown): void {
     const error = toIpcError(reason);
     if (error.code === CANCELLED_CODE) {
       replaceChildren(notice, NOTHING_CHANGED);
@@ -185,10 +193,17 @@ export function startSettings(root: HTMLElement): SettingsApp {
     problem.hidden = false;
   }
 
+  /** Shows why the configuration could not be read. The next successful read hides it. */
+  function reportRead(reason: unknown): void {
+    const error = toIpcError(reason);
+    replaceChildren(readProblem, `${error.message} (${error.code})`);
+    readProblem.hidden = false;
+  }
+
   function clearMessages(): void {
     problem.hidden = true;
+    readProblem.hidden = true;
     notice.hidden = true;
-    messageFromRead = false;
   }
 
   async function refresh(): Promise<void> {
@@ -205,11 +220,9 @@ export function startSettings(root: HTMLElement): SettingsApp {
       if (!sameOverview(overview, current)) {
         show(overview);
       }
-      if (messageFromRead) {
-        clearMessages();
-      }
+      readProblem.hidden = true;
     } catch (reason) {
-      report(reason, true);
+      reportRead(reason);
     } finally {
       finishWork();
     }
@@ -230,12 +243,12 @@ export function startSettings(root: HTMLElement): SettingsApp {
       try {
         show(await change(revision));
       } catch (reason) {
-        report(reason);
+        reportChange(reason);
         try {
           show(await settingsApi.overview());
         } catch (again) {
           show(recorded);
-          report(again);
+          reportRead(again);
         }
       } finally {
         finishWork();

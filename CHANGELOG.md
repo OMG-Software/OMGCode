@@ -178,10 +178,12 @@ Changes are recorded here before a release version is assigned.
 - The settings window reads the overview again when a read is asked for while
   another read or change runs, so a scope set meanwhile is not lost. A read
   that returns the overview already shown no longer redraws the window, so an
-  API key typed but not sent survives the window regaining focus. A read
-  clears only a read's own failure, so a change's error, such as credential
-  cleanup instructions, stays shown when a read queued during the change (as
-  when a native dialog returns focus) follows it.
+  API key typed but not sent survives the window regaining focus. A change's
+  error and a failed read now have separate messages: a change's error, such
+  as credential cleanup instructions, stays until the next change starts,
+  even when a read queued during the change (as when a native dialog returns
+  focus) follows it, and a read's failure stays until a read succeeds, even
+  when it follows a failed change.
 - The settings window's `[hidden]` rule is `!important`. It came first in the
   stylesheet, so `.settings-nav { display: flex }` won and the sidebar stayed
   visible in the scoped view; the test now checks the computed style.

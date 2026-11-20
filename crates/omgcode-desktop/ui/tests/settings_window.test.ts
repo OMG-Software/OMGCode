@@ -460,10 +460,36 @@ describe("settings window", () => {
     // The control shows the recorded state again, not what the operator asked for.
     expect(stateOf("Write")).toBe("prompt");
     expect((root.querySelector("[role=status]") as HTMLElement).textContent).toBe(NOTHING_CHANGED);
-    const alert = root.querySelector("[role=alert]") as HTMLElement;
+    const alert = root.querySelector(".read-error") as HTMLElement;
     expect(alert.hidden).toBe(false);
     expect(alert.textContent).toBe("The settings could not be read. (io)");
     expect(body().disabled).toBe(false);
+  });
+
+  it("keeps a change's error and its failed read apart, and a later read clears only the read's", async () => {
+    await start(() => overview(), {
+      settings_choose_root: () =>
+        rejection("stale_revision", "The settings changed since this window read them."),
+    });
+    // The store stays busy through the change and the read that follows it.
+    ipc.on("settings_overview", () => rejection("busy", "The settings store is in use."));
+    buttonByText(root, "Change").click();
+    await settle();
+
+    const change = root.querySelector(".change-error") as HTMLElement;
+    const read = root.querySelector(".read-error") as HTMLElement;
+    expect(change.hidden).toBe(false);
+    expect(change.textContent).toContain("(stale_revision)");
+    expect(read.hidden).toBe(false);
+    expect(read.textContent).toBe("The settings store is in use. (busy)");
+
+    // The store is free again: Refresh reads it, hides the read failure, keeps the change's.
+    ipc.on("settings_overview", () => overview({ revision: 9 }));
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(read.hidden).toBe(true);
+    expect(change.hidden).toBe(false);
+    expect(change.textContent).toContain("(stale_revision)");
   });
 
   it("shows a refusal and reads the configuration again", async () => {
@@ -562,7 +588,7 @@ describe("settings window", () => {
 
   it("shows the core error and keeps the Refresh button", async () => {
     await start(() => rejection("busy", "The settings store is in use."));
-    const alert = root.querySelector("[role=alert]") as HTMLElement;
+    const alert = root.querySelector(".read-error") as HTMLElement;
     expect(alert.hidden).toBe(false);
     expect(alert.textContent).toBe("The settings store is in use. (busy)");
     ipc.on("settings_overview", () => overview());
