@@ -176,7 +176,9 @@ Changes are recorded here before a release version is assigned.
 - **Workspace settings** sends the newly opened session at once instead of
   the previous one until the transcript loads.
 - The settings window reads the overview again when a read is asked for while
-  another read or change runs, so a scope set meanwhile is not lost.
+  another read or change runs, so a scope set meanwhile is not lost. A read
+  that returns the overview already shown no longer redraws the window, so an
+  API key typed but not sent survives the window regaining focus.
 - The settings window's `[hidden]` rule is `!important`. It came first in the
   stylesheet, so `.settings-nav { display: flex }` won and the sidebar stayed
   visible in the scoped view; the test now checks the computed style.

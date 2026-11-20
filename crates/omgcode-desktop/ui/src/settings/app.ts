@@ -154,6 +154,11 @@ export function startSettings(root: HTMLElement): SettingsApp {
     draw();
   }
 
+  /** Whether two overviews hold the same data. Both are plain IPC data in Rust's field order. */
+  function sameOverview(next: SettingsOverview, shown: SettingsOverview | null): boolean {
+    return shown !== null && JSON.stringify(next) === JSON.stringify(shown);
+  }
+
   function show(overview: SettingsOverview): void {
     current = overview;
     nav.setRevision(overview.revision);
@@ -183,7 +188,13 @@ export function startSettings(root: HTMLElement): SettingsApp {
     }
     setWorking(true);
     try {
-      show(await settingsApi.overview());
+      const overview = await settingsApi.overview();
+      // An unchanged overview is not drawn again: a redraw would rebuild every form and drop
+      // what the operator typed but has not sent, such as an API key pasted from elsewhere
+      // just before this window regained focus.
+      if (!sameOverview(overview, current)) {
+        show(overview);
+      }
       clearMessages();
     } catch (reason) {
       report(reason);

@@ -860,6 +860,29 @@ describe("settings window", () => {
       expect(picker("New connection provider").value).toBe("ollama_cloud");
     });
 
+    it("keeps an unsent key when focus returns and the configuration has not changed", async () => {
+      let revision = 7;
+      await start(() => choosable({ revision, provider_profiles: [] }));
+      go("Model");
+      chooseCloud();
+      const key = field("API key");
+      // The operator pasted a key, then left to find something and came back.
+      type("API key", KEY);
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(ipc.callsTo("settings_overview").length).toBeGreaterThan(1);
+      expect(field("API key")).toBe(key);
+      expect(key.value).toBe(KEY);
+
+      // A configuration that did change is drawn again, which shows what is recorded.
+      revision = 8;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(root.textContent).toContain("Revision 8");
+      expect(field("API key")).not.toBe(key);
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
     it("sets a new key from the row, once, and clears the field either way", async () => {
       let refuse = false;
       await start(() => choosable({ provider_profiles: [cloud()] }), {
