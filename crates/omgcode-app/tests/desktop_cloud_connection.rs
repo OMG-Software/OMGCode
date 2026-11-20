@@ -9,7 +9,8 @@ mod common;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
@@ -151,6 +152,33 @@ fn native(fixture: &Fixture, id: &CredentialId) -> Option<Vec<u8>> {
     }
 }
 
+/// Assert that no file under `root` holds `key`: the settings journal and
+/// every other persisted file. The native store keeps the key outside the
+/// data directory (Credential Manager or the Secret Service).
+fn assert_no_file_holds(root: &Path, key: &str) {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = 0;
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).expect("read data directory") {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files += 1;
+                let bytes = fs::read(&path).expect("read persisted file");
+                assert!(
+                    !bytes
+                        .windows(key.len())
+                        .any(|window| window == key.as_bytes()),
+                    "{} holds the key",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(files > 0, "the settings journal was not found");
+}
+
 fn profile_count(fixture: &Fixture) -> usize {
     ControlStore::open(&fixture.data)
         .expect("control store")
@@ -192,6 +220,7 @@ fn adding_ollama_cloud_records_the_profile_and_binds_the_key() {
     assert!(!text_of(&overview).contains(KEY), "overview holds the key");
     let again = service.settings_overview().expect("overview");
     assert!(!text_of(&again).contains(KEY));
+    assert_no_file_holds(&fixture.data, KEY);
 }
 
 /// Every refused request leaves no profile, no stored secret, and no change of
@@ -315,6 +344,8 @@ fn setting_a_key_replaces_the_stored_item() {
     assert_eq!(native(&fixture, &new).as_deref(), Some(NEXT_KEY.as_bytes()));
     assert_eq!(native(&fixture, &old), None, "the replaced item is deleted");
     assert!(!text_of(&overview).contains(NEXT_KEY));
+    assert_no_file_holds(&fixture.data, KEY);
+    assert_no_file_holds(&fixture.data, NEXT_KEY);
 
     // A local profile, an unknown name, a bad key, and a stale revision.
     service

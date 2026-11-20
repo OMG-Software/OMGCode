@@ -179,6 +179,13 @@ describe("mock backend", () => {
       model: "lfm2.5:latest",
     })) as Status;
     expect(chosen.model).toBe("lfm2.5:latest");
+    // The limit is 256 UTF-8 bytes, not 256 characters: 129 two-byte characters are refused.
+    await expect(
+      invoke("session_model_select", { session_id: id, model: "é".repeat(129) }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      invoke("session_model_select", { session_id: id, model: "é".repeat(128) }),
+    ).resolves.toMatchObject({ model: "é".repeat(128) });
     await expect(
       invoke("session_model_select", { session_id: id, model: "a\nb" }),
     ).rejects.toMatchObject({ code: "invalid_request" });
@@ -314,11 +321,41 @@ describe("mock backend", () => {
       code: "session_connection_stale",
     });
 
+    // Added again under the same name at another endpoint: offered, but not active, as in Rust.
+    const { revision: next } = (await invoke("settings_overview", {})) as SettingsOverview;
+    await invoke("settings_add_connection", {
+      revision: next,
+      name: "ollama",
+      kind: "ollama_local",
+      endpoint: "http://127.0.0.1:11435/v1",
+      api_key: null,
+    });
+    const replaced = (await invoke("connection_status", { session_id: id })) as {
+      stale: boolean;
+      choices: Array<{ name: string; active: boolean }>;
+    };
+    expect(replaced.stale).toBe(true);
+    expect(replaced.choices.map((choice) => choice.name)).toContain("ollama");
+    expect(replaced.choices.some((choice) => choice.active)).toBe(false);
+
     // Choosing again clears it.
     const chosen = (await invoke("connection_select", { session_id: id, profile: null })) as {
       stale: boolean;
     };
     expect(chosen.stale).toBe(false);
+  });
+
+  it("opens Workspace settings for the workspace a new session belongs to", async () => {
+    const { invoke } = createMockBackend();
+    const { workspaces } = (await invoke("workspace_list", {})) as WorkspaceList;
+    const second = workspaces[1]?.workspace_id;
+    expect(second).toBeDefined();
+    const created = (await invoke("session_create", { workspace_id: second, title: "two" })) as {
+      session_id: string;
+    };
+    await invoke("settings_show_workspace", { session_id: created.session_id });
+    const { scope } = (await invoke("settings_overview", {})) as SettingsOverview;
+    expect(scope).toEqual({ workspace_id: second });
   });
 
   it("adds Ollama Cloud with a key, replaces the key, and removes a bound profile", async () => {

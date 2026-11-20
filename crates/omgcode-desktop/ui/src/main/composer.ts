@@ -85,13 +85,20 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   // The open session, for the Workspace settings button (ADR-0071). Rust resolves its workspace.
   let sessionId: string | null = null;
   let workspaceError: string | null = null;
+  /** Counts Workspace settings requests; a failure is shown only for the latest, in its session. */
+  let workspaceRequest = 0;
   const workspaceButton = button("Workspace settings", () => {
     const id = sessionId;
     if (id === null) {
       return;
     }
     workspaceError = null;
+    workspaceRequest += 1;
+    const mine = workspaceRequest;
     api.settingsShowWorkspace(id).catch((failure: unknown) => {
+      if (mine !== workspaceRequest || sessionId !== id) {
+        return;
+      }
       workspaceError = toIpcError(failure).message;
       refresh();
     });
@@ -445,6 +452,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     setSession(id) {
       if (id !== sessionId) {
         workspaceError = null;
+        // A request for the session being left must not show its failure here.
+        workspaceRequest += 1;
       }
       sessionId = id;
       refresh();

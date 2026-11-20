@@ -113,6 +113,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     string,
     { profile: string | null | typeof FOLLOW; endpoint: string | null; model: string }
   >();
+  /** The workspace each session created here belongs to, as core records it. */
+  const sessionWorkspaces = new Map<string, string>();
   const settings: SettingsOverview = initialSettings();
   const nowUnix = (): number => Math.floor(now() / 1000);
 
@@ -561,6 +563,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         };
         sessions.push(created);
         byId.set(id, created);
+        sessionWorkspaces.set(id, str(args, "workspace_id"));
         groups[0]?.session_ids.unshift(id);
         return clone(created.summary);
       }
@@ -609,12 +612,15 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         settings.scope = null;
         return null;
       case "settings_show_workspace": {
-        session(str(args, "session_id"));
-        const first = settings.workspaces[0];
-        if (first === undefined) {
+        const id = str(args, "session_id");
+        session(id);
+        // A session created here names its workspace; a fixture session uses the first one.
+        const wanted = sessionWorkspaces.get(id) ?? settings.workspaces[0]?.workspace_id;
+        const found = settings.workspaces.find((w) => w.workspace_id === wanted);
+        if (found === undefined) {
           return fail("unknown_workspace", "The workspace is not registered.");
         }
-        settings.scope = { workspace_id: first.workspace_id };
+        settings.scope = { workspace_id: found.workspace_id };
         return null;
       }
       case "settings_clear_scope":
@@ -720,7 +726,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         const id = str(args, "session_id");
         session(id);
         const model = str(args, "model");
-        if (model.length > 256 || /\p{Cc}/u.test(model)) {
+        // The service's rule: at most 256 UTF-8 bytes and no control character.
+        if (new TextEncoder().encode(model).length > 256 || /\p{Cc}/u.test(model)) {
           fail("invalid_request", "The model name is not valid.");
         }
         const existing = sessionChoices.get(id);
@@ -915,6 +922,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
     const view = effectiveConnection(sessionId);
     const own = choice !== undefined && choice.profile !== FOLLOW;
+    const stale = staleChoice(sessionId);
     const choices = settings.connection.selectable
       ? settings.provider_profiles
           .filter((profile) => profile.selectable && profile.endpoint !== null)
@@ -922,14 +930,15 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             name: profile.name,
             kind: profile.kind,
             endpoint: profile.endpoint ?? "",
-            active: profile.name === view.profile,
+            // A replacement under the same name is offered, but active only once chosen again.
+            active: !stale && profile.name === view.profile,
           }))
       : [];
     return clone({
       connection: view,
       origin: !settings.connection.selectable ? "launch" : own ? "session" : "default",
       model: choice === undefined ? chatDefaults().settings.model : choice.model,
-      stale: staleChoice(sessionId),
+      stale,
       session_choices_unreadable: false,
       choices,
     } satisfies ConnectionStatus);

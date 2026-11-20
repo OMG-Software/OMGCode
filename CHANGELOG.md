@@ -200,6 +200,28 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Choosing a session's provider records nothing when the profile changed
+  during the native confirmation in any detail the dialog named, not only its
+  name or endpoint: a profile replaced under the same name and endpoint by
+  another provider kind, or one whose key was bound or removed meanwhile, is
+  refused with `stale_revision` (ADR-0071).
+- When adding an Ollama Cloud connection fails after its key was stored and
+  removing the new profile fails as well, the error still names the stored
+  item's identifier, so the operator can find and delete it.
+- The composer no longer shows a **Workspace settings** failure for a session
+  the operator has since left.
+- The `settings` window keeps an API key typed but not sent when another
+  setting changes and the window is drawn again: the key moves to the new
+  field of the same form and is never copied into view state. It is dropped
+  when its form closes or its connection is removed.
+- The development mock opens **Workspace settings** for the workspace a new
+  session belongs to, applies the 256-byte model limit in UTF-8 bytes, and
+  marks no connection active for a session whose choice is stale.
+- The desktop approvals tests read the approval list again while a running
+  turn holds the settings store, which is the list's documented `busy`
+  answer, instead of failing on the first one.
+- The guide's list of features that are not implemented no longer says that
+  Ollama Cloud and its write-only key field are CLI-only.
 - The composer no longer discards the whole model list when the endpoint it
   cached differs from the one `chat_models` resolved. That happened after the
   connection changed in the `settings` window, or when `chat_defaults` fell

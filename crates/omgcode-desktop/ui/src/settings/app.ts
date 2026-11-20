@@ -152,11 +152,54 @@ export function startSettings(root: HTMLElement): SettingsApp {
     // focus back on its replacement, so a keyboard user keeps their place.
     const active = document.activeElement;
     const focusedId = active instanceof HTMLElement && body.contains(active) ? active.id : "";
+    const unsent = takeUnsentKeys();
     replaceChildren(body, ...renderSection(scoped ? "workspaces" : view.section, context));
+    restoreUnsentKeys(unsent);
     const replacement = focusedId === "" ? null : document.getElementById(focusedId);
     if (replacement !== null && body.contains(replacement)) {
       replacement.focus();
     }
+  }
+
+  /**
+   * Takes every API key typed but not sent out of its field, by the field's id, which names the
+   * form and its connection. The keys move from the old fields to the new ones and are never put
+   * in view state.
+   */
+  function takeUnsentKeys(): Map<string, string> {
+    const unsent = new Map<string, string>();
+    for (const input of Array.from(
+      body.querySelectorAll<HTMLInputElement>('input[type="password"]'),
+    )) {
+      if (input.id !== "" && input.value !== "") {
+        unsent.set(input.id, input.value);
+        input.value = "";
+      }
+    }
+    return unsent;
+  }
+
+  /**
+   * Puts each key back into the new field with the same id, opening its disclosure. A key whose
+   * form is gone (closed, or its connection removed or no longer hosted) is dropped.
+   */
+  function restoreUnsentKeys(unsent: Map<string, string>): void {
+    for (const [id, value] of unsent) {
+      const input = document.getElementById(id);
+      if (
+        !(input instanceof HTMLInputElement) ||
+        input.type !== "password" ||
+        !body.contains(input)
+      ) {
+        continue;
+      }
+      input.value = value;
+      const disclosure = input.closest("details");
+      if (disclosure !== null) {
+        disclosure.open = true;
+      }
+    }
+    unsent.clear();
   }
 
   function select(id: SectionId): void {

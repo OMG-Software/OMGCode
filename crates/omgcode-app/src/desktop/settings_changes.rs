@@ -776,13 +776,16 @@ impl DesktopService {
             requested
         };
         confirm(prompt, &confirmation)?;
-        // What was confirmed must still be what is recorded.
+        // What was confirmed must still be what is recorded: the choice and
+        // every detail the dialog named, so a profile replaced under the same
+        // name and endpoint by another provider kind, or one whose key was
+        // bound or removed meanwhile, records nothing.
         let again = {
             let store = inner.open_control()?;
             requested_choice(store.as_ref(), request.profile.as_deref(), &inner.endpoint)
                 .map_err(|error| DesktopError::from_control(&error))?
         };
-        if again.0 != choice {
+        if again != (choice.clone(), confirmation) {
             return Err(DesktopError::stale_revision());
         }
         inner.update_session_record(session_id, |_| SessionRecord {
@@ -945,7 +948,7 @@ impl DesktopService {
                     match roll_back_profile(store, &credentials, &declaration.name) {
                         Ok(()) => DesktopError::from_provider_credential(&error),
                         Err(Some(left)) => DesktopError::credential_item_orphaned(&left),
-                        Err(None) => DesktopError::credential_orphaned(),
+                        Err(None) => DesktopError::connection_rollback_failed(&error),
                     },
                 ),
             }

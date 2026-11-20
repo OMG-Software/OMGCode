@@ -900,12 +900,43 @@ describe("settings window", () => {
       expect(field("API key")).toBe(key);
       expect(key.value).toBe(KEY);
 
-      // A configuration that did change is drawn again, which shows what is recorded.
+      // A configuration that did change is drawn again, which shows what is recorded; the
+      // unsent key moves to the new field of the same form, and nowhere else.
       revision = 8;
       window.dispatchEvent(new Event("focus"));
       await settle();
       expect(root.textContent).toContain("Revision 8");
       expect(field("API key")).not.toBe(key);
+      expect(field("API key").value).toBe(KEY);
+      expect(key.value).toBe("");
+      expect(root.innerHTML.includes(KEY)).toBe(false);
+      expect(ipc.calls.some((call) => JSON.stringify(call.args).includes(KEY))).toBe(false);
+    });
+
+    it("keeps an unsent Set key entry across a change, and drops it with its connection", async () => {
+      let profiles = [cloud()];
+      let revision = 7;
+      await start(() => choosable({ revision, provider_profiles: profiles }));
+      go("Model");
+      const disclosure = rowOf("hosted").querySelector("details") as HTMLDetailsElement;
+      disclosure.open = true;
+      const input = rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement;
+      input.value = KEY;
+
+      // Another setting changed (through the CLI): the row is drawn again and keeps the entry.
+      revision = 8;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      const again = rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement;
+      expect(again).not.toBe(input);
+      expect(again.value).toBe(KEY);
+      expect((rowOf("hosted").querySelector("details") as HTMLDetailsElement).open).toBe(true);
+
+      // The connection was removed: its form is gone, and so is the key.
+      revision = 9;
+      profiles = [];
+      window.dispatchEvent(new Event("focus"));
+      await settle();
       expect(pageHolds(KEY)).toBe(false);
     });
 

@@ -433,4 +433,24 @@ describe("per-session provider and model", () => {
       { command: "settings_show_workspace", args: { session_id: "s-b" } },
     ]);
   });
+
+  it("does not show a Workspace settings failure of the session that was left", async () => {
+    let fail: (reason: unknown) => void = () => undefined;
+    await start({
+      ...backend(),
+      settings_show_workspace: () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    });
+    await open("s-a");
+    buttonByText(root, "Workspace settings").click();
+    await settle();
+    await open("s-b");
+    fail({ code: "unknown_workspace", message: "The workspace is not registered." });
+    await settle();
+    const problem = root.querySelector(".composer-error") as HTMLElement;
+    expect(problem.hidden).toBe(true);
+    expect(problem.textContent).not.toContain("The workspace is not registered.");
+  });
 });

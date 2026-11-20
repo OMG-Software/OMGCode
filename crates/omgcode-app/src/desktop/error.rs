@@ -342,6 +342,23 @@ impl DesktopError {
         )
     }
 
+    /// Adding a connection with a key failed, and removing the new profile
+    /// failed too. When the key's failure left a new item whose deletion
+    /// failed, that item is named by its identifier: no profile names it, so
+    /// `provider-profile-show` cannot find it. Otherwise the generic message.
+    pub(crate) fn connection_rollback_failed(error: &ProviderCredentialError) -> Self {
+        match error {
+            ProviderCredentialError::Unrecorded { credential_id, .. }
+            | ProviderCredentialError::Unstored { credential_id, .. } => Self::new(
+                "credential_orphaned",
+                format!(
+                    "The stored API key {credential_id} could not be cleaned up and may remain in the operating system's credential store with no connection naming it, and the new connection may still be recorded without a key. Delete the item there, and check the connection in the trusted CLI with `provider-profile-show`."
+                ),
+            ),
+            _ => Self::credential_orphaned(),
+        }
+    }
+
     /// The application is shutting down.
     pub(crate) fn shutting_down() -> Self {
         Self::new("shutting_down", "The application is shutting down.")
@@ -530,5 +547,38 @@ mod tests {
             assert!(shown.message().contains(KEPT), "{}", shown.message());
             assert!(!shown.message().contains("NATIVE-DETAIL"));
         }
+    }
+
+    /// When the profile's rollback fails as well, an orphaned item is still
+    /// named by its identifier; a failure that left no item keeps the generic
+    /// message. No native text either way.
+    #[test]
+    fn a_failed_rollback_still_names_the_orphaned_item() {
+        for error in [
+            ProviderCredentialError::Unrecorded {
+                error: io_error(),
+                credential_id: id(KEPT),
+                cleanup: CredentialError::Io(io::Error::other("NATIVE-DETAIL")),
+            },
+            ProviderCredentialError::Unstored {
+                error: CredentialError::Io(io::Error::other("NATIVE-DETAIL")),
+                credential_id: id(KEPT),
+                cleanup: CredentialError::Io(io::Error::other("NATIVE-DETAIL")),
+            },
+        ] {
+            let shown = DesktopError::connection_rollback_failed(&error);
+            assert_eq!(shown.code(), "credential_orphaned");
+            assert!(shown.message().contains(KEPT), "{}", shown.message());
+            assert!(shown.message().contains("provider-profile-show"));
+            assert!(!shown.message().contains("NATIVE-DETAIL"));
+        }
+        let plain =
+            DesktopError::connection_rollback_failed(&ProviderCredentialError::Control(io_error()));
+        assert_eq!(plain.code(), "credential_orphaned");
+        assert_eq!(
+            plain.message(),
+            DesktopError::credential_orphaned().message()
+        );
+        assert!(!plain.message().contains("NATIVE-DETAIL"));
     }
 }

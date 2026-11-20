@@ -88,20 +88,23 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing credentials, toolchain profiles, container grants,
-  package-network profiles, and skills in the desktop application, and
-  adding a profile with a credential or a cloud provider kind. They change
-  only through the trusted CLI. The rest of phase S3 and phases S4 and S5 of
+- Changing toolchain profiles, container grants, package-network profiles,
+  and skills in the desktop application, binding a credential to a local
+  LM Studio profile, and adding any cloud provider other than Ollama Cloud.
+  They change only through the trusted CLI. The `settings` window adds an
+  Ollama Cloud connection with its API key, replaces the key, and removes the
+  connection, through the write-only key field (ADR-0071). The rest of phase
+  S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: the write-only API key field, execution setup, and
-  skill management.
+  are not implemented: execution setup and skill management.
 - Development panels: terminal tabs, task logs, diffs, and a file browser.
 - Git, MCP, and memory interfaces, and skill management. The `main` window
   can only select an already enabled skill for one turn.
 - A recovery interface for damaged journals or an incomplete tail.
-- A provider other than a local LM Studio or Ollama server. Stored API keys
-  are used only for an LM Studio server's token. The `main` window shows
-  nothing about the credential source beyond the endpoint text.
+- A provider other than a local LM Studio or Ollama server and Ollama Cloud.
+  Stored API keys are used only for an LM Studio server's token and an Ollama
+  Cloud key. The `main` window shows nothing about the credential source
+  beyond the endpoint text and the hosted label.
 - A native operating-system confirmation dialog for approvals.
 
 Platform status. The shell was built, tested, and driven end to end on Windows

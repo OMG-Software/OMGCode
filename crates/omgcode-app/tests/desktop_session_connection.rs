@@ -228,13 +228,26 @@ fn a_session_choice_carries_that_sessions_turns_and_model_list() {
         code(send(&service, first, &default.endpoint)),
         "connection_changed"
     );
-    send(&service, first, &ollama.endpoint).expect("turn starts");
+    // The composer sends the model the status names for the session.
+    let mut settings = settings_json(&ollama.endpoint);
+    settings["model"] = json!(chosen.model);
+    service
+        .chat_send(wire(json!({
+            "session_id": first,
+            "message": "hello",
+            "settings": settings,
+            "skills": [],
+        })))
+        .expect("turn starts");
     let done = wait_finished(&service, first);
     assert!(matches!(done.state, ChatState::Completed), "{done:?}");
     let (served, recorded) = ollama.finish_recorded();
     assert_eq!(served, 2);
     assert!(recorded[0].head.starts_with("GET /v1/models "));
     assert!(recorded[1].head.starts_with("POST /v1/chat/completions "));
+    let request: serde_json::Value =
+        serde_json::from_str(&recorded[1].body).expect("chat request body");
+    assert_eq!(request["model"], "lfm2.5:latest");
     default.assert_untouched();
 }
 
@@ -404,6 +417,59 @@ fn a_refused_or_declined_choice_records_nothing() {
             serde_json::from_value::<omgcode_app::desktop::ConnectionChooseRequest>(bad).is_err()
         );
     }
+}
+
+/// Runs `change` while the dialog is open, as the trusted CLI could, then
+/// answers Yes.
+struct ChangedMeanwhile<F: Fn()>(F);
+
+impl<F: Fn()> SettingsPrompt for ChangedMeanwhile<F> {
+    fn pick_folder(
+        &self,
+        _purpose: FolderPurpose,
+        _start: Option<&std::path::Path>,
+    ) -> Option<PathBuf> {
+        panic!("no folder dialog is expected");
+    }
+
+    fn confirm(&self, _confirmation: &Confirmation) -> bool {
+        (self.0)();
+        true
+    }
+}
+
+/// A Yes holds only for what the dialog named. A profile replaced during the
+/// dialog under the same name and endpoint by another provider kind records
+/// nothing, although the recorded choice (name and endpoint) is unchanged.
+#[test]
+fn a_profile_replaced_by_another_kind_during_the_dialog_records_nothing() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let server = NoCallServer::start();
+    let service = active(&fixture, &unused_endpoint());
+    let vault = Vault::new(&fixture.data);
+    vault.add_profile_at("local", "lm_studio", "none", &server.endpoint);
+    let id = session(&service, workspace.id);
+
+    let prompt = ChangedMeanwhile(|| {
+        vault.remove_profile("local");
+        vault.add_profile_at("local", "ollama_local", "none", &server.endpoint);
+    });
+    let refused = service.connection_select(
+        wire(json!({ "session_id": id, "profile": "local" })),
+        &prompt,
+    );
+    assert_eq!(code(refused), "stale_revision");
+    assert!(!record_file(&fixture).exists());
+    assert_eq!(status(&service, Some(id)).origin, ConnectionOrigin::Default);
+
+    // Chosen again, the dialog names the provider that is recorded now.
+    let prompt = Answers::with(&[true]);
+    choose(&service, id, Some("local"), &prompt).expect("choose again");
+    let shown = prompt.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].message.contains("Ollama"), "{}", shown[0].message);
+    server.assert_untouched();
 }
 
 /// An Ollama Cloud profile is offered once its key is bound, and its dialog says
