@@ -293,6 +293,15 @@ describe("inline content", () => {
     expect(only(root, "code").textContent).toBe("c");
     expect(root.textContent).toBe('<span title="*a* `x">b</span> and c');
   });
+
+  it("does not end a tag at a > inside a quoted attribute value", () => {
+    const quoted = md(`<a title="x>" *y*> and <b alt='>' *z*>`);
+    expect(quoted.querySelector("em")).toBeNull();
+    expect(quoted.textContent).toBe(`<a title="x>" *y*> and <b alt='>' *z*>`);
+    // A quote left open is not a tag, so the text after it is parsed as usual.
+    const open = md('<a title="x> *y*');
+    expect(only(open, "em").textContent).toBe("y");
+  });
 });
 
 describe("untrusted content stays inert", () => {

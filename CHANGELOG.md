@@ -64,7 +64,8 @@ Changes are recorded here before a release version is assigned.
     line continues only an item's open paragraph, so an item that starts
     empty, as in `-` then ` foo`, ends before an under-indented line.
     Without `Intl.Segmenter`, the image keeps combining marks, emoji
-    modifiers, variation selectors, joined emoji, and flags whole.
+    modifiers, variation selectors, joined emoji, and flags whole. A `>`
+    inside a quoted attribute value no longer ends an HTML-like tag.
   - **Tests (reply actions):** model labels from manifests and their reset
     at a turn start, a hostile model id, the live entry label, the label in
     the window, each copy action, refusal and label reset, plain-text

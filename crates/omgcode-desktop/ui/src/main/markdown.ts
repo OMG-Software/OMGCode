@@ -771,9 +771,10 @@ function destinationEnd(source: string, ends: Int32Array, open: number): number 
 
 /**
  * The index of the `>` ending an HTML-like tag that starts at `at`: `<name>`, `</name>`, or a
- * name followed by whitespace or `/` and up to `MAX_TAG_CHARS` characters without `<`. The tag
- * is shown as text, but it is kept whole, so a delimiter inside it matches nothing outside it.
- * Each search stops at the next `<`, so the searches never overlap.
+ * name followed by whitespace or `/` and up to `MAX_TAG_CHARS` characters without `<`. A `>`
+ * inside a quoted attribute value does not end the tag, and a quote left open means no tag. The
+ * tag is shown as text, but it is kept whole, so a delimiter inside it matches nothing outside
+ * it. Each search stops at the next `<`, even inside quotes, so the searches never overlap.
  */
 function tagEnd(source: string, at: number): number {
   let k = at + 1;
@@ -794,13 +795,20 @@ function tagEnd(source: string, at: number): number {
     return -1;
   }
   const limit = Math.min(source.length, at + MAX_TAG_CHARS);
+  let quote = "";
   for (; k < limit; k += 1) {
     const ch = source.charAt(k);
-    if (ch === ">") {
-      return k;
-    }
     if (ch === "<") {
       return -1;
+    }
+    if (quote !== "") {
+      if (ch === quote) {
+        quote = "";
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ">") {
+      return k;
     }
   }
   return -1;

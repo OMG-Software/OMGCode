@@ -102,7 +102,8 @@ command and opens no dialogs.
 - The image is a repaint, not a screenshot. Shadows, gradients, outlines,
   images, and text ellipses are not drawn, and glyph positions can differ
   slightly from the screen. It was compared with the screen in a Chromium
-  browser pane against the mock backend.
+  browser pane against the mock backend, where a code line scrolled far past
+  the reply's edge was also painted wrapped inside the image.
 - A model server chooses the id shown as the label. A crafted id could read
   like another name; the reply's position and shading still mark it as a
   reply.
