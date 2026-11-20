@@ -246,7 +246,12 @@ fn a_refused_add_records_nothing_and_never_repeats_the_key() {
             "{error} {error:?} {}",
             serde_json::to_string(&error).expect("json")
         );
-        assert!(!shown.contains(secret), "{label}: {shown}");
+        // The failure message names the case only: printing `shown` would
+        // write the key to the test log in exactly the case this catches.
+        assert!(
+            !shown.contains(secret),
+            "{label}: the refusal repeats the key"
+        );
     }
     assert_eq!(revision(&fixture), before);
     assert_eq!(profile_count(&fixture), 0);
