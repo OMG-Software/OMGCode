@@ -21,7 +21,8 @@ each call; it does not infer a live binding from journal metadata. Tool-enabled
 chat preserves those checks and also requires the live `model_tools`
 preference before each call.
 
-Trusted apply can replace an existing file on Linux ext4 or Windows NTFS under
+Trusted apply can replace an existing file on a Linux ext4, btrfs, XFS, tmpfs,
+or ZFS mount, or on a Windows NTFS or ReFS volume, under
 the [replacement contract](#replacement-contract). Trusted restore writes a
 retained checkpoint's original bytes back through that same apply path, and
 trusted checkpoint deletion removes one resolved private entry; see
@@ -261,9 +262,11 @@ registered data-root identity and creation time, and uses `openat2` without
 symlink or magic-link traversal. Selecting the trusted data root can cross a
 mount; child traversal cannot. Generated procfs reopening requires procfs and
 verifies the retained file identity again. There is no weaker path fallback.
-Windows uses the NTFS private store from
+Windows uses the private store from
 [ADR-0023](adr/0023-store-windows-checkpoints-with-verified-acls.md), with exact
-protected per-user DACLs. No automatic chmod or ACL repair occurs.
+protected per-user DACLs, on an NTFS or ReFS volume that reports persistent
+ACLs, POSIX unlink and rename, case-preserved Unicode names, and extended
+attributes ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). No automatic chmod or ACL repair occurs.
 
 The source and private root must have the same device identifier before
 initialization. This check does not qualify a later rename across mount aliases.
@@ -350,10 +353,18 @@ and no operation ID. A source read can still create its ordinary read audit.
 
 Native apply requires Linux with `openat2`, procfs, and a positive
 `statx` mount ID (available since Linux 5.8). The retained workspace parent and
-private storage must be on the same ext4 mount. Check the mount ID against a
+private storage must be on the same mount, and its type must be ext4, btrfs, XFS,
+tmpfs, or ZFS ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Check the mount ID against a
 bounded kernel mountinfo record and probe directory sync before private work.
-Equal device numbers alone do not establish this. Mount aliases, non-ext4
-mounts, missing controls, and unsupported platforms fail closed. Existing
+Equal device numbers alone do not establish this. Mount aliases, other mount
+types, missing controls, and unsupported platforms fail closed. The refusal
+reads `workspace mount uses nfs4; file writes require ext4, btrfs, XFS, tmpfs,
+or ZFS`. The inode-attribute policy comes from the open file's `statfs` magic.
+ext4 may carry only `FS_EXTENT_FL`. The other filesystems may carry no
+`FS_IOC_GETFLAGS` flag, and `FS_IOC_FSGETXATTR` fields must be zero, so btrfs
+NOCOW or compression and XFS allocation hints or project inheritance are
+refused. Only tmpfs may lack the attribute ioctls. overlayfs, NFS, SMB, FUSE,
+FAT, and exFAT stay refused. tmpfs is not persistent. Existing
 read/list/create and standalone checkpoint preparation retain their earlier
 requirements.
 
@@ -394,6 +405,8 @@ Native verification covers the ordered sync calls and fault/reopen behavior on
 Ubuntu 24.04 under WSL, kernel 6.6.87.2, on ext4 with `data=ordered`.
 This does not qualify physical power-loss behavior or a release filesystem
 matrix. See [ADR-0022](adr/0022-publish-one-verified-stage-on-linux-ext4.md).
+[ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) widened the accepted mounts beyond ext4 and makes no power-loss claim
+for any of them.
 
 ### Admission and conflict checks
 
@@ -594,8 +607,8 @@ normalized path, and the file's size and SHA-256, and the summary is `delete
 {path}: {n} bytes, sha256 {12}`. After approval, the handler checks the success
 report fits, consumes the record, and calls `FileBroker::apply_removal`. It
 runs the checkpointed apply's sequence without a stage: the live binding, both
-preferences, checkpoint admission, the qualified filesystem (Linux ext4,
-Windows NTFS), a capture whose size and SHA-256 must match, a durable checkpoint
+preferences, checkpoint admission, the accepted filesystem (Linux ext4,
+btrfs, XFS, tmpfs, or ZFS; Windows NTFS or ReFS), a capture whose size and SHA-256 must match, a durable checkpoint
 of the original bytes under a `remove` record, a recheck that the target is
 still the captured object, commit intent, one native removal attempt, and a
 success record. A change before commit intent is `checkpoint_conflict` and
@@ -782,8 +795,9 @@ is made. Replay and archive/restore must never execute a recorded replacement.
 
 ### Native backend gates
 
-Linux ext4 and Windows NTFS are implemented prototypes. Windows is unqualified
-for release.
+Linux ext4, btrfs, XFS, tmpfs, and ZFS and Windows NTFS and ReFS are
+implemented prototypes ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Windows is unqualified
+for release, and no filesystem has a power-loss claim.
 [ADR-0023](adr/0023-store-windows-checkpoints-with-verified-acls.md) accepts a
 directory-handle flush for persistence, for which Microsoft gives no contract,
 and records observed rename behaviour.
@@ -791,8 +805,8 @@ and records observed rename behaviour.
 
 | Backend | Required primitive and review gate |
 | --- | --- |
-| Linux | Require one ext4 mount and retained rooted parent handles. Use one `renameat2` replacement from the private stage. Sync checkpoint files, checkpoint directories, the staged/published file, and both rename parents in the required order. The rename changes the namespace atomically; it cannot check expected content. |
-| Windows | Require NTFS, one volume, and retained handles. Use one `FileRenameInformationEx` replacement from the private stage to the retained target parent, with replace-if-exists and POSIX semantics. Flush checkpoint files, directories, the published file, and both parents, and refuse a failed flush. The flush has no Microsoft persistence contract, and the directory-option contract gap remains open. |
+| Linux | Require one mount of an accepted type (ext4, btrfs, XFS, tmpfs, or ZFS) and retained rooted parent handles. Use one `renameat2` replacement from the private stage. Sync checkpoint files, checkpoint directories, the staged/published file, and both rename parents in the required order. The rename changes the namespace atomically; it cannot check expected content. |
+| Windows | Require NTFS or ReFS with the required volume capabilities, one volume, and retained handles. Use one `FileRenameInformationEx` replacement from the private stage to the retained target parent, with replace-if-exists and POSIX semantics. Flush checkpoint files, directories, the published file, and both parents, and refuse a failed flush. The flush has no Microsoft persistence contract, and the directory-option contract gap remains open. |
 
 The [Linux rename contract](https://man7.org/linux/man-pages/man2/rename.2.html)
 defines replacement publication, and its
@@ -822,7 +836,7 @@ directory durability remains unqualified and is not a current guarantee.
 ### Implemented Windows apply (Phase A3b)
 
 The v0.10.0 `file apply` command uses the same arguments and record flow on
-Windows NTFS. The same limits apply: stop other writers first, and a swap or
+Windows NTFS. ADR-0068 later added ReFS. The same limits apply: stop other writers first, and a swap or
 removal after the final check can go undetected. The retained source handle
 blocks new writers while the operation runs, so an in-place edit cannot happen
 during it. A writer that already has the file open refuses the capture. A
@@ -834,7 +848,8 @@ including read-only and hidden, alternate data streams, extended attributes,
 mandatory labels, resource attributes, scoped policy entries, an owner other
 than the current user or the token default owner, a name that differs from the
 stored name by case or short-name alias, hard links, reparse points, a different
-volume, and filesystems other than NTFS. An audit SACL cannot be read without
+volume, filesystems other than NTFS and ReFS, and files with the ReFS
+integrity-stream or no-scrub attribute. An audit SACL cannot be read without
 elevation, so it is neither checked nor preserved. The file ID and modification
 time can change.
 

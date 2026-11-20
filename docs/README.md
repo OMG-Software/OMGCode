@@ -41,7 +41,7 @@ remaining product contracts.
 | [Platform support](platform-support.md) | Windows/Linux targets, prerequisites, and the evidence for each, including the desktop shell |
 | [Provider authentication](provider-authentication.md) | Required subscription/API profiles, provider evidence, and readiness gates |
 | [Workspace settings](workspace-permissions.md) | Implemented workspace IDs, configuration-only permissions, revisions, audit, and remaining gates |
-| [Workspace file access](file-access.md) | Native broker, previews, Linux ext4 apply, checkpoint storage, and existing-only recovery |
+| [Workspace file access](file-access.md) | Native broker, previews, trusted apply on supported filesystems, checkpoint storage, and existing-only recovery |
 | [Filesystem qualification plan](filesystem-qualification.md) | Release filesystem matrix and power-loss campaign for checkpoints and apply; plan only, not run |
 | [Development tools](development-tools.md) | Installed/managed toolchains, runtime grants, outputs, caches, and qualification |
 | [Command execution](execution.md) | Process-tree runner contract, confinement, trusted runs, toolchain profiles, the run journal, limits, and next increments |

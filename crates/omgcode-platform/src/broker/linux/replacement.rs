@@ -1,4 +1,5 @@
-//! Linux ext4-only handle-relative replacement publication.
+//! Linux handle-relative replacement publication on ext4, btrfs, XFS, tmpfs,
+//! or ZFS (ADR-0068). Other mount types are refused before any artifact.
 
 use super::{
     FileSnapshot, NativeWorkspace, RelativePath, changed_during_operation, invalid_data,
@@ -6,6 +7,7 @@ use super::{
 };
 use crate::broker::{FileCapture, MAX_FILE_BYTES};
 use crate::directory_identity;
+use crate::private_store::linux::LinuxFilesystem;
 use crate::private_store::{NativeSecurity, PrivateDirectory, PrivateFileIdentity, StageMetadata};
 use rustix::fs::{
     AtFlags, Mode, OFlags, RenameFlags, ResolveFlags, StatxFlags, fchmod, fchown, fstat, fsync,
@@ -21,6 +23,8 @@ use std::time::SystemTime;
 const MOUNT_INFO_LIMIT: usize = 1024 * 1024;
 const MOUNT_INFO_READ_LIMIT: u64 = 1024 * 1024 + 1;
 const STAGE_NAME: &str = "stage";
+/// Longest mount type repeated in an error message.
+const MAX_REPORTED_TYPE: usize = 32;
 
 /// A retained existing workspace entry and its bounded expected version.
 pub struct ReplacementTarget<'a> {
@@ -69,7 +73,7 @@ impl NativeWorkspace {
         let workspace = self.workspace_handle()?;
         let (parent, name) = self.parent_and_name(&workspace, path)?;
         let mount_id = directory_mount_id(&parent)?;
-        require_ext4_mount(mount_id)?;
+        require_supported_mount(mount_id)?;
         let pinned = openat2(
             &parent,
             Path::new(&name),
@@ -142,7 +146,7 @@ impl ReplacementTarget<'_> {
         &self.capture
     }
 
-    /// Check the target mount and ext4 qualification before private artifacts.
+    /// Check that storage shares the qualified target mount before private artifacts.
     pub fn check_storage(&self, directory: &PrivateDirectory) -> io::Result<()> {
         directory.identity()?;
         let target_mount = directory_mount_id(&self.parent)?;
@@ -525,7 +529,9 @@ fn validate_same_mount(expected: u64, target: u64, storage: u64) -> io::Result<(
     Ok(())
 }
 
-fn require_ext4_mount(mount_id: u64) -> io::Result<()> {
+/// Refuses a mount whose type is not one of the functionally tested ones.
+/// The type comes from the unique mountinfo record for the retained mount ID.
+fn require_supported_mount(mount_id: u64) -> io::Result<LinuxFilesystem> {
     let mut file = File::open("/proc/self/mountinfo")?;
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
@@ -538,14 +544,25 @@ fn require_ext4_mount(mount_id: u64) -> io::Result<()> {
         ));
     }
     let expected = mount_id.to_string();
-    let filesystem = mount_type_for_id(&bytes, expected.as_bytes())?;
-    if filesystem != b"ext4" {
-        return Err(io::Error::new(
+    classify_mount_type(mount_type_for_id(&bytes, expected.as_bytes())?)
+}
+
+fn classify_mount_type(filesystem: &[u8]) -> io::Result<LinuxFilesystem> {
+    LinuxFilesystem::from_mount_type(filesystem).ok_or_else(|| {
+        // Display text only, bounded; the comparison above used the bytes.
+        let shown = filesystem.get(..MAX_REPORTED_TYPE).unwrap_or(filesystem);
+        let shown = if shown.is_empty() {
+            "an unnamed filesystem".into()
+        } else {
+            String::from_utf8_lossy(shown)
+        };
+        io::Error::new(
             io::ErrorKind::Unsupported,
-            "replacement requires ext4",
-        ));
-    }
-    Ok(())
+            format!(
+                "workspace mount uses {shown}; file writes require ext4, btrfs, XFS, tmpfs, or ZFS"
+            ),
+        )
+    })
 }
 
 fn mount_type_for_id<'a>(bytes: &'a [u8], expected: &[u8]) -> io::Result<&'a [u8]> {
@@ -688,7 +705,7 @@ mod tests {
         let directory = PrivateDirectory::open(storage.path()).expect("private directory");
         target
             .check_storage(&directory)
-            .expect("same ext4 mount preflight");
+            .expect("same supported mount preflight");
         let old_id = PrivateFileIdentity {
             volume: target.capture.volume,
             file_id: target.capture.file_id,
@@ -763,18 +780,22 @@ mod tests {
         let path = fs::canonicalize(other.path()).expect("native fixture path");
         let directory = PrivateDirectory::open(&path).expect("existing private directory");
         let other_id = directory_mount_id(directory.native_file()).expect("actual mount ID");
-        assert_ne!(target.mount_id, other_id);
-        assert_eq!(
-            require_ext4_mount(other_id)
-                .expect_err("tmpfs unavailable")
-                .kind(),
-            io::ErrorKind::Unsupported
-        );
+        if target.mount_id == other_id {
+            // TMPDIR is itself on /dev/shm, so this host has no second mount
+            // here. The same-mount comparison is still covered by unit checks.
+            eprintln!("skipped: the temporary directory is already on /dev/shm");
+            return;
+        }
+        // Both mounts may be supported types; the refusal is the mount mismatch.
         let refusal = target
             .prepare_stage(directory, b"after")
             .err()
             .expect("cross-mount refusal");
         assert_eq!(refusal.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(
+            refusal.to_string(),
+            "replacement storage and target are not on the same mounted filesystem"
+        );
         assert!(!path.join("stage").exists());
         assert_eq!(fs::read(source).expect("unchanged source"), b"before");
     }
@@ -1055,6 +1076,68 @@ mod tests {
             mount_id_from_statx(StatxFlags::MNT_ID.bits(), 42).expect("present ID"),
             42
         );
+    }
+
+    #[test]
+    fn given_each_mount_type_when_classified_then_only_the_tested_types_are_accepted() {
+        for (name, kind) in [
+            (&b"ext4"[..], LinuxFilesystem::Ext4),
+            (b"btrfs", LinuxFilesystem::Btrfs),
+            (b"xfs", LinuxFilesystem::Xfs),
+            (b"tmpfs", LinuxFilesystem::Tmpfs),
+            (b"zfs", LinuxFilesystem::Zfs),
+        ] {
+            assert_eq!(classify_mount_type(name).expect("accepted"), kind);
+        }
+        for name in ["nfs4", "overlay", "fuse.sshfs", "vfat", "proc"] {
+            let refusal = classify_mount_type(name.as_bytes()).expect_err("refused");
+            assert_eq!(refusal.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(
+                refusal.to_string(),
+                format!(
+                    "workspace mount uses {name}; file writes require ext4, btrfs, XFS, tmpfs, or ZFS"
+                )
+            );
+        }
+        assert_eq!(
+            classify_mount_type(b"").expect_err("empty").to_string(),
+            "workspace mount uses an unnamed filesystem; file writes require ext4, btrfs, XFS, \
+             tmpfs, or ZFS"
+        );
+        let long = classify_mount_type(&[b'x'; 300])
+            .expect_err("long")
+            .to_string();
+        assert!(long.contains(&"x".repeat(MAX_REPORTED_TYPE)));
+        assert!(!long.contains(&"x".repeat(MAX_REPORTED_TYPE + 1)));
+    }
+
+    #[test]
+    fn given_the_test_temporary_mount_when_queried_then_it_is_a_supported_type() {
+        let (_root, workspace, _storage) = fixture();
+        let handle = workspace.workspace_handle().expect("workspace handle");
+        let mount_id = directory_mount_id(&handle).expect("mount ID");
+        require_supported_mount(mount_id)
+            .expect("test temporary storage must be ext4, btrfs, XFS, tmpfs, or ZFS");
+    }
+
+    /// CI sets the variable for each filesystem job, so a job whose temporary
+    /// directory landed on another mount fails instead of passing silently.
+    #[test]
+    #[ignore = "set OMGCODE_TEST_EXPECT_FS to ext4, btrfs, xfs, tmpfs, or zfs for a filesystem job"]
+    fn the_temporary_directory_is_on_the_expected_filesystem() {
+        let expected = std::env::var("OMGCODE_TEST_EXPECT_FS")
+            .expect("OMGCODE_TEST_EXPECT_FS names the expected filesystem");
+        let (_root, workspace, _storage) = fixture();
+        let handle = workspace.workspace_handle().expect("workspace handle");
+        let mount_id = directory_mount_id(&handle).expect("mount ID");
+        let actual = match require_supported_mount(mount_id).expect("supported mount") {
+            LinuxFilesystem::Ext4 => "ext4",
+            LinuxFilesystem::Btrfs => "btrfs",
+            LinuxFilesystem::Xfs => "xfs",
+            LinuxFilesystem::Tmpfs => "tmpfs",
+            LinuxFilesystem::Zfs => "zfs",
+        };
+        assert_eq!(actual, expected, "temporary directory filesystem");
     }
 
     #[test]

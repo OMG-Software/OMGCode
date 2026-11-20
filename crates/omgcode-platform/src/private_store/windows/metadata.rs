@@ -26,9 +26,9 @@ use windows_sys::Win32::Security::{
     SetKernelObjectSecurity, SetSecurityDescriptorControl,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
-    FILE_BASIC_INFO, FILE_STREAM_INFO, FileBasicInfo, FileStreamInfo, GetFileInformationByHandleEx,
-    SetFileInformationByHandle,
+    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_INTEGRITY_STREAM, FILE_ATTRIBUTE_NO_SCRUB_DATA,
+    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_BASIC_INFO, FILE_STREAM_INFO,
+    FileBasicInfo, FileStreamInfo, GetFileInformationByHandleEx, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -46,6 +46,8 @@ const INSPECTED_SECURITY: OBJECT_SECURITY_INFORMATION = PRESERVED_SECURITY
     | SCOPE_SECURITY_INFORMATION;
 const SUPPORTED_ATTRIBUTES: u32 =
     FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+const REFS_INTEGRITY_ATTRIBUTES: u32 =
+    FILE_ATTRIBUTE_INTEGRITY_STREAM | FILE_ATTRIBUTE_NO_SCRUB_DATA;
 const MAX_DESCRIPTOR_UNITS: usize = 16 * 1024;
 const STREAM_BUFFER_BYTES: usize = 4096;
 const DEFAULT_STREAM: &str = "::$DATA";
@@ -204,7 +206,14 @@ pub(crate) fn set_content_indexing(file: &File, not_content_indexed: bool) -> io
 
 /// Refuses attributes, alternate streams, and extended attributes on this handle.
 pub(crate) fn validate_file_metadata(file: &File) -> io::Result<()> {
-    if query_attributes(file)?.FileAttributes & !SUPPORTED_ATTRIBUTES != 0 {
+    let attributes = query_attributes(file)?.FileAttributes;
+    if attributes & REFS_INTEGRITY_ATTRIBUTES != 0 {
+        // A stage would need the same integrity state, which no store records.
+        return Err(unsupported(
+            "replacement cannot preserve ReFS integrity-stream attributes",
+        ));
+    }
+    if attributes & !SUPPORTED_ATTRIBUTES != 0 {
         return Err(unsupported(
             "replacement cannot preserve this file's attributes",
         ));

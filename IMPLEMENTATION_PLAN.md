@@ -380,12 +380,15 @@ suite on both hosts with default parallelism, as CI does. Use
 provider fixtures; record failures before any isolated rerun or full retry. A
 serial run alone cannot detect races between test threads.
 
-On a Windows host whose repository is on ReFS, point `TEMP` and `TMP` at a
-directory on NTFS. The private-store, credential, container, and replacement
-tests need NTFS. Earlier notes here put `TEMP` and `TMP` on the same volume as
-the fixtures; that works only when the repository volume is NTFS. Phase E
-development ran with the repository on a ReFS volume. See
-[testing standards](docs/testing-standards.md#desktop-shell-and-frontend).
+On a Windows host, `TEMP` and `TMP` may be on NTFS or ReFS
+([ADR-0068](docs/adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)),
+but they must name a per-user directory: a fresh volume root grants
+Authenticated Users only Modify, which lacks the `WRITE_OWNER` right that the
+fixtures use. Give the directory the Full Control shape of `%TEMP%` with
+`icacls <dir> /inheritance:r` and grants for the user, SYSTEM, and
+Administrators. Report the filesystem used. The notes below, and earlier notes
+here that required NTFS because the repository was on ReFS, predate ADR-0068.
+See [testing standards](docs/testing-standards.md#desktop-shell-and-frontend).
 
 Phase E final verification on 2026-11-16 used Rust 1.99.1 and default test
 parallelism, with the Windows and Linux runs one after the other.

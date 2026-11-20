@@ -4,6 +4,36 @@ Changes are recorded here before a release version is assigned.
 
 ## Unreleased
 
+### Changed
+
+- Version 0.47.0 accepts ReFS, including a Dev Drive, on Windows and btrfs,
+  XFS, tmpfs, and ZFS on Linux for trusted apply, checkpoint storage, and
+  Windows container grants (ADR-0068, accepted). Model edit, multi-edit, and
+  delete calls no longer fail with `native_error` on those volumes when the
+  data directory shares the volume or mount. No power-loss claim is made.
+  - **Platform (Windows):** one volume check replaces the NTFS name check for
+    the private store, the replacement target, and grant directories. It
+    accepts `NTFS` or `ReFS` only when the volume reports persistent ACLs,
+    POSIX unlink and rename, case-preserved Unicode names, and extended
+    attributes. A refusal names the role and filesystem, for example
+    `workspace volume uses exFAT; file writes require NTFS or ReFS`, instead
+    of `private storage requires NTFS on Windows`. Files carrying the ReFS
+    integrity-stream or no-scrub attribute are refused with their own message.
+  - **Platform (Linux):** apply accepts the `ext4`, `btrfs`, `xfs`, `tmpfs`,
+    and `zfs` mount types and refuses others as
+    `workspace mount uses nfs4; file writes require ext4, btrfs, XFS, tmpfs, or ZFS`.
+    The inode-attribute policy follows the open file's `statfs` magic: only
+    ext4 may carry the extents flag, `FSGETXATTR` must report nothing, and
+    only tmpfs may lack the attribute ioctls. A missing ioctl elsewhere is now
+    an `Unsupported` refusal rather than a raw `ENOTTY` error.
+  - **CI:** a `filesystems` job mounts ReFS on Windows Server 2025 and
+    btrfs, XFS, tmpfs, and ZFS on Ubuntu 24.04, checks the temporary directory
+    is there through the opt-in `OMGCODE_TEST_EXPECT_FS` test, and reruns the
+    platform, core, and CLI file-access suites.
+  - **Tests:** volume and mount classification, per-filesystem attribute
+    policy, a supported-temporary-volume check on both systems, and a
+    cross-mount test that no longer assumes tmpfs is refused.
+
 ### Added
 
 - Version 0.46.0 lists the models the local LM Studio or Ollama server

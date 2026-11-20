@@ -1,4 +1,4 @@
-//! AppContainer SIDs and DACL grants on NTFS.
+//! AppContainer SIDs and DACL grants on NTFS or ReFS.
 //!
 //! The container SID is derived from its name with
 //! `DeriveAppContainerSidFromAppContainerName`. Windows starts a process in
@@ -46,7 +46,9 @@ use windows_sys::core::HRESULT;
 
 use super::{ContainerAccess, ContainerName};
 use crate::broker::windows::{SHARE_READ_WRITE, validate_directory};
-use crate::private_store::windows::{Ace, ObjectSecurity, Sid, invalid_data, require_ntfs};
+use crate::private_store::windows::{
+    Ace, ObjectSecurity, Sid, VolumeRole, invalid_data, require_supported_filesystem,
+};
 use crate::{DirectoryIdentity, directory_identity};
 
 /// `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`: read, list, traverse, execute.
@@ -301,7 +303,7 @@ fn open_granted_directory(path: &Path, expected: DirectoryIdentity) -> io::Resul
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     validate_directory(&directory, expected.volume)?;
-    require_ntfs(&directory)?;
+    require_supported_filesystem(&directory, VolumeRole::ContainerGrant)?;
     if directory_identity(&directory)? != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -32,7 +32,7 @@ every filter branch. These tests ran on WSL 6.6 with Landlock ABI 3; they do not
 qualify other kernels. The 0.15.0 Windows tests copy the test binary into a
 granted directory, run it in a fresh AppContainer, and record each probe as
 `ok`, `denied`, or the OS error. The same probes run unconfined as a positive
-control. Grant tests change real ACLs on temporary NTFS directories, and each
+control. Grant tests change real ACLs on temporary NTFS or ReFS directories, and each
 test container deletes its profile when dropped, so runs leave no per-user
 AppContainer profiles. These tests ran on Windows 11 build 26300.
 
@@ -53,7 +53,7 @@ the workspace and revoke every grant when dropped. The `toolchain_acceptance` te
 variables. Run them explicitly with `--ignored` on both platforms and report
 each language that did not run. A missing variable fails the case rather than
 passing it. Since 0.27.0 the credential tests use the real native store:
-DPAPI files in a temporary private NTFS root on Windows, and the Secret Service
+DPAPI files in a temporary private NTFS or ReFS root on Windows, and the Secret Service
 default collection on the session bus on Linux. On Linux they need a running,
 unlocked Secret Service and fail without one; they must not be skipped or
 mocked. Only the Linux prompt-refusal tests use a mock Secret Service over a
@@ -103,6 +103,19 @@ Use the locked Cargo commands below. They are also configured in
 `.github/workflows/rust.yml` for Ubuntu 24.04 and Windows Server 2025. A CI
 matrix or passing test suite does not establish release support or sandbox
 containment.
+
+The `filesystems` CI job
+([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md))
+reruns the platform, core, and CLI file-access suites with the temporary
+directory on another filesystem. It mounts ReFS on Windows Server 2025 and
+btrfs, XFS, tmpfs, and ZFS on Ubuntu 24.04, and sets `TEMP` and `TMP` or
+`TMPDIR` to that mount. Before the suites it runs the ignored guard test
+`the_temporary_directory_is_on_the_expected_filesystem` with `--ignored`. The
+guard reads `OMGCODE_TEST_EXPECT_FS`, fails when the variable is missing, and
+fails unless the temporary directory is on the named filesystem. The job also
+fails unless exactly one guard test passed. These runs show functional
+behaviour only and make no power-loss claim. The btrfs, XFS, and ZFS cells have
+not run on a developer host, because creating those mounts needs root.
 
 Documentation-only changes need documentation checks. Do not report application
 tests for documentation-only work.
@@ -400,9 +413,15 @@ npm run test:dist
   posting of the close message, because the helper that posts it takes
   seconds to start on a loaded host. This proves the Windows wiring against a
   mock. It does not prove a live LM Studio server or Linux.
-- **ReFS and `TEMP`.** If the repository is on a ReFS volume, point `TEMP` and
-  `TMP` at an NTFS directory before the Cargo tests. The private-store,
-  credential, container, and replacement tests need NTFS. Report the setting.
+- **ReFS and `TEMP`.** ReFS is supported
+  ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)),
+  so `TEMP` and `TMP` may be on NTFS or ReFS. They must name a per-user
+  directory. A fresh volume root grants Authenticated Users only Modify, which
+  lacks the `WRITE_OWNER` right that the fixtures use. Give the directory the
+  Full Control shape of `%TEMP%`: run `icacls <dir> /inheritance:r` and grant
+  the current user, SYSTEM, and Administrators full control. Report the
+  filesystem that `TEMP` used. On 2026-11-20 the Windows platform suite (169
+  tests) passed with `TEMP` on a local ReFS volume on Windows 11 build 26300.
 - **Temp-directory ACL.** A data root under the user's Temp directory inherits
   an ACL that the private store refuses. The fixtures reset it; for a manual
   run do the same with
@@ -501,9 +520,12 @@ stage checks, non-CAS interleavings, authority refusal, and one native attempt.
 Test failures at the commit, verification, file sync, parent sync, and terminal
 append boundaries. Reopen actual files to distinguish unchanged targets,
 published targets, complete visible outcomes, and malformed ledger tails.
-Use ext4 for Linux temporary targets and private storage. The native cross-mount
-case also uses a disposable directory under `/dev/shm` on tmpfs. Tests do not
-establish physical power-loss behavior.
+Use any accepted filesystem (ext4, btrfs, XFS, tmpfs, or ZFS) for Linux
+temporary targets and private storage, and report which. The native cross-mount
+case also uses a disposable directory under `/dev/shm` on tmpfs; it skips with a
+message when `TMPDIR` is itself on `/dev/shm`. The Linux platform suite (142
+tests) passed on ext4 and on tmpfs under WSL 6.6. Tests do not establish
+physical power-loss behavior.
 
 Phase A3b runs the capture, storage, and apply tests natively on Windows NTFS.
 Exercise exact security descriptors, each refused metadata kind, sharing
@@ -521,12 +543,15 @@ default entries. CI temporary files inherit no entries, so a test that needs
 inherited entries must create them. To reproduce that locally, point `TMP` and
 `TEMP` at a directory without inheritable entries. Tests do not cover audit
 SACLs, a foreign owner,
-a second local user, a real second volume, ReFS, filter drivers, or physical
-power loss.
+a second local user, a real second volume, filter drivers, or physical power
+loss. They did not cover ReFS when written. The Windows platform suite has since
+passed with `TEMP` on a local ReFS volume, and the CI `filesystems` job runs it on
+ReFS ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
 
 Phase A4 adds restore and checkpoint-deletion tests in the core replacement
 module, the `replacement_records` ledger tests, the platform removal tests, and
-CLI `checkpoint_lifecycle` tests. Run them on native Windows NTFS and Linux ext4.
+CLI `checkpoint_lifecycle` tests. Run them on native Windows NTFS or ReFS and
+on Linux ext4, btrfs, XFS, tmpfs, or ZFS.
 Restore tests must show stale-content conflicts, foreign or missing checkpoints,
 denied authority, preserved security metadata, and a new checkpoint holding the
 replaced bytes. Deletion tests must show that unresolved operations are refused,

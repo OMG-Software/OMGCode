@@ -1,6 +1,8 @@
 # 0023: Store Windows checkpoints with verified ACLs
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0068](0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md),
+  which also accepts ReFS
 - Date: 2026-11-11
 
 ## Context

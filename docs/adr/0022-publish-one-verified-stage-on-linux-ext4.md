@@ -1,6 +1,8 @@
 # 0022: Publish one verified stage on Linux ext4
 
-- Status: Accepted
+- Status: Accepted; amended by
+  [ADR-0068](0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md),
+  which also accepts btrfs, XFS, tmpfs, and ZFS
 - Date: 2026-11-10
 
 ## Context

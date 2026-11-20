@@ -3,7 +3,7 @@
 //!
 //! These tests drive real turns with a scripted model, real files, and the
 //! real control store. Edit applies need a private data root; on Windows the
-//! temporary directory must be on NTFS (set `TEMP` and `TMP` accordingly).
+//! temporary directory must be on NTFS or ReFS (set `TEMP` and `TMP` accordingly).
 
 use std::collections::VecDeque;
 use std::fs;

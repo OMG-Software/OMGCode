@@ -1,6 +1,7 @@
 //! Handle-relative private storage. This is not workspace authorization.
 //!
-//! Linux requires openat2 and procfs. Windows requires NTFS and verified ACLs.
+//! Linux requires openat2 and procfs. Windows requires NTFS or ReFS and
+//! verified ACLs.
 //! Other backends refuse before I/O.
 
 #[cfg(target_os = "linux")]
