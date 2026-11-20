@@ -53,6 +53,13 @@ export function createConnectionModel(): ConnectionModel {
   let generation = 0;
   /** Counts model choices; only the latest one's answer is used, so the operator's last pick wins. */
   let modelCalls = 0;
+  /** Counts accepted provider choices; a model answer from before one is stale. */
+  let providerCalls = 0;
+  /**
+   * Every write (a model or a provider choice) runs after the one before it settled, because each
+   * IPC call runs on its own worker and two in flight could land out of order in Rust.
+   */
+  let writes: Promise<unknown> = Promise.resolve();
   let disposed = false;
   const listeners = new Set<(change: ConnectionChange) => void>();
 
@@ -67,6 +74,13 @@ export function createConnectionModel(): ConnectionModel {
     return error.code === CANCELLED_CODE
       ? CONNECTION_UNCHANGED
       : `${error.message} (${error.code})`;
+  }
+
+  /** Starts `write` once every earlier write has settled, whether it succeeded or failed. */
+  function enqueue<T>(write: () => Promise<T>): Promise<T> {
+    const run = writes.then(write, write);
+    writes = run.catch(() => undefined);
+    return run;
   }
 
   async function read(): Promise<void> {
@@ -98,11 +112,12 @@ export function createConnectionModel(): ConnectionModel {
     working = true;
     note = "";
     generation += 1;
+    providerCalls += 1;
     emit("busy");
     let status: ConnectionStatus | null = null;
     let failure: unknown = null;
     try {
-      status = await api.connectionSelect(id, profile);
+      status = await enqueue(() => api.connectionSelect(id, profile));
     } catch (reason) {
       failure = reason;
     }
@@ -162,17 +177,20 @@ export function createConnectionModel(): ConnectionModel {
       }
       modelCalls += 1;
       const mine = modelCalls;
+      const provider = providerCalls;
+      const stale = (): boolean =>
+        disposed || session !== id || mine !== modelCalls || provider !== providerCalls;
       note = "";
       try {
-        const status = await api.sessionModelSelect(id, model);
-        if (disposed || session !== id || mine !== modelCalls) {
+        const status = await enqueue(() => api.sessionModelSelect(id, model));
+        if (stale()) {
           return;
         }
         current = status;
         generation += 1;
         emit("model");
       } catch (reason) {
-        if (disposed || session !== id || mine !== modelCalls) {
+        if (stale()) {
           return;
         }
         note = describe(reason);

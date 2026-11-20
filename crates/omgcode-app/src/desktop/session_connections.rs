@@ -31,15 +31,19 @@
 //! - A write goes to a new temporary file in the same directory (created
 //!   exclusively, mode 0600 on Unix), is flushed, and is renamed over the
 //!   final name, as the chat preferences are written. One mutex serializes the
-//!   read-modify-write cycles of this service; it is held for file input and
-//!   output only, never across a dialog or a network request.
+//!   read-modify-write cycles of this service, and an exclusive lock on the
+//!   dedicated `session-connections.lock` file serializes them across desktop
+//!   processes that share the data folder, waiting at most two seconds and then
+//!   failing with `busy`. Both are held for file input and output only, never
+//!   across a dialog or a network request. Reads take no lock: a write is an
+//!   atomic rename, so a read sees the old file or the new one, never a mix.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use omgcode_core::control::{ControlStore, ProviderKind};
 use omgcode_core::provider::ModelEndpoint;
@@ -292,6 +296,69 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// How long a write waits for another process that holds the file lock.
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+/// The pause between lock attempts.
+const LOCK_POLL: Duration = Duration::from_millis(20);
+/// The lock file next to the data file. It holds nothing; only its lock matters.
+const LOCK_NAME: &str = "session-connections.lock";
+
+/// One read-modify-write cycle of the file (see `update_session_record`).
+fn update_record(
+    data_root: &Path,
+    session_id: Uuid,
+    change: impl FnOnce(Option<&SessionRecord>) -> SessionRecord,
+    wait: Duration,
+) -> Result<(), DesktopError> {
+    let _lock = lock_exclusive(data_root, wait)?;
+    let (mut records, _) = load_or_empty(data_root);
+    if !records.contains_key(&session_id) && records.len() >= MAX_SESSIONS {
+        return Err(DesktopError::session_choices());
+    }
+    let updated = change(records.get(&session_id));
+    records.insert(session_id, updated);
+    save(data_root, &records)
+}
+
+/// Hold the cross-process exclusive lock until the returned handle drops.
+///
+/// Two desktop processes can share one data folder, and the in-process mutex
+/// cannot order them. The lock is on a dedicated file, never on the data file,
+/// because the data file is replaced by rename. The wait is bounded so a
+/// stuck holder cannot freeze a command.
+///
+/// # Errors
+///
+/// `busy` when another holder keeps the lock for `wait`; `session_choices`
+/// when the lock file cannot be opened or locked.
+fn lock_exclusive(data_root: &Path, wait: Duration) -> Result<File, DesktopError> {
+    let directory = data_root.join(DIRECTORY);
+    create_directory(&directory).map_err(|_| DesktopError::session_choices())?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(directory.join(LOCK_NAME))
+        .map_err(|_| DesktopError::session_choices())?;
+    let started = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {
+                if started.elapsed() >= wait {
+                    return Err(DesktopError::busy());
+                }
+                std::thread::sleep(LOCK_POLL);
+            }
+            Err(TryLockError::Error(_)) => return Err(DesktopError::session_choices()),
+        }
+    }
+}
+
 /// Check a model id the way `chat_send` does: at most 256 bytes and no control
 /// character. An empty id clears the session's model.
 pub(super) fn check_model(model: &str) -> Result<(), DesktopError> {
@@ -342,13 +409,7 @@ impl Inner {
             .session_choices
             .lock()
             .map_err(|_| DesktopError::poisoned())?;
-        let (mut records, _) = load_or_empty(&self.data_root);
-        if !records.contains_key(&session_id) && records.len() >= MAX_SESSIONS {
-            return Err(DesktopError::session_choices());
-        }
-        let updated = change(records.get(&session_id));
-        records.insert(session_id, updated);
-        save(&self.data_root, &records)
+        update_record(&self.data_root, session_id, change, LOCK_WAIT)
     }
 
     /// The connection for one session's next request (ADR-0067 decision 7).
@@ -588,5 +649,63 @@ mod tests {
             check_model("a\u{7}b").expect_err("control").code(),
             "invalid_request"
         );
+    }
+
+    #[test]
+    fn writers_without_a_shared_mutex_keep_each_others_sessions() {
+        // Two independent writers stand for two desktop processes: they share
+        // no mutex, only the data folder.
+        let root = scratch("two-writers");
+        let writers: Vec<_> = (0..2u128)
+            .map(|writer| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    for step in 0..15u128 {
+                        let id = Uuid::from_u128(writer * 100 + step);
+                        update_record(&root, id, |_| profile_record("m"), Duration::from_secs(30))
+                            .expect("update");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer");
+        }
+        let (records, damaged) = load_or_empty(&root);
+        assert!(!damaged);
+        assert_eq!(records.len(), 30);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_write_fails_with_busy_while_another_handle_holds_the_lock() {
+        let root = scratch("held-lock");
+        let held = lock_exclusive(&root, Duration::from_millis(50)).expect("first lock");
+        let started = Instant::now();
+        let error = update_record(
+            &root,
+            Uuid::from_u128(1),
+            |_| profile_record("m"),
+            Duration::from_millis(100),
+        )
+        .expect_err("busy");
+        assert_eq!(error.code(), "busy");
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait is bounded"
+        );
+        assert!(load(&root).expect("load").is_none(), "nothing was written");
+        // Once the holder lets go, the same write succeeds.
+        drop(held);
+        update_record(
+            &root,
+            Uuid::from_u128(1),
+            |_| profile_record("m"),
+            Duration::from_millis(100),
+        )
+        .expect("after release");
+        assert_eq!(load_or_empty(&root).0.len(), 1);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 }

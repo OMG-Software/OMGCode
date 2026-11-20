@@ -1118,7 +1118,11 @@ What the design does:
 - **Per-session choices are re-checked and not tamper-evident.**
   `<data root>/desktop-v1/session-connections.json` maps a session id to the
   provider chosen for it and its model. Only Rust writes it, atomically, under
-  one lock that is never held across a dialog or a request. It holds a profile
+  one in-process lock and an exclusive file lock on the neighbouring
+  `session-connections.lock`, so two desktop processes on one data folder do not
+  drop each other's choices; a write waits at most two seconds for that lock and
+  then fails with `busy`. Reads take no lock, because a write is an atomic
+  rename. Neither lock is ever held across a dialog or a request. It holds a profile
   name, the confirmed endpoint, and a model name, and no credential. It is
   limited to 4,096 sessions and 1 MiB; a new entry beyond that is refused with
   `session_choices`. It is parsed strictly (a version, no unknown field); a

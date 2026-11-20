@@ -64,6 +64,20 @@ Changes are recorded here before a release version is assigned.
   back to the launch endpoint, and it left only the saved model on offer for
   LM Studio and Ollama. The list is now tied to the session and request it was
   asked for (ADR-0067).
+- A desktop launch with `--provider-profile` for an Ollama Cloud profile no
+  longer exits before a window opens. The launch check now keeps the profile's
+  token while it validates the endpoint; `--endpoint` and the default endpoint
+  still refuse a cloud endpoint without a token.
+- The scoped settings view and the Ollama Cloud add form no longer show
+  elements marked `hidden`; the settings stylesheet now has the generic
+  `[hidden]` rule the other windows have.
+- Model and provider choices for a session are sent one at a time, in order. A
+  quick second model choice can no longer be overtaken by the first, and a
+  provider change waits for a pending model save, so a late model reply cannot
+  attach an old server's model to the new provider.
+- Per-session choices are written under an exclusive cross-process lock on
+  `desktop-v1/session-connections.lock` (bounded wait, then `busy`), so two
+  desktop processes on one data folder no longer drop each other's choices.
 
 ### Added
 

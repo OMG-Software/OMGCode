@@ -1,5 +1,9 @@
 @import "./tokens.css";
 
+[hidden] {
+  display: none;
+}
+
 #app {
   height: 100%;
 }
