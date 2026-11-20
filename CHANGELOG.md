@@ -6,6 +6,67 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.47.0 chooses the provider and model per session, adds Ollama Cloud
+  as a hosted provider, and adds a **Workspace settings** button (ADR-0067,
+  accepted).
+  - **Core:** `OLLAMA_CLOUD_ENDPOINT` (`https://ollama.com/v1`) and
+    `ModelEndpoint`, which is either the unchanged loopback rule or exactly
+    that endpoint. An `ollama_cloud` profile accepts only that endpoint. A
+    cloud request needs a token and is refused without one before any
+    connection. It uses HTTPS only, with no proxy, redirect, or retry.
+    `check_provider_selectable` admits a local profile with an endpoint or an
+    `ollama_cloud` profile with a bound credential. Replay checks the
+    endpoint rule only.
+  - **CLI:** `--provider-profile` accepts an `ollama_cloud` profile for
+    `chat`, `session compact`, and `models`. `--endpoint
+    https://ollama.com/v1` is refused, so `OMGCODE_LM_TOKEN` never reaches the
+    hosted service. `capabilities` lists `ollama_cloud` as a stored-credential,
+    streaming, and cancellable adapter. Streaming and cancellation are assumed
+    from the shared client, because no real key was available to check them.
+  - **Desktop, per session:** `desktop-v1/session-connections.json` records
+    each session's connection, with the endpoint shown in the confirmation,
+    and its model. It is written only by Rust and limited to 4096 sessions and
+    1 MiB. A damaged file is treated as empty. A launch argument still fixes
+    the connection for every session. Otherwise the session's own choice
+    applies, and a session without one follows the global selection. Each
+    turn re-resolves the session's profile and refuses with
+    `session_connection_stale` when the profile is gone, can no longer be
+    chosen, or has another endpoint. `connection_select`,
+    `connection_status`, and `chat_models` take a session id.
+    `connection_select` shows the native Yes/No, which for Ollama Cloud says
+    that prompts, workspace text, and command output leave this computer, and
+    clears the session's model. The new `session_model_select` records a
+    model without a dialog.
+  - **Desktop, composer:** **Provider** and **Model** dropdowns sit beside
+    **Chat settings**. Opening a session switches both without a dialog. The
+    model list is filled for the chosen provider and belongs to a session.
+  - **Desktop, settings:** `settings_add_local_connection` is now
+    `settings_add_connection` and also adds Ollama Cloud. Its API key is typed
+    into a write-only password field, sent once, and cleared at once. Rust
+    wraps the key in a zeroing type with redacted `Debug` and stores and binds
+    it as the CLI does. If storing the key fails, Rust removes the profile it
+    had just recorded. The new `settings_set_api_key` replaces a key.
+    Removing a profile that has a stored key is now allowed after a native
+    Yes/No and deletes the key.
+  - **Desktop, workspace settings:** the new **Workspace settings** button
+    calls `settings_show_workspace` with the open session's id. Rust resolves
+    the workspace and shows the `settings` window scoped to it. **All
+    settings** (`settings_clear_scope`) and the sidebar **Settings** row clear
+    the scope. The scope is display state only.
+  - The policy has 39 commands: 25 for `main`, 3 for `approvals`, and 11 for
+    `settings`.
+
+### Fixed
+
+- The composer no longer discards the whole model list when the endpoint it
+  cached differs from the one `chat_models` resolved. That happened after the
+  connection changed in the `settings` window, or when `chat_defaults` fell
+  back to the launch endpoint, and it left only the saved model on offer for
+  LM Studio and Ollama. The list is now tied to the session and request it was
+  asked for (ADR-0067).
+
+### Added
+
 - Version 0.46.0 lists the models the local LM Studio or Ollama server
   reports, so the operator chooses a model instead of typing its id
   (ADR-0066, accepted).
