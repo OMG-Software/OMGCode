@@ -361,9 +361,12 @@ types, missing controls, and unsupported platforms fail closed. The refusal
 reads `workspace mount uses nfs4; file writes require ext4, btrfs, XFS, tmpfs,
 or ZFS`. The inode-attribute policy comes from the open file's `statfs` magic.
 ext4 may carry only `FS_EXTENT_FL`. The other filesystems may carry no
-`FS_IOC_GETFLAGS` flag, and `FS_IOC_FSGETXATTR` fields must be zero, so btrfs
-NOCOW or compression and XFS allocation hints or project inheritance are
-refused. Only tmpfs may lack the attribute ioctls. overlayfs, NFS, SMB, FUSE,
+`FS_IOC_GETFLAGS` flag. `FS_IOC_FSGETXATTR` may report no settable flag, project
+ID, or reserved byte, so btrfs NOCOW or compression and XFS allocation hints
+or project inheritance are refused. Its read-only attribute-fork bit
+(`FS_XFLAG_HASATTR`) and an extent or CoW size without its hint flag, a
+filesystem default, are not attributes; extended attributes are refused
+separately. Only tmpfs may lack the attribute ioctls. overlayfs, NFS, SMB, FUSE,
 FAT, and exFAT stay refused. tmpfs is not persistent. Existing
 read/list/create and standalone checkpoint preparation retain their earlier
 requirements.

@@ -147,11 +147,22 @@ fn validate_flags(filesystem: LinuxFilesystem, flags: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// `FS_XFLAG_HASATTR`: a read-only status bit for an attribute fork. XFS can
+/// report it with no extended attribute left; those are refused separately
+/// by `flistxattr`, and `FS_IOC_FSSETXATTR` cannot set or clear the bit.
+const XFLAG_HAS_ATTRIBUTE_FORK: u32 = 0x8000_0000;
+
+/// Refuse any settable `fsx_xflags` flag, a project ID, or reserved bytes.
+///
+/// An extent size or CoW extent size belongs to the inode only while its
+/// `FS_XFLAG_EXTSIZE`, `FS_XFLAG_EXTSZINHERIT`, or `FS_XFLAG_COWEXTSIZE`
+/// flag is set, and every flag is refused here. A size reported without its
+/// flag is the filesystem's default, which a new stage file reports too, so
+/// it is not an attribute to preserve. Some kernels report XFS's default CoW
+/// extent size this way on a reflink filesystem.
 fn validate_attributes(attributes: FilesystemAttributes) -> io::Result<()> {
-    if attributes.flags != 0
-        || attributes.extent_size != 0
+    if attributes.flags & !XFLAG_HAS_ATTRIBUTE_FORK != 0
         || attributes.project != 0
-        || attributes.cow_extent_size != 0
         || attributes.reserved != [0; 8]
     {
         return Err(unsupported_attributes());
@@ -259,6 +270,59 @@ mod tests {
         }
         assert_eq!(LinuxFilesystem::from_magic(0x6969), None); // NFS
         assert_eq!(LinuxFilesystem::from_magic(0x794C_7630), None); // overlayfs
+    }
+
+    #[test]
+    fn given_size_hints_without_their_flags_when_validated_then_they_are_defaults() {
+        validate_attributes(FilesystemAttributes {
+            extent_size: 64 * 1024,
+            cow_extent_size: 128 * 4096,
+            extent_count: 3,
+            ..FilesystemAttributes::default()
+        })
+        .expect("unflagged sizes are filesystem defaults");
+    }
+
+    #[test]
+    fn given_only_the_attribute_fork_status_bit_when_validated_then_it_is_accepted() {
+        validate_attributes(FilesystemAttributes {
+            flags: XFLAG_HAS_ATTRIBUTE_FORK,
+            ..FilesystemAttributes::default()
+        })
+        .expect("the status bit is not a settable attribute");
+        let with_flag = FilesystemAttributes {
+            flags: XFLAG_HAS_ATTRIBUTE_FORK | 0x0000_0008, // FS_XFLAG_APPEND
+            ..FilesystemAttributes::default()
+        };
+        assert!(validate_attributes(with_flag).is_err());
+    }
+
+    #[test]
+    fn given_a_flag_project_or_reserved_byte_when_validated_then_it_is_refused() {
+        // FS_XFLAG_COWEXTSIZE, FS_XFLAG_EXTSIZE, and FS_XFLAG_PROJINHERIT.
+        for flags in [0x0001_0000, 0x0000_0800, 0x0000_0200] {
+            let attributes = FilesystemAttributes {
+                flags,
+                cow_extent_size: 128 * 4096,
+                ..FilesystemAttributes::default()
+            };
+            assert_eq!(
+                validate_attributes(attributes)
+                    .expect_err("a set hint flag is refused")
+                    .to_string(),
+                "replacement cannot preserve these inode attributes"
+            );
+        }
+        let project = FilesystemAttributes {
+            project: 7,
+            ..FilesystemAttributes::default()
+        };
+        assert!(validate_attributes(project).is_err());
+        let reserved = FilesystemAttributes {
+            reserved: [1, 0, 0, 0, 0, 0, 0, 0],
+            ..FilesystemAttributes::default()
+        };
+        assert!(validate_attributes(reserved).is_err());
     }
 
     #[test]

@@ -23,8 +23,9 @@ Changes are recorded here before a release version is assigned.
     and `zfs` mount types and refuses others as
     `workspace mount uses nfs4; file writes require ext4, btrfs, XFS, tmpfs, or ZFS`.
     The inode-attribute policy follows the open file's `statfs` magic: only
-    ext4 may carry the extents flag, `FSGETXATTR` must report nothing, and
-    only tmpfs may lack the attribute ioctls. A missing ioctl elsewhere is now
+    ext4 may carry the extents flag, `FSGETXATTR` may report no settable
+    flag or project (XFS's read-only attribute-fork bit and unflagged default
+    size hints are ignored), and only tmpfs may lack the attribute ioctls. A missing ioctl elsewhere is now
     an `Unsupported` refusal rather than a raw `ENOTTY` error.
   - **CI:** a `filesystems` job mounts ReFS on Windows Server 2025 and
     btrfs, XFS, tmpfs, and ZFS on Ubuntu 24.04, checks the temporary directory

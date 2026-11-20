@@ -59,9 +59,14 @@ Linux:
   `workspace mount uses nfs4; file writes require ext4, btrfs, XFS, tmpfs, or ZFS`.
 - Choose the inode-attribute policy from the open file's own `statfs` magic,
   not from a caller or path. ext4 may carry only `FS_EXTENT_FL`; the others
-  may carry no `FS_IOC_GETFLAGS` flag. `FS_IOC_FSGETXATTR` must still report no
-  flags, extent size, project, or CoW extent size. btrfs `NOCOW` and
+  may carry no `FS_IOC_GETFLAGS` flag. `FS_IOC_FSGETXATTR` must report no
+  settable flag, project ID, or reserved byte. btrfs `NOCOW` and
   compression, XFS allocation hints, and project inheritance are refused.
+  XFS reports `FS_XFLAG_HASATTR`, a read-only attribute-fork status bit, on
+  new files with no extended attribute (observed on a fresh XFS volume),
+  so that bit is ignored; extended attributes are refused separately. An
+  extent or CoW extent size reported without its hint flag is the
+  filesystem default, which a new stage file also gets, so it is ignored.
 - Only tmpfs may lack the attribute ioctls (before Linux 6.0); that is read
   as no attributes. Elsewhere a missing ioctl is refused.
 - The generic requirements are unchanged and still fail closed: `openat2`,
@@ -115,10 +120,11 @@ has still not run for any cell.
 - SELinux hosts still refuse checkpoint capture of files that carry a
   `security.selinux` extended attribute; that is a separate limit.
 - Windows refusals that used to name private storage now name the actual role.
-- The CI ZFS cell depends on the runner kernel's ZFS module. The btrfs, XFS,
-  and ZFS cells have not run on a developer host, because creating those
-  mounts needs root; tmpfs ran under WSL. No Dev Drive was confirmed in the
-  local runs, so Dev Drive coverage rests on Dev Drive being ReFS.
+- The CI ZFS cell depends on the runner kernel's ZFS module, and the ZFS
+  cell has not run on a developer host. The btrfs and XFS suites passed on
+  loop mounts under WSL kernel 6.6, and tmpfs ran there too. No Dev Drive
+  was confirmed in the local runs, so Dev Drive coverage rests on Dev Drive
+  being ReFS.
 - ADR-0022, ADR-0023, ADR-0024, and ADR-0029 are amended by this decision.
 
 ## References

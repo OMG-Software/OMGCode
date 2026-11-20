@@ -170,6 +170,7 @@ jobs:
           esac
           sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /mnt/fs/tmp
           findmnt -T /mnt/fs/tmp
+          uname -r
           echo "TMPDIR=/mnt/fs/tmp" >> "$GITHUB_ENV"
       - name: Start a user service manager for delegated cgroups
         if: runner.os == 'Linux'
