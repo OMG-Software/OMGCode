@@ -179,6 +179,15 @@ describe("blocks", () => {
     expect(root.querySelector("table")).toBeNull();
   });
 
+  it("opens a fence whose info string holds a line separator before more text", () => {
+    // A pattern's "." stops at U+2028, so the scan must carry the info string past it.
+    const separator = String.fromCharCode(0x2028);
+    const root = md(`\`\`\`js${separator}extra\ncode\n\`\`\`\nafter`);
+    expect(only(root, "pre").textContent).toBe("code");
+    expect(only(root, ".md-code-lang").textContent).toContain("js");
+    expect(only(root, ":scope > p").textContent).toBe("after");
+  });
+
   it("closes a fence only on spaces and tabs after the marker", () => {
     const nbsp = String.fromCharCode(0xa0);
     const open = md(`\`\`\`\na\n\`\`\`${nbsp}\nb`);
