@@ -870,7 +870,7 @@ impl DesktopService {
             (NewConnectionKind::OllamaCloud, None, Some(key)) => {
                 let secret = key
                     .into_secret()
-                    .ok_or_else(DesktopError::api_key_invalid)?;
+                    .ok_or_else(DesktopError::malformed_key_input)?;
                 (
                     ProviderKind::OllamaCloud,
                     OLLAMA_CLOUD_ENDPOINT.to_owned(),
@@ -973,7 +973,7 @@ impl DesktopService {
         }
         let secret = api_key
             .into_secret()
-            .ok_or_else(DesktopError::api_key_invalid)?;
+            .ok_or_else(DesktopError::malformed_key_input)?;
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
         let credentials = CredentialStore::open(&self.inner.data_root)
             .map_err(|error| DesktopError::from_credential(&error))?;

@@ -222,7 +222,7 @@ impl DesktopError {
 
     /// The API key is empty, too long, or has a control character. The message
     /// is fixed and never repeats the key or its length.
-    pub(crate) fn api_key_invalid() -> Self {
+    pub(crate) fn malformed_key_input() -> Self {
         Self::new(
             "invalid_request",
             "The API key is empty, longer than 16 KiB, or contains a control character.",
@@ -242,7 +242,7 @@ impl DesktopError {
                 "The credential store is locked. Unlock it outside OMGCode and try again.",
             ),
             CredentialError::TooLarge | CredentialError::Invalid(_) => {
-                return Self::api_key_invalid();
+                return Self::malformed_key_input();
             }
             CredentialError::PromptRequired => (
                 "credential_prompt_required",
