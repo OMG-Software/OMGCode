@@ -7,8 +7,7 @@
 //! a listed id is untrusted provider text for display and selection only.
 
 use super::{
-    CONNECT_TIMEOUT, ProviderError, bearer_header, read_whole_body, until_cancelled,
-    validate_base_url,
+    CONNECT_TIMEOUT, ModelEndpoint, ProviderError, bearer_header, read_whole_body, until_cancelled,
 };
 use crate::storage::parse_strict_json;
 use crate::turn::CancelToken;
@@ -41,8 +40,9 @@ pub struct ListedModel {
 
 /// List the models the local server at `base_url` reports, sorted by id.
 ///
-/// `base_url` must pass the same loopback rule as a chat connection
-/// (ADR-0048), and `token`, when present, is sent exactly as a chat request
+/// `base_url` must pass the same endpoint rule as a chat connection: the
+/// loopback rule (ADR-0048) or the fixed Ollama Cloud endpoint (ADR-0067),
+/// which also requires a token. `token`, when present, is sent exactly as a chat request
 /// sends it. The request is one `GET /v1/models` with no proxy, no redirect,
 /// no retry, a five-second connect timeout, a ten-second total deadline, and
 /// a 1 MiB body limit. It runs on a single-thread runtime made for this call,
@@ -71,8 +71,10 @@ fn list_with_timeout(
     token: Option<&str>,
     timeout: Duration,
 ) -> Result<Vec<ListedModel>, ProviderError> {
-    let mut endpoint = validate_base_url(base_url)?;
-    endpoint.set_path("/v1/models");
+    let model_endpoint = ModelEndpoint::parse(base_url)?;
+    model_endpoint.check_token(token)?;
+    let https_only = model_endpoint.https_only();
+    let endpoint = model_endpoint.with_path("/v1/models");
     let authorization = token.map(bearer_header).transpose()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -85,6 +87,7 @@ fn list_with_timeout(
         // The client is built inside the runtime that drives it, as for chat.
         let client = Client::builder()
             .no_proxy()
+            .https_only(https_only)
             .redirect(Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(CONNECT_TIMEOUT)
@@ -172,6 +175,39 @@ mod tests {
 
     fn ids(models: &[ListedModel]) -> Vec<&str> {
         models.iter().map(|model| model.id.as_str()).collect()
+    }
+
+    /// The shape `https://ollama.com/v1/models` returned on 2026-11-20 (without
+    /// a key), shortened to three entries.
+    const OLLAMA_CLOUD_LIST: &str = r#"{"object":"list","data":[{"id":"minimax-m3","object":"model","created":1780272000,"owned_by":"ollama"},{"id":"gpt-oss:120b","object":"model","created":1754000000,"owned_by":"ollama"},{"id":"kimi-k3","object":"model","created":1788094731,"owned_by":"ollama"}]}"#;
+
+    #[test]
+    fn parses_the_ollama_cloud_list_shape() {
+        let models = parse_model_list(OLLAMA_CLOUD_LIST.as_bytes()).expect("cloud list");
+        assert_eq!(ids(&models), ["gpt-oss:120b", "kimi-k3", "minimax-m3"]);
+        assert!(models.iter().all(|model| !model.cloud_tag));
+    }
+
+    /// The cloud endpoint needs a token, so a list request without one is
+    /// refused before any connection, and any other endpoint is refused too.
+    #[test]
+    fn a_cloud_list_without_a_token_is_refused_before_any_connection() {
+        for endpoint in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
+            assert_eq!(
+                list_local_models(endpoint, None),
+                Err(ProviderError::InvalidToken),
+                "{endpoint}"
+            );
+            assert_eq!(
+                list_local_models(endpoint, Some("bad\nkey")),
+                Err(ProviderError::InvalidToken),
+                "{endpoint}"
+            );
+        }
+        assert_eq!(
+            list_local_models("https://ollama.com:8443/v1", Some("not-a-real-key")),
+            Err(ProviderError::InvalidConfiguration)
+        );
     }
 
     #[test]

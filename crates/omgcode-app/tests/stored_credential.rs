@@ -10,9 +10,10 @@ use std::fs;
 
 use omgcode_app::{
     AppError, ChatHooks, ChatSettings, ChatTurnInput, ConnectionSource, ErrorKind, LmToken,
-    create_session, read_lm_token, redact_known_secret, resolve_local_connection, run_chat_turn,
+    check_profile_selectable, create_session, read_lm_token, redact_known_secret,
+    resolve_local_connection, resolve_profile_connection, run_chat_turn,
 };
-use omgcode_core::control::ControlStore;
+use omgcode_core::control::{ControlStore, ProviderKind};
 use serde_json::json;
 
 mod common;
@@ -23,6 +24,8 @@ const STORED: &str = "fake-stored-token-4c19e7a2";
 const ROTATED: &str = "fake-rotated-token-90b3d1f6";
 /// An endpoint for a profile whose test sends no request.
 const RECORDED: &str = "http://127.0.0.1:1/v1";
+/// The one hosted endpoint (ADR-0067); no test connects to it.
+const CLOUD: &str = "https://ollama.com/v1";
 
 fn profile(name: &str) -> ConnectionSource {
     ConnectionSource::Profile(name.to_owned())
@@ -426,4 +429,47 @@ fn a_tool_call_containing_the_stored_token_is_refused() {
         !String::from_utf8_lossy(&bytes).contains(STORED),
         "the journal holds no token"
     );
+}
+
+/// An `ollama_cloud` profile resolves like an `lm_studio` one: its fixed
+/// endpoint as a validated type and the stored key, and a key bound to a
+/// local profile is never taken for it (ADR-0067). No request is sent.
+#[test]
+fn an_ollama_cloud_profile_resolves_its_endpoint_and_stored_key() {
+    let fixture = Fixture::new();
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile_at("cloud", "ollama_cloud", "api_key", CLOUD);
+    vault.add_profile_at("unbound", "ollama_cloud", "api_key", CLOUD);
+    vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
+    vault.bind("cloud", STORED.as_bytes());
+    vault.bind("lms", ROTATED.as_bytes());
+
+    let connection = resolve_local_connection(&fixture.data, &profile("CLOUD")).expect("cloud");
+    assert_eq!(connection.endpoint, CLOUD);
+    assert_eq!(connection.token.expect("a key").expose(), STORED);
+
+    let resolved = resolve_profile_connection(&fixture.data, "cloud").expect("profile");
+    assert_eq!(resolved.kind, ProviderKind::OllamaCloud);
+    assert!(resolved.endpoint.is_cloud());
+    assert_eq!(resolved.token.expect("a key").expose(), STORED);
+    let local = resolve_profile_connection(&fixture.data, "lms").expect("local");
+    assert_eq!(local.kind, ProviderKind::LmStudio);
+    assert!(!local.endpoint.is_cloud());
+
+    let (_, message) = refusal(&fixture, &profile("unbound"));
+    assert!(message.starts_with("not_bound:"), "{message}");
+    assert!(check_profile_selectable(&fixture.data, "cloud").is_ok());
+    assert!(check_profile_selectable(&fixture.data, "unbound").is_err());
+}
+
+/// The environment token is never sent to the hosted endpoint, so the cloud
+/// endpoint without a profile is refused before the variable is read.
+#[test]
+fn the_cloud_endpoint_is_refused_without_a_profile() {
+    let fixture = Fixture::bare();
+    let source = ConnectionSource::Environment {
+        endpoint: CLOUD.to_owned(),
+    };
+    let (_, message) = refusal(&fixture, &source);
+    assert!(message.starts_with("cloud_needs_profile:"), "{message}");
 }

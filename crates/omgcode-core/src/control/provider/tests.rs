@@ -231,7 +231,6 @@ fn other_provider_kinds_refuse_an_endpoint() {
     for (kind, auth) in [
         ("openai", "api_key"),
         ("anthropic", "subscription"),
-        ("ollama_cloud", "api_key"),
         ("open_router", "api_key"),
     ] {
         let message = refusal(
@@ -570,5 +569,220 @@ fn replay_rejects_an_invalid_active_connection() {
             "{replacement}: {:?}",
             result.err()
         );
+    }
+}
+
+const CLOUD_ENDPOINT: &str = "https://ollama.com/v1";
+
+/// An `ollama_cloud` profile accepts exactly the fixed cloud endpoint, with or
+/// without one trailing slash, stores it as given, and replays it (ADR-0067).
+#[test]
+fn an_ollama_cloud_profile_records_exactly_the_cloud_endpoint_and_replays_it() {
+    let (_directory, data, mut store) = store();
+    for (revision, (name, endpoint)) in [
+        ("cloud", CLOUD_ENDPOINT),
+        ("slash", "https://ollama.com/v1/"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let profile = store
+            .add_provider_profile(
+                &with_endpoint(name, "ollama_cloud", "api_key", Some(endpoint)),
+                u64::try_from(revision).expect("revision"),
+            )
+            .expect("cloud profile");
+        assert_eq!(
+            profile.endpoint().map(ProviderEndpoint::as_str),
+            Some(endpoint)
+        );
+    }
+    drop(store);
+    let store = ControlStore::open(&data).expect("replay");
+    let status = store.provider_profile("slash").expect("profile");
+    assert_eq!(
+        status.profile().endpoint().map(ProviderEndpoint::as_str),
+        Some("https://ollama.com/v1/")
+    );
+    assert_eq!(status.profile().kind(), ProviderKind::OllamaCloud);
+    assert_eq!(status.profile().auth(), ProviderAuth::ApiKey);
+}
+
+/// Every other endpoint text is refused for `ollama_cloud` and writes no event.
+#[test]
+fn an_ollama_cloud_profile_refuses_every_other_endpoint() {
+    let (_directory, _data, mut store) = store();
+    let long = format!("https://ollama.com/v1/{}", "a".repeat(300));
+    let refused = [
+        "http://ollama.com/v1",
+        "https://ollama.com",
+        "https://ollama.com/",
+        "https://ollama.com/v1//",
+        "https://ollama.com/v1/extra",
+        "https://ollama.com/v2",
+        "https://ollama.com:443/v1",
+        "https://ollama.com:8443/v1",
+        "https://www.ollama.com/v1",
+        "https://ollama.com.evil.example/v1",
+        "https://user@ollama.com/v1",
+        "https://user:pass@ollama.com/v1",
+        "https://ollama.com/v1?x=1",
+        "https://ollama.com/v1#fragment",
+        "https://OLLAMA.COM/v1",
+        "https://ollama.com/V1",
+        "HTTPS://ollama.com/v1",
+        " https://ollama.com/v1",
+        "https://ollama.com/v1 ",
+        "https://ollama.com/v1\u{7}",
+        "https://127.0.0.1:1234/v1",
+        ENDPOINT,
+        "",
+        long.as_str(),
+    ];
+    for endpoint in refused {
+        let message = refusal(store.add_provider_profile(
+            &with_endpoint("cloud", "ollama_cloud", "api_key", Some(endpoint)),
+            0,
+        ));
+        assert!(
+            message.contains("ollama_cloud endpoint") || message.contains("longer than 256"),
+            "{endpoint:?}: {message}"
+        );
+    }
+    assert_eq!(store.revision(), 0);
+    // The cloud endpoint is refused for every other kind.
+    for (kind, auth) in [
+        ("lm_studio", "none"),
+        ("ollama_local", "none"),
+        ("openai", "api_key"),
+        ("open_router", "api_key"),
+    ] {
+        assert!(
+            matches!(
+                store.add_provider_profile(
+                    &with_endpoint("other", kind, auth, Some(CLOUD_ENDPOINT)),
+                    0
+                ),
+                Err(ControlError::ProviderRefused(_))
+            ),
+            "{kind}"
+        );
+    }
+    // A subscription is still refused for ollama_cloud.
+    assert!(matches!(
+        store.add_provider_profile(
+            &with_endpoint(
+                "cloud",
+                "ollama_cloud",
+                "subscription",
+                Some(CLOUD_ENDPOINT)
+            ),
+            0
+        ),
+        Err(ControlError::ProviderRefused(_))
+    ));
+    assert_eq!(store.revision(), 0);
+}
+
+/// Replay applies the cloud rule, so an edited journal cannot point an
+/// `ollama_cloud` profile at another host.
+#[test]
+fn replay_rejects_an_ollama_cloud_profile_with_another_endpoint() {
+    let (_directory, data, mut store) = store();
+    store
+        .add_provider_profile(
+            &with_endpoint("cloud", "ollama_cloud", "api_key", Some(CLOUD_ENDPOINT)),
+            0,
+        )
+        .expect("profile");
+    drop(store);
+    let original = fs::read_to_string(data.join(FILE_NAME)).expect("journal");
+    assert!(original.contains(CLOUD_ENDPOINT));
+    for replacement in [
+        "https://evil.example/v1",
+        "http://ollama.com/v1",
+        "http://127.0.0.1:1234/v1",
+    ] {
+        let edited = original.replacen(CLOUD_ENDPOINT, replacement, 1);
+        let directory = tempfile::tempdir().expect("copy");
+        let path = directory.path().join("data");
+        drop(ControlStore::open(&path).expect("directory"));
+        fs::write(path.join(FILE_NAME), edited).expect("edited fixture");
+        let result = ControlStore::open(&path);
+        assert!(
+            matches!(result, Err(ControlError::Invalid(_))),
+            "{replacement}: {:?}",
+            result.err()
+        );
+    }
+}
+
+/// An `ollama_cloud` profile with the cloud endpoint is selectable once a
+/// credential is bound; replay checks the endpoint rule only (ADR-0067).
+#[test]
+fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check() {
+    let (_directory, data, mut store) = store();
+    store
+        .add_provider_profile(
+            &with_endpoint("cloud", "ollama_cloud", "api_key", Some(CLOUD_ENDPOINT)),
+            0,
+        )
+        .expect("cloud");
+    store
+        .add_provider_profile(&declaration("bare", "ollama_cloud", "api_key"), 1)
+        .expect("no endpoint");
+    assert!(matches!(
+        store.select_active_provider(Some("cloud"), 2),
+        Err(ControlError::ProviderRefused(message)) if message.contains("bound credential")
+    ));
+    assert!(matches!(
+        store.select_active_provider(Some("bare"), 2),
+        Err(ControlError::ProviderRefused(_))
+    ));
+    assert_eq!(store.revision(), 2);
+    // Binding needs the native store, which these tests do not open, so record
+    // a binding in the snapshot as the selection check reads it.
+    let binding = crate::control::CredentialBinding::new(
+        crate::control::CredentialId::parse(&Uuid::new_v4().simple().to_string()).expect("id"),
+        crate::control::CredentialBackend::WindowsDpapi,
+    );
+    store
+        .snapshot
+        .provider_profiles
+        .iter_mut()
+        .find(|status| status.profile().name() == "cloud")
+        .expect("profile")
+        .credential = Some(binding);
+    store
+        .select_active_provider(Some("cloud"), 2)
+        .expect("select a bound cloud profile");
+    assert_eq!(
+        store
+            .active_provider_profile()
+            .map(|status| status.profile().kind()),
+        Some(ProviderKind::OllamaCloud)
+    );
+    drop(store);
+    // Replay has no credential store: the selection replays on the endpoint rule.
+    let store = ControlStore::open(&data).expect("replay");
+    assert_eq!(
+        store
+            .active_provider_profile()
+            .map(|status| status.profile().name()),
+        Some("cloud")
+    );
+}
+
+/// Ollama Cloud is served by the model adapter but is not a local kind.
+#[test]
+fn ollama_cloud_uses_the_model_adapter_without_being_local() {
+    assert!(ProviderKind::OllamaCloud.uses_model_adapter());
+    assert!(!ProviderKind::OllamaCloud.is_local());
+    for kind in [
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
+        ProviderKind::OpenRouter,
+    ] {
+        assert!(!kind.uses_model_adapter(), "{kind:?}");
     }
 }

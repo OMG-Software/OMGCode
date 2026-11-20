@@ -33,8 +33,9 @@ pub use chat::{
 };
 pub use context::{CompactionMeter, ContextMeter, compact_journal, summary_output_tokens};
 pub use credential_source::{
-    ConnectionSource, LmToken, LocalConnection, LocalEndpoint, TokenSource,
-    resolve_local_connection, resolve_local_endpoint,
+    ConnectionSource, LmToken, LocalConnection, LocalEndpoint, ProfileConnection, TokenSource,
+    check_profile_selectable, resolve_local_connection, resolve_local_endpoint,
+    resolve_profile_connection,
 };
 pub use error::{AppError, ErrorKind};
 pub use paths::data_root;

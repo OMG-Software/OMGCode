@@ -18,6 +18,10 @@ use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
 
+/// The one hosted endpoint a provider may use (ADR-0067): Ollama Cloud's
+/// OpenAI-compatible base URL. No other non-loopback destination is accepted.
+pub const OLLAMA_CLOUD_ENDPOINT: &str = "https://ollama.com/v1";
+
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,13 +37,80 @@ const MAX_TOOL_DEFINITIONS: usize = 8;
 /// The turn runtime applies its own, smaller per-round limit.
 const MAX_RESPONSE_TOOL_CALLS: usize = 64;
 
+/// A validated model endpoint: a literal loopback HTTP endpoint
+/// ([`validate_base_url`], ADR-0048) or the fixed Ollama Cloud endpoint
+/// ([`OLLAMA_CLOUD_ENDPOINT`], ADR-0067). There is no other destination.
+///
+/// The cloud variant sends prompts, tool results, and command output off this
+/// computer, so a client built on it requires a token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModelEndpoint {
+    /// A literal loopback IP, an explicit port, and the `/v1` path.
+    Loopback(Url),
+    /// Exactly `https://ollama.com/v1`, with or without one trailing `/`.
+    OllamaCloud(Url),
+}
+
+impl ModelEndpoint {
+    /// Validate endpoint text. The cloud rule is an exact match, so no host,
+    /// port, path, user information, query, fragment, scheme, or letter case
+    /// variant of it is accepted. Anything else must pass the loopback rule.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidConfiguration` for any other text.
+    pub fn parse(text: &str) -> Result<Self, ProviderError> {
+        if let Ok(url) = validate_cloud_url(text) {
+            return Ok(Self::OllamaCloud(url));
+        }
+        validate_base_url(text).map(Self::Loopback)
+    }
+
+    /// Whether this is the hosted Ollama Cloud endpoint.
+    pub const fn is_cloud(&self) -> bool {
+        matches!(self, Self::OllamaCloud(_))
+    }
+
+    /// The endpoint text as validated. It is not a secret.
+    pub fn as_str(&self) -> &str {
+        self.url().as_str()
+    }
+
+    const fn url(&self) -> &Url {
+        match self {
+            Self::Loopback(url) | Self::OllamaCloud(url) => url,
+        }
+    }
+
+    /// The URL of one resource on the endpoint's host, such as `/v1/models`.
+    fn with_path(&self, path: &str) -> Url {
+        let mut url = self.url().clone();
+        url.set_path(path);
+        url
+    }
+
+    /// Refuse a cloud endpoint that has no token, before any connection.
+    fn check_token(&self, token: Option<&str>) -> Result<(), ProviderError> {
+        if self.is_cloud() && token.is_none() {
+            return Err(ProviderError::InvalidToken);
+        }
+        Ok(())
+    }
+
+    /// Whether requests must use HTTPS. The loopback rule admits only HTTP.
+    const fn https_only(&self) -> bool {
+        self.is_cloud()
+    }
+}
+
 /// Explicit settings for one local LM Studio Chat Completions connection.
 ///
 /// `context_tokens` is a required conservative budget supplied by the caller.
 /// This adapter estimates input tokens from UTF-8 bytes and fixed overhead; it
 /// does not claim to reproduce the selected model's tokenizer.
 pub struct LocalModelConfig {
-    /// A literal loopback HTTP URL with an explicit port and `/v1` path.
+    /// A literal loopback HTTP URL with an explicit port and `/v1` path, or
+    /// the Ollama Cloud endpoint (see [`ModelEndpoint`]), which needs a token.
     pub base_url: String,
     /// The model identifier already available to the selected LM Studio server.
     pub model: String,
@@ -56,6 +127,7 @@ pub struct LocalModelConfig {
 /// ADR-0051), so no pooled connection outlives the runtime that drives it.
 pub struct LocalModelClient {
     endpoint: Url,
+    https_only: bool,
     model: String,
     context_tokens: u64,
     max_output_tokens: u32,
@@ -180,7 +252,8 @@ impl LocalModelClient {
         token: Option<String>,
         request_timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        let mut endpoint = validate_base_url(&config.base_url)?;
+        let model_endpoint = ModelEndpoint::parse(&config.base_url)?;
+        model_endpoint.check_token(token.as_deref())?;
         if config.model.is_empty()
             || config.model.len() > 256
             || config.model.chars().any(char::is_control)
@@ -189,12 +262,13 @@ impl LocalModelClient {
         {
             return Err(ProviderError::InvalidConfiguration);
         }
-        endpoint.set_path("/v1/chat/completions");
+        let endpoint = model_endpoint.with_path("/v1/chat/completions");
 
         let authorization = token.as_deref().map(bearer_header).transpose()?;
 
         Ok(Self {
             endpoint,
+            https_only: model_endpoint.https_only(),
             model: config.model,
             context_tokens: config.context_tokens,
             max_output_tokens: config.max_output_tokens,
@@ -458,6 +532,7 @@ impl LocalModelClient {
     fn http_client(&self) -> Result<Client, ProviderError> {
         Client::builder()
             .no_proxy()
+            .https_only(self.https_only)
             .redirect(Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(CONNECT_TIMEOUT)
@@ -756,6 +831,17 @@ pub(crate) fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
     Ok(parsed)
 }
 
+/// The one implementation of the Ollama Cloud endpoint rule (ADR-0067): the
+/// exact text of [`OLLAMA_CLOUD_ENDPOINT`], with or without one trailing `/`.
+/// A provider profile applies it before it records an endpoint, and the
+/// client applies it to every request configuration.
+pub(crate) fn validate_cloud_url(text: &str) -> Result<Url, ProviderError> {
+    if text != OLLAMA_CLOUD_ENDPOINT && text.strip_suffix('/') != Some(OLLAMA_CLOUD_ENDPOINT) {
+        return Err(ProviderError::InvalidConfiguration);
+    }
+    Url::parse(text).map_err(|_| ProviderError::InvalidConfiguration)
+}
+
 /// Bound input with a byte-based estimate and reserve output plus template headroom.
 fn estimate_context(
     messages: &[ModelMessage],
@@ -1047,6 +1133,109 @@ mod tests {
         }
         assert!(validate_base_url("http://127.0.0.1:1234/v1").is_ok());
         assert!(validate_base_url("http://[::1]:1234/v1/").is_ok());
+    }
+
+    /// The endpoint type accepts a loopback endpoint or exactly the cloud
+    /// endpoint, and refuses every variant of the cloud text (ADR-0067).
+    #[test]
+    fn the_endpoint_type_accepts_loopback_or_exactly_the_cloud_endpoint() {
+        assert!(matches!(
+            ModelEndpoint::parse("http://127.0.0.1:1234/v1"),
+            Ok(ModelEndpoint::Loopback(_))
+        ));
+        assert!(matches!(
+            ModelEndpoint::parse("http://[::1]:1234/v1/"),
+            Ok(ModelEndpoint::Loopback(_))
+        ));
+        for text in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
+            let endpoint = ModelEndpoint::parse(text).expect(text);
+            assert!(endpoint.is_cloud(), "{text}");
+            assert_eq!(
+                endpoint.as_str(),
+                "https://ollama.com/v1".to_owned() + &text[21..]
+            );
+        }
+        for text in [
+            "http://ollama.com/v1",
+            "https://ollama.com",
+            "https://ollama.com/",
+            "https://ollama.com/v1//",
+            "https://ollama.com/v1/chat",
+            "https://ollama.com:443/v1",
+            "https://ollama.com:8443/v1",
+            "https://www.ollama.com/v1",
+            "https://user@ollama.com/v1",
+            "https://ollama.com/v1?q=1",
+            "https://ollama.com/v1#f",
+            "https://OLLAMA.com/v1",
+            "https://ollama.com/V1",
+            "HTTPS://ollama.com/v1",
+            " https://ollama.com/v1",
+            "https://ollama.com/v1\n",
+            "https://evil.example/v1",
+        ] {
+            assert_eq!(
+                ModelEndpoint::parse(text),
+                Err(ProviderError::InvalidConfiguration),
+                "{text:?}"
+            );
+        }
+        // Every loopback refusal stays a refusal.
+        for text in REFUSED_ENDPOINTS {
+            assert!(ModelEndpoint::parse(text).is_err(), "{text:?}");
+        }
+    }
+
+    fn cloud_config() -> LocalModelConfig {
+        LocalModelConfig {
+            base_url: OLLAMA_CLOUD_ENDPOINT.to_owned(),
+            model: "minimax-m3".to_owned(),
+            context_tokens: 4096,
+            max_output_tokens: 64,
+        }
+    }
+
+    /// A cloud client needs a token and builds without any connection. The
+    /// request path is the OpenAI-compatible chat path on the cloud host.
+    #[test]
+    fn a_cloud_client_requires_a_token_before_any_connection() {
+        assert_eq!(
+            LocalModelClient::new(cloud_config(), None).err(),
+            Some(ProviderError::InvalidToken)
+        );
+        assert_eq!(
+            LocalModelClient::new(cloud_config(), Some("bad\nkey".to_owned())).err(),
+            Some(ProviderError::InvalidToken)
+        );
+        let client = LocalModelClient::new(cloud_config(), Some("not-a-real-key".to_owned()))
+            .expect("cloud client");
+        assert_eq!(
+            client.endpoint.as_str(),
+            "https://ollama.com/v1/chat/completions"
+        );
+        assert!(client.https_only);
+        let debug = format!("{client:?}");
+        assert!(!debug.contains("not-a-real-key"), "{debug}");
+        // A loopback client keeps its token optional and plain HTTP.
+        let local = LocalModelClient::new(
+            LocalModelConfig {
+                base_url: "http://127.0.0.1:1234/v1".to_owned(),
+                ..cloud_config()
+            },
+            None,
+        )
+        .expect("local client");
+        assert!(!local.https_only);
+        // The cloud endpoint with a trailing slash selects the same URL.
+        let slash = LocalModelClient::new(
+            LocalModelConfig {
+                base_url: "https://ollama.com/v1/".to_owned(),
+                ..cloud_config()
+            },
+            Some("not-a-real-key".to_owned()),
+        )
+        .expect("slash client");
+        assert_eq!(slash.endpoint, client.endpoint);
     }
 
     use std::net::TcpListener;

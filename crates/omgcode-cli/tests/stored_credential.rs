@@ -514,7 +514,7 @@ fn capabilities_report_the_stored_credential_adapters_and_no_provider_adapters()
     let capabilities = json_output(&output);
     assert_eq!(
         capabilities["stored_credential_adapters"],
-        json!(["lm_studio"])
+        json!(["lm_studio", "ollama_cloud"])
     );
     assert_eq!(capabilities["provider_adapters"], false);
 }
