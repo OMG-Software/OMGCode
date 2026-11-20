@@ -41,7 +41,7 @@ export interface SettingsApp {
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";
 
-/** Offered with `credential_storage_not_private`; Rust explains and confirms natively (ADR-0072). */
+/** Offered with `credential_storage_not_private`; Rust explains and confirms natively (ADR-0073). */
 export const REPAIR_FOLDER_LABEL = "Remove extra permissions…";
 export const REPAIR_FOLDER_HELP =
   "OMGCode can remove the other accounts from its data folder. It names each one in a system dialog first.";

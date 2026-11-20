@@ -6,7 +6,7 @@
 //! current user, SYSTEM, and Administrators. ACLs are verified from the open
 //! handle and never repaired automatically. A replacement stage takes its
 //! source's security before publication, and [`root_access`] removes a root's
-//! extra grants only after the operator confirms them (ADR-0072).
+//! extra grants only after the operator confirms them (ADR-0073).
 //!
 //! Directory durability has no Microsoft contract. `sync` flushes the directory
 //! handle and refuses on failure, but no page states that this persists entries

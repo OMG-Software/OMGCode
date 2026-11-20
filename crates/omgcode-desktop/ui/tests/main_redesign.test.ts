@@ -64,14 +64,17 @@ afterEach(() => {
 });
 
 describe("sidebar View menu", () => {
-  it("keeps the header to a title, New session, search, and one View menu", async () => {
+  it("keeps the header to a title, New session, collapse, search, and one View menu", async () => {
     await start();
     const header = root.querySelector(".sidebar-header") as HTMLElement;
-    // Outside the View menu there is one button: New session.
+    // Outside the View menu there are two buttons: New session and the collapse icon (ADR-0072).
     const direct = Array.from(header.querySelectorAll("button")).filter(
       (b) => b.closest("details") === null,
     );
-    expect(direct).toHaveLength(1);
+    expect(direct.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+      "New session",
+      "Collapse sessions panel",
+    ]);
     expect(buttonByText(header, "New session").classList.contains("primary")).toBe(true);
     expect(header.querySelectorAll("details.popover")).toHaveLength(1);
     expect(header.querySelector("details")?.contains(header.querySelector(".search"))).toBe(false);

@@ -93,7 +93,7 @@ pub struct ExtraGrant {
     pub account: Option<String>,
 }
 
-/// Whether a private root's extra grants can be removed (ADR-0072).
+/// Whether a private root's extra grants can be removed (ADR-0073).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RootAccess {
     /// The root grants no principal beyond the trusted ones.
@@ -167,7 +167,7 @@ pub fn inspect_root_access(path: &std::path::Path) -> std::io::Result<RootAccess
 }
 
 /// Remove the extra grants from a private root after the operator confirmed
-/// exactly `confirmed` (ADR-0072). The DACL is rewritten as protected: every
+/// exactly `confirmed` (ADR-0073). The DACL is rewritten as protected: every
 /// trusted and deny entry is kept and made explicit, and the owner is
 /// unchanged. The caller must obtain the operator's confirmation of the list
 /// that [`inspect_root_access`] returned; this function never runs on its own.

@@ -5,7 +5,7 @@ export const CANCELLED_CODE = "cancelled";
 /** The settings window chose another model connection after this window read its endpoint. */
 export const CONNECTION_CHANGED_CODE = "connection_changed";
 
-/** The application data folder grants another account access, so no API key is stored (ADR-0072). */
+/** The application data folder grants another account access, so no API key is stored (ADR-0073). */
 export const STORAGE_NOT_PRIVATE_CODE = "credential_storage_not_private";
 /** A folder repair found different grants from those the operator reviewed and changed nothing. */
 export const DATA_FOLDER_CHANGED_CODE = "data_folder_changed";

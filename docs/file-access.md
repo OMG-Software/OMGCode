@@ -943,7 +943,7 @@ The data root must meet the
 grant beyond the current user, SYSTEM, and Administrators is refused, including
 an inherited one. OMGCode never repairs it on its own; the desktop `settings`
 window removes such grants only after the operator confirms each account
-([ADR-0072](adr/0072-remove-extra-data-folder-grants-after-operator-confirmation.md)).
+([ADR-0073](adr/0073-remove-extra-data-folder-grants-after-operator-confirmation.md)).
 Windows makes no power-loss claim. See
 [ADR-0024](adr/0024-publish-one-verified-stage-on-windows-ntfs.md).
 

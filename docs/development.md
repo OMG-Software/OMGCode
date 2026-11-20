@@ -346,7 +346,7 @@ backend and its state. A control journal written by 0.27.0 cannot be read by
   A folder that grants another account access is
   `credential_storage_not_private`; a missing folder is
   `credential_unavailable`. The desktop `settings` window can remove the
-  extra grants after a native confirmation (ADR-0072); the CLI cannot. An
+  extra grants after a native confirmation (ADR-0073); the CLI cannot. An
   edited, truncated, or
   copied blob, or a broadened DACL, is `credential_corrupt`.
 - **Linux:** each credential is one item in the Secret Service default

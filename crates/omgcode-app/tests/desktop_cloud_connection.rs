@@ -481,7 +481,7 @@ fn a_session_that_chose_a_removed_cloud_profile_becomes_stale() {
 
 /// A data folder that grants another account access is reported with its own
 /// code, and the operator can remove the grant after a native confirmation
-/// that names it (ADR-0072). Declining changes nothing.
+/// that names it (ADR-0073). Declining changes nothing.
 #[cfg(windows)]
 #[test]
 fn a_shared_data_folder_is_reported_and_repaired_only_after_confirmation() {

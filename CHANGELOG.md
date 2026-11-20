@@ -6,10 +6,10 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
-- Version 0.51.0 reports a Windows data folder that grants another account
+- Version 0.52.0 reports a Windows data folder that grants another account
   access as `credential_storage_not_private`, not `credential_unavailable`,
   and lets the operator remove those grants from the desktop `settings`
-  window after a native confirmation (ADR-0072, accepted). Adding an Ollama
+  window after a native confirmation (ADR-0073, accepted). Adding an Ollama
   Cloud key failed with "No protected credential store is available on this
   computer." because the data folder had inherited a read grant for another
   tool's sandbox group. The store refused the folder, and the desktop hid
@@ -42,10 +42,50 @@ Changes are recorded here before a release version is assigned.
     cover a confirmed repair, which keeps a deny entry and the user's access,
     clears an inheriting child, and leaves a protected store child alone. They
     also cover a grant list that changed after confirmation, a private root,
-    a user entry that only children inherit, and relative and junction paths. A desktop service test covers the new
-    code, a declined repair, a confirmed repair followed by storing a key, and
-    a second repair with no dialog. Vitest covers the button, its empty
-    request, a declined repair, and no button for other credential errors.
+    a user entry that only children inherit, a user entry with only
+    `READ_CONTROL`, a kept deny for the Users group, and relative and
+    junction paths. A cross-platform test pins what each repair error says
+    about the folder. A desktop service test covers the new code, a declined
+    repair, a confirmed repair followed by storing a key, and a second repair
+    with no dialog. Vitest covers the button, its empty request, a visible
+    success notice, the button staying after a declined repair or
+    `data_folder_changed` and not after `data_folder_not_repairable`, and no
+    button for other credential errors.
+
+- Version 0.51.0 lets the operator resize and collapse the desktop `main`
+  window's panels, widens and centres chat, and keeps the transcript at its
+  end after a send (ADR-0072, accepted). No command, IPC shape, permission,
+  or Rust check changed.
+  - **Desktop:** the window is a grid of the sessions panel, the
+    conversation, and a new terminal panel, with a focusable window-splitter
+    separator between each pair (drag, arrow keys, Home, End, Enter, double
+    click). The sessions panel is 200 to 480 pixels; the terminal panel is
+    240 to 720 and starts collapsed; neither takes the conversation below
+    360 pixels: the terminal panel gives way first when the window narrows,
+    a panel dragged wider grows into the other down to its minimum, a panel
+    expanding from its rail takes the free room first, and when both
+    minimums do not fit (an 800-pixel window) the other panel collapses. A collapsed panel is a rail of icon buttons: the sessions rail
+    holds Expand, New session, Search, Sessions, Approvals with its count,
+    and Settings. The terminal panel only says that no terminal is
+    available; it starts no shell and calls no command. Widths are not kept
+    between launches. The shell's two width properties are the frontend's
+    only inline style.
+  - **Chat:** every transcript entry is centred at 90% of the transcript's
+    width instead of at most about 72 characters, and the operator's bubble
+    is centred too. Sending scrolls to the end and follows new content until
+    the operator scrolls up; scrolling back to the end follows again. A
+    turn's end no longer jumps to the end after the operator scrolled up.
+    **Load more** keeps the place, and a send made while it loads still
+    follows the end.
+  - **Tests:** `ui/tests/transcript_layout.test.ts` (new) checks the
+    centred column's cascade. `ui/tests/layout.test.ts` (new) covers the columns, rails,
+    keyboard and pointer resizing, limits, narrowing, and disposal.
+    `live_preview.test.ts` adds four following tests, which failed against
+    the previous `conversation.ts`, and its earlier scroll test now fires the
+    scroll event a real scroll fires. The security scan allows inline style
+    only for the two widths. Two main-window assertions were narrowed: no
+    tooltip in the session tree (icon buttons have fixed tooltips) and no
+    inline style other than the shell's widths.
 
 - Version 0.49.0 keeps new checkpoints in a protected `.OMGCode` folder in
   each workspace instead of the data directory (ADR-0070, accepted), so

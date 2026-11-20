@@ -16,6 +16,10 @@ renders a recorded assistant reply as a bounded Markdown subset built from
 elements and text nodes; links and images stay inert text, and a code block's
 **Copy** button writes its shown text to the clipboard
 ([ADR-0067](docs/adr/0067-render-recorded-replies-as-inert-markdown.md)).
+Its sessions panel and a terminal panel resize and collapse to rails of
+icons; the terminal panel starts no shell and runs no command, and the
+transcript follows its end after a send until the operator scrolls up
+([ADR-0072](docs/adr/0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md)).
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only
@@ -112,7 +116,7 @@ On Windows, a data folder that grants another account access is reported as
 `credential_storage_not_private`. The `settings` window can remove exactly
 those grants after a native confirmation that names each account; nothing
 repairs them automatically
-([ADR-0072](docs/adr/0072-remove-extra-data-folder-grants-after-operator-confirmation.md)).
+([ADR-0073](docs/adr/0073-remove-extra-data-folder-grants-after-operator-confirmation.md)).
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
 connections and Ollama Cloud connections, whose API key is typed once into a

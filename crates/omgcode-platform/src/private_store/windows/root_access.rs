@@ -1,4 +1,4 @@
-//! Operator-confirmed removal of extra grants from a private root (ADR-0072).
+//! Operator-confirmed removal of extra grants from a private root (ADR-0073).
 //!
 //! The application data root inherits its DACL, so another program can leave
 //! a grant on it that the private-root rule refuses. This module lists such

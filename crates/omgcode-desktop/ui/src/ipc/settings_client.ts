@@ -59,7 +59,7 @@ export const settingsApi = {
       api_key: apiKey,
     }),
   /**
-   * Asks Rust to remove the extra grants on the application data folder (ADR-0072). It sends
+   * Asks Rust to remove the extra grants on the application data folder (ADR-0073). It sends
    * nothing: Rust reads the folder, names each account in a native confirmation, and removes
    * exactly those grants on Yes.
    */

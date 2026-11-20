@@ -629,7 +629,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       case "settings_overview":
         return clone(settings);
       // The mock's data folder grants no extra account, so, like Rust for a private folder,
-      // nothing is asked and nothing changes (ADR-0072).
+      // nothing is asked and nothing changes (ADR-0073).
       case "settings_repair_data_folder":
         return clone(settings);
       // The development mock stands in for the native dialogs: each folder dialog "chooses" a

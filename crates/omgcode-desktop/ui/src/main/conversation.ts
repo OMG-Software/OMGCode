@@ -72,6 +72,11 @@ export function createConversation(deps: ConversationDeps): Conversation {
   let lastTurnModel: string | null = null;
   const sentModels = new Map<string, string>();
   let frame: number | null = null;
+  // Whether the transcript follows its end. Sending sets it; scrolling up clears it; scrolling
+  // back to the end sets it again. Content that grows while it is set keeps the end in view.
+  let pinned = false;
+  // The scroll offset at the last scroll event, so a scroll up can be told from content growth.
+  let lastScrollTop = 0;
 
   const runner = createChatRunner({ onStatus: handleChatStatus, onPreview: handlePreview });
   const composer = createComposer(
@@ -99,6 +104,19 @@ export function createConversation(deps: ConversationDeps): Conversation {
     composer.element,
   );
   content.hidden = true;
+  transcript.addEventListener("scroll", () => {
+    const top = transcript.scrollTop;
+    if (atEnd()) {
+      pinned = true;
+    } else if (top < lastScrollTop) {
+      pinned = false;
+    }
+    lastScrollTop = top;
+  });
+  // A narrower window or panel rewraps the transcript; a pinned transcript keeps its end in view.
+  const resizeObserver =
+    typeof ResizeObserver === "function" ? new ResizeObserver(() => followEnd()) : null;
+  resizeObserver?.observe(transcript);
   const element = el(
     "main",
     { class: "pane", attrs: { "aria-label": "Conversation" } },
@@ -242,6 +260,8 @@ export function createConversation(deps: ConversationDeps): Conversation {
     if (highlightSeq !== null) {
       scrollToSeq(highlightSeq);
       highlightSeq = null;
+    } else {
+      followEnd();
     }
   }
 
@@ -250,6 +270,21 @@ export function createConversation(deps: ConversationDeps): Conversation {
       transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <=
       SCROLL_END_SLACK_PX
     );
+  }
+
+  function scrollToEnd(): void {
+    transcript.scrollTop = transcript.scrollHeight;
+    lastScrollTop = transcript.scrollTop;
+  }
+
+  /**
+   * Keeps the end in view while the transcript is pinned. Every render calls it in the same task
+   * that changed the content, so the next scroll event still finds the transcript at its end.
+   */
+  function followEnd(): void {
+    if (pinned) {
+      scrollToEnd();
+    }
   }
 
   /** Shows, updates, or removes the live entry so it matches the runner's preview. */
@@ -263,7 +298,6 @@ export function createConversation(deps: ConversationDeps): Conversation {
       live = null;
       return;
     }
-    const follow = atEnd();
     if (live === null) {
       live = createLiveEntry(sentModels.get(session?.session_id ?? "") ?? lastTurnModel);
     }
@@ -271,9 +305,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     if (live.element.parentNode !== transcript) {
       transcript.appendChild(live.element);
     }
-    if (follow) {
-      transcript.scrollTop = transcript.scrollHeight;
-    }
+    followEnd();
   }
 
   /** Coalesces preview updates to one per animation frame. */
@@ -361,14 +393,12 @@ export function createConversation(deps: ConversationDeps): Conversation {
     renderBody();
   }
 
+  /** Reads the transcript again; `toEnd` reads every page. A pinned transcript stays at its end. */
   async function reload(toEnd: boolean): Promise<void> {
     const page = await fetchPages(entries.length, toEnd);
     if (page !== null) {
       renderHeader();
       renderBody();
-      if (toEnd) {
-        transcript.scrollTop = transcript.scrollHeight;
-      }
     }
   }
 
@@ -377,6 +407,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
       return;
     }
     const token = ++loadToken;
+    // The operator asked to read the next page from where they are, not to jump past it. This is
+    // decided now, not when the page arrives, so a send made meanwhile keeps following the end.
+    pinned = false;
     try {
       const page = await api.sessionTranscript(session.session_id, nextAfter, TRANSCRIPT_PAGE_SIZE);
       if (token !== loadToken) {
@@ -415,6 +448,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
       return;
     }
     setNotice(null);
+    // Sending shows the end and follows it until the operator scrolls up.
+    pinned = true;
+    scrollToEnd();
     const submitted = opening;
     sentModels.set(session.session_id, settings.model);
     try {
@@ -493,6 +529,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
     folder = nextFolder;
     confirmInterrupt = false;
     highlightSeq = seq;
+    if (!same || seq !== null) {
+      // Another session, or a search hit to show, starts unpinned; it pins once at its end.
+      pinned = false;
+    }
     if (!same) {
       opening += 1;
       entries = [];
@@ -510,6 +550,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
     if (page !== null) {
       renderHeader();
       renderBody();
+      // A transcript that fits, or one already scrolled to its end, follows new content.
+      pinned = pinned || (seq === null && atEnd());
+      lastScrollTop = transcript.scrollTop;
       if (session?.status === "running" && !runner.isActive(session.session_id)) {
         runner.watch(session.session_id);
       }
@@ -525,6 +568,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
         cancelAnimationFrame(frame);
       }
       frame = null;
+      resizeObserver?.disconnect();
       runner.dispose();
       composer.dispose();
     },

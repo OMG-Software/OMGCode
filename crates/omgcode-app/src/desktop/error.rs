@@ -263,7 +263,7 @@ impl DesktopError {
         Self::new(code, message)
     }
 
-    /// The data folder's grants could not be listed (ADR-0072).
+    /// The data folder's grants could not be listed (ADR-0073).
     pub(crate) fn data_folder_unreadable() -> Self {
         Self::new(
             "data_folder_unreadable",

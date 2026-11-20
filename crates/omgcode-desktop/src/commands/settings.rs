@@ -272,7 +272,7 @@ pub async fn settings_remove_connection(
 
 /// `settings` only. Lists the extra grants on the application data folder
 /// and, after a native confirmation that names the folder and each account,
-/// removes exactly those grants (ADR-0072). The request carries nothing: Rust
+/// removes exactly those grants (ADR-0073). The request carries nothing: Rust
 /// reads the folder and the list itself.
 ///
 /// # Errors

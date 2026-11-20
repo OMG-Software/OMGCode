@@ -1,7 +1,8 @@
-# 0072: Remove extra data folder grants after operator confirmation
+# 0073: Remove extra data folder grants after operator confirmation
 
 - Status: Accepted
 - Date: 2026-11-20
+- Implemented: version 0.52.0
 
 ## Context
 

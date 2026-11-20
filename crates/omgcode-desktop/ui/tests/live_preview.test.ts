@@ -233,25 +233,135 @@ describe("live assistant preview", () => {
     expect(liveEntries()).toHaveLength(1);
     expect(liveText().textContent).toBe("minestill mine");
   });
+});
 
-  it("keeps the scroll position when the user scrolled up, and follows when at the end", async () => {
-    await start();
-    await send();
+describe("following the end of the transcript", () => {
+  const VIEW = 200;
+
+  interface Scroll {
+    transcript: HTMLElement;
+    top: number;
+    height: number;
+  }
+
+  /** Gives the transcript a 200-pixel view whose offset is clamped like a browser's. */
+  function fakeScroll(height: number, top = 0): Scroll {
     const transcript = root.querySelector<HTMLElement>(".transcript") as HTMLElement;
-    let top = 800;
-    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1000 });
-    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    const state: Scroll = { transcript, top, height };
+    Object.defineProperty(transcript, "scrollHeight", {
+      configurable: true,
+      get: () => state.height,
+    });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: VIEW });
     Object.defineProperty(transcript, "scrollTop", {
       configurable: true,
-      get: () => top,
+      get: () => state.top,
       set: (value: number) => {
-        top = value;
+        state.top = Math.max(0, Math.min(value, state.height - VIEW));
       },
     });
-    await emit(delta("at end"));
-    expect(top).toBe(1000);
-    top = 100;
-    await emit(delta(" more"));
-    expect(top).toBe(100);
+    return state;
+  }
+
+  /** The operator moves the scrollbar; the browser then fires `scroll`. */
+  function scrollTo(state: Scroll, top: number): void {
+    state.transcript.scrollTop = top;
+    state.transcript.dispatchEvent(new Event("scroll"));
+  }
+
+  function scrollToBottom(state: Scroll): void {
+    scrollTo(state, state.height);
+  }
+
+  it("scrolls to the end when a message is sent, even from higher up", async () => {
+    await start();
+    const state = fakeScroll(1000);
+    scrollToBottom(state);
+    scrollTo(state, 100);
+    await send();
+    expect(state.top).toBe(800);
+  });
+
+  it("follows new content until scrolled up, and again after scrolling back down", async () => {
+    await start();
+    const state = fakeScroll(1000);
+    await send();
+    state.height = 1200;
+    await emit(delta("first"));
+    expect(state.top).toBe(1000);
+
+    scrollTo(state, 500);
+    state.height = 1400;
+    await emit(delta(" second"));
+    expect(state.top).toBe(500);
+
+    scrollToBottom(state);
+    state.height = 1600;
+    await emit(delta(" third"));
+    expect(state.top).toBe(1400);
+  });
+
+  it("does not stop following when content grows without a scroll up", async () => {
+    await start();
+    const state = fakeScroll(1000);
+    await send();
+    // Growth alone fires no scroll event; a later event at the end keeps the transcript pinned.
+    state.height = 1300;
+    state.transcript.dispatchEvent(new Event("scroll"));
+    await emit(delta("more"));
+    expect(state.top).toBe(1100);
+  });
+
+  it("keeps the end in view when the turn ends, and keeps the place if scrolled up", async () => {
+    await start();
+    const state = fakeScroll(1000);
+    await send();
+    state.height = 1500;
+    await emit({ kind: "finished", session_id: "s-live" });
+    expect(state.top).toBe(1300);
+
+    await send();
+    scrollTo(state, 300);
+    state.height = 1800;
+    await emit({ kind: "finished", session_id: "s-live" });
+    expect(state.top).toBe(300);
+  });
+
+  it("keeps following a send made while Load more is still loading", async () => {
+    let release: (() => void) | null = null;
+    await start({
+      session_transcript: (args) =>
+        args.after_seq === 1
+          ? new Promise((resolve) => {
+              release = () => resolve(page(s, [userMessage(2, "older")]));
+            })
+          : page(s, [userMessage(1, "hi")], { next_after_seq: 1 }),
+    });
+    const state = fakeScroll(1000);
+    buttonByText(root, "Load more").click();
+    await settle();
+    await send();
+    expect(state.top).toBe(800);
+    // The page that was asked for before the send arrives after it.
+    (release as (() => void) | null)?.();
+    await settle();
+    state.height = 1400;
+    await emit(delta("reply"));
+    expect(state.top).toBe(1200);
+  });
+
+  it("keeps the place when Load more adds a page", async () => {
+    await start({
+      session_transcript: (args) =>
+        args.after_seq === 1
+          ? page(s, [userMessage(2, "older")])
+          : page(s, [userMessage(1, "hi")], { next_after_seq: 1 }),
+    });
+    const state = fakeScroll(1000);
+    scrollToBottom(state);
+    buttonByText(root, "Load more").click();
+    state.height = 1400;
+    await settle();
+    expect(state.top).toBe(800);
   });
 });

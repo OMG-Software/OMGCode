@@ -1,4 +1,4 @@
-//! Removing extra grants from the application data folder (ADR-0072).
+//! Removing extra grants from the application data folder (ADR-0073).
 //!
 //! The credential store refuses a data folder whose DACL grants a principal
 //! other than the current user, SYSTEM, and Administrators, which the window
@@ -35,7 +35,7 @@ const TITLE: &str = "Remove extra folder permissions";
 impl DesktopService {
     /// List the data folder's extra grants, ask the operator to remove them
     /// in a native confirmation, and remove exactly those grants on Yes
-    /// (ADR-0072). A folder that grants nothing extra is left unchanged.
+    /// (ADR-0073). A folder that grants nothing extra is left unchanged.
     ///
     /// # Errors
     ///
