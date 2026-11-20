@@ -155,7 +155,10 @@ Changes are recorded here before a release version is assigned.
 - A status read that started before a model choice, or answered while its save
   was pending, no longer puts the old model back in the composer. A model
   choice now invalidates earlier reads, and a read for a session with a pending
-  model save is dropped, so a quick send cannot go to the old model.
+  model save is dropped, so a quick send cannot go to the old model. A dropped
+  read is made again once the session's last save settles, even when that
+  save's answer is discarded, so a session reopened during the save never
+  stays loading.
 - The composer now warns while `connection_status` reports the saved
   per-session choices as unreadable. The session then follows the default
   connection, and the next choice replaces every session's saved choice.

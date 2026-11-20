@@ -61,6 +61,12 @@ export function createConnectionModel(): ConnectionModel {
    */
   const pendingModels = new Map<string, number>();
   /**
+   * Sessions whose status read was dropped for a pending model save. The read is repeated once
+   * the last save settles, even when that save's own answer is discarded, so the session never
+   * stays without a status.
+   */
+  const droppedReads = new Set<string>();
+  /**
    * Every write (a model or a provider choice) runs after the one before it settled, because each
    * IPC call runs on its own worker and two in flight could land out of order in Rust.
    */
@@ -92,13 +98,15 @@ export function createConnectionModel(): ConnectionModel {
     return id !== null && (pendingModels.get(id) ?? 0) > 0;
   }
 
-  function settleModelSave(id: string): void {
+  /** Settles one model save; true when it was the session's last and a read was dropped. */
+  function settleModelSave(id: string): boolean {
     const left = (pendingModels.get(id) ?? 1) - 1;
     if (left > 0) {
       pendingModels.set(id, left);
-    } else {
-      pendingModels.delete(id);
+      return false;
     }
+    pendingModels.delete(id);
+    return droppedReads.delete(id);
   }
 
   async function read(): Promise<void> {
@@ -107,7 +115,11 @@ export function createConnectionModel(): ConnectionModel {
     const mine = generation;
     try {
       const status = await api.connectionStatus(id);
-      if (disposed || mine !== generation || session !== id || modelSavePending(id)) {
+      if (disposed || mine !== generation || session !== id) {
+        return;
+      }
+      if (id !== null && modelSavePending(id)) {
+        droppedReads.add(id);
         return;
       }
       current = status;
@@ -209,8 +221,13 @@ export function createConnectionModel(): ConnectionModel {
       } catch (reason) {
         failure = reason;
       }
-      settleModelSave(id);
+      const repeatRead = settleModelSave(id);
       if (stale()) {
+        // This answer is discarded, but a read dropped while it was pending must still happen,
+        // or a reopened session would stay without a status.
+        if (repeatRead && !disposed && session === id) {
+          await read();
+        }
         return;
       }
       if (status !== null) {

@@ -181,4 +181,47 @@ describe("serialized connection writes", () => {
     await choosing;
     expect(model.status()?.model).toBe("b-model");
   });
+
+  it("reads a reopened session again after its pending save settles, even when that answer is discarded", async () => {
+    const calls = installDeferred();
+    const model = createConnectionModel();
+    const pending = (command: string, session: string): Deferred | undefined =>
+      calls.filter((call) => call.command === command && call.args.session_id === session).at(-1);
+
+    const opening = model.open("s-a");
+    await flush();
+    pending("connection_status", "s-a")?.resolve(status("a-model"));
+    await opening;
+
+    // Choose in A, choose in B (queued behind A's save), then reopen A while A's save is pending.
+    const choosingA = model.chooseModel("a-new");
+    await flush();
+    const toB = model.open("s-b");
+    await flush();
+    pending("connection_status", "s-b")?.resolve(status("b-model"));
+    await toB;
+    const choosingB = model.chooseModel("b-new");
+    const backToA = model.open("s-a");
+    await flush();
+    const firstRead = pending("connection_status", "s-a");
+    firstRead?.resolve(status("a-model"));
+    await backToA;
+    // That read was dropped for the pending save, so A has no status yet.
+    expect(model.status()).toBeNull();
+
+    // A's save answers after B's choice advanced the model counter, so its answer is discarded;
+    // the dropped read is made again instead.
+    pending("session_model_select", "s-a")?.resolve(status("a-new"));
+    await flush();
+    const retry = pending("connection_status", "s-a");
+    expect(retry).not.toBe(firstRead);
+    retry?.resolve(status("a-new"));
+    await choosingA;
+    expect(model.sessionId()).toBe("s-a");
+    expect(model.status()?.model).toBe("a-new");
+
+    pending("session_model_select", "s-b")?.resolve(status("b-new"));
+    await choosingB;
+    expect(model.status()?.model).toBe("a-new");
+  });
 });
