@@ -323,7 +323,9 @@ an unbound item cannot be deleted, the command still succeeds and reports a
 `warning` with code `credential_orphaned` and the identifier to remove by hand.
 
 Credential failures use stable error codes: `credential_unavailable`,
-`credential_locked`, `credential_not_found`, `credential_exists`,
+`credential_storage_not_private` (Windows: the data folder grants another
+account access or is not an ordinary folder; the message names the failed
+check), `credential_locked`, `credential_not_found`, `credential_exists`,
 `credential_corrupt`, `credential_input`, `credential_io`,
 `credential_prompt_required` (the Secret Service asked for confirmation,
 which OMGCode never shows), `credential_orphaned` (nothing was recorded, and
@@ -340,8 +342,12 @@ backend and its state. A control journal written by 0.27.0 cannot be read by
 
 - **Windows:** each credential is a DPAPI blob for the current user in
   `<data-dir>\credentials-v1`, written create-only with an owner-only DACL.
-  The data folder must meet the private-root rule used by checkpoint storage;
-  otherwise the store is `credential_unavailable`. An edited, truncated, or
+  The data folder must meet the private-root rule used by checkpoint storage.
+  A folder that grants another account access is
+  `credential_storage_not_private`; a missing folder is
+  `credential_unavailable`. The desktop `settings` window can remove the
+  extra grants after a native confirmation (ADR-0072); the CLI cannot. An
+  edited, truncated, or
   copied blob, or a broadened DACL, is `credential_corrupt`.
 - **Linux:** each credential is one item in the Secret Service default
   collection on the session bus, for example the gnome-keyring login

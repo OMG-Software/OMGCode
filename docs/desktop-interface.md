@@ -271,6 +271,7 @@ their registered identifier, and approvals by identifier.
 | `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
+| `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0072) |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -937,6 +938,20 @@ revision check and validation (ADR-0064, ADR-0071).
   and choosing the connection stays confirmed separately; a failure to delete
   the old item is reported as `credential_orphaned`, which says the new key is
   set and names the old item's identifier, since no profile names it any more.
+- **A data folder that is not private can be repaired** (ADR-0072). On
+  Windows a data folder that grants another account access refuses every key
+  change with `credential_storage_not_private`. The error shows **Remove extra
+  permissions…**, which calls `settings_repair_data_folder` with no arguments.
+  Rust lists the folder's allow entries for principals other than the current
+  user, SYSTEM, and Administrators and shows the folder and each account, by
+  name and SID, in a native Yes/No dialog. On Yes it removes exactly those
+  entries, refusing with `data_folder_changed` if they differ when it looks
+  again. It keeps every other entry, makes inherited entries explicit, and
+  stops the folder inheriting. A folder with nothing to remove succeeds with
+  no dialog. A link, an untrusted owner, an unknown entry type, or a result
+  that leaves the user without access is `data_folder_not_repairable`. The
+  window then says that only the user, SYSTEM, and Administrators have access.
+  The key field was already emptied, so the operator types the key again.
 - **Removing a connection with a stored key, or the active one, is
   confirmed.** `settings_remove_connection` removes a profile and, through
   the same core path as the CLI's `provider-profile-remove`, deletes its

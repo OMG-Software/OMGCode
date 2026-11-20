@@ -478,3 +478,55 @@ fn a_session_that_chose_a_removed_cloud_profile_becomes_stale() {
     assert_eq!(code(sent), "session_connection_stale");
     server.assert_untouched();
 }
+
+/// A data folder that grants another account access is reported with its own
+/// code, and the operator can remove the grant after a native confirmation
+/// that names it (ADR-0072). Declining changes nothing.
+#[cfg(windows)]
+#[test]
+fn a_shared_data_folder_is_reported_and_repaired_only_after_confirmation() {
+    // S-1-5-32-545 is the built-in Users group, named by SID so the test does
+    // not depend on the display language.
+    const USERS: &str = "S-1-5-32-545";
+    let fixture = Fixture::new();
+    let granted = std::process::Command::new("icacls")
+        .arg(&fixture.data)
+        .args(["/grant", &format!("*{USERS}:(OI)(CI)(RX)")])
+        .output()
+        .expect("icacls");
+    assert!(granted.status.success(), "icacls fixture failed");
+    let service = service(&fixture);
+    let mut vault = Vault::new(&fixture.data);
+
+    let refused = add_cloud(&service, &fixture, "cloud", KEY);
+    assert_eq!(code(refused), "credential_storage_not_private");
+    assert_eq!(profile_count(&fixture), 0, "nothing is recorded");
+
+    let declined = Answers::with(&[false]);
+    assert_eq!(
+        code(service.settings_repair_data_folder(&declined)),
+        "cancelled"
+    );
+    let shown = declined.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        shown[0].message.contains(&format!("({USERS})")),
+        "{}",
+        shown[0].message
+    );
+    let still_refused = add_cloud(&service, &fixture, "cloud", KEY);
+    assert_eq!(code(still_refused), "credential_storage_not_private");
+
+    let confirmed = Answers::with(&[true]);
+    service
+        .settings_repair_data_folder(&confirmed)
+        .expect("repair after confirmation");
+    assert_eq!(confirmed.shown().len(), 1);
+    add_cloud(&service, &fixture, "cloud", KEY).expect("add after repair");
+    vault.track(bound(&fixture, "cloud").expect("a bound credential"));
+
+    // Nothing is left to remove, so no dialog is shown.
+    service
+        .settings_repair_data_folder(&Answers::with(&[]))
+        .expect("a private folder needs no repair");
+}

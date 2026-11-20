@@ -193,7 +193,8 @@ pub async fn settings_select_connection(
 /// # Errors
 ///
 /// `forbidden_window`, or the service's error (`invalid_request`, `control`,
-/// `credential_unavailable`, `credential_locked`).
+/// `credential_unavailable`, `credential_storage_not_private`,
+/// `credential_locked`).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn settings_add_connection(
     webview: Webview,
@@ -225,7 +226,8 @@ pub async fn settings_add_connection(
 /// # Errors
 ///
 /// `forbidden_window`, or the service's error (`invalid_request`, `control`,
-/// `credential_unavailable`, `credential_locked`).
+/// `credential_unavailable`, `credential_storage_not_private`,
+/// `credential_locked`).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn settings_set_api_key(
     webview: Webview,
@@ -264,6 +266,29 @@ pub async fn settings_remove_connection(
     let request = ConnectionRemoveRequest { revision, name };
     blocking(&state, move |service| {
         service.settings_remove_connection(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Lists the extra grants on the application data folder
+/// and, after a native confirmation that names the folder and each account,
+/// removes exactly those grants (ADR-0072). The request carries nothing: Rust
+/// reads the folder and the list itself.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`,
+/// `data_folder_unreadable`, `data_folder_not_repairable`,
+/// `data_folder_changed`, `data_folder_repair_failed`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_repair_data_folder(
+    webview: Webview,
+    state: Service<'_>,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRepairDataFolder, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    blocking(&state, move |service| {
+        service.settings_repair_data_folder(&prompt)
     })
     .await
 }

@@ -38,11 +38,21 @@ pub(crate) struct DpapiStore {
 
 impl DpapiStore {
     /// Open the existing trusted data root. Nothing is created here.
+    ///
+    /// The private store reports an untrusted owner or grant, or an object
+    /// that is not an ordinary directory, as `InvalidData`; that becomes
+    /// [`CredentialError::StorageNotPrivate`] so the operator learns the
+    /// folder needs fixing. Any other failure, such as a missing root or an
+    /// unsupported filesystem, leaves the store unavailable.
     pub(super) fn open(root: &Path) -> Result<Self, CredentialError> {
         let root = PrivateDirectory::open(root).map_err(|error| {
-            CredentialError::Unavailable(format!(
-                "application storage cannot hold credentials: {error}"
-            ))
+            if error.kind() == io::ErrorKind::InvalidData {
+                CredentialError::StorageNotPrivate(error.to_string())
+            } else {
+                CredentialError::Unavailable(format!(
+                    "application storage cannot hold credentials: {error}"
+                ))
+            }
         })?;
         Ok(Self { root })
     }

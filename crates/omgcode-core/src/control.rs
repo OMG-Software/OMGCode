@@ -50,6 +50,10 @@ pub use credential::{
 };
 /// Whether this platform can record and apply container grants.
 pub use omgcode_platform::container::CONTAINER_GRANTS_SUPPORTED;
+/// Operator-confirmed removal of extra grants from the data folder (ADR-0072).
+pub use omgcode_platform::private_store::{
+    ExtraGrant, RootAccess, RootRepairError, inspect_root_access, remove_extra_root_grants,
+};
 pub use package::{
     LoadedPackageCredential, MAX_PACKAGE_ORIGIN_BYTES, MAX_PACKAGE_ORIGINS,
     MAX_PACKAGE_OUTPUT_BYTES, MAX_PACKAGE_PROFILES, PackageAuth, PackageCredentialError,

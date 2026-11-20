@@ -5,6 +5,9 @@ export const CANCELLED_CODE = "cancelled";
 /** The settings window chose another model connection after this window read its endpoint. */
 export const CONNECTION_CHANGED_CODE = "connection_changed";
 
+/** The application data folder grants another account access, so no API key is stored (ADR-0072). */
+export const STORAGE_NOT_PRIVATE_CODE = "credential_storage_not_private";
+
 /** The connection recorded for the session no longer matches its profile; the operator must choose again. */
 export const SESSION_CONNECTION_STALE_CODE = "session_connection_stale";
 

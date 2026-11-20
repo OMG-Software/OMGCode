@@ -83,6 +83,111 @@ pub fn is_private_file(file: &std::fs::File) -> std::io::Result<bool> {
     windows::is_private_file(file)
 }
 
+/// A principal that a private root grants access to beyond the current user,
+/// SYSTEM, and Administrators.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExtraGrant {
+    /// The principal's SID in `S-1-…` form. A repair compares only this.
+    pub sid: String,
+    /// `DOMAIN\name` when Windows can resolve the SID; for display only.
+    pub account: Option<String>,
+}
+
+/// Whether a private root's extra grants can be removed (ADR-0072).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RootAccess {
+    /// The root grants no principal beyond the trusted ones.
+    Private,
+    /// Removing these grants, sorted by SID, would leave only trusted ones.
+    Repairable(Vec<ExtraGrant>),
+    /// The root cannot be repaired here, with a fixed reason.
+    NotRepairable(&'static str),
+}
+
+/// A refused or failed removal of extra grants.
+#[derive(Debug)]
+pub enum RootRepairError {
+    /// The root's extra grants differ from the list the operator confirmed.
+    /// Nothing was changed.
+    Changed,
+    /// The root cannot be repaired here, with a fixed reason. Nothing was
+    /// changed.
+    NotRepairable(&'static str),
+    /// A native call failed. The DACL may or may not have been replaced.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for RootRepairError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed => formatter.write_str("the folder's permissions changed after review"),
+            Self::NotRepairable(reason) => formatter.write_str(reason),
+            Self::Io(error) => write!(
+                formatter,
+                "the folder's permissions were not changed: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RootRepairError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Changed | Self::NotRepairable(_) => None,
+        }
+    }
+}
+
+/// The fixed reason on platforms whose private roots this module never edits.
+#[cfg(not(windows))]
+const REPAIR_UNSUPPORTED: &str = "folder permission repair is available only on Windows";
+
+/// List the grants on an existing private root that the private-root rule
+/// refuses. The root is opened without following a final reparse point, and
+/// nothing is changed. Linux and other platforms report `NotRepairable`.
+///
+/// # Errors
+///
+/// Returns an error when the root cannot be opened or its descriptor read.
+pub fn inspect_root_access(path: &std::path::Path) -> std::io::Result<RootAccess> {
+    #[cfg(windows)]
+    {
+        windows::root_access::inspect(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(RootAccess::NotRepairable(REPAIR_UNSUPPORTED))
+    }
+}
+
+/// Remove the extra grants from a private root after the operator confirmed
+/// exactly `confirmed` (ADR-0072). The DACL is rewritten as protected: every
+/// trusted and deny entry is kept and made explicit, and the owner is
+/// unchanged. The caller must obtain the operator's confirmation of the list
+/// that [`inspect_root_access`] returned; this function never runs on its own.
+///
+/// # Errors
+///
+/// [`RootRepairError::Changed`] when the grants differ from `confirmed`,
+/// [`RootRepairError::NotRepairable`] when the root cannot be repaired, and
+/// [`RootRepairError::Io`] when a native call fails.
+pub fn remove_extra_root_grants(
+    path: &std::path::Path,
+    confirmed: &[ExtraGrant],
+) -> Result<(), RootRepairError> {
+    #[cfg(windows)]
+    {
+        windows::root_access::remove(path, confirmed)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (path, confirmed);
+        Err(RootRepairError::NotRepairable(REPAIR_UNSUPPORTED))
+    }
+}
+
 /// Inspect supported replacement-stage metadata from the same open file handle.
 /// Linux rejects xattrs, special mode bits, and file attrs. Windows rejects
 /// alternate streams, extended attributes, and unsupported file attributes.

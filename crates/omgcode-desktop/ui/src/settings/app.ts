@@ -1,5 +1,5 @@
 import { button, el, replaceChildren } from "../dom";
-import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
+import { CANCELLED_CODE, STORAGE_NOT_PRIVATE_CODE, toIpcError } from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
 import { renderAdvanced } from "./advanced_section";
@@ -35,6 +35,17 @@ export interface SettingsApp {
 
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";
+
+/** Offered with `credential_storage_not_private`; Rust explains and confirms natively (ADR-0072). */
+export const REPAIR_FOLDER_LABEL = "Remove extra permissions…";
+export const REPAIR_FOLDER_HELP =
+  "OMGCode can remove the other accounts from its data folder. It names each one in a system dialog first.";
+/**
+ * Shown after the repair command succeeds. Rust also succeeds, without a dialog, when the folder
+ * already granted no other account, so the text states what is true in both cases.
+ */
+export const FOLDER_REPAIRED =
+  "OMGCode's data folder now gives access only to your account, SYSTEM, and Administrators. Try the change again.";
 
 /** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
 const ACTIONS: Actions = {
@@ -249,8 +260,23 @@ export function startSettings(root: HTMLElement): SettingsApp {
       notice.hidden = false;
       return;
     }
-    replaceChildren(problem, `${error.message} (${error.code})`);
+    if (error.code === STORAGE_NOT_PRIVATE_CODE) {
+      // The button only asks Rust to look; Rust lists the accounts and asks in a native dialog.
+      const repair = button(REPAIR_FOLDER_LABEL, () => submit(repairDataFolder));
+      repair.classList.add("repair-folder");
+      replaceChildren(problem, `${error.message} (${error.code}) ${REPAIR_FOLDER_HELP} `, repair);
+    } else {
+      replaceChildren(problem, `${error.message} (${error.code})`);
+    }
     problem.hidden = false;
+  }
+
+  /** The repair change. On success it says so, since the overview itself does not change. */
+  async function repairDataFolder(): Promise<SettingsOverview> {
+    const overview = await settingsApi.repairDataFolder();
+    replaceChildren(notice, FOLDER_REPAIRED);
+    notice.hidden = false;
+    return overview;
   }
 
   /** Shows why the configuration could not be read. The next successful read hides it. */

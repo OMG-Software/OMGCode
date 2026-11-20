@@ -13,9 +13,11 @@ import {
   ADVANCED_HELP,
   DEFAULT_CHOICE,
   DEFAULT_ENDPOINTS,
+  FOLDER_REPAIRED,
   MODEL_HELP,
   NOTHING_CHANGED,
   PERMISSION_LABELS,
+  REPAIR_FOLDER_LABEL,
   type SettingsApp,
   startSettings,
   WORKSPACES_HELP,
@@ -884,6 +886,68 @@ describe("settings window", () => {
       expect(pageHolds(KEY)).toBe(false);
       // The form keeps its choice of provider and name, but never the key.
       expect(picker("New connection provider").value).toBe("ollama_cloud");
+    });
+
+    it("offers to remove the data folder's extra permissions and sends nothing with it", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection(
+            "credential_storage_not_private",
+            "OMGCode's application data folder grants access to another account.",
+          ),
+        settings_repair_data_folder: () => choosable({ provider_profiles: [] }),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+      expect(root.textContent).toContain("credential_storage_not_private");
+      expect(ipc.callsTo("settings_repair_data_folder")).toHaveLength(0);
+
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      // Rust reads the folder and lists the accounts itself; the window names nothing.
+      expect(ipc.callsTo("settings_repair_data_folder")).toEqual([
+        { command: "settings_repair_data_folder", args: {} },
+      ]);
+      expect(root.textContent).toContain(FOLDER_REPAIRED);
+      expect(root.querySelector<HTMLElement>(".change-error")?.hidden).toBe(true);
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
+    it("reports a declined folder repair as nothing changed", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection("credential_storage_not_private", "The data folder is not private."),
+        settings_repair_data_folder: () => rejection("cancelled", "No change was made."),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain(NOTHING_CHANGED);
+      expect(root.textContent).not.toContain(FOLDER_REPAIRED);
+    });
+
+    it("offers no folder repair for other credential failures", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection("credential_unavailable", "No protected credential store is available."),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+      expect(root.textContent).toContain("credential_unavailable");
+      expect(root.textContent).not.toContain(REPAIR_FOLDER_LABEL);
     });
 
     it("keeps an unsent key when focus returns and the configuration has not changed", async () => {

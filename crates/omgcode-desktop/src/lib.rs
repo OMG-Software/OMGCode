@@ -177,7 +177,8 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_add_connection,
             commands::settings::settings_remove_connection,
             commands::settings::settings_set_api_key,
-            commands::settings::settings_clear_scope
+            commands::settings::settings_clear_scope,
+            commands::settings::settings_repair_data_folder
         ])
         .build(tauri::generate_context!());
     match built {

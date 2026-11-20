@@ -355,6 +355,10 @@ fn use_error_codes_are_stable() {
             CredentialError::Unavailable("x".into()),
             "credential_unavailable",
         ),
+        (
+            CredentialError::StorageNotPrivate("x".into()),
+            "credential_storage_not_private",
+        ),
         (CredentialError::Corrupt("x"), "credential_corrupt"),
         (
             CredentialError::PromptRequired,

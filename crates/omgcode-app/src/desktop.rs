@@ -86,6 +86,7 @@
 
 mod approvals;
 mod chat;
+mod data_folder;
 mod error;
 mod events;
 mod preferences;

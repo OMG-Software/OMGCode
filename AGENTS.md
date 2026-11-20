@@ -108,6 +108,11 @@ workspace preferences, and package cache roots. Rust opens a native folder
 dialog for each folder and a native confirmation before each change that
 widens access, and creates an empty settings store on first use
 ([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
+On Windows, a data folder that grants another account access is reported as
+`credential_storage_not_private`. The `settings` window can remove exactly
+those grants after a native confirmation that names each account; nothing
+repairs them automatically
+([ADR-0072](docs/adr/0072-remove-extra-data-folder-grants-after-operator-confirmation.md)).
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
 connections and Ollama Cloud connections, whose API key is typed once into a

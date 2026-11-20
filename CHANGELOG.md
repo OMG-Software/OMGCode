@@ -6,6 +6,42 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.51.0 reports a Windows data folder that grants another account
+  access as `credential_storage_not_private`, not `credential_unavailable`,
+  and lets the operator remove those grants from the desktop `settings`
+  window after a native confirmation (ADR-0072, accepted). Adding an Ollama
+  Cloud key failed with "No protected credential store is available on this
+  computer." because the data folder had inherited a read grant for another
+  tool's sandbox group. The store refused the folder, and the desktop hid
+  the cause.
+  - **Platform:** `CredentialError::StorageNotPrivate` covers a data folder
+    that fails the private-root checks. `inspect_root_access` lists the
+    folder's allow entries for principals other than the current user,
+    SYSTEM, and Administrators. `remove_extra_root_grants` reopens the folder
+    without following a link and removes exactly the confirmed entries. It
+    refuses if they changed. The new DACL is protected and keeps every
+    trusted and deny entry, explicit and with denies first. The owner is not
+    changed. A link, an untrusted owner, an unknown entry type, or a result
+    without the user's own entry is refused.
+  - **Core and CLI:** `credential_storage_not_private` is a new stable code.
+    The CLI keeps the native reason in its message and has no repair
+    command.
+  - **Desktop:** that error shows **Remove extra permissions…**, which calls
+    the new `settings`-only command `settings_repair_data_folder` with no
+    arguments. Rust shows the folder and each account, by name and SID, in a
+    native Yes/No dialog and changes nothing on No. New codes:
+    `data_folder_unreadable`, `data_folder_not_repairable`,
+    `data_folder_changed`, and `data_folder_repair_failed`.
+  - **Tests:** a regression test, first run against the unfixed store,
+    shows that a root granting Users was `Unavailable`. Windows repair tests
+    cover a confirmed repair, which keeps a deny entry and the user's access,
+    clears an inheriting child, and leaves a protected store child alone. They
+    also cover a grant list that changed after confirmation, a private root,
+    a user entry that only children inherit, and relative and junction paths. A desktop service test covers the new
+    code, a declined repair, a confirmed repair followed by storing a key, and
+    a second repair with no dialog. Vitest covers the button, its empty
+    request, a declined repair, and no button for other credential errors.
+
 - Version 0.49.0 keeps new checkpoints in a protected `.OMGCode` folder in
   each workspace instead of the data directory (ADR-0070, accepted), so
   model edit, multi-edit, and delete calls work when the workspace is on

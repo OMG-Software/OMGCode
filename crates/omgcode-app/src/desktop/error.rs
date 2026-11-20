@@ -237,6 +237,10 @@ impl DesktopError {
                 "credential_unavailable",
                 "No protected credential store is available on this computer.",
             ),
+            CredentialError::StorageNotPrivate(_) => (
+                "credential_storage_not_private",
+                "OMGCode's application data folder grants access to another account or is not an ordinary folder, so it cannot hold API keys. Allow only your account, SYSTEM, and Administrators on it.",
+            ),
             CredentialError::Locked => (
                 "credential_locked",
                 "The credential store is locked. Unlock it outside OMGCode and try again.",
@@ -257,6 +261,42 @@ impl DesktopError {
             ),
         };
         Self::new(code, message)
+    }
+
+    /// The data folder's grants could not be listed (ADR-0072).
+    pub(crate) fn data_folder_unreadable() -> Self {
+        Self::new(
+            "data_folder_unreadable",
+            "OMGCode could not read the permissions of its application data folder.",
+        )
+    }
+
+    /// The data folder cannot be repaired here. `reason` is fixed text from
+    /// the platform and names no path or account.
+    pub(crate) fn data_folder_not_repairable(reason: &'static str) -> Self {
+        Self::new(
+            "data_folder_not_repairable",
+            format!(
+                "OMGCode cannot fix the data folder's permissions: {reason}. Fix them outside OMGCode."
+            ),
+        )
+    }
+
+    /// The data folder's grants changed between the confirmation and the
+    /// repair, so nothing was changed.
+    pub(crate) fn data_folder_changed() -> Self {
+        Self::new(
+            "data_folder_changed",
+            "The data folder's permissions changed after you reviewed them. Nothing was changed; try again.",
+        )
+    }
+
+    /// The native DACL write failed. It may or may not have taken effect.
+    pub(crate) fn data_folder_repair_failed() -> Self {
+        Self::new(
+            "data_folder_repair_failed",
+            "Windows refused to change the data folder's permissions. Check them outside OMGCode.",
+        )
     }
 
     /// Map a failure of core's store-and-bind call.

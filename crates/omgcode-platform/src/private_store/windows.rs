@@ -4,14 +4,16 @@
 //! only the current user, applied by the same native create. The application
 //! data root inherits its ACL, so it instead must grant nothing beyond the
 //! current user, SYSTEM, and Administrators. ACLs are verified from the open
-//! handle and never repaired. A replacement stage is the one exception: it is
-//! created private, then takes its source's security before publication.
+//! handle and never repaired automatically. A replacement stage takes its
+//! source's security before publication, and [`root_access`] removes a root's
+//! extra grants only after the operator confirms them (ADR-0072).
 //!
 //! Directory durability has no Microsoft contract. `sync` flushes the directory
 //! handle and refuses on failure, but no page states that this persists entries
 //! or renames. See ADR-0023. Same-user and administrator actors are not isolated.
 
 mod metadata;
+pub(crate) mod root_access;
 mod volume;
 #[cfg(test)]
 pub(crate) use metadata::read_security;

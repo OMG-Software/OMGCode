@@ -73,6 +73,31 @@ fn a_missing_root_is_unavailable() {
     assert!(!missing.exists());
 }
 
+/// A data root that grants another principal access is reported as not
+/// private, not as a missing store, so the operator can fix its permissions.
+#[test]
+fn a_root_granting_another_principal_is_not_private() {
+    let root = root();
+    // S-1-5-32-545 is the built-in Users group, named by its identifier so
+    // the command does not depend on the display language.
+    let granted = Command::new("icacls")
+        .arg(&root.path)
+        .args(["/grant", "*S-1-5-32-545:(OI)(CI)(RX)"])
+        .output()
+        .expect("run icacls");
+    assert!(
+        granted.status.success(),
+        "icacls failed: {}",
+        String::from_utf8_lossy(&granted.stderr)
+    );
+    let result = CredentialStore::open(&root.path);
+    let Err(CredentialError::StorageNotPrivate(reason)) = &result else {
+        panic!("expected StorageNotPrivate: {:?}", result.err());
+    };
+    assert!(reason.contains("untrusted principal"), "{reason}");
+    assert!(!root.path.join(DIRECTORY).exists(), "open must not create");
+}
+
 #[test]
 fn an_edited_or_truncated_blob_is_corrupt_not_absent() {
     let root = root();

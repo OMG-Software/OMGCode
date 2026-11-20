@@ -370,7 +370,8 @@ credential. It is the only adapter that reads one.
   code, and a busy store is refused without a retry. The cause codes are
   `unknown_profile`, `wrong_provider`, `endpoint_not_recorded`,
   `subscription_unsupported`, `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
-  `credential_locked`, `credential_unavailable`, `credential_corrupt`,
+  `credential_locked`, `credential_unavailable`,
+  `credential_storage_not_private`, `credential_corrupt`,
   `credential_prompt_required`, `credential_io`, `credential_refused`, and
   `credential_invalid`. The desktop adds `endpoint_changed` (see the next
   section).
