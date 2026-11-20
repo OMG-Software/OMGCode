@@ -932,7 +932,8 @@ revision check and validation (ADR-0064, ADR-0070).
   stored, then bound, then the old item is deleted. It shows no dialog,
   because the key goes only to the same fixed host the profile already names
   and choosing the connection stays confirmed separately; a failure to delete
-  the old item is reported as `credential_orphaned`.
+  the old item is reported as `credential_orphaned`, which says the new key is
+  set and names the old item's identifier, since no profile names it any more.
 - **Removing a connection with a stored key, or the active one, is
   confirmed.** `settings_remove_connection` removes a profile and, through
   the same core path as the CLI's `provider-profile-remove`, deletes its
@@ -946,7 +947,7 @@ revision check and validation (ADR-0064, ADR-0070).
   dialog. No keeps the profile, its key, and its selection. The native store is
   opened before anything is removed, so an unavailable one refuses the
   removal; a native item that cannot be deleted after the profile is gone is
-  reported as `credential_orphaned`. A session that chose the removed profile
+  reported as `credential_orphaned` with that item's identifier. A session that chose the removed profile
   refuses its next turn with `session_connection_stale` until the provider is
   chosen again.
 - **Ollama context length.** OMGCode cannot set Ollama's context length over

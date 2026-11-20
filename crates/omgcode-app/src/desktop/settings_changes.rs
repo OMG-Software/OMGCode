@@ -44,8 +44,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
-    ControlError, ControlStore, CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth,
-    ProviderCredentialError, ProviderKind, ProviderProfileDeclaration, delete_unbound_credential,
+    ControlError, ControlStore, CredentialId, CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES,
+    ProviderAuth, ProviderCredentialError, ProviderKind, ProviderProfileDeclaration,
+    delete_unbound_credential,
 };
 use omgcode_core::policy::{Access, PermissionSet, WriteTool};
 use omgcode_core::provider::OLLAMA_CLOUD_ENDPOINT;
@@ -462,16 +463,26 @@ fn current_choice(
 }
 
 /// Undo a profile recorded for a key that could not be stored: remove it, and
-/// delete a binding it gained if the binding was recorded after all. `true`
-/// when the profile is gone and no bound item remains.
-fn roll_back_profile(store: &mut ControlStore, credentials: &CredentialStore, name: &str) -> bool {
+/// delete a binding it gained if the binding was recorded after all. `Ok`
+/// when the profile is gone and no bound item remains; otherwise the
+/// identifier of an item that could not be deleted, or `None` when the
+/// profile itself could not be removed.
+fn roll_back_profile(
+    store: &mut ControlStore,
+    credentials: &CredentialStore,
+    name: &str,
+) -> Result<(), Option<CredentialId>> {
     let revision = store.revision();
-    match store.remove_provider_profile(name, revision) {
-        Ok(removal) => removal
-            .credential
-            .as_ref()
-            .is_none_or(|binding| delete_unbound_credential(credentials, binding).is_none()),
-        Err(_) => false,
+    let removal = store
+        .remove_provider_profile(name, revision)
+        .map_err(|_| None)?;
+    match removal
+        .credential
+        .as_ref()
+        .and_then(|binding| delete_unbound_credential(credentials, binding))
+    {
+        None => Ok(()),
+        Some(orphan) => Err(Some(orphan.id)),
     }
 }
 
@@ -920,22 +931,23 @@ impl DesktopService {
             };
             let current = store.revision();
             match store.set_provider_credential(&credentials, &declaration.name, &secret, current) {
-                Ok(set) if set.orphan.is_none() => Ok(()),
-                Ok(_) => Err(DesktopError::credential_orphaned()),
+                Ok(set) => match set.orphan {
+                    None => Ok(()),
+                    Some(orphan) => Err(DesktopError::credential_item_orphaned(&orphan.id)),
+                },
                 // The binding may be recorded, so the new item may be the one the profile names.
                 // Removing the profile would delete it; both are kept and the identifier is
                 // reported (security coding rules).
                 Err(error @ ProviderCredentialError::BindingUncertain { .. }) => {
                     Err(DesktopError::from_provider_credential(&error))
                 }
-                Err(error) => {
-                    let clean = roll_back_profile(store, &credentials, &declaration.name);
-                    Err(if clean {
-                        DesktopError::from_provider_credential(&error)
-                    } else {
-                        DesktopError::credential_orphaned()
-                    })
-                }
+                Err(error) => Err(
+                    match roll_back_profile(store, &credentials, &declaration.name) {
+                        Ok(()) => DesktopError::from_provider_credential(&error),
+                        Err(Some(left)) => DesktopError::credential_item_orphaned(&left),
+                        Err(None) => DesktopError::credential_orphaned(),
+                    },
+                ),
             }
         })
     }
@@ -987,8 +999,11 @@ impl DesktopService {
                 ));
             }
             match store.set_provider_credential(&credentials, &name, &secret, revision) {
-                Ok(set) if set.orphan.is_none() => Ok(()),
-                Ok(_) => Err(DesktopError::credential_orphaned()),
+                Ok(set) => match set.orphan {
+                    None => Ok(()),
+                    // The profile now names the new key, so only this identifier finds the old one.
+                    Some(orphan) => Err(DesktopError::replaced_key_orphaned(&orphan.id)),
+                },
                 Err(error) => Err(DesktopError::from_provider_credential(&error)),
             }
         })
@@ -1086,10 +1101,10 @@ impl DesktopService {
                 (Some(binding), Some(credentials)) => {
                     match delete_unbound_credential(credentials, binding) {
                         None => Ok(()),
-                        Some(_) => Err(DesktopError::credential_orphaned()),
+                        Some(orphan) => Err(DesktopError::removed_key_orphaned(&orphan.id)),
                     }
                 }
-                (Some(_), None) => Err(DesktopError::credential_orphaned()),
+                (Some(binding), None) => Err(DesktopError::removed_key_orphaned(binding.id())),
                 (None, _) => Ok(()),
             }
         })

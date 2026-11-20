@@ -279,11 +279,34 @@ impl DesktopError {
     /// A new stored item that no profile names could not be deleted. Its
     /// opaque identifier is reported so the operator can find it; the key and
     /// the native error text are not.
-    fn credential_item_orphaned(credential_id: &CredentialId) -> Self {
+    pub(crate) fn credential_item_orphaned(credential_id: &CredentialId) -> Self {
         Self::new(
             "credential_orphaned",
             format!(
                 "The stored API key {credential_id} could not be cleaned up and may remain in the operating system's credential store with no connection naming it. Delete it there."
+            ),
+        )
+    }
+
+    /// The new key is bound, but the item it replaced was not deleted. The
+    /// connection now names the new key, so `provider-profile-show` cannot
+    /// find the old one; its opaque identifier is the only way to.
+    pub(crate) fn replaced_key_orphaned(old: &CredentialId) -> Self {
+        Self::new(
+            "credential_orphaned",
+            format!(
+                "The new API key is set, but the key it replaced, {old}, could not be deleted and may remain in the operating system's credential store with no connection naming it. Delete it there."
+            ),
+        )
+    }
+
+    /// The connection is removed, but its stored item was not deleted. No
+    /// profile names the item any more, so its opaque identifier is reported.
+    pub(crate) fn removed_key_orphaned(credential_id: &CredentialId) -> Self {
+        Self::new(
+            "credential_orphaned",
+            format!(
+                "The connection was removed, but its stored API key {credential_id} could not be deleted and may remain in the operating system's credential store with no connection naming it. Delete it there."
             ),
         )
     }
@@ -470,6 +493,21 @@ mod tests {
             });
         assert!(first.message().contains(KEPT));
         assert!(!first.message().contains("replaced"), "{}", first.message());
+    }
+
+    /// A key replacement or a removal that leaves the old item names it and
+    /// says the change itself took effect, because no profile names the item.
+    #[test]
+    fn a_leftover_key_after_a_completed_change_is_named_by_its_identifier() {
+        let replaced = DesktopError::replaced_key_orphaned(&id(REPLACED));
+        assert_eq!(replaced.code(), "credential_orphaned");
+        assert!(replaced.message().contains(REPLACED));
+        assert!(replaced.message().contains("The new API key is set"));
+
+        let removed = DesktopError::removed_key_orphaned(&id(KEPT));
+        assert_eq!(removed.code(), "credential_orphaned");
+        assert!(removed.message().contains(KEPT));
+        assert!(removed.message().contains("The connection was removed"));
     }
 
     /// An orphaned item that could not be deleted is named by its identifier.

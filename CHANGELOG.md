@@ -203,6 +203,10 @@ Changes are recorded here before a release version is assigned.
   `credential_binding_uncertain` with the kept item's identifier, and any item
   it replaced, as the CLI does. An item that could not be cleaned up is named
   in `credential_orphaned`. No message shows the key or native error text.
+- When an Ollama Cloud key is replaced, or a connection is removed, but the old
+  stored item cannot be deleted, `credential_orphaned` now names that item's
+  identifier and says the replacement or removal took effect. No connection
+  names the item any more, so `provider-profile-show` cannot find it.
 - A desktop API key over 16 KiB is refused before it is scanned or copied.
 - The global connection's endpoint, token, and kind come from one read of the
   settings store, so `chat_models` cannot pair one profile's models with
