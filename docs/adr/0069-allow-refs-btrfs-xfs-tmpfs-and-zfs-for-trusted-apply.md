@@ -1,4 +1,4 @@
-# 0068: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply
+# 0069: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply
 
 - Status: Accepted
 - Date: 2026-11-20

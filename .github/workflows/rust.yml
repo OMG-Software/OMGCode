@@ -94,7 +94,7 @@ jobs:
       - name: Run documentation tests
         run: cargo test --workspace --doc --locked
 
-  # ADR-0068: rerun the file-access suites with the temporary directory, and so
+  # ADR-0069: rerun the file-access suites with the temporary directory, and so
   # every fixture's data root and workspace, on each accepted filesystem. The
   # runner's own disk covers NTFS and ext4 in the check job above.
   filesystems:

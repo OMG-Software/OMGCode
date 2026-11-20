@@ -4,7 +4,7 @@
 //! capability the callers rely on: persistent ACLs, POSIX unlink and rename,
 //! case-preserved Unicode names, and extended-attribute queries. The name list
 //! keeps an untested filesystem that happens to report the same flags refused.
-//! See ADR-0068. This is functional qualification, not a power-loss claim.
+//! See ADR-0069. This is functional qualification, not a power-loss claim.
 
 use std::fs::File;
 use std::io;

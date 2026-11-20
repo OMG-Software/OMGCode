@@ -173,7 +173,7 @@ authorization. See
   journal helper's Windows directory-sync no-op is not a checkpoint durability
   primitive.
 - Linux apply must retain the source and both parents, check the same accepted
-  mount (ext4, btrfs, XFS, tmpfs, or ZFS; ADR-0068), preserve supported
+  mount (ext4, btrfs, XFS, tmpfs, or ZFS; ADR-0069), preserve supported
   owner/group/mode, and refuse unsupported metadata.
   Verify the stage before syncing commit intent. Recheck the native objects and
   live authority before one rename attempt. Sync the published file and both

@@ -2,7 +2,7 @@
 //!
 //! The policy comes from the open file's own filesystem magic, so no path or
 //! caller-supplied type is trusted. Only ext4, btrfs, XFS, tmpfs, and ZFS are
-//! accepted (ADR-0068). Every visible flag a stage could not carry is refused.
+//! accepted (ADR-0069). Every visible flag a stage could not carry is refused.
 
 use std::{fs::File, io, mem::size_of};
 
@@ -66,7 +66,7 @@ impl LinuxFilesystem {
     /// Whether a missing attribute ioctl means "no attributes". Only tmpfs
     /// before Linux 6.0 lacks them, and it has no persistent inode flags.
     /// This is about attributes, not persistence: tmpfs itself is not
-    /// persistent, so its checkpoints end at unmount (ADR-0068). On every
+    /// persistent, so its checkpoints end at unmount (ADR-0069). On every
     /// other filesystem a missing ioctl could hide flags, so it refuses.
     fn missing_ioctl_means_none(self) -> bool {
         self == Self::Tmpfs

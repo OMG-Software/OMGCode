@@ -1,4 +1,4 @@
-//! Windows handle-relative replacement publication on NTFS or ReFS (ADR-0068).
+//! Windows handle-relative replacement publication on NTFS or ReFS (ADR-0069).
 //!
 //! The retained source handle denies write sharing, so ordinary writers are
 //! blocked for the whole operation. It permits delete sharing because the final

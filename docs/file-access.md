@@ -266,7 +266,7 @@ Windows uses the private store from
 [ADR-0023](adr/0023-store-windows-checkpoints-with-verified-acls.md), with exact
 protected per-user DACLs, on an NTFS or ReFS volume that reports persistent
 ACLs, POSIX unlink and rename, case-preserved Unicode names, and extended
-attributes ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). No automatic chmod or ACL repair occurs.
+attributes ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). No automatic chmod or ACL repair occurs.
 
 The source and private root must have the same device identifier before
 initialization. This check does not qualify a later rename across mount aliases.
@@ -354,7 +354,7 @@ and no operation ID. A source read can still create its ordinary read audit.
 Native apply requires Linux with `openat2`, procfs, and a positive
 `statx` mount ID (available since Linux 5.8). The retained workspace parent and
 private storage must be on the same mount, and its type must be ext4, btrfs, XFS,
-tmpfs, or ZFS ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Check the mount ID against a
+tmpfs, or ZFS ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Check the mount ID against a
 bounded kernel mountinfo record and probe directory sync before private work.
 Equal device numbers alone do not establish this. Mount aliases, other mount
 types, missing controls, and unsupported platforms fail closed. The refusal
@@ -408,7 +408,7 @@ Native verification covers the ordered sync calls and fault/reopen behavior on
 Ubuntu 24.04 under WSL, kernel 6.6.87.2, on ext4 with `data=ordered`.
 This does not qualify physical power-loss behavior or a release filesystem
 matrix. See [ADR-0022](adr/0022-publish-one-verified-stage-on-linux-ext4.md).
-[ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) widened the accepted mounts beyond ext4 and makes no power-loss claim
+[ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) widened the accepted mounts beyond ext4 and makes no power-loss claim
 for any of them.
 
 ### Admission and conflict checks
@@ -799,7 +799,7 @@ is made. Replay and archive/restore must never execute a recorded replacement.
 ### Native backend gates
 
 Linux ext4, btrfs, XFS, tmpfs, and ZFS and Windows NTFS and ReFS are
-implemented prototypes ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Windows is unqualified
+implemented prototypes ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Windows is unqualified
 for release, and no filesystem has a power-loss claim.
 [ADR-0023](adr/0023-store-windows-checkpoints-with-verified-acls.md) accepts a
 directory-handle flush for persistence, for which Microsoft gives no contract,
@@ -839,7 +839,7 @@ directory durability remains unqualified and is not a current guarantee.
 ### Implemented Windows apply (Phase A3b)
 
 The v0.10.0 `file apply` command uses the same arguments and record flow on
-Windows NTFS. ADR-0068 later added ReFS. The same limits apply: stop other writers first, and a swap or
+Windows NTFS. ADR-0069 later added ReFS. The same limits apply: stop other writers first, and a swap or
 removal after the final check can go undetected. The retained source handle
 blocks new writers while the operation runs, so an in-place edit cannot happen
 during it. A writer that already has the file open refuses the capture. A

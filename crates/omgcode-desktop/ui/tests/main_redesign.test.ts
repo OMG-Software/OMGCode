@@ -397,7 +397,7 @@ describe("compact transcript rows", () => {
     expect(manifest.textContent).not.toContain(String.fromCharCode(0x202e));
   });
 
-  it("right-aligns your messages and leaves a reply without a box", () => {
+  it("right-aligns your messages and puts a reply in a response block", () => {
     const mine = renderEntry(userMessage(1, "hi"));
     const reply = renderEntry({
       ...base,

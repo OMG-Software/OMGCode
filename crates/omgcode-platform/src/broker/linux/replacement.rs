@@ -1,5 +1,5 @@
 //! Linux handle-relative replacement publication on ext4, btrfs, XFS, tmpfs,
-//! or ZFS (ADR-0068). Other mount types are refused before any artifact.
+//! or ZFS (ADR-0069). Other mount types are refused before any artifact.
 
 use super::{
     FileSnapshot, NativeWorkspace, RelativePath, changed_during_operation, invalid_data,

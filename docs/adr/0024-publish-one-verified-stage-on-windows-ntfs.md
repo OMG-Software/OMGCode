@@ -1,7 +1,7 @@
 # 0024: Publish one verified stage on Windows NTFS
 
 - Status: Accepted; amended by
-  [ADR-0068](0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md),
+  [ADR-0069](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md),
   which also accepts ReFS
 - Date: 2026-11-11
 

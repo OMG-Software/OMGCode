@@ -162,7 +162,7 @@ The core also validates replacement journal bytes and can prepare protected
 Linux and Windows checkpoints through its authorized library API. The CLI can
 inspect and acknowledge existing checkpoint state. Trusted `file apply` can
 publish one checkpointed replacement on a Linux ext4, btrfs, XFS, tmpfs, or ZFS
-mount, or on a Windows NTFS or ReFS volume ([ADR-0068](docs/adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Stop independent
+mount, or on a Windows NTFS or ReFS volume ([ADR-0069](docs/adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Stop independent
 writers first: a content check and rename cannot guarantee no lost updates. No
 filesystem has a power-loss claim. Trusted
 `file restore` writes a retained original back through a new checkpoint after

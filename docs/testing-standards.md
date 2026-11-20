@@ -105,7 +105,7 @@ matrix or passing test suite does not establish release support or sandbox
 containment.
 
 The `filesystems` CI job
-([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md))
+([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md))
 reruns the platform, core, and CLI file-access suites with the temporary
 directory on another filesystem. It mounts ReFS on Windows Server 2025 and
 btrfs, XFS, tmpfs, and ZFS on Ubuntu 24.04, and sets `TEMP` and `TMP` or
@@ -414,7 +414,7 @@ npm run test:dist
   seconds to start on a loaded host. This proves the Windows wiring against a
   mock. It does not prove a live LM Studio server or Linux.
 - **ReFS and `TEMP`.** ReFS is supported
-  ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)),
+  ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)),
   so `TEMP` and `TMP` may be on NTFS or ReFS. They must name a per-user
   directory. A fresh volume root grants Authenticated Users only Modify, which
   lacks the `WRITE_OWNER` right that the fixtures use. Give the directory the
@@ -546,7 +546,7 @@ SACLs, a foreign owner,
 a second local user, a real second volume, filter drivers, or physical power
 loss. They did not cover ReFS when written. The Windows platform suite has since
 passed with `TEMP` on a local ReFS volume, and the CI `filesystems` job runs it on
-ReFS ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
+ReFS ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)).
 
 Phase A4 adds restore and checkpoint-deletion tests in the core replacement
 module, the `replacement_records` ledger tests, the platform removal tests, and

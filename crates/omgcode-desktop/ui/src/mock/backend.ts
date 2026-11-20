@@ -281,6 +281,20 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     item.summary.updated_at = new Date(now()).toISOString();
   }
 
+  /** Records the request manifest, so a reply is labelled with the model as in a real journal. */
+  function appendManifest(item: FixtureSession, model: string): void {
+    const last = item.entries[item.entries.length - 1];
+    item.entries.push({
+      seq: (last?.seq ?? 0) + 1,
+      timestamp: new Date(now()).toISOString(),
+      kind: "request_manifest",
+      request_id: `mock-${item.entries.length}`,
+      model,
+      prompt_version: "mock",
+      tools: [],
+    });
+  }
+
   function settle(id: string, record: ChatRecord, modelFails: boolean, cancelled: boolean): void {
     finishTurn(id, record, modelFails, cancelled);
     emit({ kind: "finished", session_id: id });
@@ -340,6 +354,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     if (message.trim() === "" || settings.model.trim() === "") {
       fail("invalid_argument", "A message and a model are required.");
     }
+    appendManifest(item, settings.model);
     append(item, "user", message);
     item.summary.status = "running";
     const record: ChatRecord = {

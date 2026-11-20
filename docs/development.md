@@ -13,7 +13,7 @@ new file, the rename of a file, or the deletion of a file after a checkpoint, an
 with `execute`, `read`, and
 `write` enabled it can request an approval-gated command. Trusted CLI apply can
 replace an existing file on Linux ext4, btrfs, XFS, tmpfs, or ZFS or on Windows
-NTFS or ReFS ([ADR-0068](adr/0068-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Trusted restore puts a
+NTFS or ReFS ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Trusted restore puts a
 retained checkpoint's original bytes back through apply, and trusted checkpoint
 deletion removes one resolved private entry. The trusted `run` command starts
 one program in a workspace whose `execute` preference is enabled, under

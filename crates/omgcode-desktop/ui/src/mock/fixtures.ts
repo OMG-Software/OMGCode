@@ -12,6 +12,29 @@ export const HOSTILE = {
   link: "javascript:alert(1)",
 } as const;
 
+/** A reply that exercises the Markdown renderer (ADR-0067), with hostile text in each part. */
+const MARKDOWN_REPLY = [
+  "To run this web server, you can execute the following command in your terminal " +
+    "(assuming you are in the same directory as `server.py`):",
+  "",
+  "```bash",
+  "python3 server.py",
+  "```",
+  "",
+  "## Notes",
+  "",
+  "1. The server listens on **port 8000** by default.",
+  "2. Stop it with *Ctrl-C*.",
+  "   - Logs go to `stderr`.",
+  "",
+  `> See [the docs](${HOSTILE.link}) and ${HOSTILE.img}`,
+  "",
+  "| Flag | Meaning |",
+  "| :-- | :-- |",
+  "| `--port` | Listening port |",
+  "| `--bind` | Address to bind |",
+].join("\n");
+
 export interface FixtureGroup {
   group_id: string;
   folder_display: string;
@@ -58,7 +81,9 @@ function fullTranscript(base: number): TranscriptEntry[] {
     seq += 1;
     return { seq, timestamp: iso(base, 900 - seq) };
   };
+  // Core records a request manifest only inside its turn, so it follows the turn start.
   const entries: TranscriptEntry[] = [
+    { ...at(), kind: "turn_started", request_id: "r1" },
     {
       ...at(),
       kind: "request_manifest",
@@ -67,7 +92,6 @@ function fullTranscript(base: number): TranscriptEntry[] {
       prompt_version: "v3",
       tools: ["workspace_read_file", "workspace_list_dir"],
     },
-    { ...at(), kind: "turn_started", request_id: "r1" },
     {
       ...at(),
       kind: "message",
@@ -124,6 +148,14 @@ function fullTranscript(base: number): TranscriptEntry[] {
       role: "assistant",
       source: "chat",
       text: `Reply with a link ${HOSTILE.link} and a token ${HOSTILE.long}`,
+      call_id: null,
+    },
+    {
+      ...at(),
+      kind: "message",
+      role: "assistant",
+      source: "chat",
+      text: MARKDOWN_REPLY,
       call_id: null,
     },
     { ...at(), kind: "turn_completed", request_id: "r1" },
