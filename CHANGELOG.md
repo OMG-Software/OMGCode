@@ -30,7 +30,8 @@ Changes are recorded here before a release version is assigned.
     turn's end no longer jumps to the end after the operator scrolled up.
     **Load more** keeps the place, and a send made while it loads still
     follows the end.
-  - **Tests:** `ui/tests/layout.test.ts` (new) covers the columns, rails,
+  - **Tests:** `ui/tests/transcript_layout.test.ts` (new) checks the
+    centred column's cascade. `ui/tests/layout.test.ts` (new) covers the columns, rails,
     keyboard and pointer resizing, limits, narrowing, and disposal.
     `live_preview.test.ts` adds four following tests, which failed against
     the previous `conversation.ts`, and its earlier scroll test now fires the

@@ -455,6 +455,8 @@ mark {
 
 /* The operator's bubble fits its text, up to the column's width, and is centred like a reply. */
 .bubble-user {
+  /* Stated again from `.entry`: a centred flex item is sized to its content, not stretched. */
+  align-self: center;
   width: auto;
   max-width: var(--chat-column);
   padding: 8px 12px;

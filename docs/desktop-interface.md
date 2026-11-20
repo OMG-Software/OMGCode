@@ -1441,7 +1441,10 @@ ACLs the private store refuses, see the notes in
   `ui/tests/live_preview.test.ts` covers following the end: a send from
   higher up, scrolling up and back down, growth without a scroll, a turn's
   end while pinned and while scrolled up, and **Load more**, including a
-  send made while its page loads. The security scan keeps
+  send made while its page loads. `ui/tests/transcript_layout.test.ts`
+  checks the cascade that centres every entry and sizes the operator's
+  bubble to its text; jsdom computes no layout, so it reads the properties
+  that decide the size. The security scan keeps
   inline style to the two width properties in `src/main/layout.ts`.
   Vitest processes CSS, so the stylesheet scans read the real source and
   assert it is non-empty.
