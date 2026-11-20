@@ -2,20 +2,30 @@ import { append, el, replaceChildren } from "../dom";
 import { approvalsApi } from "../ipc/approvals_client";
 import { toIpcError } from "../ipc/errors";
 import type { ApprovalDetail, ApprovalView } from "../ipc/types";
+import { changeViews, splitChanges } from "./changes";
 import {
   approvalEffect,
   approveGate,
   decisionArgs,
+  operationLabel,
   REVIEW_AGAIN_CODES,
   REVIEW_DELAY_MS,
   type ReviewInput,
   WRITERS_STOPPED_TEXT,
 } from "./model";
 
+export interface ShowOptions {
+  /** Shown as an error line under the decision row. */
+  notice?: string;
+  /** Moves focus to the review heading. Never to Approve. */
+  focus?: boolean;
+}
+
 export interface ReviewPanel {
+  /** The review pane: an empty state and the review itself. */
   element: HTMLElement;
-  /** Shows the detail and restarts the approve delay. `notice` is shown as an error line. */
-  show(detail: ApprovalDetail, notice?: string): void;
+  /** Shows the detail, unticks the acknowledgement and restarts the approve delay. */
+  show(detail: ApprovalDetail, options?: ShowOptions): void;
   clear(): void;
   dispose(): void;
 }
@@ -39,11 +49,39 @@ function explanation(detail: ApprovalDetail): string | null {
   return null;
 }
 
+function bindingLabel(detail: ApprovalDetail): string {
+  if (detail.binding === "exact") {
+    return "Exact match";
+  }
+  return detail.binding === "stale" ? "Stale" : "Not found";
+}
+
+/** The chip beside the title: whether a turn waits, or why the request cannot be approved. */
+function statusChip(detail: ApprovalDetail): HTMLElement {
+  if (detail.approval.state !== "pending") {
+    return el("span", { class: "chip", text: `Already ${detail.approval.state}` });
+  }
+  if (detail.binding !== "exact") {
+    return el("span", {
+      class: "chip chip-invalid",
+      text: detail.binding === "stale" ? "Out of date" : "Not found",
+    });
+  }
+  return detail.waiting
+    ? el("span", { class: "chip chip-waiting", text: "Turn waiting" })
+    : el("span", { class: "chip", text: "No turn waiting" });
+}
+
 /** Builds the review panel. It renders approval fields as text and gates Approve. */
 export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
   const element = el("section", { class: "review", attrs: { "aria-label": "Review" } });
   element.hidden = true;
+  const empty = el("div", { class: "empty-state review-empty" }, "Select a request to review it.");
+  const pane = el("div", { class: "review-pane" }, empty, element);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Counts shown reviews. The timer belongs to the newest one, so a decision that finishes
+  // after another review was shown must leave that review's timer alone.
+  let shownCount = 0;
 
   function cancelTimer(): void {
     if (timer !== null) {
@@ -52,19 +90,21 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
     }
   }
 
-  function show(detail: ApprovalDetail, notice?: string): void {
+  function show(detail: ApprovalDetail, options: ShowOptions = {}): void {
     cancelTimer();
+    shownCount += 1;
+    const shown = shownCount;
     const input: ReviewInput = { writersStopped: false, armed: false, busy: false };
     const isFile = detail.approval.operation === "file_write";
     const pending = detail.approval.state === "pending";
     const exact = detail.binding === "exact";
 
     const result = el("p", { class: "result", attrs: { role: "status" } });
-    if (notice !== undefined) {
-      replaceChildren(result, notice);
+    if (options.notice !== undefined) {
+      replaceChildren(result, options.notice);
       result.classList.add("error");
     }
-    const hint = el("p", { class: "muted" });
+    const hint = el("p", { class: "muted hint" });
     const approve = el("button", { class: "primary", text: "Approve" });
     approve.type = "button";
     const deny = el("button", { class: "danger", text: "Deny" });
@@ -96,7 +136,9 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
           args.writersStopped,
           args.reviewToken,
         );
-        cancelTimer();
+        if (shown === shownCount) {
+          cancelTimer();
+        }
         replaceChildren(result, `Decision recorded: ${view.state}.`);
         result.classList.remove("error");
         approve.disabled = true;
@@ -126,8 +168,9 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
       sync();
     });
 
+    const split = splitChanges(detail.tool, exact ? detail.fields : []);
     const fields = el("dl", { class: "fields" });
-    for (const field of detail.fields) {
+    for (const field of split.rest) {
       append(
         fields,
         el("dt", { text: field.label }),
@@ -136,30 +179,69 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
     }
     const explain = explanation(detail);
     const effect = approvalEffect(detail);
+    const heading = el("h2", {
+      class: "review-title",
+      text: operationLabel(detail.approval.operation),
+      attrs: { tabindex: "-1" },
+    });
+    const technical = el(
+      "details",
+      { class: "technical" },
+      el("summary", { text: "Technical details" }),
+      el(
+        "dl",
+        { class: "tech-list" },
+        el("dt", { text: "Binding" }),
+        el("dd", { text: bindingLabel(detail) }),
+        ...(exact
+          ? [
+              detail.tool === null ? null : el("dt", { text: "Tool" }),
+              detail.tool === null ? null : el("dd", { text: detail.tool }),
+              el("dt", { text: "Request SHA-256" }),
+              el("dd", {}, el("code", { text: detail.approval.request_sha256 })),
+            ]
+          : []),
+      ),
+    );
     replaceChildren(
       element,
-      el("h2", { text: "Review" }),
-      explain === null ? null : el("p", { class: "banner", text: explain }),
-      exact && detail.tool !== null
-        ? el("p", { class: "tool", text: `Tool: ${detail.tool}` })
-        : null,
-      exact ? fields : null,
-      exact
-        ? el(
-            "p",
-            { class: "hash" },
-            "Request SHA-256: ",
-            el("code", { text: detail.approval.request_sha256 }),
-          )
-        : null,
-      effect === null ? null : el("p", { class: "effect", text: effect }),
-      pending && isFile && exact ? checkLabel : null,
-      el("div", { class: "decision" }, ...(pending ? [deny, exact ? approve : null] : [])),
-      hint,
-      result,
+      el(
+        "div",
+        { class: "review-body" },
+        el(
+          "header",
+          { class: "review-head" },
+          el(
+            "div",
+            { class: "review-heading" },
+            heading,
+            exact && detail.tool !== null
+              ? el("p", { class: "tool muted", text: detail.tool })
+              : null,
+          ),
+          statusChip(detail),
+        ),
+        explain === null ? null : el("p", { class: "banner", text: explain }),
+        exact && fields.childElementCount > 0 ? fields : null,
+        ...(exact ? changeViews(split) : []),
+        technical,
+      ),
+      el(
+        "div",
+        { class: "review-actions" },
+        effect === null ? null : el("p", { class: "effect", text: effect }),
+        pending && isFile && exact ? checkLabel : null,
+        el("div", { class: "decision" }, ...(pending ? [deny, exact ? approve : null] : [])),
+        hint,
+        result,
+      ),
     );
+    empty.hidden = true;
     element.hidden = false;
     sync();
+    if (options.focus === true) {
+      heading.focus();
+    }
     timer = setTimeout(() => {
       timer = null;
       input.armed = true;
@@ -168,12 +250,13 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
   }
 
   return {
-    element,
+    element: pane,
     show,
     clear() {
       cancelTimer();
       element.hidden = true;
       element.replaceChildren();
+      empty.hidden = false;
     },
     dispose: cancelTimer,
   };

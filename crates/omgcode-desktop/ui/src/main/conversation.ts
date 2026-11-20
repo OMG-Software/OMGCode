@@ -508,6 +508,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
       }
       frame = null;
       runner.dispose();
+      composer.dispose();
     },
   };
 }

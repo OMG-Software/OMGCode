@@ -18,6 +18,9 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Process CSS so `?raw` imports return the real source. Vitest otherwise replaces every
+    // CSS module with an empty string, which would make the CSS scans check nothing.
+    css: true,
     include: ["tests/**/*.test.ts"],
     // Used by `npm run coverage` only. The report feeds the Sonar analysis;
     // its paths are written relative to the repository root, which is where

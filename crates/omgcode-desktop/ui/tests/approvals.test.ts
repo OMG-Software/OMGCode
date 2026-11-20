@@ -177,9 +177,11 @@ describe("approvals window", () => {
 
   it("shows the exact request and the full hash after selecting", async () => {
     await start();
-    expect(root.querySelector(".review")).toHaveProperty("hidden", true);
-    await select();
+    // The soonest-expiring pending request is selected when the window opens.
     expect(ipc.callsTo("approval_detail")[0]?.args).toEqual({ id: "a1" });
+    expect(root.querySelector(".review")).toHaveProperty("hidden", false);
+    await select();
+    expect(ipc.callsTo("approval_detail")).toHaveLength(2);
     const review = root.querySelector(".review") as HTMLElement;
     expect(review.textContent).toContain("workspace_run_command");
     expect(review.textContent).toContain("Program");
@@ -220,10 +222,19 @@ describe("approvals window", () => {
     await select();
     let review = root.querySelector(".review") as HTMLElement;
     expect(review.textContent).toContain("workspace_multi_edit_file");
-    expect(review.textContent).toContain("Old text 2");
-    expect(review.textContent).toContain("New text 2");
+    expect(review.textContent).toContain("Edit 1 of 2");
+    expect(review.textContent).toContain("Edit 2 of 2");
+    expect(review.querySelectorAll(".diff")).toHaveLength(2);
     expect(review.querySelector("img")).toBeNull();
-    expect(review.querySelector("pre")?.textContent).toBe(`a\n${HOSTILE_IMG}`);
+    const removed = Array.from(review.querySelectorAll(".diff-remove .diff-text")).map(
+      (n) => n.textContent,
+    );
+    expect(removed).toContain(HOSTILE_IMG);
+    expect(removed).toContain("c");
+    const added = Array.from(review.querySelectorAll(".diff-add .diff-text")).map(
+      (n) => n.textContent,
+    );
+    expect(added).toEqual(["b", "d"]);
 
     current = detail(
       {
@@ -240,9 +251,12 @@ describe("approvals window", () => {
     await select();
     review = root.querySelector(".review") as HTMLElement;
     expect(review.textContent).toContain("workspace_create_file");
-    expect(review.textContent).toContain("Content");
     expect(review.querySelector("img")).toBeNull();
-    expect(review.querySelector("pre")?.textContent).toBe(`hello\n${HOSTILE_IMG}`);
+    expect(review.querySelector(".diff-remove")).toBeNull();
+    const created = Array.from(review.querySelectorAll(".diff-add .diff-text")).map(
+      (n) => n.textContent,
+    );
+    expect(created).toEqual(["hello", HOSTILE_IMG]);
   });
 
   it("renders the fields of the rename and delete tools as plain text", async () => {
@@ -390,7 +404,8 @@ describe("approvals window", () => {
     await settle(1000);
     buttonByText(root, "Approve").click();
     await settle();
-    expect(ipc.callsTo("approval_detail")).toHaveLength(2);
+    // Opened with the window, selected again, then reloaded after the rejection.
+    expect(ipc.callsTo("approval_detail")).toHaveLength(3);
     expect(root.querySelector(".result")?.textContent).toContain("Review it again");
     expect(buttonByText(root, "Approve").disabled).toBe(true);
     await settle(1000);
@@ -503,14 +518,14 @@ describe("approvals window", () => {
       await settle(6000);
       expect(buttonByText(root, "Approve")).toBe(approve);
       expect(approve.disabled).toBe(false);
-      expect(ipc.callsTo("approval_detail")).toHaveLength(1);
+      expect(ipc.callsTo("approval_detail")).toHaveLength(2);
     });
 
     it("clamps long labels in the list", async () => {
       approvals = [view({ folder_display: "x".repeat(5000), summary: "y".repeat(5000) })];
       await start();
       expect(root.querySelector(".who")?.classList.contains("clamp-1")).toBe(true);
-      expect(root.querySelector(".summary")?.classList.contains("clamp-3")).toBe(true);
+      expect(root.querySelector(".summary")?.classList.contains("clamp-1")).toBe(true);
     });
   });
 });

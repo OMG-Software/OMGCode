@@ -2,6 +2,8 @@ import { button, el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { SearchHit, SessionSummary, SessionTree, TreeSort, TreeView } from "../ipc/types";
+import { createPopover } from "../ui/popover";
+import { segmented } from "../ui/segmented";
 import { SEARCH_LIMIT, SEARCH_MAX_CHARS } from "./model";
 import { enableTreeKeys, renderHits, renderTree } from "./tree";
 
@@ -23,7 +25,10 @@ export interface Sidebar {
 
 const SEARCH_DEBOUNCE_MS = 250;
 
-/** Builds the sidebar: header controls, search box, and session tree or hit list. */
+/**
+ * Builds the sidebar: a title row with New session, the search box with a View menu (active or
+ * archived, sort, direction), the session tree or hit list, and the Approvals and Settings rows.
+ */
 export function createSidebar(handlers: SidebarHandlers): Sidebar {
   let view: TreeView = "active";
   let sort: TreeSort = "updated";
@@ -38,12 +43,13 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
   const body = el("div", { class: "sidebar-body" });
   const approvalsBadge = el("span", { class: "badge", text: "0" });
   approvalsBadge.hidden = true;
-  const approvalsButton = button("Approvals", handlers.onShowApprovals, { class: "ghost" });
+  const approvalsButton = button("Approvals", handlers.onShowApprovals, {
+    class: "ghost nav-row",
+  });
   approvalsButton.appendChild(approvalsBadge);
-  const settingsButton = button("Settings", handlers.onShowSettings, { class: "ghost" });
+  const settingsButton = button("Settings", handlers.onShowSettings, { class: "ghost nav-row" });
 
-  const activeButton = button("Active", () => setView("active"), { class: "seg" });
-  const archivedButton = button("Archived", () => setView("archived"), { class: "seg" });
+  const viewHolder = el("div", { class: "view-choice" });
   const sortSelect = el("select", { attrs: { "aria-label": "Sort sessions" } });
   for (const [value, label] of [
     ["updated", "Updated"],
@@ -54,7 +60,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     option.value = value;
     sortSelect.appendChild(option);
   }
-  const directionButton = button("Newest first", () => {
+  const directionButton = button("Descending", () => {
     descending = !descending;
     syncControls();
     void refresh();
@@ -66,8 +72,19 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
   search.maxLength = SEARCH_MAX_CHARS;
 
   function syncControls(): void {
-    activeButton.setAttribute("aria-pressed", String(view === "active"));
-    archivedButton.setAttribute("aria-pressed", String(view === "archived"));
+    // The segmented control never changes its own state; it is drawn again from `view`.
+    replaceChildren(
+      viewHolder,
+      segmented<TreeView>({
+        label: "View",
+        choices: [
+          ["active", "Active"],
+          ["archived", "Archived"],
+        ],
+        value: view,
+        onChoose: setView,
+      }),
+    );
     directionButton.textContent = descending ? "Descending" : "Ascending";
     directionButton.setAttribute("aria-pressed", String(descending));
   }
@@ -75,6 +92,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
   function setView(next: TreeView): void {
     view = next;
     syncControls();
+    viewHolder.querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
     void refresh();
   }
 
@@ -102,6 +120,14 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     }
   });
 
+  const viewMenu = createPopover(
+    "View",
+    { class: "align-end", label: "View options" },
+    el("div", { class: "field" }, el("span", { text: "Show" }), viewHolder),
+    el("label", { class: "field" }, el("span", { text: "Sort by" }), sortSelect),
+    el("div", { class: "field" }, el("span", { text: "Order" }), directionButton),
+  );
+
   const header = el(
     "div",
     { class: "sidebar-header" },
@@ -111,21 +137,14 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
       el("h1", { text: "OMGCode" }),
       button("New session", handlers.onNewSession, { class: "primary" }),
     ),
-    el(
-      "div",
-      { class: "seg-group", attrs: { role: "group", "aria-label": "View" } },
-      activeButton,
-      archivedButton,
-    ),
-    el("div", { class: "sort-row" }, sortSelect, directionButton),
-    search,
-    el("div", { class: "window-row" }, approvalsButton, settingsButton),
+    el("div", { class: "search-row" }, search, viewMenu.element),
   );
   const element = el(
     "nav",
     { class: "sidebar", attrs: { "aria-label": "Sessions" } },
     header,
     body,
+    el("div", { class: "sidebar-footer" }, approvalsButton, settingsButton),
   );
   syncControls();
 
@@ -229,6 +248,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
       replaceChildren(approvalsBadge, String(count));
     },
     dispose() {
+      viewMenu.dispose();
       if (debounce !== null) {
         clearTimeout(debounce);
       }

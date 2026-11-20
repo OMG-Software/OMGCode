@@ -14,9 +14,10 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
 }
 
+/* Sidebar: title and New session, search with a View menu, the tree, then the window rows. */
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -29,13 +30,13 @@
   display: grid;
   gap: 8px;
   padding: var(--gap);
-  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .sidebar-title-row h1 {
@@ -43,58 +44,52 @@
   font-size: 15px;
 }
 
-.seg-group {
-  display: flex;
-}
-
-.seg-group .seg {
-  flex: 1;
-  border-radius: 0;
-}
-
-.seg-group .seg:first-child {
-  border-radius: var(--radius) 0 0 var(--radius);
-}
-
-.seg-group .seg:last-child {
-  border-radius: 0 var(--radius) var(--radius) 0;
-  border-left: 0;
-}
-
-.seg[aria-pressed="true"] {
-  background: var(--surface-2);
-  font-weight: 600;
-}
-
-.sort-row {
+.search-row {
   display: flex;
   gap: 6px;
-}
-
-.sort-row select {
-  flex: 1;
-}
-
-.ghost {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
 }
 
-.badge {
-  background: var(--accent);
-  color: var(--accent-text);
-  border-radius: 999px;
-  padding: 0 7px;
-  font-size: 11px;
-  font-weight: 600;
+.search {
+  flex: 1;
+  min-width: 0;
+}
+
+.view-choice {
+  display: flex;
+}
+
+.popover-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .sidebar-body {
   flex: 1;
   overflow: auto;
   overflow-x: hidden;
+  padding: 0 6px 6px;
+}
+
+.sidebar-footer {
+  display: grid;
+  gap: 2px;
   padding: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.nav-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  color: var(--muted);
+}
+
+.nav-row:hover:not(:disabled) {
+  color: var(--text);
 }
 
 .tree,
@@ -103,10 +98,6 @@
   list-style: none;
   margin: 0;
   padding: 0;
-}
-
-.tree-children {
-  padding-left: 14px;
 }
 
 .tree-group:focus-visible,
@@ -128,7 +119,9 @@
 }
 
 .group-row {
-  padding: 4px 6px;
+  padding: 8px 6px 4px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -187,6 +180,8 @@
   text-align: left;
   gap: 2px;
   margin-bottom: 4px;
+  background: transparent;
+  border-color: var(--border);
 }
 
 .hit-title {
@@ -210,6 +205,7 @@ mark {
   border-radius: 2px;
 }
 
+/* Conversation pane. */
 .pane {
   display: flex;
   flex-direction: column;
@@ -277,14 +273,15 @@ mark {
   justify-content: flex-end;
 }
 
+/* Transcript: your messages on the right, replies and notes on a quiet left edge. */
 .transcript {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: var(--gap);
+  padding: 16px var(--gap);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .entry {
@@ -311,21 +308,36 @@ mark {
 
 .entry-time {
   margin-left: auto;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
-.bubble,
-.tool-block,
-.summary-block {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 10px;
-  max-width: 820px;
+.bubble {
+  max-width: min(72ch, 100%);
 }
 
 .bubble-user {
   align-self: flex-end;
+  max-width: min(72ch, 85%);
+  padding: 8px 12px;
   background: var(--surface-2);
+  border-radius: var(--radius-lg);
+}
+
+.bubble-assistant {
+  padding: 2px;
+}
+
+.bubble-tool {
+  padding: 2px 8px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.bubble-live {
+  padding: 2px 10px;
+  border-left: 2px dashed var(--accent-fg);
 }
 
 .bubble-text {
@@ -335,11 +347,11 @@ mark {
 }
 
 .summary-block {
-  border-style: dashed;
-}
-
-.bubble-live {
-  border-style: dashed;
+  max-width: min(72ch, 100%);
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
 }
 
 .live-note {
@@ -348,12 +360,67 @@ mark {
   color: var(--muted);
 }
 
-.tool-args {
-  background: var(--surface-2);
-  padding: 6px 8px;
+/* A tool request is one compact row; its full arguments open on demand. */
+.tool-block {
+  max-width: min(72ch, 100%);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.tool-summary {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 4px 8px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-summary::before {
+  content: "+";
+  color: var(--muted);
+}
+
+.tool-block[open] > .tool-summary::before {
+  content: "-";
+}
+
+.tool-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tool-name {
+  font-family: var(--mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.tool-preview {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.tool-args {
   max-height: 240px;
   overflow: auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.tool-result {
+  padding: 0 8px;
 }
 
 .note-text {
@@ -368,18 +435,23 @@ mark {
   color: var(--danger);
 }
 
-.divider {
+/* Turn notes and request metadata: a thin line with centred muted text. */
+.note-line {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--muted);
+  gap: 10px;
 }
 
-.divider::before,
-.divider::after {
+.note-line::before,
+.note-line::after {
   content: "";
   flex: 1;
   border-top: 1px solid var(--border);
+}
+
+.note-line > .note-text {
+  max-width: 70%;
+  text-align: center;
 }
 
 .load-more {
@@ -401,9 +473,10 @@ mark {
   overflow-wrap: anywhere;
 }
 
+/* Composer: the message box, then one toolbar row. */
 .composer {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   padding: var(--gap);
   border-top: 1px solid var(--border);
   background: var(--surface);
@@ -418,17 +491,47 @@ mark {
   width: 100%;
   resize: vertical;
   min-height: 64px;
+  max-height: 40vh;
 }
 
 .composer-row {
+  position: relative;
   display: flex;
   gap: 8px;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+}
+
+.composer-tools,
+.composer-send {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.composer-panel {
+  max-height: min(60vh, 460px);
+  overflow: auto;
+}
+
+/* Composer menus are placed against the toolbar row, not their own button, so a panel starts at
+   the row's left edge and never runs past the conversation column (at the 800-pixel minimum the
+   column is about 540 pixels wide). It opens upward from the toolbar over the message box, so a
+   tall message box cannot push it above the window. */
+.composer-tools > .popover {
+  position: static;
+}
+
+.composer-tools > .popover > .composer-panel {
+  left: 0;
+  max-width: 100%;
+}
+
+.composer-tools > .settings > .composer-panel {
+  width: 560px;
 }
 
 .counter {
-  margin-right: auto;
   font-size: 12px;
   color: var(--muted);
 }
@@ -437,21 +540,19 @@ mark {
   color: var(--danger);
 }
 
+.running {
+  color: var(--muted);
+}
+
 .composer-note,
 .composer-error {
   margin: 0;
-}
-
-.settings summary {
-  cursor: pointer;
-  color: var(--muted);
 }
 
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
-  margin-top: 6px;
 }
 
 .field {
@@ -474,27 +575,9 @@ mark {
   grid-column: 1 / -1;
 }
 
-.skills {
-  margin: 0;
-  padding: 4px 8px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.skills legend {
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .skill-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-}
-
-.window-row {
-  display: flex;
-  gap: 6px;
+  display: grid;
+  gap: 4px;
 }
 
 .statusbar {
@@ -511,7 +594,7 @@ mark {
   display: none;
 }
 
-/* The bar along the bottom of the main window: workspace, branch, model (ADR-0064). */
+/* The bar along the bottom of the main window: workspace, branch, approvals, model (ADR-0064). */
 .status-footer {
   display: flex;
   gap: 14px;
@@ -534,8 +617,29 @@ mark {
   text-overflow: ellipsis;
 }
 
+.status-segment[hidden] {
+  display: none;
+}
+
 .status-footer .muted {
   color: var(--muted);
+}
+
+.status-approvals {
+  color: var(--accent-fg);
+}
+
+.status-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--accent-fg);
+  text-decoration: underline;
+}
+
+.status-link:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent-hover);
 }
 
 .status-spacer {
@@ -553,16 +657,18 @@ mark {
   padding: 1px 4px;
 }
 
+/* New session dialog. */
 .dialog {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
+  padding: 16px;
   width: min(480px, 92vw);
 }
 
 .dialog::backdrop {
-  background: rgb(0 0 0 / 40%);
+  background: rgb(0 0 0 / 60%);
 }
 
 .dialog h2 {
@@ -571,7 +677,12 @@ mark {
 }
 
 .dialog .field {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.dialog .field > input,
+.dialog .field > select {
+  width: 100%;
 }
 
 .dialog-actions {

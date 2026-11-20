@@ -25,6 +25,30 @@ function note(entry: TranscriptEntry, className: string, message: string): HTMLE
   return node;
 }
 
+/** A thin divider line with centred muted text, for turn notes and request metadata. */
+function noteLine(entry: TranscriptEntry, className: string, message: string): HTMLElement {
+  return note(entry, `${className} note-line`, message);
+}
+
+/** Longest argument preview in a collapsed tool row, in UTF-16 code units. */
+export const TOOL_PREVIEW_CHARS = 160;
+
+/**
+ * One line of a tool call's arguments for the collapsed row: runs of whitespace become one
+ * space and the text is cut at `TOOL_PREVIEW_CHARS`. It is still untrusted text; callers show it
+ * only as a text node. The expanded row carries the full arguments.
+ */
+export function argumentPreview(args: string): string {
+  const flat = args.replace(/\s+/g, " ").trim();
+  if (flat.length <= TOOL_PREVIEW_CHARS) {
+    return flat;
+  }
+  // Do not end on the first half of a surrogate pair.
+  const last = flat.charCodeAt(TOOL_PREVIEW_CHARS - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? TOOL_PREVIEW_CHARS - 1 : TOOL_PREVIEW_CHARS;
+  return `${flat.slice(0, end)}…`;
+}
+
 export interface LiveEntry {
   element: HTMLElement;
   /** Updates the text node in place; nothing is rebuilt. */
@@ -77,10 +101,22 @@ export function renderEntry(entry: TranscriptEntry): HTMLElement {
       return node;
     }
     case "tool_requested": {
-      const node = entryShell(entry, "tool-block");
+      // A compact row: the tool name and a clamped one-line preview in the summary, the full
+      // arguments in the body that opens on demand.
+      const node = el("details", {
+        class: "entry tool-block",
+        attrs: { "data-seq": String(entry.seq) },
+      });
       append(
         node,
-        head("Tool request", entry, entry.tool),
+        el(
+          "summary",
+          { class: "tool-summary" },
+          el("span", { class: "tool-label", text: "Tool request" }),
+          el("span", { class: "tool-name", text: entry.tool }),
+          el("span", { class: "tool-preview clamp-1", text: argumentPreview(entry.arguments) }),
+          el("span", { class: "entry-time", text: formatAbsolute(entry.timestamp) }),
+        ),
         el("pre", { class: "tool-args", text: entry.arguments }),
       );
       return node;
@@ -94,17 +130,17 @@ export function renderEntry(entry: TranscriptEntry): HTMLElement {
       );
     }
     case "turn_started":
-      return note(entry, "turn", "Turn started");
+      return noteLine(entry, "turn", "Turn started");
     case "turn_completed":
-      return note(entry, "turn", "Turn completed");
+      return noteLine(entry, "turn", "Turn completed");
     case "turn_failed":
-      return note(
+      return noteLine(
         entry,
         "turn turn-failed",
         entry.code === null ? "Turn failed" : `Turn failed: ${entry.code}`,
       );
     case "request_manifest":
-      return note(
+      return noteLine(
         entry,
         "manifest",
         `Request to ${entry.model}, prompt ${entry.prompt_version}, tools: ${
@@ -125,9 +161,9 @@ export function renderEntry(entry: TranscriptEntry): HTMLElement {
       return node;
     }
     case "session_archived":
-      return note(entry, "divider", "Session archived");
+      return noteLine(entry, "divider", "Session archived");
     case "session_restored":
-      return note(entry, "divider", "Session restored");
+      return noteLine(entry, "divider", "Session restored");
     default:
       return assertNever(entry);
   }
