@@ -66,6 +66,11 @@ export function mainHandlers(overrides: Record<string, Handler> = {}): Record<st
       preferences: "defaults",
       enter_to_send: true,
     }),
+    // The composer's model choice (ADR-0066): the default model is listed.
+    chat_models: () => ({
+      endpoint: SETTINGS.endpoint,
+      models: [{ id: SETTINGS.model, cloud_tag: false }],
+    }),
     session_skills: () => ({ workspace_registered: true, skills: [] }),
     settings_show_window: () => null,
     approvals_summary: () => ({ pending: 0 }),
@@ -164,6 +169,21 @@ export function buttonByText(scope: ParentNode, label: string): HTMLButtonElemen
   );
   if (found === undefined) {
     throw new Error(`No button starting with "${label}"`);
+  }
+  return found;
+}
+
+/** Chooses `value` in a `<select>` as the operator would. */
+export function choose(select: HTMLSelectElement, value: string): void {
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+/** The composer's model choice. */
+export function modelSelect(scope: ParentNode): HTMLSelectElement {
+  const found = scope.querySelector<HTMLSelectElement>('.settings select[aria-label="Model"]');
+  if (found === null) {
+    throw new Error("No model choice");
   }
   return found;
 }

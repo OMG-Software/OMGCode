@@ -114,11 +114,11 @@ use self::turns::TurnTable;
 pub use self::wire::{
     ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
     ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, BranchState,
-    BranchView, ChatDefaults, ChatEvent, ChatOutcome, ChatPreferencesDto,
+    BranchView, ChatDefaults, ChatEvent, ChatModels, ChatOutcome, ChatPreferencesDto,
     ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
     ConnectionChoice, ConnectionChooseRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
     ConnectionSourceView, ConnectionStatus, ConnectionView, ContainerGrantView, ContextMeterDto,
-    Decision, EntryKind, LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto,
+    Decision, EntryKind, LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto, ModelChoice,
     PackageProfileView, PermissionFlags, PermissionsChangeRequest, PreferencesSource,
     ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto, SessionContext,
     SessionCreateRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,

@@ -21,7 +21,7 @@ use omgcode_app::{
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
-use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
+use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig, list_local_models};
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -68,6 +68,9 @@ enum Command {
     },
     /// Send one turn to an explicitly selected local LM Studio or Ollama model.
     Chat(ChatArgs),
+    /// List the models the local LM Studio or Ollama server reports, so one
+    /// can be passed to `chat --model` (ADR-0066). Reads no session.
+    Models(ModelsArgs),
     /// Run one program in a workspace under native confinement, using a
     /// recorded toolchain profile. Needs the workspace `execute` preference.
     Run(run_cli::RunArgs),
@@ -214,6 +217,39 @@ struct ChatArgs {
     message: String,
 }
 
+#[derive(Args)]
+struct ModelsArgs {
+    /// The loopback endpoint. Not allowed with --provider-profile, whose
+    /// recorded endpoint is the only one a profile uses.
+    #[arg(
+        long,
+        default_value = "http://127.0.0.1:1234/v1",
+        conflicts_with = "provider_profile"
+    )]
+    endpoint: String,
+    /// Use this recorded `lm_studio` or `ollama_local` provider profile's
+    /// endpoint, and its stored credential, if any, instead of
+    /// OMGCODE_LM_TOKEN, exactly as `chat` does.
+    #[arg(long, value_parser = non_empty_name)]
+    provider_profile: Option<String>,
+}
+
+/// The `models` result. Ids are untrusted provider text; JSON escapes them.
+#[derive(Serialize)]
+struct ModelsOutput {
+    endpoint: String,
+    models: Vec<ListedModel>,
+}
+
+/// List the models of the connection `chat` would use with the same options.
+fn list_models(data_dir: Option<&Path>, args: ModelsArgs) -> Result<(), CliError> {
+    let LocalConnection { endpoint, token } =
+        local_connection(data_dir, args.endpoint, args.provider_profile.as_deref())?;
+    let models = list_local_models(&endpoint, token.as_ref().map(LmToken::expose))
+        .map_err(AppError::provider)?;
+    print_json(&ModelsOutput { endpoint, models })
+}
+
 /// Parse a skill name, so an invalid one is a usage error before anything runs.
 fn parse_skill_name(value: &str) -> Result<SkillName, String> {
     SkillName::new(value).map_err(|error| format!("invalid skill name: {}", error.code()))
@@ -304,6 +340,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "archive_restore": true,
             "compiled_prompt": true,
             "local_model_chat": true,
+            "local_model_listing": true,
             "workspace_registry": true,
             "permission_policy": true,
             "permission_audit": true,
@@ -420,6 +457,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         }
         Command::File { action } => file_cli::run(action, &data_root(cli.data_dir)?),
         Command::Chat(args) => chat(cli.data_dir, args),
+        Command::Models(args) => list_models(cli.data_dir.as_deref(), args),
         Command::Run(args) => run_cli::run(args, &data_root(cli.data_dir)?),
         Command::Runs { action } => run_cli::runs(action, &data_root(cli.data_dir)?),
         Command::Packages { action } => packages_cli::run(action, &data_root(cli.data_dir)?),

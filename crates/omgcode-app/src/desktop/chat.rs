@@ -1,4 +1,4 @@
-//! Chat commands: defaults, send, status, cancel, and shutdown.
+//! Chat commands: defaults, model list, send, status, cancel, and shutdown.
 
 use std::time::Duration;
 
@@ -14,11 +14,15 @@ use super::error::DesktopError;
 use super::preferences;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
-    ChatDefaults, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
-    ChatState, ChatStatus, PreferencesSource, SessionRequest, enter_to_send_default,
+    ChatDefaults, ChatModels, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest,
+    ChatSettingsDto, ChatState, ChatStatus, ModelChoice, PreferencesSource, SessionRequest,
+    enter_to_send_default,
 };
 use super::{DesktopService, Inner};
-use crate::{ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection};
+use crate::{
+    AppError, ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection,
+};
+use omgcode_core::provider::list_local_models;
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -65,6 +69,42 @@ impl DesktopService {
             preferences: source,
             enter_to_send: preferences.enter_to_send,
         }
+    }
+
+    /// List the models of the connection the next turn would use, so the
+    /// composer offers a choice instead of a typed name (ADR-0066).
+    ///
+    /// The connection is resolved exactly as [`chat_send`](Self::chat_send)
+    /// resolves it, its credential included, and the one request goes only to
+    /// its validated loopback endpoint. The list is untrusted provider text and
+    /// grants nothing; `chat_send` still validates the chosen model. The call
+    /// blocks for at most the core's ten-second deadline, so run it on a
+    /// blocking task.
+    ///
+    /// # Errors
+    ///
+    /// The application layer's `configuration` and `credential` codes for an
+    /// unusable connection, and `provider` for a refused endpoint, a server
+    /// that cannot be reached in time, a failure status, or a list outside the
+    /// supported schema.
+    pub fn chat_models(&self) -> Result<ChatModels, DesktopError> {
+        let inner = &self.inner;
+        let LocalConnection { endpoint, token } = inner
+            .token
+            .resolve(&inner.data_root, &inner.endpoint)
+            .map_err(|error| DesktopError::from_app(&error))?;
+        let models = list_local_models(&endpoint, token.as_ref().map(LmToken::expose))
+            .map_err(|error| DesktopError::from_app(&AppError::provider(error)))?;
+        Ok(ChatModels {
+            endpoint,
+            models: models
+                .into_iter()
+                .map(|model| ModelChoice {
+                    id: model.id,
+                    cloud_tag: model.cloud_tag,
+                })
+                .collect(),
+        })
     }
 
     /// Save the chat preferences the composer starts from next time.

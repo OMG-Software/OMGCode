@@ -8,11 +8,13 @@ import { createMockBackend } from "../src/mock/backend";
 import { HOSTILE } from "../src/mock/fixtures";
 import {
   buttonByText,
+  choose,
   type FakeIpc,
   type Handler,
   hasButton,
   installFakeIpc,
   mainHandlers,
+  modelSelect,
   mountRoot,
   page,
   rejection,
@@ -519,6 +521,13 @@ describe("chat lifecycle", () => {
         settings: { ...SETTINGS, endpoint: current },
         preferences: "defaults",
       }),
+      chat_models: () => ({
+        endpoint: current,
+        models: [
+          { id: "lfm2.5:latest", cloud_tag: false },
+          { id: SETTINGS.model, cloud_tag: false },
+        ],
+      }),
       chat_send: (args) =>
         (args.settings as { endpoint: string }).endpoint === current
           ? running
@@ -526,12 +535,9 @@ describe("chat lifecycle", () => {
     });
     itemFor("s-chat").click();
     await settle();
+    choose(modelSelect(root), "lfm2.5:latest");
     // The settings window switches to Ollama after this window read its endpoint.
     current = after;
-    const model = Array.from(root.querySelectorAll(".settings label.field"))
-      .find((label) => label.querySelector("span")?.textContent === "Model")
-      ?.querySelector("input") as HTMLInputElement;
-    type(model, "lfm2.5:latest");
     const box = root.querySelector(".message-box") as HTMLTextAreaElement;
     type(box, "hello");
     buttonByText(root, "Send").click();
@@ -616,7 +622,7 @@ describe("chat lifecycle", () => {
       session_transcript: () => page(s, []),
       chat_defaults: () => ({
         settings: {
-          endpoint: "",
+          endpoint: SETTINGS.endpoint,
           model: "",
           context_tokens: 0,
           max_output_tokens: 0,
@@ -632,8 +638,8 @@ describe("chat lifecycle", () => {
     await settle();
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
     expect(buttonByText(root, "Send").disabled).toBe(true);
-    const inputs = root.querySelectorAll<HTMLInputElement>(".settings input[type=text]");
-    type(inputs[0] as HTMLInputElement, "some-model");
+    choose(modelSelect(root), SETTINGS.model);
+    expect(buttonByText(root, "Send").disabled).toBe(true);
     const numbers = root.querySelectorAll<HTMLInputElement>(".settings input[type=number]");
     type(numbers[0] as HTMLInputElement, "4096");
     expect(buttonByText(root, "Send").disabled).toBe(false);
@@ -883,10 +889,16 @@ describe("settings window, saved defaults, and per-turn skills", () => {
   it("saves the model settings as defaults without the endpoint", async () => {
     const saved = { ...SETTINGS, model: "saved-model" };
     await open({
+      chat_models: () => ({
+        endpoint: SETTINGS.endpoint,
+        models: [
+          { id: "saved-model", cloud_tag: false },
+          { id: SETTINGS.model, cloud_tag: false },
+        ],
+      }),
       chat_preferences_save: () => ({ settings: saved, preferences: "saved", enter_to_send: true }),
     });
-    const model = root.querySelector<HTMLInputElement>(".settings input[type=text]");
-    type(model as HTMLInputElement, "saved-model");
+    choose(modelSelect(root), "saved-model");
     buttonByText(root, "Save as defaults").click();
     await settle();
     const args = ipc.callsTo("chat_preferences_save")[0]?.args as {
@@ -1050,14 +1062,21 @@ describe("settings window, saved defaults, and per-turn skills", () => {
           finish = resolve;
         }),
     });
-    const model = root.querySelector<HTMLInputElement>(
-      ".settings input[type=text]",
-    ) as HTMLInputElement;
-    type(model, "first");
+    ipc.on("chat_models", () => ({
+      endpoint: SETTINGS.endpoint,
+      models: [
+        { id: "first", cloud_tag: false },
+        { id: "second", cloud_tag: false },
+      ],
+    }));
+    buttonByText(root, "Refresh").click();
+    await settle();
+    const model = modelSelect(root);
+    choose(model, "first");
     buttonByText(root, "Save as defaults").click();
     await settle();
     expect(ipc.callsTo("chat_preferences_save")).toHaveLength(1);
-    type(model, "second");
+    choose(model, "second");
     finish({
       settings: { ...SETTINGS, model: "first" },
       preferences: "saved",

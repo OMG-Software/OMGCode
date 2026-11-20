@@ -5,6 +5,7 @@ import type {
   ApprovalView,
   ChatDefaults,
   ChatEvent,
+  ChatModels,
   ChatOutcome,
   ChatPreferences,
   ChatSettings,
@@ -533,6 +534,22 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       }
       case "chat_defaults":
         return chatDefaults();
+      // A fixed list per provider kind, like the servers' `/v1/models` (ADR-0066).
+      case "chat_models":
+        return {
+          endpoint: currentEndpoint(),
+          models:
+            settings.connection.kind === "ollama_local"
+              ? [
+                  { id: "gpt-oss:120b-cloud", cloud_tag: true },
+                  { id: "lfm2.5:latest", cloud_tag: false },
+                  { id: "qwen2.5-coder:7b", cloud_tag: false },
+                ]
+              : [
+                  { id: "google/gemma-4-e4b", cloud_tag: false },
+                  { id: "qwen2.5-coder", cloud_tag: false },
+                ],
+        } satisfies ChatModels;
       case "chat_preferences_save":
         savedPreferences = clone(args.preferences as ChatPreferences);
         return chatDefaults();

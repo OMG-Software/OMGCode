@@ -103,6 +103,10 @@ window shows the open session's workspace and Git branch, read from `HEAD`
 without a Git process, and offers the same connection choice through the same
 native confirmation
 ([ADR-0064](docs/adr/0064-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
+The composer chooses the model from the list that connection's server reports
+through `GET /v1/models`, and `omgcode models` prints that list; the list
+grants nothing, and an Ollama cloud tag is labelled by name only
+([ADR-0066](docs/adr/0066-choose-the-chat-model-from-the-local-servers-model-list.md)).
 Credentials, execution setup, and skills still change only through the
 trusted CLI. The desktop shell has no development
 panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to

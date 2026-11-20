@@ -1,4 +1,7 @@
+mod models;
 mod stream;
+
+pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models};
 
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
@@ -188,17 +191,7 @@ impl LocalModelClient {
         }
         endpoint.set_path("/v1/chat/completions");
 
-        let authorization = token
-            .map(|token| {
-                if token.is_empty() || token.chars().any(char::is_control) {
-                    return Err(ProviderError::InvalidToken);
-                }
-                let mut header = HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(|_| ProviderError::InvalidToken)?;
-                header.set_sensitive(true);
-                Ok(header)
-            })
-            .transpose()?;
+        let authorization = token.as_deref().map(bearer_header).transpose()?;
 
         Ok(Self {
             endpoint,
@@ -685,6 +678,20 @@ const fn model_error(error: ProviderError) -> ModelError {
         | ProviderError::MalformedResponse
         | ProviderError::UnsupportedToolCall => ModelError::InvalidResponse,
     }
+}
+
+/// Build the sensitive `Authorization` value for an optional local token.
+///
+/// An empty token, a control character, or a value HTTP cannot carry is
+/// `InvalidToken`. The header is marked sensitive so it is never logged.
+fn bearer_header(token: &str) -> Result<HeaderValue, ProviderError> {
+    if token.is_empty() || token.chars().any(char::is_control) {
+        return Err(ProviderError::InvalidToken);
+    }
+    let mut header = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| ProviderError::InvalidToken)?;
+    header.set_sensitive(true);
+    Ok(header)
 }
 
 /// Reject destinations which could redirect prompts or credentials off loopback.

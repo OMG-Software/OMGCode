@@ -258,3 +258,32 @@ fn a_profile_replaced_with_another_endpoint_refuses_the_next_turn() {
     );
     replacement.assert_untouched();
 }
+
+/// The model list (ADR-0066) reads the stored credential as a turn does and
+/// sends it only to the profile's endpoint; an unreadable one is a
+/// `credential` error before anything is sent. No result carries the token.
+#[test]
+fn the_model_list_sends_the_stored_credential_and_never_returns_it() {
+    let fixture = Fixture::new();
+    let mut vault = Vault::new(&fixture.data);
+    let server = MockServer::start(vec![Step::reply(json!({"data": [{"id": "m"}]}))]);
+    vault.add_profile_at("lms", "lm_studio", "api_key", &server.endpoint);
+    let id = vault.bind("lms", STORED.as_bytes());
+    let service = service(&fixture, &server.endpoint, "lms");
+
+    let listed = service.chat_models().expect("list");
+    assert_eq!(listed.endpoint, server.endpoint);
+    assert!(!text_of(&listed).contains(STORED));
+    let (served, requests) = server.finish_recorded();
+    assert_eq!(served, 1);
+    assert!(requests[0].head.starts_with("GET /v1/models "));
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {STORED}"))
+    );
+
+    vault.delete_native(&id);
+    let error = service.chat_models().expect_err("refused");
+    assert_eq!(error.code(), "credential");
+    assert!(!text_of(&error).contains(STORED));
+}

@@ -265,13 +265,16 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
         if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
             let head_text = String::from_utf8_lossy(&bytes[..end]).into_owned();
             let head = head_text.to_ascii_lowercase();
-            let length: usize = head
+            // A GET (the model list, ADR-0066) carries no body and no length;
+            // every other request must state its length.
+            let length: usize = match head
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length:"))
-                .ok_or("missing content length")?
-                .trim()
-                .parse()
-                .map_err(|_| "invalid content length")?;
+            {
+                Some(value) => value.trim().parse().map_err(|_| "invalid content length")?,
+                None if head.starts_with("get ") => 0,
+                None => return Err("missing content length".to_owned()),
+            };
             if length > MAX_HTTP_BYTES {
                 return Err("request too large".to_owned());
             }

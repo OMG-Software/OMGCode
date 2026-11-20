@@ -223,7 +223,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 34 commands. No other command exists.
+The shell has three webview windows and 35 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -239,6 +239,7 @@ their registered identifier, and approvals by identifier.
 | `workspace_list` | main | List the registered workspaces a session can be created in |
 | `session_create` | main | Create a session in a registered workspace |
 | `chat_defaults` | main | Return the endpoint the next turn uses and the saved or built-in chat preferences |
+| `chat_models` | main | List the model ids the next turn's connection reports, for the composer's model choice |
 | `chat_preferences_save` | main | Save the chat preferences the composer starts from |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
@@ -454,8 +455,9 @@ registers and changes no workspace itself.
 A turn takes the model name, the context size, the output reserve, optional
 user instructions, and the compaction settings. The composer starts from the
 saved chat preferences, or from built-in values when none are saved, and
-each can be changed before a turn. The model must be loaded on the
-server, and the context size must match what the server loaded. A context of
+each can be changed before a turn. The model is chosen from a list, not
+typed (see **Model choice**). The server must be able to load it, and the
+context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
@@ -468,6 +470,29 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   keeps it for the next run. A change made before the saved defaults load is
   kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
   outside the turn settings, because it never reaches a turn (ADR-0062).
+- **Model choice.** Since 0.46.0 (ADR-0066) the **Model** field in **Chat
+  settings** is a choice with a **Refresh** button. `chat_models` resolves
+  the connection exactly as `chat_send` does, stored credential included,
+  and sends one `GET /v1/models` to its loopback endpoint. Core refuses the
+  whole list when it is not a `data` array of at most 512 entries with
+  string ids, or when an id is empty, over 256 bytes, repeated, or holds a
+  control or bidirectional formatting character. The deadline is ten
+  seconds. The composer lists models when the chat defaults load, after the
+  connection changes, and on **Refresh**, which is disabled while a list is
+  being read. When the connection changes, the previous server's models are
+  removed at once, before the new list arrives. A list whose endpoint is not
+  the one shown is discarded with a note. The ids are sorted and shown as text. A chosen or saved model the
+  server did not report stays chosen and is marked "(not reported by the
+  server)". An id whose last tag is `cloud` or ends in `-cloud` is marked
+  "(Ollama cloud)", and while it is chosen a warning says that prompts and
+  workspace text sent to it leave this computer. The warning is read from the
+  chosen id itself, so it also shows for a saved model while the list loads or
+  after listing fails. A chosen id is sent exactly as listed, never trimmed. The mark follows Ollama's
+  naming convention and is not proof; an unmarked model is not shown to be
+  local. A failure is shown beside the field with its code. Nothing is chosen
+  automatically: with no saved model, Send stays disabled until a model is
+  chosen. Choosing a model grants nothing; `chat_send` validates it as
+  before. Embedding models are listed too and cannot answer a turn.
 - **Saved preferences.** **Save as defaults** sends the model name, context
   size, output reserve, custom instructions, compaction threshold, the
   automatic compaction switch, and the **Enter to send** choice to
@@ -509,9 +534,10 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   turn resolves the active connection, and a request whose endpoint differs
   from it is refused with `connection_changed`: the `settings` window chose
   another connection after `main` read the endpoint. No turn starts. The
-  composer then reads the endpoint again and keeps the draft and the model
-  name, so the operator can check the model before sending again
-  (ADR-0064). With `--provider-profile`, each turn also resolves the profile
+  composer then reads the endpoint again, lists that connection's models,
+  and keeps the draft and the chosen model, marked when the new server does
+  not report it, so the operator can check the model before sending again
+  (ADR-0064, ADR-0066). With `--provider-profile`, each turn also resolves the profile
   again. If its recorded endpoint no longer equals the
   launch value, because the profile was removed and added again, `chat_send`
   fails at once with a `credential` error that starts `endpoint_changed:` and
@@ -673,7 +699,7 @@ Only this window receives the configuration view. The `main` window receives
 only the workspace summaries of `workspace_list` (each registered
 workspace's identifier, folder display text, and `model_tools`, `read`,
 `write`, and `execute` states), the endpoint text of
-`chat_defaults`, the enabled skill names of `session_skills`, the branch
+`chat_defaults`, the model ids of `chat_models`, the enabled skill names of `session_skills`, the branch
 display of `session_context`, and the connection view and local profile
 names, kinds, and endpoints of `connection_status`.
 
@@ -1026,6 +1052,7 @@ What it does not do:
 | Message and instructions prefilter | 64 KiB each |
 | Skills selected per turn | 4 |
 | Saved model name | 256 bytes, no control characters |
+| Listed models | 512 ids of at most 256 bytes, a 1 MiB body, a 10-second deadline |
 | Saved instructions | 64 KiB |
 | Chat preferences file | 512 KiB |
 | Review token lifetime | 120 seconds, single use |
