@@ -10,20 +10,148 @@
   margin: 40px;
 }
 
+/* Sessions, a separator, the conversation, a separator, and the terminal (ADR-0072). Each panel's
+   width is set by src/main/layout.ts; a collapsed panel is a rail of icons. */
 .shell {
+  --rail-width: 44px;
+  --separator-width: 1px;
+  --left-track: var(--left-width, 260px);
+  --right-track: var(--right-width, 360px);
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns:
+    var(--left-track) var(--separator-width) minmax(0, 1fr) var(--separator-width)
+    var(--right-track);
+}
+
+.shell.left-collapsed {
+  --left-track: var(--rail-width);
+}
+
+.shell.right-collapsed {
+  --right-track: var(--rail-width);
+}
+
+.shell.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* A one-pixel line with a wider grip on each side. */
+.separator {
+  position: relative;
+  z-index: 1;
+  background: var(--border);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.separator::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.separator:hover,
+.separator:focus-visible,
+.resizing .separator:focus {
+  background: var(--accent);
+  outline: none;
 }
 
 /* Sidebar: title and New session, search with a View menu, the tree, then the window rows. */
-.sidebar {
+.sidebar,
+.terminal-panel {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   background: var(--surface);
-  border-right: 1px solid var(--border);
+}
+
+.sidebar-full,
+.terminal-full {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-title-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* A collapsed panel: a column of icon buttons. */
+.panel-rail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.sidebar-full[hidden],
+.terminal-full[hidden],
+.panel-rail[hidden] {
+  display: none;
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.icon-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.rail-badge {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  min-width: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+/* Terminal panel: a title row and, until a terminal exists, a note that none is available. */
+.terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 6px 6px var(--gap);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-header h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.terminal-empty {
+  margin: 0;
+  padding: var(--gap);
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .sidebar-header {
@@ -275,6 +403,7 @@ mark {
 
 /* Transcript: your messages on the right, replies and notes on a quiet left edge. */
 .transcript {
+  --chat-column: 90%;
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -284,8 +413,12 @@ mark {
   gap: 10px;
 }
 
+/* Every entry sits in one centred column that takes a share of the transcript's width, so it
+   grows and shrinks with the window and the side panels (ADR-0072). */
 .entry {
   min-width: 0;
+  align-self: center;
+  width: var(--chat-column);
 }
 
 .entry.highlight {
@@ -320,13 +453,10 @@ mark {
   white-space: nowrap;
 }
 
-.bubble {
-  max-width: min(72ch, 100%);
-}
-
+/* The operator's bubble fits its text, up to the column's width, and is centred like a reply. */
 .bubble-user {
-  align-self: flex-end;
-  max-width: min(72ch, 85%);
+  width: auto;
+  max-width: var(--chat-column);
   padding: 8px 12px;
   background: var(--surface-2);
   border-radius: var(--radius-lg);
@@ -520,7 +650,6 @@ mark {
 }
 
 .summary-block {
-  max-width: min(72ch, 100%);
   padding: 8px 10px;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
@@ -535,7 +664,6 @@ mark {
 
 /* A tool request is one compact row; its full arguments open on demand. */
 .tool-block {
-  max-width: min(72ch, 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);

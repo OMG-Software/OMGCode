@@ -81,6 +81,12 @@ merged to `main` at the time of writing):
   sections, and the `main` window moves its view options, skills, and chat
   settings into menus. No command, IPC shape, or permission changed. See
   [appearance](#appearance).
+- Since version 0.51.0 (ADR-0072), the `main` window's sessions panel and a
+  new terminal panel can be resized and collapsed to a rail of icons, chat
+  entries are centred and follow the window's width, and the transcript
+  follows its end after a send until the operator scrolls up. The terminal
+  panel holds no terminal. No command, IPC shape, or permission changed. See
+  [appearance](#appearance) and [transcript view](#transcript-view).
 
 Not implemented:
 
@@ -97,7 +103,9 @@ Not implemented:
   S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
   are not implemented: execution setup and skill management.
-- Development panels: terminal tabs, task logs, diffs, and a file browser.
+- Development panels: a working terminal, task logs, diffs, and a file
+  browser. The terminal panel (ADR-0072) only says that no terminal is
+  available; it starts no shell and runs no command.
 - Git, MCP, and memory interfaces, and skill management. The `main` window
   can only select an already enabled skill for one turn.
 - A recovery interface for damaged journals or an incomplete tail.
@@ -311,7 +319,26 @@ confirmation dialogs follow the operating system's theme.
 
 The `main` window is laid out as follows.
 
-- **Sidebar.** About 260 pixels wide. A title row with **New session**, then
+- **Columns.** The sessions panel, the conversation, and the terminal panel,
+  with a one-pixel separator between each pair (ADR-0072). A separator is a
+  focusable window splitter: drag it, or use the arrow keys (16 pixels, 64
+  with Shift), Home and End for the limits, and Enter or a double click to
+  collapse or expand its panel. Dragging a panel more than 80 pixels below
+  its minimum collapses it. The sessions panel is 200 to 480 pixels and opens
+  at 260; the terminal panel is 240 to 720, opens at 360, and starts
+  collapsed. Neither may take the conversation below 360 pixels, and when the
+  window narrows the terminal panel gives way first. Widths and collapsed
+  states last until the window closes. The shell's two width properties are
+  the frontend's only inline style.
+- **Collapsed panels.** A collapsed panel is a 44-pixel rail of icon buttons,
+  each with an accessible name and a tooltip. The sessions rail holds Expand,
+  **New session**, Search, Sessions, **Approvals** with the waiting count, and
+  **Settings**; Search and Sessions expand the panel and focus the search box
+  or the open session. The terminal rail holds one button that expands it.
+- **Terminal panel.** A title row with a collapse button and a note that no
+  terminal is available and that the panel starts no shell and runs no
+  command. It calls no command and has no input.
+- **Sidebar.** A title row with **New session** and a collapse button, then
   the search field with a **View** menu beside it. The menu holds Active or
   Archived as a segmented control, the sort field, and the direction toggle.
   The session tree follows, with quiet group labels and an accent bar on the
@@ -324,9 +351,11 @@ The `main` window is laid out as follows.
   notice line above the status bar now only reports a failure to open a
   window, with **Dismiss**; the earlier "An approval is waiting." banner is
   gone.
-- **Transcript.** The operator's messages are right-aligned bubbles and the
+- **Transcript.** Every entry is centred and takes 90% of the transcript's
+  width, so it follows the window and the panels (ADR-0072). The operator's
+  messages are bubbles that fit their text up to that width, and the
   assistant's replies sit in a response block one shade lighter than the
-  transcript, each at most about 72 characters wide. A recorded reply is
+  transcript. A recorded reply is
   rendered as a Markdown subset (ADR-0067): paragraphs, headings, rules, block
   quotes, nested lists, tables, inline code, strong, emphasis, and
   strikethrough. A fenced code block is a darker monospace block with its
@@ -463,6 +492,18 @@ Reading a transcript uses the lock-free inspection path:
 Transcript text, tool arguments, and snippets are returned as recorded. The
 frontend renders them as text and marks bidirectional override characters. They
 are not escaped by the service.
+
+Since 0.51.0 (ADR-0072) the transcript follows its end:
+
+- Sending a message scrolls to the end and pins the transcript there. While
+  it is pinned, the live preview, the reload at a turn's end, and a change in
+  the transcript's size keep the end in view.
+- A scroll that moves up and leaves the end unpins it; the place is kept
+  while content arrives. Scrolling back to the end pins it again. Content
+  growth alone fires no scroll event, so it never unpins.
+- Opening another session, or a search hit, starts unpinned; the transcript
+  pins once it is at its end. **Load more** unpins it, so the next page is
+  read from where the operator is.
 
 ## Chat
 
@@ -1109,6 +1150,10 @@ What the design does:
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
   permission. Adding one needs an ADR.
+- **One inline style.** `ui/src/main/layout.ts` sets the shell's
+  `--left-width` and `--right-width` through the CSSOM, each a whole number
+  of pixels it computes and clamps (ADR-0072). No other frontend code sets a
+  style, and no text reaches one; `tests/security.test.ts` checks both.
 - **No host paths.** No command accepts a path. The service returns no journal
   path, no data root, no token, and no tool output digest. Workspace folder
   display text is the only path-like text the `main` window receives. The
@@ -1380,6 +1425,16 @@ ACLs the private store refuses, see the notes in
   success and after a refusal, and absent from the page and from every other
   call), **Set key…**, **Remove** for a profile with a stored key, and the
   hosted label.
+  Since ADR-0072: `ui/tests/layout.test.ts` covers the column order, the
+  separators' splitter attributes, collapsing each panel to its rail and
+  moving focus, each rail button, the waiting count on the rail, the terminal
+  panel's note and its absence of any command, keyboard and pointer resizing
+  with limits, collapse by drag and by Enter, the conversation's minimum,
+  narrowing the window, the size observer, and disposal.
+  `ui/tests/live_preview.test.ts` covers following the end: a send from
+  higher up, scrolling up and back down, growth without a scroll, and a
+  turn's end while pinned and while scrolled up. The security scan keeps
+  inline style to the two width properties in `src/main/layout.ts`.
   Vitest processes CSS, so the stylesheet scans read the real source and
   assert it is non-empty.
 - **Shell (no webview).** The policy table; the capability files against the

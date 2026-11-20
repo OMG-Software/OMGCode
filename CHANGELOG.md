@@ -6,6 +6,36 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.51.0 lets the operator resize and collapse the desktop `main`
+  window's panels, widens and centres chat, and keeps the transcript at its
+  end after a send (ADR-0072, accepted). No command, IPC shape, permission,
+  or Rust check changed.
+  - **Desktop:** the window is a grid of the sessions panel, the
+    conversation, and a new terminal panel, with a focusable window-splitter
+    separator between each pair (drag, arrow keys, Home, End, Enter, double
+    click). The sessions panel is 200 to 480 pixels; the terminal panel is
+    240 to 720 and starts collapsed; neither takes the conversation below
+    360 pixels, and the terminal panel gives way first when the window
+    narrows. A collapsed panel is a rail of icon buttons: the sessions rail
+    holds Expand, New session, Search, Sessions, Approvals with its count,
+    and Settings. The terminal panel only says that no terminal is
+    available; it starts no shell and calls no command. Widths are not kept
+    between launches. The shell's two width properties are the frontend's
+    only inline style.
+  - **Chat:** every transcript entry is centred at 90% of the transcript's
+    width instead of at most about 72 characters, and the operator's bubble
+    is centred too. Sending scrolls to the end and follows new content until
+    the operator scrolls up; scrolling back to the end follows again. A
+    turn's end no longer jumps to the end after the operator scrolled up.
+  - **Tests:** `ui/tests/layout.test.ts` (new) covers the columns, rails,
+    keyboard and pointer resizing, limits, narrowing, and disposal.
+    `live_preview.test.ts` adds four following tests, which failed against
+    the previous `conversation.ts`, and its earlier scroll test now fires the
+    scroll event a real scroll fires. The security scan allows inline style
+    only for the two widths. Two main-window assertions were narrowed: no
+    tooltip in the session tree (icon buttons have fixed tooltips) and no
+    inline style other than the shell's widths.
+
 - Version 0.49.0 keeps new checkpoints in a protected `.OMGCode` folder in
   each workspace instead of the data directory (ADR-0070, accepted), so
   model edit, multi-edit, and delete calls work when the workspace is on
