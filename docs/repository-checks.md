@@ -157,7 +157,12 @@ repository or dependency code. It downloads the archives and writes
    `latest` release keeps serving its archives during the upload.
 3. It requires exactly one such draft whose uploaded assets match the local
    files by name and size.
-4. It deletes the previous `latest` release and tag, then publishes the draft
+4. It deletes the previous `latest` release, then deletes the `latest` tag
+   until an exact lookup no longer finds it. A lookup just after the delete
+   can still list the tag, and a second delete then fails with HTTP 422
+   "Reference does not exist", so a failed delete is followed by another
+   lookup. After five delete attempts, about 30 seconds of waits, the job
+   fails. A failed lookup also fails it. The job then publishes the draft
    through the release API with `tag_name: latest`, `draft: false`,
    `prerelease: true`, and `make_latest: "false"`. Publishing creates the tag
    at the built commit.

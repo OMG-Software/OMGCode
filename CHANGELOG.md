@@ -200,6 +200,19 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- The Testing build's publish job no longer fails when a lookup just after
+  deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
+  deleted the old release and tag with `gh release delete --cleanup-tag`. A
+  lookup then still found the tag, and the second delete failed with HTTP 422
+  "Reference does not exist". The exit trap removed the draft, which left no
+  `latest` release. The job now deletes the release without `--cleanup-tag`.
+  It then deletes the tag until an exact `matching-refs` lookup no longer
+  finds it, and treats a failed delete as a reason to look again. The job
+  fails after five delete attempts or on a failed lookup. A stub `gh` that
+  reports a deleted tag for one more read reproduced the failure with the old
+  step. With the new step, stubs that report it for one, two, or three more
+  reads publish. A stub that reports it for ten reads, and one whose delete
+  always returns HTTP 403, fail the job. The new step has not run on GitHub.
 - Choosing a session's provider records nothing when the profile changed
   during the native confirmation in any detail the dialog named, not only its
   name or endpoint: a profile replaced under the same name and endpoint by

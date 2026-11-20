@@ -359,11 +359,30 @@ jobs:
           # If a call fails, the trap deletes the draft and a re-run of this
           # job stages it again from the same artifacts.
           if gh release view latest >/dev/null 2>&1; then
-            gh release delete latest --yes --cleanup-tag
+            gh release delete latest --yes
           fi
-          if gh api "repos/${GH_REPO}/git/ref/tags/latest" >/dev/null 2>&1; then
-            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/latest"
-          fi
+          # Delete the tag on its own. A read just after a ref is deleted can
+          # still list it, and a second DELETE then fails with HTTP 422
+          # "Reference does not exist", so a failed DELETE is not final:
+          # look the tag up again until it is gone. A failed lookup stops
+          # the job under `set -e`, and the tag must be gone within five
+          # attempts.
+          delete_attempts=0
+          while :; do
+            tag_count=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/latest" \
+              --jq '[.[] | select(.ref == "refs/tags/latest")] | length')
+            if [ "$tag_count" = 0 ]; then
+              break
+            fi
+            if [ "$delete_attempts" -ge 5 ]; then
+              echo "::error::The latest tag still exists after ${delete_attempts} delete attempts."
+              exit 1
+            fi
+            delete_attempts=$((delete_attempts + 1))
+            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/latest" --silent \
+              || echo "::warning::Deleting the latest tag failed (attempt ${delete_attempts}); looking it up again."
+            sleep $((delete_attempts * 2))
+          done
           gh api -X PATCH "repos/${GH_REPO}/releases/${draft_id}" \
             -f tag_name=latest \
             -f target_commitish="$GITHUB_SHA" \
