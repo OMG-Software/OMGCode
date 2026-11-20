@@ -114,6 +114,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
         workspace_overrides: [{ workspace_id: WORKSPACE, enabled: false }],
       },
     ],
+    scope: null,
     ...overrides,
   };
 }

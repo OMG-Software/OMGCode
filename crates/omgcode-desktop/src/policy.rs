@@ -59,6 +59,7 @@ pub enum Command {
     ApprovalDetail,
     ApprovalDecide,
     SettingsShowWindow,
+    SettingsShowWorkspace,
     ChatPreferencesSave,
     SessionSkills,
     SessionContext,
@@ -74,11 +75,12 @@ pub enum Command {
     SettingsSelectConnection,
     SettingsAddLocalConnection,
     SettingsRemoveConnection,
+    SettingsClearScope,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 37] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -99,6 +101,7 @@ impl Command {
         Self::ApprovalDetail,
         Self::ApprovalDecide,
         Self::SettingsShowWindow,
+        Self::SettingsShowWorkspace,
         Self::ChatPreferencesSave,
         Self::SessionSkills,
         Self::SessionContext,
@@ -114,6 +117,7 @@ impl Command {
         Self::SettingsSelectConnection,
         Self::SettingsAddLocalConnection,
         Self::SettingsRemoveConnection,
+        Self::SettingsClearScope,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -140,6 +144,7 @@ impl Command {
             Self::ApprovalDetail => "approval_detail",
             Self::ApprovalDecide => "approval_decide",
             Self::SettingsShowWindow => "settings_show_window",
+            Self::SettingsShowWorkspace => "settings_show_workspace",
             Self::ChatPreferencesSave => "chat_preferences_save",
             Self::SessionSkills => "session_skills",
             Self::SessionContext => "session_context",
@@ -155,6 +160,7 @@ impl Command {
             Self::SettingsSelectConnection => "settings_select_connection",
             Self::SettingsAddLocalConnection => "settings_add_local_connection",
             Self::SettingsRemoveConnection => "settings_remove_connection",
+            Self::SettingsClearScope => "settings_clear_scope",
         }
     }
 
@@ -173,7 +179,8 @@ impl Command {
             | Self::SettingsClearPackageCache
             | Self::SettingsSelectConnection
             | Self::SettingsAddLocalConnection
-            | Self::SettingsRemoveConnection => WindowLabel::Settings,
+            | Self::SettingsRemoveConnection
+            | Self::SettingsClearScope => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -191,6 +198,7 @@ impl Command {
             | Self::ApprovalsSummary
             | Self::ApprovalsShowWindow
             | Self::SettingsShowWindow
+            | Self::SettingsShowWorkspace
             | Self::ChatPreferencesSave
             | Self::SessionSkills
             | Self::SessionContext
@@ -234,10 +242,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 35);
-        assert_eq!(with_window(WindowLabel::Main).len(), 23);
+        assert_eq!(Command::ALL.len(), 37);
+        assert_eq!(with_window(WindowLabel::Main).len(), 24);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 9);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 10);
     }
 
     #[test]
@@ -320,10 +328,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_thirty_five_unique_names_matching_the_enum() {
+    fn shared_name_list_has_thirty_seven_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 35);
-        assert_eq!(shared.len(), 35);
+        assert_eq!(COMMAND_NAMES.len(), 37);
+        assert_eq!(shared.len(), 37);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

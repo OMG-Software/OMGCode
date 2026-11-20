@@ -65,6 +65,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     package_profiles: [],
     container_grants: [],
     skills: [],
+    scope: null,
     ...overrides,
   };
 }
@@ -430,6 +431,68 @@ describe("advanced section", () => {
       "No container grant is recorded.",
       "No skill is imported.",
     ]);
+  });
+});
+
+describe("workspace scope", () => {
+  const scoped = (id: string) => overview({ scope: { workspace_id: id } });
+
+  it("shows only the scoped workspace without sections, chooser, root, or registration", async () => {
+    await start(() => scoped(B));
+
+    expect(heading()).toBe("/home/dev/b");
+    expect(root.textContent).toContain("Workspace settings");
+    expect(root.textContent).not.toContain("/home/dev/a");
+    expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
+    expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(true);
+    expect(chooser()).toBeNull();
+    expect(root.textContent).not.toContain("Development root");
+    expect(root.textContent).not.toContain("Register workspace");
+    expect(root.querySelector(".tool-limits")).not.toBeNull();
+    expect(root.textContent).toContain("Package cache");
+    expect((root.querySelector(".scope-bar") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("restores the sections and the chooser when All settings clears the scope", async () => {
+    await start(() => scoped(B), { settings_clear_scope: () => overview({ revision: 4 }) });
+    buttonByText(root, "All settings").click();
+    await settle();
+
+    expect(ipc.callsTo("settings_clear_scope")).toEqual([
+      { command: "settings_clear_scope", args: {} },
+    ]);
+    expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(false);
+    expect((root.querySelector(".scope-bar") as HTMLElement).hidden).toBe(true);
+    expect(root.querySelector(".settings-window.scoped")).toBeNull();
+    expect(chooser()).not.toBeNull();
+    expect(current()).toBe("Workspaces");
+  });
+
+  it("shows a note and the full view when the scoped workspace is gone", async () => {
+    await start(() => scoped("cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
+
+    expect(root.textContent).toContain("no longer registered");
+    expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(false);
+    expect(chooser()).not.toBeNull();
+  });
+
+  it("reads the scope again when the window gains focus", async () => {
+    await start(() => overview());
+    expect(root.querySelector(".settings-window.scoped")).toBeNull();
+
+    ipc.on("settings_overview", () => scoped(A));
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
+    expect(heading()).toBe("/home/dev/a");
+  });
+
+  it("still sends changes for the scoped workspace by its identifier", async () => {
+    await start(() => scoped(B), { settings_set_permissions: () => scoped(B) });
+    choose("Read", "deny");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({ workspace_id: B });
   });
 });
 

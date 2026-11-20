@@ -167,12 +167,40 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         package_profiles,
         container_grants,
         skills,
+        scope: inner.settings_scope(),
     };
     drop(store);
     overview
 }
 
 impl DesktopService {
+    /// Scope the `settings` window to the registered workspace a session was
+    /// recorded in (ADR-0067). The identifier comes from the session index and
+    /// the settings store, never from the caller. The scope is display state:
+    /// it grants and removes no access.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` for an unknown session, `unknown_workspace` when the
+    /// session's workspace is not registered here or there is no settings
+    /// store, `busy`, `control`, or `internal`. The scope is unchanged on error.
+    pub fn settings_scope_workspace(&self, request: SessionRequest) -> Result<(), DesktopError> {
+        let Some((store, workspace_id)) = self.session_workspace(request)? else {
+            return Err(DesktopError::unknown_workspace());
+        };
+        drop(store);
+        self.inner.set_settings_scope(Some(*workspace_id.as_uuid()))
+    }
+
+    /// Clear the `settings` window's scope so it shows every workspace.
+    ///
+    /// # Errors
+    ///
+    /// `internal` when the scope state is unavailable (a poisoned lock).
+    pub fn settings_scope_clear(&self) -> Result<(), DesktopError> {
+        self.inner.set_settings_scope(None)
+    }
+
     /// The skills the operator may select for one turn in this session: those
     /// effectively enabled for the session's recorded workspace.
     ///

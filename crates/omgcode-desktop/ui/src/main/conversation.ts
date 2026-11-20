@@ -281,6 +281,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
   }
 
   function renderComposer(): void {
+    composer.setSession(session?.session_id ?? null);
     composer.update(composerState(session, chatActive(), failure), chatActive());
   }
 

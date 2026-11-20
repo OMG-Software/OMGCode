@@ -156,6 +156,7 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::approvals::approval_detail,
             commands::approvals::approval_decide,
             commands::settings_show_window,
+            commands::settings_show_workspace,
             commands::chat::chat_preferences_save,
             commands::chat::session_skills,
             commands::chat::session_context,
@@ -170,7 +171,8 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_clear_package_cache,
             commands::settings::settings_select_connection,
             commands::settings::settings_add_local_connection,
-            commands::settings::settings_remove_connection
+            commands::settings::settings_remove_connection,
+            commands::settings::settings_clear_scope
         ])
         .build(tauri::generate_context!());
     match built {

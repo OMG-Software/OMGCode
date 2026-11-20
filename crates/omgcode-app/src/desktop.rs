@@ -102,6 +102,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use omgcode_core::session_index::SessionIndex;
+use uuid::Uuid;
 
 pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
@@ -122,10 +123,11 @@ pub use self::wire::{
     PackageProfileView, PermissionFlags, PermissionsChangeRequest, PreferencesSource,
     ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto, SessionContext,
     SessionCreateRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
-    SessionTree, SettingsOverview, SettingsRevisionRequest, SkillOverrideView, SkillSettingView,
-    SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
-    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
-    WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
+    SessionTree, SettingsOverview, SettingsRevisionRequest, SettingsScope, SkillOverrideView,
+    SkillSettingView, SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode,
+    TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
+    WorkspaceChoice, WorkspaceGroup, WorkspaceList, WorkspaceRevisionRequest,
+    WorkspaceSettingsView,
 };
 use crate::{
     AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
@@ -261,6 +263,10 @@ struct Inner {
     /// Set while one settings change waits for the operator or applies, so
     /// a second change is refused rather than opening a second dialog.
     settings_change: AtomicBool,
+    /// The workspace the `settings` window is scoped to, set by the `main`
+    /// window's **Workspace settings** button. Display state only: it grants
+    /// and removes no access. Keep every critical section to one read or write.
+    settings_scope: Mutex<Option<Uuid>>,
 }
 
 /// The desktop command service. See the [module documentation](self).
@@ -315,6 +321,7 @@ impl DesktopService {
                 events: Mutex::new(EventHub::default()),
                 pending_cache: AtomicU64::new(0),
                 settings_change: AtomicBool::new(false),
+                settings_scope: Mutex::new(None),
             }),
         })
     }

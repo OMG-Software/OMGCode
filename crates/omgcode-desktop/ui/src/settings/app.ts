@@ -1,9 +1,16 @@
-import { el, replaceChildren } from "../dom";
+import { button, el, replaceChildren } from "../dom";
 import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
 import { renderAdvanced } from "./advanced_section";
-import type { Actions, Change, SectionContext, SectionId, ViewState } from "./context";
+import {
+  type Actions,
+  type Change,
+  type SectionContext,
+  type SectionId,
+  scopedWorkspace,
+  type ViewState,
+} from "./context";
 import { newConnectionDraft, renderModel } from "./model_section";
 import { createNav } from "./nav";
 import { renderWorkspaces } from "./workspaces_section";
@@ -65,12 +72,17 @@ export function startSettings(root: HTMLElement): SettingsApp {
   // A disabled fieldset disables every control inside it without touching their own state.
   const body = el("fieldset", { class: "settings-body" });
   // The one scroll container for every section.
-  const content = el("div", { class: "settings-content" }, problem, notice, body);
+  // Shown only while the window is scoped to one workspace (ADR-0067).
+  const allSettings = button("All settings", () => submit(() => settingsApi.clearScope()));
+  const scopeBar = el("div", { class: "scope-bar" }, allSettings);
+  scopeBar.hidden = true;
+  const content = el("div", { class: "settings-content" }, scopeBar, problem, notice, body);
   const nav = createNav(
     view.section,
     (id) => select(id),
     () => void refresh(),
   );
+  const windowElement = el("main", { class: "settings-window" }, nav.element, content);
   let current: SettingsOverview | null = null;
   let working = false;
 
@@ -78,6 +90,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     working = value;
     body.disabled = value;
     nav.setDisabled(value);
+    allSettings.disabled = value;
   }
 
   function renderSection(id: SectionId, context: SectionContext): HTMLElement[] {
@@ -102,12 +115,17 @@ export function startSettings(root: HTMLElement): SettingsApp {
       actions: ACTIONS,
       rerender: draw,
     };
+    const scoped = scopedWorkspace(current) !== null;
+    // A scoped window shows one workspace and no section list; All settings restores both.
+    nav.element.hidden = scoped;
+    scopeBar.hidden = !scoped;
+    windowElement.classList.toggle("scoped", scoped);
     nav.select(view.section);
     // Drawing replaces every control. A focused control with an id (the workspace chooser) gets
     // focus back on its replacement, so a keyboard user keeps their place.
     const active = document.activeElement;
     const focusedId = active instanceof HTMLElement && body.contains(active) ? active.id : "";
-    replaceChildren(body, ...renderSection(view.section, context));
+    replaceChildren(body, ...renderSection(scoped ? "workspaces" : view.section, context));
     const replacement = focusedId === "" ? null : document.getElementById(focusedId);
     if (replacement !== null && body.contains(replacement)) {
       replacement.focus();
@@ -192,14 +210,18 @@ export function startSettings(root: HTMLElement): SettingsApp {
     }
   };
   document.addEventListener("visibilitychange", onVisible);
+  // The window can already be visible when the main window scopes it, which fires no visibility
+  // change; it gains focus, so it reads the scope then.
+  window.addEventListener("focus", onVisible);
 
-  replaceChildren(root, el("main", { class: "settings-window" }, nav.element, content));
+  replaceChildren(root, windowElement);
   void refresh();
 
   return {
     refresh,
     dispose() {
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     },
   };
 }

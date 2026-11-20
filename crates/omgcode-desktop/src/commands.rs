@@ -15,8 +15,9 @@
 //! [`tauri::async_runtime::spawn_blocking`] through [`blocking`]. The service
 //! is managed state of type `Arc<DesktopService>`; `State<'_, T>` is borrowed
 //! for the handler, so a handler clones the `Arc` into the blocking closure.
-//! The two handlers below that touch no service only read constants or send a
-//! window message, so they stay synchronous.
+//! The two handlers below that touch no service (`app_info` and
+//! `approvals_show_window`) only read constants or send a window message, so
+//! they stay synchronous.
 //!
 //! Arguments are matched by name: Tauri deserializes each parameter from the
 //! key of the invoke argument object with the same name (`rename_all =
@@ -26,9 +27,10 @@
 
 use std::sync::Arc;
 
-use omgcode_app::desktop::{DesktopError, DesktopService};
+use omgcode_app::desktop::{DesktopError, DesktopService, SessionRequest};
 use serde::Serialize;
 use tauri::{Manager, State, Webview};
+use uuid::Uuid;
 
 use crate::error::CommandError;
 use crate::policy::{Command, WindowLabel, authorize};
@@ -117,16 +119,48 @@ pub fn approvals_show_window(webview: Webview) -> Result<(), CommandError> {
 }
 
 /// `main` only. Shows, unminimizes, and focuses the existing `settings` window
-/// (ADR-0059). It creates no window, navigates nothing, and passes nothing to
-/// the settings window.
+/// (ADR-0059). It creates no window and navigates nothing. It first clears the
+/// window's workspace scope, so the window shows every workspace (ADR-0067).
 ///
 /// # Errors
 ///
-/// `forbidden_window` when the caller is not `main`; `window_unavailable` when
-/// the settings window is missing or the platform refuses a step.
+/// `forbidden_window` when the caller is not `main`; `internal` when the scope
+/// state is unavailable; `window_unavailable` when the settings window is
+/// missing or the platform refuses a step.
 #[tauri::command(rename_all = "snake_case")]
-pub fn settings_show_window(webview: Webview) -> Result<(), CommandError> {
+pub async fn settings_show_window(
+    webview: Webview,
+    state: Service<'_>,
+) -> Result<(), CommandError> {
     authorize(Command::SettingsShowWindow, webview.label())?;
+    blocking(&state, |service| service.settings_scope_clear()).await?;
+    show_window(&webview, WindowLabel::Settings)
+}
+
+/// `main` only. Scopes the `settings` window to the workspace the named session
+/// was recorded in, then shows, unminimizes, and focuses it (ADR-0067). The
+/// workspace is resolved by Rust from the session index and the settings
+/// store; the webview names only the session. The scope is display state: it
+/// grants and removes no access.
+///
+/// # Errors
+///
+/// `forbidden_window` when the caller is not `main`; `not_found` for an unknown
+/// session; `unknown_workspace` when its workspace is not registered;
+/// `window_unavailable` when the settings window is missing or the platform
+/// refuses a step.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_show_workspace(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+) -> Result<(), CommandError> {
+    authorize(Command::SettingsShowWorkspace, webview.label())?;
+    let request = SessionRequest { session_id };
+    blocking(&state, move |service| {
+        service.settings_scope_workspace(request)
+    })
+    .await?;
     show_window(&webview, WindowLabel::Settings)
 }
 

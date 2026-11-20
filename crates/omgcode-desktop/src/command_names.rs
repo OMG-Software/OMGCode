@@ -24,6 +24,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "approval_detail",
     "approval_decide",
     "settings_show_window",
+    "settings_show_workspace",
     "chat_preferences_save",
     "session_skills",
     "session_context",
@@ -39,4 +40,5 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_select_connection",
     "settings_add_local_connection",
     "settings_remove_connection",
+    "settings_clear_scope",
 ];

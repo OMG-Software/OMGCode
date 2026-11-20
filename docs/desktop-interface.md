@@ -223,7 +223,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 35 commands. No other command exists.
+The shell has three webview windows and 37 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -251,7 +251,8 @@ their registered identifier, and approvals by identifier.
 | `chat_subscribe` | main | Subscribe a caller-created channel to chat events |
 | `approvals_summary` | main | Return the advisory count of pending approvals |
 | `approvals_show_window` | main | Show the existing approvals window |
-| `settings_show_window` | main | Show the existing settings window |
+| `settings_show_window` | main | Clear the settings window's workspace scope and show the existing settings window |
+| `settings_show_workspace` | main | Scope the settings window to a session's registered workspace, then show it |
 | `approvals_list` | approvals | List pending approvals and recent decisions |
 | `approval_detail` | approvals | Review one approval and obtain a review token |
 | `approval_decide` | approvals | Approve or deny one approval |
@@ -264,6 +265,7 @@ their registered identifier, and approvals by identifier.
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
 | `settings_add_local_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential |
 | `settings_remove_connection` | settings | Remove a provider profile that has no bound credential; removing the active one needs a native confirmation |
+| `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -329,7 +331,8 @@ The `main` window is laid out as follows.
 - **Composer.** The message box, then one toolbar: a **Skills (n)** menu,
   where n counts the skills chosen for the turn, hidden when no skill is
   enabled; a **Chat settings** menu with the settings grid, the read-only
-  endpoint, and **Save as defaults**; then the byte counter, the running
+  endpoint, and **Save as defaults**; a **Workspace settings** button (see
+  "Settings window"); then the byte counter, the running
   label, **Cancel**, and **Send**. The counter appears only above 80% of the
   message limit or when the message is over it.
 - **No waiting marker.** The `main` window cannot tell which session an
@@ -619,7 +622,8 @@ A panicked turn thread is recorded as a failed turn with the code `internal`.
 
 **Settings** in the session sidebar calls `settings_show_window`, which shows
 the hidden `settings` window. The window calls `settings_overview` when it
-starts, when it becomes visible again, and when **Refresh** is pressed. When
+starts, when it becomes visible again or gains focus, and when **Refresh** is
+pressed. When
 no settings store exists, that call creates an empty one, as the CLI's
 `workspace status` does (ADR-0060). The window loads hidden at launch, so the
 store exists from the first launch.
@@ -664,6 +668,30 @@ waits. The window shows:
   their folder, access, and state; and each imported skill's name, its
   application setting, and its workspace overrides, with the workspace shown
   by its folder. A line says these change only through the trusted CLI.
+- **Workspace scope** (ADR-0067). **Workspace settings**, next to **Chat
+  settings** in the composer toolbar, calls `settings_show_workspace` with
+  the open session's identifier and nothing else; it is disabled until a
+  session is open. Rust resolves the workspace the session was recorded in
+  through the session index and the settings store, never from the webview.
+  A session that is unknown, or whose workspace is not registered, is
+  refused with `not_found` or `unknown_workspace`, and the composer shows the
+  message. Otherwise Rust records that workspace as the window's scope in
+  memory, one short mutex-protected write, and shows the `settings` window.
+  Every overview carries `scope`, either `{ workspace_id }` or `null`. While
+  the scope names a registered workspace, the window hides the section
+  sidebar and shows only **Workspace settings** for that workspace: the
+  Deny, Prompt, and Allow help, its folder, **Model tools**, the permission
+  rows, **File-write tool limits**, its identifier, and its package cache.
+  It shows no development root, **Register workspace…**, or workspace
+  chooser. **All settings** calls `settings_clear_scope`, a `settings`
+  command, and the window then shows the sections as before. **Settings** in
+  the sidebar calls `settings_show_window`, which clears the scope first. If
+  the scoped workspace is no longer registered, the window shows the full
+  view with a note. The window also reads the overview when it gains focus,
+  so a window that was already visible picks up a new scope; this uses no
+  `core:` event permission. The scope is display state: the `settings` window
+  could already change every workspace, and the scope grants and removes
+  nothing. A poisoned scope lock reads as no scope.
 - **Status bar.** A footer along the bottom of `main` shows the open
   session's workspace folder, its Git branch, and the model provider
   (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
@@ -1037,7 +1065,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 23 |
+| Commands | 37 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
@@ -1134,6 +1162,7 @@ private store refuses, see the notes in
   delay and checkbox for every shown review, focus, the absence of a decision
   key, and that a late detail answer is dropped;
   `ui/tests/settings_sections.test.ts` the sections, the workspace field, the
+  workspace scope (one workspace, no sidebar, **All settings**, a focus read),
   permission rows, and the read-only Advanced section; and
   `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
   segment, the composer menus and counter, and the compact transcript rows.

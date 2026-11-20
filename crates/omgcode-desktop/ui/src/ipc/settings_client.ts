@@ -39,6 +39,8 @@ export const settingsApi = {
       kind,
       endpoint,
     }),
+  /** Clears the window's workspace scope and returns the unscoped overview (ADR-0067). */
+  clearScope: () => invokeCommand<SettingsOverview>("settings_clear_scope", {}),
   removeConnection: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_connection", { revision, name }),
 };

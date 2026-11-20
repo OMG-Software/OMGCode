@@ -7,7 +7,7 @@ import type {
   WriteToolAccess,
 } from "../ipc/types";
 import { segmented } from "../ui/segmented";
-import type { SectionContext } from "./context";
+import { type SectionContext, scopedWorkspace } from "./context";
 import { emptyLine, facts, sectionHead } from "./parts";
 
 export const WORKSPACES_HELP =
@@ -294,17 +294,36 @@ function chooser(shown: WorkspaceSettingsView, ctx: SectionContext): HTMLElement
   );
 }
 
+export const SCOPED_HELP = "Settings for the open session's workspace only.";
+
+/** Shown with the full view when the scoped workspace is no longer registered. */
+export const SCOPE_GONE =
+  "The workspace you opened is no longer registered. All workspaces are shown.";
+
 export function renderWorkspaces(ctx: SectionContext): HTMLElement[] {
+  const scoped = scopedWorkspace(ctx.overview);
+  if (scoped !== null) {
+    // One workspace: no root, no registration, and no chooser (ADR-0067).
+    ctx.view.workspaceId = scoped.workspace_id;
+    return [
+      ...sectionHead("Workspace settings", SCOPED_HELP),
+      el("p", { class: "access-help", text: ACCESS_HELP }),
+      workspaceBlock(scoped, ctx),
+    ];
+  }
+  const gone = ctx.overview.scope === null ? null : el("p", { class: "notice", text: SCOPE_GONE });
   const shown = shownWorkspace(ctx);
   if (shown === null) {
     return [
       ...sectionHead("Workspaces", WORKSPACES_HELP),
+      gone,
       developmentRoot(ctx.overview, ctx),
       emptyLine("No workspace is registered."),
-    ];
+    ].filter((node): node is HTMLElement => node !== null);
   }
   return [
     ...sectionHead("Workspaces", WORKSPACES_HELP),
+    gone,
     el("p", { class: "access-help", text: ACCESS_HELP }),
     developmentRoot(ctx.overview, ctx),
     chooser(shown, ctx),

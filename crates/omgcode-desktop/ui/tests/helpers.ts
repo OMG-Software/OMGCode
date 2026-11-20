@@ -73,6 +73,7 @@ export function mainHandlers(overrides: Record<string, Handler> = {}): Record<st
     }),
     session_skills: () => ({ workspace_registered: true, skills: [] }),
     settings_show_window: () => null,
+    settings_show_workspace: () => null,
     approvals_summary: () => ({ pending: 0 }),
     approvals_show_window: () => null,
     // The status bar (ADR-0064): the default connection, nothing else to choose.

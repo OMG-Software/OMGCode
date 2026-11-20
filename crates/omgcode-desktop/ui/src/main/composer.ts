@@ -33,6 +33,8 @@ export interface Composer {
   element: HTMLElement;
   /** `running` shows the Running state and Cancel button. */
   update(state: ComposerState, running: boolean): void;
+  /** Names the open session for the Workspace settings button; `null` disables it. */
+  setSession(id: string | null): void;
   /** Clears the draft and the skill selection after a successful send. */
   clear(): void;
   readSettings(): ChatSettings;
@@ -77,6 +79,22 @@ export function createComposer(handlers: ComposerHandlers): Composer {
   cancelButton.hidden = true;
   const runningLabel = el("span", { class: "running", text: "Running…" });
   runningLabel.hidden = true;
+
+  // The open session, for the Workspace settings button (ADR-0067). Rust resolves its workspace.
+  let sessionId: string | null = null;
+  let workspaceError: string | null = null;
+  const workspaceButton = button("Workspace settings", () => {
+    const id = sessionId;
+    if (id === null) {
+      return;
+    }
+    workspaceError = null;
+    api.settingsShowWorkspace(id).catch((failure: unknown) => {
+      workspaceError = toIpcError(failure).message;
+      refresh();
+    });
+    refresh();
+  });
 
   const endpointValue = el("span", { class: "fixed-value" });
   const model = createModelPicker(() => refresh());
@@ -260,8 +278,10 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     runningLabel.hidden = !running;
     replaceChildren(reason, state.reason ?? "");
     reason.hidden = state.reason === null;
-    replaceChildren(problem, defaultsError ?? "");
-    problem.hidden = defaultsError === null;
+    const shown = defaultsError ?? workspaceError;
+    replaceChildren(problem, shown ?? "");
+    problem.hidden = shown === null;
+    workspaceButton.disabled = sessionId === null;
     model.setDisabled(!state.enabled);
     for (const input of [contextTokens, maxOutput, compactThreshold, autoCompact, instructions]) {
       input.disabled = !state.enabled;
@@ -309,7 +329,13 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     el(
       "div",
       { class: "composer-row" },
-      el("div", { class: "composer-tools" }, skillsMenu.element, settingsMenu.element),
+      el(
+        "div",
+        { class: "composer-tools" },
+        skillsMenu.element,
+        settingsMenu.element,
+        workspaceButton,
+      ),
       el("div", { class: "composer-send" }, counter, runningLabel, cancelButton, sendButton),
     ),
     reason,
@@ -333,6 +359,13 @@ export function createComposer(handlers: ComposerHandlers): Composer {
     update(next, isRunning) {
       state = next;
       running = isRunning;
+      refresh();
+    },
+    setSession(id) {
+      if (id !== sessionId) {
+        workspaceError = null;
+      }
+      sessionId = id;
       refresh();
     },
     clear() {

@@ -235,3 +235,23 @@ pub async fn settings_remove_connection(
     })
     .await
 }
+
+/// `settings` only. Clears the window's workspace scope and returns the
+/// unscoped overview (ADR-0067). The scope is display state; clearing it
+/// changes no setting.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`internal`, `busy`, `control`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_clear_scope(
+    webview: Webview,
+    state: Service<'_>,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsClearScope, webview.label())?;
+    blocking(&state, |service| {
+        service.settings_scope_clear()?;
+        service.settings_overview()
+    })
+    .await
+}

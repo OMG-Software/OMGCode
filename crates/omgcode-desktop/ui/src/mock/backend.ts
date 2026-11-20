@@ -557,7 +557,20 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         str(args, "session_id");
         return { workspace_registered: true, skills: ["review-checklist", "release-notes"] };
       case "settings_show_window":
+        settings.scope = null;
         return null;
+      case "settings_show_workspace": {
+        session(str(args, "session_id"));
+        const first = settings.workspaces[0];
+        if (first === undefined) {
+          return fail("unknown_workspace", "The workspace is not registered.");
+        }
+        settings.scope = { workspace_id: first.workspace_id };
+        return null;
+      }
+      case "settings_clear_scope":
+        settings.scope = null;
+        return clone(settings);
       case "settings_overview":
         return clone(settings);
       // The development mock stands in for the native dialogs: each folder dialog "chooses" a
@@ -875,6 +888,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           workspace_overrides: [{ workspace_id: workspace, enabled: false }],
         },
       ],
+      scope: null,
     };
   }
 

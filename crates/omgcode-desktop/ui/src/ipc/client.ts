@@ -125,4 +125,7 @@ export const api = {
   approvalsSummary: () => invokeCommand<{ pending: number }>("approvals_summary", {}),
   approvalsShowWindow: () => invokeCommand<null>("approvals_show_window", {}),
   settingsShowWindow: () => invokeCommand<null>("settings_show_window", {}),
+  /** Shows the settings window scoped to the session's workspace; Rust resolves the workspace. */
+  settingsShowWorkspace: (sessionId: string) =>
+    invokeCommand<null>("settings_show_workspace", { session_id: sessionId }),
 };

@@ -1150,4 +1150,15 @@ pub struct SettingsOverview {
     pub container_grants: Vec<ContainerGrantView>,
     /// Registered skills and their settings.
     pub skills: Vec<SkillSettingView>,
+    /// The workspace the window is scoped to, or `null` for the full view. It
+    /// is display state only: it grants and removes nothing.
+    pub scope: Option<SettingsScope>,
+}
+
+/// The `settings` window's scope: one registered workspace chosen by the `main`
+/// window's **Workspace settings** button (ADR-0067).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SettingsScope {
+    /// The workspace shown. It may have been unregistered since it was set.
+    pub workspace_id: Uuid,
 }

@@ -814,6 +814,38 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(ipc.callsTo("settings_overview")).toHaveLength(0);
   });
 
+  it("disables Workspace settings until a session is open", async () => {
+    await start({ session_tree: treeOf(s) });
+    expect(buttonByText(root, "Workspace settings").disabled).toBe(true);
+
+    itemFor("s-skills").click();
+    await settle();
+    expect(buttonByText(root, "Workspace settings").disabled).toBe(false);
+    expect(ipc.callsTo("settings_show_workspace")).toHaveLength(0);
+  });
+
+  it("opens the settings window for the open session's workspace by session id only", async () => {
+    await open();
+    buttonByText(root, "Workspace settings").click();
+    await settle();
+    expect(ipc.callsTo("settings_show_workspace")).toEqual([
+      { command: "settings_show_workspace", args: { session_id: "s-skills" } },
+    ]);
+    expect(ipc.callsTo("settings_show_window")).toHaveLength(0);
+  });
+
+  it("says so when the workspace settings cannot be opened", async () => {
+    await open({
+      settings_show_workspace: () =>
+        rejection("unknown_workspace", "The workspace is not registered."),
+    });
+    buttonByText(root, "Workspace settings").click();
+    await settle();
+    expect(root.querySelector(".composer-error")?.textContent).toContain(
+      "The workspace is not registered.",
+    );
+  });
+
   it("says so when the settings window cannot be shown", async () => {
     await start({ settings_show_window: () => rejection("window_unavailable", "gone") });
     buttonByText(root, "Settings").click();

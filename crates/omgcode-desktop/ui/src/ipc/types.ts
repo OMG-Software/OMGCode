@@ -409,4 +409,6 @@ export interface SettingsOverview {
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
   skills: SkillSettingView[];
+  /** The workspace the window is scoped to (ADR-0067), or `null` for the full view. Display only. */
+  scope: { workspace_id: string } | null;
 }

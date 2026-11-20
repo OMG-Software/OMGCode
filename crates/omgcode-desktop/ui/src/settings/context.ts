@@ -1,4 +1,9 @@
-import type { LocalProviderKind, PermissionFlags, SettingsOverview } from "../ipc/types";
+import type {
+  LocalProviderKind,
+  PermissionFlags,
+  SettingsOverview,
+  WorkspaceSettingsView,
+} from "../ipc/types";
 
 /** What one control asks the core to do, given the revision the window last read. */
 export type Change = (revision: number) => Promise<SettingsOverview>;
@@ -20,6 +25,18 @@ export interface Actions {
   selectConnection(profile: string | null): Change;
   addLocalConnection(name: string, kind: LocalProviderKind, endpoint: string): Change;
   removeConnection(name: string): Change;
+}
+
+/**
+ * The workspace the window is scoped to (ADR-0067), or `null` when it shows every workspace: no
+ * scope is set, or the scoped workspace is no longer registered. The scope is display state only.
+ */
+export function scopedWorkspace(overview: SettingsOverview): WorkspaceSettingsView | null {
+  const scope = overview.scope;
+  if (scope === null) {
+    return null;
+  }
+  return overview.workspaces.find((w) => w.workspace_id === scope.workspace_id) ?? null;
 }
 
 export type SectionId = "model" | "workspaces" | "advanced";
