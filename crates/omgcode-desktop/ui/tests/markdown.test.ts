@@ -196,6 +196,22 @@ describe("blocks", () => {
     expect(only(inside, "li").querySelectorAll("p")).toHaveLength(2);
   });
 
+  it("starts an empty item's content one column after its marker, as CommonMark does", () => {
+    // CommonMark list items, rule 3: an item that starts with a blank line takes its content
+    // from the marker width plus one column, so two spaces continue "-" and one does not.
+    const continued = md("-\n  foo");
+    expect(only(continued, "li").textContent).toBe("foo");
+    const ordered = md("1.\n   foo");
+    expect(only(ordered, "li").textContent).toBe("foo");
+    const short = md("-\n foo");
+    expect(only(short, "li").textContent).toBe("");
+    expect(only(short, ":scope > p").textContent).toBe("foo");
+    // A lazy line still continues an item's open paragraph.
+    const lazy = md("- a\nb");
+    expect(only(lazy, "li").textContent).toBe("a\nb");
+    expect(lazy.querySelector(":scope > p")).toBeNull();
+  });
+
   it("ends a list item at an unindented line while its code block is open", () => {
     const root = md("- a\n  ```\n  code\nlazy");
     expect(only(root, "li pre").textContent).toBe("code");

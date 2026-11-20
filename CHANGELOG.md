@@ -60,7 +60,9 @@ Changes are recorded here before a release version is assigned.
     line, and a reply holds at most 10,000 table cells. The image strikes
     through text nested in a deletion, places wrapped words by grapheme, pads
     with the colour behind the entry, and wraps wide code while captured.
-    Plain text separates blocks inside a list item with a blank line.
+    Plain text separates blocks inside a list item with a blank line. A lazy
+    line continues only an item's open paragraph, so an item that starts
+    empty, as in `-` then ` foo`, ends before an under-indented line.
   - **Tests (reply actions):** model labels from manifests and their reset
     at a turn start, a hostile model id, the live entry label, the label in
     the window, each copy action, refusal and label reset, plain-text

@@ -352,6 +352,16 @@ function headingText(line: string, openLength: number): string {
   return before === " " || before === "\t" ? body.slice(0, end).trimEnd() : body;
 }
 
+/** Whether `line`, inside no fence, leaves a paragraph open for a lazy line to continue. */
+function opensParagraph(line: string): boolean {
+  return (
+    !isBlank(line) &&
+    fenceOpen(line) === null &&
+    !HEADING_OPEN.test(line) &&
+    !THEMATIC_BREAK.test(line)
+  );
+}
+
 function listAt(
   lines: Lines,
   start: number,
@@ -370,6 +380,8 @@ function listAt(
     // A fence open in the item's body holds every indented line until it closes, and an
     // unindented line ends the item rather than joining the code as a lazy continuation.
     let fence = fenceAfter(null, marker.first);
+    // A lazy line continues only an open paragraph, so an item that starts empty takes none.
+    let paragraph = fence === null && opensParagraph(marker.first);
     i += 1;
     while (i < lines.length) {
       const line = lineAt(lines, i);
@@ -383,6 +395,7 @@ function listAt(
           for (; i < next; i += 1) {
             body.push("");
           }
+          paragraph = false;
           continue;
         }
         break;
@@ -390,8 +403,15 @@ function listAt(
       if (indentWidth(line) >= marker.contentIndent) {
         const content = stripIndent(line, marker.contentIndent);
         body.push(content);
-        fence = fenceAfter(fence, content);
-      } else if (fence !== null || listMarker(line) !== null || interruptsParagraph(line, depth)) {
+        const open = fence;
+        fence = fenceAfter(open, content);
+        paragraph = open === null && fence === null && opensParagraph(content);
+      } else if (
+        fence !== null ||
+        !paragraph ||
+        listMarker(line) !== null ||
+        interruptsParagraph(line, depth)
+      ) {
         break;
       } else {
         // A lazy continuation line of the item's paragraph.
