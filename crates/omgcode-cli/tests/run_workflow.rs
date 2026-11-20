@@ -1090,3 +1090,85 @@ fn a_run_outside_a_delegated_cgroup_is_refused_before_recording() {
     assert_no_runs(&scene);
     scene.close();
 }
+
+/// Replace `note.txt` once through trusted apply, so the workspace gets its
+/// `.OMGCode` checkpoint folder (ADR-0070).
+fn checkpoint_once(scene: &Scene) {
+    // The head record lives in the data directory, whose temporary-directory
+    // ACL the private store refuses until it is restricted.
+    #[cfg(windows)]
+    support::workspace_fixture::restrict_existing_to_current_user(&scene.data);
+    for flag in ["--read", "--write"] {
+        scene.set_permission(flag, "true");
+    }
+    fs::write(scene.workspace.join("note.txt"), b"before\n").expect("note");
+    let session = uuid::Uuid::new_v4().to_string();
+    let read = scene.cli(&["file", "read", &scene.id, "--session", &session, "note.txt"]);
+    assert_success(&read);
+    let sha256 = json_output(&read)["sha256"]
+        .as_str()
+        .expect("note digest")
+        .to_owned();
+    let proposed = scene.temporary.path().join("proposed.txt");
+    fs::write(&proposed, b"after\n").expect("proposed bytes");
+    assert_success(&scene.cli(&[
+        "file",
+        "apply",
+        &scene.id,
+        "note.txt",
+        "--session",
+        &session,
+        "--content-file",
+        path_arg(&proposed),
+        "--expected-sha256",
+        &sha256,
+        "--expected-bytes",
+        "7",
+        "--writers-stopped",
+    ]));
+    assert!(scene.workspace.join(".OMGCode").is_dir());
+}
+
+/// The checkpoint folder's protected DACL does not inherit the workspace
+/// container grant, so a contained run can neither read, list, nor write it.
+#[cfg(windows)]
+#[test]
+fn a_windows_run_cannot_open_the_checkpoint_folder() {
+    let scene = Scene::new();
+    assert_success(&scene.add_profile("system", &[]));
+    checkpoint_once(&scene);
+    let script = "(type .OMGCode\\.gitignore >nul 2>&1 && echo READ-ALLOWED) \
+                  & (dir .OMGCode >nul 2>&1 && echo LIST-ALLOWED) \
+                  & ((echo planted>.OMGCode\\planted) 2>nul && echo WRITE-ALLOWED) \
+                  & echo DONE";
+    let run = run_json(&scene.run("system", &[], &shell(script)));
+    let stdout = run["stdout"]["text"].as_str().expect("stdout");
+    assert!(stdout.contains("DONE"), "the script did not finish: {run}");
+    for marker in ["READ-ALLOWED", "LIST-ALLOWED", "WRITE-ALLOWED"] {
+        assert!(!stdout.contains(marker), "{marker}: {run}");
+    }
+    assert!(!scene.workspace.join(".OMGCode").join("planted").exists());
+    assert_success(&scene.cli(&["file", "checkpoints", "--workspace", &scene.id]));
+    scene.close();
+}
+
+/// Landlock grants the workspace as a hierarchy, so a contained run can
+/// replace the checkpoint folder. The next use detects it (ADR-0070).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_runs_change_to_the_checkpoint_folder_is_detected() {
+    let scene = Scene::new();
+    assert_success(&scene.add_profile("system", &[]));
+    checkpoint_once(&scene);
+    let script = "mv .OMGCode moved && mkdir -m 700 .OMGCode && echo REPLACED";
+    let run = run_json(&scene.run("system", &[], &shell(script)));
+    let stdout = run["stdout"]["text"].as_str().expect("stdout");
+    assert!(
+        stdout.contains("REPLACED"),
+        "the run could not replace it: {run}"
+    );
+    let checkpoints = scene.cli(&["file", "checkpoints", "--workspace", &scene.id]);
+    assert_error_code(&checkpoints, "checkpoint_store_changed");
+    assert!(error_message(&checkpoints).contains("replaced"));
+    scene.close();
+}

@@ -121,6 +121,70 @@ impl PrivateDirectory {
         Ok(directory)
     }
 
+    /// Exclusively create `name` as a new private root inside `parent`.
+    ///
+    /// `parent` is opened without traversing a symbolic link and must have
+    /// `parent_identity`. The child is created with mode 0700, must belong to
+    /// the effective UID, and must stay on the parent's mount. The parent is
+    /// synced. An existing entry fails with `AlreadyExists`; nothing is
+    /// replaced, retried, or removed.
+    pub fn create_in(
+        parent: &Path,
+        parent_identity: DirectoryIdentity,
+        name: &OsStr,
+    ) -> io::Result<Self> {
+        validate_name(name)?;
+        let parent = Self::open_unchecked(parent)?;
+        if directory_identity(&parent)? != parent_identity {
+            return Err(invalid("parent directory differs from its registration"));
+        }
+        mkdirat(&parent, name, Mode::RUSR | Mode::WUSR | Mode::XUSR)?;
+        let file = native_open(
+            &parent,
+            Path::new(name),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            child_flags(),
+        )?;
+        let directory = Self { file };
+        if directory.validate()?.dev() != parent.metadata()?.dev() {
+            return Err(invalid("private directory changed filesystem"));
+        }
+        parent.sync_all()?;
+        Ok(directory)
+    }
+
+    /// Open an absolute directory like [`Self::open`] without the privacy
+    /// check, for a parent that is not itself private.
+    fn open_unchecked(path: &Path) -> io::Result<File> {
+        let relative = path
+            .strip_prefix("/")
+            .map_err(|_| invalid("private root must be absolute"))?;
+        let relative = if relative.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            relative
+        };
+        let slash = open(
+            "/",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        native_open(
+            &slash,
+            relative,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            root_flags(),
+        )
+    }
+
+    /// Require the effective-user owner and exact mode 0700 that
+    /// [`Self::create_in`] applies. Every open already checks this on Linux.
+    pub fn require_owner_only(&self) -> io::Result<()> {
+        self.validate().map(|_| ())
+    }
+
     /// Return the opened directory identity after rechecking privacy.
     pub fn identity(&self) -> io::Result<DirectoryIdentity> {
         self.validate()?;
@@ -785,5 +849,37 @@ mod tests {
                 .len(),
             2
         );
+    }
+    #[test]
+    fn given_an_ordinary_parent_when_creating_in_it_then_the_folder_is_private_and_exclusive() {
+        let temporary = tempfile::tempdir().expect("ordinary parent");
+        let parent = temporary.path();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o755)).expect("ordinary mode");
+        let identity = directory_identity(&File::open(parent).expect("parent")).expect("identity");
+        let name = OsStr::new(".OMGCode");
+
+        let created = PrivateDirectory::create_in(parent, identity, name).expect("create folder");
+        let metadata = fs::metadata(parent.join(name)).expect("folder metadata");
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o700);
+        assert_eq!(
+            created.identity().expect("created identity"),
+            directory_identity(&File::open(parent.join(name)).expect("reopen"))
+                .expect("reopened identity")
+        );
+        drop(created);
+        PrivateDirectory::open(&parent.join(name)).expect("reopen as a private root");
+
+        let error = PrivateDirectory::create_in(parent, identity, name)
+            .err()
+            .expect("an existing folder is never replaced");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+
+        let other = parent.join("other");
+        fs::create_dir(&other).expect("other parent");
+        let error = PrivateDirectory::create_in(&other, identity, name)
+            .err()
+            .expect("a different parent is refused");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!other.join(name).exists());
     }
 }

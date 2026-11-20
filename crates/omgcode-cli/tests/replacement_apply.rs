@@ -171,7 +171,15 @@ fn apply_replaces_exact_bytes_and_retains_a_completed_checkpoint() {
     let operation_id = receipt["operation_id"]
         .as_str()
         .expect("checkpoint operation ID");
-    let checkpoints = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let checkpoints = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&checkpoints);
     let view = json_output(&checkpoints);
     assert_eq!(view["state"], "ready");
@@ -180,7 +188,7 @@ fn apply_replaces_exact_bytes_and_retains_a_completed_checkpoint() {
     assert_eq!(
         fs::read(
             fixture
-                .data
+                .store_dir()
                 .join("replacement-v1")
                 .join(operation_id)
                 .join("original")
@@ -191,7 +199,7 @@ fn apply_replaces_exact_bytes_and_retains_a_completed_checkpoint() {
     assert_eq!(
         fs::read(
             fixture
-                .data
+                .store_dir()
                 .join("replacement-v1")
                 .join(operation_id)
                 .join("proposed")
@@ -232,7 +240,7 @@ fn stale_expected_digest_refuses_without_changing_target_or_checkpoint_storage()
 
     let output = fixture.apply(&proposed_file, &"0".repeat(64), ORIGINAL.len(), true);
     assert_error_code(&output, "checkpoint_conflict");
-    assert!(!fixture.data.join("replacement-v1").exists());
+    assert!(!fixture.store_dir().join("replacement-v1").exists());
     assert_eq!(
         fs::read(fixture.workspace.join("note.txt")).expect("unchanged source"),
         ORIGINAL
@@ -272,7 +280,7 @@ fn denied_write_preference_refuses_replacement() {
         fs::read(fixture.workspace.join("note.txt")).expect("unchanged source"),
         ORIGINAL
     );
-    assert!(!fixture.data.join("replacement-v1").exists());
+    assert!(!fixture.store_dir().join("replacement-v1").exists());
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -312,7 +320,7 @@ fn apply_rejects_a_symlinked_proposed_source() {
         fs::read(fixture.workspace.join("note.txt")).expect("unchanged source"),
         ORIGINAL
     );
-    assert!(!fixture.data.join("replacement-v1").exists());
+    assert!(!fixture.store_dir().join("replacement-v1").exists());
 }
 
 #[cfg(windows)]
@@ -333,9 +341,163 @@ fn apply_refuses_a_target_held_open_by_a_writer() {
     let output = fixture.apply(&proposed_file, &expected_sha256, ORIGINAL.len(), true);
     assert!(!output.status.success(), "an open writer must refuse apply");
     drop(writer);
-    assert!(!fixture.data.join("replacement-v1").exists());
+    assert!(!fixture.store_dir().join("replacement-v1").exists());
     assert_eq!(
         fs::read(fixture.workspace.join("note.txt")).expect("unchanged source"),
         ORIGINAL
     );
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl Fixture {
+    /// Apply `bytes` over the current target with the operator acknowledgement.
+    fn apply_bytes(&self, name: &str, current: &[u8], bytes: &[u8]) -> std::process::Output {
+        let expected_sha256 = self.current_sha256();
+        self.apply_over(name, &expected_sha256, current, bytes)
+    }
+
+    /// Apply `bytes` over a target whose digest the caller already knows.
+    fn apply_over(
+        &self,
+        name: &str,
+        current_sha256: &str,
+        current: &[u8],
+        bytes: &[u8],
+    ) -> std::process::Output {
+        let proposed_file = self._temporary.path().join(name);
+        fs::write(&proposed_file, bytes).expect("complete proposed bytes");
+        self.apply(&proposed_file, current_sha256, current.len(), true)
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn given_a_deleted_store_folder_when_applying_then_it_is_missing_until_the_operator_forgets_it() {
+    let fixture = Fixture::new(ORIGINAL);
+    let workspace_id = fixture.workspace_id.to_string();
+    let original_sha256 = fixture.current_sha256();
+    let first = fixture.apply_bytes("first.txt", ORIGINAL, PROPOSED);
+    assert_success(&first);
+    let proposed_sha256 = json_output(&first)["proposed"]["sha256"]
+        .as_str()
+        .expect("proposed digest")
+        .to_owned();
+    assert_eq!(
+        fs::read(fixture.store_dir().join(".gitignore")).expect("ignore file"),
+        b"*\n"
+    );
+    fs::remove_dir_all(fixture.store_dir()).expect("delete the store folder");
+
+    let output = fixture.apply_over("second.txt", &proposed_sha256, PROPOSED, ORIGINAL);
+    assert_error_code(&output, "checkpoint_store_missing");
+    // Every broker operation in the workspace waits, as for an unresolved one.
+    let read = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "read",
+            &workspace_id,
+            "--session",
+            &fixture.session_id.to_string(),
+            "note.txt",
+        ],
+    );
+    assert_error_code(&read, "checkpoint_store_missing");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("forget-checkpoint-store"),
+        "the error names the recovery command"
+    );
+    assert!(!fixture.store_dir().exists());
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("unchanged target"),
+        PROPOSED
+    );
+
+    // Forgetting needs the explicit abandonment flag.
+    let refused = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "forget-checkpoint-store",
+            "--workspace",
+            &workspace_id,
+        ],
+    );
+    assert!(!refused.status.success(), "forgetting requires --abandon");
+    let forgot = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "forget-checkpoint-store",
+            "--workspace",
+            &workspace_id,
+            "--abandon",
+        ],
+    );
+    assert_success(&forgot);
+    let receipt = json_output(&forgot);
+    assert_eq!(receipt["workspace"], workspace_id.as_str());
+    assert_eq!(receipt["forgotten"], true);
+    assert_eq!(receipt["folder_changed"], false);
+
+    assert_success(&fixture.apply_over("third.txt", &proposed_sha256, PROPOSED, ORIGINAL));
+    assert_eq!(fixture.current_sha256(), original_sha256);
+    assert_eq!(
+        fs::read(fixture.workspace.join("note.txt")).expect("restored target"),
+        ORIGINAL
+    );
+    let checkpoints = run_cli(
+        &fixture.data,
+        &["file", "checkpoints", "--workspace", &workspace_id],
+    );
+    assert_success(&checkpoints);
+    assert_eq!(
+        json_output(&checkpoints)["operations"]
+            .as_array()
+            .expect("operations")
+            .len(),
+        1
+    );
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn given_a_git_workspace_when_a_checkpoint_is_written_then_git_ignores_the_store_folder() {
+    let git = |directory: &Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(args)
+            .output()
+    };
+    let fixture = Fixture::new(ORIGINAL);
+    match git(&fixture.workspace, &["init", "--quiet"]) {
+        Ok(output) if output.status.success() => {}
+        other => {
+            eprintln!("skipped: git is not available to initialise a repository: {other:?}");
+            return;
+        }
+    }
+    assert_success(&fixture.apply_bytes("proposed.txt", ORIGINAL, PROPOSED));
+    assert!(fixture.store_dir().join("replacement-v1").exists());
+
+    let status = git(
+        &fixture.workspace,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .expect("git status");
+    assert!(status.status.success(), "git status failed: {status:?}");
+    let listed = String::from_utf8_lossy(&status.stdout);
+    assert!(listed.contains("note.txt"), "{listed}");
+    assert!(!listed.contains(".OMGCode"), "{listed}");
+    let ignored = git(
+        &fixture.workspace,
+        &[
+            "check-ignore",
+            "--quiet",
+            ".OMGCode/replacement-v1/ledger.jsonl",
+        ],
+    )
+    .expect("git check-ignore");
+    assert!(ignored.status.success(), "the ledger must be ignored");
 }

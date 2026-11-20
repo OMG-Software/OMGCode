@@ -29,11 +29,20 @@ use super::{
 };
 use crate::control::{ControlError, ControlStore};
 use crate::files::FileTarget;
+use crate::policy::WorkspaceId;
 use crate::session::NativePath;
 use crate::workspace::DirectoryRecord;
 
 mod publication;
+mod workspace;
 pub use publication::ReplacementReceipt;
+pub use workspace::CheckpointStore;
+pub(crate) use workspace::ensure as ensure_workspace_store;
+use workspace::{HeadFile, Location, locate};
+#[cfg(test)]
+pub(crate) use workspace::{
+    head_state_for_test, ledger_digest_for_test, set_head_for_test, trust_ledger_for_test,
+};
 
 const ANCHOR: &str = "replacement-init-v1.jsonl";
 const DIRECTORY: &str = "replacement-v1";
@@ -109,6 +118,18 @@ pub enum CheckpointError {
     /// A failed write or synchronization prevents further writes on this handle.
     #[error("checkpoint writer is poisoned")]
     Poisoned,
+    /// The workspace's bound `.OMGCode` folder no longer exists. Nothing is
+    /// recreated; the operator forgets the store before the next write.
+    #[error(
+        "the workspace's .OMGCode checkpoint folder is missing; run `omgcode file \
+         forget-checkpoint-store` for this workspace to start a new one"
+    )]
+    StoreMissing,
+    /// A workspace checkpoint folder or its ledger differs from what was
+    /// recorded, or an unregistered folder is in the way. Nothing is
+    /// repaired; inspect it, then move it and forget the store.
+    #[error("workspace checkpoint storage changed outside OMGCode: {0}")]
+    StoreChanged(&'static str),
     /// Private evidence may exist. Reopen for inspection; do not retry or delete.
     #[error("checkpoint operation is uncertain for operation {operation_id:?}: {source}")]
     Uncertain {
@@ -142,6 +163,8 @@ impl CheckpointError {
             Self::Unavailable => "checkpoint_unavailable",
             Self::TargetMismatch => "checkpoint_target",
             Self::Poisoned => "checkpoint_poisoned",
+            Self::StoreMissing => "checkpoint_store_missing",
+            Self::StoreChanged(_) => "checkpoint_store_changed",
             Self::Uncertain { .. } => "checkpoint_uncertain",
         }
     }
@@ -242,6 +265,7 @@ fn state_present(path: &Path) -> Result<bool, CheckpointError> {
     Ok(present)
 }
 
+#[cfg(all(test, target_os = "linux"))]
 fn context(control: &ControlStore) -> Result<(DirectoryRecord, Uuid), CheckpointError> {
     Ok(control.replacement_context()?)
 }
@@ -259,20 +283,90 @@ fn open_root(expected: &DirectoryRecord) -> Result<PrivateDirectory, CheckpointE
     Ok(root)
 }
 
-/// Validate existing evidence before the caller opens the legacy operation log.
-/// Incomplete initialization and pending work block admission, not settings.
-pub(crate) fn check_admission(control: &ControlStore) -> Result<(), CheckpointError> {
-    let view = inspect(control)?;
-    if view.state == CheckpointState::Initializing {
-        return Err(CheckpointError::Invalid(
-            "initialization is incomplete; inspect existing storage",
+/// Whether a workspace store's root holds any checkpoint storage.
+fn root_present(root: &PrivateDirectory) -> Result<bool, CheckpointError> {
+    Ok(root.exists(OsStr::new(ANCHOR))? || root.exists(OsStr::new(DIRECTORY))?)
+}
+
+/// An existing store's root and head, or `None` when it holds no storage.
+///
+/// Absence never provisions storage. A legacy store has no head and opens
+/// only when its data-directory state exists. A workspace store (ADR-0070)
+/// is decided in this order:
+///
+/// 1. The bound folder must open with its recorded identity and creation
+///    time and the exact owner-only access (`open_bound_root`), or it is
+///    missing or changed.
+/// 2. Storage in the folder needs a head record; without one the folder
+///    holds a ledger nothing vouches for.
+/// 3. No storage with a committed head means storage was removed.
+/// 4. No storage and no committed head is a store whose initialization
+///    never finished, which reads as unused.
+///
+/// The head is checked against the replayed ledger later, in `verify`.
+fn open_existing(
+    location: Location,
+) -> Result<Option<(PrivateDirectory, Option<HeadFile>)>, CheckpointError> {
+    let Some(slot) = location.head else {
+        if !state_present(&location.root.live_path()?)? {
+            return Ok(None);
+        }
+        return Ok(Some((open_root(&location.root)?, None)));
+    };
+    let root = workspace::open_bound_root(&location.root)?;
+    let head = slot.open()?;
+    if root_present(&root)? {
+        let head = head.ok_or(CheckpointError::StoreChanged(
+            "the checkpoint ledger's head record is missing",
+        ))?;
+        return Ok(Some((root, Some(head))));
+    }
+    if head.is_some_and(|head| head.has_committed()) {
+        return Err(CheckpointError::StoreChanged(
+            "checkpoint storage was removed from its folder",
         ));
     }
-    if let Some(id) = view.pending {
-        return Err(CheckpointError::Pending(id));
-    }
-    if let Some(id) = view.pending_deletion {
-        return Err(CheckpointError::DeletionPending(id));
+    Ok(None)
+}
+
+/// An opened store root and, for a workspace store, its ledger head record.
+type OpenedRoot = (PrivateDirectory, Option<HeadFile>);
+
+/// Locate and open one existing store, with its control-store identity.
+fn existing(
+    control: &ControlStore,
+    store: CheckpointStore,
+) -> Result<(Uuid, Option<OpenedRoot>), CheckpointError> {
+    let control_id = control.replacement_context()?.1;
+    let Some(location) = locate(control, store)? else {
+        return Ok((control_id, None));
+    };
+    Ok((control_id, open_existing(location)?))
+}
+
+/// Validate existing evidence before the caller opens the legacy operation log.
+/// Incomplete initialization and pending work block admission, not settings.
+/// Both the legacy store and the target workspace's store are checked.
+pub(crate) fn check_admission(
+    control: &ControlStore,
+    workspace_id: WorkspaceId,
+) -> Result<(), CheckpointError> {
+    for store in [
+        CheckpointStore::Legacy,
+        CheckpointStore::Workspace(workspace_id),
+    ] {
+        let view = inspect(control, store)?;
+        if view.state == CheckpointState::Initializing {
+            return Err(CheckpointError::Invalid(
+                "initialization is incomplete; inspect existing storage",
+            ));
+        }
+        if let Some(id) = view.pending {
+            return Err(CheckpointError::Pending(id));
+        }
+        if let Some(id) = view.pending_deletion {
+            return Err(CheckpointError::DeletionPending(id));
+        }
     }
     Ok(())
 }
@@ -280,9 +374,12 @@ pub(crate) fn check_admission(control: &ControlStore) -> Result<(), CheckpointEr
 /// Inspect under the caller's control lock and a retained exclusive anchor lock.
 /// Absence never provisions storage; initializing state permits only a bounded
 /// partial inventory, while ready state requires full artifact validation.
-pub(crate) fn inspect(control: &ControlStore) -> Result<CheckpointInspection, CheckpointError> {
-    let (expected, control_id) = context(control)?;
-    if !state_present(&expected.live_path()?)? {
+pub(crate) fn inspect(
+    control: &ControlStore,
+    store: CheckpointStore,
+) -> Result<CheckpointInspection, CheckpointError> {
+    let (control_id, opened) = existing(control, store)?;
+    let Some((root, head)) = opened else {
         return Ok(CheckpointInspection {
             state: CheckpointState::Unused,
             control_store_id: control_id,
@@ -293,8 +390,7 @@ pub(crate) fn inspect(control: &ControlStore) -> Result<CheckpointInspection, Ch
             compacted_from: None,
             managed_bytes: 0,
         });
-    }
-    let root = open_root(&expected)?;
+    };
     let mut anchor = root.open_file(OsStr::new(ANCHOR), false)?;
     lock(&anchor)?;
     let anchor_bytes = read_bounded(&mut anchor, 4096)?;
@@ -331,7 +427,14 @@ pub(crate) fn inspect(control: &ControlStore) -> Result<CheckpointInspection, Ch
             managed_bytes: used,
         });
     }
-    let store = Store::from_opened(root, anchor, anchor_bytes, initialization.scope, false)?;
+    let store = Store::from_opened(
+        root,
+        anchor,
+        anchor_bytes,
+        initialization.scope,
+        false,
+        head,
+    )?;
     Ok(store.view())
 }
 
@@ -339,13 +442,14 @@ pub(crate) fn inspect(control: &ControlStore) -> Result<CheckpointInspection, Ch
 /// Invalid evidence is not repaired and workspace authority is not reconstructed.
 pub(crate) fn acknowledge(
     control: &ControlStore,
+    store: CheckpointStore,
     operation_id: Uuid,
 ) -> Result<(), CheckpointError> {
-    let (expected, control_id) = context(control)?;
-    if !state_present(&expected.live_path()?)? {
+    let (control_id, opened) = existing(control, store)?;
+    let Some((root, head)) = opened else {
         return Err(CheckpointError::WrongOperation);
-    }
-    let mut store = Store::open_ready(open_root(&expected)?, control_id, true)?;
+    };
+    let mut store = Store::open_ready(root, control_id, true, head)?;
     record_acknowledgement(&mut store, operation_id)
 }
 
@@ -353,31 +457,34 @@ pub(crate) fn acknowledge(
 /// The ledger keeps the operation's history. No workspace file is opened.
 pub(crate) fn delete(
     control: &ControlStore,
+    store: CheckpointStore,
     operation_id: Uuid,
 ) -> Result<CheckpointDeletion, CheckpointError> {
-    delete_with(control, operation_id, Faults::default())
+    delete_with(control, store, operation_id, Faults::default())
 }
 
 /// Delete with one instance-local test fault at a named persistence boundary.
 #[cfg(test)]
 pub(crate) fn delete_with_fault(
     control: &ControlStore,
+    store: CheckpointStore,
     operation_id: Uuid,
     point: &'static str,
 ) -> Result<CheckpointDeletion, CheckpointError> {
-    delete_with(control, operation_id, Faults { at: Some(point) })
+    delete_with(control, store, operation_id, Faults { at: Some(point) })
 }
 
 fn delete_with(
     control: &ControlStore,
+    store: CheckpointStore,
     operation_id: Uuid,
     faults: Faults,
 ) -> Result<CheckpointDeletion, CheckpointError> {
-    let (expected, control_id) = context(control)?;
-    if !state_present(&expected.live_path()?)? {
+    let (control_id, opened) = existing(control, store)?;
+    let Some((root, head)) = opened else {
         return Err(CheckpointError::Unavailable);
-    }
-    let mut store = Store::open_ready(open_root(&expected)?, control_id, true)?;
+    };
+    let mut store = Store::open_ready(root, control_id, true, head)?;
     store.faults = faults;
     store.delete_entry(operation_id)
 }
@@ -388,30 +495,52 @@ fn delete_with(
 /// digest, and record count remain. Refused while an operation is unresolved
 /// or a deletion is unfinished. No checkpoint entry or workspace file is
 /// opened. Nothing is written when compaction would not shrink the ledger.
-pub(crate) fn compact(control: &ControlStore) -> Result<CheckpointCompaction, CheckpointError> {
-    compact_with(control, Faults::default())
+pub(crate) fn compact(
+    control: &ControlStore,
+    store: CheckpointStore,
+) -> Result<CheckpointCompaction, CheckpointError> {
+    compact_with(control, store, Faults::default())
 }
 
 /// Compact with one instance-local test fault at a named persistence boundary.
 #[cfg(test)]
 pub(crate) fn compact_with_fault(
     control: &ControlStore,
+    store: CheckpointStore,
     point: &'static str,
 ) -> Result<CheckpointCompaction, CheckpointError> {
-    compact_with(control, Faults { at: Some(point) })
+    compact_with(control, store, Faults { at: Some(point) })
 }
 
 fn compact_with(
     control: &ControlStore,
+    store: CheckpointStore,
     faults: Faults,
 ) -> Result<CheckpointCompaction, CheckpointError> {
-    let (expected, control_id) = context(control)?;
-    if !state_present(&expected.live_path()?)? {
+    let (control_id, opened) = existing(control, store)?;
+    let Some((root, head)) = opened else {
         return Err(CheckpointError::Unavailable);
-    }
-    let mut store = Store::open_ready(open_root(&expected)?, control_id, true)?;
+    };
+    let mut store = Store::open_ready(root, control_id, true, head)?;
     store.faults = faults;
     store.compact_ledger()
+}
+
+/// Read a retained original from the target workspace's store, or from the
+/// legacy store when the workspace store has no such checkpoint.
+pub(crate) fn read_original_any(
+    control: &ControlStore,
+    operation_id: Uuid,
+    target: &FileTarget,
+    kind: ReplacementKind,
+) -> Result<Vec<u8>, CheckpointError> {
+    let workspace = CheckpointStore::Workspace(target.workspace_id);
+    match read_original(control, workspace, operation_id, target, kind) {
+        Err(CheckpointError::Unavailable) => {
+            read_original(control, CheckpointStore::Legacy, operation_id, target, kind)
+        }
+        other => other,
+    }
 }
 
 /// Return one retained checkpoint's original bytes for an explicit restore.
@@ -423,15 +552,16 @@ fn compact_with(
 /// The store is opened read-only and closed before the caller restores them.
 pub(crate) fn read_original(
     control: &ControlStore,
+    store: CheckpointStore,
     operation_id: Uuid,
     target: &FileTarget,
     kind: ReplacementKind,
 ) -> Result<Vec<u8>, CheckpointError> {
-    let (expected, control_id) = context(control)?;
-    if !state_present(&expected.live_path()?)? {
+    let (control_id, opened) = existing(control, store)?;
+    let Some((root, head)) = opened else {
         return Err(CheckpointError::Unavailable);
-    }
-    let store = Store::open_ready(open_root(&expected)?, control_id, false)?;
+    };
+    let store = Store::open_ready(root, control_id, false, head)?;
     if let Some(operation) = store.snapshot.pending() {
         return Err(CheckpointError::Pending(operation.operation_id));
     }
@@ -508,6 +638,8 @@ pub(crate) struct Store {
     used: u64,
     poisoned: bool,
     faults: Faults,
+    /// The recorded ledger head of a workspace store; `None` for legacy.
+    head: Option<HeadFile>,
     // Fields drop in declaration order. Keep this lock until dependent files
     // and directories have closed, including during unwinding.
     _anchor: File,
@@ -570,39 +702,69 @@ impl Store {
     /// the caller's final authority check. Initialization errors preserve evidence.
     pub(crate) fn open_or_initialize(
         control: &ControlStore,
+        store: CheckpointStore,
         volume: u64,
         before_mutation: impl FnOnce(&PrivateDirectory) -> Result<(), CheckpointError>,
     ) -> Result<Self, CheckpointError> {
-        let (expected, control_id) = context(control)?;
-        let root = open_root(&expected)?;
+        let location = locate(control, store)?.ok_or(CheckpointError::Invalid(
+            "the workspace has no bound checkpoint folder",
+        ))?;
+        let control_id = location.control_id;
+        let root = match &location.head {
+            None => open_root(&location.root)?,
+            Some(_) => workspace::open_bound_root(&location.root)?,
+        };
         if root.identity()?.volume != volume {
             return Err(CheckpointError::Invalid(
                 "checkpoint and source must share a filesystem",
             ));
         }
-        if state_present(&expected.live_path()?)? {
-            let store = Self::open_ready(root, control_id, true)?;
+        let present = match &location.head {
+            None => state_present(&location.root.live_path()?)?,
+            Some(_) => root_present(&root)?,
+        };
+        let head = match &location.head {
+            None => None,
+            Some(slot) => slot.open()?,
+        };
+        if present {
+            if location.head.is_some() && head.is_none() {
+                return Err(CheckpointError::StoreChanged(
+                    "the checkpoint ledger's head record is missing",
+                ));
+            }
+            let store = Self::open_ready(root, control_id, true, head)?;
             before_mutation(&store.root)?;
             return Ok(store);
+        }
+        if head.as_ref().is_some_and(HeadFile::has_committed) {
+            return Err(CheckpointError::StoreChanged(
+                "checkpoint storage was removed from its folder",
+            ));
         }
         // Probe required parent synchronization before creating the first
         // anchor. This is not a power-loss qualification of the filesystem.
         root.sync()?;
         before_mutation(&root)?;
-        Self::initialize(root, control_id, Faults::default()).map_err(|source| {
-            CheckpointError::Uncertain {
+        if location.head.is_some() {
+            workspace::write_gitignore(&root)?;
+        }
+        Self::initialize(root, control_id, Faults::default(), location.head.as_ref()).map_err(
+            |source| CheckpointError::Uncertain {
                 operation_id: None,
                 source: Box::new(source),
-            }
-        })
+            },
+        )
     }
 
     /// Persist initializing, ledger header, then ready through exclusive names.
     /// Each transition syncs its files and parents; no error path removes them.
+    /// A workspace store announces its first ledger head before any of them.
     fn initialize(
         root: PrivateDirectory,
         control_id: Uuid,
         mut faults: Faults,
+        head: Option<&workspace::HeadSlot>,
     ) -> Result<Self, CheckpointError> {
         // Recheck through the retained root, never replacing either candidate.
         if root.exists(OsStr::new(ANCHOR))? || root.exists(OsStr::new(DIRECTORY))? {
@@ -620,6 +782,14 @@ impl Store {
         {
             return Err(CheckpointError::Limit);
         }
+        let bytes = encode(scope, 0, LedgerAction::Created)?;
+        let mut head = match head {
+            Some(slot) => Some(slot.begin(
+                scope.replacement_store_id(),
+                workspace::ledger_descriptor(&bytes, &[])?,
+            )?),
+            None => None,
+        };
         let mut anchor = root.create_file(OsStr::new(ANCHOR))?;
         lock(&anchor)?;
         faults.write(&mut anchor, &initial, "initializing_sync")?;
@@ -629,7 +799,6 @@ impl Store {
         let directory = root.create_dir(OsStr::new(DIRECTORY))?;
         faults.check("store_creation")?;
         let mut ledger = directory.create_file(OsStr::new(LEDGER))?;
-        let bytes = encode(scope, 0, LedgerAction::Created)?;
         faults.write(&mut ledger, &bytes, "header_sync")?;
         faults.check("header_sync")?;
         ledger.sync_all()?;
@@ -639,6 +808,9 @@ impl Store {
         faults.check("ready_sync")?;
         anchor.sync_all()?;
         root.sync()?;
+        if let Some(head) = &mut head {
+            head.commit()?;
+        }
         let mut anchor_bytes = initial;
         anchor_bytes.extend_from_slice(&ready);
         let snapshot = inspect_ledger(&bytes, scope)?;
@@ -653,6 +825,7 @@ impl Store {
             used,
             poisoned: false,
             faults: Faults::default(),
+            head,
         })
     }
 
@@ -662,6 +835,7 @@ impl Store {
         root: PrivateDirectory,
         control_id: Uuid,
         writable: bool,
+        head: Option<HeadFile>,
     ) -> Result<Self, CheckpointError> {
         let mut anchor = root.open_file(OsStr::new(ANCHOR), writable)?;
         lock(&anchor)?;
@@ -672,22 +846,34 @@ impl Store {
                 "checkpoint initialization is incomplete",
             ));
         }
-        Self::from_opened(root, anchor, anchor_bytes, initialization.scope, writable)
+        Self::from_opened(
+            root,
+            anchor,
+            anchor_bytes,
+            initialization.scope,
+            writable,
+            head,
+        )
     }
 
     /// Retain the locked anchor while decoding the ledger and validating files.
     /// Existing-only opens prevent a missing referenced ledger becoming empty.
+    /// A workspace store's replayed ledger must also match its recorded head.
     fn from_opened(
         root: PrivateDirectory,
         anchor: File,
         anchor_bytes: Vec<u8>,
         scope: ReplacementScope,
         writable: bool,
+        mut head: Option<HeadFile>,
     ) -> Result<Self, CheckpointError> {
         let directory = root.open_dir(OsStr::new(DIRECTORY))?;
         let mut ledger = directory.open_file(OsStr::new(LEDGER), writable)?;
         let bytes = read_bounded(&mut ledger, MAX_LEDGER)?;
         let snapshot = inspect_ledger(&bytes, scope)?;
+        if let Some(head) = &mut head {
+            head.verify(scope.replacement_store_id(), &bytes, writable)?;
+        }
         let used = inventory(&root, &directory, &snapshot, anchor_bytes.len())?;
         Ok(Self {
             root,
@@ -699,6 +885,7 @@ impl Store {
             used,
             poisoned: false,
             faults: Faults::default(),
+            head,
         })
     }
 
@@ -1085,6 +1272,9 @@ impl Store {
                 ));
             }
             drop(written);
+            if let Some(head) = &mut self.head {
+                head.announce(workspace::ledger_descriptor(&candidate, &[])?)?;
+            }
             let mut ledger = self.ledger.take().ok_or(CheckpointError::Poisoned)?;
             self.require_unchanged(&mut ledger)?;
             // Windows refuses to replace a name while this handle, which
@@ -1104,6 +1294,9 @@ impl Store {
             self.ledger = Some(ledger);
             self.bytes = candidate;
             self.snapshot = snapshot;
+            if let Some(head) = &mut self.head {
+                head.commit()?;
+            }
             self.refresh_usage()?;
             Ok(CheckpointCompaction {
                 compacted: true,
@@ -1253,6 +1446,11 @@ impl Store {
         // Validating the one new record against the replayed state equals
         // replaying the whole candidate ledger, without parsing it again.
         let snapshot = replay::extend(&self.snapshot, &encoded)?;
+        // The head names the ledger this append produces before it exists,
+        // so a crash leaves the ledger at the committed or announced head.
+        if let Some(head) = &mut self.head {
+            head.announce(workspace::ledger_descriptor(&self.bytes, &encoded)?)?;
+        }
         let mut ledger = self.ledger.take().ok_or(CheckpointError::Poisoned)?;
         let result = self.require_unchanged(&mut ledger).and_then(|()| {
             let written = (|| {
@@ -1275,6 +1473,13 @@ impl Store {
             .ok_or(CheckpointError::Limit)?;
         self.bytes.extend_from_slice(&encoded);
         self.snapshot = snapshot;
+        if let Some(head) = &mut self.head
+            && let Err(error) = head.commit()
+        {
+            // The synced ledger still matches the announced head on reopen.
+            self.poisoned = true;
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -1623,7 +1828,7 @@ mod tests {
             context(&self.control).expect("context").1
         }
         fn initialize(&self) -> Store {
-            Store::initialize(self.root(), self.control_id(), Faults::default())
+            Store::initialize(self.root(), self.control_id(), Faults::default(), None)
                 .expect("initialize")
         }
         fn capture(&self) -> FileCapture {
@@ -1660,10 +1865,11 @@ mod tests {
                 fixture.root(),
                 fixture.control_id(),
                 Faults { at: Some(point) },
+                None,
             );
             assert!(result.is_err(), "{point}");
             let before = fs::read(fixture.data.join(ANCHOR)).expect("anchor preserved");
-            let view = inspect(&fixture.control);
+            let view = inspect(&fixture.control, CheckpointStore::Legacy);
             if point == "initializing_partial_write" || point == "ready_partial_write" {
                 assert!(view.is_err(), "partial records cannot become ready");
             } else if point == "ready_sync" {
@@ -1676,7 +1882,7 @@ mod tests {
                     view.expect("incomplete initialization evidence").state,
                     CheckpointState::Initializing
                 );
-                assert!(check_admission(&fixture.control).is_err());
+                assert!(check_admission(&fixture.control, fixture.target.workspace_id).is_err());
             }
             assert_eq!(
                 fs::read(fixture.data.join(ANCHOR)).expect("anchor unchanged"),
@@ -1705,11 +1911,16 @@ mod tests {
                     .expect("empty anchor fixture");
             }
             let names = fs::read_dir(&fixture.data).expect("inventory").count();
-            assert!(inspect(&fixture.control).is_err());
-            assert!(check_admission(&fixture.control).is_err());
+            assert!(inspect(&fixture.control, CheckpointStore::Legacy).is_err());
+            assert!(check_admission(&fixture.control, fixture.target.workspace_id).is_err());
             assert!(
-                Store::open_or_initialize(&fixture.control, fixture.capture().volume, |_| Ok(()))
-                    .is_err()
+                Store::open_or_initialize(
+                    &fixture.control,
+                    CheckpointStore::Legacy,
+                    fixture.capture().volume,
+                    |_| Ok(())
+                )
+                .is_err()
             );
             assert_eq!(
                 fs::read_dir(&fixture.data)
@@ -1766,8 +1977,8 @@ mod tests {
             }
             let before = fixture.ledger_bytes();
             drop(store);
-            let view =
-                inspect(&fixture.control).expect("strict reopen of complete visible records");
+            let view = inspect(&fixture.control, CheckpointStore::Legacy)
+                .expect("strict reopen of complete visible records");
             assert!(view.pending.is_some());
             assert_eq!(
                 view.operations[0].progress,
@@ -1804,8 +2015,8 @@ mod tests {
             let bytes = fixture.ledger_bytes();
             assert!(!bytes.ends_with(b"\n"));
             drop(store);
-            assert!(inspect(&fixture.control).is_err());
-            assert!(check_admission(&fixture.control).is_err());
+            assert!(inspect(&fixture.control, CheckpointStore::Legacy).is_err());
+            assert!(check_admission(&fixture.control, fixture.target.workspace_id).is_err());
             assert_eq!(fixture.ledger_bytes(), bytes);
         }
     }
@@ -1826,7 +2037,7 @@ mod tests {
             assert!(store.snapshot.pending().is_some());
             let before = fixture.ledger_bytes();
             drop(store);
-            let reopened = inspect(&fixture.control);
+            let reopened = inspect(&fixture.control, CheckpointStore::Legacy);
             if point == "ack_sync" {
                 let view = reopened.expect("complete visible acknowledgement");
                 assert!(view.pending.is_none());
@@ -1863,10 +2074,15 @@ mod tests {
                 fs::remove_file(&path).expect("simulate missing evidence");
             }
             let before = fs::read(&path).ok();
-            assert!(inspect(&fixture.control).is_err());
+            assert!(inspect(&fixture.control, CheckpointStore::Legacy).is_err());
             assert!(
-                Store::open_or_initialize(&fixture.control, fixture.capture().volume, |_| Ok(()))
-                    .is_err()
+                Store::open_or_initialize(
+                    &fixture.control,
+                    CheckpointStore::Legacy,
+                    fixture.capture().volume,
+                    |_| Ok(())
+                )
+                .is_err()
             );
             assert_eq!(fs::read(&path).ok(), before);
         }
@@ -1875,9 +2091,12 @@ mod tests {
     #[test]
     fn late_authority_and_filesystem_checks_precede_initialization() {
         let fixture = Fixture::new();
-        let denied = Store::open_or_initialize(&fixture.control, fixture.capture().volume, |_| {
-            Err(CheckpointError::Invalid("authority changed after setup"))
-        });
+        let denied = Store::open_or_initialize(
+            &fixture.control,
+            CheckpointStore::Legacy,
+            fixture.capture().volume,
+            |_| Err(CheckpointError::Invalid("authority changed after setup")),
+        );
         assert!(denied.is_err());
         assert!(!fixture.data.join(ANCHOR).exists());
         assert!(!fixture.data.join(DIRECTORY).exists());
@@ -1886,7 +2105,15 @@ mod tests {
             .volume
             .checked_add(1)
             .expect("fixture device range");
-        assert!(Store::open_or_initialize(&fixture.control, foreign_volume, |_| Ok(())).is_err());
+        assert!(
+            Store::open_or_initialize(
+                &fixture.control,
+                CheckpointStore::Legacy,
+                foreign_volume,
+                |_| Ok(())
+            )
+            .is_err()
+        );
         assert!(!fixture.data.join(ANCHOR).exists());
     }
 
@@ -1895,7 +2122,7 @@ mod tests {
         let fixture = Fixture::new();
         let mut store = fixture.initialize();
         assert!(matches!(
-            inspect(&fixture.control),
+            inspect(&fixture.control, CheckpointStore::Legacy),
             Err(CheckpointError::Busy)
         ));
         let mut tampered = fixture.ledger_bytes();
@@ -1983,8 +2210,15 @@ mod tests {
             .join("original");
         fs::set_permissions(&original, fs::Permissions::from_mode(0o644))
             .expect("unsafe private mode fixture");
-        assert!(inspect(&fixture.control).is_err());
-        assert!(acknowledge(&fixture.control, receipt.operation_id).is_err());
+        assert!(inspect(&fixture.control, CheckpointStore::Legacy).is_err());
+        assert!(
+            acknowledge(
+                &fixture.control,
+                CheckpointStore::Legacy,
+                receipt.operation_id
+            )
+            .is_err()
+        );
         assert_eq!(
             fs::metadata(&original).expect("mode preserved").mode() & 0o777,
             0o644

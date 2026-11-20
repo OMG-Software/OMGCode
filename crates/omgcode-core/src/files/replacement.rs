@@ -16,7 +16,7 @@ use super::{FileOperation, FileOutcome};
 use crate::policy::Operation;
 use crate::policy::SessionBinding;
 #[cfg(any(target_os = "linux", windows))]
-use crate::replacement::store::{self, Store};
+use crate::replacement::store::{self, CheckpointStore, Store};
 use crate::replacement::{CheckpointError, RecordedArtifact, ReplacementKind, ReplacementReceipt};
 use uuid::Uuid;
 
@@ -79,8 +79,12 @@ impl FileBroker<'_> {
             check_permissions(self.control, binding, target)?;
             // The store opens read-only and closes before apply reopens it, so
             // the lock order stays control, then one subordinate journal.
-            let original =
-                store::read_original(self.control, checkpoint, target, ReplacementKind::Replace)?;
+            let original = store::read_original_any(
+                self.control,
+                checkpoint,
+                target,
+                ReplacementKind::Replace,
+            )?;
             self.apply_with_preparation_hook(binding, target, expected, &original, |_| {})
         }
         #[cfg(not(any(target_os = "linux", windows)))]
@@ -149,8 +153,12 @@ impl FileBroker<'_> {
         {
             super::validate_target(target, false)?;
             check_permissions(self.control, binding, target)?;
-            let original =
-                store::read_original(self.control, checkpoint, target, ReplacementKind::Remove)?;
+            let original = store::read_original_any(
+                self.control,
+                checkpoint,
+                target,
+                ReplacementKind::Remove,
+            )?;
             match self.create_file(binding, target, &original) {
                 Err(FileError::Conflict) => Err(CheckpointError::Conflict.into()),
                 other => other,
@@ -194,10 +202,14 @@ impl FileBroker<'_> {
 
         let capture = native.capture();
         validate_capture_bytes(capture, expected)?;
-        let mut store = Store::open_or_initialize(self.control, capture.volume, |root| {
-            native.check_storage(root)?;
-            check_permissions(self.control, binding, target)
-        })?;
+        check_permissions(self.control, binding, target)?;
+        store::ensure_workspace_store(self.control, target.workspace_id)?;
+        let workspace_store = CheckpointStore::Workspace(target.workspace_id);
+        let mut store =
+            Store::open_or_initialize(self.control, workspace_store, capture.volume, |root| {
+                native.check_storage(root)?;
+                check_permissions(self.control, binding, target)
+            })?;
         check_permissions(self.control, binding, target)?;
         let prepared = store.prepare_kind(
             ReplacementKind::Remove,
@@ -279,10 +291,14 @@ impl FileBroker<'_> {
             });
         }
 
-        let mut store = Store::open_or_initialize(self.control, capture.volume, |root| {
-            native.check_storage(root)?;
-            check_permissions(self.control, binding, target)
-        })?;
+        check_permissions(self.control, binding, target)?;
+        store::ensure_workspace_store(self.control, target.workspace_id)?;
+        let workspace_store = CheckpointStore::Workspace(target.workspace_id);
+        let mut store =
+            Store::open_or_initialize(self.control, workspace_store, capture.volume, |root| {
+                native.check_storage(root)?;
+                check_permissions(self.control, binding, target)
+            })?;
         check_permissions(self.control, binding, target)?;
         let prepared = store.prepare(target, self.control.revision(), capture, proposed)?;
         let operation_id = prepared.operation_id;

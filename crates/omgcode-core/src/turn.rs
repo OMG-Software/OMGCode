@@ -4122,14 +4122,17 @@ fn classify_edit_error(call: &ToolCall, error: FileError) -> ToolExecution {
         // Terminal: settings that cannot be validated, a storage I/O or sync
         // failure, invalid private records, a poisoned writer, or an uncertain
         // outcome can leave evidence or a changed target that only the operator
-        // can inspect and acknowledge. Further broker work is blocked anyway,
-        // so continuing the turn cannot help.
+        // can inspect and acknowledge. A missing or changed workspace
+        // checkpoint folder needs the operator too (ADR-0070). Further broker
+        // work is blocked anyway, so continuing the turn cannot help.
         CheckpointError::Control(_)
         | CheckpointError::Io(_)
         | CheckpointError::Records(_)
         | CheckpointError::Json(_)
         | CheckpointError::Invalid(_)
         | CheckpointError::Poisoned
+        | CheckpointError::StoreMissing
+        | CheckpointError::StoreChanged(_)
         | CheckpointError::Uncertain { .. } => {
             ToolExecution::failed(code, call, FileError::Checkpoint(checkpoint))
         }

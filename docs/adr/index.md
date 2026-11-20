@@ -37,7 +37,7 @@ meaningful alternative does not need an ADR.
 | [0020: Rename the project to OMGCode](0020-rename-the-project-to-omgcode.md) | Accepted | 2026-11-10 |
 | [0021: Store checkpoints with native private handles](0021-store-checkpoints-with-native-private-handles.md) | Accepted | 2026-11-10 |
 | [0022: Publish one verified stage on Linux ext4](0022-publish-one-verified-stage-on-linux-ext4.md) | Accepted; amended by ADR-0069 | 2026-11-10 |
-| [0023: Store Windows checkpoints with verified ACLs](0023-store-windows-checkpoints-with-verified-acls.md) | Accepted; amended by ADR-0069 | 2026-11-11 |
+| [0023: Store Windows checkpoints with verified ACLs](0023-store-windows-checkpoints-with-verified-acls.md) | Accepted; amended by ADR-0069 and ADR-0070 | 2026-11-11 |
 | [0024: Publish one verified stage on Windows NTFS](0024-publish-one-verified-stage-on-windows-ntfs.md) | Accepted; amended by ADR-0069 | 2026-11-11 |
 | [0025: Restore and delete checkpoints explicitly](0025-restore-and-delete-checkpoints-explicitly.md) | Accepted | 2026-11-11 |
 | [0026: Offer read/list tools through a workspace preference](0026-offer-read-list-tools-through-a-workspace-preference.md) | Accepted | 2026-11-11 |
@@ -67,7 +67,7 @@ meaningful alternative does not need an ADR.
 | [0050: Interrupt a streamed model request when a turn is cancelled](0050-interrupt-a-streamed-model-request-on-cancellation.md) | Accepted; amended by ADR-0051 | 2026-11-16 |
 | [0051: Cancel every model request and let an interrupt cancel a CLI turn](0051-cancel-every-model-request-and-interrupt-cli-turns.md) | Accepted | 2026-11-17 |
 | [0052: Publish rolling testing builds from main](0052-publish-rolling-testing-builds-from-main.md) | Accepted; amended by ADR-0058 | 2026-11-17 |
-| [0053: Compact the checkpoint ledger in place](0053-compact-the-checkpoint-ledger-in-place.md) | Accepted | 2026-11-17 |
+| [0053: Compact the checkpoint ledger in place](0053-compact-the-checkpoint-ledger-in-place.md) | Accepted; amended by ADR-0070 | 2026-11-17 |
 | [0054: Add multi-edit and create model file tools](0054-add-multi-edit-and-create-model-file-tools.md) | Accepted | 2026-11-17 |
 | [0055: Add checkpointed delete and no-replace rename model tools](0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md) | Accepted | 2026-11-17 |
 | [0056: Send registry credentials to one declared origin](0056-send-registry-credentials-to-one-declared-origin.md) | Accepted | 2026-11-17 |
@@ -84,3 +84,4 @@ meaningful alternative does not need an ADR.
 | [0067: Render recorded replies as inert Markdown](0067-render-recorded-replies-as-inert-markdown.md) | Accepted | 2026-11-20 |
 | [0068: Name replies by model and copy them as Markdown, text, or an image](0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md) | Accepted | 2026-11-20 |
 | [0069: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) | Accepted | 2026-11-20 |
+| [0070: Keep checkpoints in a protected per-workspace `.OMGCode` folder](0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md) | Accepted | 2026-11-20 |

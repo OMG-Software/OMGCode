@@ -142,7 +142,15 @@ fn unused_checkpoint_inspection_and_refused_acknowledgement_create_no_storage() 
     let before_names = child_names(&fixture.data);
     let before_settings = fs::read(fixture.data.join("control-v1.jsonl")).expect("settings bytes");
 
-    let output = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let output = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&output);
     let view = json_output(&output);
     assert_eq!(view["state"], "unused");
@@ -157,6 +165,8 @@ fn unused_checkpoint_inspection_and_refused_acknowledgement_create_no_storage() 
         &[
             "file",
             "acknowledge-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
             &Uuid::new_v4().to_string(),
         ],
     );
@@ -233,7 +243,15 @@ fn pending_checkpoint_blocks_file_reads_until_trusted_acknowledgement_without_ap
 
     let blocked = fixture.read();
     assert_error_code(&blocked, "checkpoint_pending");
-    let inspection = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let inspection = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&inspection);
     let view = json_output(&inspection);
     assert_eq!(view["state"], "ready");
@@ -255,7 +273,13 @@ fn pending_checkpoint_blocks_file_reads_until_trusted_acknowledgement_without_ap
 
     let acknowledgement = run_cli(
         &fixture.data,
-        &["file", "acknowledge-checkpoint", &operation_id.to_string()],
+        &[
+            "file",
+            "acknowledge-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &operation_id.to_string(),
+        ],
     );
     assert_success(&acknowledgement);
     assert_eq!(
@@ -264,7 +288,15 @@ fn pending_checkpoint_blocks_file_reads_until_trusted_acknowledgement_without_ap
             "acknowledged_checkpoint": operation_id, "replayed": false, "applied": false
         })
     );
-    let after = run_cli(&fixture.data, &["file", "checkpoints"]);
+    let after = run_cli(
+        &fixture.data,
+        &[
+            "file",
+            "checkpoints",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+        ],
+    );
     assert_success(&after);
     assert_eq!(json_output(&after)["pending"], Value::Null);
     assert_eq!(
@@ -286,7 +318,7 @@ fn pending_checkpoint_blocks_file_reads_until_trusted_acknowledgement_without_ap
         before_settings
     );
     let entry = fixture
-        .data
+        .store_dir()
         .join("replacement-v1")
         .join(operation_id.to_string());
     assert_eq!(
@@ -329,7 +361,13 @@ fn checkpoint_acknowledgement_does_not_restore_revoked_workspace_permissions() {
 
     let acknowledgement = run_cli(
         &fixture.data,
-        &["file", "acknowledge-checkpoint", &operation_id.to_string()],
+        &[
+            "file",
+            "acknowledge-checkpoint",
+            "--workspace",
+            &fixture.workspace_id.to_string(),
+            &operation_id.to_string(),
+        ],
     );
     assert_success(&acknowledgement);
     assert_error_code(&fixture.read(), "file_denied");
@@ -355,13 +393,27 @@ fn present_checkpoint_storage_refuses_an_untrusted_root_without_mutation() {
     let settings = fs::read(fixture.data.join("control-v1.jsonl")).expect("settings bytes");
 
     assert_error_code(
-        &run_cli(&fixture.data, &["file", "checkpoints"]),
+        &run_cli(
+            &fixture.data,
+            &[
+                "file",
+                "checkpoints",
+                "--workspace",
+                &fixture.workspace_id.to_string(),
+            ],
+        ),
         "checkpoint_io",
     );
     assert_error_code(
         &run_cli(
             &fixture.data,
-            &["file", "acknowledge-checkpoint", &operation_id.to_string()],
+            &[
+                "file",
+                "acknowledge-checkpoint",
+                "--workspace",
+                &fixture.workspace_id.to_string(),
+                &operation_id.to_string(),
+            ],
         ),
         "checkpoint_io",
     );

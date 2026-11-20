@@ -43,9 +43,15 @@ and synced journal appends are implemented. No CLI command creates a standalone
 checkpoint. The CLI provides existing-only inspection and acknowledgement:
 
 ```text
-omgcode --data-dir /private/omgcode-data file checkpoints
-omgcode --data-dir /private/omgcode-data file acknowledge-checkpoint OPERATION_UUID
+omgcode --data-dir /private/omgcode-data file checkpoints --workspace WORKSPACE_UUID
+omgcode --data-dir /private/omgcode-data file acknowledge-checkpoint OPERATION_UUID \
+  --workspace WORKSPACE_UUID
 ```
+
+Checkpoints live in each workspace's `.OMGCode` folder, which Git ignores
+and the broker refuses to open. `--workspace` selects that folder; without
+it, the checkpoint commands use the legacy store in the data directory
+that versions before 0.49.0 wrote ([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
 
 These commands require existing workspace settings, but no workspace/session
 selection. Inspection never initializes storage and returns metadata only.
@@ -101,7 +107,8 @@ without it. `--removed` cannot be combined with the digest and size options. To 
 acknowledge any unresolved operation, then permanently delete one entry:
 
 ```text
-omgcode --data-dir /private/omgcode-data file delete-checkpoint OPERATION_UUID --permanent
+omgcode --data-dir /private/omgcode-data file delete-checkpoint OPERATION_UUID \
+  --workspace WORKSPACE_UUID --permanent
 ```
 
 Deletion removes the entry's payloads, manifest, and any retained stage. The
@@ -114,11 +121,24 @@ compacted. Apply, restore, and deletion compact it first when it lacks room.
 To compact it on request, discarding every deleted entry's history:
 
 ```text
-omgcode --data-dir /private/omgcode-data file compact-checkpoints --discard-history
+omgcode --data-dir /private/omgcode-data file compact-checkpoints \
+  --workspace WORKSPACE_UUID --discard-history
 ```
 
-Copy `replacement-v1/ledger.jsonl` first if that history is needed. See
-[ledger compaction](file-access.md#implemented-ledger-compaction-phase-a5).
+Copy `.OMGCode/replacement-v1/ledger.jsonl` first if that history is needed.
+See [ledger compaction](file-access.md#implemented-ledger-compaction-phase-a5).
+
+If the `.OMGCode` folder is deleted or changed outside OMGCode, every file
+operation in the workspace is refused with `checkpoint_store_missing` or
+`checkpoint_store_changed`. To abandon the folder and start a new one:
+
+```text
+omgcode --data-dir /private/omgcode-data file forget-checkpoint-store \
+  --workspace WORKSPACE_UUID --abandon
+```
+
+The folder is left in place. Move, delete, or empty it before the next
+write. See the [workspace checkpoint folder](file-access.md#workspace-checkpoint-folder-adr-0069).
 
 ## Build
 
@@ -459,6 +479,7 @@ preference. `apply` and `restore` require both preferences and a supported
 native mount. Execute remains disabled. The `audit`, `acknowledge`,
 `checkpoints`, `acknowledge-checkpoint`, `delete-checkpoint`, and
 `compact-checkpoints` commands require existing workspace settings.
+`forget-checkpoint-store` also requires the workspace to be registered.
 They do not require a configured root, workspace registration, or session
 selection. Chat advertises the read/list tools when the session's workspace
 enables `model_tools`, the edit, multi-edit, and create tools when `read` and
