@@ -592,7 +592,7 @@ fn injected(param: &(String, String)) -> bool {
 }
 
 #[test]
-fn generate_handler_registers_exactly_the_thirty_seven_policy_commands() {
+fn generate_handler_registers_exactly_the_policy_commands() {
     // Given the invoke handler in lib.rs.
     let lib = read(&crate_dir().join("src/lib.rs"));
     let start =

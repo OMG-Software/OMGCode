@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_thirty_seven_unique_names_matching_the_enum() {
+    fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
         assert_eq!(COMMAND_NAMES.len(), 40);
         assert_eq!(shared.len(), 40);
