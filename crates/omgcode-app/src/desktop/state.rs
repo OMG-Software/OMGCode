@@ -19,7 +19,7 @@ use super::Inner;
 use super::error::DesktopError;
 use super::review_tokens::ReviewTokens;
 use super::turns::TurnTable;
-use super::wire::{SessionStatus, SessionSummary};
+use super::wire::{SessionStatus, SessionSummary, SettingsScope};
 
 /// Journals inspected per `refresh` call.
 const REFRESH_CHUNK: usize = 200;
@@ -100,6 +100,24 @@ impl Inner {
 
     pub(super) fn lock_turns(&self) -> Result<MutexGuard<'_, TurnTable>, DesktopError> {
         self.turns.lock().map_err(|_| DesktopError::poisoned())
+    }
+
+    /// The `settings` window's scope for an overview. The scope is display
+    /// state, so a poisoned lock reads as no scope (the full, unscoped view);
+    /// the commands that set it report the failure instead.
+    pub(super) fn settings_scope(&self) -> Option<SettingsScope> {
+        let scope = self.settings_scope.lock().ok()?;
+        scope.map(|workspace_id| SettingsScope { workspace_id })
+    }
+
+    /// Replace the `settings` window's scope. One short critical section.
+    pub(super) fn set_settings_scope(&self, scope: Option<Uuid>) -> Result<(), DesktopError> {
+        let mut guard = self
+            .settings_scope
+            .lock()
+            .map_err(|_| DesktopError::poisoned())?;
+        *guard = scope;
+        Ok(())
     }
 
     pub(super) fn lock_reviews(&self) -> Result<MutexGuard<'_, ReviewTokens>, DesktopError> {

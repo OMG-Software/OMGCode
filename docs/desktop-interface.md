@@ -88,20 +88,23 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing credentials, toolchain profiles, container grants,
-  package-network profiles, and skills in the desktop application, and
-  adding a profile with a credential or a cloud provider kind. They change
-  only through the trusted CLI. The rest of phase S3 and phases S4 and S5 of
+- Changing toolchain profiles, container grants, package-network profiles,
+  and skills in the desktop application, binding a credential to a local
+  LM Studio profile, and adding any cloud provider other than Ollama Cloud.
+  They change only through the trusted CLI. The `settings` window adds an
+  Ollama Cloud connection with its API key, replaces the key, and removes the
+  connection, through the write-only key field (ADR-0071). The rest of phase
+  S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: the write-only API key field, execution setup, and
-  skill management.
+  are not implemented: execution setup and skill management.
 - Development panels: terminal tabs, task logs, diffs, and a file browser.
 - Git, MCP, and memory interfaces, and skill management. The `main` window
   can only select an already enabled skill for one turn.
 - A recovery interface for damaged journals or an incomplete tail.
-- A provider other than a local LM Studio or Ollama server. Stored API keys
-  are used only for an LM Studio server's token. The `main` window shows
-  nothing about the credential source beyond the endpoint text.
+- A provider other than a local LM Studio or Ollama server and Ollama Cloud.
+  Stored API keys are used only for an LM Studio server's token and an Ollama
+  Cloud key. The `main` window shows nothing about the credential source
+  beyond the endpoint text and the hosted label.
 - A native operating-system confirmation dialog for approvals.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
@@ -223,7 +226,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 35 commands. No other command exists.
+The shell has three webview windows and 39 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -239,19 +242,21 @@ their registered identifier, and approvals by identifier.
 | `workspace_list` | main | List the registered workspaces a session can be created in |
 | `session_create` | main | Create a session in a registered workspace |
 | `chat_defaults` | main | Return the endpoint the next turn uses and the saved or built-in chat preferences |
-| `chat_models` | main | List the model ids the next turn's connection reports, for the composer's model choice |
+| `chat_models` | main | List the model ids a session's connection reports, for the composer's model choice; takes the session id |
 | `chat_preferences_save` | main | Save the chat preferences the composer starts from |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
-| `connection_status` | main | Return the connection the next turn uses and the local connections the status bar may offer |
-| `connection_select` | main | Request the default or a recorded local profile as the model connection; Rust shows a native confirmation |
+| `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
+| `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
+| `session_model_select` | main | Record the model chosen for one session; no dialog |
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
 | `chat_subscribe` | main | Subscribe a caller-created channel to chat events |
 | `approvals_summary` | main | Return the advisory count of pending approvals |
 | `approvals_show_window` | main | Show the existing approvals window |
-| `settings_show_window` | main | Show the existing settings window |
+| `settings_show_window` | main | Clear the settings window's workspace scope and show the existing settings window |
+| `settings_show_workspace` | main | Scope the settings window to a session's registered workspace, then show it |
 | `approvals_list` | approvals | List pending approvals and recent decisions |
 | `approval_detail` | approvals | Review one approval and obtain a review token |
 | `approval_decide` | approvals | Approve or deny one approval |
@@ -262,8 +267,10 @@ their registered identifier, and approvals by identifier.
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
-| `settings_add_local_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential |
-| `settings_remove_connection` | settings | Remove a provider profile that has no bound credential; removing the active one needs a native confirmation |
+| `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, or an `ollama_cloud` profile with its fixed endpoint and a write-only API key |
+| `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
+| `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
+| `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -342,8 +349,11 @@ The `main` window is laid out as follows.
   different pages.
 - **Composer.** The message box, then one toolbar: a **Skills (n)** menu,
   where n counts the skills chosen for the turn, hidden when no skill is
-  enabled; a **Chat settings** menu with the settings grid, the read-only
-  endpoint, and **Save as defaults**; then the byte counter, the running
+  enabled; a **Provider** dropdown and a **Model** dropdown with its
+  **Refresh** button for the open session (see "Provider and model per
+  session"); a **Chat settings** menu with the numeric settings grid, the
+  read-only endpoint, and **Save as defaults**; a **Workspace settings**
+  button (see "Settings window"); then the byte counter, the running
   label, **Cancel**, and **Send**. The counter appears only above 80% of the
   message limit or when the message is over it.
 - **No waiting marker.** The `main` window cannot tell which session an
@@ -484,29 +494,63 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   keeps it for the next run. A change made before the saved defaults load is
   kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
   outside the turn settings, because it never reaches a turn (ADR-0062).
-- **Model choice.** Since 0.46.0 (ADR-0066) the **Model** field in **Chat
-  settings** is a choice with a **Refresh** button. `chat_models` resolves
-  the connection exactly as `chat_send` does, stored credential included,
-  and sends one `GET /v1/models` to its loopback endpoint. Core refuses the
-  whole list when it is not a `data` array of at most 512 entries with
-  string ids, or when an id is empty, over 256 bytes, repeated, or holds a
-  control or bidirectional formatting character. The deadline is ten
-  seconds. The composer lists models when the chat defaults load, after the
-  connection changes, and on **Refresh**, which is disabled while a list is
-  being read. When the connection changes, the previous server's models are
-  removed at once, before the new list arrives. A list whose endpoint is not
-  the one shown is discarded with a note. The ids are sorted and shown as text. A chosen or saved model the
+- **Model choice.** Since 0.46.0 (ADR-0066) the model is a dropdown with a
+  **Refresh** button, in the composer toolbar since ADR-0071. `chat_models`
+  takes the session id, resolves that session's connection exactly as
+  `chat_send` does, stored credential included, and sends one
+  `GET /v1/models` to its endpoint, which is a loopback endpoint or the fixed
+  Ollama Cloud endpoint. Core refuses the whole list when it is not a `data`
+  array of at most 512 entries with string ids, or when an id is empty, over
+  256 bytes, repeated, or holds a control or bidirectional formatting
+  character. The deadline is ten seconds. The answer carries the session id,
+  the endpoint it asked (display only), and the provider kind. **The list is
+  keyed on the session and the request, never on endpoint text.** The
+  composer keeps an answer only when it is for the session still shown and no
+  later request or reset began; it never compares the endpoint of an answer
+  with another endpoint. It once did, and discarded the whole list
+  whenever the connection had changed outside the footer (a regression test
+  covers it). The list loads when a session opens, after a provider is
+  chosen for it, when the connection read for it changes, and on
+  **Refresh**, which is disabled while a list is being read. While it loads,
+  the dropdown is empty and disabled, so no model of another server is
+  offered. The ids are sorted and shown as text. A chosen or saved model the
   server did not report stays chosen and is marked "(not reported by the
   server)". An id whose last tag is `cloud` or ends in `-cloud` is marked
   "(Ollama cloud)", and while it is chosen a warning says that prompts and
-  workspace text sent to it leave this computer. The warning is read from the
-  chosen id itself, so it also shows for a saved model while the list loads or
-  after listing fails. A chosen id is sent exactly as listed, never trimmed. The mark follows Ollama's
-  naming convention and is not proof; an unmarked model is not shown to be
-  local. A failure is shown beside the field with its code. Nothing is chosen
-  automatically: with no saved model, Send stays disabled until a model is
-  chosen. Choosing a model grants nothing; `chat_send` validates it as
-  before. Embedding models are listed too and cannot answer a turn.
+  workspace text sent to it leave this computer. On an Ollama Cloud
+  connection every model is marked "(hosted)" and a warning says that
+  prompts, workspace text read by tools, and command output leave this
+  computer. The warning is read from the chosen id itself and from the
+  connection, so it also shows while the list loads or after listing fails. A
+  chosen id is sent exactly as listed, never trimmed. The mark follows
+  Ollama's naming convention and is not proof; an unmarked model is not shown
+  to be local. A failure is shown beside the toolbar with its code. Nothing
+  is chosen automatically: with no saved model, Send stays disabled until a
+  model is chosen. Choosing a model grants nothing; `chat_send` validates it
+  as before. Embedding models are listed too and cannot answer a turn.
+- **Provider and model per session** (ADR-0071 decisions 6 to 11). The
+  provider and the model belong to the open session. The composer's
+  **Provider** dropdown and the footer's provider dropdown both render one
+  shared state read from `connection_status` for the session, so they cannot
+  disagree. Opening a session reads its connection and model and lists its
+  models; switching sessions switches both and shows no dialog, because the
+  choice was confirmed when it was made. Choosing a provider calls
+  `connection_select` with the session id and the profile name or `null`;
+  Rust shows the native Yes/No dialog, and only on Yes records the choice and
+  clears the session's model, because model ids belong to one server. The
+  model dropdown is then empty and disabled until the session's list
+  arrives. Choosing a model calls `session_model_select`, which shows no
+  dialog. A status or list that arrives for a session that is no longer open
+  is ignored. A session that never chose follows the global default chosen in
+  the `settings` window. **Chat settings** keeps the endpoint as read-only text
+  (the open session's endpoint) and the numeric settings; **Save as defaults**
+  still saves the chat preferences, the model included, and these are the
+  model a session without its own choice starts from. A launch argument
+  (`--endpoint` or `--provider-profile`) fixes the connection of every
+  session: both provider dropdowns are disabled and show "Set at launch", and
+  the model is still chosen from that connection's list. `chat_send` keeps
+  sending the composer's endpoint and model; Send is disabled without a model
+  and while the session's provider is being read or has gone stale.
 - **Saved preferences.** **Save as defaults** sends the model name, context
   size, output reserve, custom instructions, compaction threshold, the
   automatic compaction switch, and the **Enter to send** choice to
@@ -636,7 +680,8 @@ A panicked turn thread is recorded as a failed turn with the code `internal`.
 
 **Settings** in the session sidebar calls `settings_show_window`, which shows
 the hidden `settings` window. The window calls `settings_overview` when it
-starts, when it becomes visible again, and when **Refresh** is pressed. When
+starts, when it becomes visible again or gains focus, and when **Refresh** is
+pressed. When
 no settings store exists, that call creates an empty one, as the CLI's
 `workspace status` does (ADR-0060). The window loads hidden at launch, so the
 store exists from the first launch.
@@ -651,15 +696,20 @@ waits. The window shows:
 
 - **Model.** The connection the next turn uses, with a **Model provider**
   dropdown, and its provider, endpoint, and source. The dropdown lists the
-  default LM Studio endpoint and every `lm_studio` or `ollama_local` profile
-  with an endpoint; when a launch argument fixed the connection, it is
-  disabled and says so. Then one row per provider profile, with its name, an
-  **Active** chip, its provider, endpoint, and authentication, whether a
-  credential is bound, and **Remove**, disabled for a profile with a
-  credential. Then **Add connection**, a disclosure with labelled provider
-  (`Ollama` or `LM Studio`), name, and loopback endpoint fields, the endpoint
-  prefilled with the provider's usual address (`http://127.0.0.1:11434/v1` or
-  `http://127.0.0.1:1234/v1`).
+  default LM Studio endpoint and every selectable profile; when a launch
+  argument fixed the connection, it is disabled and says so. Then one row per
+  provider profile, with its name, an **Active** chip, its provider,
+  endpoint, and authentication, whether a credential is bound, and
+  **Remove**. An `ollama_cloud` profile also has a **Hosted** chip, a line
+  saying that prompts, workspace text read by tools, and command output leave
+  this computer for ollama.com, and a **Set key…** disclosure with a
+  password field and **Save key**. Then **Add connection**, a disclosure with
+  labelled provider (`Ollama`, `LM Studio`, or `Ollama Cloud (hosted)`),
+  name, and loopback endpoint fields, the endpoint prefilled with the
+  provider's usual address (`http://127.0.0.1:11434/v1` or
+  `http://127.0.0.1:1234/v1`). For Ollama Cloud the endpoint field is hidden
+  and the fixed endpoint `https://ollama.com/v1` is shown as read-only text,
+  and a labelled **API key** password field (`autocomplete="off"`) appears.
 - **Workspaces.** The meaning of Deny, Prompt, and Allow, stated once. The
   development root, with **Choose folder…** or **Change…**, and
   **Register workspace…**, which is disabled until a root is set. With two or
@@ -681,21 +731,53 @@ waits. The window shows:
   their folder, access, and state; and each imported skill's name, its
   application setting, and its workspace overrides, with the workspace shown
   by its folder. A line says these change only through the trusted CLI.
+- **Workspace scope** (ADR-0071). **Workspace settings**, next to **Chat
+  settings** in the composer toolbar, calls `settings_show_workspace` with
+  the open session's identifier and nothing else; it is disabled until a
+  session is open. Rust resolves the workspace the session was recorded in
+  through the session index and the settings store, never from the webview.
+  A session that is unknown, or whose workspace is not registered, is
+  refused with `not_found` or `unknown_workspace`, and the composer shows the
+  message. Otherwise Rust records that workspace as the window's scope in
+  memory, one short mutex-protected write, and shows the `settings` window.
+  Every overview carries `scope`, either `{ workspace_id }` or `null`. While
+  the scope names a registered workspace, the window hides the section
+  sidebar and shows only **Workspace settings** for that workspace: the
+  Deny, Prompt, and Allow help, its folder, **Model tools**, the permission
+  rows, **File-write tool limits**, its identifier, and its package cache.
+  It shows no development root, **Register workspace…**, or workspace
+  chooser. **All settings** calls `settings_clear_scope`, a `settings`
+  command, and the window then shows the sections as before. **Settings** in
+  the sidebar calls `settings_show_window`, which clears the scope first. If
+  the scoped workspace is no longer registered, the window shows the full
+  view with a note. The window also reads the overview when it gains focus,
+  so a window that was already visible picks up a new scope; this uses no
+  `core:` event permission. The scope is display state: the `settings` window
+  could already change every workspace, and the scope grants and removes
+  nothing. A poisoned scope lock reads as no scope.
 - **Status bar.** A footer along the bottom of `main` shows the open
   session's workspace folder, its Git branch, and the model provider
   (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
-  local profile with a recorded endpoint, from `connection_status`, labelled
-  with provider, profile name, and endpoint. Choosing one calls
-  `connection_select` with the profile name only. Rust applies the same
-  checks and native Yes/No dialog as `settings_select_connection`; the
-  footer then shows the recorded choice and the composer reads the endpoint
-  again. A declined dialog shows "The model provider was not changed.". When
-  a launch argument fixed the connection, the dropdown is disabled and shows
-  "Set at launch". The branch comes from `session_context`, which reads only
-  `HEAD` through the anchored broker (see "Git branch display"). The footer
-  reads both again when the window regains focus, when a session opens, and
-  after a turn settles. Like the rest of `main`, it uses no `title`
-  tooltips; the reason a branch is unavailable is shown as text.
+  selectable profile, from `connection_status`, labelled with provider,
+  profile name, and endpoint. A profile is selectable when it is a local
+  profile with a recorded endpoint, or an `ollama_cloud` profile with the
+  cloud endpoint and a bound credential. Since ADR-0071 the dropdown acts on
+  the open session and is the same control, over the same state, as the
+  composer's **Provider** dropdown: choosing one calls `connection_select`
+  with the session id and the profile name only. Rust refuses an unknown
+  session, an unchanged choice, an unselectable profile, and a launch-fixed
+  connection before any dialog, then asks the native Yes/No dialog and records
+  the choice only on Yes. A declined dialog shows "The model provider was not
+  changed.". With no session open the dropdown is disabled. When a launch
+  argument fixed the connection, it is disabled and shows "Set at launch".
+  A recorded choice that no longer holds (its profile was removed, is no
+  longer selectable, or has another endpoint) shows "Choose again" and the
+  next send is refused with `session_connection_stale`. The branch comes from
+  `session_context`, which reads only `HEAD` through the anchored broker (see
+  "Git branch display"). The footer reads both again when the window regains
+  focus, when a session opens, and after a turn settles. Like the rest of
+  `main`, it uses no `title` tooltips; the reason a branch is unavailable is
+  shown as text.
 - **Git branch display.** `session_context` opens the session's registered
   workspace by its recorded root and workspace identities and reads
   `.git/HEAD`, at most 4096 bytes, without following a link. No Git program
@@ -717,8 +799,9 @@ only the workspace summaries of `workspace_list` (each registered
 workspace's identifier, folder display text, and `model_tools`, `read`,
 `write`, and `execute` states), the endpoint text of
 `chat_defaults`, the model ids of `chat_models`, the enabled skill names of `session_skills`, the branch
-display of `session_context`, and the connection view and local profile
-names, kinds, and endpoints of `connection_status`.
+display of `session_context`, and the connection view, the session's model,
+and the profile names, kinds, and endpoints of `connection_status`. None
+carries a credential.
 
 The view reads the settings store through the same core functions as the
 trusted CLI and releases it before returning. It reads no stored secret and
@@ -774,38 +857,102 @@ by the same re-read.
 
 ### Choosing the model connection
 
-The `main` window's `connection_select` runs the same checks and dialog as
-`settings_select_connection`, below, reading the revision itself; it takes
-only a profile name or none. The three `settings` connection commands call
+The `main` window's `connection_select` chooses the provider of **one
+session** (ADR-0071). It takes the session id and a profile name, or `null` for
+the default, and nothing else. Rust refuses, before any dialog, a launch
+argument that fixed the connection (`connection_fixed`), an unknown session
+(`not_found`), a profile core would not accept (`control`), and a choice the
+session already has (`control`). It then shows the native Yes/No dialog:
+"Send this session's chat turns to `<provider>` through the connection
+`<name>`?" with the endpoint, and, for Ollama Cloud, a paragraph saying that
+prompts, workspace text read by tools, and command output leave this computer
+for ollama.com. The command takes the one settings change at a time, so a
+second change is refused with `settings_change_running`. After Yes the
+settings are read again, and a profile removed or given another endpoint while
+the dialog was open records nothing (`stale_revision`). Only then is the
+choice recorded with the endpoint that was confirmed, and the session's model
+is cleared. It does not change the global default or the settings revision.
+`session_model_select` records a model for a session with no dialog; it
+applies the rule `chat_send` applies (at most 256 bytes, no control
+character; an empty id clears the choice). A session with no record gets one
+that follows the default connection, so choosing a model never pins a
+provider the operator did not confirm.
+The `settings` window's `settings_select_connection` keeps choosing the
+**global default**, which sessions without their own choice follow; it uses
+the same checks and dialog. The `settings` connection commands call
 the same `ControlStore` functions as the
-CLI's `workspace provider-profile-select`, `provider-profile-add`, and
-`provider-profile-remove`, with the same revision check and validation
-(ADR-0064).
+CLI's `workspace provider-profile-select`, `provider-profile-add`,
+`provider-credential-set`, and `provider-profile-remove`, with the same
+revision check and validation (ADR-0064, ADR-0071).
 
 - **Selecting needs a native confirmation.** `settings_select_connection`
   takes the revision and a profile name, or none for the default. The
-  service refuses an unknown profile, a profile that is not `lm_studio` or
-  `ollama_local`, a profile without an endpoint, and an unchanged choice
-  before any dialog. It then asks "Send new chat turns to Ollama through the
-  connection `<name>`?" (or LM Studio, or the default), with the endpoint,
-  and records the choice only on Yes. It applies to turns that start
-  afterwards. When a launch argument fixed the connection, the command is
+  service refuses an unknown profile, a profile that cannot be chosen (core's
+  selectable rule: a local kind with a recorded endpoint, or an `ollama_cloud`
+  profile with a bound credential), and an unchanged choice
+  before any dialog. It then asks "Send chat turns of sessions that have no
+  connection of their own to Ollama through the connection `<name>`?" (or
+  LM Studio, Ollama Cloud, or the default), with the endpoint,
+  and records the choice only on Yes. It applies to turns of sessions
+  without their own choice that start afterwards. When a launch argument fixed the connection, the command is
   refused with `connection_fixed`.
-- **Adding needs no dialog.** `settings_add_local_connection` takes a name of
-  at most 256 bytes, the kind `lm_studio` or `ollama_local`, and an endpoint.
-  It records a profile with authentication `none`. Core refuses an endpoint
-  that is not `http://<loopback IP>:<port>/v1`. A new profile is not used
+- **Adding needs no dialog.** `settings_add_connection` takes a name of at
+  most 256 bytes and a kind. For `lm_studio` or `ollama_local` it takes an
+  endpoint and no key, and records a profile with authentication `none`;
+  core refuses an endpoint that is not `http://<loopback IP>:<port>/v1`. For
+  `ollama_cloud` it takes an `api_key` and no endpoint: Rust supplies the one
+  fixed endpoint `https://ollama.com/v1` and records authentication
+  `api_key`. A request that gives a local kind a key, gives the cloud an
+  endpoint, or omits the field its kind needs is refused as
+  `invalid_request` before anything is recorded. A new profile is not used
   until it is selected.
-- **Removing the active connection is confirmed.**
-  `settings_remove_connection` removes a profile without a bound credential.
-  Removing an inactive profile shows no dialog. Removing the selected
-  profile returns new turns to the default endpoint, which receives
-  `OMGCODE_LM_TOKEN` when it is set, so Rust first asks "Remove the
-  connection `<name>` and send new chat turns to the default connection?"
-  with the default endpoint, unless a launch argument fixed the connection.
-  No keeps the profile and its selection. A profile with a stored credential is
-  refused with `credential_bound`; remove it with the trusted CLI, which also
-  deletes the credential.
+- **The API key is write-only** (ADR-0059 decision 6, ADR-0071 decision 5).
+  The key is typed into a password field, sent once in `settings_add_connection` or
+  `settings_set_api_key`, and the field is emptied as the button is pressed,
+  whether the answer is success or failure. The window keeps it in no state
+  object, log, or message. In Rust the request type moves it into a zeroing
+  buffer on arrival, its `Debug` form is fixed text, and core's secret type
+  refuses an empty key, one over 16 KiB, and (in the desktop) one with a
+  control character, as one fixed `invalid_request` message that never
+  repeats the key or its length. Core's credential store keeps the key in
+  DPAPI or the Secret Service and binds it to the profile; no command returns
+  the key, its length, or a digest of it. Because a profile cannot be bound
+  before it exists, Rust opens the native store first (an unavailable or locked
+  store refuses the request before anything is recorded), records the profile,
+  then stores and binds the key. If storing or binding fails, the profile is
+  removed again in the same locked store and a binding it gained is deleted,
+  so a failure leaves no profile without a key; the settings revision still
+  advances by the two recorded events. If the profile cannot be removed,
+  the error is `credential_orphaned`, with the opaque identifier of an item
+  that could not be deleted. A binding whose journal write failed may still be
+  recorded, so then neither the profile nor the new item is removed: the
+  error is `credential_binding_uncertain` and names the kept item's
+  identifier (and any item it replaced), as the CLI does, for the operator to
+  check with `provider-profile-show`. No error shows the key or native error
+  text. `settings_set_api_key` replaces the key
+  of an `ollama_cloud` profile (and refuses any other kind or an unknown
+  name) the way the CLI's `provider-credential-set` does: the new item is
+  stored, then bound, then the old item is deleted. It shows no dialog,
+  because the key goes only to the same fixed host the profile already names
+  and choosing the connection stays confirmed separately; a failure to delete
+  the old item is reported as `credential_orphaned`, which says the new key is
+  set and names the old item's identifier, since no profile names it any more.
+- **Removing a connection with a stored key, or the active one, is
+  confirmed.** `settings_remove_connection` removes a profile and, through
+  the same core path as the CLI's `provider-profile-remove`, deletes its
+  bound credential. A profile with a stored key first asks "Remove the
+  connection `<name>` and delete its stored API key?", and, when it is the
+  selected profile and no launch argument fixed the connection, adds that new
+  turns for sessions without their own connection go to the default
+  connection and its endpoint. Removing the selected profile without a key asks
+  the ADR-0064 question about the default endpoint, which receives
+  `OMGCODE_LM_TOKEN` when it is set. Removing any other profile shows no
+  dialog. No keeps the profile, its key, and its selection. The native store is
+  opened before anything is removed, so an unavailable one refuses the
+  removal; a native item that cannot be deleted after the profile is gone is
+  reported as `credential_orphaned` with that item's identifier. A session that chose the removed profile
+  refuses its next turn with `session_connection_stale` until the provider is
+  chosen again.
 - **Ollama context length.** OMGCode cannot set Ollama's context length over
   this API. Set it in Ollama, for example with `OLLAMA_CONTEXT_LENGTH`, and
   give the composer the same context size.
@@ -956,8 +1103,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the six settings-window
-  commands. The `settings` file grants only those six. Every handler also calls the Rust
+  not grant the three approval commands or any of the eleven settings-window
+  commands. The `settings` file grants only those eleven. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -971,11 +1118,56 @@ What the design does:
   change gets its folder from a native dialog that Rust opens.
 - **Endpoint and token outside `main`.** The `main` webview cannot supply an
   endpoint, choose the credential source, or read the token. It may only
-  request a recorded local profile, or the default, with `connection_select`;
-  Rust switches only after the operator confirms a native dialog, and not at
-  all when a launch argument fixed the connection (ADR-0064). The `settings`
-  window chooses through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
+  request a recorded profile, or the default, for one session with
+  `connection_select`; Rust records it only after the operator confirms a
+  native dialog, and not at all when a launch argument fixed the connection
+  (ADR-0064, ADR-0071). The `settings` window chooses the global default
+  through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
+- **An API key crosses the `settings` webview once.** The operator types an
+  Ollama Cloud key into a password field of the `settings` window (ADR-0059
+  decision 6, ADR-0071 decision 5). The key is in that webview's memory
+  while it is typed and in one IPC message (`settings_add_connection` or
+  `settings_set_api_key`); the field is emptied as the button is pressed,
+  whether the command succeeds or fails, and the window holds the key in no
+  state object, storage, log, or message. That is a weaker boundary than the
+  CLI's standard input, and it is the cost the operator chose over a native
+  prompt. The window renders no model- or repository-controlled text, which
+  narrows who can reach it. Rust moves the key into a zeroing buffer on
+  arrival (zeroing reduces, and cannot guarantee, the removal of copies the IPC layer
+  or the operating system make), applies the CLI's checks, stores it in the
+  native credential store, and returns nothing derived from it: no key, length,
+  or digest, and no error text that repeats it. The `main` window has no
+  command that carries or reads a key. A key replaced by a compromised
+  `settings` webview still reaches only the fixed host `ollama.com`; choosing
+  that connection for a session or as the default stays behind a native
+  confirmation, which is why replacing a key shows none.
+- **Per-session choices are re-checked and not tamper-evident.**
+  `<data root>/desktop-v1/session-connections.json` maps a session id to the
+  provider chosen for it and its model. Only Rust writes it, atomically, under
+  one in-process lock and an exclusive file lock on the neighbouring
+  `session-connections.lock`, so two desktop processes on one data folder do not
+  drop each other's choices; a write waits at most two seconds for that lock and
+  then fails with `busy`. Reads take no lock, because a write is an atomic
+  rename. Neither lock is ever held across a dialog or a request. It holds a profile
+  name, the confirmed endpoint, and a model name, and no credential. It is
+  limited to 4,096 sessions and 1 MiB; a new entry beyond that is refused with
+  `session_choices`. It is parsed strictly (a version, no unknown field); a
+  damaged file is reported by `connection_status` as unreadable, treated as
+  empty, and replaced by the next choice, so it never blocks chat. While it is
+  reported unreadable, the composer shows a warning that the session follows
+  the default connection and that the next choice replaces every session's
+  saved choice. It is not
+  tamper-evident: a process running as the same user can edit it, as it can
+  edit the settings journal. Every turn, model list, and status resolves the
+  order launch argument, then the session's record, then the global default.
+  A recorded profile is resolved through core each time. If it is gone, is
+  not selectable, or its endpoint no longer equals the recorded one, the turn
+  and the list are refused with `session_connection_stale`, so an edit can
+  only choose a profile that is already recorded and selectable, and a profile
+  removed and added again with another endpoint receives nothing until the
+  operator confirms it again. The existing `connection_changed` check still
+  compares the endpoint the window sent with the resolved one.
 - **Channel, no `core:` permission.** `chat_subscribe` takes a Tauri IPC
   channel that the `main` webview creates. It needs no capability beyond the
   command's own permission. Tauri events would need a `core:event` permission,
@@ -1071,7 +1263,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 23 |
+| Commands | 39 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
@@ -1080,6 +1272,8 @@ What it does not do:
 | Running chat turns | 2 |
 | Chat preview per request | 16 KiB |
 | Chat delta text | 1,024 bytes |
+| Sessions with a recorded provider or model | 4,096 |
+| `session-connections.json` | 1 MiB |
 | Previews kept for untracked sessions | 4 |
 | Client preview bound | 64 KiB of UTF-16 code units |
 | Finished chat results kept | 64 |
@@ -1168,9 +1362,24 @@ ACLs the private store refuses, see the notes in
   delay and checkbox for every shown review, focus, the absence of a decision
   key, and that a late detail answer is dropped;
   `ui/tests/settings_sections.test.ts` the sections, the workspace field, the
+  workspace scope (one workspace, no sidebar, **All settings**, a focus read),
   permission rows, and the read-only Advanced section; and
   `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
   segment, the composer menus and counter, and the compact transcript rows.
+  Since ADR-0071: `ui/tests/model_picker.test.ts` covers the model
+  list, including the regression that the list is kept when its endpoint
+  differs from the composer's; `ui/tests/session_connection.test.ts` covers
+  reading a session's provider and model when it opens, switching sessions
+  without a dialog, choosing a provider for the open session (the model is
+  cleared and disabled until the list arrives), the footer and the composer
+  staying in step, a status or list that arrives for a session that was left,
+  the hosted warning, launch-fixed connections, and a stale choice.
+  `ui/tests/settings_window.test.ts` and `ui/tests/settings_sections.test.ts`
+  also cover the Ollama Cloud form (the endpoint hidden and the fixed one
+  shown, a password field, the key sent once and the field cleared after a
+  success and after a refusal, and absent from the page and from every other
+  call), **Set key…**, **Remove** for a profile with a stored key, and the
+  hosted label.
   Vitest processes CSS, so the stylesheet scans read the real source and
   assert it is non-empty.
 - **Shell (no webview).** The policy table; the capability files against the
@@ -1184,7 +1393,19 @@ ACLs the private store refuses, see the notes in
   tokens, shutdown, and the index. `crates/omgcode-app/tests/desktop_events.rs`
   covers the event hub. `crates/omgcode-app/tests/desktop_settings.rs` covers
   the configuration view, session skills, skill selection, and saved
-  preferences. The desktop chat and event tests also cover cancelling
+  preferences. `crates/omgcode-app/tests/desktop_session_connection.rs` covers
+  the per-session choice: the confirmation, the recorded choice and model, the
+  model list and turn for that session, the launch argument winning, a removed
+  or re-added profile making the choice stale, refusals before any dialog, the
+  Ollama Cloud dialog text, model validation, and a damaged file.
+  `crates/omgcode-app/tests/desktop_cloud_connection.rs` covers adding Ollama
+  Cloud with a key against the real settings and native credential stores
+  (the profile, the fixed endpoint, the bound item, selectability), refusals
+  that record nothing and never repeat the key, that a request never prints
+  its key, replacing a key, removing a bound profile with a declined and an
+  accepted dialog (the native item is deleted), the active-profile dialog
+  text, and a session that chose a removed profile becoming stale. Unit tests in
+  `session_connections.rs` cover the file's round trip, bounds, and damage. The desktop chat and event tests also cover cancelling
   a streamed turn and shutting down while one runs, and cancelling a turn
   whose request is not streamed.
 - **End to end.** The real Windows shell was driven over the WebView2 remote

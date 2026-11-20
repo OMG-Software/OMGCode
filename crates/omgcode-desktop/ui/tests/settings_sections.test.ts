@@ -65,6 +65,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     package_profiles: [],
     container_grants: [],
     skills: [],
+    scope: null,
     ...overrides,
   };
 }
@@ -420,6 +421,35 @@ describe("advanced section", () => {
     expect(text).toContain("not set (disabled)");
   });
 
+  it("labels a hosted profile, offers Set key, and keeps Remove for a stored key", async () => {
+    await start(() =>
+      overview({
+        provider_profiles: [
+          profile(),
+          profile({
+            name: "hosted",
+            kind: "ollama_cloud",
+            auth: "api_key",
+            endpoint: "https://ollama.com/v1",
+            credential_bound: true,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const rows = Array.from(root.querySelectorAll<HTMLElement>(".row"));
+    const hosted = rows.find((row) => row.textContent?.includes("hosted"));
+    const local = rows.find((row) => row.querySelector(".row-title")?.textContent === "ollama");
+    expect(hosted?.textContent).toContain("Hosted");
+    expect(hosted?.textContent).toContain("leave this computer");
+    expect(hosted?.textContent).toContain("Set key");
+    expect(hosted?.querySelector("input[type=password]")).not.toBeNull();
+    expect(hosted?.querySelector<HTMLButtonElement>("button:not(summary)")?.disabled).toBe(false);
+    // A local profile has neither the hosted label nor a key field.
+    expect(local?.textContent).not.toContain("Hosted");
+    expect(local?.querySelector("input")).toBeNull();
+  });
+
   it("gives each empty group one line", async () => {
     await start(() => overview());
     go("Advanced");
@@ -430,6 +460,94 @@ describe("advanced section", () => {
       "No container grant is recorded.",
       "No skill is imported.",
     ]);
+  });
+});
+
+describe("workspace scope", () => {
+  const scoped = (id: string) => overview({ scope: { workspace_id: id } });
+
+  it("shows only the scoped workspace without sections, chooser, root, or registration", async () => {
+    await start(() => scoped(B));
+
+    expect(heading()).toBe("/home/dev/b");
+    expect(root.textContent).toContain("Workspace settings");
+    expect(root.textContent).not.toContain("/home/dev/a");
+    expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
+    expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(true);
+    expect(chooser()).toBeNull();
+    expect(root.textContent).not.toContain("Development root");
+    expect(root.textContent).not.toContain("Register workspace");
+    expect(root.querySelector(".tool-limits")).not.toBeNull();
+    expect(root.textContent).toContain("Package cache");
+    expect((root.querySelector(".scope-bar") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("restores the sections and the chooser when All settings clears the scope", async () => {
+    await start(() => scoped(B), { settings_clear_scope: () => overview({ revision: 4 }) });
+    buttonByText(root, "All settings").click();
+    await settle();
+
+    expect(ipc.callsTo("settings_clear_scope")).toEqual([
+      { command: "settings_clear_scope", args: {} },
+    ]);
+    expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(false);
+    expect((root.querySelector(".scope-bar") as HTMLElement).hidden).toBe(true);
+    expect(root.querySelector(".settings-window.scoped")).toBeNull();
+    expect(chooser()).not.toBeNull();
+    expect(current()).toBe("Workspaces");
+  });
+
+  it("shows a note and the full view when the scoped workspace is gone", async () => {
+    await start(() => scoped("cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
+
+    expect(root.textContent).toContain("no longer registered");
+    expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(false);
+    expect(chooser()).not.toBeNull();
+  });
+
+  it("reads the scope again when the window gains focus", async () => {
+    await start(() => overview());
+    expect(root.querySelector(".settings-window.scoped")).toBeNull();
+
+    ipc.on("settings_overview", () => scoped(A));
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
+    expect(heading()).toBe("/home/dev/a");
+  });
+
+  it("reads again when the scope changes while an earlier read is still pending", async () => {
+    await start(() => overview());
+
+    // A read starts, and its answer will be the old, unscoped view.
+    let answerOld: (value: unknown) => void = () => undefined;
+    ipc.on(
+      "settings_overview",
+      () =>
+        new Promise((resolve) => {
+          answerOld = resolve;
+        }),
+    );
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    // The main window scopes the window and focuses it before that read answers.
+    ipc.on("settings_overview", () => scoped(A));
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+    answerOld(overview());
+    await settle();
+
+    expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
+    expect(heading()).toBe("/home/dev/a");
+  });
+
+  it("still sends changes for the scoped workspace by its identifier", async () => {
+    await start(() => scoped(B), { settings_set_permissions: () => scoped(B) });
+    choose("Read", "deny");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({ workspace_id: B });
   });
 });
 

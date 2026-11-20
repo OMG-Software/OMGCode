@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import { setInvoker } from "../src/ipc/client";
 import type {
   ChatSettings,
+  ConnectionStatus,
   SessionSummary,
   SessionTree,
   TranscriptEntry,
@@ -57,6 +58,25 @@ export function installFakeIpc(handlers: Record<string, Handler> = {}): FakeIpc 
   };
 }
 
+/** The default-connection status the main window reads for a session (ADR-0071). */
+export function connectionStatus(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
+  return {
+    connection: {
+      endpoint: SETTINGS.endpoint,
+      source: "active",
+      profile: null,
+      kind: null,
+      selectable: true,
+    },
+    origin: "default",
+    model: SETTINGS.model,
+    stale: false,
+    session_choices_unreadable: false,
+    choices: [],
+    ...overrides,
+  };
+}
+
 /** Handlers every main-window test needs. */
 export function mainHandlers(overrides: Record<string, Handler> = {}): Record<string, Handler> {
   return {
@@ -67,25 +87,21 @@ export function mainHandlers(overrides: Record<string, Handler> = {}): Record<st
       enter_to_send: true,
     }),
     // The composer's model choice (ADR-0066): the default model is listed.
-    chat_models: () => ({
+    chat_models: (args) => ({
+      session_id: args.session_id as string,
       endpoint: SETTINGS.endpoint,
+      kind: null,
       models: [{ id: SETTINGS.model, cloud_tag: false }],
     }),
     session_skills: () => ({ workspace_registered: true, skills: [] }),
     settings_show_window: () => null,
+    settings_show_workspace: () => null,
     approvals_summary: () => ({ pending: 0 }),
     approvals_show_window: () => null,
     // The status bar (ADR-0064): the default connection, nothing else to choose.
-    connection_status: () => ({
-      connection: {
-        endpoint: SETTINGS.endpoint,
-        source: "active",
-        profile: null,
-        kind: null,
-        selectable: true,
-      },
-      choices: [],
-    }),
+    connection_status: () => connectionStatus(),
+    // Records nothing; the status read back keeps the fixture model.
+    session_model_select: (args) => connectionStatus({ model: args.model as string }),
     session_context: () => ({
       workspace_registered: true,
       branch: { state: "branch", name: "main", note: null },
@@ -181,7 +197,7 @@ export function choose(select: HTMLSelectElement, value: string): void {
 
 /** The composer's model choice. */
 export function modelSelect(scope: ParentNode): HTMLSelectElement {
-  const found = scope.querySelector<HTMLSelectElement>('.settings select[aria-label="Model"]');
+  const found = scope.querySelector<HTMLSelectElement>('.composer select[aria-label="Model"]');
   if (found === null) {
     throw new Error("No model choice");
   }

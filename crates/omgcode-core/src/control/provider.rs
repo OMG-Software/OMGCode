@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use super::credential::{self, CredentialBinding, ProviderProfileRemoval};
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_profile_name, valid_uuid};
-use crate::provider::validate_base_url;
+use crate::provider::{validate_base_url, validate_cloud_url};
 
 /// Most recorded provider profiles.
 pub const MAX_PROVIDER_PROFILES: usize = 32;
@@ -87,6 +87,14 @@ impl ProviderKind {
     /// and Ollama on this computer (ADR-0064).
     pub const fn is_local(self) -> bool {
         matches!(self, Self::LmStudio | Self::OllamaLocal)
+    }
+
+    /// Whether the model adapter that speaks the OpenAI-compatible Chat
+    /// Completions API serves this kind: the local kinds and Ollama Cloud
+    /// (ADR-0071). A profile of such a kind can record an endpoint and read a
+    /// stored credential through `provider_credential_binding`.
+    pub const fn uses_model_adapter(self) -> bool {
+        self.is_local() || matches!(self, Self::OllamaCloud)
     }
 
     /// Parse a stored or command-line spelling, case-insensitively.
@@ -284,6 +292,37 @@ impl ControlStore {
             .find(|status| status.profile.id == id)
     }
 
+    /// Check that the named profile can be chosen as a connection now
+    /// (ADR-0071): a local kind that records an endpoint, or an `ollama_cloud`
+    /// profile with the cloud endpoint and a bound credential. It reads no
+    /// native storage and so cannot show that the stored secret still exists;
+    /// a turn without a usable credential fails with the `credential` errors.
+    /// Replay applies the same rule without the credential check.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownProvider` for an unknown name and `ProviderRefused` for a
+    /// profile that cannot be chosen.
+    pub fn check_provider_selectable(
+        &self,
+        name: &str,
+    ) -> Result<&ProviderProfileStatus, ControlError> {
+        let status = self
+            .provider_profile(name)
+            .ok_or(ControlError::UnknownProvider)?;
+        if !selectable(&status.profile) {
+            return Err(ControlError::ProviderRefused(
+                "only an lm_studio, ollama_local, or ollama_cloud profile with a recorded endpoint can be the active connection",
+            ));
+        }
+        if status.profile.kind == ProviderKind::OllamaCloud && status.credential.is_none() {
+            return Err(ControlError::ProviderRefused(
+                "an ollama_cloud profile needs a bound credential before it can be chosen",
+            ));
+        }
+        Ok(status)
+    }
+
     /// Select the active local connection by profile name, or return to the
     /// default endpoint with `None`. This advances the settings revision.
     ///
@@ -306,17 +345,7 @@ impl ControlStore {
         self.check_revision(expected_revision)?;
         let profile_id = match name {
             None => None,
-            Some(name) => {
-                let status = self
-                    .provider_profile(name)
-                    .ok_or(ControlError::UnknownProvider)?;
-                if !selectable(&status.profile) {
-                    return Err(ControlError::ProviderRefused(
-                        "only an lm_studio or ollama_local profile with a recorded endpoint can be the active connection",
-                    ));
-                }
-                Some(status.profile.id)
-            }
+            Some(name) => Some(self.check_provider_selectable(name)?.profile.id),
         };
         if profile_id == self.snapshot.active_provider {
             return Err(ControlError::ProviderRefused(
@@ -440,9 +469,11 @@ pub(super) fn apply(
 }
 
 /// Whether a profile can be the active connection: a local kind that records
-/// the endpoint its turns use.
+/// the endpoint its turns use, or an `ollama_cloud` profile, whose recorded
+/// endpoint replay has already checked against the fixed cloud endpoint
+/// (ADR-0071). Replay applies exactly this; the credential is not read there.
 fn selectable(profile: &ProviderProfile) -> bool {
-    profile.kind.is_local() && profile.endpoint.is_some()
+    profile.kind.uses_model_adapter() && profile.endpoint.is_some()
 }
 
 /// Check a profile name and the provider/authentication pairing.
@@ -479,12 +510,21 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
                 )
             })
         }
-        ProviderKind::OpenAi
-        | ProviderKind::Anthropic
-        | ProviderKind::OllamaCloud
-        | ProviderKind::OpenRouter => Err(ControlError::ProviderRefused(
-            "this provider kind does not accept an endpoint yet",
-        )),
+        ProviderKind::OllamaCloud => {
+            if text.len() > MAX_PROVIDER_ENDPOINT_BYTES {
+                return Err(ControlError::ProviderRefused(
+                    "the provider endpoint is longer than 256 bytes",
+                ));
+            }
+            validate_cloud_url(text).map(|_| ()).map_err(|_| {
+                ControlError::ProviderRefused(
+                    "an ollama_cloud endpoint must be exactly https://ollama.com/v1",
+                )
+            })
+        }
+        ProviderKind::OpenAi | ProviderKind::Anthropic | ProviderKind::OpenRouter => Err(
+            ControlError::ProviderRefused("this provider kind does not accept an endpoint yet"),
+        ),
     }
 }
 

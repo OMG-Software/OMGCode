@@ -47,6 +47,7 @@ use omgcode_core::control::{
     ControlError, ControlStore, CredentialStore, LoadedProviderConnection,
     ProviderCredentialUseError, ProviderKind, Secret,
 };
+use omgcode_core::provider::ModelEndpoint;
 use zeroize::Zeroizing;
 
 use crate::error::{AppError, ErrorKind};
@@ -169,13 +170,14 @@ pub struct LocalConnection {
     pub token: Option<LmToken>,
 }
 
-/// The profile kind the local adapter reads `name` as. A profile of another
+/// The profile kind the model adapter reads `name` as (local kinds and
+/// `ollama_cloud`, ADR-0071). A profile of another
 /// kind is read as `lm_studio`, so core refuses it as a different provider.
 fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
     control
         .provider_profile(name)
         .map(|status| status.profile().kind())
-        .filter(|kind| kind.is_local())
+        .filter(|kind| kind.uses_model_adapter())
         .unwrap_or(ProviderKind::LmStudio)
 }
 
@@ -239,23 +241,32 @@ pub fn resolve_local_connection(
     data_root: &Path,
     source: &ConnectionSource,
 ) -> Result<LocalConnection, AppError> {
+    resolve_connection_and_kind(data_root, source).map(|(connection, _)| connection)
+}
+
+/// [`resolve_local_connection`] together with the kind of the profile it used,
+/// or `None` for an environment or default endpoint. The kind is read from the
+/// same open settings store as the profile's endpoint and token, so a change to
+/// the selection in between cannot pair one profile's connection with another
+/// profile's kind.
+///
+/// # Errors
+///
+/// As [`resolve_local_connection`].
+pub(crate) fn resolve_connection_and_kind(
+    data_root: &Path,
+    source: &ConnectionSource,
+) -> Result<(LocalConnection, Option<ProviderKind>), AppError> {
     match source {
-        ConnectionSource::Environment { endpoint } => Ok(LocalConnection {
-            endpoint: endpoint.clone(),
-            token: read_lm_token()?.map(LmToken::new),
-        }),
+        ConnectionSource::Environment { endpoint } => Ok((environment_connection(endpoint)?, None)),
         ConnectionSource::Profile(name) => {
             let control = open_settings(data_root, name)?;
-            profile_connection(control, data_root, name)
+            let kind = local_adapter(&control, name);
+            Ok((profile_connection(control, data_root, name)?, Some(kind)))
         }
         ConnectionSource::Active { default_endpoint } => {
             let Some(control) = open_settings_if_any(data_root)? else {
-                return resolve_local_connection(
-                    data_root,
-                    &ConnectionSource::Environment {
-                        endpoint: default_endpoint.clone(),
-                    },
-                );
+                return Ok((environment_connection(default_endpoint)?, None));
             };
             // The selection and the profile it names are read from one open
             // store, so a change in between cannot pair them wrongly.
@@ -263,19 +274,135 @@ pub fn resolve_local_connection(
                 .active_provider_profile()
                 .map(|status| status.profile().name().to_owned());
             match selected {
-                Some(name) => profile_connection(control, data_root, &name),
+                Some(name) => {
+                    let kind = local_adapter(&control, &name);
+                    Ok((profile_connection(control, data_root, &name)?, Some(kind)))
+                }
                 None => {
                     drop(control);
-                    resolve_local_connection(
-                        data_root,
-                        &ConnectionSource::Environment {
-                            endpoint: default_endpoint.clone(),
-                        },
-                    )
+                    Ok((environment_connection(default_endpoint)?, None))
                 }
             }
         }
     }
+}
+
+/// The launch or default endpoint with the environment's local server token.
+fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
+    // The environment token is a local server's token. It is never sent to the
+    // hosted endpoint, whose key comes from a bound credential only (ADR-0071).
+    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_cloud()) {
+        return Err(credential_error(
+            "cloud_needs_profile: the Ollama Cloud endpoint is used only through an ollama_cloud provider profile".to_owned(),
+        ));
+    }
+    Ok(LocalConnection {
+        endpoint: endpoint.to_owned(),
+        token: read_lm_token()?.map(LmToken::new),
+    })
+}
+
+/// One recorded profile resolved for a turn: its kind, its validated endpoint,
+/// and its credential. Nothing else supplies any of the three.
+///
+/// `Debug` prints the kind and endpoint, which are not secret, and the
+/// token's fixed redaction. The type has no `Serialize`.
+#[derive(Debug)]
+pub struct ProfileConnection {
+    /// The profile's kind: a local kind or `ollama_cloud`.
+    pub kind: ProviderKind,
+    /// The recorded endpoint, validated again by the shared rule.
+    pub endpoint: ModelEndpoint,
+    /// The bound credential, or `None` for a `none` profile. It is present
+    /// for every `ollama_cloud` profile, which accepts only `api_key`.
+    pub token: Option<LmToken>,
+}
+
+/// Resolve the named profile for one turn: its kind, validated endpoint, and
+/// credential, read as [`resolve_local_connection`] reads a profile
+/// (ADR-0047, ADR-0048, ADR-0071). Nothing is cached.
+///
+/// # Errors
+///
+/// A `credential` error with core's cause code for every refusal that
+/// [`resolve_local_connection`] reports for a profile, and
+/// `endpoint_invalid` if the recorded endpoint no longer passes the shared
+/// rule.
+pub fn resolve_profile_connection(
+    data_root: &Path,
+    name: &str,
+) -> Result<ProfileConnection, AppError> {
+    let control = open_settings(data_root, name)?;
+    let kind = local_adapter(&control, name);
+    let connection = profile_connection(control, data_root, name)?;
+    let endpoint = ModelEndpoint::parse(&connection.endpoint).map_err(|_| {
+        credential_error("endpoint_invalid: the recorded endpoint is not usable".to_owned())
+    })?;
+    Ok(ProfileConnection {
+        kind,
+        endpoint,
+        token: connection.token,
+    })
+}
+
+/// Check that a profile can be chosen as a connection now, for a front end
+/// that offers a choice (ADR-0071): core's
+/// [`ControlStore::check_provider_selectable`] on the existing settings store,
+/// which for an `ollama_cloud` profile also needs a bound credential. No
+/// native storage is read.
+///
+/// # Errors
+///
+/// A `credential` error when the settings store is missing or busy, or when
+/// core refuses the profile.
+pub fn check_profile_selectable(data_root: &Path, name: &str) -> Result<(), AppError> {
+    profile_selectability(data_root, name).map_err(ProfileCheckError::into_app_error)
+}
+
+/// Why [`profile_selectability`] refused, as a type a caller can branch on
+/// without reading the message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProfileCheckError {
+    /// The profile is gone, or can no longer be chosen: no settings store
+    /// exists, the name is unknown, or core refuses the profile (an
+    /// `ollama_cloud` profile without a bound credential, for example).
+    NotSelectable(AppError),
+    /// The settings store is busy or unusable, so nothing is known about the
+    /// profile.
+    Unavailable(AppError),
+}
+
+impl ProfileCheckError {
+    /// The underlying application error, with its `credential` code.
+    #[must_use]
+    pub fn into_app_error(self) -> AppError {
+        match self {
+            Self::NotSelectable(error) | Self::Unavailable(error) => error,
+        }
+    }
+}
+
+/// As [`check_profile_selectable`], with a typed refusal: a profile that is
+/// gone or cannot be chosen is [`ProfileCheckError::NotSelectable`], and a
+/// busy or unusable settings store is [`ProfileCheckError::Unavailable`].
+///
+/// # Errors
+///
+/// See [`ProfileCheckError`].
+pub fn profile_selectability(data_root: &Path, name: &str) -> Result<(), ProfileCheckError> {
+    let control = open_settings_if_any(data_root)
+        .map_err(ProfileCheckError::Unavailable)?
+        .ok_or_else(|| {
+            ProfileCheckError::NotSelectable(credential_error(format!(
+                "no settings store exists, so provider profile {name} cannot be used"
+            )))
+        })?;
+    control
+        .check_provider_selectable(name)
+        .map(|_| ())
+        .map_err(|error| {
+            ProfileCheckError::NotSelectable(credential_error(format!("not_selectable: {error}")))
+        })
 }
 
 /// Resolve one profile's endpoint and token from an open settings store.

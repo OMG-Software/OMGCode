@@ -2,7 +2,7 @@
 //!
 //! The window reads the trusted configuration and, from phase S2, changes the
 //! development root, workspace registrations, workspace preferences, and
-//! package cache roots. It also records local model connections and chooses
+//! package cache roots. It also records model connections, sets an Ollama Cloud key, and chooses
 //! the active one (ADR-0064). No handler takes a path: a folder comes from a native
 //! dialog that Rust opens ([`NativePrompt`]), and every change that widens
 //! access waits for the operator's answer in a native confirmation. Each
@@ -10,9 +10,9 @@
 //! store block.
 
 use omgcode_app::desktop::{
-    ConnectionRemoveRequest, ConnectionSelectRequest, LocalConnectionAddRequest, LocalProviderKind,
-    PermissionFlags, PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
-    WorkspaceRevisionRequest,
+    ApiKeySetRequest, ApiKeyText, ConnectionAddRequest, ConnectionRemoveRequest,
+    ConnectionSelectRequest, NewConnectionKind, PermissionFlags, PermissionsChangeRequest,
+    SettingsOverview, SettingsRevisionRequest, WorkspaceRevisionRequest,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -184,42 +184,74 @@ pub async fn settings_select_connection(
     .await
 }
 
-/// `settings` only. Records a local LM Studio or Ollama connection with no
-/// credential. Recording it grants nothing, so no dialog is shown.
+/// `settings` only. Records a connection (ADR-0064, ADR-0071): a local LM
+/// Studio or Ollama connection with a loopback `endpoint`, or `ollama_cloud`
+/// with an `api_key` and no endpoint. Recording it grants nothing, so no
+/// dialog is shown. The key is moved into a zeroing type on arrival and is
+/// never returned, logged, or echoed.
 ///
 /// # Errors
 ///
-/// `forbidden_window`, or the service's error (`invalid_request`, `control`).
+/// `forbidden_window`, or the service's error (`invalid_request`, `control`,
+/// `credential_unavailable`, `credential_locked`).
 #[tauri::command(rename_all = "snake_case")]
-pub async fn settings_add_local_connection(
+pub async fn settings_add_connection(
     webview: Webview,
     state: Service<'_>,
     revision: u64,
     name: String,
-    kind: LocalProviderKind,
-    endpoint: String,
+    kind: NewConnectionKind,
+    endpoint: Option<String>,
+    api_key: Option<ApiKeyText>,
 ) -> Result<SettingsOverview, CommandError> {
-    authorize(Command::SettingsAddLocalConnection, webview.label())?;
-    let request = LocalConnectionAddRequest {
+    authorize(Command::SettingsAddConnection, webview.label())?;
+    let request = ConnectionAddRequest {
         revision,
         name,
         kind,
         endpoint,
+        api_key,
     };
     blocking(&state, move |service| {
-        service.settings_add_local_connection(request)
+        service.settings_add_connection(request)
     })
     .await
 }
 
-/// `settings` only. Removes a recorded provider profile that has no stored
-/// credential. Removing the active connection first asks a native Yes/No,
-/// because new turns then go to the default endpoint (ADR-0064).
+/// `settings` only. Replaces the stored API key of an `ollama_cloud`
+/// profile. The key goes to the same fixed host, so no dialog is shown. It is
+/// never returned, logged, or echoed.
 ///
 /// # Errors
 ///
-/// `forbidden_window`, or the service's error (`credential_bound`,
-/// `control`, `cancelled`).
+/// `forbidden_window`, or the service's error (`invalid_request`, `control`,
+/// `credential_unavailable`, `credential_locked`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_set_api_key(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+    api_key: ApiKeyText,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSetApiKey, webview.label())?;
+    let request = ApiKeySetRequest {
+        revision,
+        name,
+        api_key,
+    };
+    blocking(&state, move |service| service.settings_set_api_key(request)).await
+}
+
+/// `settings` only. Removes a recorded provider profile. A profile with a
+/// stored API key first asks a native Yes/No saying the connection and its
+/// key will be deleted; removing the active connection also says where new
+/// turns go (ADR-0064, ADR-0071).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`control`, `cancelled`,
+/// `credential_unavailable`, `credential_orphaned`).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn settings_remove_connection(
     webview: Webview,
@@ -232,6 +264,26 @@ pub async fn settings_remove_connection(
     let request = ConnectionRemoveRequest { revision, name };
     blocking(&state, move |service| {
         service.settings_remove_connection(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Clears the window's workspace scope and returns the
+/// unscoped overview (ADR-0071). The scope is display state; clearing it
+/// changes no setting.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`internal`, `busy`, `control`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_clear_scope(
+    webview: Webview,
+    state: Service<'_>,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsClearScope, webview.label())?;
+    blocking(&state, |service| {
+        service.settings_scope_clear()?;
+        service.settings_overview()
     })
     .await
 }

@@ -24,11 +24,13 @@
     "allow-approvals-summary",
     "allow-approvals-show-window",
     "allow-settings-show-window",
+    "allow-settings-show-workspace",
     "allow-chat-preferences-save",
     "allow-session-skills",
     "allow-session-context",
     "allow-connection-status",
     "allow-connection-select",
+    "allow-session-model-select",
     "allow-chat-models"
   ]
 }

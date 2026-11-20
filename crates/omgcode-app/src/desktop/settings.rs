@@ -25,12 +25,15 @@ use omgcode_core::policy::WorkspaceId;
 use omgcode_core::turn::display_safe_line;
 
 use super::error::DesktopError;
+use super::preferences;
+use super::session_connections::{ChosenConnection, recorded_endpoint};
 use super::state::folder_of_directory;
 use super::wire::{
-    BranchState, BranchView, ConnectionChoice, ConnectionSourceView, ConnectionStatus,
-    ConnectionView, ContainerGrantView, PackageProfileView, ProviderProfileView, SessionContext,
-    SessionRequest, SessionSkills, SettingsOverview, SkillOverrideView, SkillSettingView,
-    ToolchainProfileView, WorkspaceSettingsView,
+    BranchState, BranchView, ConnectionChoice, ConnectionOrigin, ConnectionSourceView,
+    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView,
+    PackageProfileView, ProviderProfileView, SessionContext, SessionRequest, SessionSkills,
+    SettingsOverview, SkillOverrideView, SkillSettingView, ToolchainProfileView,
+    WorkspaceSettingsView,
 };
 use super::{DesktopService, Inner, TokenResolver};
 use crate::TokenSource;
@@ -90,7 +93,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                     .endpoint()
                     .map(|endpoint| display_safe_line(endpoint.as_str())),
                 credential_bound: status.credential().is_some(),
-                selectable: profile.kind().is_local() && profile.endpoint().is_some(),
+                selectable: store.check_provider_selectable(profile.name()).is_ok(),
                 active: active == Some(profile.id()),
             }
         })
@@ -167,12 +170,40 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         package_profiles,
         container_grants,
         skills,
+        scope: inner.settings_scope(),
     };
     drop(store);
     overview
 }
 
 impl DesktopService {
+    /// Scope the `settings` window to the registered workspace a session was
+    /// recorded in (ADR-0071). The identifier comes from the session index and
+    /// the settings store, never from the caller. The scope is display state:
+    /// it grants and removes no access.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` for an unknown session, `unknown_workspace` when the
+    /// session's workspace is not registered here or there is no settings
+    /// store, `busy`, `control`, or `internal`. The scope is unchanged on error.
+    pub fn settings_scope_workspace(&self, request: SessionRequest) -> Result<(), DesktopError> {
+        let Some((store, workspace_id)) = self.session_workspace(request)? else {
+            return Err(DesktopError::unknown_workspace());
+        };
+        drop(store);
+        self.inner.set_settings_scope(Some(*workspace_id.as_uuid()))
+    }
+
+    /// Clear the `settings` window's scope so it shows every workspace.
+    ///
+    /// # Errors
+    ///
+    /// `internal` when the scope state is unavailable (a poisoned lock).
+    pub fn settings_scope_clear(&self) -> Result<(), DesktopError> {
+        self.inner.set_settings_scope(None)
+    }
+
     /// The skills the operator may select for one turn in this session: those
     /// effectively enabled for the session's recorded workspace.
     ///
@@ -229,42 +260,117 @@ impl DesktopService {
         })
     }
 
-    /// The connection the next turn uses and the local connections that may
-    /// be chosen, for the `main` window's status bar (ADR-0064). It names
-    /// profiles, kinds, and endpoints only, never a credential.
+    /// The connection a session's next turn uses, where that choice comes from,
+    /// the session's model, and the connections that may be chosen, for the
+    /// `main` window's composer and status bar (ADR-0064, ADR-0071). With no
+    /// session it describes the default: the global selection, or the launch
+    /// endpoint. It names profiles, kinds, and endpoints only, never a
+    /// credential, and reads no native credential store.
+    ///
+    /// A session whose recorded choice no longer holds is reported with
+    /// `stale` set and still shows what was recorded.
     ///
     /// # Errors
     ///
-    /// `busy`, `control`, or `internal`.
-    pub fn connection_status(&self) -> Result<ConnectionStatus, DesktopError> {
+    /// `not_found` for an unknown session, `busy`, `control`, or `internal`.
+    pub fn connection_status(
+        &self,
+        request: ConnectionStatusRequest,
+    ) -> Result<ConnectionStatus, DesktopError> {
         let inner = &self.inner;
+        if let Some(session_id) = request.session_id {
+            inner.resolve_path(session_id)?;
+        }
         let store = inner.open_control()?;
-        let connection = connection_view(inner, store.as_ref());
-        let choices = match (&store, connection.selectable) {
-            (Some(store), true) => {
-                let active = store
-                    .active_provider_profile()
-                    .map(|status| status.profile().id());
-                store
-                    .provider_profiles()
-                    .iter()
-                    .map(|status| status.profile())
-                    .filter_map(|profile| {
-                        let endpoint = profile.endpoint()?;
-                        profile.kind().is_local().then(|| ConnectionChoice {
-                            name: display_safe_line(profile.name()),
-                            kind: profile.kind().as_str(),
-                            endpoint: display_safe_line(endpoint.as_str()),
-                            active: active == Some(profile.id()),
-                        })
-                    })
-                    .collect()
+        let (records, unreadable) = inner.session_records();
+        let record = request
+            .session_id
+            .and_then(|session_id| records.get(&session_id));
+        let saved_model = || {
+            preferences::load(&inner.data_root)
+                .ok()
+                .flatten()
+                .map(|saved| saved.model)
+                .unwrap_or_default()
+        };
+        let model = record.map_or_else(saved_model, |record| record.model.clone());
+        let fixed = inner.token.is_fixed();
+        let (connection, origin, stale) = if fixed {
+            (
+                connection_view(inner, store.as_ref()),
+                ConnectionOrigin::Launch,
+                false,
+            )
+        } else {
+            match record.map(|record| &record.connection) {
+                None | Some(ChosenConnection::Follow {}) => (
+                    connection_view(inner, store.as_ref()),
+                    ConnectionOrigin::Default,
+                    false,
+                ),
+                Some(ChosenConnection::Default { endpoint }) => (
+                    ConnectionView {
+                        endpoint: display_safe_line(endpoint),
+                        source: ConnectionSourceView::Active,
+                        profile: None,
+                        kind: None,
+                        selectable: true,
+                    },
+                    ConnectionOrigin::Session,
+                    *endpoint != inner.endpoint,
+                ),
+                Some(ChosenConnection::Profile { name, endpoint }) => {
+                    let current = store.as_ref().and_then(|store| {
+                        store
+                            .check_provider_selectable(name)
+                            .ok()
+                            .and(recorded_endpoint(store, name))
+                    });
+                    let kind = store
+                        .as_ref()
+                        .and_then(|store| store.provider_profile(name))
+                        .map(|status| status.profile().kind().as_str());
+                    (
+                        ConnectionView {
+                            endpoint: display_safe_line(endpoint),
+                            source: ConnectionSourceView::Active,
+                            profile: Some(display_safe_line(name)),
+                            kind,
+                            selectable: true,
+                        },
+                        ConnectionOrigin::Session,
+                        current.as_deref() != Some(endpoint.as_str()),
+                    )
+                }
             }
+        };
+        let choices = match (&store, fixed) {
+            (Some(store), false) => store
+                .provider_profiles()
+                .iter()
+                .map(|status| status.profile())
+                .filter_map(|profile| {
+                    let endpoint = profile.endpoint()?;
+                    store.check_provider_selectable(profile.name()).ok()?;
+                    Some(ConnectionChoice {
+                        name: display_safe_line(profile.name()),
+                        kind: profile.kind().as_str(),
+                        endpoint: display_safe_line(endpoint.as_str()),
+                        active: !stale
+                            && connection.profile.as_deref()
+                                == Some(display_safe_line(profile.name()).as_str()),
+                    })
+                })
+                .collect(),
             _ => Vec::new(),
         };
         drop(store);
         Ok(ConnectionStatus {
             connection,
+            origin,
+            model,
+            stale,
+            session_choices_unreadable: unreadable,
             choices,
         })
     }

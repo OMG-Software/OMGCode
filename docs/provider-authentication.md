@@ -19,7 +19,7 @@ billing or defer it.
 | Anthropic API | User API key; API-account billing | Planned; not implemented |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
-| Ollama Cloud | Provider cloud credentials | Planned; not implemented |
+| Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0071); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
 | OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
 | LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
 
@@ -141,7 +141,7 @@ a separately billed Anthropic API connection remains a different profile.
 and an authentication mode. Kinds are `openai`, `anthropic`, `ollama_local`,
 `ollama_cloud`, `open_router`, and `lm_studio`; modes are `subscription`,
 `api_key`, and `none`. Subscription is accepted only for OpenAI and Anthropic.
-API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio.
+API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio. Since ADR-0071 an `ollama_cloud` profile also accepts its one fixed endpoint.
 Ollama Local accepts only `none`.
 
 A profile stores no account, token, password, certificate, or other
@@ -152,8 +152,8 @@ entitlement check, billing mode, or model context uses it. Since 0.30.0 the
 local LM Studio adapter can read a bound credential of an `lm_studio` profile
 that the operator selects (below). `capabilities` reports
 `provider_profiles: true`, `provider_adapters: false`, and
-`stored_credential_adapters: ["lm_studio"]`, and, since 0.31.0,
-`provider_profile_endpoints: true`. Cloud adapters and the
+`stored_credential_adapters: ["lm_studio", "ollama_cloud"]`, and, since 0.31.0,
+`provider_profile_endpoints: true`. Hosted adapters other than Ollama Cloud and the
 provider-specific login approvals remain prerequisites for any real
 connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
 
@@ -164,7 +164,7 @@ applies to every request: plain `http`, a literal loopback IP, an explicit
 non-zero port, the path `/v1` or `/v1/`, no user information, query, or
 fragment, and at most 256 bytes. Core has one implementation of that rule, and
 both the provider client and the profile record use it. Replay of the control
-journal applies it again. Every other provider kind refuses an endpoint for
+journal applies it again. An `ollama_cloud` profile accepts only the fixed cloud endpoint (Ollama Cloud, below). Every other provider kind refuses an endpoint for
 now, because no adapter defines its rule. The text is stored exactly as given,
 without normalisation. The refusals are `provider profile refused: a
 local provider endpoint must be http://<loopback IP>:<port>/v1 with no user
@@ -240,8 +240,8 @@ streams are core test fixtures.
   client-side budget, so set the server's length in Ollama, for example with
   `OLLAMA_CONTEXT_LENGTH`, to at least that value.
 - **Not covered.** Ollama's native `/api` endpoints, model download,
-  starting the server, an Ollama server behind authentication, and Ollama
-  Cloud as a provider. Model listing uses `/v1/models` (next section).
+  starting the server, and an Ollama server behind authentication. Ollama
+  Cloud is a separate connection (see Ollama Cloud below). Model listing uses `/v1/models`.
 
 ## Model listing (0.46.0)
 
@@ -272,8 +272,68 @@ OpenAI-compatible APIs, and both returned
   `/v1/models` does not report. Embedding models are listed.
 
 `capabilities` reports `streaming_adapters` and `cancellable_adapters` as
-`["lm_studio", "ollama_local"]`. `stored_credential_adapters` stays
-`["lm_studio"]`.
+`["lm_studio", "ollama_local", "ollama_cloud"]` since ADR-0071, and
+`stored_credential_adapters` is `["lm_studio", "ollama_cloud"]`.
+
+## Ollama Cloud (ADR-0071)
+
+[ADR-0071](adr/0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)
+adds a direct connection to Ollama's hosted service. It reuses the local
+adapter's Chat Completions client, stream parser, cancellation, and model list.
+
+- **One endpoint.** An `ollama_cloud` profile accepts exactly
+  `https://ollama.com/v1`, or the same text with one trailing `/`, and nothing
+  else: no other host, port, path, user information, query, fragment, scheme,
+  or letter case. It still takes authentication `api_key` only, and a profile
+  without an endpoint cannot be used (`endpoint_not_recorded`). Core has one
+  implementation of the rule (`OLLAMA_CLOUD_ENDPOINT`, `ModelEndpoint`), which
+  the profile record, replay, the client, and the model list share. No rule
+  admits any other non-loopback endpoint. `omgcode workspace
+  provider-profile-add NAME --kind ollama_cloud --auth api_key --endpoint
+  https://ollama.com/v1 --revision N` records one.
+- **Credential.** `provider-credential-set` stores the key and binds it as for
+  `lm_studio`. `provider_credential_binding` and `load_provider_credential`
+  take `ollama_cloud` as the adapter and return the recorded endpoint with
+  the credential decision, so the key goes only to the recorded endpoint
+  (ADR-0048). `--provider-profile NAME` selects the profile for `chat`,
+  `session compact`, `models`, and the desktop launch. `OMGCODE_LM_TOKEN` is
+  never read for it, and `--endpoint https://ollama.com/v1` without a profile
+  is refused (`cloud_needs_profile`).
+- **Desktop key entry.** The desktop `settings` window can add an
+  `ollama_cloud` profile and its key in one step (**Add connection**, Ollama
+  Cloud) and replace the key later (**Set key…**), as the write-only field of
+  ADR-0059 decision 6 describes. The window sends the key once, in
+  `settings_add_connection` or `settings_set_api_key`, and clears the field.
+  Rust moves it into the zeroing `Secret`, applies the same size bound as the
+  CLI (16 KiB, not empty; the desktop also refuses a control character), and
+  uses the same core calls: `add_provider_profile`, then
+  `set_provider_credential`, which stores the item, binds it, and deletes a
+  replaced item. The profile must exist before it can be bound, so Rust opens
+  the native store first and, if storing or binding fails, removes the
+  profile again. The endpoint is not typed: Rust supplies
+  `OLLAMA_CLOUD_ENDPOINT`. No response or error carries the key, its length,
+  or a digest. The key passes through the `settings` webview's memory and one
+  IPC message, which is a weaker boundary than the CLI's standard input.
+  Removing the profile in the window asks a native Yes/No that says the stored
+  key is deleted, then removes the profile and deletes the item as `provider-profile-remove`
+  does. Replacing a key shows no dialog, because the audience is unchanged.
+  See the [desktop interface](desktop-interface.md#choosing-the-model-connection).
+- **Transport.** HTTPS only, with the platform's certificate validation
+  (`native-tls`); no proxy, redirect, or retry; the same timeouts and body
+  limits as a local request. A request to the cloud endpoint without a token
+  is refused before any connection (`invalid local model token`).
+- **Selectable.** A profile can be the active connection when it is a local
+  kind with an endpoint, or an `ollama_cloud` profile with the cloud endpoint
+  and a bound credential (`ControlStore::check_provider_selectable`). Replay
+  checks the endpoint rule only, because it cannot read the credential store.
+- **Off-machine data.** A turn on this connection sends prompts, workspace
+  text that tools read, and command output to ollama.com.
+- **Not verified.** The model list shape was observed on 2026-11-20 without a
+  key. No chat, stream, or tool-call request was made to ollama.com, because
+  no key was available; those shapes are assumed to match the local Ollama
+  server's. No test makes a network call to ollama.com.
+- **Not covered.** Ollama's native `/api` endpoints, account sign-in, usage
+  limits and billing, and any other hosted provider.
 
 ## Stored credential use (0.30.0)
 
@@ -328,7 +388,7 @@ credential. It is the only adapter that reads one.
   recorded and returned text applies to it. The provider clients' request-header
   copies and transport buffers are not zeroed.
 - **Limits.** Any process running as the same user can still read the stored
-  credential. A memory-only session credential, a cloud adapter, subscription
+  credential. A memory-only session credential, subscription
   sign-in, token refresh, and account lifecycle are not implemented. The
   frontend shows nothing about the credential source beyond the endpoint text
   it already displayed. Version 0.30.0 bound the credential to a provider kind
@@ -374,7 +434,7 @@ to an endpoint no longer holds for a usable profile.
   selected. Remove it, add it again with `--endpoint`, and store the credential
   again. The 0.30.0 behaviour, which took the endpoint from `--endpoint`, was
   never merged or released.
-- **Limits.** Only `lm_studio` profiles accept an endpoint. No endpoint rule
+- **Limits.** In this version only `lm_studio` profiles accepted an endpoint. No endpoint rule
   exists for a non-loopback provider, HTTPS, or certificates, and no cloud
   adapter exists. Any process running as the same user can still read a stored
   credential. A hand-edited control journal is checked only by replay

@@ -59,10 +59,14 @@ without credentials. Trusted CLI commands can store API keys in protected OS
 storage (DPAPI on Windows, the Secret Service on Linux) and bind them to
 `api_key` profiles. An `lm_studio` or `ollama_local` profile can record a
 loopback endpoint, and one local adapter serves both through the OpenAI-compatible
-`/v1` API. Only the local adapter reads a credential, for an operator-selected
-`lm_studio` profile that supplies both the endpoint and the token
-(ADR-0047, ADR-0048); an `ollama_local` profile has none. No cloud adapter or
-login exists. Trusted
+`/v1` API. The same client reads a credential for an operator-selected
+`lm_studio` or `ollama_cloud` profile that supplies both the endpoint and the
+token (ADR-0047, ADR-0048); an `ollama_local` profile has none. An
+`ollama_cloud` profile accepts only the fixed HTTPS endpoint
+`https://ollama.com/v1` and always needs a stored key; its chat, stream, and
+tool-call shapes were not verified with a real key
+([ADR-0071](docs/adr/0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
+No other cloud adapter or login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
 in the same turn; on the CLI only a later identical call may consume an
@@ -106,7 +110,12 @@ widens access, and creates an empty settings store on first use
 ([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
-connections without a credential. A status bar at the bottom of the `main`
+connections and Ollama Cloud connections, whose API key is typed once into a
+write-only field. A **Workspace settings** button beside the composer shows
+the same window scoped to the open session's workspace. The provider and model
+are chosen per session in the composer; a provider change needs the native
+confirmation, and each turn re-checks the session's recorded endpoint
+(ADR-0071). A status bar at the bottom of the `main`
 window shows the open session's workspace and Git branch, read from `HEAD`
 without a Git process, and offers the same connection choice through the same
 native confirmation
@@ -115,7 +124,7 @@ The composer chooses the model from the list that connection's server reports
 through `GET /v1/models`, and `omgcode models` prints that list; the list
 grants nothing, and an Ollama cloud tag is labelled by name only
 ([ADR-0066](docs/adr/0066-choose-the-chat-model-from-the-local-servers-model-list.md)).
-Credentials, execution setup, and skills still change only through the
+Other credentials, execution setup, and skills still change only through the
 trusted CLI. The desktop shell has no development
 panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not

@@ -178,8 +178,9 @@ pub(crate) struct ProviderProfileAddArgs {
     /// One of: subscription, api_key, none.
     #[arg(long)]
     auth: String,
-    /// The endpoint the profile's adapter uses. Only lm_studio and
-    /// ollama_local accept one: http://<loopback IP>:<port>/v1. It cannot be
+    /// The endpoint the profile's adapter uses. lm_studio and ollama_local
+    /// accept http://<loopback IP>:<port>/v1; ollama_cloud accepts exactly
+    /// https://ollama.com/v1. No other kind accepts one. It cannot be
     /// changed later; remove the profile and add it again.
     #[arg(long)]
     endpoint: Option<String>,

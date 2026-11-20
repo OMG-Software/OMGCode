@@ -1,9 +1,16 @@
-import { el, replaceChildren } from "../dom";
+import { button, el, replaceChildren } from "../dom";
 import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
 import { renderAdvanced } from "./advanced_section";
-import type { Actions, Change, SectionContext, SectionId, ViewState } from "./context";
+import {
+  type Actions,
+  type Change,
+  type SectionContext,
+  type SectionId,
+  scopedWorkspace,
+  type ViewState,
+} from "./context";
 import { newConnectionDraft, renderModel } from "./model_section";
 import { createNav } from "./nav";
 import { renderWorkspaces } from "./workspaces_section";
@@ -40,8 +47,9 @@ const ACTIONS: Actions = {
   clearPackageCache: (workspaceId) => (revision) =>
     settingsApi.clearPackageCache(workspaceId, revision),
   selectConnection: (profile) => (revision) => settingsApi.selectConnection(revision, profile),
-  addLocalConnection: (name, kind, endpoint) => (revision) =>
-    settingsApi.addLocalConnection(revision, name, kind, endpoint),
+  addConnection: (name, kind, endpoint, apiKey) => (revision) =>
+    settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
+  setApiKey: (name, apiKey) => (revision) => settingsApi.setApiKey(revision, name, apiKey),
   removeConnection: (name) => (revision) => settingsApi.removeConnection(revision, name),
 };
 
@@ -58,26 +66,58 @@ export function startSettings(root: HTMLElement): SettingsApp {
     addConnectionOpen: false,
     connectionDraft: newConnectionDraft(),
   };
-  const problem = el("p", { class: "error", attrs: { role: "alert" } });
+  // A change's error stays until the next change starts; a read's failure until a read succeeds.
+  // Two elements, so neither outcome can overwrite or clear the other.
+  const problem = el("p", { class: "error change-error", attrs: { role: "alert" } });
   problem.hidden = true;
+  const readProblem = el("p", { class: "error read-error", attrs: { role: "alert" } });
+  readProblem.hidden = true;
   const notice = el("p", { class: "notice", attrs: { role: "status" } });
   notice.hidden = true;
   // A disabled fieldset disables every control inside it without touching their own state.
   const body = el("fieldset", { class: "settings-body" });
   // The one scroll container for every section.
-  const content = el("div", { class: "settings-content" }, problem, notice, body);
+  // Shown only while the window is scoped to one workspace (ADR-0071).
+  const allSettings = button("All settings", () => submit(() => settingsApi.clearScope()));
+  const scopeBar = el("div", { class: "scope-bar" }, allSettings);
+  scopeBar.hidden = true;
+  const content = el(
+    "div",
+    { class: "settings-content" },
+    scopeBar,
+    problem,
+    readProblem,
+    notice,
+    body,
+  );
   const nav = createNav(
     view.section,
     (id) => select(id),
     () => void refresh(),
   );
+  const windowElement = el("main", { class: "settings-window" }, nav.element, content);
   let current: SettingsOverview | null = null;
   let working = false;
+  /**
+   * A read was asked for while another read or change ran. That one's answer may predate a scope
+   * the main window set meanwhile, so one more read follows it.
+   */
+  let readAgain = false;
 
   function setWorking(value: boolean): void {
     working = value;
     body.disabled = value;
     nav.setDisabled(value);
+    allSettings.disabled = value;
+  }
+
+  /** Ends the current read or change, then makes the read that was asked for meanwhile. */
+  function finishWork(): void {
+    setWorking(false);
+    if (readAgain) {
+      readAgain = false;
+      void refresh();
+    }
   }
 
   function renderSection(id: SectionId, context: SectionContext): HTMLElement[] {
@@ -102,16 +142,81 @@ export function startSettings(root: HTMLElement): SettingsApp {
       actions: ACTIONS,
       rerender: draw,
     };
+    const scoped = scopedWorkspace(current) !== null;
+    // A scoped window shows one workspace and no section list; All settings restores both.
+    nav.element.hidden = scoped;
+    scopeBar.hidden = !scoped;
+    windowElement.classList.toggle("scoped", scoped);
     nav.select(view.section);
     // Drawing replaces every control. A focused control with an id (the workspace chooser) gets
     // focus back on its replacement, so a keyboard user keeps their place.
     const active = document.activeElement;
     const focusedId = active instanceof HTMLElement && body.contains(active) ? active.id : "";
-    replaceChildren(body, ...renderSection(view.section, context));
+    const unsent = takeUnsentKeys();
+    replaceChildren(body, ...renderSection(scoped ? "workspaces" : view.section, context));
+    restoreUnsentKeys(unsent);
     const replacement = focusedId === "" ? null : document.getElementById(focusedId);
     if (replacement !== null && body.contains(replacement)) {
       replacement.focus();
     }
+  }
+
+  /**
+   * Takes every API key typed but not sent out of its field, by the field's id, which names the
+   * form and its connection. The keys move from the old fields to the new ones and are never put
+   * in view state. A key in a closed form is cleared and not carried.
+   */
+  function takeUnsentKeys(): Map<string, string> {
+    const unsent = new Map<string, string>();
+    for (const input of Array.from(
+      body.querySelectorAll<HTMLInputElement>('input[type="password"]'),
+    )) {
+      const value = input.value;
+      input.value = "";
+      if (input.id !== "" && value !== "" && input.closest("details")?.open !== false) {
+        unsent.set(input.id, value);
+      }
+    }
+    return unsent;
+  }
+
+  // Closing a form drops the key typed into it, so nothing hidden keeps a key or brings it back.
+  body.addEventListener(
+    "toggle",
+    (event) => {
+      const disclosure = event.target;
+      if (disclosure instanceof HTMLDetailsElement && !disclosure.open) {
+        for (const input of Array.from(
+          disclosure.querySelectorAll<HTMLInputElement>('input[type="password"]'),
+        )) {
+          input.value = "";
+        }
+      }
+    },
+    true,
+  );
+
+  /**
+   * Puts each key back into the new field with the same id, opening its disclosure again. A key
+   * whose form is gone (its connection removed or no longer hosted) is dropped.
+   */
+  function restoreUnsentKeys(unsent: Map<string, string>): void {
+    for (const [id, value] of unsent) {
+      const input = document.getElementById(id);
+      if (
+        !(input instanceof HTMLInputElement) ||
+        input.type !== "password" ||
+        !body.contains(input)
+      ) {
+        continue;
+      }
+      input.value = value;
+      const disclosure = input.closest("details");
+      if (disclosure !== null) {
+        disclosure.open = true;
+      }
+    }
+    unsent.clear();
   }
 
   function select(id: SectionId): void {
@@ -121,13 +226,23 @@ export function startSettings(root: HTMLElement): SettingsApp {
     draw();
   }
 
+  /** Whether two overviews hold the same data. Both are plain IPC data in Rust's field order. */
+  function sameOverview(next: SettingsOverview, shown: SettingsOverview | null): boolean {
+    return shown !== null && JSON.stringify(next) === JSON.stringify(shown);
+  }
+
   function show(overview: SettingsOverview): void {
     current = overview;
     nav.setRevision(overview.revision);
     draw();
   }
 
-  function report(reason: unknown): void {
+  /**
+   * Shows the outcome of a change: its error (perhaps credential cleanup instructions) or
+   * "nothing changed". It stays until the operator starts another change, even when a read
+   * queued meanwhile follows at once, as one does when a native dialog returns focus here.
+   */
+  function reportChange(reason: unknown): void {
     const error = toIpcError(reason);
     if (error.code === CANCELLED_CODE) {
       replaceChildren(notice, NOTHING_CHANGED);
@@ -138,23 +253,38 @@ export function startSettings(root: HTMLElement): SettingsApp {
     problem.hidden = false;
   }
 
+  /** Shows why the configuration could not be read. The next successful read hides it. */
+  function reportRead(reason: unknown): void {
+    const error = toIpcError(reason);
+    replaceChildren(readProblem, `${error.message} (${error.code})`);
+    readProblem.hidden = false;
+  }
+
   function clearMessages(): void {
     problem.hidden = true;
+    readProblem.hidden = true;
     notice.hidden = true;
   }
 
   async function refresh(): Promise<void> {
     if (working) {
+      readAgain = true;
       return;
     }
     setWorking(true);
     try {
-      show(await settingsApi.overview());
-      clearMessages();
+      const overview = await settingsApi.overview();
+      // An unchanged overview is not drawn again: a redraw would rebuild every form and drop
+      // what the operator typed but has not sent, such as an API key pasted from elsewhere
+      // just before this window regained focus.
+      if (!sameOverview(overview, current)) {
+        show(overview);
+      }
+      readProblem.hidden = true;
     } catch (reason) {
-      report(reason);
+      reportRead(reason);
     } finally {
-      setWorking(false);
+      finishWork();
     }
   }
 
@@ -173,15 +303,15 @@ export function startSettings(root: HTMLElement): SettingsApp {
       try {
         show(await change(revision));
       } catch (reason) {
-        report(reason);
+        reportChange(reason);
         try {
           show(await settingsApi.overview());
         } catch (again) {
           show(recorded);
-          report(again);
+          reportRead(again);
         }
       } finally {
-        setWorking(false);
+        finishWork();
       }
     })();
   }
@@ -192,14 +322,18 @@ export function startSettings(root: HTMLElement): SettingsApp {
     }
   };
   document.addEventListener("visibilitychange", onVisible);
+  // The window can already be visible when the main window scopes it, which fires no visibility
+  // change; it gains focus, so it reads the scope then.
+  window.addEventListener("focus", onVisible);
 
-  replaceChildren(root, el("main", { class: "settings-window" }, nav.element, content));
+  replaceChildren(root, windowElement);
   void refresh();
 
   return {
     refresh,
     dispose() {
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     },
   };
 }

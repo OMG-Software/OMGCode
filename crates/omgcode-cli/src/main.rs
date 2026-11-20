@@ -145,7 +145,7 @@ enum SessionCommand {
         context_tokens: u64,
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
-        /// Use this recorded `lm_studio` or `ollama_local` provider profile's
+        /// Use this recorded `lm_studio`, `ollama_local`, or `ollama_cloud` provider profile's
         /// endpoint, and its stored credential, if any, instead of
         /// OMGCODE_LM_TOKEN.
         #[arg(long, value_parser = non_empty_name)]
@@ -198,7 +198,7 @@ struct ChatArgs {
     /// Enable compaction at the effective trigger before a turn.
     #[arg(long)]
     auto_compact: bool,
-    /// Use this recorded `lm_studio` or `ollama_local` provider profile's
+    /// Use this recorded `lm_studio`, `ollama_local`, or `ollama_cloud` provider profile's
     /// endpoint, and its stored credential, if any, instead of
     /// OMGCODE_LM_TOKEN. The variable is then not read.
     #[arg(long, value_parser = non_empty_name)]
@@ -227,7 +227,7 @@ struct ModelsArgs {
         conflicts_with = "provider_profile"
     )]
     endpoint: String,
-    /// Use this recorded `lm_studio` or `ollama_local` provider profile's
+    /// Use this recorded `lm_studio`, `ollama_local`, or `ollama_cloud` provider profile's
     /// endpoint, and its stored credential, if any, instead of
     /// OMGCODE_LM_TOKEN, exactly as `chat` does.
     #[arg(long, value_parser = non_empty_name)]
@@ -372,9 +372,9 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "provider_profiles": true,
             "provider_profile_endpoints": true,
             "provider_adapters": false,
-            "stored_credential_adapters": ["lm_studio"],
-            "streaming_adapters": ["lm_studio", "ollama_local"],
-            "cancellable_adapters": ["lm_studio", "ollama_local"],
+            "stored_credential_adapters": ["lm_studio", "ollama_cloud"],
+            "streaming_adapters": ["lm_studio", "ollama_local", "ollama_cloud"],
+            "cancellable_adapters": ["lm_studio", "ollama_local", "ollama_cloud"],
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "package_registry_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),

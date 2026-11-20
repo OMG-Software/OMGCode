@@ -450,3 +450,59 @@ fn session_context_reads_the_workspace_branch_for_display() {
         .expect_err("unknown session");
     assert_eq!(unknown.code(), "not_found");
 }
+
+/// The `settings` window's scope (ADR-0071) comes from the session's recorded
+/// workspace, is carried by every overview, and is cleared on request.
+#[test]
+fn the_settings_scope_follows_the_session_and_is_cleared_on_request() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let session = new_session(&service, &workspace);
+
+    // Given no scope, the overview carries none.
+    assert_eq!(service.settings_overview().expect("overview").scope, None);
+
+    // When the session's workspace is scoped, the overview names it.
+    service
+        .settings_scope_workspace(wire(session_request(session)))
+        .expect("scope");
+    let overview = service.settings_overview().expect("overview");
+    assert_eq!(
+        overview.scope.map(|scope| scope.workspace_id),
+        Some(workspace.id)
+    );
+    assert_eq!(
+        json_of(&overview)["scope"],
+        json!({"workspace_id": workspace.id})
+    );
+
+    // When it is cleared, the overview carries none again.
+    service.settings_scope_clear().expect("clear");
+    assert_eq!(service.settings_overview().expect("overview").scope, None);
+}
+
+#[test]
+fn an_unknown_session_leaves_the_settings_scope_unchanged() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let session = new_session(&service, &workspace);
+    service
+        .settings_scope_workspace(wire(session_request(session)))
+        .expect("scope");
+
+    let error = service
+        .settings_scope_workspace(wire(session_request(Uuid::new_v4())))
+        .expect_err("an unknown session is refused");
+
+    assert_eq!(error.code(), "not_found");
+    assert_eq!(
+        service
+            .settings_overview()
+            .expect("overview")
+            .scope
+            .map(|scope| scope.workspace_id),
+        Some(workspace.id)
+    );
+}

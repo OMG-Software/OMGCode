@@ -1,6 +1,7 @@
 import { button, el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { createPoller } from "../poll";
+import { createConnectionModel } from "./connection_state";
 import { createConversation } from "./conversation";
 import { createNewSessionDialog } from "./new_session";
 import { createSidebar } from "./sidebar";
@@ -48,20 +49,24 @@ export function startMain(root: HTMLElement): MainApp {
     }
   }
 
+  // The open session's provider and model: one source of truth for the composer's dropdowns and
+  // the footer's (ADR-0071).
+  const connection = createConnectionModel();
+  void connection.open(null);
   const footer = createStatusFooter({
-    // The composer shows the endpoint the next turn uses; read it again after a switch.
-    onConnectionChanged: () => void conversation.refreshEndpoint().catch(() => undefined),
+    connection,
     onShowApprovals: () => void showApprovals(),
   });
   const conversation = createConversation({
+    connection,
     onTreeChanged: () => {
       void sidebar.refresh();
       footer.refresh();
     },
-    onConnectionChanged: () => footer.refresh(),
   });
   const sidebar = createSidebar({
     onOpen: (session, folder, seq) => {
+      void connection.open(session.session_id);
       footer.showSession(session, folder);
       void conversation.open(session, folder, seq);
     },
@@ -71,6 +76,7 @@ export function startMain(root: HTMLElement): MainApp {
   });
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);
+    void connection.open(session.session_id);
     footer.showSession(session, folder);
     void conversation.open(session, folder, null);
     void sidebar.refresh();
@@ -100,6 +106,7 @@ export function startMain(root: HTMLElement): MainApp {
       conversation.dispose();
       sidebar.dispose();
       footer.dispose();
+      connection.dispose();
     },
   };
 }

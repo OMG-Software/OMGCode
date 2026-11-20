@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use omgcode_app::desktop::{DesktopConfig, DesktopService};
 use omgcode_app::{
-    ChatClients, ChatSettings, ConnectionSource, LocalConnection, TokenSource,
+    ChatClients, ChatSettings, ConnectionSource, LmToken, LocalConnection, TokenSource,
     resolve_local_connection,
 };
 use tauri::{Manager, RunEvent};
@@ -70,7 +70,7 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
         (None, Some(endpoint)) => {
             // Validate the endpoint the way a chat turn would, so a malformed
             // or non-loopback endpoint fails now, with the provider's message.
-            check_endpoint(&endpoint)?;
+            check_endpoint(&endpoint, None)?;
             let data_root =
                 omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
             (data_root, endpoint, TokenSource::Environment)
@@ -80,7 +80,7 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
             // chosen in settings, and uses the default while none is chosen.
             // An unusable selection is reported by the turn, not here, so the
             // settings window stays reachable to change it.
-            check_endpoint(launch::DEFAULT_ENDPOINT)?;
+            check_endpoint(launch::DEFAULT_ENDPOINT, None)?;
             let data_root =
                 omgcode_app::data_root(args.data_dir).map_err(|error| error.to_string())?;
             (
@@ -100,12 +100,14 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
             let connection =
                 resolve_local_connection(&data_root, &ConnectionSource::Profile(name.clone()))
                     .map_err(|error| error.to_string())?;
-            // The token is dropped at once; each turn resolves it again. The
-            // endpoint is the one the profile recorded, and it is validated
-            // like any other so a hand-edited journal cannot slip past.
+            // The token is held only through the check, because a cloud
+            // endpoint is refused without one, and then dropped; each turn
+            // resolves it again. The endpoint is the one the profile recorded,
+            // and it is validated like any other so a hand-edited journal
+            // cannot slip past.
             let LocalConnection { endpoint, token } = connection;
+            check_endpoint(&endpoint, token.as_ref().map(LmToken::expose))?;
             drop(token);
-            check_endpoint(&endpoint)?;
             (data_root, endpoint, TokenSource::Profile(name))
         }
     };
@@ -119,10 +121,11 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
 }
 
 /// Validate an endpoint the way a chat turn would. The clients are discarded;
-/// no request is made and no token is read.
-fn check_endpoint(endpoint: &str) -> Result<(), String> {
+/// no request is made. A token is passed only so a cloud endpoint, which core
+/// refuses without one, validates; it is never stored or sent.
+fn check_endpoint(endpoint: &str, token: Option<&str>) -> Result<(), String> {
     let probe = ChatSettings::new(endpoint, "endpoint-check", PROBE_CONTEXT_TOKENS);
-    ChatClients::new(&probe, None)
+    ChatClients::new(&probe, token)
         .map(drop)
         .map_err(|error| error.to_string())
 }
@@ -156,11 +159,13 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::approvals::approval_detail,
             commands::approvals::approval_decide,
             commands::settings_show_window,
+            commands::settings_show_workspace,
             commands::chat::chat_preferences_save,
             commands::chat::session_skills,
             commands::chat::session_context,
             commands::chat::connection_status,
             commands::chat::connection_select,
+            commands::chat::session_model_select,
             commands::chat::chat_models,
             commands::settings::settings_overview,
             commands::settings::settings_choose_root,
@@ -169,8 +174,10 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_choose_package_cache,
             commands::settings::settings_clear_package_cache,
             commands::settings::settings_select_connection,
-            commands::settings::settings_add_local_connection,
-            commands::settings::settings_remove_connection
+            commands::settings::settings_add_connection,
+            commands::settings::settings_remove_connection,
+            commands::settings::settings_set_api_key,
+            commands::settings::settings_clear_scope
         ])
         .build(tauri::generate_context!());
     match built {
@@ -258,5 +265,22 @@ mod tests {
             "{failure}"
         );
         assert!(!root.exists());
+    }
+
+    const CLOUD: &str = "https://ollama.com/v1";
+
+    #[test]
+    fn a_cloud_endpoint_is_accepted_with_a_token_and_refused_without_one() {
+        // Given the Ollama Cloud endpoint a profile launch resolves.
+        // When the check runs with the profile's token, then it passes.
+        assert_eq!(check_endpoint(CLOUD, Some("test-token")), Ok(()));
+        // When it runs without a token (the --endpoint and default branches),
+        // then the cloud endpoint is still refused.
+        assert!(check_endpoint(CLOUD, None).is_err());
+    }
+
+    #[test]
+    fn a_loopback_endpoint_needs_no_token() {
+        assert_eq!(check_endpoint("http://127.0.0.1:1234/v1", None), Ok(()));
     }
 }

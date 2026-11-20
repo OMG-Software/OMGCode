@@ -272,10 +272,14 @@ export interface ModelChoice {
   cloud_tag: boolean;
 }
 
-/** The models of the connection the next turn uses, sorted by id. */
+/** The models of a session's connection, sorted by id (ADR-0071). */
 export interface ChatModels {
-  /** The endpoint that was asked; a list for another endpoint is not offered. */
+  /** The session that asked. An answer for a session that is no longer shown is discarded. */
+  session_id: string;
+  /** The endpoint that was asked, for display only. Never compared with another endpoint. */
   endpoint: string;
+  /** The provider kind of the profile that was asked, or `null` for the launch or default endpoint. */
+  kind: string | null;
   models: ModelChoice[];
 }
 
@@ -326,15 +330,28 @@ export interface ConnectionView {
 /** One connection the main window's status bar may offer (ADR-0064). Never a credential. */
 export interface ConnectionChoice {
   name: string;
-  /** `lm_studio` or `ollama_local`. */
+  /** `lm_studio`, `ollama_local`, or `ollama_cloud`. */
   kind: string;
   endpoint: string;
   active: boolean;
 }
 
-/** The status bar's view of the model connection. `choices` is empty when a launch argument fixed it. */
+/** Where a session's connection comes from (ADR-0071). */
+export type ConnectionOrigin = "launch" | "session" | "default";
+
+/**
+ * A session's model connection (ADR-0064, ADR-0071). `choices` is empty when a launch argument
+ * fixed the connection.
+ */
 export interface ConnectionStatus {
   connection: ConnectionView;
+  origin: ConnectionOrigin;
+  /** The model chosen for the session, or the saved chat preference's model when it has none. */
+  model: string;
+  /** The recorded choice no longer holds; the next turn is refused until the operator chooses again. */
+  stale: boolean;
+  /** The per-session choices file could not be read and is treated as empty. */
+  session_choices_unreadable: boolean;
   choices: ConnectionChoice[];
 }
 
@@ -369,6 +386,9 @@ export interface ProviderProfileView {
 
 /** A local provider the settings window may record (ADR-0064). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
+
+/** A provider the settings window may add: a local one, or hosted Ollama Cloud (ADR-0071). */
+export type NewConnectionKind = LocalProviderKind | "ollama_cloud";
 
 export interface ToolchainProfileView {
   name: string;
@@ -409,4 +429,6 @@ export interface SettingsOverview {
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
   skills: SkillSettingView[];
+  /** The workspace the window is scoped to (ADR-0071), or `null` for the full view. Display only. */
+  scope: { workspace_id: string } | null;
 }

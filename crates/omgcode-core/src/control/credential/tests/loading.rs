@@ -232,6 +232,98 @@ fn a_missing_native_item_is_a_typed_not_found() {
     assert!(!format!("{error:?}").contains("omgcode-core-sentinel"));
 }
 
+/// An `ollama_cloud` profile is a stored-credential adapter beside
+/// `lm_studio` (ADR-0071): it returns its recorded endpoint with the secret,
+/// is refused for the wrong adapter in both directions, and is refused with
+/// the typed cause when it records no endpoint or has no binding.
+#[test]
+fn an_ollama_cloud_profile_binds_and_loads_like_lm_studio() {
+    const CLOUD: &str = "https://ollama.com/v1";
+    let fixture = fixture();
+    let credentials = &fixture.credentials;
+    let mut store = fixture.store();
+    let cloud = |name: &str, endpoint: Option<&str>| ProviderProfileDeclaration {
+        name: name.into(),
+        kind: "ollama_cloud".into(),
+        auth: "api_key".into(),
+        endpoint: endpoint.map(str::to_owned),
+    };
+    for declaration in [
+        cloud("cloud", Some(CLOUD)),
+        cloud("cloud-unbound", Some(CLOUD)),
+        cloud("cloud-bare", None),
+    ] {
+        let revision = store.revision();
+        store
+            .add_provider_profile(&declaration, revision)
+            .expect("cloud profile");
+    }
+    add_lm_studio(&mut store, "lms", "api_key");
+    let ask = |store: &ControlStore, name: &str, adapter: ProviderKind| {
+        store
+            .provider_credential_binding(name, adapter)
+            .map(|connection| {
+                (
+                    connection.endpoint().as_str().to_owned(),
+                    connection.binding().is_some(),
+                )
+            })
+    };
+
+    // Refusals decide before any native access, in the documented order.
+    let error = ask(&store, "cloud-bare", ProviderKind::OllamaCloud).expect_err("no endpoint");
+    assert_eq!(error.code(), "endpoint_not_recorded");
+    let error = ask(&store, "cloud-unbound", ProviderKind::OllamaCloud).expect_err("unbound");
+    assert_eq!(error.code(), "not_bound");
+    let error = ask(&store, "cloud", ProviderKind::LmStudio).expect_err("wrong adapter");
+    assert_eq!(error.code(), "wrong_provider");
+    let error = ask(&store, "lms", ProviderKind::OllamaCloud).expect_err("wrong adapter");
+    assert_eq!(error.code(), "wrong_provider");
+
+    let revision = store.revision();
+    let set = store
+        .set_provider_credential(credentials, "cloud", &secret(SENTINEL), revision)
+        .expect("set");
+    assert_eq!(
+        ask(&store, "cloud", ProviderKind::OllamaCloud).expect("binding"),
+        (CLOUD.to_owned(), true)
+    );
+    let loaded = store
+        .load_provider_credential(credentials, "cloud", ProviderKind::OllamaCloud)
+        .expect("load");
+    let (endpoint, secret_value) = loaded.into_parts();
+    assert_eq!(endpoint, CLOUD);
+    assert_eq!(
+        store
+            .provider_profile("cloud")
+            .and_then(|status| status.credential()),
+        Some(&set.binding)
+    );
+    assert_eq!(secret_value.expect("a secret").expose(), SENTINEL);
+    // The LM Studio adapter still cannot read the cloud profile's key.
+    assert_eq!(
+        lm_studio(&store, credentials, "cloud")
+            .expect_err("wrong adapter")
+            .code(),
+        "wrong_provider"
+    );
+    // A bound cloud profile is selectable; an unbound one is not.
+    assert!(store.check_provider_selectable("cloud").is_ok());
+    assert!(matches!(
+        store.check_provider_selectable("cloud-unbound"),
+        Err(ControlError::ProviderRefused(_))
+    ));
+    assert!(matches!(
+        store.check_provider_selectable("cloud-bare"),
+        Err(ControlError::ProviderRefused(_))
+    ));
+    let revision = store.revision();
+    let removal = store
+        .remove_provider_credential(credentials, "cloud", revision)
+        .expect("cleanup");
+    assert!(removal.orphan.is_none());
+}
+
 /// A poisoned store refuses a read before it looks at any profile.
 #[test]
 fn a_poisoned_store_refuses_a_read() {

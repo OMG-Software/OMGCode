@@ -35,6 +35,7 @@
 //! | `reviews` | outstanding single-use approval review tokens |
 //! | `events` | the one chat event subscriber and the running turns' previews |
 //! | `pending_cache` | an atomic copy of the last pending-approval count read |
+//! | `session_choices` | the read-modify-write of `session-connections.json` (ADR-0071) |
 //!
 //! **Lock order** when two are ever needed: `turns`, then `index`, then
 //! `reviews`. The code takes one at a time. The `events` lock is never held
@@ -89,6 +90,7 @@ mod error;
 mod events;
 mod preferences;
 mod review_tokens;
+mod session_connections;
 mod sessions;
 mod settings;
 mod settings_changes;
@@ -101,7 +103,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
+use omgcode_core::control::ProviderKind;
 use omgcode_core::session_index::SessionIndex;
+use uuid::Uuid;
 
 pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
@@ -112,24 +116,27 @@ use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
 pub use self::wire::{
-    ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
-    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, BranchState,
-    BranchView, ChatDefaults, ChatEvent, ChatModels, ChatOutcome, ChatPreferencesDto,
-    ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
-    ConnectionChoice, ConnectionChooseRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
-    ConnectionSourceView, ConnectionStatus, ConnectionView, ContainerGrantView, ContextMeterDto,
-    Decision, EntryKind, LocalConnectionAddRequest, LocalProviderKind, MessageRoleDto, ModelChoice,
-    PackageProfileView, PermissionFlags, PermissionsChangeRequest, PreferencesSource,
-    ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto, SessionContext,
-    SessionCreateRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
-    SessionTree, SettingsOverview, SettingsRevisionRequest, SkillOverrideView, SkillSettingView,
-    SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
-    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
-    WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
+    ApiKeySetRequest, ApiKeyText, ApprovalDecideRequest, ApprovalDetail, ApprovalField,
+    ApprovalList, ApprovalOperationDto, ApprovalRequest, ApprovalStateDto, ApprovalView,
+    ApprovalsSummary, Binding, BranchState, BranchView, ChatDefaults, ChatEvent, ChatModels,
+    ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
+    ChatState, ChatStatus, ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest,
+    ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView,
+    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView, ContextMeterDto,
+    Decision, EntryKind, MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView,
+    PermissionFlags, PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit,
+    SearchRequest, SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest,
+    SessionModelSelectRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
+    SessionTree, SettingsOverview, SettingsRevisionRequest, SettingsScope, SkillOverrideView,
+    SkillSettingView, SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode,
+    TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
+    WorkspaceChoice, WorkspaceGroup, WorkspaceList, WorkspaceRevisionRequest,
+    WorkspaceSettingsView,
 };
+use crate::credential_source::resolve_connection_and_kind;
 use crate::{
     AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
-    resolve_local_connection, resolve_local_endpoint,
+    resolve_local_endpoint,
 };
 
 /// Fixed settings of one desktop process.
@@ -162,14 +169,14 @@ pub struct DesktopConfig {
 /// process environment and the credential store.
 ///
 /// [`DesktopService::open`] resolves `DesktopConfig::token_source` with
-/// [`resolve_local_connection`]; [`DesktopService::open_with_token_source`] uses this
+/// [`crate::resolve_local_connection`]; [`DesktopService::open_with_token_source`] uses this
 /// function instead and ignores the configured source.
 pub type InjectedTokenFn = fn() -> Result<Option<String>, AppError>;
 
 /// How a turn obtains its token.
 #[derive(Clone)]
 enum TokenResolver {
-    /// The production path: [`resolve_local_connection`].
+    /// The production path: [`crate::resolve_local_connection`].
     Source(TokenSource),
     /// A test or embedder supplier.
     Injected(InjectedTokenFn),
@@ -189,10 +196,22 @@ impl TokenResolver {
         data_root: &Path,
         launch_endpoint: &str,
     ) -> Result<LocalConnection, AppError> {
+        self.resolve_with_kind(data_root, launch_endpoint)
+            .map(|(connection, _)| connection)
+    }
+
+    /// [`Self::resolve`] with the kind of the selected profile, from the same
+    /// read of the settings store. `None` for the launch or default endpoint
+    /// and for a source fixed at launch, as [`Self::current_endpoint`] reports.
+    fn resolve_with_kind(
+        &self,
+        data_root: &Path,
+        launch_endpoint: &str,
+    ) -> Result<(LocalConnection, Option<ProviderKind>), AppError> {
         match self {
             Self::Source(source) => {
-                let connection =
-                    resolve_local_connection(data_root, &source.connection(launch_endpoint))?;
+                let (connection, kind) =
+                    resolve_connection_and_kind(data_root, &source.connection(launch_endpoint))?;
                 // An active source may change between turns; `chat_send`
                 // compares its endpoint with the one the window was shown.
                 if source.is_fixed() && connection.endpoint != launch_endpoint {
@@ -201,12 +220,15 @@ impl TokenResolver {
                         "endpoint_changed: the provider profile's endpoint changed since launch; restart the application",
                     ));
                 }
-                Ok(connection)
+                Ok((connection, if source.is_fixed() { None } else { kind }))
             }
-            Self::Injected(supplier) => Ok(LocalConnection {
-                endpoint: launch_endpoint.to_owned(),
-                token: supplier()?.map(LmToken::new),
-            }),
+            Self::Injected(supplier) => Ok((
+                LocalConnection {
+                    endpoint: launch_endpoint.to_owned(),
+                    token: supplier()?.map(LmToken::new),
+                },
+                None,
+            )),
         }
     }
 
@@ -261,6 +283,13 @@ struct Inner {
     /// Set while one settings change waits for the operator or applies, so
     /// a second change is refused rather than opening a second dialog.
     settings_change: AtomicBool,
+    /// The workspace the `settings` window is scoped to, set by the `main`
+    /// window's **Workspace settings** button. Display state only: it grants
+    /// and removes no access. Keep every critical section to one read or write.
+    settings_scope: Mutex<Option<Uuid>>,
+    /// Serializes the read-modify-write cycles of the per-session choices file
+    /// (ADR-0071). Held for file input and output only.
+    session_choices: Mutex<()>,
 }
 
 /// The desktop command service. See the [module documentation](self).
@@ -315,6 +344,8 @@ impl DesktopService {
                 events: Mutex::new(EventHub::default()),
                 pending_cache: AtomicU64::new(0),
                 settings_change: AtomicBool::new(false),
+                settings_scope: Mutex::new(None),
+                session_choices: Mutex::new(()),
             }),
         })
     }

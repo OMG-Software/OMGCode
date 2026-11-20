@@ -11,6 +11,7 @@ import type {
   ChatSettings,
   ChatStatus,
   ConnectionStatus,
+  ConnectionView,
   PermissionFlags,
   SearchHit,
   SessionSummary,
@@ -34,6 +35,8 @@ const CHAT_DURATION_MS = 2000;
 const MOCK_REPLY_PIECES = ["This ", "is a ", "mock ", "reply."];
 const TOKEN_LIFETIME_MS = 120_000;
 const MOCK_ENDPOINT = "http://127.0.0.1:1234/v1";
+/** A mock session's record that follows the global default (a model chosen, no provider). */
+const FOLLOW = Symbol("follow");
 
 interface Fail {
   code: string;
@@ -102,6 +105,16 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   const tokens = new Map<string, { id: string; expires: number }>();
   let subscriber: Subscriber | null = null;
   let savedPreferences: ChatPreferences | null = null;
+  /**
+   * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
+   * for it, as Rust records it, and its model.
+   */
+  const sessionChoices = new Map<
+    string,
+    { profile: string | null | typeof FOLLOW; endpoint: string | null; model: string }
+  >();
+  /** The workspace each session created here belongs to, as core records it. */
+  const sessionWorkspaces = new Map<string, string>();
   const settings: SettingsOverview = initialSettings();
   const nowUnix = (): number => Math.floor(now() / 1000);
 
@@ -345,7 +358,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     if (item.summary.status !== "idle" || item.summary.archived) {
       fail("session_not_idle", "The session cannot take a message now.");
     }
-    if (settings.endpoint !== currentEndpoint()) {
+    if (staleChoice(id)) {
+      fail(
+        "session_connection_stale",
+        "The connection chosen for this session changed or was removed. Choose the provider again, then send.",
+      );
+    }
+    if (settings.endpoint !== effectiveConnection(id).endpoint) {
       fail(
         "connection_changed",
         "The model connection changed in settings. Check the model name, then send again.",
@@ -544,27 +563,45 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         };
         sessions.push(created);
         byId.set(id, created);
+        sessionWorkspaces.set(id, str(args, "workspace_id"));
         groups[0]?.session_ids.unshift(id);
         return clone(created.summary);
       }
       case "chat_defaults":
         return chatDefaults();
       // A fixed list per provider kind, like the servers' `/v1/models` (ADR-0066).
-      case "chat_models":
+      case "chat_models": {
+        const id = str(args, "session_id");
+        session(id);
+        if (staleChoice(id)) {
+          fail(
+            "session_connection_stale",
+            "The connection chosen for this session changed or was removed. Choose the provider again, then send.",
+          );
+        }
+        const view = effectiveConnection(id);
         return {
-          endpoint: currentEndpoint(),
+          session_id: id,
+          endpoint: view.endpoint,
+          kind: view.kind,
           models:
-            settings.connection.kind === "ollama_local"
+            view.kind === "ollama_cloud"
               ? [
-                  { id: "gpt-oss:120b-cloud", cloud_tag: true },
-                  { id: "lfm2.5:latest", cloud_tag: false },
-                  { id: "qwen2.5-coder:7b", cloud_tag: false },
+                  { id: "gpt-oss:120b", cloud_tag: false },
+                  { id: "qwen3-coder:480b", cloud_tag: false },
                 ]
-              : [
-                  { id: "google/gemma-4-e4b", cloud_tag: false },
-                  { id: "qwen2.5-coder", cloud_tag: false },
-                ],
+              : view.kind === "ollama_local"
+                ? [
+                    { id: "gpt-oss:120b-cloud", cloud_tag: true },
+                    { id: "lfm2.5:latest", cloud_tag: false },
+                    { id: "qwen2.5-coder:7b", cloud_tag: false },
+                  ]
+                : [
+                    { id: "google/gemma-4-e4b", cloud_tag: false },
+                    { id: "qwen2.5-coder", cloud_tag: false },
+                  ],
         } satisfies ChatModels;
+      }
       case "chat_preferences_save":
         savedPreferences = clone(args.preferences as ChatPreferences);
         return chatDefaults();
@@ -572,7 +609,23 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         str(args, "session_id");
         return { workspace_registered: true, skills: ["review-checklist", "release-notes"] };
       case "settings_show_window":
+        settings.scope = null;
         return null;
+      case "settings_show_workspace": {
+        const id = str(args, "session_id");
+        session(id);
+        // A session created here names its workspace; a fixture session uses the first one.
+        const wanted = sessionWorkspaces.get(id) ?? settings.workspaces[0]?.workspace_id;
+        const found = settings.workspaces.find((w) => w.workspace_id === wanted);
+        if (found === undefined) {
+          return fail("unknown_workspace", "The workspace is not registered.");
+        }
+        settings.scope = { workspace_id: found.workspace_id };
+        return null;
+      }
+      case "settings_clear_scope":
+        settings.scope = null;
+        return clone(settings);
       case "settings_overview":
         return clone(settings);
       // The development mock stands in for the native dialogs: each folder dialog "chooses" a
@@ -631,25 +684,77 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           workspace_registered: true,
           branch: { state: "branch", name: "main", note: null },
         };
-      case "connection_status":
-        return connectionStatus();
+      case "connection_status": {
+        const id = args.session_id;
+        if (id !== null && typeof id !== "string") {
+          fail("invalid_argument", "Bad session.");
+        }
+        if (id !== null) {
+          session(id);
+        }
+        return connectionStatus(id);
+      }
+      // One session's provider (ADR-0071). The native confirmation is accepted here; a model
+      // belongs to one server, so the choice clears it.
       case "connection_select": {
+        const id = str(args, "session_id");
+        session(id);
         if (!settings.connection.selectable) {
           fail("connection_fixed", "The connection was set when OMGCode started.");
         }
-        selectConnection(args.profile ?? null);
-        settings.revision += 1;
-        return connectionStatus();
+        const wanted = args.profile ?? null;
+        if (wanted !== null && typeof wanted !== "string") {
+          fail("invalid_argument", "Bad profile.");
+        }
+        const profile =
+          wanted === null ? null : settings.provider_profiles.find((p) => p.name === wanted);
+        if (profile === undefined || (profile !== null && !profile.selectable)) {
+          fail("control", "only a profile with a recorded endpoint can be chosen");
+        }
+        // A stale choice is no current choice, as in Rust, so the same name can be chosen again.
+        if (!staleChoice(id) && (effectiveConnection(id).profile ?? null) === wanted) {
+          fail("control", "this is already the connection of this session");
+        }
+        sessionChoices.set(id, {
+          profile: wanted,
+          endpoint: profile === null ? MOCK_ENDPOINT : profile.endpoint,
+          model: "",
+        });
+        return connectionStatus(id);
       }
-      case "settings_add_local_connection":
+      case "session_model_select": {
+        const id = str(args, "session_id");
+        session(id);
+        const model = str(args, "model");
+        // The service's rule: at most 256 UTF-8 bytes and no control character.
+        if (new TextEncoder().encode(model).length > 256 || /\p{Cc}/u.test(model)) {
+          fail("invalid_request", "The model name is not valid.");
+        }
+        const existing = sessionChoices.get(id);
+        sessionChoices.set(id, {
+          profile: existing === undefined ? FOLLOW : existing.profile,
+          endpoint: existing === undefined ? null : existing.endpoint,
+          model,
+        });
+        return connectionStatus(id);
+      }
+      case "settings_add_connection":
         return changeSettings(args, () => {
           const name = str(args, "name");
           const kind = str(args, "kind");
-          const endpoint = str(args, "endpoint");
-          if (kind !== "lm_studio" && kind !== "ollama_local") {
+          const endpoint = args.endpoint ?? null;
+          const apiKey = args.api_key ?? null;
+          if (kind !== "lm_studio" && kind !== "ollama_local" && kind !== "ollama_cloud") {
             fail("invalid_argument", "Bad kind.");
           }
-          if (!isLocalEndpoint(endpoint)) {
+          if (kind === "ollama_cloud") {
+            if (endpoint !== null || typeof apiKey !== "string") {
+              fail("invalid_request", "Ollama Cloud takes an API key and no endpoint.");
+            }
+            checkApiKey(apiKey);
+          } else if (typeof endpoint !== "string" || apiKey !== null) {
+            fail("invalid_request", "A local connection takes an endpoint and no API key.");
+          } else if (!isLocalEndpoint(endpoint)) {
             fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
           }
           if (settings.provider_profiles.some((p) => p.name === name)) {
@@ -658,12 +763,25 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           settings.provider_profiles.push({
             name,
             kind,
-            auth: "none",
-            endpoint,
-            credential_bound: false,
+            auth: kind === "ollama_cloud" ? "api_key" : "none",
+            endpoint: kind === "ollama_cloud" ? "https://ollama.com/v1" : (endpoint as string),
+            credential_bound: kind === "ollama_cloud",
             selectable: true,
             active: false,
           });
+        });
+      case "settings_set_api_key":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const profile = settings.provider_profiles.find((p) => p.name === name);
+          if (profile === undefined) {
+            fail("control", "unknown provider profile");
+          }
+          if (profile.kind !== "ollama_cloud") {
+            fail("invalid_request", "Only an Ollama Cloud connection has an API key set here.");
+          }
+          checkApiKey(args.api_key);
+          profile.credential_bound = true;
         });
       case "settings_remove_connection":
         return changeSettings(args, () => {
@@ -673,9 +791,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (profile === undefined) {
             fail("control", "unknown provider profile");
           }
-          if (profile.credential_bound) {
-            fail("credential_bound", "This connection has a stored credential.");
-          }
+          // Rust asks a native Yes/No first when a key is stored, then deletes both.
           settings.provider_profiles.splice(index, 1);
           if (profile.active) {
             settings.connection = {
@@ -768,8 +884,45 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** What the status bar reads: the connection and, when it may change, the local choices. */
-  function connectionStatus(): ConnectionStatus {
+  /**
+   * Whether a session's own choice can no longer be used as recorded: its profile is gone, cannot
+   * be chosen, or has another endpoint (ADR-0071 decision 7). Rust then refuses its turns.
+   */
+  function staleChoice(sessionId: string | null): boolean {
+    const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
+    if (!settings.connection.selectable || choice === undefined || choice.profile === FOLLOW) {
+      return false;
+    }
+    if (choice.profile === null) {
+      return choice.endpoint !== MOCK_ENDPOINT;
+    }
+    const profile = settings.provider_profiles.find((each) => each.name === choice.profile);
+    return profile === undefined || !profile.selectable || profile.endpoint !== choice.endpoint;
+  }
+
+  /** The connection a session's next turn uses: its own choice, or the global default. */
+  function effectiveConnection(sessionId: string | null): ConnectionView {
+    const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
+    if (!settings.connection.selectable || choice === undefined || choice.profile === FOLLOW) {
+      return settings.connection;
+    }
+    const profile = settings.provider_profiles.find((each) => each.name === choice.profile);
+    return {
+      // A stale choice shows what was recorded, which the next turn refuses.
+      endpoint: choice.endpoint ?? profile?.endpoint ?? MOCK_ENDPOINT,
+      source: "active",
+      profile: choice.profile,
+      kind: profile?.kind ?? null,
+      selectable: true,
+    };
+  }
+
+  /** What the composer and the status bar read for a session (ADR-0071). */
+  function connectionStatus(sessionId: string | null): ConnectionStatus {
+    const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
+    const view = effectiveConnection(sessionId);
+    const own = choice !== undefined && choice.profile !== FOLLOW;
+    const stale = staleChoice(sessionId);
     const choices = settings.connection.selectable
       ? settings.provider_profiles
           .filter((profile) => profile.selectable && profile.endpoint !== null)
@@ -777,10 +930,18 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             name: profile.name,
             kind: profile.kind,
             endpoint: profile.endpoint ?? "",
-            active: profile.active,
+            // A replacement under the same name is offered, but active only once chosen again.
+            active: !stale && profile.name === view.profile,
           }))
       : [];
-    return clone({ connection: settings.connection, choices });
+    return clone({
+      connection: view,
+      origin: !settings.connection.selectable ? "launch" : own ? "session" : "default",
+      model: choice === undefined ? chatDefaults().settings.model : choice.model,
+      stale,
+      session_choices_unreadable: false,
+      choices,
+    } satisfies ConnectionStatus);
   }
 
   /** Applies one mock settings change after the same revision check as core. */
@@ -890,6 +1051,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           workspace_overrides: [{ workspace_id: workspace, enabled: false }],
         },
       ],
+      scope: null,
     };
   }
 
@@ -927,6 +1089,27 @@ export function isLocalEndpoint(endpoint: string): boolean {
 }
 
 /** `127.0.0.0/8` in strict dotted decimal: four parts, no leading zero. */
+/** The bound core's `Secret` applies to a key, in UTF-8 bytes. */
+const MAX_API_KEY_BYTES = 16 * 1024;
+
+/**
+ * Refuses an API key as Rust's `ApiKeyText::into_secret` does: not text, empty, over the bound,
+ * or holding a control character. One message for all, as in Rust.
+ */
+function checkApiKey(key: unknown): void {
+  if (
+    typeof key !== "string" ||
+    key === "" ||
+    new TextEncoder().encode(key).length > MAX_API_KEY_BYTES ||
+    /\p{Cc}/u.test(key)
+  ) {
+    fail(
+      "invalid_request",
+      "The API key is empty, longer than 16 KiB, or contains a control character.",
+    );
+  }
+}
+
 function isIpv4Loopback(host: string): boolean {
   const parts = host.split(".");
   return (

@@ -7,14 +7,16 @@
     "settings"
   ],
   "permissions": [
-    "allow-settings-add-local-connection",
+    "allow-settings-add-connection",
     "allow-settings-choose-package-cache",
     "allow-settings-choose-root",
     "allow-settings-clear-package-cache",
+    "allow-settings-clear-scope",
     "allow-settings-overview",
     "allow-settings-register-workspace",
     "allow-settings-remove-connection",
     "allow-settings-select-connection",
+    "allow-settings-set-api-key",
     "allow-settings-set-permissions"
   ]
 }

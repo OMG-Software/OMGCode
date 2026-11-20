@@ -2,16 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setInvoker } from "../src/ipc/client";
 import type { ChatModels } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
-import {
-  CHANGED_NOTE,
-  CLOUD_SUFFIX,
-  CLOUD_WARNING,
-  EMPTY_NOTE,
-  UNLISTED_SUFFIX,
-} from "../src/main/model_picker";
+import { CLOUD_SUFFIX, CLOUD_WARNING, EMPTY_NOTE, UNLISTED_SUFFIX } from "../src/main/model_picker";
 import {
   buttonByText,
   choose,
+  connectionStatus,
   type FakeIpc,
   type Handler,
   installFakeIpc,
@@ -37,9 +32,11 @@ const s = session({ session_id: "s-pick", title: "Pick" });
 const running = { session_id: "s-pick", state: "running", outcome: null, error: null };
 
 function listing(...models: Array<[string, boolean]>): Handler {
-  return () =>
+  return (args) =>
     ({
+      session_id: args.session_id as string,
       endpoint: SETTINGS.endpoint,
+      kind: null,
       models: models.map(([id, cloud_tag]) => ({ id, cloud_tag })),
     }) satisfies ChatModels;
 }
@@ -96,7 +93,7 @@ describe("model choice", () => {
   it("offers the listed models and sends the chosen one", async () => {
     await start({ chat_models: listing(["a-model", false], [SETTINGS.model, false]) });
     expect(ipc.callsTo("chat_models")).toHaveLength(1);
-    expect(ipc.callsTo("chat_models")[0]?.args).toEqual({});
+    expect(ipc.callsTo("chat_models")[0]?.args).toEqual({ session_id: "s-pick" });
     expect(labels()).toEqual(["Choose a model", "a-model", SETTINGS.model]);
     // The saved default is chosen, and the model is no longer a text box.
     expect(modelSelect(root).value).toBe(SETTINGS.model);
@@ -127,11 +124,7 @@ describe("model choice", () => {
   it("warns about a saved cloud model while listing and after listing fails", async () => {
     let fail: (reason: unknown) => void = () => undefined;
     await start({
-      chat_defaults: () => ({
-        settings: { ...SETTINGS, model: "gpt-oss:120b-cloud" },
-        preferences: "saved",
-        enter_to_send: true,
-      }),
+      connection_status: () => connectionStatus({ model: "gpt-oss:120b-cloud" }),
       chat_models: () =>
         new Promise((_resolve, reject) => {
           fail = reject;
@@ -153,11 +146,16 @@ describe("model choice", () => {
     let answer: (value: ChatModels) => void = () => undefined;
     await start({
       chat_models: listing(["lm-only", false], [SETTINGS.model, false]),
-      chat_defaults: () => ({
-        settings: { ...SETTINGS, endpoint: current },
-        preferences: "defaults",
-        enter_to_send: true,
-      }),
+      connection_status: () =>
+        connectionStatus({
+          connection: {
+            endpoint: current,
+            source: "active",
+            profile: null,
+            kind: null,
+            selectable: true,
+          },
+        }),
       chat_send: (args) =>
         (args.settings as { endpoint: string }).endpoint === current
           ? running
@@ -171,13 +169,18 @@ describe("model choice", () => {
           answer = resolve;
         }),
     );
-    // The settings window switched to Ollama; the refused send reads the new endpoint.
+    // The settings window switched to Ollama; the refused send reads the new connection.
     current = ollama;
     send();
     await settle();
     expect(labels()).not.toContain("lm-only");
     expect(labels()).toContain(`${SETTINGS.model}${UNLISTED_SUFFIX}`);
-    answer({ endpoint: ollama, models: [{ id: "lfm2.5:latest", cloud_tag: false }] });
+    answer({
+      session_id: "s-pick",
+      endpoint: ollama,
+      kind: "ollama_local",
+      models: [{ id: "lfm2.5:latest", cloud_tag: false }],
+    });
     await settle();
     expect(labels()).toContain("lfm2.5:latest");
   });
@@ -191,13 +194,7 @@ describe("model choice", () => {
   });
 
   it("cannot send without a chosen model", async () => {
-    await start({
-      chat_defaults: () => ({
-        settings: { ...SETTINGS, model: "" },
-        preferences: "defaults",
-        enter_to_send: true,
-      }),
-    });
+    await start({ connection_status: () => connectionStatus({ model: "" }) });
     expect(modelSelect(root).value).toBe("");
     send();
     await settle();
@@ -221,15 +218,20 @@ describe("model choice", () => {
     expect(note()).toBe(EMPTY_NOTE);
   });
 
-  it("discards a list for another endpoint", async () => {
+  // Regression (ADR-0071 decision 10): the list used to be dropped whenever the endpoint the
+  // answer named differed from the endpoint the composer had cached from `chat_defaults`,
+  // which happens after the connection changes outside this window's footer.
+  it("keeps the list when the answer names another endpoint than the cached one", async () => {
     await start({
-      chat_models: () => ({
+      chat_models: (args) => ({
+        session_id: args.session_id as string,
         endpoint: "http://127.0.0.1:11434/v1",
+        kind: "ollama_local",
         models: [{ id: "elsewhere", cloud_tag: false }],
       }),
     });
-    expect(note()).toBe(CHANGED_NOTE);
-    expect(labels()).not.toContain("elsewhere");
+    expect(labels()).toContain("elsewhere");
+    expect(note()).toBe("");
   });
 
   it("lists again on Refresh", async () => {
@@ -252,7 +254,9 @@ describe("model choice", () => {
     expect(note()).toBe("Listing models…");
     expect(answers).toHaveLength(1);
     answers[0]?.({
+      session_id: "s-pick",
       endpoint: SETTINGS.endpoint,
+      kind: null,
       models: [{ id: "fresh", cloud_tag: false }],
     });
     await settle();

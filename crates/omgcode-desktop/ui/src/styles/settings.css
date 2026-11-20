@@ -1,5 +1,13 @@
 @import "./tokens.css";
 
+/* `!important`: this rule comes first, and later rules of equal specificity, such as
+   `.settings-nav { display: flex }`, would otherwise win. A hidden element is hidden
+   whatever rule styles it, so no later rule may override this one. */
+[hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: the hidden attribute must always win. */
+  display: none !important;
+}
+
 #app {
   height: 100%;
 }
@@ -13,6 +21,14 @@
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
   height: 100vh;
+}
+
+.settings-window.scoped {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.scope-bar {
+  margin: 0 0 12px;
 }
 
 .settings-nav {

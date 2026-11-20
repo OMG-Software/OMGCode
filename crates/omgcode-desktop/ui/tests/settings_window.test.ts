@@ -114,6 +114,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
         workspace_overrides: [{ workspace_id: WORKSPACE, enabled: false }],
       },
     ],
+    scope: null,
     ...overrides,
   };
 }
@@ -259,7 +260,8 @@ describe("settings window", () => {
   it("types no path and offers exactly three access states everywhere", async () => {
     await start(() => overview());
     // No control takes a typed path: folders come only from the system dialog. The only typed
-    // values are a new connection name and loopback URL (ADR-0064).
+    // values are a new connection name, a loopback URL (ADR-0064), and the write-only API key
+    // of an Ollama Cloud connection (ADR-0071).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);
@@ -270,7 +272,7 @@ describe("settings window", () => {
         }
       }
     }
-    expect(typed).toEqual(["New connection name", "New connection endpoint"]);
+    expect(typed).toEqual(["New connection name", "New connection endpoint", "API key"]);
     // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
     // group, and the three labels are the same everywhere.
     go("Model");
@@ -458,10 +460,36 @@ describe("settings window", () => {
     // The control shows the recorded state again, not what the operator asked for.
     expect(stateOf("Write")).toBe("prompt");
     expect((root.querySelector("[role=status]") as HTMLElement).textContent).toBe(NOTHING_CHANGED);
-    const alert = root.querySelector("[role=alert]") as HTMLElement;
+    const alert = root.querySelector(".read-error") as HTMLElement;
     expect(alert.hidden).toBe(false);
     expect(alert.textContent).toBe("The settings could not be read. (io)");
     expect(body().disabled).toBe(false);
+  });
+
+  it("keeps a change's error and its failed read apart, and a later read clears only the read's", async () => {
+    await start(() => overview(), {
+      settings_choose_root: () =>
+        rejection("stale_revision", "The settings changed since this window read them."),
+    });
+    // The store stays busy through the change and the read that follows it.
+    ipc.on("settings_overview", () => rejection("busy", "The settings store is in use."));
+    buttonByText(root, "Change").click();
+    await settle();
+
+    const change = root.querySelector(".change-error") as HTMLElement;
+    const read = root.querySelector(".read-error") as HTMLElement;
+    expect(change.hidden).toBe(false);
+    expect(change.textContent).toContain("(stale_revision)");
+    expect(read.hidden).toBe(false);
+    expect(read.textContent).toBe("The settings store is in use. (busy)");
+
+    // The store is free again: Refresh reads it, hides the read failure, keeps the change's.
+    ipc.on("settings_overview", () => overview({ revision: 9 }));
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(read.hidden).toBe(true);
+    expect(change.hidden).toBe(false);
+    expect(change.textContent).toContain("(stale_revision)");
   });
 
   it("shows a refusal and reads the configuration again", async () => {
@@ -560,7 +588,7 @@ describe("settings window", () => {
 
   it("shows the core error and keeps the Refresh button", async () => {
     await start(() => rejection("busy", "The settings store is in use."));
-    const alert = root.querySelector("[role=alert]") as HTMLElement;
+    const alert = root.querySelector(".read-error") as HTMLElement;
     expect(alert.hidden).toBe(false);
     expect(alert.textContent).toBe("The settings store is in use. (busy)");
     ipc.on("settings_overview", () => overview());
@@ -670,7 +698,7 @@ describe("settings window", () => {
 
   it("adds an Ollama connection with its usual address and follows the provider choice", async () => {
     await start(() => choosable({ provider_profiles: [] }), {
-      settings_add_local_connection: () => choosable({ revision: 8 }),
+      settings_add_connection: () => choosable({ revision: 8 }),
     });
     go("Model");
     expect(picker("New connection provider").value).toBe("ollama_local");
@@ -692,11 +720,12 @@ describe("settings window", () => {
     field("New connection name").value = "  local  ";
     buttonByText(root, "Add connection").click();
     await settle();
-    expect(ipc.callsTo("settings_add_local_connection")[0]?.args).toEqual({
+    expect(ipc.callsTo("settings_add_connection")[0]?.args).toEqual({
       revision: 7,
       name: "local",
       kind: "ollama_local",
       endpoint: "http://127.0.0.1:4000/v1",
+      api_key: null,
     });
     expect(root.textContent).toContain("Revision 8");
   });
@@ -704,7 +733,7 @@ describe("settings window", () => {
   it("keeps a typed connection across redraws, after a refusal, and clears it after an add", async () => {
     let refuse = true;
     await start(() => choosable({ provider_profiles: [] }), {
-      settings_add_local_connection: () =>
+      settings_add_connection: () =>
         refuse ? rejection("invalid_endpoint", "Bad.") : choosable({ revision: 8 }),
     });
     go("Model");
@@ -732,13 +761,14 @@ describe("settings window", () => {
     expect(field("New connection endpoint").value).toBe(DEFAULT_ENDPOINTS.ollama_local);
   });
 
-  it("removes a connection without a credential and leaves a stored one to the CLI", async () => {
+  it("removes a connection, including one with a stored credential", async () => {
     await start(() => choosable(), {
       settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [lms()] }),
     });
     go("Model");
-    expect(buttonByText(rowOf("lms"), "Remove").disabled).toBe(true);
-    expect(rowOf("lms").textContent).toContain("remove with the trusted CLI");
+    // A bound profile can be removed: Rust asks a system Yes/No and deletes the key with it.
+    expect(buttonByText(rowOf("lms"), "Remove").disabled).toBe(false);
+    expect(rowOf("lms").textContent).toContain("Credential stored");
     buttonByText(rowOf("ollama"), "Remove").click();
     await settle();
     expect(ipc.callsTo("settings_remove_connection")[0]?.args).toEqual({
@@ -746,6 +776,300 @@ describe("settings window", () => {
       name: "ollama",
     });
     expect(() => rowOf("ollama")).toThrow();
+  });
+
+  describe("Ollama Cloud", () => {
+    const KEY = "test-key-not-real";
+
+    function cloud(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
+      return {
+        name: "hosted",
+        kind: "ollama_cloud",
+        auth: "api_key",
+        endpoint: "https://ollama.com/v1",
+        credential_bound: true,
+        selectable: true,
+        active: false,
+        ...overrides,
+      };
+    }
+
+    /** Every place the page could hold the key: text, attributes, and each field's value. */
+    function pageHolds(text: string): boolean {
+      const fields = Array.from(root.querySelectorAll("input, textarea")).map(
+        (input) => (input as HTMLInputElement).value,
+      );
+      return root.innerHTML.includes(text) || fields.some((value) => value.includes(text));
+    }
+
+    function chooseCloud(): void {
+      const kind = picker("New connection provider");
+      kind.value = "ollama_cloud";
+      kind.dispatchEvent(new Event("change"));
+    }
+
+    function type(label: string, value: string): void {
+      field(label).value = value;
+      field(label).dispatchEvent(new Event("input"));
+    }
+
+    it("hides the endpoint, shows the fixed one, and takes the key in a password field", async () => {
+      await start(() => choosable({ provider_profiles: [] }));
+      go("Model");
+      const endpoint = field("New connection endpoint");
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
+      chooseCloud();
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(true);
+      const key = field("API key");
+      expect(key.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(key.type).toBe("password");
+      expect(key.getAttribute("autocomplete")).toBe("off");
+      expect(root.querySelector("#new-connection-fixed-endpoint")?.textContent).toContain(
+        "https://ollama.com/v1",
+      );
+      expect(root.textContent).toContain("leave this computer for ollama.com");
+      expect(field("New connection name").value).toBe("ollama-cloud");
+      // Switching back shows the endpoint again and hides the key.
+      const kind = picker("New connection provider");
+      kind.value = "ollama_local";
+      kind.dispatchEvent(new Event("change"));
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
+    });
+
+    it("sends the key once, with no endpoint, and clears the field after a success", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () => choosable({ revision: 8, provider_profiles: [cloud()] }),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      // The field is empty before the answer arrives.
+      expect(field("API key").value).toBe("");
+      await settle();
+      expect(ipc.callsTo("settings_add_connection")).toHaveLength(1);
+      expect(ipc.callsTo("settings_add_connection")[0]?.args).toEqual({
+        revision: 7,
+        name: "hosted",
+        kind: "ollama_cloud",
+        endpoint: null,
+        api_key: KEY,
+      });
+      expect(field("API key").value).toBe("");
+      expect(pageHolds(KEY)).toBe(false);
+      // No other call carried it.
+      const carrying = ipc.calls.filter((call) => JSON.stringify(call.args).includes(KEY));
+      expect(carrying).toHaveLength(1);
+      expect(rowOf("hosted").textContent).toContain("API key stored");
+      expect(rowOf("hosted").textContent).toContain("leave this computer for ollama.com");
+      expect(root.textContent).toContain("Revision 8");
+    });
+
+    it("clears the key after a refusal and never shows it in the error", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection("credential_locked", "The credential store is locked."),
+      });
+      go("Model");
+      chooseCloud();
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      expect(field("API key").value).toBe("");
+      await settle();
+      expect(root.textContent).toContain("credential_locked");
+      expect(field("API key").value).toBe("");
+      expect(pageHolds(KEY)).toBe(false);
+      // The form keeps its choice of provider and name, but never the key.
+      expect(picker("New connection provider").value).toBe("ollama_cloud");
+    });
+
+    it("keeps an unsent key when focus returns and the configuration has not changed", async () => {
+      let revision = 7;
+      await start(() => choosable({ revision, provider_profiles: [] }));
+      go("Model");
+      // The operator opens Add connection, as the form is collapsed until then.
+      const form = field("API key").closest("details") as HTMLDetailsElement;
+      form.open = true;
+      form.dispatchEvent(new Event("toggle"));
+      chooseCloud();
+      const key = field("API key");
+      // The operator pasted a key, then left to find something and came back.
+      type("API key", KEY);
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(ipc.callsTo("settings_overview").length).toBeGreaterThan(1);
+      expect(field("API key")).toBe(key);
+      expect(key.value).toBe(KEY);
+
+      // A configuration that did change is drawn again, which shows what is recorded; the
+      // unsent key moves to the new field of the same form, and nowhere else.
+      revision = 8;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(root.textContent).toContain("Revision 8");
+      expect(field("API key")).not.toBe(key);
+      expect(field("API key").value).toBe(KEY);
+      expect(key.value).toBe("");
+      expect(root.innerHTML.includes(KEY)).toBe(false);
+      expect(ipc.calls.some((call) => JSON.stringify(call.args).includes(KEY))).toBe(false);
+    });
+
+    it("keeps an unsent Set key entry across a change, and drops it with its connection", async () => {
+      let profiles = [cloud()];
+      let revision = 7;
+      await start(() => choosable({ revision, provider_profiles: profiles }));
+      go("Model");
+      const disclosure = rowOf("hosted").querySelector("details") as HTMLDetailsElement;
+      disclosure.open = true;
+      const input = rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement;
+      input.value = KEY;
+
+      // Another setting changed (through the CLI): the row is drawn again and keeps the entry.
+      revision = 8;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      const again = rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement;
+      expect(again).not.toBe(input);
+      expect(again.value).toBe(KEY);
+      expect((rowOf("hosted").querySelector("details") as HTMLDetailsElement).open).toBe(true);
+
+      // Closing the form drops its key at once.
+      const open = rowOf("hosted").querySelector("details") as HTMLDetailsElement;
+      open.open = false;
+      open.dispatchEvent(new Event("toggle"));
+      expect(pageHolds(KEY)).toBe(false);
+
+      // A key left in a closed form is not carried into the redraw, and the form stays closed.
+      (rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement).value = KEY;
+      revision = 9;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(pageHolds(KEY)).toBe(false);
+      expect((rowOf("hosted").querySelector("details") as HTMLDetailsElement).open).toBe(false);
+
+      // Typed again into the open form, it survives one more change.
+      const reopened = rowOf("hosted").querySelector("details") as HTMLDetailsElement;
+      reopened.open = true;
+      (rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement).value = KEY;
+      revision = 10;
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(
+        (rowOf("hosted").querySelector("input[type=password]") as HTMLInputElement).value,
+      ).toBe(KEY);
+
+      // The connection was removed: its form is gone, and so is the key.
+      revision = 11;
+      profiles = [];
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
+    it("keeps a change's error when a read queued during the change follows it", async () => {
+      let fail: (reason: unknown) => void = () => undefined;
+      await start(() => choosable({ provider_profiles: [cloud()] }), {
+        settings_set_api_key: () =>
+          new Promise((_, reject) => {
+            fail = reject;
+          }),
+      });
+      go("Model");
+      const input = rowOf("hosted").querySelector<HTMLInputElement>("input[type=password]");
+      if (input === null) {
+        throw new Error("No key field");
+      }
+      input.value = KEY;
+      buttonByText(rowOf("hosted"), "Save key").click();
+      await settle();
+      // Focus returns while the change runs, as it does when a native dialog closes.
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      const reads = ipc.callsTo("settings_overview").length;
+      fail({
+        code: "credential_binding_uncertain",
+        message: "The API key was stored as 0123456789ab4def8123456789abcdef, but it was kept.",
+      });
+      await settle();
+
+      // The queued read ran, and the change's error, with the identifier, is still shown.
+      expect(ipc.callsTo("settings_overview").length).toBeGreaterThan(reads);
+      const problem = Array.from(root.querySelectorAll<HTMLElement>("[role=alert]")).find((node) =>
+        node.textContent?.includes("credential_binding_uncertain"),
+      );
+      expect(problem?.hidden).toBe(false);
+      expect(problem?.textContent).toContain("0123456789ab4def8123456789abcdef");
+    });
+
+    it("sets a new key from the row, once, and clears the field either way", async () => {
+      let refuse = false;
+      await start(() => choosable({ provider_profiles: [cloud()] }), {
+        settings_set_api_key: () =>
+          refuse
+            ? rejection("invalid_request", "The API key is empty.")
+            : choosable({ revision: 8, provider_profiles: [cloud()] }),
+      });
+      go("Model");
+      const row = rowOf("hosted");
+      expect(row.textContent).toContain("Set key\u2026");
+      expect(row.textContent).toContain("Hosted");
+      const input = row.querySelector<HTMLInputElement>("input[type=password]");
+      expect(input?.getAttribute("autocomplete")).toBe("off");
+      if (input === null) {
+        throw new Error("No key field");
+      }
+      input.value = KEY;
+      buttonByText(row, "Save key").click();
+      expect(input.value).toBe("");
+      await settle();
+      expect(ipc.callsTo("settings_set_api_key")).toHaveLength(1);
+      expect(ipc.callsTo("settings_set_api_key")[0]?.args).toEqual({
+        revision: 7,
+        name: "hosted",
+        api_key: KEY,
+      });
+      expect(pageHolds(KEY)).toBe(false);
+      expect(root.textContent).toContain("Revision 8");
+
+      refuse = true;
+      const again = rowOf("hosted").querySelector<HTMLInputElement>("input[type=password]");
+      if (again === null) {
+        throw new Error("No key field");
+      }
+      again.value = KEY;
+      buttonByText(rowOf("hosted"), "Save key").click();
+      expect(again.value).toBe("");
+      await settle();
+      expect(root.textContent).toContain("invalid_request");
+      expect(pageHolds(KEY)).toBe(false);
+      expect(ipc.callsTo("settings_set_api_key")).toHaveLength(2);
+    });
+
+    it("offers Remove for a profile with a stored key and sends the removal", async () => {
+      await start(() => choosable({ provider_profiles: [cloud()] }), {
+        settings_remove_connection: () => choosable({ revision: 8, provider_profiles: [] }),
+      });
+      go("Model");
+      const remove = buttonByText(rowOf("hosted"), "Remove");
+      expect(remove.disabled).toBe(false);
+      remove.click();
+      await settle();
+      expect(ipc.callsTo("settings_remove_connection")[0]?.args).toEqual({
+        revision: 7,
+        name: "hosted",
+      });
+      expect(() => rowOf("hosted")).toThrow();
+    });
+
+    it("has no Set key control on a local profile", async () => {
+      await start(() => choosable());
+      go("Model");
+      expect(rowOf("lms").textContent).not.toContain("Set key");
+      expect(rowOf("lms").querySelector("input")).toBeNull();
+    });
   });
 
   it("keeps the active connection when its removal is declined", async () => {

@@ -1114,7 +1114,7 @@ fn capabilities_report_the_streaming_adapters() {
     assert_success(&output);
     assert_eq!(
         output_json(&output)["streaming_adapters"],
-        json!(["lm_studio", "ollama_local"])
+        json!(["lm_studio", "ollama_local", "ollama_cloud"])
     );
 }
 
@@ -1124,7 +1124,7 @@ fn capabilities_report_the_cancellable_adapters() {
     assert_success(&output);
     assert_eq!(
         output_json(&output)["cancellable_adapters"],
-        json!(["lm_studio", "ollama_local"])
+        json!(["lm_studio", "ollama_local", "ollama_cloud"])
     );
 }
 

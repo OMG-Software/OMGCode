@@ -257,11 +257,14 @@ describe("composer toolbar", () => {
     await open();
     const settings = menu("Chat settings");
     expect(settings.querySelector(".fixed-value")?.textContent).toBe(SETTINGS.endpoint);
-    expect(settings.textContent).toContain("Chosen in the Settings window");
+    expect(settings.textContent).toContain("Follows the session's provider");
     expect(buttonByText(settings, "Save as defaults")).toBeDefined();
-    // The model is chosen from the connection's list, not typed (ADR-0066).
+    // The model and the provider moved to the toolbar (ADR-0071); nothing is typed (ADR-0066).
     expect(settings.querySelectorAll("input[type=text]")).toHaveLength(0);
-    expect(settings.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
+    expect(settings.querySelectorAll("select")).toHaveLength(0);
+    const tools = root.querySelector(".composer-tools") as HTMLElement;
+    expect(tools.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
+    expect(tools.querySelectorAll('select[aria-label="Provider"]')).toHaveLength(1);
     expect(settings.querySelectorAll("input[type=number]")).toHaveLength(3);
   });
 

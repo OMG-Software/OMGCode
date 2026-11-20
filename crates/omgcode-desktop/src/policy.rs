@@ -59,11 +59,13 @@ pub enum Command {
     ApprovalDetail,
     ApprovalDecide,
     SettingsShowWindow,
+    SettingsShowWorkspace,
     ChatPreferencesSave,
     SessionSkills,
     SessionContext,
     ConnectionStatus,
     ConnectionSelect,
+    SessionModelSelect,
     ChatModels,
     SettingsOverview,
     SettingsChooseRoot,
@@ -72,13 +74,15 @@ pub enum Command {
     SettingsChoosePackageCache,
     SettingsClearPackageCache,
     SettingsSelectConnection,
-    SettingsAddLocalConnection,
+    SettingsAddConnection,
     SettingsRemoveConnection,
+    SettingsSetApiKey,
+    SettingsClearScope,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 39] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -99,11 +103,13 @@ impl Command {
         Self::ApprovalDetail,
         Self::ApprovalDecide,
         Self::SettingsShowWindow,
+        Self::SettingsShowWorkspace,
         Self::ChatPreferencesSave,
         Self::SessionSkills,
         Self::SessionContext,
         Self::ConnectionStatus,
         Self::ConnectionSelect,
+        Self::SessionModelSelect,
         Self::ChatModels,
         Self::SettingsOverview,
         Self::SettingsChooseRoot,
@@ -112,8 +118,10 @@ impl Command {
         Self::SettingsChoosePackageCache,
         Self::SettingsClearPackageCache,
         Self::SettingsSelectConnection,
-        Self::SettingsAddLocalConnection,
+        Self::SettingsAddConnection,
         Self::SettingsRemoveConnection,
+        Self::SettingsSetApiKey,
+        Self::SettingsClearScope,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -140,11 +148,13 @@ impl Command {
             Self::ApprovalDetail => "approval_detail",
             Self::ApprovalDecide => "approval_decide",
             Self::SettingsShowWindow => "settings_show_window",
+            Self::SettingsShowWorkspace => "settings_show_workspace",
             Self::ChatPreferencesSave => "chat_preferences_save",
             Self::SessionSkills => "session_skills",
             Self::SessionContext => "session_context",
             Self::ConnectionStatus => "connection_status",
             Self::ConnectionSelect => "connection_select",
+            Self::SessionModelSelect => "session_model_select",
             Self::ChatModels => "chat_models",
             Self::SettingsOverview => "settings_overview",
             Self::SettingsChooseRoot => "settings_choose_root",
@@ -153,8 +163,10 @@ impl Command {
             Self::SettingsChoosePackageCache => "settings_choose_package_cache",
             Self::SettingsClearPackageCache => "settings_clear_package_cache",
             Self::SettingsSelectConnection => "settings_select_connection",
-            Self::SettingsAddLocalConnection => "settings_add_local_connection",
+            Self::SettingsAddConnection => "settings_add_connection",
             Self::SettingsRemoveConnection => "settings_remove_connection",
+            Self::SettingsSetApiKey => "settings_set_api_key",
+            Self::SettingsClearScope => "settings_clear_scope",
         }
     }
 
@@ -172,8 +184,10 @@ impl Command {
             | Self::SettingsChoosePackageCache
             | Self::SettingsClearPackageCache
             | Self::SettingsSelectConnection
-            | Self::SettingsAddLocalConnection
-            | Self::SettingsRemoveConnection => WindowLabel::Settings,
+            | Self::SettingsAddConnection
+            | Self::SettingsRemoveConnection
+            | Self::SettingsSetApiKey
+            | Self::SettingsClearScope => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -191,11 +205,13 @@ impl Command {
             | Self::ApprovalsSummary
             | Self::ApprovalsShowWindow
             | Self::SettingsShowWindow
+            | Self::SettingsShowWorkspace
             | Self::ChatPreferencesSave
             | Self::SessionSkills
             | Self::SessionContext
             | Self::ConnectionStatus
             | Self::ConnectionSelect
+            | Self::SessionModelSelect
             | Self::ChatModels => WindowLabel::Main,
         }
     }
@@ -234,10 +250,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 35);
-        assert_eq!(with_window(WindowLabel::Main).len(), 23);
+        assert_eq!(Command::ALL.len(), 39);
+        assert_eq!(with_window(WindowLabel::Main).len(), 25);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 9);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 11);
     }
 
     #[test]
@@ -320,10 +336,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_list_has_thirty_five_unique_names_matching_the_enum() {
+    fn shared_name_list_has_thirty_seven_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 35);
-        assert_eq!(shared.len(), 35);
+        assert_eq!(COMMAND_NAMES.len(), 39);
+        assert_eq!(shared.len(), 39);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

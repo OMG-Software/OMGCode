@@ -1,7 +1,12 @@
 import { append, button, el, replaceChildren } from "../dom";
 import { formatUpdated } from "../format";
 import { api } from "../ipc/client";
-import { CANCELLED_CODE, CONNECTION_CHANGED_CODE, toIpcError } from "../ipc/errors";
+import {
+  CANCELLED_CODE,
+  CONNECTION_CHANGED_CODE,
+  SESSION_CONNECTION_STALE_CODE,
+  toIpcError,
+} from "../ipc/errors";
 import type {
   ChatSettings,
   ChatStatus,
@@ -11,6 +16,7 @@ import type {
 } from "../ipc/types";
 import { type ChatPreview, createChatRunner } from "./chat_runner";
 import { createComposer } from "./composer";
+import type { ConnectionModel } from "./connection_state";
 import {
   composerState,
   type LoadFailure,
@@ -27,8 +33,8 @@ const SCROLL_END_SLACK_PX = 8;
 export interface ConversationDeps {
   /** Called when the session list should be reloaded (status, title or archive changes). */
   onTreeChanged(): void;
-  /** Called when a send found that another window chose a different model connection. */
-  onConnectionChanged?(): void;
+  /** The open session's provider and model, shared with the footer (ADR-0071). */
+  connection: ConnectionModel;
 }
 
 export interface Conversation {
@@ -36,8 +42,6 @@ export interface Conversation {
   /** Opens a session and, when `seq` is on a loaded page, scrolls to that entry. */
   open(session: SessionSummary, folder: string, seq: number | null): Promise<void>;
   currentId(): string | null;
-  /** Reads the endpoint the next turn uses again, after the connection was changed. */
-  refreshEndpoint(): Promise<void>;
   dispose(): void;
 }
 
@@ -70,10 +74,13 @@ export function createConversation(deps: ConversationDeps): Conversation {
   let frame: number | null = null;
 
   const runner = createChatRunner({ onStatus: handleChatStatus, onPreview: handlePreview });
-  const composer = createComposer({
-    onSend: (message, settings, skills) => void send(message, settings, skills),
-    onCancel: () => void cancelChat(),
-  });
+  const composer = createComposer(
+    {
+      onSend: (message, settings, skills) => void send(message, settings, skills),
+      onCancel: () => void cancelChat(),
+    },
+    deps.connection,
+  );
 
   const header = el("header", { class: "pane-header" });
   const transcript = el("div", { class: "transcript", attrs: { tabindex: "-1" } });
@@ -287,6 +294,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
   }
 
   function renderComposer(): void {
+    composer.setSession(session?.session_id ?? null);
     composer.update(composerState(session, chatActive(), failure), chatActive());
   }
 
@@ -417,12 +425,11 @@ export function createConversation(deps: ConversationDeps): Conversation {
     } catch (reason) {
       const error = toIpcError(reason);
       setNotice({ text: `${error.message} (${error.code})`, error: true });
-      if (error.code === CONNECTION_CHANGED_CODE) {
-        // The settings window chose another connection after this window read
-        // its endpoint. Show the new one so the operator can check the model
-        // and send again; the draft is kept.
-        await composer.refreshEndpoint().catch(() => undefined);
-        deps.onConnectionChanged?.();
+      if (error.code === CONNECTION_CHANGED_CODE || error.code === SESSION_CONNECTION_STALE_CODE) {
+        // The settings window chose another connection, or the profile this session chose was
+        // removed or changed. Read the session's connection again, so the dropdowns show the
+        // truth and the model list is loaded for it; the draft is kept.
+        await deps.connection.refresh().catch(() => undefined);
       }
     }
   }
@@ -497,6 +504,8 @@ export function createConversation(deps: ConversationDeps): Conversation {
     empty.hidden = true;
     content.hidden = false;
     renderHeader();
+    // The Workspace settings button follows the header at once, not after the transcript loads.
+    composer.setSession(next.session_id);
     const page = await fetchPages(1, false);
     if (page !== null) {
       renderHeader();
@@ -511,7 +520,6 @@ export function createConversation(deps: ConversationDeps): Conversation {
     element,
     open,
     currentId: () => session?.session_id ?? null,
-    refreshEndpoint: () => composer.refreshEndpoint(),
     dispose: () => {
       if (frame !== null && typeof cancelAnimationFrame === "function") {
         cancelAnimationFrame(frame);

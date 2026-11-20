@@ -74,6 +74,56 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.50.0 chooses the provider and model per session, adds Ollama Cloud
+  as a hosted provider, and adds a **Workspace settings** button (ADR-0071,
+  accepted).
+  - **Core:** `OLLAMA_CLOUD_ENDPOINT` (`https://ollama.com/v1`) and
+    `ModelEndpoint`, which is either the unchanged loopback rule or exactly
+    that endpoint. An `ollama_cloud` profile accepts only that endpoint. A
+    cloud request needs a token and is refused without one before any
+    connection. It uses HTTPS only, with no proxy, redirect, or retry.
+    `check_provider_selectable` admits a local profile with an endpoint or an
+    `ollama_cloud` profile with a bound credential. Replay checks the
+    endpoint rule only.
+  - **CLI:** `--provider-profile` accepts an `ollama_cloud` profile for
+    `chat`, `session compact`, and `models`. `--endpoint
+    https://ollama.com/v1` is refused, so `OMGCODE_LM_TOKEN` never reaches the
+    hosted service. `capabilities` lists `ollama_cloud` as a stored-credential,
+    streaming, and cancellable adapter. Streaming and cancellation are assumed
+    from the shared client, because no real key was available to check them.
+  - **Desktop, per session:** `desktop-v1/session-connections.json` records
+    each session's connection, with the endpoint shown in the confirmation,
+    and its model. It is written only by Rust and limited to 4096 sessions and
+    1 MiB. A damaged file is treated as empty. A launch argument still fixes
+    the connection for every session. Otherwise the session's own choice
+    applies, and a session without one follows the global selection. Each
+    turn re-resolves the session's profile and refuses with
+    `session_connection_stale` when the profile is gone, can no longer be
+    chosen, or has another endpoint. `connection_select`,
+    `connection_status`, and `chat_models` take a session id.
+    `connection_select` shows the native Yes/No, which for Ollama Cloud says
+    that prompts, workspace text, and command output leave this computer, and
+    clears the session's model. The new `session_model_select` records a
+    model without a dialog.
+  - **Desktop, composer:** **Provider** and **Model** dropdowns sit beside
+    **Chat settings**. Opening a session switches both without a dialog. The
+    model list is filled for the chosen provider and belongs to a session.
+  - **Desktop, settings:** `settings_add_local_connection` is now
+    `settings_add_connection` and also adds Ollama Cloud. Its API key is typed
+    into a write-only password field, sent once, and cleared at once. Rust
+    wraps the key in a zeroing type with redacted `Debug` and stores and binds
+    it as the CLI does. If storing the key fails, Rust removes the profile it
+    had just recorded. The new `settings_set_api_key` replaces a key.
+    Removing a profile that has a stored key is now allowed after a native
+    Yes/No and deletes the key.
+  - **Desktop, workspace settings:** the new **Workspace settings** button
+    calls `settings_show_workspace` with the open session's id. Rust resolves
+    the workspace and shows the `settings` window scoped to it. **All
+    settings** (`settings_clear_scope`) and the sidebar **Settings** row clear
+    the scope. The scope is display state only.
+  - The policy has 39 commands: 25 for `main`, 3 for `approvals`, and 11 for
+    `settings`.
+
 - Version 0.47.0 renders recorded assistant replies as Markdown in the
   desktop `main` window (ADR-0067, accepted).
   - **Desktop:** a reply sits in a response block one shade lighter than the
@@ -147,6 +197,97 @@ Changes are recorded here before a release version is assigned.
     or WebKitGTK shell. A Chromium browser pane refused every clipboard
     write and showed "Copy failed". The painted image was compared with the
     screen in that pane against the mock backend.
+
+### Fixed
+
+- Choosing a session's provider records nothing when the profile changed
+  during the native confirmation in any detail the dialog named, not only its
+  name or endpoint: a profile replaced under the same name and endpoint by
+  another provider kind, or one whose key was bound or removed meanwhile, is
+  refused with `stale_revision` (ADR-0071).
+- When adding an Ollama Cloud connection fails after its key was stored and
+  removing the new profile fails as well, the error still names the stored
+  item's identifier, so the operator can find and delete it.
+- The composer no longer shows a **Workspace settings** failure for a session
+  the operator has since left.
+- The `settings` window keeps an API key typed but not sent when another
+  setting changes and the window is drawn again: the key moves to the new
+  field of the same form and is never copied into view state. It is dropped
+  when its form closes or its connection is removed.
+- The development mock opens **Workspace settings** for the workspace a new
+  session belongs to, applies the 256-byte model limit in UTF-8 bytes, and
+  marks no connection active for a session whose choice is stale.
+- The desktop approvals tests read the approval list again while a running
+  turn holds the settings store, which is the list's documented `busy`
+  answer, instead of failing on the first one.
+- The guide's list of features that are not implemented no longer says that
+  Ollama Cloud and its write-only key field are CLI-only.
+- The composer no longer discards the whole model list when the endpoint it
+  cached differs from the one `chat_models` resolved. That happened after the
+  connection changed in the `settings` window, or when `chat_defaults` fell
+  back to the launch endpoint, and it left only the saved model on offer for
+  LM Studio and Ollama. The list is now tied to the session and request it was
+  asked for (ADR-0071).
+- A desktop launch with `--provider-profile` for an Ollama Cloud profile no
+  longer exits before a window opens. The launch check now keeps the profile's
+  token while it validates the endpoint; `--endpoint` and the default endpoint
+  still refuse a cloud endpoint without a token.
+- The scoped settings view and the Ollama Cloud add form no longer show
+  elements marked `hidden`; the settings stylesheet now has the generic
+  `[hidden]` rule the other windows have.
+- Model and provider choices for a session are sent one at a time, in order. A
+  quick second model choice can no longer be overtaken by the first, and a
+  provider change waits for a pending model save, so a late model reply cannot
+  attach an old server's model to the new provider.
+- Per-session choices are written under an exclusive cross-process lock on
+  `desktop-v1/session-connections.lock` (bounded wait, then `busy`), so two
+  desktop processes on one data folder no longer drop each other's choices.
+- A status read that started before a model choice, or answered while its save
+  was pending, no longer puts the old model back in the composer. A model
+  choice now invalidates earlier reads, and a read for a session with a pending
+  model save is dropped, so a quick send cannot go to the old model. A dropped
+  read is made again once the session's last save settles, even when that
+  save's answer is discarded, so a session reopened during the save never
+  stays loading.
+- The composer now warns while `connection_status` reports the saved
+  per-session choices as unreadable. The session then follows the default
+  connection, and the next choice replaces every session's saved choice.
+- An Ollama Cloud key whose binding write failed but may have been recorded is
+  no longer deleted with its profile. The desktop keeps both and reports
+  `credential_binding_uncertain` with the kept item's identifier, and any item
+  it replaced, as the CLI does. An item that could not be cleaned up is named
+  in `credential_orphaned`. No message shows the key or native error text.
+- When an Ollama Cloud key is replaced, or a connection is removed, but the old
+  stored item cannot be deleted, `credential_orphaned` now names that item's
+  identifier and says the replacement or removal took effect. No connection
+  names the item any more, so `provider-profile-show` cannot find it.
+- A desktop API key over 16 KiB is refused before it is scanned or copied.
+- The global connection's endpoint, token, and kind come from one read of the
+  settings store, so `chat_models` cannot pair one profile's models with
+  another profile's kind.
+- `ModelEndpoint` is a struct with a private representation, so only
+  `ModelEndpoint::parse` makes one.
+- **Workspace settings** sends the newly opened session at once instead of
+  the previous one until the transcript loads.
+- The settings window reads the overview again when a read is asked for while
+  another read or change runs, so a scope set meanwhile is not lost. A read
+  that returns the overview already shown no longer redraws the window, so an
+  API key typed but not sent survives the window regaining focus. A change's
+  error and a failed read now have separate messages: a change's error, such
+  as credential cleanup instructions, stays until the next change starts,
+  even when a read queued during the change (as when a native dialog returns
+  focus) follows it, and a read's failure stays until a read succeeds, even
+  when it follows a failed change.
+- The settings window's `[hidden]` rule is `!important`. It came first in the
+  stylesheet, so `.settings-nav { display: flex }` won and the sidebar stayed
+  visible in the scoped view; the test now checks the computed style.
+- The mock backend refuses an API key with a control character or over 16 KiB
+  on both key routes, and reports a session whose chosen profile was removed
+  or changed as stale, refusing its turns and model list until a provider is
+  chosen again.
+
+### Added
+
 - Version 0.46.0 lists the models the local LM Studio or Ollama server
   reports, so the operator chooses a model instead of typing its id
   (ADR-0066, accepted).
