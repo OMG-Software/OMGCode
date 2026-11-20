@@ -92,8 +92,9 @@ fn repair_confirmation(root: &Path, grants: &[ExtraGrant]) -> Confirmation {
     }
     message.push_str(
         "\nRemove them? The folder will also stop inheriting permissions from its parent, \
-         so they are not added back. Your account, SYSTEM, and Administrators keep their \
-         access. Programs that run as the removed accounts lose access to OMGCode's data.",
+         so they are not added back. Your account keeps its access, and any entry the \
+         folder already has for SYSTEM or Administrators is kept; no entry is added. \
+         Programs that run as the removed accounts lose access to OMGCode's data.",
     );
     Confirmation {
         title: TITLE,
@@ -132,5 +133,9 @@ mod tests {
             "control characters are escaped: {text}"
         );
         assert!(text.contains("Remove them?"), "{text}");
+        // The repair adds no entry, so the dialog promises SYSTEM and
+        // Administrators nothing the folder does not already grant them.
+        assert!(text.contains("no entry is added"), "{text}");
+        assert!(!text.contains("SYSTEM, and Administrators keep"), "{text}");
     }
 }

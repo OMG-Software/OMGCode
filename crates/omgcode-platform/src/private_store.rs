@@ -113,18 +113,22 @@ pub enum RootRepairError {
     /// The root cannot be repaired here, with a fixed reason. Nothing was
     /// changed.
     NotRepairable(&'static str),
-    /// A native call failed. The DACL may or may not have been replaced.
+    /// A native call failed: opening the root, reading it, writing the DACL,
+    /// or the check after the write. The DACL may or may not have been
+    /// replaced.
     Io(std::io::Error),
 }
 
 impl std::fmt::Display for RootRepairError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Changed => formatter.write_str("the folder's permissions changed after review"),
+            Self::Changed => formatter
+                .write_str("the folder's permissions changed after review; nothing was changed"),
             Self::NotRepairable(reason) => formatter.write_str(reason),
+            // The call can fail after the DACL write, so claim neither outcome.
             Self::Io(error) => write!(
                 formatter,
-                "the folder's permissions were not changed: {error}"
+                "the folder's permissions may or may not have changed: {error}"
             ),
         }
     }
@@ -300,6 +304,23 @@ fn unsupported() -> io::Error {
         io::ErrorKind::Unsupported,
         "native private storage is not qualified on this platform",
     )
+}
+
+#[cfg(test)]
+mod repair_error_tests {
+    use super::RootRepairError;
+
+    /// A failed native call can come after the DACL write, so its text must
+    /// not claim that nothing changed; the refusals happen before any write.
+    #[test]
+    fn a_repair_error_states_only_what_is_known_about_the_folder() {
+        let failed = RootRepairError::Io(std::io::Error::other("native failure")).to_string();
+        assert!(failed.contains("may or may not have changed"), "{failed}");
+        assert!(!failed.contains("were not changed"), "{failed}");
+        assert!(failed.contains("native failure"), "{failed}");
+        let changed = RootRepairError::Changed.to_string();
+        assert!(changed.contains("nothing was changed"), "{changed}");
+    }
 }
 
 #[cfg(all(test, not(any(target_os = "linux", windows))))]
