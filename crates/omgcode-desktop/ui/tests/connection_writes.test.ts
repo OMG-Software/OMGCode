@@ -30,6 +30,18 @@ function install(): Deferred[] {
   return writes;
 }
 
+/** Every call, reads included, waits for the test to settle it. */
+function installDeferred(): Deferred[] {
+  const calls: Deferred[] = [];
+  setInvoker(
+    (command, args) =>
+      new Promise<ConnectionStatus>((resolve) => {
+        calls.push({ command, args: args as Record<string, unknown>, resolve });
+      }),
+  );
+  return calls;
+}
+
 const flush = async (): Promise<void> => {
   for (let turn = 0; turn < 10; turn += 1) {
     await Promise.resolve();
@@ -83,5 +95,90 @@ describe("serialized connection writes", () => {
     await Promise.all([saving, switching]);
     expect(model.status()?.connection.profile).toBe("cloud");
     expect(model.status()?.model).toBe("");
+  });
+
+  it("drops a status read that started before a model choice", async () => {
+    const calls = installDeferred();
+    const model = createConnectionModel();
+    const opening = model.open("s-a");
+    await flush();
+    calls[0]?.resolve(status("old"));
+    await opening;
+
+    // The composer sets its dropdown from every "read", so a late one would undo the choice.
+    let reads = 0;
+    model.subscribe((change) => {
+      if (change === "read") {
+        reads += 1;
+      }
+    });
+
+    // A focus refresh reads the old model; the operator chooses another before it answers.
+    const refreshing = model.refresh();
+    const choosing = model.chooseModel("new");
+    await flush();
+    calls[1]?.resolve(status("old"));
+    await refreshing;
+    expect(reads).toBe(0);
+
+    calls[2]?.resolve(status("new"));
+    await choosing;
+    expect(calls.map((call) => call.command)).toEqual([
+      "connection_status",
+      "connection_status",
+      "session_model_select",
+    ]);
+    expect(model.status()?.model).toBe("new");
+  });
+
+  it("drops a status read that answers while the session's model save is pending", async () => {
+    const calls = installDeferred();
+    const model = createConnectionModel();
+    const opening = model.open("s-a");
+    await flush();
+    calls[0]?.resolve(status("old"));
+    await opening;
+    let changes = 0;
+    model.subscribe((change) => {
+      if (change === "read") {
+        changes += 1;
+      }
+    });
+
+    const choosing = model.chooseModel("new");
+    await flush();
+    const refreshing = model.refresh();
+    await flush();
+    // Rust has not seen the save yet, so this read still holds the old model.
+    calls[2]?.resolve(status("old"));
+    await refreshing;
+    expect(changes).toBe(0);
+
+    calls[1]?.resolve(status("new"));
+    await choosing;
+    expect(model.status()?.model).toBe("new");
+  });
+
+  it("still reads another session while one session's model save is pending", async () => {
+    const calls = installDeferred();
+    const model = createConnectionModel();
+    const opening = model.open("s-a");
+    await flush();
+    calls[0]?.resolve(status("a-model"));
+    await opening;
+
+    const choosing = model.chooseModel("a-new");
+    await flush();
+    const switching = model.open("s-b");
+    await flush();
+    calls[2]?.resolve(status("b-model"));
+    await switching;
+    expect(model.sessionId()).toBe("s-b");
+    expect(model.status()?.model).toBe("b-model");
+
+    // The save answers for a session that is no longer open; it changes nothing shown.
+    calls[1]?.resolve(status("a-new"));
+    await choosing;
+    expect(model.status()?.model).toBe("b-model");
   });
 });

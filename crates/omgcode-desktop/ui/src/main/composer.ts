@@ -21,6 +21,11 @@ export const SKILLS_PER_TURN = 4;
 /** Message box hints for each "Enter to send" choice. */
 export const PLACEHOLDER_ENTER = "Message (Enter to send, Shift+Enter for a new line)";
 export const PLACEHOLDER_CTRL_ENTER = "Message (Ctrl+Enter to send)";
+/** Shown while Rust reports that the saved per-session provider and model choices are unreadable. */
+export const SESSION_CHOICES_UNREADABLE =
+  "Saved provider and model choices could not be read, so this session follows the default " +
+  "connection. Choosing a provider or model replaces the damaged file and every other session's " +
+  "saved choice.";
 
 /** The counter appears once the message uses more than this share of the byte limit. */
 export const COUNTER_SHOW_RATIO = 0.8;
@@ -96,6 +101,13 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   const endpointValue = el("span", { class: "fixed-value" });
   const providerNote = el("span", { class: "muted", attrs: { role: "status" } });
   providerNote.hidden = true;
+  // Rust could not read the saved per-session choices; it follows the global choice meanwhile.
+  const choicesNote = el("span", {
+    class: "model-warning",
+    text: SESSION_CHOICES_UNREADABLE,
+    attrs: { role: "status" },
+  });
+  choicesNote.hidden = true;
   const model = createModelPicker(
     () => refresh(),
     (id) => void connection.chooseModel(id),
@@ -298,6 +310,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     providerSelect.setLocked(!state.enabled);
     replaceChildren(providerNote, connection.message());
     providerNote.hidden = connection.message() === "";
+    choicesNote.hidden = connection.status()?.session_choices_unreadable !== true;
     for (const input of [contextTokens, maxOutput, compactThreshold, autoCompact, instructions]) {
       input.disabled = !state.enabled;
     }
@@ -398,7 +411,14 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       ),
       el("div", { class: "composer-send" }, counter, runningLabel, cancelButton, sendButton),
     ),
-    el("div", { class: "composer-model-status" }, model.note, model.warning, providerNote),
+    el(
+      "div",
+      { class: "composer-model-status" },
+      model.note,
+      model.warning,
+      providerNote,
+      choicesNote,
+    ),
     reason,
     problem,
   );

@@ -56,6 +56,11 @@ export function createConnectionModel(): ConnectionModel {
   /** Counts accepted provider choices; a model answer from before one is stale. */
   let providerCalls = 0;
   /**
+   * Model saves not yet answered, by session. While one is pending a status read could still
+   * hold the old model, so its answer is dropped: the save's own answer is the newer truth.
+   */
+  const pendingModels = new Map<string, number>();
+  /**
    * Every write (a model or a provider choice) runs after the one before it settled, because each
    * IPC call runs on its own worker and two in flight could land out of order in Rust.
    */
@@ -83,13 +88,26 @@ export function createConnectionModel(): ConnectionModel {
     return run;
   }
 
+  function modelSavePending(id: string | null): boolean {
+    return id !== null && (pendingModels.get(id) ?? 0) > 0;
+  }
+
+  function settleModelSave(id: string): void {
+    const left = (pendingModels.get(id) ?? 1) - 1;
+    if (left > 0) {
+      pendingModels.set(id, left);
+    } else {
+      pendingModels.delete(id);
+    }
+  }
+
   async function read(): Promise<void> {
     const id = session;
     generation += 1;
     const mine = generation;
     try {
       const status = await api.connectionStatus(id);
-      if (disposed || mine !== generation || session !== id) {
+      if (disposed || mine !== generation || session !== id || modelSavePending(id)) {
         return;
       }
       current = status;
@@ -181,23 +199,30 @@ export function createConnectionModel(): ConnectionModel {
       const stale = (): boolean =>
         disposed || session !== id || mine !== modelCalls || provider !== providerCalls;
       note = "";
+      // A status read already in flight may hold the old model; it must not undo this choice.
+      generation += 1;
+      pendingModels.set(id, (pendingModels.get(id) ?? 0) + 1);
+      let status: ConnectionStatus | null = null;
+      let failure: unknown = null;
       try {
-        const status = await enqueue(() => api.sessionModelSelect(id, model));
-        if (stale()) {
-          return;
-        }
+        status = await enqueue(() => api.sessionModelSelect(id, model));
+      } catch (reason) {
+        failure = reason;
+      }
+      settleModelSave(id);
+      if (stale()) {
+        return;
+      }
+      if (status !== null) {
         current = status;
         generation += 1;
         emit("model");
-      } catch (reason) {
-        if (stale()) {
-          return;
-        }
-        note = describe(reason);
-        emit("message");
-        // The recorded model decides what the dropdown shows after a failure.
-        await read();
+        return;
       }
+      note = describe(failure);
+      emit("message");
+      // The recorded model decides what the dropdown shows after a failure.
+      await read();
     },
     dispose() {
       disposed = true;

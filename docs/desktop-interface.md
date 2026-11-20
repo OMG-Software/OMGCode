@@ -1144,7 +1144,10 @@ What the design does:
   limited to 4,096 sessions and 1 MiB; a new entry beyond that is refused with
   `session_choices`. It is parsed strictly (a version, no unknown field); a
   damaged file is reported by `connection_status` as unreadable, treated as
-  empty, and replaced by the next choice, so it never blocks chat. It is not
+  empty, and replaced by the next choice, so it never blocks chat. While it is
+  reported unreadable, the composer shows a warning that the session follows
+  the default connection and that the next choice replaces every session's
+  saved choice. It is not
   tamper-evident: a process running as the same user can edit it, as it can
   edit the settings journal. Every turn, model list, and status resolves the
   order launch argument, then the session's record, then the global default.

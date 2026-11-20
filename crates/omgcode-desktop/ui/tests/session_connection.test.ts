@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setInvoker } from "../src/ipc/client";
 import type { ChatModels, ConnectionStatus } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
+import { SESSION_CHOICES_UNREADABLE } from "../src/main/composer";
 import { CONNECTION_UNCHANGED } from "../src/main/connection_state";
 import { CLOUD_WARNING, HOSTED_SUFFIX, HOSTED_WARNING } from "../src/main/model_picker";
 import {
@@ -388,5 +389,28 @@ describe("per-session provider and model", () => {
     choose(composerProvider(), "ollama");
     await settle();
     expect(ipc.callsTo("connection_select")).toHaveLength(1);
+  });
+
+  it("warns while the saved per-session choices are unreadable", async () => {
+    const handlers = backend();
+    let unreadable = true;
+    await start({
+      ...handlers,
+      connection_status: (args) => {
+        const status = handlers.connection_status?.(args) as ConnectionStatus;
+        return { ...status, session_choices_unreadable: unreadable };
+      },
+    });
+    await open("s-a");
+    const warning = (): HTMLElement | undefined =>
+      Array.from(root.querySelectorAll<HTMLElement>(".model-warning")).find(
+        (node) => node.textContent === SESSION_CHOICES_UNREADABLE,
+      );
+    expect(warning()?.hidden).toBe(false);
+
+    // A later read that finds the file readable again hides it.
+    unreadable = false;
+    await open("s-b");
+    expect(warning()?.hidden).toBe(true);
   });
 });

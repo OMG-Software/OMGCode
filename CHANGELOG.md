@@ -152,6 +152,13 @@ Changes are recorded here before a release version is assigned.
 - Per-session choices are written under an exclusive cross-process lock on
   `desktop-v1/session-connections.lock` (bounded wait, then `busy`), so two
   desktop processes on one data folder no longer drop each other's choices.
+- A status read that started before a model choice, or answered while its save
+  was pending, no longer puts the old model back in the composer. A model
+  choice now invalidates earlier reads, and a read for a session with a pending
+  model save is dropped, so a quick send cannot go to the old model.
+- The composer now warns while `connection_status` reports the saved
+  per-session choices as unreadable. The session then follows the default
+  connection, and the next choice replaces every session's saved choice.
 
 ### Added
 
