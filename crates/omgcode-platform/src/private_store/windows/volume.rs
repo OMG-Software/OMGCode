@@ -126,6 +126,11 @@ pub(crate) fn classify_volume(
 }
 
 /// Display text only; the comparison above uses the native units.
+///
+/// `name` is the filesystem type a driver reports (`NTFS`, `ReFS`, `exFAT`,
+/// `FAT32`, `CSVFS`), not the volume label. It is cut at
+/// [`MAX_REPORTED_NAME`] units so a driver cannot fill the message; every
+/// known type name is far shorter, so the cut only affects a malformed one.
 fn reported_name(name: &[u16]) -> String {
     if name.is_empty() {
         return "an unnamed filesystem".to_owned();
