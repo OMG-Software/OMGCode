@@ -998,8 +998,10 @@ revision check and validation (ADR-0064, ADR-0071).
   no dialog. A link, an untrusted owner, an unknown entry type, or a result
   that would not give the user the rights the store needs on the folder is
   `data_folder_not_repairable`. Both the user's own entries and Windows'
-  `AccessCheck` must grant them. After No or
-  `data_folder_changed` the button stays on offer. After a repair the
+  `AccessCheck` must grant them. After No, `data_folder_changed`, or
+  `data_folder_unreadable` (the folder could not be opened, read, or
+  checked before the dialog) nothing has changed, so the button stays on
+  offer. After a repair the
   window says that only the user, SYSTEM, and Administrators have access.
   The key field was already emptied, so the operator types the key again.
 - **Removing a connection with a stored key, or the active one, is

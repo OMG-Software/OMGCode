@@ -27,7 +27,9 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
+use windows_sys::Win32::Foundation::{
+    GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, HANDLE, LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, SE_FILE_OBJECT, SetSecurityInfo,
 };
@@ -174,13 +176,13 @@ fn plan(file: &File, principals: &Principals) -> io::Result<Result<Plan, &'stati
             Ace::Allowed { sid, .. } if !principals.trusted(&sid) => grants.push(describe(&sid)?),
             Ace::Allowed { flags, mask, sid } => {
                 if flags & INHERIT_ONLY_ACE == 0 && principals.user.equals(&sid) {
-                    user_allowed |= mask;
+                    user_allowed |= map_generic(mask);
                 }
                 allows.push(explicit(bytes));
             }
             Ace::Denied { flags, mask, sid } => {
                 if flags & INHERIT_ONLY_ACE == 0 && principals.user.equals(&sid) {
-                    user_denied |= mask;
+                    user_denied |= map_generic(mask);
                 }
                 denies.push(explicit(bytes));
             }
@@ -206,6 +208,23 @@ fn plan(file: &File, principals: &Principals) -> io::Result<Result<Plan, &'stati
         return Ok(Err(NO_USER_ACCESS));
     }
     Ok(Ok(Plan { grants, acl }))
+}
+
+/// `mask` with each generic right replaced by the file rights it stands for,
+/// as `FILE_MAPPING` maps it for `AccessCheck`.
+fn map_generic(mask: u32) -> u32 {
+    let mut mapped = mask & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    for (generic, specific) in [
+        (GENERIC_READ, FILE_MAPPING.GenericRead),
+        (GENERIC_WRITE, FILE_MAPPING.GenericWrite),
+        (GENERIC_EXECUTE, FILE_MAPPING.GenericExecute),
+        (GENERIC_ALL, FILE_MAPPING.GenericAll),
+    ] {
+        if mask & generic != 0 {
+            mapped |= specific;
+        }
+    }
+    mapped
 }
 
 /// Whether this process would get every right the private store asks for on

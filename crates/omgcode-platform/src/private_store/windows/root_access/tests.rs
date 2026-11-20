@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use windows_sys::Win32::Security::{WinAnonymousSid, WinBuiltinUsersSid};
+use windows_sys::Win32::Storage::FileSystem::FILE_ADD_FILE;
 
 use super::*;
 use crate::broker::windows::tests::create_junction_bounded;
@@ -237,6 +238,61 @@ fn a_repair_that_a_kept_group_deny_would_lock_out_is_refused() {
     );
     let (protected, _) = aces(&root);
     assert!(!protected, "nothing was rewritten");
+}
+
+/// Generic rights count as Windows maps them for files, so a user entry
+/// written as `GENERIC_ALL` keeps the store's access.
+#[test]
+fn a_user_entry_with_only_generic_rights_still_allows_the_repair() {
+    assert_eq!(
+        map_generic(GENERIC_ALL) & PRIVATE_DIRECTORY_ACCESS,
+        PRIVATE_DIRECTORY_ACCESS
+    );
+    assert_eq!(map_generic(GENERIC_READ) & FILE_ADD_FILE, 0);
+    assert_eq!(map_generic(GENERIC_ALL) & GENERIC_ALL, 0);
+
+    // The fixture writes raw generic entries, as another program could. NTFS
+    // stores them mapped, so the check sees file rights either way; mapping
+    // in the check keeps it right if a filesystem ever keeps them unmapped.
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = inheriting_root(&temporary);
+    let user = Principals::current().expect("principals").user;
+    let users = Sid::well_known(WinBuiltinUsersSid).expect("users");
+    let mut fixture = build_acl(&[
+        allowed_ace(&user, GENERIC_ALL),
+        allowed_ace(&users, GENERIC_READ | GENERIC_EXECUTE),
+    ])
+    .expect("fixture ACL");
+    apply(&open(&root, REPAIR_ACCESS).expect("open"), &mut fixture).expect("fixture DACL");
+    assert!(
+        aces(&root).1.iter().any(|ace| matches!(
+            ace,
+            Ace::Allowed { mask, sid, .. } if sid.equals(&user)
+                && map_generic(*mask) & PRIVATE_DIRECTORY_ACCESS == PRIVATE_DIRECTORY_ACCESS
+        )),
+        "the fixture gives the user its generic entry"
+    );
+
+    let found = grants(&root);
+    assert!(found.iter().any(|grant| grant.sid == USERS), "{found:?}");
+    remove(&root, &found).expect("repair");
+    WindowsPrivateDirectory::open(&root).expect("the store opens after repair");
+}
+
+/// An access-allowed ACE with no flags, as Windows lays one out.
+fn allowed_ace(sid: &Sid, mask: u32) -> Vec<u8> {
+    let length = sid.length().expect("SID length");
+    let size = u16::try_from(8 + length).expect("ACE size");
+    let mut ace = vec![0u8, 0u8];
+    ace.extend_from_slice(&size.to_le_bytes());
+    ace.extend_from_slice(&mask.to_le_bytes());
+    ace.extend(
+        sid.storage
+            .iter()
+            .flat_map(|word| word.to_ne_bytes())
+            .take(length),
+    );
+    ace
 }
 
 fn grants_named(sid: &str) -> Vec<ExtraGrant> {

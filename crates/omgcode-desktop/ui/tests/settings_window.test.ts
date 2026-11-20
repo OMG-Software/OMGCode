@@ -982,6 +982,20 @@ describe("settings window", () => {
       expect(repairOffered()).toBe(true);
     });
 
+    it("keeps offering the folder repair when the folder's permissions could not be checked", async () => {
+      await offerFolderRepair([
+        () =>
+          rejection(
+            "data_folder_unreadable",
+            "OMGCode could not check the permissions of its application data folder.",
+          ),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain("data_folder_unreadable");
+      expect(repairOffered()).toBe(true);
+    });
+
     it("stops offering the folder repair when OMGCode cannot make it", async () => {
       await offerFolderRepair([
         () =>

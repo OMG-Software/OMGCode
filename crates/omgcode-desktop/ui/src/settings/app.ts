@@ -2,6 +2,7 @@ import { button, el, replaceChildren } from "../dom";
 import {
   CANCELLED_CODE,
   DATA_FOLDER_CHANGED_CODE,
+  DATA_FOLDER_UNREADABLE_CODE,
   STORAGE_NOT_PRIVATE_CODE,
   toIpcError,
 } from "../ipc/errors";
@@ -52,7 +53,11 @@ export const REPAIR_FOLDER_HELP =
 export const FOLDER_REPAIRED =
   "OMGCode's data folder now gives access only to your account, SYSTEM, and Administrators. Try the change again.";
 /** Repair outcomes that leave the folder as it was, so the repair stays on offer. */
-const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([CANCELLED_CODE, DATA_FOLDER_CHANGED_CODE]);
+const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
+  CANCELLED_CODE,
+  DATA_FOLDER_CHANGED_CODE,
+  DATA_FOLDER_UNREADABLE_CODE,
+]);
 
 /** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
 const ACTIONS: Actions = {

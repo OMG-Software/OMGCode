@@ -40,7 +40,8 @@ impl DesktopService {
     /// # Errors
     ///
     /// `settings_change_running`; `data_folder_unreadable` when the folder's
-    /// permissions cannot be read; `data_folder_not_repairable` with a fixed
+    /// permissions cannot be opened, read, or checked before the
+    /// confirmation, with nothing changed; `data_folder_not_repairable` with a fixed
     /// reason; `cancelled` when the operator declines; `data_folder_changed`
     /// when the grants changed after the confirmation; and
     /// `data_folder_repair_failed` when opening the folder for the change,

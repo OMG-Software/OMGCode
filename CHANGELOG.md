@@ -33,8 +33,9 @@ Changes are recorded here before a release version is assigned.
   - **Desktop:** that error shows **Remove extra permissions…**, which calls
     the new `settings`-only command `settings_repair_data_folder` with no
     arguments. Rust shows the folder and each account, by name and SID, in a
-    native Yes/No dialog and changes nothing on No. After No or
-    `data_folder_changed` the button stays on offer. New codes:
+    native Yes/No dialog and changes nothing on No. After No,
+    `data_folder_changed`, or `data_folder_unreadable` the button stays on
+    offer. New codes:
     `data_folder_unreadable`, `data_folder_not_repairable`,
     `data_folder_changed`, and `data_folder_repair_failed`.
   - **Tests:** a regression test, first run against the unfixed store,

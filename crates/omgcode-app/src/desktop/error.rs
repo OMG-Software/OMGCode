@@ -263,11 +263,14 @@ impl DesktopError {
         Self::new(code, message)
     }
 
-    /// The data folder's grants could not be listed (ADR-0073).
+    /// The data folder's grants could not be listed before the confirmation
+    /// (ADR-0073): opening or reading the folder, or checking what a repair
+    /// would leave, failed. Nothing was changed. The native reason is not
+    /// passed on, as no OS detail reaches the webview.
     pub(crate) fn data_folder_unreadable() -> Self {
         Self::new(
             "data_folder_unreadable",
-            "OMGCode could not read the permissions of its application data folder.",
+            "OMGCode could not check the permissions of its application data folder. Nothing was changed; try again.",
         )
     }
 
