@@ -17,9 +17,10 @@
 //! receive the new inheritable entries through the native propagation of
 //! `SetSecurityInfo`; the store's own children are protected and unchanged.
 
+use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
@@ -29,8 +30,9 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{
-    ACE_HEADER, ACL, ACL_REVISION, AccessCheck, AddAce, DACL_SECURITY_INFORMATION, DuplicateToken,
-    GENERIC_MAPPING, INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor, LookupAccountSidW,
+    ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AccessCheck, AclSizeInformation, AddAce,
+    DACL_SECURITY_INFORMATION, DuplicateToken, GENERIC_MAPPING, GetAce, GetAclInformation,
+    INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor, LookupAccountSidW,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR, SID_NAME_USE,
     SecurityIdentification, SetSecurityDescriptorDacl, SetSecurityDescriptorGroup,
     SetSecurityDescriptorOwner, TOKEN_DUPLICATE, TOKEN_QUERY,
@@ -57,8 +59,6 @@ const REPAIR_ACCESS: FILE_ACCESS_RIGHTS = DIRECTORY_ACCESS | READ_CONTROL | WRIT
 const INSPECT_ACCESS: FILE_ACCESS_RIGHTS = DIRECTORY_ACCESS | READ_CONTROL;
 /// Account and domain names longer than this are shown by SID alone.
 const ACCOUNT_UNITS: usize = 256;
-/// The same bound in the type the lookup takes.
-const ACCOUNT_UNITS_U32: u32 = 256;
 /// `INHERITED_ACE` in the one-byte `AceFlags` field.
 const INHERITED_FLAG: u8 = 0x10;
 const _: () = assert!(INHERITED_ACE == INHERITED_FLAG as u32);
@@ -272,33 +272,58 @@ fn explicit(mut bytes: Vec<u8>) -> Vec<u8> {
 #[allow(unsafe_code)]
 fn raw_aces(security: &ObjectSecurity) -> io::Result<Vec<Vec<u8>>> {
     let dacl = security.dacl();
-    // SAFETY: `ObjectSecurity::read` refused a null DACL, and `dacl` points
-    // into the descriptor that `security` keeps alive.
-    let header = unsafe { std::ptr::read_unaligned(dacl) };
-    let count = u32::from(header.AceCount);
-    let acl_bytes = usize::from(header.AclSize);
-    if count > MAX_ROOT_ACES {
+    let mut information = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    let length = u32::try_from(size_of::<ACL_SIZE_INFORMATION>())
+        .map_err(|_| invalid_data("ACL information too large"))?;
+    // SAFETY: `ObjectSecurity::read` refused a null DACL, `dacl` points into
+    // the descriptor that `security` keeps alive, and `information` is
+    // writable for `length` bytes.
+    let read = unsafe {
+        GetAclInformation(
+            dacl,
+            std::ptr::from_mut(&mut information).cast(),
+            length,
+            AclSizeInformation,
+        )
+    };
+    if read == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if information.AceCount > MAX_ROOT_ACES {
         return Err(invalid_data("object DACL has too many entries"));
     }
+    let in_use = usize::try_from(information.AclBytesInUse)
+        .map_err(|_| invalid_data("ACL size out of range"))?;
     let mut aces = Vec::new();
-    for index in 0..count {
-        let mut raw: *mut std::ffi::c_void = std::ptr::null_mut();
-        // SAFETY: `index` is below the ACL's count and `raw` is writable.
-        if unsafe { windows_sys::Win32::Security::GetAce(dacl, index, &mut raw) } == 0 {
+    for index in 0..information.AceCount {
+        let mut slot = MaybeUninit::<*mut c_void>::uninit();
+        // SAFETY: `index` is below the reported ACE count, and `slot` is
+        // writable. The returned pointer refers into `dacl`.
+        if unsafe { GetAce(dacl, index, slot.as_mut_ptr()) } == 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: a successful `GetAce` has written the output pointer.
+        let raw = unsafe { slot.assume_init() };
         if raw.is_null() {
             return Err(invalid_data("native ACE pointer is null"));
         }
-        // SAFETY: `raw` points to an ACE header inside the live DACL.
+        let offset = raw.cast::<u8>().addr().checked_sub(dacl.addr());
+        if offset
+            .and_then(|offset| offset.checked_add(size_of::<ACE_HEADER>()))
+            .is_none_or(|end| end > in_use)
+        {
+            return Err(invalid_data("native ACE lies outside its DACL"));
+        }
+        // SAFETY: `raw` is non-null, and the check above places its header
+        // inside the bytes the live DACL uses.
         let header = unsafe { std::ptr::read_unaligned(raw.cast::<ACE_HEADER>()) };
         let size = usize::from(header.AceSize);
-        let end = raw
-            .cast::<u8>()
-            .addr()
-            .checked_sub(dacl.addr())
-            .and_then(|offset| offset.checked_add(size));
-        if size < size_of::<ACE_HEADER>() || end.is_none_or(|end| end > acl_bytes) {
+        let end = offset.and_then(|offset| offset.checked_add(size));
+        if size < size_of::<ACE_HEADER>() || end.is_none_or(|end| end > in_use) {
             return Err(invalid_data("native ACE lies outside its DACL"));
         }
         let mut bytes = vec![0u8; size];
@@ -395,10 +420,13 @@ fn describe(sid: &Sid) -> io::Result<ExtraGrant> {
 fn account_name(sid: &Sid) -> Option<String> {
     let mut name = [0u16; ACCOUNT_UNITS];
     let mut domain = [0u16; ACCOUNT_UNITS];
-    let (mut name_units, mut domain_units) = (ACCOUNT_UNITS_U32, ACCOUNT_UNITS_U32);
+    // Each length comes from its own buffer, so the two cannot drift apart.
+    let mut name_units = u32::try_from(name.len()).ok()?;
+    let mut domain_units = u32::try_from(domain.len()).ok()?;
     let mut usage: SID_NAME_USE = 0;
-    // SAFETY: both buffers are writable for the unit counts passed, and the
-    // SID is valid for this synchronous call.
+    // SAFETY: each buffer is writable for the unit count passed with it,
+    // which was taken from that buffer's length, and the SID is valid for
+    // this synchronous call.
     let found = unsafe {
         LookupAccountSidW(
             std::ptr::null(),

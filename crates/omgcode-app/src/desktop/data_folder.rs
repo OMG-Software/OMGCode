@@ -43,7 +43,9 @@ impl DesktopService {
     /// permissions cannot be read; `data_folder_not_repairable` with a fixed
     /// reason; `cancelled` when the operator declines; `data_folder_changed`
     /// when the grants changed after the confirmation; and
-    /// `data_folder_repair_failed` when Windows refuses the change.
+    /// `data_folder_repair_failed` when opening the folder for the change,
+    /// writing its permissions, or checking them afterwards fails, in which
+    /// case the folder may or may not have changed.
     pub fn settings_repair_data_folder(
         &self,
         prompt: &dyn SettingsPrompt,

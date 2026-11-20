@@ -291,11 +291,13 @@ impl DesktopError {
         )
     }
 
-    /// The native DACL write failed. It may or may not have taken effect.
+    /// The repair failed after the confirmation: opening the folder for the
+    /// change, writing its DACL, or the check after the write. The folder may
+    /// or may not have changed, so the message claims neither.
     pub(crate) fn data_folder_repair_failed() -> Self {
         Self::new(
             "data_folder_repair_failed",
-            "Windows refused to change the data folder's permissions. Check them outside OMGCode.",
+            "OMGCode could not finish changing the data folder's permissions, so they may or may not have changed. Check them outside OMGCode.",
         )
     }
 

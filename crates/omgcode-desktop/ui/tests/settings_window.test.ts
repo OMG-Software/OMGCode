@@ -912,7 +912,7 @@ describe("settings window", () => {
       expect(ipc.callsTo("settings_repair_data_folder")).toEqual([
         { command: "settings_repair_data_folder", args: {} },
       ]);
-      expect(root.textContent).toContain(FOLDER_REPAIRED);
+      expect(repairedNoticeShown()).toBe(true);
       expect(root.querySelector<HTMLElement>(".change-error")?.hidden).toBe(true);
       expect(pageHolds(KEY)).toBe(false);
     });
@@ -937,6 +937,12 @@ describe("settings window", () => {
       await settle();
     }
 
+    /** Visible, not only present: `textContent` also counts hidden elements. */
+    function repairedNoticeShown(): boolean {
+      const notice = root.querySelector<HTMLElement>(".notice");
+      return notice?.hidden === false && (notice.textContent ?? "").includes(FOLDER_REPAIRED);
+    }
+
     function repairOffered(): boolean {
       const problem = root.querySelector<HTMLElement>(".change-error");
       return problem?.hidden === false && (problem.textContent ?? "").includes(REPAIR_FOLDER_LABEL);
@@ -958,7 +964,7 @@ describe("settings window", () => {
       buttonByText(root, REPAIR_FOLDER_LABEL).click();
       await settle();
       expect(ipc.callsTo("settings_repair_data_folder")).toHaveLength(2);
-      expect(root.textContent).toContain(FOLDER_REPAIRED);
+      expect(repairedNoticeShown()).toBe(true);
       expect(repairOffered()).toBe(false);
     });
 
