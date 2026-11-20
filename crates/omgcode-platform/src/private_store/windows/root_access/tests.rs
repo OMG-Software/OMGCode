@@ -188,6 +188,64 @@ fn a_repair_that_would_leave_the_user_without_access_is_refused() {
     ));
 }
 
+/// A direct user entry that grants too little to open the store is not
+/// enough: removing the group that gives the rest would lock the store out.
+#[test]
+fn a_repair_whose_user_entry_grants_too_little_is_refused() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = inheriting_root(&temporary);
+    let user = Principals::current().expect("principals").user;
+    let user_sid = describe(&user).expect("user SID").sid;
+    icacls(
+        &root,
+        &[
+            "/inheritance:r",
+            "/grant:r",
+            &format!("*{user_sid}:(RC)"),
+            &format!("*{USERS}:(OI)(CI)(F)"),
+        ],
+    );
+    assert_eq!(
+        inspect(&root).expect("inspect"),
+        RootAccess::NotRepairable(NO_USER_ACCESS)
+    );
+    assert!(matches!(
+        remove(&root, &grants_named(USERS)),
+        Err(RootRepairError::NotRepairable(NO_USER_ACCESS))
+    ));
+    assert!(
+        allows(
+            &aces(&root).1,
+            &Sid::well_known(WinBuiltinUsersSid).expect("users")
+        ),
+        "nothing was rewritten"
+    );
+}
+
+/// A kept deny entry for a group the user belongs to counts against the
+/// user, as Windows itself applies it.
+#[test]
+fn a_repair_that_a_kept_group_deny_would_lock_out_is_refused() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = inheriting_root(&temporary);
+    icacls(&root, &["/grant", &format!("*{ANONYMOUS}:(RX)")]);
+    // Add subdirectory, which the store needs to create its folders.
+    icacls(&root, &["/deny", &format!("*{USERS}:(AD)")]);
+    assert_eq!(
+        inspect(&root).expect("inspect"),
+        RootAccess::NotRepairable(NO_USER_ACCESS)
+    );
+    let (protected, _) = aces(&root);
+    assert!(!protected, "nothing was rewritten");
+}
+
+fn grants_named(sid: &str) -> Vec<ExtraGrant> {
+    vec![ExtraGrant {
+        sid: sid.to_owned(),
+        account: None,
+    }]
+}
+
 #[test]
 fn relative_paths_and_junctions_are_not_repaired() {
     assert_eq!(

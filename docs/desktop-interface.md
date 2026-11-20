@@ -949,8 +949,10 @@ revision check and validation (ADR-0064, ADR-0071).
   again. It keeps every other entry, makes inherited entries explicit, and
   stops the folder inheriting. A folder with nothing to remove succeeds with
   no dialog. A link, an untrusted owner, an unknown entry type, or a result
-  that leaves the user without access is `data_folder_not_repairable`. The
-  window then says that only the user, SYSTEM, and Administrators have access.
+  under which Windows' `AccessCheck` would not give this process the rights
+  the store needs on the folder is `data_folder_not_repairable`. After No or
+  `data_folder_changed` the button stays on offer. After a repair the
+  window says that only the user, SYSTEM, and Administrators have access.
   The key field was already emptied, so the operator types the key again.
 - **Removing a connection with a stored key, or the active one, is
   confirmed.** `settings_remove_connection` removes a profile and, through

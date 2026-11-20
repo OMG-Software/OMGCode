@@ -9,8 +9,11 @@
 //! entry, makes inherited entries explicit, and protects the DACL so the
 //! parent cannot pass the grant down again. Deny entries are placed first, which
 //! only narrows access. The owner is never changed. A root with an untrusted
-//! owner, an entry type this module does not decode, or no remaining entry
-//! for the current user is not repaired. Children whose DACL is not protected
+//! owner or an entry type this module does not decode is not repaired. Nor is
+//! one whose new DACL would not give this process every right the store asks
+//! for on its root: Windows' own `AccessCheck` decides that against the
+//! process token, so group memberships, deny entries, and the owner's implicit
+//! rights count as they will when the store opens. Children whose DACL is not protected
 //! receive the new inheritable entries through the native propagation of
 //! `SetSecurityInfo`; the store's own children are protected and unchanged.
 
@@ -18,7 +21,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem::size_of;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
@@ -26,19 +29,22 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{
-    ACE_HEADER, ACL, ACL_REVISION, AddAce, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
-    INHERITED_ACE, InitializeAcl, LookupAccountSidW, PROTECTED_DACL_SECURITY_INFORMATION,
-    SID_NAME_USE,
+    ACE_HEADER, ACL, ACL_REVISION, AccessCheck, AddAce, DACL_SECURITY_INFORMATION, DuplicateToken,
+    GENERIC_MAPPING, INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor, LookupAccountSidW,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR, SID_NAME_USE,
+    SecurityIdentification, SetSecurityDescriptorDacl, SetSecurityDescriptorGroup,
+    SetSecurityDescriptorOwner, TOKEN_DUPLICATE, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ACCESS_RIGHTS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL,
-    WRITE_DAC,
+    FILE_ACCESS_RIGHTS, FILE_ALL_ACCESS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, READ_CONTROL, WRITE_DAC,
 };
-use windows_sys::Win32::System::SystemServices::MAXDWORD;
+use windows_sys::Win32::System::SystemServices::{MAXDWORD, SECURITY_DESCRIPTOR_REVISION};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use super::{
-    Ace, MAX_ROOT_ACES, ObjectSecurity, Principals, Sid, VolumeRole, invalid_data, invalid_input,
-    require_supported_filesystem, require_trusted_root,
+    Ace, MAX_ROOT_ACES, ObjectSecurity, PRIVATE_DIRECTORY_ACCESS, Principals, Sid, VolumeRole,
+    invalid_data, invalid_input, require_supported_filesystem, require_trusted_root,
 };
 use crate::broker::windows::{
     DIRECTORY_ACCESS, SHARE_READ_WRITE, query_identity, validate_directory,
@@ -56,20 +62,31 @@ const ACCOUNT_UNITS_U32: u32 = 256;
 /// `INHERITED_ACE` in the one-byte `AceFlags` field.
 const INHERITED_FLAG: u8 = 0x10;
 const _: () = assert!(INHERITED_ACE == INHERITED_FLAG as u32);
+/// Room for the privilege set `AccessCheck` reports. The rights checked here
+/// need no privilege, so a few entries are ample.
+const PRIVILEGE_BYTES: usize = 256;
+/// How Windows maps generic rights on files and folders.
+const FILE_MAPPING: GENERIC_MAPPING = GENERIC_MAPPING {
+    GenericRead: FILE_GENERIC_READ,
+    GenericWrite: FILE_GENERIC_WRITE,
+    GenericExecute: FILE_GENERIC_EXECUTE,
+    GenericAll: FILE_ALL_ACCESS,
+};
 
 const NOT_A_FOLDER: &str = "the folder is a link or is not an ordinary folder";
 const UNSUPPORTED_VOLUME: &str = "the folder is not on an NTFS or ReFS volume";
 const UNTRUSTED_OWNER: &str = "the folder is owned by another account";
 const UNKNOWN_ENTRY: &str = "the folder has a permission entry of a kind OMGCode does not edit";
 const NO_USER_ACCESS: &str =
-    "removing the extra grants would leave your account without its own access";
+    "removing the extra grants would leave your account without the access OMGCode needs";
 
-/// The grants to remove and the entries to keep, in their new order.
+/// The grants to remove and the DACL that would replace the current one.
 struct Plan {
     /// Untrusted principals with an allow entry, sorted by SID and unique.
     grants: Vec<ExtraGrant>,
-    /// Kept entries with the inherited flag cleared: denies, then allows.
-    keep: Vec<Vec<u8>>,
+    /// The kept entries with the inherited flag cleared, denies then allows,
+    /// as an ACL in aligned storage.
+    acl: Vec<u64>,
 }
 
 /// Lists the extra grants on an existing root, opened without following a
@@ -88,7 +105,7 @@ pub(crate) fn inspect(path: &Path) -> io::Result<RootAccess> {
 pub(crate) fn remove(path: &Path, confirmed: &[ExtraGrant]) -> Result<(), RootRepairError> {
     let principals = Principals::current().map_err(RootRepairError::Io)?;
     let file = open(path, REPAIR_ACCESS).map_err(RootRepairError::Io)?;
-    let plan = plan(&file, &principals)
+    let mut plan = plan(&file, &principals)
         .map_err(RootRepairError::Io)?
         .map_err(RootRepairError::NotRepairable)?;
     if !same_principals(&plan.grants, confirmed) {
@@ -97,7 +114,7 @@ pub(crate) fn remove(path: &Path, confirmed: &[ExtraGrant]) -> Result<(), RootRe
     if plan.grants.is_empty() {
         return Ok(());
     }
-    apply(&file, &plan.keep).map_err(RootRepairError::Io)?;
+    apply(&file, &mut plan.acl).map_err(RootRepairError::Io)?;
     require_trusted_root(&file, &principals).map_err(RootRepairError::Io)
 }
 
@@ -136,7 +153,8 @@ fn plan(file: &File, principals: &Principals) -> io::Result<Result<Plan, &'stati
         }
     }
     let security = ObjectSecurity::read(file)?;
-    if !principals.trusted(&security.owner()?) {
+    let owner = security.owner()?;
+    if !principals.trusted(&owner) {
         return Ok(Err(UNTRUSTED_OWNER));
     }
     let decoded = security.aces()?;
@@ -146,29 +164,99 @@ fn plan(file: &File, principals: &Principals) -> io::Result<Result<Plan, &'stati
     }
     let mut grants = Vec::new();
     let (mut denies, mut allows) = (Vec::new(), Vec::new());
-    let mut user_kept = false;
     for (ace, bytes) in decoded.into_iter().zip(raw) {
         match ace {
             Ace::Allowed { sid, .. } if !principals.trusted(&sid) => grants.push(describe(&sid)?),
-            Ace::Allowed { flags, sid, .. } => {
-                // An inherit-only entry grants nothing on the folder itself.
-                user_kept |= flags & INHERIT_ONLY_ACE == 0 && principals.user.equals(&sid);
-                allows.push(explicit(bytes));
-            }
+            Ace::Allowed { .. } => allows.push(explicit(bytes)),
             Ace::Denied { .. } => denies.push(explicit(bytes)),
             Ace::Other { .. } => return Ok(Err(UNKNOWN_ENTRY)),
         }
     }
     grants.sort();
     grants.dedup_by(|left, right| left.sid == right.sid);
-    if !grants.is_empty() && !user_kept {
+    denies.append(&mut allows);
+    let mut acl = build_acl(&denies)?;
+    if !grants.is_empty() && !store_could_open(&owner, &mut acl)? {
         return Ok(Err(NO_USER_ACCESS));
     }
-    denies.append(&mut allows);
-    Ok(Ok(Plan {
-        grants,
-        keep: denies,
-    }))
+    Ok(Ok(Plan { grants, acl }))
+}
+
+/// Whether this process would get every right the private store asks for on
+/// its root if the root carried `acl` and `owner`, as Windows decides it.
+#[allow(unsafe_code)]
+fn store_could_open(owner: &Sid, acl: &mut [u64]) -> io::Result<bool> {
+    let mut raw: HANDLE = std::ptr::null_mut();
+    // SAFETY: the pseudo-handle is always valid and `raw` is writable.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut raw) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: success returned a new token handle that this value now owns.
+    let primary = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
+    let mut raw: HANDLE = std::ptr::null_mut();
+    // SAFETY: `primary` is a live token opened with TOKEN_DUPLICATE, and
+    // `raw` is writable. `AccessCheck` needs an impersonation token, and
+    // identification is the lowest level that allows the check.
+    if unsafe {
+        DuplicateToken(
+            primary.as_raw_handle() as HANDLE,
+            SecurityIdentification,
+            &mut raw,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: success returned a new token handle that this value now owns.
+    let token = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
+    let mut descriptor = SECURITY_DESCRIPTOR {
+        Revision: 0,
+        Sbz1: 0,
+        Control: 0,
+        Owner: std::ptr::null_mut(),
+        Group: std::ptr::null_mut(),
+        Sacl: std::ptr::null_mut(),
+        Dacl: std::ptr::null_mut(),
+    };
+    let pointer: PSECURITY_DESCRIPTOR = std::ptr::from_mut(&mut descriptor).cast();
+    // SAFETY: `pointer` is a live, writable absolute descriptor. It stores
+    // `owner` and `acl` by reference, and both outlive its only use below.
+    // `AccessCheck` needs a group; the owner stands in, as no kept entry
+    // that applies to the folder itself names the creator group.
+    unsafe {
+        if InitializeSecurityDescriptor(pointer, SECURITY_DESCRIPTOR_REVISION) == 0
+            || SetSecurityDescriptorOwner(pointer, owner.as_psid(), 0) == 0
+            || SetSecurityDescriptorGroup(pointer, owner.as_psid(), 0) == 0
+            || SetSecurityDescriptorDacl(pointer, 1, acl.as_mut_ptr().cast(), 0) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let mut privileges = [0u64; PRIVILEGE_BYTES / size_of::<u64>()];
+    let mut privilege_length =
+        u32::try_from(PRIVILEGE_BYTES).map_err(|_| invalid_data("privilege buffer too large"))?;
+    let (mut granted, mut status) = (0u32, 0i32);
+    // SAFETY: the descriptor, token, and mapping are valid for this
+    // synchronous call; `privileges` is aligned and writable for
+    // `privilege_length` bytes, and the two outputs are writable.
+    if unsafe {
+        AccessCheck(
+            pointer,
+            token.as_raw_handle() as HANDLE,
+            PRIVATE_DIRECTORY_ACCESS,
+            &FILE_MAPPING,
+            privileges.as_mut_ptr().cast(),
+            &mut privilege_length,
+            &mut granted,
+            &mut status,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(status != 0 && granted & PRIVATE_DIRECTORY_ACCESS == PRIVATE_DIRECTORY_ACCESS)
 }
 
 /// Clears the inherited flag so the entry survives a protected DACL.
@@ -224,9 +312,9 @@ fn raw_aces(security: &ObjectSecurity) -> io::Result<Vec<Vec<u8>>> {
     Ok(aces)
 }
 
-/// Writes a protected DACL holding exactly `keep`, in order.
+/// An ACL holding exactly `keep`, in order, in aligned storage.
 #[allow(unsafe_code)]
-fn apply(file: &File, keep: &[Vec<u8>]) -> io::Result<()> {
+fn build_acl(keep: &[Vec<u8>]) -> io::Result<Vec<u64>> {
     let mut bytes = size_of::<ACL>();
     for ace in keep {
         bytes = bytes
@@ -249,9 +337,16 @@ fn apply(file: &File, keep: &[Vec<u8>]) -> io::Result<()> {
             }
         }
     }
+    Ok(storage)
+}
+
+/// Writes `acl` as the folder's protected DACL.
+#[allow(unsafe_code)]
+fn apply(file: &File, acl: &mut [u64]) -> io::Result<()> {
+    let acl = acl.as_mut_ptr().cast::<ACL>();
     // SAFETY: `file` is a live handle opened with WRITE_DAC, `acl` is a valid
-    // ACL that outlives this synchronous call, and the owner, group, and SACL
-    // are not changed.
+    // ACL from `build_acl` that outlives this synchronous call, and the owner,
+    // group, and SACL are not changed.
     let status = unsafe {
         SetSecurityInfo(
             file.as_raw_handle() as HANDLE,

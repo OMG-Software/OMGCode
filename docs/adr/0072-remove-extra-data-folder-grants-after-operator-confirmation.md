@@ -41,7 +41,8 @@ permissions.
    SYSTEM, and Administrators, and shows the folder path and each account
    (name and SID, escaped) in a native Yes/No dialog. No webview can open,
    answer, or read that dialog. Nothing changes unless the operator answers
-   Yes.
+   Yes. After No, or `data_folder_changed`, the folder is as it was, so the
+   window offers the button again without repeating the key change.
 3. **Exactly what was confirmed.** The platform reopens the folder without
    following a final reparse point. It reads the grants again from that
    handle and refuses with `data_folder_changed` if the SIDs differ from
@@ -53,8 +54,15 @@ permissions.
    entries first. It removes only the listed allow entries. The owner is
    never changed. The repair is refused, with `data_folder_not_repairable`,
    when the folder is a link or not an ordinary folder, is not on NTFS or
-   ReFS, has an untrusted owner, has an entry type the module does not
-   decode, or would leave the current user without its own allow entry.
+   ReFS, has an untrusted owner, or has an entry type the module does not
+   decode. It is also refused when the new DACL would not give this process
+   every right the store asks for on its root: listing, traversal, reading
+   attributes and the descriptor, and adding files and folders. Windows'
+   own `AccessCheck` decides this against the process token, so group
+   memberships, kept deny entries, and the owner's implicit rights count
+   as they will when the store opens. The check uses the token of the
+   process that runs the repair, so an elevated run can pass where an
+   unelevated one would not.
 5. **Children.** `SetSecurityInfo` passes the new inheritable entries to
    child folders whose DACL is not protected, such as `sessions`, so they
    lose the inherited grant too. The store's own children, such as

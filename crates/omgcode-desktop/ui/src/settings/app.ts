@@ -1,5 +1,10 @@
 import { button, el, replaceChildren } from "../dom";
-import { CANCELLED_CODE, STORAGE_NOT_PRIVATE_CODE, toIpcError } from "../ipc/errors";
+import {
+  CANCELLED_CODE,
+  DATA_FOLDER_CHANGED_CODE,
+  STORAGE_NOT_PRIVATE_CODE,
+  toIpcError,
+} from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
 import { renderAdvanced } from "./advanced_section";
@@ -46,6 +51,8 @@ export const REPAIR_FOLDER_HELP =
  */
 export const FOLDER_REPAIRED =
   "OMGCode's data folder now gives access only to your account, SYSTEM, and Administrators. Try the change again.";
+/** Repair outcomes that leave the folder as it was, so the repair stays on offer. */
+const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([CANCELLED_CODE, DATA_FOLDER_CHANGED_CODE]);
 
 /** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
 const ACTIONS: Actions = {
@@ -114,6 +121,8 @@ export function startSettings(root: HTMLElement): SettingsApp {
    * the main window set meanwhile, so one more read follows it.
    */
   let readAgain = false;
+  /** While a folder repair runs, the shared-folder problem its button was offered with. */
+  let repairing: string | null = null;
 
   function setWorking(value: boolean): void {
     working = value;
@@ -255,28 +264,55 @@ export function startSettings(root: HTMLElement): SettingsApp {
    */
   function reportChange(reason: unknown): void {
     const error = toIpcError(reason);
+    // Set only while a repair runs, so a failure of any other change never offers it.
+    const offered = repairing;
+    repairing = null;
+    if (error.code === STORAGE_NOT_PRIVATE_CODE) {
+      offerRepair(`${error.message} (${error.code})`);
+      return;
+    }
+    if (offered !== null && REPAIR_RETRY_CODES.has(error.code)) {
+      if (error.code === CANCELLED_CODE) {
+        replaceChildren(notice, NOTHING_CHANGED);
+        notice.hidden = false;
+        offerRepair(offered);
+      } else {
+        offerRepair(offered, `${error.message} (${error.code})`);
+      }
+      return;
+    }
     if (error.code === CANCELLED_CODE) {
       replaceChildren(notice, NOTHING_CHANGED);
       notice.hidden = false;
       return;
     }
-    if (error.code === STORAGE_NOT_PRIVATE_CODE) {
-      // The button only asks Rust to look; Rust lists the accounts and asks in a native dialog.
-      const repair = button(REPAIR_FOLDER_LABEL, () => submit(repairDataFolder));
-      repair.classList.add("repair-folder");
-      replaceChildren(problem, `${error.message} (${error.code}) ${REPAIR_FOLDER_HELP} `, repair);
-    } else {
-      replaceChildren(problem, `${error.message} (${error.code})`);
-    }
+    replaceChildren(problem, `${error.message} (${error.code})`);
+    problem.hidden = false;
+  }
+
+  /**
+   * Shows the shared-folder problem with its repair button, after `outcome` when a repair left
+   * the folder as it was. The button only asks Rust to look; Rust lists the accounts and asks in
+   * a native dialog.
+   */
+  function offerRepair(storageProblem: string, outcome?: string): void {
+    const repair = button(REPAIR_FOLDER_LABEL, () => submit(repairDataFolder(storageProblem)));
+    repair.classList.add("repair-folder");
+    const lead = outcome === undefined ? storageProblem : `${outcome} ${storageProblem}`;
+    replaceChildren(problem, `${lead} ${REPAIR_FOLDER_HELP} `, repair);
     problem.hidden = false;
   }
 
   /** The repair change. On success it says so, since the overview itself does not change. */
-  async function repairDataFolder(): Promise<SettingsOverview> {
-    const overview = await settingsApi.repairDataFolder();
-    replaceChildren(notice, FOLDER_REPAIRED);
-    notice.hidden = false;
-    return overview;
+  function repairDataFolder(storageProblem: string): Change {
+    return async () => {
+      repairing = storageProblem;
+      const overview = await settingsApi.repairDataFolder();
+      repairing = null;
+      replaceChildren(notice, FOLDER_REPAIRED);
+      notice.hidden = false;
+      return overview;
+    };
   }
 
   /** Shows why the configuration could not be read. The next successful read hides it. */

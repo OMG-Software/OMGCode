@@ -21,15 +21,19 @@ Changes are recorded here before a release version is assigned.
     without following a link and removes exactly the confirmed entries. It
     refuses if they changed. The new DACL is protected and keeps every
     trusted and deny entry, explicit and with denies first. The owner is not
-    changed. A link, an untrusted owner, an unknown entry type, or a result
-    without the user's own entry is refused.
+    changed. A link, an untrusted owner, or an unknown entry type is
+    refused. So is a new DACL under which Windows' `AccessCheck`, run against
+    the process token, would not grant the rights the store asks for on its
+    root, so a direct entry with too few rights or a kept deny for one of the
+    user's groups cannot lock the store out.
   - **Core and CLI:** `credential_storage_not_private` is a new stable code.
     The CLI keeps the native reason in its message and has no repair
     command.
   - **Desktop:** that error shows **Remove extra permissions…**, which calls
     the new `settings`-only command `settings_repair_data_folder` with no
     arguments. Rust shows the folder and each account, by name and SID, in a
-    native Yes/No dialog and changes nothing on No. New codes:
+    native Yes/No dialog and changes nothing on No. After No or
+    `data_folder_changed` the button stays on offer. New codes:
     `data_folder_unreadable`, `data_folder_not_repairable`,
     `data_folder_changed`, and `data_folder_repair_failed`.
   - **Tests:** a regression test, first run against the unfixed store,
