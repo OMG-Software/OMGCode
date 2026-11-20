@@ -290,9 +290,20 @@ fn root_present(root: &PrivateDirectory) -> Result<bool, CheckpointError> {
 
 /// An existing store's root and head, or `None` when it holds no storage.
 ///
-/// Absence never provisions storage. A workspace store needs its bound
-/// folder; storage there needs a head record, and a committed head needs
-/// storage, so a deleted, emptied, or replaced store is refused.
+/// Absence never provisions storage. A legacy store has no head and opens
+/// only when its data-directory state exists. A workspace store (ADR-0070)
+/// is decided in this order:
+///
+/// 1. The bound folder must open with its recorded identity and creation
+///    time and the exact owner-only access (`open_bound_root`), or it is
+///    missing or changed.
+/// 2. Storage in the folder needs a head record; without one the folder
+///    holds a ledger nothing vouches for.
+/// 3. No storage with a committed head means storage was removed.
+/// 4. No storage and no committed head is a store whose initialization
+///    never finished, which reads as unused.
+///
+/// The head is checked against the replayed ledger later, in `verify`.
 fn open_existing(
     location: Location,
 ) -> Result<Option<(PrivateDirectory, Option<HeadFile>)>, CheckpointError> {

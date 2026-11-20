@@ -78,6 +78,9 @@ impl FileBroker<'_> {
         // old authorization result. The control writer remains borrowed here.
         check_permissions(self.control, binding, target)?;
         if let CheckpointStore::Workspace(workspace_id) = store {
+            // `store` and `target` arrive separately and nothing in their
+            // types ties them. A checkpoint must sit in its own workspace's
+            // folder, on the target's volume, so a mismatch is refused.
             if workspace_id != target.workspace_id {
                 return Err(FileError::Invalid(
                     "checkpoint store belongs to another workspace",
