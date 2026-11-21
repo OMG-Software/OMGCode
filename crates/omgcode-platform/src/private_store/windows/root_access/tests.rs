@@ -49,6 +49,35 @@ fn aces(path: &Path) -> (bool, Vec<Ace>) {
     )
 }
 
+/// The process user, the folder owner, and every decoded entry, for a
+/// failure message: the fixture's DACL can differ between Windows editions.
+fn dacl_report(path: &Path) -> String {
+    let principals = Principals::current().expect("principals");
+    let name = |sid: &Sid| describe(sid).map_or_else(|error| error.to_string(), |grant| grant.sid);
+    let file = open(path, INSPECT_ACCESS).expect("open for inspection");
+    let security = ObjectSecurity::read(&file).expect("security");
+    let mut report = format!(
+        "user {}, owner {}, protected {:?}\n",
+        name(&principals.user),
+        security
+            .owner()
+            .map_or_else(|error| error.to_string(), |owner| name(&owner)),
+        security.dacl_protected()
+    );
+    for ace in security.aces().expect("aces") {
+        report.push_str(&match ace {
+            Ace::Allowed { flags, mask, sid } => {
+                format!("  allow {} flags {flags:#x} mask {mask:#x}\n", name(&sid))
+            }
+            Ace::Denied { flags, mask, sid } => {
+                format!("  deny {} flags {flags:#x} mask {mask:#x}\n", name(&sid))
+            }
+            Ace::Other { flags } => format!("  other flags {flags:#x}\n"),
+        });
+    }
+    report
+}
+
 fn allows(aces: &[Ace], sid: &Sid) -> bool {
     aces.iter()
         .any(|ace| matches!(ace, Ace::Allowed { sid: granted, .. } if granted.equals(sid)))
@@ -181,7 +210,9 @@ fn a_repair_that_would_leave_the_user_without_access_is_refused() {
     );
     assert_eq!(
         inspect(&root).expect("inspect"),
-        RootAccess::NotRepairable(NO_USER_ACCESS)
+        RootAccess::NotRepairable(NO_USER_ACCESS),
+        "{}",
+        dacl_report(&root)
     );
     assert!(matches!(
         remove(&root, &[]),
@@ -208,7 +239,9 @@ fn a_repair_whose_user_entry_grants_too_little_is_refused() {
     );
     assert_eq!(
         inspect(&root).expect("inspect"),
-        RootAccess::NotRepairable(NO_USER_ACCESS)
+        RootAccess::NotRepairable(NO_USER_ACCESS),
+        "{}",
+        dacl_report(&root)
     );
     assert!(matches!(
         remove(&root, &grants_named(USERS)),
