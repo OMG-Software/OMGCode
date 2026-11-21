@@ -99,9 +99,11 @@ fn repair_confirmation(root: &Path, grants: &[ExtraGrant]) -> Confirmation {
     }
     message.push_str(
         "\nRemove them? The folder will also stop inheriting permissions from its parent, \
-         so they are not added back. Your account keeps its access, and any entry the \
-         folder already has for SYSTEM or Administrators is kept; no entry is added. \
-         Programs that run as the removed accounts lose access to OMGCode's data.",
+         so they are not added back. Your account's own entries are kept, and OMGCode \
+         checked that they give it the access it needs. Access your account had only \
+         through a removed account or group is lost. Any entry the folder already has \
+         for SYSTEM or Administrators is kept; no entry is added. Programs that run as \
+         the removed accounts lose access to OMGCode's data.",
     );
     Confirmation {
         title: TITLE,
@@ -144,5 +146,13 @@ mod tests {
         // Administrators nothing the folder does not already grant them.
         assert!(text.contains("no entry is added"), "{text}");
         assert!(!text.contains("SYSTEM, and Administrators keep"), "{text}");
+        // The repair checks only the account's own entries, so the dialog
+        // warns that access through a removed group is lost.
+        assert!(!text.contains("keeps its access"), "{text}");
+        assert!(text.contains("own entries are kept"), "{text}");
+        assert!(
+            text.contains("through a removed account or group"),
+            "{text}"
+        );
     }
 }

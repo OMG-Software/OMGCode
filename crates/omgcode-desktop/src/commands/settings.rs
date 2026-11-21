@@ -277,9 +277,11 @@ pub async fn settings_remove_connection(
 ///
 /// # Errors
 ///
-/// `forbidden_window`, or the service's error (`cancelled`,
-/// `data_folder_unreadable`, `data_folder_not_repairable`,
-/// `data_folder_changed`, `data_folder_repair_failed`).
+/// `forbidden_window`, or the service's error (`settings_change_running`,
+/// `cancelled`, `data_folder_unreadable`, `data_folder_not_repairable`,
+/// `data_folder_changed`, `data_folder_repair_failed`, or
+/// `data_folder_repaired` when the grants were removed but the settings could
+/// not be read again).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn settings_repair_data_folder(
     webview: Webview,

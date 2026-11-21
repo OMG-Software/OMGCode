@@ -239,7 +239,7 @@ impl DesktopError {
             ),
             CredentialError::StorageNotPrivate(_) => (
                 "credential_storage_not_private",
-                "OMGCode's application data folder grants access to another account or is not an ordinary folder, so it cannot hold API keys. Allow only your account, SYSTEM, and Administrators on it.",
+                "OMGCode's application data folder grants access to another account or is not an ordinary folder, so it cannot hold API keys. It must be an ordinary folder, owned by your account, SYSTEM, or Administrators, that allows only those accounts.",
             ),
             CredentialError::Locked => (
                 "credential_locked",
