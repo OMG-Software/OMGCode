@@ -290,6 +290,7 @@ fn add_orphan_warning(output: &mut Value, orphan: Option<&OrphanedCredential>) {
 pub(crate) fn credential_error(error: CredentialError) -> CliError {
     let code = match &error {
         CredentialError::Unavailable(_) => "credential_unavailable",
+        CredentialError::StorageNotPrivate(_) => "credential_storage_not_private",
         CredentialError::Locked => "credential_locked",
         CredentialError::NotFound => "credential_not_found",
         CredentialError::AlreadyExists => "credential_exists",
@@ -407,5 +408,16 @@ mod tests {
         let error = credential_error(CredentialError::PromptRequired);
         assert_eq!(error.code, "credential_prompt_required");
         assert!(error.message.contains("never prompts"), "{}", error.message);
+
+        // The CLI keeps the native reason, so the operator sees which check failed.
+        let error = credential_error(CredentialError::StorageNotPrivate(
+            "private root grants an untrusted principal".to_owned(),
+        ));
+        assert_eq!(error.code, "credential_storage_not_private");
+        assert!(
+            error.message.contains("untrusted principal"),
+            "{}",
+            error.message
+        );
     }
 }

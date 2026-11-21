@@ -390,6 +390,7 @@ impl ProviderCredentialUseError {
             CredentialError::NotFound => "credential_not_found",
             CredentialError::Locked => "credential_locked",
             CredentialError::Unavailable(_) => "credential_unavailable",
+            CredentialError::StorageNotPrivate(_) => "credential_storage_not_private",
             CredentialError::Corrupt(_) => "credential_corrupt",
             CredentialError::PromptRequired => "credential_prompt_required",
             CredentialError::Io(_) => "credential_io",
@@ -826,6 +827,7 @@ fn store_may_leave_item(error: &CredentialError) -> bool {
         CredentialError::Io(_)
         | CredentialError::Corrupt(_)
         | CredentialError::Unavailable(_)
+        | CredentialError::StorageNotPrivate(_)
         | CredentialError::Locked
         | CredentialError::NotFound
         | CredentialError::PromptRequired => true,

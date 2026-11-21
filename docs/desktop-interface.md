@@ -279,6 +279,7 @@ their registered identifier, and approvals by identifier.
 | `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
+| `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -984,6 +985,30 @@ revision check and validation (ADR-0064, ADR-0071).
   and choosing the connection stays confirmed separately; a failure to delete
   the old item is reported as `credential_orphaned`, which says the new key is
   set and names the old item's identifier, since no profile names it any more.
+- **A data folder that is not private can be repaired** (ADR-0073). On
+  Windows a data folder that grants another account access refuses every key
+  change with `credential_storage_not_private`. The error shows **Remove extra
+  permissions…**, which calls `settings_repair_data_folder` with no arguments.
+  Rust lists the folder's allow entries for principals other than the current
+  user, SYSTEM, and Administrators and shows the folder and each account, by
+  name and SID, in a native Yes/No dialog. On Yes it removes every allow
+  entry for those accounts, refusing with `data_folder_changed` if the set of
+  accounts differs when it looks again (a changed access mask for a listed
+  account does not). It keeps every other entry, makes inherited entries explicit, and
+  stops the folder inheriting. A folder with nothing to remove succeeds with
+  no dialog. A link, an untrusted owner, an unknown entry type, or a result
+  that would not give the user the rights the store needs on the folder is
+  `data_folder_not_repairable`. Both the user's own entries and Windows'
+  `AccessCheck` must grant them. After No, `data_folder_changed`,
+  `data_folder_unreadable` (the folder could not be opened, read, or
+  checked before the dialog), or `settings_change_running` (another
+  settings change held the guard) nothing has changed, so the button stays
+  on offer. After a repair the
+  window says that only the user, SYSTEM, and Administrators have access,
+  and asks the operator to try the change again. When reading the settings
+  again then fails (`data_folder_repaired`) it says the same about access,
+  and the error alone gives the next step: close and reopen the window.
+  The key field was already emptied, so the operator types the key again.
 - **Removing a connection with a stored key, or the active one, is
   confirmed.** `settings_remove_connection` removes a profile and, through
   the same core path as the CLI's `provider-profile-remove`, deletes its

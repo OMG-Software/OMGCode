@@ -207,6 +207,11 @@ impl CredentialBackend {
 pub enum CredentialError {
     /// No protected store is usable here. Nothing falls back to plaintext.
     Unavailable(String),
+    /// The Windows application data folder failed its private-root checks:
+    /// its owner or a grant names a principal other than the current user,
+    /// SYSTEM, and Administrators, or it is not an ordinary directory.
+    /// Nothing was created or repaired; the operator must fix the folder.
+    StorageNotPrivate(String),
     /// The store exists but is locked. OMGCode never prompts to unlock it.
     Locked,
     /// No credential has this identifier.
@@ -232,6 +237,9 @@ impl fmt::Display for CredentialError {
         match self {
             Self::Unavailable(reason) => {
                 write!(formatter, "credential store is unavailable: {reason}")
+            }
+            Self::StorageNotPrivate(reason) => {
+                write!(formatter, "application storage is not private: {reason}")
             }
             Self::Locked => formatter
                 .write_str("credential store is locked; unlock it outside OMGCode and try again"),
@@ -318,8 +326,10 @@ impl CredentialStore {
     /// # Errors
     ///
     /// Returns [`CredentialError::Unavailable`] when no protected store can
-    /// be used and [`CredentialError::Locked`] when the Linux default
-    /// collection is locked. Nothing is created by opening.
+    /// be used, [`CredentialError::StorageNotPrivate`] when the Windows data
+    /// folder fails its private-root checks, and [`CredentialError::Locked`]
+    /// when the Linux default collection is locked. Nothing is created by
+    /// opening.
     pub fn open(app_storage_root: &Path) -> Result<Self, CredentialError> {
         #[cfg(windows)]
         {

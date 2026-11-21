@@ -115,10 +115,10 @@ pub trait SettingsPrompt {
 }
 
 /// Holds the one-change-at-a-time flag and clears it on every path.
-struct ChangeGuard<'a>(&'a AtomicBool);
+pub(super) struct ChangeGuard<'a>(&'a AtomicBool);
 
 impl<'a> ChangeGuard<'a> {
-    fn take(flag: &'a AtomicBool) -> Result<Self, DesktopError> {
+    pub(super) fn take(flag: &'a AtomicBool) -> Result<Self, DesktopError> {
         flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| Self(flag))
             .map_err(|_| DesktopError::settings_change_running())

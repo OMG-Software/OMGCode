@@ -941,7 +941,10 @@ does not repair it.
 The data root must meet the
 [ADR-0023](adr/0023-store-windows-checkpoints-with-verified-acls.md) rule. Any
 grant beyond the current user, SYSTEM, and Administrators is refused, including
-an inherited one. Windows makes no power-loss claim. See
+an inherited one. OMGCode never repairs it on its own; the desktop `settings`
+window removes such grants only after the operator confirms each account
+([ADR-0073](adr/0073-remove-extra-data-folder-grants-after-operator-confirmation.md)).
+Windows makes no power-loss claim. See
 [ADR-0024](adr/0024-publish-one-verified-stage-on-windows-ntfs.md).
 
 ### Uncertain outcomes and recovery

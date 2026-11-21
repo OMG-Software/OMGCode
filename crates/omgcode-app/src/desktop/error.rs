@@ -237,6 +237,10 @@ impl DesktopError {
                 "credential_unavailable",
                 "No protected credential store is available on this computer.",
             ),
+            CredentialError::StorageNotPrivate(_) => (
+                "credential_storage_not_private",
+                "OMGCode's application data folder grants access to another account or is not an ordinary folder, so it cannot hold API keys. It must be an ordinary folder, owned by your account, SYSTEM, or Administrators, that allows only those accounts.",
+            ),
             CredentialError::Locked => (
                 "credential_locked",
                 "The credential store is locked. Unlock it outside OMGCode and try again.",
@@ -257,6 +261,56 @@ impl DesktopError {
             ),
         };
         Self::new(code, message)
+    }
+
+    /// The data folder's grants could not be listed before the confirmation
+    /// (ADR-0073): opening or reading the folder, or checking what a repair
+    /// would leave, failed. Nothing was changed. The native reason is not
+    /// passed on, as no OS detail reaches the webview.
+    pub(crate) fn data_folder_unreadable() -> Self {
+        Self::new(
+            "data_folder_unreadable",
+            "OMGCode could not check the permissions of its application data folder. Nothing was changed; try again.",
+        )
+    }
+
+    /// The data folder cannot be repaired here. `reason` is fixed text from
+    /// the platform and names no path or account.
+    pub(crate) fn data_folder_not_repairable(reason: &'static str) -> Self {
+        Self::new(
+            "data_folder_not_repairable",
+            format!(
+                "OMGCode cannot fix the data folder's permissions: {reason}. Fix them outside OMGCode."
+            ),
+        )
+    }
+
+    /// The data folder's grants changed between the confirmation and the
+    /// repair, so nothing was changed.
+    pub(crate) fn data_folder_changed() -> Self {
+        Self::new(
+            "data_folder_changed",
+            "The data folder's permissions changed after you reviewed them. Nothing was changed; try again.",
+        )
+    }
+
+    /// The repair removed the grants, but reading the settings afterwards
+    /// failed. The folder is fixed; only the window's view is stale.
+    pub(crate) fn data_folder_repaired_unread() -> Self {
+        Self::new(
+            "data_folder_repaired",
+            "OMGCode removed the extra permissions from its data folder but could not read its settings again. Close and reopen this window.",
+        )
+    }
+
+    /// The repair failed after the confirmation: opening the folder for the
+    /// change, writing its DACL, or the check after the write. The folder may
+    /// or may not have changed, so the message claims neither.
+    pub(crate) fn data_folder_repair_failed() -> Self {
+        Self::new(
+            "data_folder_repair_failed",
+            "OMGCode could not finish changing the data folder's permissions, so they may or may not have changed. Check them outside OMGCode.",
+        )
     }
 
     /// Map a failure of core's store-and-bind call.

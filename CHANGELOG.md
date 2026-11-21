@@ -6,6 +6,63 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.52.0 reports a Windows data folder that grants another account
+  access as `credential_storage_not_private`, not `credential_unavailable`,
+  and lets the operator remove those grants from the desktop `settings`
+  window after a native confirmation (ADR-0073, accepted). Adding an Ollama
+  Cloud key failed with "No protected credential store is available on this
+  computer." because the data folder had inherited a read grant for another
+  tool's sandbox group. The store refused the folder, and the desktop hid
+  the cause.
+  - **Platform:** `CredentialError::StorageNotPrivate` covers a data folder
+    that fails the private-root checks. `inspect_root_access` lists the
+    folder's allow entries for principals other than the current user,
+    SYSTEM, and Administrators. `remove_extra_root_grants` reopens the folder
+    without following a link and removes every allow entry for the confirmed
+    accounts. It refuses if the set of accounts (SIDs) changed; a changed
+    access mask for a confirmed account does not stop the removal, since the
+    operator confirmed removing that account. The new DACL is protected and keeps every
+    trusted and deny entry, explicit and with denies first. The owner is not
+    changed. A link, an untrusted owner, or an unknown entry type is
+    refused. So is a new DACL that would not grant the rights the store asks
+    for on its root, both through the user's own entries and under Windows'
+    `AccessCheck` for the process token. A direct entry with too few rights
+    or a kept deny for one of the user's groups therefore cannot lock the
+    store out, even when the repair runs elevated.
+  - **Core and CLI:** `credential_storage_not_private` is a new stable code.
+    The CLI keeps the native reason in its message and has no repair
+    command.
+  - **Desktop:** that error shows **Remove extra permissions…**, which calls
+    the new `settings`-only command `settings_repair_data_folder` with no
+    arguments. Rust shows the folder and each account, by name and SID, in a
+    native Yes/No dialog and changes nothing on No. After No,
+    `data_folder_changed`, `data_folder_unreadable`, or
+    `settings_change_running` the button stays on offer. A repair that
+    succeeds but whose settings re-read fails is `data_folder_repaired`: the
+    window still says the folder was fixed, and only the error gives the
+    next step, so it does not also ask the operator to try the change again.
+    New codes: `data_folder_unreadable`, `data_folder_not_repairable`,
+    `data_folder_changed`, `data_folder_repaired`, and
+    `data_folder_repair_failed`.
+  - **Tests:** a regression test, first run against the unfixed store,
+    shows that a root granting Users was `Unavailable`. Windows repair tests
+    cover a confirmed repair, which keeps a deny entry and the user's access,
+    clears an inheriting child, and leaves a protected store child alone. They
+    also cover a grant list that changed after confirmation, a private root,
+    a user entry that only children inherit, a user entry with only
+    `READ_CONTROL`, a kept deny for the Users group, and relative and
+    junction paths. The two lockout fixtures write their exact DACL, because
+    `icacls /inheritance:r` keeps the explicit full-control entry an elevated
+    runner's default DACL gives the user. A resolved account name holds no
+    NUL, which would end the native dialog's text. A cross-platform test pins what each repair error says
+    about the folder. A desktop service test covers the new code, a declined
+    repair, a confirmed repair followed by storing a key, and a second repair
+    with no dialog. Vitest covers the button, its empty request, a visible
+    success notice, the button staying after a declined repair,
+    `data_folder_changed`, or `settings_change_running` and not after
+    `data_folder_not_repairable`, no retry step beside `data_folder_repaired`, and no
+    button for other credential errors.
+
 - Version 0.51.0 lets the operator resize and collapse the desktop `main`
   window's panels, widens and centres chat, and keeps the transcript at its
   end after a send (ADR-0072, accepted). No command, IPC shape, permission,

@@ -43,4 +43,5 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_remove_connection",
     "settings_set_api_key",
     "settings_clear_scope",
+    "settings_repair_data_folder",
 ];

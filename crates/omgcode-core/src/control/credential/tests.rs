@@ -407,6 +407,7 @@ fn only_store_failures_after_creation_may_leave_an_item() {
         (CredentialError::Io(std::io::Error::other("sync")), true),
         (CredentialError::Corrupt("partial"), true),
         (CredentialError::Unavailable("gone".to_owned()), true),
+        (CredentialError::StorageNotPrivate("grant".to_owned()), true),
         (CredentialError::Locked, true),
         (CredentialError::NotFound, true),
         (CredentialError::PromptRequired, true),

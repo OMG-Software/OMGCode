@@ -1,5 +1,13 @@
 import { button, el, replaceChildren } from "../dom";
-import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
+import {
+  CANCELLED_CODE,
+  DATA_FOLDER_CHANGED_CODE,
+  DATA_FOLDER_REPAIRED_CODE,
+  DATA_FOLDER_UNREADABLE_CODE,
+  SETTINGS_CHANGE_RUNNING_CODE,
+  STORAGE_NOT_PRIVATE_CODE,
+  toIpcError,
+} from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
 import { renderAdvanced } from "./advanced_section";
@@ -35,6 +43,30 @@ export interface SettingsApp {
 
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";
+
+/** Offered with `credential_storage_not_private`; Rust explains and confirms natively (ADR-0073). */
+export const REPAIR_FOLDER_LABEL = "Remove extra permissions…";
+export const REPAIR_FOLDER_HELP =
+  "OMGCode can remove the other accounts from its data folder. It names each one in a system dialog first.";
+/**
+ * Shown after the repair command succeeds. Rust also succeeds, without a dialog, when the folder
+ * already granted no other account, so the text states what is true in both cases.
+ */
+export const FOLDER_REPAIRED =
+  "OMGCode's data folder now gives access only to your account, SYSTEM, and Administrators.";
+/** The next step after a repair whose settings were read again; `data_folder_repaired` has its own. */
+export const RETRY_AFTER_REPAIR = "Try the change again.";
+/**
+ * Repair outcomes that leave the folder as it was, so the repair stays on offer. Rust takes the
+ * one-change-at-a-time guard before it reads the folder, so `settings_change_running` changes
+ * nothing either.
+ */
+const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
+  CANCELLED_CODE,
+  DATA_FOLDER_CHANGED_CODE,
+  DATA_FOLDER_UNREADABLE_CODE,
+  SETTINGS_CHANGE_RUNNING_CODE,
+]);
 
 /** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
 const ACTIONS: Actions = {
@@ -103,6 +135,8 @@ export function startSettings(root: HTMLElement): SettingsApp {
    * the main window set meanwhile, so one more read follows it.
    */
   let readAgain = false;
+  /** While a folder repair runs, the shared-folder problem its button was offered with. */
+  let repairing: string | null = null;
 
   function setWorking(value: boolean): void {
     working = value;
@@ -244,6 +278,31 @@ export function startSettings(root: HTMLElement): SettingsApp {
    */
   function reportChange(reason: unknown): void {
     const error = toIpcError(reason);
+    // Set only while a repair runs, so a failure of any other change never offers it.
+    const offered = repairing;
+    repairing = null;
+    if (error.code === STORAGE_NOT_PRIVATE_CODE) {
+      offerRepair(`${error.message} (${error.code})`);
+      return;
+    }
+    if (error.code === DATA_FOLDER_REPAIRED_CODE) {
+      // The repair itself succeeded; only reading the settings again failed.
+      replaceChildren(notice, FOLDER_REPAIRED);
+      notice.hidden = false;
+      replaceChildren(problem, `${error.message} (${error.code})`);
+      problem.hidden = false;
+      return;
+    }
+    if (offered !== null && REPAIR_RETRY_CODES.has(error.code)) {
+      if (error.code === CANCELLED_CODE) {
+        replaceChildren(notice, NOTHING_CHANGED);
+        notice.hidden = false;
+        offerRepair(offered);
+      } else {
+        offerRepair(offered, `${error.message} (${error.code})`);
+      }
+      return;
+    }
     if (error.code === CANCELLED_CODE) {
       replaceChildren(notice, NOTHING_CHANGED);
       notice.hidden = false;
@@ -251,6 +310,31 @@ export function startSettings(root: HTMLElement): SettingsApp {
     }
     replaceChildren(problem, `${error.message} (${error.code})`);
     problem.hidden = false;
+  }
+
+  /**
+   * Shows the shared-folder problem with its repair button, after `outcome` when a repair left
+   * the folder as it was. The button only asks Rust to look; Rust lists the accounts and asks in
+   * a native dialog.
+   */
+  function offerRepair(storageProblem: string, outcome?: string): void {
+    const repair = button(REPAIR_FOLDER_LABEL, () => submit(repairDataFolder(storageProblem)));
+    repair.classList.add("repair-folder");
+    const lead = outcome === undefined ? storageProblem : `${outcome} ${storageProblem}`;
+    replaceChildren(problem, `${lead} ${REPAIR_FOLDER_HELP} `, repair);
+    problem.hidden = false;
+  }
+
+  /** The repair change. On success it says so, since the overview itself does not change. */
+  function repairDataFolder(storageProblem: string): Change {
+    return async () => {
+      repairing = storageProblem;
+      const overview = await settingsApi.repairDataFolder();
+      repairing = null;
+      replaceChildren(notice, `${FOLDER_REPAIRED} ${RETRY_AFTER_REPAIR}`);
+      notice.hidden = false;
+      return overview;
+    };
   }
 
   /** Shows why the configuration could not be read. The next successful read hides it. */

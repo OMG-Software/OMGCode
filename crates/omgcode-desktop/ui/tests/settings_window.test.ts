@@ -13,9 +13,12 @@ import {
   ADVANCED_HELP,
   DEFAULT_CHOICE,
   DEFAULT_ENDPOINTS,
+  FOLDER_REPAIRED,
   MODEL_HELP,
   NOTHING_CHANGED,
   PERMISSION_LABELS,
+  REPAIR_FOLDER_LABEL,
+  RETRY_AFTER_REPAIR,
   type SettingsApp,
   startSettings,
   WORKSPACES_HELP,
@@ -884,6 +887,172 @@ describe("settings window", () => {
       expect(pageHolds(KEY)).toBe(false);
       // The form keeps its choice of provider and name, but never the key.
       expect(picker("New connection provider").value).toBe("ollama_cloud");
+    });
+
+    it("offers to remove the data folder's extra permissions and sends nothing with it", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection(
+            "credential_storage_not_private",
+            "OMGCode's application data folder grants access to another account.",
+          ),
+        settings_repair_data_folder: () => choosable({ provider_profiles: [] }),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+      expect(root.textContent).toContain("credential_storage_not_private");
+      expect(ipc.callsTo("settings_repair_data_folder")).toHaveLength(0);
+
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      // Rust reads the folder and lists the accounts itself; the window names nothing.
+      expect(ipc.callsTo("settings_repair_data_folder")).toEqual([
+        { command: "settings_repair_data_folder", args: {} },
+      ]);
+      expect(repairedNoticeShown()).toBe(true);
+      expect(root.textContent).toContain(RETRY_AFTER_REPAIR);
+      expect(root.querySelector<HTMLElement>(".change-error")?.hidden).toBe(true);
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
+    /** Fails one add with the shared-folder error, so the repair button is offered. */
+    async function offerFolderRepair(repairs: Array<() => unknown>): Promise<void> {
+      let attempt = 0;
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection("credential_storage_not_private", "The data folder is not private."),
+        settings_repair_data_folder: () => {
+          const next = repairs[attempt] ?? repairs[repairs.length - 1];
+          attempt += 1;
+          return next?.();
+        },
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+    }
+
+    /** Visible, not only present: `textContent` also counts hidden elements. */
+    function repairedNoticeShown(): boolean {
+      const notice = root.querySelector<HTMLElement>(".notice");
+      return notice?.hidden === false && (notice.textContent ?? "").includes(FOLDER_REPAIRED);
+    }
+
+    function repairOffered(): boolean {
+      const problem = root.querySelector<HTMLElement>(".change-error");
+      return problem?.hidden === false && (problem.textContent ?? "").includes(REPAIR_FOLDER_LABEL);
+    }
+
+    it("keeps offering the folder repair after the operator declines it", async () => {
+      await offerFolderRepair([
+        () => rejection("cancelled", "No change was made."),
+        () => choosable({ provider_profiles: [] }),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain(NOTHING_CHANGED);
+      expect(root.textContent).not.toContain(FOLDER_REPAIRED);
+      expect(root.textContent).toContain("credential_storage_not_private");
+      expect(repairOffered()).toBe(true);
+
+      // The operator can try again without repeating the change that found the problem.
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(ipc.callsTo("settings_repair_data_folder")).toHaveLength(2);
+      expect(repairedNoticeShown()).toBe(true);
+      expect(repairOffered()).toBe(false);
+    });
+
+    it("keeps offering the folder repair when the folder changed after review", async () => {
+      await offerFolderRepair([
+        () =>
+          rejection(
+            "data_folder_changed",
+            "The data folder's permissions changed after you reviewed them.",
+          ),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain("data_folder_changed");
+      expect(repairOffered()).toBe(true);
+    });
+
+    it("keeps offering the folder repair when the folder's permissions could not be checked", async () => {
+      await offerFolderRepair([
+        () =>
+          rejection(
+            "data_folder_unreadable",
+            "OMGCode could not check the permissions of its application data folder.",
+          ),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain("data_folder_unreadable");
+      expect(repairOffered()).toBe(true);
+    });
+
+    it("keeps offering the folder repair when another settings change was running", async () => {
+      await offerFolderRepair([
+        () => rejection("settings_change_running", "Another settings change is running."),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain("settings_change_running");
+      expect(repairOffered()).toBe(true);
+    });
+
+    it("reports a completed folder repair even when the settings could not be read again", async () => {
+      await offerFolderRepair([
+        () =>
+          rejection(
+            "data_folder_repaired",
+            "OMGCode removed the extra permissions but could not read its settings again.",
+          ),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(repairedNoticeShown()).toBe(true);
+      expect(root.textContent).toContain("data_folder_repaired");
+      // The error says to reopen the window, so the notice gives no other next step.
+      expect(root.textContent).not.toContain(RETRY_AFTER_REPAIR);
+      // The folder is fixed, so there is nothing left to repair.
+      expect(root.textContent).not.toContain(REPAIR_FOLDER_LABEL);
+    });
+
+    it("stops offering the folder repair when OMGCode cannot make it", async () => {
+      await offerFolderRepair([
+        () =>
+          rejection(
+            "data_folder_not_repairable",
+            "OMGCode cannot fix the data folder's permissions.",
+          ),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain("data_folder_not_repairable");
+      expect(root.textContent).not.toContain(REPAIR_FOLDER_LABEL);
+    });
+
+    it("offers no folder repair for other credential failures", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          rejection("credential_unavailable", "No protected credential store is available."),
+      });
+      go("Model");
+      chooseCloud();
+      type("New connection name", "hosted");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+      expect(root.textContent).toContain("credential_unavailable");
+      expect(root.textContent).not.toContain(REPAIR_FOLDER_LABEL);
     });
 
     it("keeps an unsent key when focus returns and the configuration has not changed", async () => {

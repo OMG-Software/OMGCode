@@ -15,6 +15,7 @@
     "allow-settings-overview",
     "allow-settings-register-workspace",
     "allow-settings-remove-connection",
+    "allow-settings-repair-data-folder",
     "allow-settings-select-connection",
     "allow-settings-set-api-key",
     "allow-settings-set-permissions"

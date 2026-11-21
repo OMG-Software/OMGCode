@@ -58,6 +58,12 @@ export const settingsApi = {
       name,
       api_key: apiKey,
     }),
+  /**
+   * Asks Rust to remove the extra grants on the application data folder (ADR-0073). It sends
+   * nothing: Rust reads the folder, names each account in a native confirmation, and removes
+   * exactly those grants on Yes.
+   */
+  repairDataFolder: () => invokeCommand<SettingsOverview>("settings_repair_data_folder", {}),
   /** Clears the window's workspace scope and returns the unscoped overview (ADR-0071). */
   clearScope: () => invokeCommand<SettingsOverview>("settings_clear_scope", {}),
   removeConnection: (revision: number, name: string) =>

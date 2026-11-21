@@ -5,6 +5,17 @@ export const CANCELLED_CODE = "cancelled";
 /** The settings window chose another model connection after this window read its endpoint. */
 export const CONNECTION_CHANGED_CODE = "connection_changed";
 
+/** The application data folder grants another account access, so no API key is stored (ADR-0073). */
+export const STORAGE_NOT_PRIVATE_CODE = "credential_storage_not_private";
+/** A folder repair found different grants from those the operator reviewed and changed nothing. */
+export const DATA_FOLDER_CHANGED_CODE = "data_folder_changed";
+/** A folder repair could not check the folder's permissions before asking, so it changed nothing. */
+export const DATA_FOLDER_UNREADABLE_CODE = "data_folder_unreadable";
+/** A folder repair removed the grants, but the settings could not be read again afterwards. */
+export const DATA_FOLDER_REPAIRED_CODE = "data_folder_repaired";
+/** Another settings change held the one-change-at-a-time guard, so this one did nothing. */
+export const SETTINGS_CHANGE_RUNNING_CODE = "settings_change_running";
+
 /** The connection recorded for the session no longer matches its profile; the operator must choose again. */
 export const SESSION_CONNECTION_STALE_CODE = "session_connection_stale";
 
