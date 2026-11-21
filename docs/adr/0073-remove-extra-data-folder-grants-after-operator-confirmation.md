@@ -100,7 +100,9 @@ change: the store still refuses an untrusted grant on every open.
 - An operator whose data folder another tool changed can fix it from the
   `settings` window in two clicks, and sees which accounts lose access.
 - Programs that run as a removed account, such as another tool's sandbox,
-  lose read access to OMGCode's data folder.
+  lose the access its entries gave them to OMGCode's data folder. An
+  account that also matches a kept entry, such as a member of
+  Administrators, keeps that access.
 - `credential_storage_not_private` is a new stable code. Scripts that
   matched `credential_unavailable` for this case must also match the new
   code.

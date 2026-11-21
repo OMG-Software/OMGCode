@@ -103,7 +103,8 @@ fn repair_confirmation(root: &Path, grants: &[ExtraGrant]) -> Confirmation {
          checked that they give it the access it needs. Access your account had only \
          through a removed account or group is lost. Any entry the folder already has \
          for SYSTEM or Administrators is kept; no entry is added. Programs that run as \
-         the removed accounts lose access to OMGCode's data.",
+         the removed accounts lose the access those entries gave them; an account that \
+         also matches a kept entry, such as a member of Administrators, keeps that access.",
     );
     Confirmation {
         title: TITLE,
@@ -150,6 +151,10 @@ mod tests {
         // warns that access through a removed group is lost.
         assert!(!text.contains("keeps its access"), "{text}");
         assert!(text.contains("own entries are kept"), "{text}");
+        // An account that also matches a kept entry, such as Administrators,
+        // keeps that access, so the dialog does not promise it is cut off.
+        assert!(!text.contains("lose access to OMGCode's data"), "{text}");
+        assert!(text.contains("also matches a kept entry"), "{text}");
         assert!(
             text.contains("through a removed account or group"),
             "{text}"
