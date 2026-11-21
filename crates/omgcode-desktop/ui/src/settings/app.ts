@@ -2,6 +2,7 @@ import { button, el, replaceChildren } from "../dom";
 import {
   CANCELLED_CODE,
   DATA_FOLDER_CHANGED_CODE,
+  DATA_FOLDER_REPAIRED_CODE,
   DATA_FOLDER_UNREADABLE_CODE,
   STORAGE_NOT_PRIVATE_CODE,
   toIpcError,
@@ -274,6 +275,14 @@ export function startSettings(root: HTMLElement): SettingsApp {
     repairing = null;
     if (error.code === STORAGE_NOT_PRIVATE_CODE) {
       offerRepair(`${error.message} (${error.code})`);
+      return;
+    }
+    if (error.code === DATA_FOLDER_REPAIRED_CODE) {
+      // The repair itself succeeded; only reading the settings again failed.
+      replaceChildren(notice, FOLDER_REPAIRED);
+      notice.hidden = false;
+      replaceChildren(problem, `${error.message} (${error.code})`);
+      problem.hidden = false;
       return;
     }
     if (offered !== null && REPAIR_RETRY_CODES.has(error.code)) {

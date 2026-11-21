@@ -294,6 +294,15 @@ impl DesktopError {
         )
     }
 
+    /// The repair removed the grants, but reading the settings afterwards
+    /// failed. The folder is fixed; only the window's view is stale.
+    pub(crate) fn data_folder_repaired_unread() -> Self {
+        Self::new(
+            "data_folder_repaired",
+            "OMGCode removed the extra permissions from its data folder but could not read its settings again. Close and reopen this window.",
+        )
+    }
+
     /// The repair failed after the confirmation: opening the folder for the
     /// change, writing its DACL, or the check after the write. The folder may
     /// or may not have changed, so the message claims neither.

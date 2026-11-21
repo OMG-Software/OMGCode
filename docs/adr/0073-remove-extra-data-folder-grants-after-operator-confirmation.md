@@ -108,6 +108,14 @@ change: the store still refuses an untrusted grant on every open.
   code.
 - The folder no longer inherits from `AppData\Local`. Later grants added
   there, by Windows or another tool, do not reach it.
+- Children are not checked after the repair. `SetSecurityInfo` propagates
+  the new entries to children whose DACL is not protected, and the tests
+  show an inheriting child losing the grant. But the repair verifies only
+  the root, and a child that kept an inherited grant, for example one that
+  Windows skipped, would stay readable by the removed account while the
+  root reports `Private`. The store itself needs only the root. Walking and
+  checking every child, including session journals and links, is not
+  decided here.
 - The repair has run only in tests on Windows NTFS temporary folders. It has
   not run against the reporting host's real data folder or on a domain-joined
   computer, where account lookup can be slow or fail. An unresolved SID is

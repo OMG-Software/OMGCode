@@ -18,8 +18,10 @@ Changes are recorded here before a release version is assigned.
     that fails the private-root checks. `inspect_root_access` lists the
     folder's allow entries for principals other than the current user,
     SYSTEM, and Administrators. `remove_extra_root_grants` reopens the folder
-    without following a link and removes exactly the confirmed entries. It
-    refuses if they changed. The new DACL is protected and keeps every
+    without following a link and removes every allow entry for the confirmed
+    accounts. It refuses if the set of accounts (SIDs) changed; a changed
+    access mask for a confirmed account does not stop the removal, since the
+    operator confirmed removing that account. The new DACL is protected and keeps every
     trusted and deny entry, explicit and with denies first. The owner is not
     changed. A link, an untrusted owner, or an unknown entry type is
     refused. So is a new DACL that would not grant the rights the store asks
@@ -35,9 +37,11 @@ Changes are recorded here before a release version is assigned.
     arguments. Rust shows the folder and each account, by name and SID, in a
     native Yes/No dialog and changes nothing on No. After No,
     `data_folder_changed`, or `data_folder_unreadable` the button stays on
-    offer. New codes:
-    `data_folder_unreadable`, `data_folder_not_repairable`,
-    `data_folder_changed`, and `data_folder_repair_failed`.
+    offer. A repair that succeeds but whose settings re-read fails is
+    `data_folder_repaired`, and the window still says the folder was fixed.
+    New codes: `data_folder_unreadable`, `data_folder_not_repairable`,
+    `data_folder_changed`, `data_folder_repaired`, and
+    `data_folder_repair_failed`.
   - **Tests:** a regression test, first run against the unfixed store,
     shows that a root granting Users was `Unavailable`. Windows repair tests
     cover a confirmed repair, which keeps a deny entry and the user's access,

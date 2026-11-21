@@ -44,6 +44,8 @@ impl DesktopService {
     /// confirmation, with nothing changed; `data_folder_not_repairable` with a fixed
     /// reason; `cancelled` when the operator declines; `data_folder_changed`
     /// when the grants changed after the confirmation; and
+    /// `data_folder_repaired` when the grants were removed but the settings
+    /// could not be read again afterwards;
     /// `data_folder_repair_failed` when opening the folder for the change,
     /// writing its permissions, or checking them afterwards fails, in which
     /// case the folder may or may not have changed.
@@ -65,7 +67,11 @@ impl DesktopService {
             return Err(DesktopError::cancelled());
         }
         match remove_extra_root_grants(root, &grants) {
-            Ok(()) => self.settings_overview(),
+            // The folder is repaired whatever the read that follows returns,
+            // so a failed read must not look like a failed repair.
+            Ok(()) => self
+                .settings_overview()
+                .map_err(|_| DesktopError::data_folder_repaired_unread()),
             Err(RootRepairError::Changed) => Err(DesktopError::data_folder_changed()),
             Err(RootRepairError::NotRepairable(reason)) => {
                 Err(DesktopError::data_folder_not_repairable(reason))

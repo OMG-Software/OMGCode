@@ -996,6 +996,22 @@ describe("settings window", () => {
       expect(repairOffered()).toBe(true);
     });
 
+    it("reports a completed folder repair even when the settings could not be read again", async () => {
+      await offerFolderRepair([
+        () =>
+          rejection(
+            "data_folder_repaired",
+            "OMGCode removed the extra permissions but could not read its settings again.",
+          ),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(repairedNoticeShown()).toBe(true);
+      expect(root.textContent).toContain("data_folder_repaired");
+      // The folder is fixed, so there is nothing left to repair.
+      expect(root.textContent).not.toContain(REPAIR_FOLDER_LABEL);
+    });
+
     it("stops offering the folder repair when OMGCode cannot make it", async () => {
       await offerFolderRepair([
         () =>

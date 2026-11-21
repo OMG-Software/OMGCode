@@ -991,9 +991,10 @@ revision check and validation (ADR-0064, ADR-0071).
   permissions…**, which calls `settings_repair_data_folder` with no arguments.
   Rust lists the folder's allow entries for principals other than the current
   user, SYSTEM, and Administrators and shows the folder and each account, by
-  name and SID, in a native Yes/No dialog. On Yes it removes exactly those
-  entries, refusing with `data_folder_changed` if they differ when it looks
-  again. It keeps every other entry, makes inherited entries explicit, and
+  name and SID, in a native Yes/No dialog. On Yes it removes every allow
+  entry for those accounts, refusing with `data_folder_changed` if the set of
+  accounts differs when it looks again (a changed access mask for a listed
+  account does not). It keeps every other entry, makes inherited entries explicit, and
   stops the folder inheriting. A folder with nothing to remove succeeds with
   no dialog. A link, an untrusted owner, an unknown entry type, or a result
   that would not give the user the rights the store needs on the folder is
@@ -1002,7 +1003,8 @@ revision check and validation (ADR-0064, ADR-0071).
   `data_folder_unreadable` (the folder could not be opened, read, or
   checked before the dialog) nothing has changed, so the button stays on
   offer. After a repair the
-  window says that only the user, SYSTEM, and Administrators have access.
+  window says that only the user, SYSTEM, and Administrators have access,
+  even when reading the settings again then fails (`data_folder_repaired`).
   The key field was already emptied, so the operator types the key again.
 - **Removing a connection with a stored key, or the active one, is
   confirmed.** `settings_remove_connection` removes a profile and, through
