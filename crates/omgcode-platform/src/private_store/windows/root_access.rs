@@ -486,13 +486,24 @@ fn account_name(sid: &Sid) -> Option<String> {
     if found == 0 {
         return None;
     }
-    let name = String::from_utf16_lossy(name.get(..usize::try_from(name_units).ok()?)?);
-    let domain = String::from_utf16_lossy(domain.get(..usize::try_from(domain_units).ok()?)?);
+    // On success the counts exclude the terminator, but the documentation is
+    // vague, and a NUL would end the native dialog's text, so stop at one.
+    let name = until_nul(name.get(..usize::try_from(name_units).ok()?)?);
+    let domain = until_nul(domain.get(..usize::try_from(domain_units).ok()?)?);
     Some(if domain.is_empty() {
         name
     } else {
         format!("{domain}\\{name}")
     })
+}
+
+/// The UTF-16 text before the first NUL, or all of it when there is none.
+fn until_nul(units: &[u16]) -> String {
+    let end = units
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(units.len());
+    String::from_utf16_lossy(&units[..end])
 }
 
 #[cfg(test)]

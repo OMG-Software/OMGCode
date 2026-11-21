@@ -350,6 +350,24 @@ fn ace_with_flags(sid: &Sid, flags: u32, mask: u32) -> Vec<u8> {
     ace
 }
 
+/// The confirmation shows this text, so it must hold no terminator: a NUL
+/// would end the native dialog's message there.
+#[test]
+fn a_resolved_account_name_holds_no_terminator() {
+    let users = Sid::well_known(WinBuiltinUsersSid).expect("users");
+    let account = describe(&users)
+        .expect("describe")
+        .account
+        .expect("BUILTIN\\Users resolves");
+    assert!(!account.contains('\0'), "{account:?}");
+    let (domain, name) = account.split_once('\\').expect("DOMAIN\\name");
+    assert!(!domain.is_empty() && !name.is_empty(), "{account:?}");
+
+    assert_eq!(until_nul(&[0x41, 0x42, 0, 0x43]), "AB");
+    assert_eq!(until_nul(&[0]), "");
+    assert_eq!(until_nul(&[0x41]), "A");
+}
+
 fn grants_named(sid: &str) -> Vec<ExtraGrant> {
     vec![ExtraGrant {
         sid: sid.to_owned(),
