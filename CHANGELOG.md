@@ -49,7 +49,9 @@ Changes are recorded here before a release version is assigned.
     also cover a grant list that changed after confirmation, a private root,
     a user entry that only children inherit, a user entry with only
     `READ_CONTROL`, a kept deny for the Users group, and relative and
-    junction paths. A cross-platform test pins what each repair error says
+    junction paths. The two lockout fixtures write their exact DACL, because
+    `icacls /inheritance:r` keeps the explicit full-control entry an elevated
+    runner's default DACL gives the user. A cross-platform test pins what each repair error says
     about the folder. A desktop service test covers the new code, a declined
     repair, a confirmed repair followed by storing a key, and a second repair
     with no dialog. Vitest covers the button, its empty request, a visible

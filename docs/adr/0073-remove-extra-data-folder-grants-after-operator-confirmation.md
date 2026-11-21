@@ -62,11 +62,9 @@ permissions.
    must both pass. First, the user's own entries on the folder, less the
    user's own deny entries, must grant those rights. This check does not
    depend on the token, so an elevated repair cannot approve a folder that
-   an unelevated launch could not open. CI showed why it is needed:
-   `AccessCheck` alone approved a READ_CONTROL-only user entry under an
-   elevated runner token. Second, Windows' own `AccessCheck` against the
-   process token must grant them, so a kept deny entry for one of the user's
-   groups counts. Access that comes only through a group is refused, which
+   an unelevated launch could not open. Second, Windows' own `AccessCheck`
+   against the process token must grant them, so a kept deny entry for one
+   of the user's groups counts. Access that comes only through a group is refused, which
    is stricter than Windows but never locks the store out.
 5. **Children.** `SetSecurityInfo` passes the new inheritable entries to
    child folders whose DACL is not protected, such as `sessions`, so they

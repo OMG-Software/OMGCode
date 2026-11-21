@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use windows_sys::Win32::Security::{WinAnonymousSid, WinBuiltinUsersSid};
+use windows_sys::Win32::Security::{
+    CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE, WinAnonymousSid, WinBuiltinUsersSid,
+};
 use windows_sys::Win32::Storage::FileSystem::FILE_ADD_FILE;
 
 use super::*;
@@ -191,6 +193,16 @@ fn a_private_root_reports_private_and_a_repair_changes_nothing() {
     WindowsPrivateDirectory::open(&root).expect("still private");
 }
 
+/// Replaces the folder's DACL with exactly `entries`, protected.
+///
+/// `icacls /inheritance:r` keeps explicit entries the folder was created
+/// with, and a CI runner's default DACL gives its user explicit full control,
+/// so a fixture built with `icacls` would still grant the user everything.
+fn exact_dacl(root: &Path, entries: &[Vec<u8>]) {
+    let mut acl = build_acl(entries).expect("fixture ACL");
+    apply(&open(root, REPAIR_ACCESS).expect("open"), &mut acl).expect("fixture DACL");
+}
+
 /// A user entry that only children inherit grants nothing on the folder, so
 /// removing the other grants would lock the user out and is refused.
 #[test]
@@ -198,14 +210,16 @@ fn a_repair_that_would_leave_the_user_without_access_is_refused() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = inheriting_root(&temporary);
     let user = Principals::current().expect("principals").user;
-    let user_sid = describe(&user).expect("user SID").sid;
-    icacls(
+    let users = Sid::well_known(WinBuiltinUsersSid).expect("users");
+    exact_dacl(
         &root,
         &[
-            "/inheritance:r",
-            "/grant:r",
-            &format!("*{user_sid}:(OI)(CI)(IO)(F)"),
-            &format!("*{USERS}:(RX)"),
+            ace_with_flags(
+                &user,
+                OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE,
+                FILE_ALL_ACCESS,
+            ),
+            allowed_ace(&users, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE),
         ],
     );
     assert_eq!(
@@ -227,14 +241,16 @@ fn a_repair_whose_user_entry_grants_too_little_is_refused() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = inheriting_root(&temporary);
     let user = Principals::current().expect("principals").user;
-    let user_sid = describe(&user).expect("user SID").sid;
-    icacls(
+    let users = Sid::well_known(WinBuiltinUsersSid).expect("users");
+    exact_dacl(
         &root,
         &[
-            "/inheritance:r",
-            "/grant:r",
-            &format!("*{user_sid}:(RC)"),
-            &format!("*{USERS}:(OI)(CI)(F)"),
+            allowed_ace(&user, READ_CONTROL),
+            ace_with_flags(
+                &users,
+                OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                FILE_ALL_ACCESS,
+            ),
         ],
     );
     assert_eq!(
@@ -291,12 +307,13 @@ fn a_user_entry_with_only_generic_rights_still_allows_the_repair() {
     let root = inheriting_root(&temporary);
     let user = Principals::current().expect("principals").user;
     let users = Sid::well_known(WinBuiltinUsersSid).expect("users");
-    let mut fixture = build_acl(&[
-        allowed_ace(&user, GENERIC_ALL),
-        allowed_ace(&users, GENERIC_READ | GENERIC_EXECUTE),
-    ])
-    .expect("fixture ACL");
-    apply(&open(&root, REPAIR_ACCESS).expect("open"), &mut fixture).expect("fixture DACL");
+    exact_dacl(
+        &root,
+        &[
+            allowed_ace(&user, GENERIC_ALL),
+            allowed_ace(&users, GENERIC_READ | GENERIC_EXECUTE),
+        ],
+    );
     assert!(
         aces(&root).1.iter().any(|ace| matches!(
             ace,
@@ -314,9 +331,14 @@ fn a_user_entry_with_only_generic_rights_still_allows_the_repair() {
 
 /// An access-allowed ACE with no flags, as Windows lays one out.
 fn allowed_ace(sid: &Sid, mask: u32) -> Vec<u8> {
+    ace_with_flags(sid, 0, mask)
+}
+
+/// An access-allowed ACE with the given inheritance flags.
+fn ace_with_flags(sid: &Sid, flags: u32, mask: u32) -> Vec<u8> {
     let length = sid.length().expect("SID length");
     let size = u16::try_from(8 + length).expect("ACE size");
-    let mut ace = vec![0u8, 0u8];
+    let mut ace = vec![0u8, u8::try_from(flags).expect("ACE flags")];
     ace.extend_from_slice(&size.to_le_bytes());
     ace.extend_from_slice(&mask.to_le_bytes());
     ace.extend(
