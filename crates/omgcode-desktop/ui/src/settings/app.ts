@@ -4,6 +4,7 @@ import {
   DATA_FOLDER_CHANGED_CODE,
   DATA_FOLDER_REPAIRED_CODE,
   DATA_FOLDER_UNREADABLE_CODE,
+  SETTINGS_CHANGE_RUNNING_CODE,
   STORAGE_NOT_PRIVATE_CODE,
   toIpcError,
 } from "../ipc/errors";
@@ -52,12 +53,19 @@ export const REPAIR_FOLDER_HELP =
  * already granted no other account, so the text states what is true in both cases.
  */
 export const FOLDER_REPAIRED =
-  "OMGCode's data folder now gives access only to your account, SYSTEM, and Administrators. Try the change again.";
-/** Repair outcomes that leave the folder as it was, so the repair stays on offer. */
+  "OMGCode's data folder now gives access only to your account, SYSTEM, and Administrators.";
+/** The next step after a repair whose settings were read again; `data_folder_repaired` has its own. */
+export const RETRY_AFTER_REPAIR = "Try the change again.";
+/**
+ * Repair outcomes that leave the folder as it was, so the repair stays on offer. Rust takes the
+ * one-change-at-a-time guard before it reads the folder, so `settings_change_running` changes
+ * nothing either.
+ */
 const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
   CANCELLED_CODE,
   DATA_FOLDER_CHANGED_CODE,
   DATA_FOLDER_UNREADABLE_CODE,
+  SETTINGS_CHANGE_RUNNING_CODE,
 ]);
 
 /** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
@@ -323,7 +331,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
       repairing = storageProblem;
       const overview = await settingsApi.repairDataFolder();
       repairing = null;
-      replaceChildren(notice, FOLDER_REPAIRED);
+      replaceChildren(notice, `${FOLDER_REPAIRED} ${RETRY_AFTER_REPAIR}`);
       notice.hidden = false;
       return overview;
     };

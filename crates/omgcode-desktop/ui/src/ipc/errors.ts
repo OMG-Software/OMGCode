@@ -13,6 +13,8 @@ export const DATA_FOLDER_CHANGED_CODE = "data_folder_changed";
 export const DATA_FOLDER_UNREADABLE_CODE = "data_folder_unreadable";
 /** A folder repair removed the grants, but the settings could not be read again afterwards. */
 export const DATA_FOLDER_REPAIRED_CODE = "data_folder_repaired";
+/** Another settings change held the one-change-at-a-time guard, so this one did nothing. */
+export const SETTINGS_CHANGE_RUNNING_CODE = "settings_change_running";
 
 /** The connection recorded for the session no longer matches its profile; the operator must choose again. */
 export const SESSION_CONNECTION_STALE_CODE = "session_connection_stale";

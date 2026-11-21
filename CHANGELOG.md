@@ -36,9 +36,11 @@ Changes are recorded here before a release version is assigned.
     the new `settings`-only command `settings_repair_data_folder` with no
     arguments. Rust shows the folder and each account, by name and SID, in a
     native Yes/No dialog and changes nothing on No. After No,
-    `data_folder_changed`, or `data_folder_unreadable` the button stays on
-    offer. A repair that succeeds but whose settings re-read fails is
-    `data_folder_repaired`, and the window still says the folder was fixed.
+    `data_folder_changed`, `data_folder_unreadable`, or
+    `settings_change_running` the button stays on offer. A repair that
+    succeeds but whose settings re-read fails is `data_folder_repaired`: the
+    window still says the folder was fixed, and only the error gives the
+    next step, so it does not also ask the operator to try the change again.
     New codes: `data_folder_unreadable`, `data_folder_not_repairable`,
     `data_folder_changed`, `data_folder_repaired`, and
     `data_folder_repair_failed`.
@@ -55,8 +57,9 @@ Changes are recorded here before a release version is assigned.
     about the folder. A desktop service test covers the new code, a declined
     repair, a confirmed repair followed by storing a key, and a second repair
     with no dialog. Vitest covers the button, its empty request, a visible
-    success notice, the button staying after a declined repair or
-    `data_folder_changed` and not after `data_folder_not_repairable`, and no
+    success notice, the button staying after a declined repair,
+    `data_folder_changed`, or `settings_change_running` and not after
+    `data_folder_not_repairable`, no retry step beside `data_folder_repaired`, and no
     button for other credential errors.
 
 - Version 0.51.0 lets the operator resize and collapse the desktop `main`

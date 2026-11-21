@@ -18,6 +18,7 @@ import {
   NOTHING_CHANGED,
   PERMISSION_LABELS,
   REPAIR_FOLDER_LABEL,
+  RETRY_AFTER_REPAIR,
   type SettingsApp,
   startSettings,
   WORKSPACES_HELP,
@@ -913,6 +914,7 @@ describe("settings window", () => {
         { command: "settings_repair_data_folder", args: {} },
       ]);
       expect(repairedNoticeShown()).toBe(true);
+      expect(root.textContent).toContain(RETRY_AFTER_REPAIR);
       expect(root.querySelector<HTMLElement>(".change-error")?.hidden).toBe(true);
       expect(pageHolds(KEY)).toBe(false);
     });
@@ -996,6 +998,16 @@ describe("settings window", () => {
       expect(repairOffered()).toBe(true);
     });
 
+    it("keeps offering the folder repair when another settings change was running", async () => {
+      await offerFolderRepair([
+        () => rejection("settings_change_running", "Another settings change is running."),
+      ]);
+      buttonByText(root, REPAIR_FOLDER_LABEL).click();
+      await settle();
+      expect(root.textContent).toContain("settings_change_running");
+      expect(repairOffered()).toBe(true);
+    });
+
     it("reports a completed folder repair even when the settings could not be read again", async () => {
       await offerFolderRepair([
         () =>
@@ -1008,6 +1020,8 @@ describe("settings window", () => {
       await settle();
       expect(repairedNoticeShown()).toBe(true);
       expect(root.textContent).toContain("data_folder_repaired");
+      // The error says to reopen the window, so the notice gives no other next step.
+      expect(root.textContent).not.toContain(RETRY_AFTER_REPAIR);
       // The folder is fixed, so there is nothing left to repair.
       expect(root.textContent).not.toContain(REPAIR_FOLDER_LABEL);
     });

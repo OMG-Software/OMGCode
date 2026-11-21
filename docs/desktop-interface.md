@@ -999,12 +999,15 @@ revision check and validation (ADR-0064, ADR-0071).
   no dialog. A link, an untrusted owner, an unknown entry type, or a result
   that would not give the user the rights the store needs on the folder is
   `data_folder_not_repairable`. Both the user's own entries and Windows'
-  `AccessCheck` must grant them. After No, `data_folder_changed`, or
+  `AccessCheck` must grant them. After No, `data_folder_changed`,
   `data_folder_unreadable` (the folder could not be opened, read, or
-  checked before the dialog) nothing has changed, so the button stays on
-  offer. After a repair the
+  checked before the dialog), or `settings_change_running` (another
+  settings change held the guard) nothing has changed, so the button stays
+  on offer. After a repair the
   window says that only the user, SYSTEM, and Administrators have access,
-  even when reading the settings again then fails (`data_folder_repaired`).
+  and asks the operator to try the change again. When reading the settings
+  again then fails (`data_folder_repaired`) it says the same about access,
+  and the error alone gives the next step: close and reopen the window.
   The key field was already emptied, so the operator types the key again.
 - **Removing a connection with a stored key, or the active one, is
   confirmed.** `settings_remove_connection` removes a profile and, through
