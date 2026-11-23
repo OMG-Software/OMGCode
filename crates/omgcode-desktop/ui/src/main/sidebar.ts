@@ -6,7 +6,7 @@ import { iconButton } from "../ui/icons";
 import { createPopover } from "../ui/popover";
 import { segmented } from "../ui/segmented";
 import { SEARCH_LIMIT, SEARCH_MAX_CHARS } from "./model";
-import { enableTreeKeys, renderHits, renderTree, visibleItems } from "./tree";
+import { enableTreeKeys, refreshTimes, renderHits, renderTree, visibleItems } from "./tree";
 
 export interface SidebarHandlers {
   onOpen(session: SessionSummary, folder: string, seq: number | null): void;
@@ -31,6 +31,8 @@ export interface Sidebar {
 }
 
 const SEARCH_DEBOUNCE_MS = 250;
+/** How often the rows' ages are drawn again, so "5m" does not go stale. */
+const TIME_REFRESH_MS = 30_000;
 
 /**
  * Builds the sidebar: a title row with New session, the search box with a View menu (active or
@@ -302,6 +304,8 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     }
   }
 
+  const timeTimer = setInterval(() => refreshTimes(body, Date.now()), TIME_REFRESH_MS);
+
   return {
     element,
     refresh,
@@ -336,6 +340,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     },
     dispose() {
       viewMenu.dispose();
+      clearInterval(timeTimer);
       if (debounce !== null) {
         clearTimeout(debounce);
       }
