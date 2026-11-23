@@ -15,9 +15,19 @@ use std::path::Path;
 /// (ADR-0078). Call this only after a reply framed by `Content-Length`, never
 /// after a reply that the close delimits, and only on a stream with a read
 /// timeout. A read error or timeout ends the wait; the caller still closes.
-pub(crate) fn await_client_close(stream: &mut impl Read) {
+///
+/// Returns whether the client's close was observed. A test that depends on
+/// the client-side TIME_WAIT must assert it, because a timeout means the
+/// fixture, not the client, closes first.
+pub(crate) fn await_client_close(stream: &mut impl Read) -> bool {
     let mut sink = [0_u8; 512];
-    while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+    loop {
+        match stream.read(&mut sink) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
 }
 
 /// Create `data` as a private data root. Windows temporary directories

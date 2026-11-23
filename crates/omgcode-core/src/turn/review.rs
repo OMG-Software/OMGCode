@@ -18,8 +18,8 @@ use thiserror::Error;
 use super::{
     PreparedEdit, ReadRequest, TextEdit, ToolArguments, ToolCall, ToolName, artifact,
     command_digest, command_run_request, create_digest, create_directory_digest, delete_digest,
-    edit_digest, edit_target, is_hidden_format, multi_edit_digest, normalized_path, prepare_edit,
-    prepare_multi_edit, read_edit_source, rename_digest,
+    edit_digest, edit_target, is_hidden_format, list_parent, multi_edit_digest, normalized_path,
+    prepare_edit, prepare_multi_edit, read_edit_source, rename_digest,
 };
 use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
 use crate::file_audit::FileAuditError;
@@ -328,12 +328,20 @@ fn review_file_write<'a>(
         let target = edit_target(approval.session_id, approval.workspace_id, path);
         let current = match read_edit_source(&mut control, &binding, &target) {
             Ok(bytes) => Some(bytes),
-            // A creation is reviewable only while its path is absent.
+            // A creation is reviewable only while its path is absent and its
+            // parent exists. Dispatch refuses a missing parent before it
+            // consumes the approval, so such a request is not offered.
             Err(FileError::Native(native))
                 if matches!(tool, ToolName::CreateFile | ToolName::CreateDirectory)
                     && is_missing_entry(&native) =>
             {
-                None
+                match list_parent(&mut control, &binding, &target) {
+                    Ok(()) => None,
+                    Err(error) => {
+                        classify_review_read(error)?;
+                        continue;
+                    }
+                }
             }
             Err(error) => {
                 classify_review_read(error)?;

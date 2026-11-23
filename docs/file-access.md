@@ -692,11 +692,13 @@ the session, workspace, and normalized path. After approval, the handler
 checks the success report fits, consumes the record, and calls the broker's
 single-directory `create_directory`, which creates no missing parent and
 replaces nothing; an entry created by another writer in between is
-`file_exists` and the approval stays spent. The creation is not
-checkpointed and no model tool removes a directory. Recursive directory
-creation remains unavailable: the model creates nested directories one level
-at a time, each with its own approval. A directory review is stale once its
-path exists.
+`file_exists` and the approval stays spent. Under `allow` no approval is
+recorded or consumed. The creation is not checkpointed. No dedicated model
+tool removes a directory; `workspace_run_command` can, when its approved
+profile exposes a program that does. Recursive directory creation remains
+unavailable: the model creates nested directories one level at a time, each
+with its own approval under `prompt`. A directory review is stale once its
+path exists or its parent is missing.
 
 ### Private checkpoints, quota, and retention
 

@@ -476,7 +476,8 @@ parents: an existing path is `file_exists` and a missing parent is
 `workspace_rename_file` now also report. It shares the edit tool's `file_write`
 approvals, writers-stopped acknowledgement, per-call recheck, and
 `edit_disabled` denial, and its digest domain is `omgcode-directory-create-v1`.
-No model tool removes a directory. See
+No dedicated model tool removes a directory; a command can, when its approved
+profile exposes a program that does. See
 [ADR-0079](adr/0079-add-a-model-tool-that-creates-one-directory.md).
 
 When `model_tools`, `execute`, `read`, and `write` are all enabled, the runtime

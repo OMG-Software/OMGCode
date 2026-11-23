@@ -98,9 +98,10 @@ fn list_with_timeout(
         // a list leaves is the server's and cannot refuse a later Windows
         // connect to the same server. A server-held TIME_WAIT can delay a
         // reconnect only after a large request, not a list (ADR-0078).
-        let build = || {
+        let build = |remaining: Duration| {
             let mut request = client
                 .get(endpoint.clone())
+                .timeout(remaining)
                 .header(ACCEPT, "application/json")
                 .header(CONNECTION, "close");
             if let Some(authorization) = &authorization {
@@ -108,7 +109,7 @@ fn list_with_timeout(
             }
             request
         };
-        let response = send_request(build, &never).await?;
+        let response = send_request(timeout, build, &never).await?;
         read_whole_body(response, &never).await
     })?;
     parse_model_list(&bytes)
@@ -485,7 +486,7 @@ mod tests {
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 body.len()
             );
-            for _ in 0..REQUESTS {
+            for connection in 0..REQUESTS {
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -509,7 +510,12 @@ mod tests {
                 }
                 stream.write_all(head.as_bytes()).expect("response head");
                 stream.write_all(body).expect("response body");
-                await_client_close(&mut stream);
+                // A timeout here would mean the fixture closes first, which
+                // is not the case this test pins.
+                assert!(
+                    await_client_close(&mut stream),
+                    "the client closes connection {connection} first"
+                );
             }
         });
         for request in 0..REQUESTS {

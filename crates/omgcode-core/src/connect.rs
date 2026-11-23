@@ -16,6 +16,8 @@
 //! byte of the request, and no credential header, reached any server. The
 //! model provider client and the trusted package fetch both send through it.
 
+use std::time::{Duration, Instant};
+
 use reqwest::{RequestBuilder, Response};
 
 /// The most ports one request skips. Each skip is a local connect refusal,
@@ -27,18 +29,27 @@ const MAX_SKIPPED_PORTS: usize = 64;
 /// operating system refuses as already in use for this destination.
 ///
 /// `build` is called once per attempt because sending consumes the request.
-/// Any other error, a refusal after [`MAX_SKIPPED_PORTS`] skips, or a refusal
-/// that no port could be reserved for, is returned as `send` reported it. The
-/// caller bounds and cancels the whole wait. The held sockets are bound but
-/// never listen or connect, so they accept nothing, and they are closed when
-/// this returns.
+/// It receives the time left before `deadline`, so a caller that bounds the
+/// request with a per-request timeout keeps one deadline across every
+/// attempt rather than starting a new one; that timeout also covers reading
+/// the body. Any other error, a refusal after [`MAX_SKIPPED_PORTS`] skips or
+/// at the deadline, or a refusal that no port could be reserved for, is
+/// returned as `send` reported it. The caller cancels the wait. The held
+/// sockets are bound but never listen or connect, so they accept nothing, and
+/// they are closed when this returns.
 pub(crate) async fn send_skipping_reused_ports(
-    mut build: impl FnMut() -> RequestBuilder,
+    deadline: Instant,
+    mut build: impl FnMut(Duration) -> RequestBuilder,
 ) -> Result<Response, reqwest::Error> {
     let mut held = Vec::new();
     loop {
-        match build().send().await {
-            Err(error) if is_reused_local_port(&error) && held.len() < MAX_SKIPPED_PORTS => {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match build(remaining).send().await {
+            Err(error)
+                if is_reused_local_port(&error)
+                    && held.len() < MAX_SKIPPED_PORTS
+                    && Instant::now() < deadline =>
+            {
                 match reserve_next_port() {
                     Some(port) => held.push(port),
                     None => return Err(error),

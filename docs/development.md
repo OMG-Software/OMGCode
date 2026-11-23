@@ -589,15 +589,17 @@ trusted application-data directory, and the workspace ID. The runtime:
   and `workspace_create_directory` only under live `model_tools`, `read`, and
   `write`, and `workspace_run_command` only when `execute` is also enabled;
   every edit, multi-edit, creation, rename, deletion, or command first needs a
-  trusted single-use approval;
+  trusted single-use approval while its preference is `prompt`, and runs
+  without one under `allow`;
 - reports the final reply's provider `finish_reason`.
 
-The runtime has no Git, MCP, or network tool. Its only writes are the approved
-exact edit and multi-edit through checkpointed apply, the approved creation of
-one new file through the exclusive create, the approved rename through the
-no-replace rename, the approved deletion through the checkpointed removal, and
-the approved creation of one directory whose parent exists, and its only process execution is the approved command through the trusted
-runner.
+The runtime has no Git, MCP, or network tool. Its only writes are the exact
+edit and multi-edit through checkpointed apply, the creation of one new file
+through the exclusive create, the rename through the no-replace rename, the
+deletion through the checkpointed removal, and the creation of one directory
+whose parent exists. Its only process execution is the command through the
+trusted runner. Each needs an approval under `prompt` and runs without one
+under `allow`.
 `LocalToolModel` adapts the LM Studio client to its model interface. The adapter
 sends the tool definitions in the OpenAI-compatible `tools` field, parses the
 response with the strict duplicate-key-rejecting parser, and returns each call
@@ -824,10 +826,12 @@ detects a concurrent writer, and neither is power-loss qualified.
 `workspace_create_directory` takes a `path`. Before recording an approval it
 reads the path and lists its parent: an existing entry returns `file_exists`
 and a missing parent returns `parent_not_found`, and neither records an
-approval. After approval, the broker creates exactly that one directory; it
-creates no missing parent and replaces nothing, so nested directories need one
-approved call per level. Creation is not checkpointed, and no model tool
-removes a directory (ADR-0079).
+approval. Under `prompt` the call then needs an approval; under `allow` it
+runs without one. The broker creates exactly that one directory; it creates no
+missing parent and replaces nothing, so nested directories need one call per
+level. Creation is not checkpointed, and no dedicated model tool removes a
+directory; a command can, when its approved profile exposes a program that
+does (ADR-0079).
 
 ## Saved sessions
 

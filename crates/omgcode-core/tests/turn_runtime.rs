@@ -5005,11 +5005,24 @@ fn an_allowed_directory_creation_makes_the_directory_and_a_file_can_follow() {
         .map(|record| record["payload"]["tool"].as_str().expect("tool"))
         .collect();
     assert_eq!(tools, ["create_directory", "create_file"]);
+    // Each start has exactly one finish, with the same action, that succeeded.
+    let ids = |kind: &str| -> Vec<&Value> {
+        actions
+            .iter()
+            .filter(|record| record["type"] == kind)
+            .map(|record| &record["payload"]["action_id"])
+            .collect()
+    };
+    let started = ids("action_started");
+    let finished = ids("action_finished");
+    assert_eq!(finished.len(), 2, "{actions:?}");
+    assert_eq!(finished, started);
     assert!(
         actions
             .iter()
             .filter(|record| record["type"] == "action_finished")
-            .all(|record| record["payload"]["outcome"] == "succeeded")
+            .all(|record| record["payload"]["outcome"] == "succeeded"),
+        "{actions:?}"
     );
 }
 
@@ -5083,6 +5096,7 @@ fn a_directory_approval_does_not_cover_another_path_or_a_file() {
         create_call("c-1", "made", "file"),
     ]);
     assert!(!fixture.workspace.join("made").exists());
+    assert!(!fixture.workspace.join("other").exists());
     assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
 }
 

@@ -61,8 +61,9 @@ but still leave the model unable to create the project.
 
 A model can build a project tree one directory at a time. Every directory
 creation is an approved or allowed write, recorded like other model actions.
-No model tool removes a directory, so an unwanted empty directory needs the
-operator. A model needs one call per directory level, which uses tool-call
+No dedicated model tool removes a directory, so an unwanted empty directory
+needs the operator or a command whose approved profile exposes a program that
+removes it. A model needs one call per directory level, which uses tool-call
 budget ([ADR-0076](0076-configure-the-tool-call-budget-per-turn.md)). Tool
 definitions sent with each request grow by one entry.
 

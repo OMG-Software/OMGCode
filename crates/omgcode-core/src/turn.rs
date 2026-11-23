@@ -3899,22 +3899,38 @@ fn create_precheck(
         }
         Err(error) => return Some(classify_edit_error(call, error)),
     }
-    let parent = target
-        .path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())?;
-    let parent_target = FileTarget {
-        session_id: target.session_id,
-        workspace_id: target.workspace_id,
-        path: parent.to_path_buf(),
-    };
-    match FileBroker::new(control).list(binding, &parent_target, 1) {
-        Ok(_) => None,
+    match list_parent(control, binding, target) {
+        Ok(()) => None,
         Err(FileError::Native(native)) if is_missing_entry(&native) => {
             Some(ToolExecution::recoverable("parent_not_found", call))
         }
         Err(error) => Some(classify_edit_error(call, error)),
     }
+}
+
+/// List the parent directory of `target` through the broker, which fails
+/// when it is missing. A path directly beneath the workspace root has no
+/// parent to check and succeeds.
+fn list_parent(
+    control: &mut ControlStore,
+    binding: &SessionBinding,
+    target: &FileTarget,
+) -> Result<(), FileError> {
+    let Some(parent) = target
+        .path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    let parent_target = FileTarget {
+        session_id: target.session_id,
+        workspace_id: target.workspace_id,
+        path: parent.to_path_buf(),
+    };
+    FileBroker::new(control)
+        .list(binding, &parent_target, 1)
+        .map(|_| ())
 }
 
 /// Read the live source of a rename or deletion and describe it by size and

@@ -37,15 +37,21 @@ attempts on that port succeeded.
 Retry a model, model-list, or trusted package-fetch request whose connect is
 refused with `WSAEADDRINUSE` on Windows. Before each retry, bind one
 unconnected socket for each address family to port 0 and hold it until the
-request is sent. The held socket takes the refused port, so the next bind
-chooses a later one. Skip at most 64 ports per request; then report the
+request is sent. The held socket is expected to take the refused port, so the
+next bind chooses a later one. This is a best-effort reservation: the bound
+port is not compared with the refused one, and when only one family binds,
+a retry in the other family holds nothing new and can be refused again. Skip
+at most 64 ports per request; then report the
 failure as before: `Transport` for a model request, and the same transport
 failure for a package fetch. The sockets never listen or connect, and they are
 closed when the request returns. The retry is limited to this refusal, which
 happens before any request byte, and so before any credential header, reaches
 a server. Any other failure keeps its existing category, a cancelled model
 request stops waiting as before, and the package fetch deadline bounds every
-attempt. The check is compiled only on Windows. The code is in
+attempt. A model or model-list request sets the time left before its own
+deadline as each attempt's request timeout, so a retry never extends the
+request's documented limit, including reading the body; no retry starts
+after the deadline. The check is compiled only on Windows. The code is in
 `crates/omgcode-core/src/connect.rs`.
 
 Send `Connection: close` on the model-list request. LM Studio then closes the
@@ -80,8 +86,10 @@ Setting `SO_REUSEADDR` or a zero linger time on the socket is not exposed by
 
 ## Consequences
 
-Back-to-back model requests on Windows no longer fail because the previous
-connection is still in TIME_WAIT. The new test
+Back-to-back model requests on Windows no longer failed in the tests and
+live runs below because the previous connection was still in TIME_WAIT. The
+reservation is best effort (see Decision), so this is observed behaviour on
+one development host, not a guarantee. The new test
 `consecutive_requests_survive_client_side_time_wait` uses a server that waits
 for the client to close each connection. On Windows it fails when the retry is
 disabled and passes with it. On other systems the retry is inert. Three

@@ -32,23 +32,34 @@ Changes are recorded here before a release version is assigned.
   again, and the connect was refused with `WSAEADDRINUSE` before any request
   was sent. This happens whether or not the socket was bound before the
   connect, as `hyper-util` does. A request refused that way now holds the port with a bound,
-  unconnected socket and retries, skipping at most 64 ports. The model-list
+  unconnected socket and retries, skipping at most 64 ports. The reservation
+  is best effort. Every attempt shares the request's original deadline, so a
+  retry never extends the model or model-list time limit. The model-list
   request sends `Connection: close`, so the server holds its TIME_WAIT.
 - On Windows, a trusted `packages fetch` to the same registry no longer fails
   with a transport error for the same reason. It uses the same reused-port
   skip, which acts before any request byte or credential is sent (ADR-0078).
-- The Windows loopback test fixtures no longer fail at random. A mock that
-  serves the model client now waits for the client to close, so a large
-  request no longer leaves a server-side TIME_WAIT that stalls the next
-  connect. Scripted mocks keep their port bound until their test ends, and an
-  endpoint that must fail is a listener that closes each connection, so a
-  released port can no longer route one test's request to another test's mock.
-  The core provider tests' one-shot fixtures keep every port bound until the
-  test binary exits, so a later fixture never reuses an earlier one's port.
+- The Windows loopback test fixtures fail far less often. A mock that serves
+  the model client now waits for the client to close, so a large request no
+  longer leaves a server-side TIME_WAIT that stalls the next connect. Scripted
+  mocks keep their port bound until their test ends, and an endpoint that must
+  fail is a listener that closes each connection, so a released port can no
+  longer route one test's request to another test's mock. The core provider
+  tests' one-shot fixtures keep every port bound until the test binary exits,
+  so a later fixture never reuses an earlier one's port. On the development
+  host the core `local_provider` target still failed 1 of 30 back-to-back
+  runs with a connect stall; its cause was not confirmed (ADR-0078).
 - The Windows confinement test's unconfined TCP probe no longer fails at
   random with `os-10048`. The host listener now accepts and closes each
-  connection, the probe waits for that close and skips a refused local port,
-  and the confined tests now also check that no connection reached the host.
+  connection, and the probe waits briefly for that close and skips a refused
+  local port. A successful connect is reported as `ok` even when that wait
+  fails. The confined tests now also stop the host listener and check its
+  final count, including queued connections, so no connection reached the
+  host.
+- An approval review no longer offers a file or directory creation whose
+  parent directory has been removed. Dispatch refuses that call with
+  `parent_not_found` before consuming the approval, so the review now reports
+  it as stale.
 
 ### Changed
 

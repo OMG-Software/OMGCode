@@ -14,11 +14,9 @@ use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread;
-use std::time::Duration;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Security::{
@@ -193,11 +191,16 @@ fn tcp_connect() -> io::Result<()> {
         }
     };
     drop(held);
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    match stream.read(&mut [0_u8; 1])? {
-        0 => Ok(()),
-        _ => Err(io::Error::other("the host sent data")),
+    // The connect succeeded, so the probe reports `ok` whatever follows. Wait
+    // briefly for the host's close so the host holds the TIME_WAIT; if the
+    // wait fails, the next connect skips a refused port as above.
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .is_ok()
+    {
+        let _closed = stream.read(&mut [0_u8; 1]);
     }
+    Ok(())
 }
 
 fn pipe_connect() -> io::Result<()> {
@@ -260,22 +263,27 @@ struct Scene {
     pipe_name: String,
     _pipe: OwnedHandle,
     tcp_address: SocketAddr,
-    /// How many connections reached the host TCP listener.
-    tcp_accepted: Arc<AtomicUsize>,
     /// Dropping it ends the host TCP service and releases its port.
-    _tcp_stop: Sender<()>,
+    tcp_stop: Option<Sender<()>>,
+    /// The host TCP service, which returns how many connections reached it.
+    tcp_service: Option<JoinHandle<usize>>,
     name: TestContainer,
 }
 
-/// Accept every host TCP connection and close it at once, counting each,
-/// until `stop` disconnects. The listener must be non-blocking.
-fn serve_host_tcp(listener: &TcpListener, accepted: &AtomicUsize, stop: &Receiver<()>) {
-    while matches!(stop.try_recv(), Err(TryRecvError::Empty)) {
+/// Accept every host TCP connection and close it at once until `stop`
+/// disconnects, then return how many arrived. The listener must be
+/// non-blocking. After the stop it still accepts every queued connection, so
+/// one that arrived before the stop is counted.
+fn serve_host_tcp(listener: &TcpListener, stop: &Receiver<()>) -> usize {
+    let mut accepted = 0;
+    loop {
+        let stopping = !matches!(stop.try_recv(), Err(TryRecvError::Empty));
         match listener.accept() {
             Ok((stream, _)) => {
-                accepted.fetch_add(1, Ordering::SeqCst);
+                accepted += 1;
                 drop(stream);
             }
+            Err(_) if stopping => return accepted,
             Err(_) => thread::sleep(Duration::from_millis(5)),
         }
     }
@@ -310,10 +318,8 @@ impl Scene {
             .set_nonblocking(true)
             .expect("non-blocking host TCP listener");
         let tcp_address = tcp_listener.local_addr().expect("TCP address");
-        let tcp_accepted = Arc::new(AtomicUsize::new(0));
         let (tcp_stop, stopped) = mpsc::channel();
-        let counter = Arc::clone(&tcp_accepted);
-        thread::spawn(move || serve_host_tcp(&tcp_listener, &counter, &stopped));
+        let tcp_service = thread::spawn(move || serve_host_tcp(&tcp_listener, &stopped));
         let name = unique_name();
         for (path, access) in [
             (&read_only_directory, ContainerAccess::ReadExecute),
@@ -332,15 +338,29 @@ impl Scene {
             pipe_name,
             _pipe: pipe,
             tcp_address,
-            tcp_accepted,
-            _tcp_stop: tcp_stop,
+            tcp_stop: Some(tcp_stop),
+            tcp_service: Some(tcp_service),
             name,
         }
     }
 
-    /// How many connections have reached the host TCP listener so far.
-    fn tcp_accepted(&self) -> usize {
-        self.tcp_accepted.load(Ordering::SeqCst)
+    /// Stop the host TCP service, wait a bounded time for it to finish, and
+    /// return how many connections reached it. Call it once, after the run.
+    fn host_tcp_connections(&mut self) -> usize {
+        drop(self.tcp_stop.take());
+        let service = self
+            .tcp_service
+            .take()
+            .expect("the host TCP service is stopped once");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !service.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the host TCP service stops in time"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        service.join().expect("the host TCP service")
     }
 
     fn confinement(&self) -> Confinement {
@@ -448,7 +468,7 @@ fn the_disk_limit_ends_a_confined_run() {
 
 #[test]
 fn the_container_reaches_only_granted_paths_and_no_host_service() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let outcome = run_confined(
         &scene.spec(),
         &scene.confinement(),
@@ -489,7 +509,11 @@ fn the_container_reaches_only_granted_paths_and_no_host_service() {
             "{name}: {result:?}; all results: {results:?}"
         );
     }
-    assert_eq!(scene.tcp_accepted(), 0, "a connection reached the host");
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a connection reached the host"
+    );
     assert_eq!(fs::read(&scene.secret).expect("secret"), b"secret");
     assert_eq!(
         fs::read(scene.read_only_directory.join("tool.txt")).expect("tool"),
@@ -500,7 +524,7 @@ fn the_container_reaches_only_granted_paths_and_no_host_service() {
 
 #[test]
 fn the_same_probes_succeed_unconfined() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let outcome = run(&scene.spec(), &limits(), &CancelSignal::new()).expect("unconfined run");
     assert_eq!(outcome.confinement, AppliedConfinement::Unconfined);
     let results = results(&outcome);
@@ -519,7 +543,11 @@ fn the_same_probes_succeed_unconfined() {
         ],
     );
     // Each probe returns only after the host accepted and closed it.
-    assert_eq!(scene.tcp_accepted(), 2, "the child and the grandchild");
+    assert_eq!(
+        scene.host_tcp_connections(),
+        2,
+        "the child and the grandchild"
+    );
 }
 
 /// With network access the tree holds `internetClient` and nothing more:
@@ -527,7 +555,7 @@ fn the_same_probes_succeed_unconfined() {
 /// path.
 #[test]
 fn a_networked_container_holds_only_internet_client() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut confinement = scene.confinement();
     confinement.network = NetworkAccess::Internet;
     let outcome = run_confined(&scene.spec(), &confinement, &limits(), &CancelSignal::new())
@@ -558,7 +586,11 @@ fn a_networked_container_holds_only_internet_client() {
             "{name}: {result:?}; all results: {results:?}"
         );
     }
-    assert_eq!(scene.tcp_accepted(), 0, "a connection reached the host");
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a connection reached the host"
+    );
 }
 
 /// Live check that a networked container resolves and reaches an internet
