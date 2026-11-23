@@ -736,7 +736,7 @@ pub struct ChatPreferencesDto {
     /// Tool-call budget to start from. Older files read as the built-in default.
     #[serde(default = "default_max_tool_calls")]
     pub max_tool_calls: usize,
-    /// Cooperative deadline to start from. Older files read as 60 seconds.
+    /// Cooperative deadline to start from. Older files read as 120 seconds.
     #[serde(default = "default_turn_timeout_seconds")]
     pub turn_timeout_seconds: u64,
     /// Custom instructions to start from. Untrusted-origin text, as in a turn.

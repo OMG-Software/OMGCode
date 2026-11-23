@@ -297,7 +297,7 @@ fn saved_chat_preferences_become_the_defaults_and_keep_the_fixed_endpoint() {
         PreferencesSource::Defaults
     );
     let defaults = service.chat_defaults();
-    assert_eq!(defaults.settings.turn_timeout_seconds, 60);
+    assert_eq!(defaults.settings.turn_timeout_seconds, 120);
     assert_eq!(
         defaults.tool_call_limit_max,
         omgcode_core::turn::MAX_TOOL_CALLS

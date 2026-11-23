@@ -538,7 +538,7 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
 If the next batch would exceed the cap, the turn stops and reports the cap,
 calls used, and calls requested. Calls from that batch are skipped.
 
-**Tool-enabled turn timeout (seconds)** defaults to 60 and accepts whole
+**Tool-enabled turn timeout (seconds)** defaults to 120 and accepts whole
 numbers from 1 to 3600. **Save as defaults** keeps the value for future runs.
 The runtime checks the deadline between operations and excludes approval waits.
 Each model request still has a 30-second timeout of its own.
@@ -617,7 +617,7 @@ controls take the returned values.
   instructions, compaction threshold, the automatic compaction switch, and
   the **Enter to send** choice to
   `chat_preferences_save`. A file or request without `max_tool_calls` reads as
-  128, and one without `turn_timeout_seconds` reads as 60. A file or request
+  128, and one without `turn_timeout_seconds` reads as 120. A file or request
   without `enter_to_send`, such
   as a file saved before version 0.42.0, reads it as on. An older build
   refuses a file that has the field as unknown, reports it as `unreadable`,

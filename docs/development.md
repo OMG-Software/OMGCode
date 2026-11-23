@@ -574,7 +574,7 @@ trusted application-data directory, and the workspace ID. The runtime:
   to 128. It budgets a model request per allowed call plus the final reply.
   Other maxima include eight calls per response, 16 KiB per source-labelled tool
   message, and 256 KiB of aggregate tool text. The core deadline defaults to
-  30 seconds. Chat defaults to 60 seconds and accepts 1 to 3600 seconds.
+  30 seconds. Chat defaults to 120 seconds and accepts 1 to 3600 seconds.
 - records `tool.requested`, `tool.completed`, and schema-version-2 tool messages,
   and records the exact tool schema version and names in the request manifest;
 - treats every tool result as source-labelled untrusted user-level content and
@@ -710,7 +710,7 @@ requests per round and at most four combination rounds after the first.
 requests under the same bound. There is a five-second connect timeout and a thirty-second
 timeout per request, with no automatic retry or provider fallback. Set
 `chat --turn-timeout-seconds <1–3600>` to change the tool-enabled turn's
-cooperative deadline from its 60-second default. The runtime checks it
+cooperative deadline from its 120-second default. The runtime checks it
 between operations and excludes desktop approval waits. A slow first inference
 can time out. Its remote outcome can be unknown, and a retry is a new explicit
 user action.
@@ -889,7 +889,7 @@ can archive, restore, and interrupt a session; see the
 | Model requests per tool-enabled turn, including the final reply | 129 default, 257 maximum |
 | Tool calls per response / per turn | 8 / 128 default, configurable from 1 to 256 |
 | Aggregate tool text per turn | 256 KiB |
-| Cooperative turn deadline | 30 seconds in the core by default. Chat defaults to 60 seconds and accepts 1 to 3600 seconds. |
+| Cooperative turn deadline | 30 seconds in the core by default. Chat defaults to 120 seconds and accepts 1 to 3600 seconds. |
 | Raw tool calls accepted from one response | 64 before runtime validation |
 
 These are ordinary quotas. Active turns reserve one terminal event and 1 KiB

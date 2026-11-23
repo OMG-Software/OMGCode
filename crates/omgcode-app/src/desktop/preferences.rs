@@ -272,7 +272,7 @@ mod tests {
         let loaded = load(&root).expect("load").expect("present");
         assert!(loaded.enter_to_send);
         assert_eq!(loaded.max_tool_calls, 128);
-        assert_eq!(loaded.turn_timeout_seconds, 60);
+        assert_eq!(loaded.turn_timeout_seconds, 120);
         assert_eq!(loaded.model, "m");
         fs::remove_dir_all(root).expect("cleanup");
     }

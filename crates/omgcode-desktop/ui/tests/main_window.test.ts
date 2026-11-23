@@ -978,7 +978,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     const timeoutField = Array.from(root.querySelectorAll(".settings label"))
       .find((label) => label.textContent === "Tool-enabled turn timeout (seconds)")
       ?.querySelector("input") as HTMLInputElement;
-    expect(timeoutField.value).toBe("60");
+    expect(timeoutField.value).toBe("120");
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
     expect(field.max).toBe("200");
     expect(timeoutField.max).toBe("1200");

@@ -32,7 +32,11 @@ use crate::secrets::redact_known_secret;
 use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, ToolMode, select};
 
 /// Default cooperative deadline for a tool-enabled chat turn, in seconds.
-pub const DEFAULT_TURN_TIMEOUT_SECONDS: u64 = 60;
+///
+/// Each model request may take up to 30 seconds, and a turn that reads,
+/// writes, and checks several files makes several requests in sequence, so
+/// two minutes lets an ordinary multi-step turn finish (ADR-0077).
+pub const DEFAULT_TURN_TIMEOUT_SECONDS: u64 = 120;
 
 /// Selected model, budgets, and user-level preferences for chat turns.
 ///

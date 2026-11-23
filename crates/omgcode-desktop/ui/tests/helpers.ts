@@ -29,7 +29,7 @@ export const SETTINGS: ChatSettings = {
   context_tokens: 8192,
   max_output_tokens: 1024,
   max_tool_calls: 128,
-  turn_timeout_seconds: 60,
+  turn_timeout_seconds: 120,
   instructions: "",
   compact_threshold: 6000,
   auto_compact: true,

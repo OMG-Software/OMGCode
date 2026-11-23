@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn chat_applies_the_configured_deadline_and_rejects_invalid_timeouts() {
         let mut settings = ChatSettings::new("http://127.0.0.1:1234/v1", "model", 8192);
-        assert_eq!(chat_limits(&settings).deadline, Duration::from_secs(60));
+        assert_eq!(chat_limits(&settings).deadline, Duration::from_secs(120));
         for timeout in [1, 900, 3600] {
             settings.turn_timeout_seconds = timeout;
             assert!(ChatClients::new(&settings, None).is_ok());

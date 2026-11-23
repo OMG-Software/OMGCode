@@ -300,7 +300,7 @@ Changes are recorded here before a release version is assigned.
   and before creating its tests. The tool-call budget defaults to 128 and can
   be set from 1 to 256 in Chat settings or with `chat --max-tool-calls`. When a
   response exceeds it, the error reports the cap and the number of calls used
-  and requested. The tool-enabled turn timeout defaults to 60 seconds and can
+  and requested. The tool-enabled turn timeout defaults to 120 seconds and can
   be set from 1 to 3600 in Chat settings or with `chat --turn-timeout-seconds`.
   The history limit rises from 128 to 640 messages. Chat reserves space for the
   tool budget before starting a turn, and summarizer chunks stay at 128 messages.
