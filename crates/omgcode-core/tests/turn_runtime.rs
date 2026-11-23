@@ -998,6 +998,31 @@ fn turn_limits_fail_before_dispatch_or_before_extra_operations() {
 }
 
 #[test]
+fn a_response_over_both_caps_reports_the_fixed_per_response_cap() {
+    // Raising the per-turn budget cannot rescue a response that also breaks
+    // the fixed per-response cap, so the error must name the per-response cap.
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![tool_reply(vec![
+        call("list-1", "workspace_list_directory", json!({"path": ""})),
+        call("list-2", "workspace_list_directory", json!({"path": ""})),
+        call("list-3", "workspace_list_directory", json!({"path": ""})),
+    ])]);
+    let limits = TurnLimits {
+        max_calls_per_round: 2,
+        max_tool_calls: 2,
+        ..TurnLimits::default()
+    };
+    let error = fixture
+        .run(&mut model, limits)
+        .expect_err("both caps exceeded");
+    assert!(
+        matches!(error, TurnError::Limit(TurnLimit::CallsPerRound)),
+        "unexpected error: {error:?}"
+    );
+    assert!(!fixture.audit_path().exists(), "no tool may run");
+}
+
+#[test]
 fn a_final_reply_fits_after_one_hundred_twenty_eight_sequential_tool_requests() {
     let mut fixture = Fixture::new();
     let mut replies: Vec<_> = (1..=128)

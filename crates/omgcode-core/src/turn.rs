@@ -1501,6 +1501,12 @@ impl<'a> TurnRuntime<'a> {
             }
 
             let requested = reply.tool_calls.len();
+            // Check the fixed per-response cap first: a larger per-turn budget
+            // cannot rescue a response that breaks it, so its error must win.
+            if requested > self.limits.max_calls_per_round {
+                let error = TurnError::Limit(TurnLimit::CallsPerRound);
+                return Err(self.abort_for(request_id, error));
+            }
             let next_total = match total_calls.checked_add(requested) {
                 Some(total) => total,
                 None => return Err(self.abort_for(request_id, TurnError::InvalidLimits)),
@@ -1511,10 +1517,6 @@ impl<'a> TurnRuntime<'a> {
                     used: total_calls,
                     requested,
                 });
-                return Err(self.abort_for(request_id, error));
-            }
-            if requested > self.limits.max_calls_per_round {
-                let error = TurnError::Limit(TurnLimit::CallsPerRound);
                 return Err(self.abort_for(request_id, error));
             }
             total_calls = next_total;
