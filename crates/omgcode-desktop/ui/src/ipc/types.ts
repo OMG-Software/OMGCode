@@ -108,6 +108,8 @@ export interface ChatSettings {
   model: string;
   context_tokens: number;
   max_output_tokens: number;
+  max_tool_calls: number;
+  turn_timeout_seconds: number;
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
@@ -248,6 +250,8 @@ export interface ChatPreferences {
   model: string;
   context_tokens: number;
   max_output_tokens: number;
+  max_tool_calls: number;
+  turn_timeout_seconds: number;
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
@@ -259,6 +263,8 @@ export type PreferencesSource = "defaults" | "saved" | "unreadable";
 
 export interface ChatDefaults {
   settings: ChatSettings;
+  tool_call_limit_max: number;
+  turn_timeout_seconds_max: number;
   preferences: PreferencesSource;
   /** A composer keyboard choice, not a turn setting (ADR-0062). */
   enter_to_send: boolean;

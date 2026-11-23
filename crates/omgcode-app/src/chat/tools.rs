@@ -13,29 +13,25 @@ use omgcode_core::prompt::ModelMessage;
 use omgcode_core::provider::{LocalModelClient, LocalToolModel, ProviderError};
 use omgcode_core::session::{RequestManifest, SessionJournal};
 use omgcode_core::turn::{
-    ModelError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimits, TurnReport,
-    TurnRuntime,
+    ModelError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimit, TurnLimits,
+    TurnReport, TurnRuntime,
 };
 use serde_json::Value;
 
 use super::output::{ToolTurnOutput, ToolTurnReply, ToolTurnSummary};
 use super::skills::LoadedSkillSummary;
 use super::stream::StreamSink;
-use super::{ChatHooks, Turn};
+use super::{ChatHooks, ChatSettings, Turn};
 use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
 
-/// Cooperative deadline for one tool-enabled chat turn.
-///
-/// Each local model request may take up to 30 seconds, and a turn makes at most
-/// four requests, so the 30-second library default would stop ordinary turns.
-const CHAT_TURN_DEADLINE: Duration = Duration::from_secs(120);
-
-/// Runtime limits for tool-enabled chat: library maxima with a chat deadline.
-fn chat_limits() -> TurnLimits {
+/// Runtime limits for a validated chat budget, with room for the final reply.
+fn chat_limits(settings: &ChatSettings) -> TurnLimits {
     TurnLimits {
-        deadline: CHAT_TURN_DEADLINE,
+        max_rounds: settings.max_tool_calls + 1,
+        max_tool_calls: settings.max_tool_calls,
+        deadline: Duration::from_secs(settings.turn_timeout_seconds),
         ..TurnLimits::default()
     }
 }
@@ -83,7 +79,8 @@ pub(super) fn run(
     // Tool results are recorded before the next model request, so they need
     // their own redaction; the model wrapper sees them only afterwards.
     let redact_tool_text = |text: &str| redact_known_secret(text, token);
-    let report: TurnReport = TurnRuntime::new(journal, turn.data_root, workspace_id, chat_limits())
+    let limits = chat_limits(turn.settings);
+    let report: TurnReport = TurnRuntime::new(journal, turn.data_root, workspace_id, limits)
         .and_then(|runtime| {
             let runtime = runtime
                 .with_cancel_token(turn.cancel.clone())
@@ -107,7 +104,7 @@ pub(super) fn run(
                     "The model returned a tool call containing the configured server token; it was not recorded or run",
                 );
             }
-            turn_error(error, model.inner.last_error())
+            turn_error(error, model.inner.last_error(), limits.deadline)
         })?;
     Ok(ToolTurnOutput {
         skills: LoadedSkillSummary::from_prompts(turn.skills),
@@ -208,7 +205,7 @@ fn contains_secret(value: &Value, token: &str, decode_nested: bool) -> bool {
 }
 
 /// Map a runtime failure to a stable application error without echoing model text.
-fn turn_error(error: TurnError, provider: Option<ProviderError>) -> AppError {
+fn turn_error(error: TurnError, provider: Option<ProviderError>, deadline: Duration) -> AppError {
     match error {
         TurnError::Model(_) => provider.map_or_else(
             || AppError::new(ErrorKind::Provider, "Local model request failed"),
@@ -222,6 +219,10 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> AppError {
             ErrorKind::ToolCall,
             format!("The model returned an invalid tool call: {error}"),
         ),
+        TurnError::Limit(limit @ TurnLimit::ToolCalls { .. }) => AppError::new(
+            ErrorKind::ToolLimit,
+            format!("{limit}. Start a new turn or increase the limit."),
+        ),
         TurnError::Limit(limit) => AppError::new(
             ErrorKind::ToolLimit,
             format!("Turn limit exceeded: {limit}"),
@@ -234,6 +235,13 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> AppError {
         ),
         TurnError::ActiveTurn => AppError::new(ErrorKind::Session, ACTIVE_TURN_MESSAGE),
         TurnError::Cancelled => AppError::new(ErrorKind::Cancelled, CANCELLED_MESSAGE),
+        TurnError::Timeout => AppError::new(
+            ErrorKind::Turn,
+            format!(
+                "The tool-enabled turn reached its time limit of {} seconds. Start a new turn or increase the limit.",
+                deadline.as_secs()
+            ),
+        ),
         TurnError::SkillWithdrawn => AppError::skill(
             "skill_withdrawn",
             "A selected skill was disabled, removed, or changed during the turn; the turn ended",
@@ -251,12 +259,67 @@ pub(super) const ACTIVE_TURN_MESSAGE: &str = "The previous turn is incomplete; i
 #[cfg(test)]
 mod tests {
     use omgcode_core::session::SessionError;
-    use omgcode_core::turn::TurnLimit;
 
     use super::*;
+    use crate::chat::{ChatClients, DEFAULT_TURN_TIMEOUT_SECONDS};
 
     fn pair(error: AppError) -> (&'static str, String) {
         (error.code(), error.into_message())
+    }
+
+    #[test]
+    fn chat_reserves_a_final_request_for_each_valid_tool_call_budget() {
+        let mut settings = ChatSettings::new("http://127.0.0.1:1234/v1", "model", 8192);
+        assert_eq!(settings.max_tool_calls, 128);
+        for limit in [1, 128, 256] {
+            settings.max_tool_calls = limit;
+            assert!(ChatClients::new(&settings, None).is_ok());
+            let limits = chat_limits(&settings);
+            assert_eq!(limits.max_tool_calls, limit);
+            assert_eq!(limits.max_rounds, limit + 1);
+        }
+        for limit in [0, 257] {
+            settings.max_tool_calls = limit;
+            let error = ChatClients::new(&settings, None)
+                .err()
+                .expect("invalid budget");
+            assert_eq!(
+                pair(error),
+                (
+                    "configuration",
+                    "Tool calls per turn must be between 1 and 256.".to_owned()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn chat_applies_the_configured_deadline_and_rejects_invalid_timeouts() {
+        let mut settings = ChatSettings::new("http://127.0.0.1:1234/v1", "model", 8192);
+        assert_eq!(chat_limits(&settings).deadline, Duration::from_secs(120));
+        for timeout in [1, 900, 3600] {
+            settings.turn_timeout_seconds = timeout;
+            assert!(ChatClients::new(&settings, None).is_ok());
+            assert_eq!(
+                chat_limits(&settings).deadline,
+                Duration::from_secs(timeout)
+            );
+        }
+        for timeout in [0, 3601] {
+            settings.turn_timeout_seconds = timeout;
+            let error = ChatClients::new(&settings, None)
+                .err()
+                .expect("invalid timeout");
+            assert_eq!(
+                pair(error),
+                (
+                    "configuration",
+                    "Tool-enabled turn timeout must be between 1 and 3600 seconds.".to_owned()
+                )
+            );
+        }
+        assert_eq!(pair(turn_error(TurnError::Timeout, None, Duration::from_secs(900))),
+            ("turn", "The tool-enabled turn reached its time limit of 900 seconds. Start a new turn or increase the limit.".to_owned()));
     }
 
     #[test]
@@ -264,14 +327,16 @@ mod tests {
         assert_eq!(
             pair(turn_error(
                 TurnError::Model(ModelError::InvalidResponse),
-                Some(ProviderError::Transport)
+                Some(ProviderError::Transport),
+                Duration::from_secs(DEFAULT_TURN_TIMEOUT_SECONDS),
             )),
             ("provider", "local model transport failed".to_owned())
         );
         assert_eq!(
             pair(turn_error(
                 TurnError::Model(ModelError::InvalidResponse),
-                None
+                None,
+                Duration::from_secs(DEFAULT_TURN_TIMEOUT_SECONDS),
             )),
             ("provider", "Local model request failed".to_owned())
         );
@@ -279,6 +344,13 @@ mod tests {
 
     #[test]
     fn runtime_failures_map_to_the_published_codes_and_messages() {
+        let turn_error = |error, provider| {
+            turn_error(
+                error,
+                provider,
+                Duration::from_secs(DEFAULT_TURN_TIMEOUT_SECONDS),
+            )
+        };
         assert_eq!(
             pair(turn_error(TurnError::Archived, None)),
             (
@@ -296,6 +368,12 @@ mod tests {
                 "tool_limit",
                 "Turn limit exceeded: model round limit".to_owned()
             )
+        );
+        assert_eq!(
+            pair(turn_error(TurnError::Limit(TurnLimit::ToolCalls {
+                limit: 128, used: 127, requested: 2,
+            }), None)),
+            ("tool_limit", "The latest response would exceed the per-turn limit of 128 tool calls (127 used, 2 requested). Skipped all calls in that response. Start a new turn or increase the limit.".to_owned())
         );
         assert_eq!(
             pair(turn_error(TurnError::Cancelled, None)),

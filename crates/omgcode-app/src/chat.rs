@@ -20,7 +20,9 @@ use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, SkillPrompt};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
 use omgcode_core::session::{ManifestSkill, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
-use omgcode_core::turn::{ApprovalWaitSlot, CancelToken};
+use omgcode_core::turn::{
+    ApprovalWaitSlot, CancelToken, DEFAULT_MAX_TOOL_CALLS, MAX_TOOL_CALLS, MAX_TURN_DEADLINE,
+};
 
 pub use self::output::ChatTurnOutput;
 pub use self::skills::{LoadedSkillSummary, validate_selection as validate_skill_selection};
@@ -28,6 +30,13 @@ use crate::context::summary_output_tokens;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
 use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, ToolMode, select};
+
+/// Default cooperative deadline for a tool-enabled chat turn, in seconds.
+///
+/// Each model request may take up to 30 seconds, and a turn that reads,
+/// writes, and checks several files makes several requests in sequence, so
+/// two minutes lets an ordinary multi-step turn finish (ADR-0077).
+pub const DEFAULT_TURN_TIMEOUT_SECONDS: u64 = 120;
 
 /// Selected model, budgets, and user-level preferences for chat turns.
 ///
@@ -43,6 +52,10 @@ pub struct ChatSettings {
     pub context_tokens: u64,
     /// Output reserve for each model request.
     pub max_output_tokens: u32,
+    /// Maximum model tool calls in this turn, across all responses.
+    pub max_tool_calls: usize,
+    /// Cooperative deadline for tool-enabled turns, excluding approval waits.
+    pub turn_timeout_seconds: u64,
     /// User-level preferences, sent as untrusted-origin custom instructions.
     pub instructions: String,
     /// Compact before a turn when the conservative estimate reaches this value.
@@ -59,11 +72,31 @@ impl ChatSettings {
             model: model.into(),
             context_tokens,
             max_output_tokens: 1024,
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+            turn_timeout_seconds: DEFAULT_TURN_TIMEOUT_SECONDS,
             instructions: String::new(),
             compact_threshold: DEFAULT_COMPACT_THRESHOLD,
             auto_compact: false,
         }
     }
+}
+
+pub(crate) fn validate_turn_budgets(
+    max_tool_calls: usize,
+    timeout_seconds: u64,
+) -> Result<(), String> {
+    if !(1..=MAX_TOOL_CALLS).contains(&max_tool_calls) {
+        return Err(format!(
+            "Tool calls per turn must be between 1 and {MAX_TOOL_CALLS}."
+        ));
+    }
+    let max_timeout_seconds = MAX_TURN_DEADLINE.as_secs();
+    if !(1..=max_timeout_seconds).contains(&timeout_seconds) {
+        return Err(format!(
+            "Tool-enabled turn timeout must be between 1 and {max_timeout_seconds} seconds."
+        ));
+    }
+    Ok(())
 }
 
 /// The inputs of one chat turn.
@@ -155,9 +188,12 @@ pub struct ChatClients {
 impl ChatClients {
     /// Validate `settings` and build the chat client and the summary client.
     ///
-    /// Fails with `provider` when the endpoint, model budgets, or token are
-    /// unusable. No network request is made.
+    /// Returns `configuration` for an out-of-range turn budget and
+    /// `provider` for an unusable endpoint, model budget, or token. No network
+    /// request is made.
     pub fn new(settings: &ChatSettings, token: Option<&str>) -> Result<Self, AppError> {
+        validate_turn_budgets(settings.max_tool_calls, settings.turn_timeout_seconds)
+            .map_err(|message| AppError::new(ErrorKind::Configuration, message))?;
         let chat = LocalModelClient::new(
             LocalModelConfig {
                 base_url: settings.endpoint.clone(),
@@ -241,6 +277,8 @@ pub fn run_chat_turn_with_clients(
     // Selection shape errors precede every other check, so nothing is
     // recorded or requested for a malformed selection.
     skills::validate_selection(input.skills)?;
+    validate_turn_budgets(settings.max_tool_calls, settings.turn_timeout_seconds)
+        .map_err(|message| AppError::new(ErrorKind::Configuration, message))?;
     let mut turn = Turn {
         message: &message,
         instructions: &instructions,

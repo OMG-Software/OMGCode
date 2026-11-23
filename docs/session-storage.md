@@ -139,11 +139,17 @@ rejects unknown tools, malformed or duplicate arguments, absolute or parent
 paths, and duplicate call identifiers before dispatch. For each operation it
 opens the control store, obtains a fresh session binding, releases the settings
 lock before the next model request, and never reconstructs authority from the
-journal. Current defaults and hard maxima are four model rounds, eight calls
-per round, sixteen calls per turn, 16 KiB per tool message, 256 KiB of aggregate
-tool messages, and a 30-second cooperative deadline. A read call accepts at most
+journal. The runtime allows eight calls per response and 1 to 256 calls per
+turn, defaulting to 128. It reserves one model request per allowed call and
+one for the final reply. Tool messages are bounded to 16 KiB each and 256 KiB
+in aggregate.
+The core defaults to a 30-second cooperative deadline. Chat defaults to 120
+seconds and can use up to the core maximum of 3600 seconds. Approval waits
+are excluded. A read call accepts at most
 15 KiB of file content and defaults to 8 KiB; larger files are refused rather
-than truncated. Before each dispatch the runtime reserves the largest possible
+than truncated. Before a tool-enabled turn starts, the history and pending
+user message must leave room for two messages per configured tool call.
+Before each dispatch the runtime reserves the largest possible
 tool message against the assembled-prompt budget; if the next request could not
 fit, it fails the turn before recording an intent or opening the target. Every
 rendered tool message, including an error, must fit the selected per-message

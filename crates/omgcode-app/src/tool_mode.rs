@@ -22,9 +22,9 @@ pub const MODEL_TOOLS_SUPPORTED: bool = cfg!(any(target_os = "linux", target_os 
 /// Conservative byte allowance for the advertised tool definitions.
 ///
 /// The largest set (read, list, edit, multi-edit, create, rename, delete, and
-/// command) serializes to 5,968 bytes in the adapter's wire shape; a unit test
+/// command) serializes to 6,174 bytes in the adapter's wire shape; a unit test
 /// keeps this allowance above it.
-pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 6 * 1024;
+pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 7 * 1024;
 
 /// Whether this chat turn offers the model the workspace tools.
 #[derive(Debug)]

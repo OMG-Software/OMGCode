@@ -26,9 +26,11 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
   subtracted once, from the context, to give the safe input budget.
 - The trigger is the smaller of `--compact-threshold` and that safe input
   budget. Compaction is also due when active history plus the pending request
-  would exceed the prompt-assembly limits (128 history messages or 256 KiB
-  assembled). Without `--auto-compact`, either case is refused before the
-  provider call with a manual-compaction hint.
+  would exceed the prompt-assembly limits (640 history messages or 256 KiB
+  assembled). Tool-enabled chat also reserves two history messages per
+  configured tool call. Without `--auto-compact`, chat refuses an over-budget
+  turn before the provider call and suggests manual compaction. Lowering the
+  tool-call limit also reduces the history reserve.
 - `session compact` requires an idle, unarchived session. It summarizes active
   messages before the latest user message, retains the latest user message and
   all later assistant/tool messages, and records a schema-v3
@@ -44,9 +46,8 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
   summaries are combined with hard chunk and depth limits. A chunk is sized from
   the summary request's own output reserve, after deducting the compiled base
   prompt, the compaction instructions, and their message overhead. A chunk,
-  including one in a combination round, also holds at most the 128 history
-  messages that one assembled request accepts, so many short messages are
-  split into several chunks instead of failing prompt assembly. Empty,
+  including one in a combination round, holds at most 128 history messages.
+  Many short messages are split into several bounded chunks. Empty,
   oversized, or failed summaries fail closed, and a summary that would not
   shrink the active context is refused with nothing recorded.
 - When the summarizer input carries tool-derived content, live `model_tools`

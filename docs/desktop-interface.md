@@ -533,6 +533,19 @@ context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
+**Tool calls per turn** in **Chat settings** accepts a whole number from 1 to
+256 and defaults to 128. **Save as defaults** keeps the value for future runs.
+If the next batch would exceed the cap, the turn stops and reports the cap,
+calls used, and calls requested. Calls from that batch are skipped.
+
+**Tool-enabled turn timeout (seconds)** defaults to 120 and accepts whole
+numbers from 1 to 3600. **Save as defaults** keeps the value for future runs.
+The runtime checks the deadline between operations and excludes approval waits.
+Each model request still has a 30-second timeout of its own.
+The composer gets the maximum tool-call and timeout values from `chat_defaults`.
+When defaults arrive after the operator has begun editing, only untouched
+controls take the returned values.
+
 - **Send key.** With **Enter to send** on, the default, Enter sends the
   message and Shift+Enter or Alt+Enter adds a newline. With it off, Enter
   adds a newline. Ctrl+Enter (Cmd+Enter) sends in both modes. An Enter that
@@ -600,17 +613,20 @@ estimate reached the compaction trigger. A context of 32,768 tokens worked.
   sending the composer's endpoint and model; Send is disabled without a model
   and while the session's provider is being read or has gone stale.
 - **Saved preferences.** **Save as defaults** sends the model name, context
-  size, output reserve, custom instructions, compaction threshold, the
-  automatic compaction switch, and the **Enter to send** choice to
-  `chat_preferences_save`. A file or request without `enter_to_send`, such
+  size, output reserve, tool-call limit, tool-enabled turn timeout, custom
+  instructions, compaction threshold, the automatic compaction switch, and
+  the **Enter to send** choice to
+  `chat_preferences_save`. A file or request without `max_tool_calls` reads as
+  128, and one without `turn_timeout_seconds` reads as 120. A file or request
+  without `enter_to_send`, such
   as a file saved before version 0.42.0, reads it as on. An older build
   refuses a file that has the field as unknown, reports it as `unreadable`,
   and uses its built-in values until the next save. They carry no
   endpoint and grant nothing. The request refuses an unknown field, so an
   endpoint cannot be saved. A model name over 256 bytes or with a control
   character, and instructions over 64 KiB, are refused with
-  `invalid_request`. The budgets are not checked when saved; `chat_send`
-  checks them as before. The file is
+  `invalid_request`. The tool-call limit and turn timeout are validated on save, load, and send.
+  `chat_send` validates the other budgets before starting a turn. The file is
   `<data_root>/desktop-v1/chat-preferences.json`, at most 512 KiB, read only
   as a regular file and parsed strictly. A save writes a new temporary file,
   syncs it, and renames it over the old one; on Unix it is created with mode

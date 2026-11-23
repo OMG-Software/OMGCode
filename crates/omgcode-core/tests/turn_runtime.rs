@@ -8,7 +8,7 @@ use omgcode_core::control::{
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::prompt::{
-    self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, SkillPrompt,
+    self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, PromptError, SkillPrompt,
 };
 use omgcode_core::session::{MessageRole, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -16,7 +16,7 @@ use omgcode_core::turn::{
     ApprovalWaitSlot, AwaitedCall, CancelToken, MAX_EDIT_FILE_BYTES, ModelError,
     TOOL_SCHEMA_VERSION, ToolArguments, ToolCall, ToolCallError, ToolModel, ToolModelReply,
     ToolModelRequest, TurnError, TurnLimit, TurnLimits, TurnReport, TurnRuntime,
-    WITHHELD_TOOL_RESULT,
+    WITHHELD_TOOL_RESULT, edit_tool_definition, multi_edit_tool_definition,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -965,20 +965,27 @@ fn turn_limits_fail_before_dispatch_or_before_extra_operations() {
             "workspace_list_directory",
             json!({"path": ""}),
         )]),
-        tool_reply(vec![call(
-            "list-2",
-            "workspace_list_directory",
-            json!({"path": ""}),
-        )]),
+        tool_reply(vec![
+            call("list-2", "workspace_list_directory", json!({"path": ""})),
+            call("list-3", "workspace_list_directory", json!({"path": ""})),
+        ]),
     ]);
     let limits = TurnLimits {
-        max_tool_calls: 1,
+        max_tool_calls: 2,
+        max_rounds: 3,
         ..TurnLimits::default()
     };
     let error = fixture
         .run(&mut model, limits)
         .expect_err("total call limit");
-    assert!(matches!(error, TurnError::Limit(TurnLimit::ToolCalls)));
+    assert!(matches!(
+        error,
+        TurnError::Limit(TurnLimit::ToolCalls {
+            limit: 2,
+            used: 1,
+            requested: 2
+        })
+    ));
     assert_eq!(
         fixture
             .audit_events()
@@ -986,8 +993,131 @@ fn turn_limits_fail_before_dispatch_or_before_extra_operations() {
             .filter(|event| event["action"]["type"] == "operation_started")
             .count(),
         1,
-        "the second round must be refused before dispatch"
+        "the oversized batch must be refused in full before dispatch"
     );
+}
+
+#[test]
+fn a_response_over_both_caps_reports_the_fixed_per_response_cap() {
+    // Raising the per-turn budget cannot rescue a response that also breaks
+    // the fixed per-response cap, so the error must name the per-response cap.
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![tool_reply(vec![
+        call("list-1", "workspace_list_directory", json!({"path": ""})),
+        call("list-2", "workspace_list_directory", json!({"path": ""})),
+        call("list-3", "workspace_list_directory", json!({"path": ""})),
+    ])]);
+    let limits = TurnLimits {
+        max_calls_per_round: 2,
+        max_tool_calls: 2,
+        ..TurnLimits::default()
+    };
+    let error = fixture
+        .run(&mut model, limits)
+        .expect_err("both caps exceeded");
+    assert!(
+        matches!(error, TurnError::Limit(TurnLimit::CallsPerRound)),
+        "unexpected error: {error:?}"
+    );
+    assert!(!fixture.audit_path().exists(), "no tool may run");
+}
+
+#[test]
+fn a_final_reply_fits_after_one_hundred_twenty_eight_sequential_tool_requests() {
+    let mut fixture = Fixture::new();
+    let mut replies: Vec<_> = (1..=128)
+        .map(|index| {
+            tool_reply(vec![call(
+                &format!("list-{index}"),
+                "workspace_list_directory",
+                json!({"path": ""}),
+            )])
+        })
+        .collect();
+    replies.push(text_reply("done"));
+    let mut model = ScriptedModel::new(replies);
+
+    // This test checks the round budget, not wall time. Each list call writes
+    // and syncs journal records. Alone the turn takes about 4 seconds on
+    // Windows, but in run 45163819874 on a windows-2025 runner it outlasted the
+    // 30-second core default while the other tests in this binary ran. A
+    // bounded 120-second deadline keeps a hang visible without letting runner
+    // contention decide a budget assertion.
+    let limits = TurnLimits {
+        deadline: Duration::from_secs(120),
+        ..TurnLimits::default()
+    };
+    let report = fixture.run(&mut model, limits).expect("final reply fits");
+
+    assert_eq!(report.tool_calls, 128);
+    assert_eq!(report.rounds, 129);
+    assert_eq!(report.reply, "done");
+}
+
+#[test]
+fn both_edit_tools_tell_the_model_to_read_before_retrying_a_missed_edit() {
+    for definition in [edit_tool_definition(), multi_edit_tool_definition()] {
+        let description = definition
+            .description
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        let description = description.join(" ");
+        assert!(
+            description.contains("edit_no_match, read the file before attempting the edit"),
+            "{} must tell the model to read the file after edit_no_match: {description}",
+            definition.name
+        );
+    }
+}
+
+#[test]
+fn the_tool_history_reserve_counts_the_pending_request() {
+    // A 256-call budget reserves 512 of the 640 history messages, so the
+    // replayed history plus the pending request may hold at most 128.
+    let limits = TurnLimits {
+        max_tool_calls: 256,
+        max_rounds: 257,
+        ..TurnLimits::default()
+    };
+    let seeded = |count: usize| {
+        let mut fixture = Fixture::new();
+        let journal = fixture.journal.as_mut().expect("journal is open");
+        for index in 0..count {
+            let role = if index % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Assistant
+            };
+            journal
+                .record_message(role, "earlier")
+                .expect("record history message");
+        }
+        fixture
+    };
+
+    let mut fixture = seeded(127);
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let report = fixture
+        .run(&mut model, limits)
+        .expect("127 messages plus the pending request fit");
+    assert_eq!(report.reply, "done");
+
+    let mut fixture = seeded(128);
+    let mut model = ScriptedModel::new(vec![text_reply("unused")]);
+    let error = fixture
+        .run(&mut model, limits)
+        .expect_err("128 messages plus the pending request exceed the reserve");
+    assert!(
+        matches!(
+            error,
+            TurnError::Prompt(PromptError::ToolHistoryCapacity {
+                max_tool_calls: 256
+            })
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(model.requests.is_empty(), "no model request may be sent");
+    assert_eq!(fixture.snapshot().active_turn, None);
 }
 
 #[test]
@@ -1310,6 +1440,33 @@ fn an_elapsed_deadline_prevents_starting_a_turn() {
     assert!(model.requests.is_empty());
     assert_eq!(fixture.snapshot().event_count, event_count);
     assert_eq!(fixture.snapshot().active_turn, None);
+}
+
+#[test]
+fn the_turn_runtime_accepts_a_one_hour_deadline_and_rejects_more() {
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let limits = TurnLimits {
+        deadline: Duration::from_secs(3600),
+        ..TurnLimits::default()
+    };
+    let report = fixture
+        .run(&mut model, limits)
+        .expect("maximum deadline is allowed");
+    assert_eq!(report.reply, "done");
+
+    let event_count = fixture.snapshot().event_count;
+    let limits = TurnLimits {
+        deadline: Duration::from_secs(3601),
+        ..limits
+    };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    assert!(matches!(
+        TurnRuntime::new(journal, &fixture.data, fixture.workspace_id, limits),
+        Err(TurnError::InvalidLimits)
+    ));
+    assert_eq!(model.requests.len(), 1);
+    assert_eq!(fixture.snapshot().event_count, event_count);
 }
 
 #[test]
@@ -2548,6 +2705,79 @@ fn create_call(id: &str, path: &str, content: &str) -> Value {
         "workspace_create_file",
         json!({"path": path, "content": content}),
     )
+}
+
+#[test]
+fn a_turn_can_create_a_program_and_tests_after_a_failed_exact_edit() {
+    let mut fixture = Fixture::new();
+    fixture.set_access(PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    });
+    let program =
+        "#include <iostream>\n#include \"hello.h\"\nint main() { std::cout << greeting(); }\n";
+    let header = "inline const char* greeting() { return \"Hello, World!\"; }\n";
+    let tests = "#include <cassert>\n#include <string_view>\n#include \"hello.h\"\nint main() { assert(std::string_view(greeting()) == \"Hello, World!\"); }\n";
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "list",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )]),
+        tool_reply(vec![create_call("program", "hello.cpp", program)]),
+        tool_reply(vec![edit_call(
+            "edit",
+            "hello.cpp",
+            "[Existing content]",
+            "replacement",
+        )]),
+        tool_reply(vec![call(
+            "read",
+            "workspace_read_file",
+            json!({"path": "hello.cpp"}),
+        )]),
+        tool_reply(vec![create_call("header", "hello.h", header)]),
+        tool_reply(vec![create_call("tests", "test_hello.cpp", tests)]),
+        text_reply("created the program and tests"),
+    ]);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn finishes");
+
+    assert_eq!(report.rounds, 7);
+    assert_eq!(report.tool_calls, 6);
+    assert_eq!(report.reply, "created the program and tests");
+    assert!(
+        model.requests[3]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("edit_no_match"))
+    );
+    for (path, content) in [
+        ("hello.cpp", program),
+        ("hello.h", header),
+        ("test_hello.cpp", tests),
+    ] {
+        assert_eq!(
+            fs::read_to_string(fixture.workspace.join(path)).expect("created file"),
+            content
+        );
+    }
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            None,
+            None,
+            Some("edit_no_match".to_owned()),
+            None,
+            None,
+            None
+        ]
+    );
 }
 
 impl Fixture {

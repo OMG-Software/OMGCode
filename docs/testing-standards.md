@@ -161,6 +161,9 @@ tests for documentation-only work.
   `crates/omgcode-cli/tests/support/spawn_gate.rs`. Do not retry on `Busy`, which
   would hide real contention. Serial runs cannot detect this race, so run the
   default parallel suite as well.
+- CLI compaction tests seed large, private journal fixtures in one batch and
+  let the child replay them. This keeps hundreds of fixture syncs from holding
+  the spawn gate while unrelated tests are trying to start.
 - Test cancellation before start, during work, during partial writes, and during
   shutdown. Observe task completion, resource release, and descendant cleanup.
 - Bound every waiting integration test. A timeout is a failure, not a skip.

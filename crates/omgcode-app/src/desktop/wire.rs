@@ -15,10 +15,12 @@
 use omgcode_core::control::{ApprovalOperation, ApprovalState};
 use omgcode_core::policy::{Access, WriteToolAccess};
 use omgcode_core::session::{MessageRole, MessageSource, ToolOutcome};
+use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::DesktopError;
+use crate::chat::DEFAULT_TURN_TIMEOUT_SECONDS;
 
 /// Whether a listing or search covers active or archived sessions.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -109,6 +111,12 @@ pub struct ChatSettingsDto {
     pub context_tokens: u64,
     /// Output reserve for each model request.
     pub max_output_tokens: u32,
+    /// Tool-call budget for the turn. Omitted fields read as the built-in default.
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: usize,
+    /// Cooperative deadline for a tool-enabled turn, in seconds.
+    #[serde(default = "default_turn_timeout_seconds")]
+    pub turn_timeout_seconds: u64,
     /// User-level preferences, sent as untrusted-origin custom instructions.
     pub instructions: String,
     /// Compact before a turn when the estimate reaches this value.
@@ -725,6 +733,12 @@ pub struct ChatPreferencesDto {
     pub context_tokens: u64,
     /// The output reserve to start from.
     pub max_output_tokens: u32,
+    /// Tool-call budget to start from. Older files read as the built-in default.
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: usize,
+    /// Cooperative deadline to start from. Older files read as 120 seconds.
+    #[serde(default = "default_turn_timeout_seconds")]
+    pub turn_timeout_seconds: u64,
     /// Custom instructions to start from. Untrusted-origin text, as in a turn.
     pub instructions: String,
     /// The compaction threshold to start from.
@@ -737,6 +751,14 @@ pub struct ChatPreferencesDto {
     /// request saved before the field existed reads as `true`.
     #[serde(default = "enter_to_send_default")]
     pub enter_to_send: bool,
+}
+
+const fn default_max_tool_calls() -> usize {
+    DEFAULT_MAX_TOOL_CALLS
+}
+
+const fn default_turn_timeout_seconds() -> u64 {
+    DEFAULT_TURN_TIMEOUT_SECONDS
 }
 
 /// The built-in "Enter to send" choice, also used for a file that predates it.
@@ -771,6 +793,10 @@ pub enum PreferencesSource {
 pub struct ChatDefaults {
     /// The settings the composer starts from. The endpoint is the fixed one.
     pub settings: ChatSettingsDto,
+    /// Largest supported value for the tool-call limit control.
+    pub tool_call_limit_max: usize,
+    /// Largest supported value for the turn timeout control.
+    pub turn_timeout_seconds_max: u64,
     /// Where `settings` came from.
     pub preferences: PreferencesSource,
     /// Whether Enter sends the message (ADR-0062). It is not a turn setting,

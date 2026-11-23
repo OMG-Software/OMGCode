@@ -570,9 +570,11 @@ trusted application-data directory, and the workspace ID. The runtime:
   and releases the settings lock before the next model request;
 - reserves assembled-prompt capacity and enforces the selected per-message limit
   before recording any tool intent, result, or message;
-- enforces hard maxima of four rounds, eight calls per round, sixteen calls per
-  turn, 16 KiB per source-labelled tool message, and 256 KiB aggregate tool
-  text, with a 30-second cooperative deadline by default (chat uses 120 seconds);
+- enforces a configurable per-turn limit of 1 to 256 tool calls, defaulting
+  to 128. It budgets a model request per allowed call plus the final reply.
+  Other maxima include eight calls per response, 16 KiB per source-labelled tool
+  message, and 256 KiB of aggregate tool text. The core deadline defaults to
+  30 seconds. Chat defaults to 120 seconds and accepts 1 to 3600 seconds.
 - records `tool.requested`, `tool.completed`, and schema-version-2 tool messages,
   and records the exact tool schema version and names in the request manifest;
 - treats every tool result as source-labelled untrusted user-level content and
@@ -638,10 +640,13 @@ When the workspace enables `model_tools`, chat offers `workspace_read_file` and
 the approval-gated `workspace_edit_file`, `workspace_multi_edit_file`,
 `workspace_create_file`, `workspace_rename_file`, and `workspace_delete_file`.
 When `execute`, `read`, and `write`
-also allow it, it offers the approval-gated `workspace_run_command`. The model may make up to
-four requests in one turn. Each read/list call is rechecked against live
-settings and stays inside the workspace. Results return to the model as
-source-labelled user messages. The configured LM Studio token is removed from
+also allow it, it offers the approval-gated `workspace_run_command`. Set
+`--max-tool-calls <1–256>` to override the default of 128 for this turn. A batch
+that would exceed the cap is refused before any of its calls run. The `tool_limit`
+error reports the configured cap, calls used, and calls requested. Start a new
+turn or raise the limit to continue. Each read/list call is
+rechecked against live settings and stays inside the workspace. Results return
+to the model as source-labelled user messages. The configured LM Studio token is removed from
 each result before it is recorded or sent. A tool call that contains the token
 is refused with a `provider` error before it is recorded, because editing its
 arguments could change the requested path. Add
@@ -697,13 +702,18 @@ omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --mode
 ```
 
 Each text-only invocation sends one request, which is not streamed unless
-`--stream` is given; a tool-enabled turn sends at most four. When `--auto-compact` compacts before the turn, the
-summarizer requests come first: at most 16 per round, with at most four
-combination rounds after the first. `session compact` sends only summarizer
+`--stream` is given. A tool-enabled turn sends at most one request more than
+its tool-call budget. When `--auto-compact`
+compacts before the turn, the summarizer requests come first, with at most 16
+requests per round and at most four combination rounds after the first.
+`session compact` sends only summarizer
 requests under the same bound. There is a five-second connect timeout and a thirty-second
-timeout per request, with no automatic retry or provider fallback. A
-tool-enabled turn also stops at a 120-second cooperative deadline. A slow first inference can time out. Its remote outcome can
-be unknown, and a retry is a new explicit user action.
+timeout per request, with no automatic retry or provider fallback. Set
+`chat --turn-timeout-seconds <1–3600>` to change the tool-enabled turn's
+cooperative deadline from its 120-second default. The runtime checks it
+between operations and excludes desktop approval waits. A slow first inference
+can time out. Its remote outcome can be unknown, and a retry is a new explicit
+user action.
 
 Optional server authentication can be supplied to the trusted CLI process with
 OMGCODE_LM_TOKEN. The CLI retains the token in memory only and sends it as a
@@ -725,9 +735,11 @@ an explicitly selected service configured for it.
 argument limit. It edits only an existing UTF-8 regular file of at most 1 MiB,
 before and after the edit. A missing, repeated, or unchanged `old_text`
 returns the recoverable `edit_no_match`, `edit_ambiguous`, or `edit_unchanged`
-result. Each call reads the live file through the audited broker. Its approval
-digest covers the session, workspace, normalized path, and the size and SHA-256
-of the current and proposed bytes, so a file that changed after the request
+result. The tool description asks the model to read the file if the current text
+is unknown or an edit returns `edit_no_match`. Each edit call reads the live file
+through the audited broker. Its approval digest covers the session, workspace,
+normalized path, and the size and SHA-256 of the current and proposed bytes,
+so a file that changed after the request
 needs a new approval ([ADR-0043](adr/0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md)).
 
 ```text
@@ -764,8 +776,10 @@ replacement can see another's output. The matches must not overlap
 (`edit_overlap`); touching matches are allowed. A missing or repeated
 `old_text` returns `edit_no_match` or `edit_ambiguous` with the 1-based edit
 index in the message, and a call whose result equals the file returns
-`edit_unchanged`. The approval digest uses its own domain tag, so an approval
-for a `workspace_edit_file` call never applies a multi-edit. Review shows each
+`edit_unchanged`. The tool tells the model to read the file when any `old_text`
+is unknown or the call returns `edit_no_match`. The approval digest uses its
+own domain tag, so an approval for a `workspace_edit_file` call never applies
+a multi-edit. Review shows each
 `Old text N` and `New text N`. One approval covers one checkpointed apply, and
 there is no atomicity across files.
 
@@ -858,7 +872,7 @@ can archive, restore, and interrupt a session; see the
 | --- | --- |
 | Custom instructions | 16 KiB of UTF-8 text |
 | Each user/assistant message | 16 KiB of UTF-8 text |
-| History in one request | 128 messages |
+| History in one request | 640 messages |
 | Assembled text / encoded request | 256 KiB each, checked separately |
 | Encoded provider response | 1 MiB |
 | Encoded journal event, including LF | 64 KiB |
@@ -872,10 +886,10 @@ can archive, restore, and interrupt a session; see the
 | Edit preview lines | 65,536 per side when changed |
 | Edit preview diff | 64 KiB |
 | Source-labelled tool message | 16 KiB |
-| Tool rounds per turn | 4 |
-| Tool calls per round / per turn | 8 / 16 |
+| Model requests per tool-enabled turn, including the final reply | 129 default, 257 maximum |
+| Tool calls per response / per turn | 8 / 128 default, configurable from 1 to 256 |
 | Aggregate tool text per turn | 256 KiB |
-| Cooperative turn deadline | 30 seconds by default; 120 seconds for chat |
+| Cooperative turn deadline | 30 seconds in the core by default. Chat defaults to 120 seconds and accepts 1 to 3600 seconds. |
 | Raw tool calls accepted from one response | 64 before runtime validation |
 
 These are ordinary quotas. Active turns reserve one terminal event and 1 KiB

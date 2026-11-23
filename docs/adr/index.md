@@ -89,3 +89,6 @@ meaningful alternative does not need an ADR.
 | [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted | 2026-11-20 |
 | [0073: Remove extra data folder grants after operator confirmation](0073-remove-extra-data-folder-grants-after-operator-confirmation.md) | Accepted | 2026-11-20 |
 | [0074: Give chat bubbles a shared width](0074-give-chat-bubbles-a-shared-width.md) | Accepted | 2026-11-23 |
+| [0075: Budget model requests for sequential tool calls](0075-budget-model-requests-for-sequential-tool-calls.md) | Accepted, amended by ADR-0076 and ADR-0077 | 2026-11-23 |
+| [0076: Configure the tool-call budget per turn](0076-configure-the-tool-call-budget-per-turn.md) | Accepted | 2026-11-23 |
+| [0077: Configure the tool-enabled turn timeout](0077-configure-the-tool-enabled-turn-timeout.md) | Accepted | 2026-11-23 |

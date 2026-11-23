@@ -12,6 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use support::run_scene::{Scene, run_command, shell};
 use support::spawn_gate::without_child_spawns;
@@ -1239,67 +1240,117 @@ fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider()
     assert!(!events.contains("context.compacted"), "{events}");
 }
 
-/// Record `count` short exchanges directly. The journal lock is held only
-/// inside the spawn gate, so no parallel test's child can inherit it.
+/// Seed a fresh private journal before handing it to the CLI. These tests
+/// exercise replay and compaction. Writing the fixture in one batch avoids
+/// blocking unrelated child spawns behind hundreds of durable appends.
 fn seed_short_exchanges(journal: &Path, count: usize) {
-    without_child_spawns(|| {
-        let mut session =
-            omgcode_core::session::SessionJournal::open(journal).expect("open journal");
-        for index in 0..count {
-            session
-                .record_message(
-                    omgcode_core::session::MessageRole::User,
-                    &format!("request {index}"),
-                )
-                .expect("user message");
-            session
-                .record_message(
-                    omgcode_core::session::MessageRole::Assistant,
-                    &format!("reply {index}"),
-                )
-                .expect("assistant message");
-        }
+    let initial = fs::read(journal).expect("read fresh journal");
+    assert_eq!(initial.last(), Some(&b'\n'));
+    let start: Value = serde_json::from_slice(&initial).expect("one session start event");
+    assert_eq!(start["type"], "session.started");
+    assert_eq!(start["seq"], 0);
+
+    let mut records = Vec::new();
+    let messages = (0..count).flat_map(|index| {
+        [
+            ("user", "user_cli", format!("request {index}")),
+            ("assistant", "provider", format!("reply {index}")),
+        ]
     });
+    for (index, (role, source, text)) in messages.enumerate() {
+        let event = json!({
+            "schema_version": start["schema_version"],
+            "session_id": start["session_id"],
+            "event_id": Uuid::new_v4(),
+            "seq": index + 1,
+            "timestamp": start["timestamp"],
+            "type": "message.recorded",
+            "payload": {"role": role, "source": source, "text": text},
+        });
+        serde_json::to_writer(&mut records, &event).expect("encode fixture event");
+        records.push(b'\n');
+    }
+    fs::OpenOptions::new()
+        .append(true)
+        .open(journal)
+        .expect("open fixture journal for append")
+        .write_all(&records)
+        .expect("append fixture events");
 }
 
 #[test]
 fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() {
     let fixture = Fixture::new(NOTE);
     let journal = fixture.session();
-    // 64 short exchanges fill the 128-message history limit far below the
-    // token trigger; the pending request would be message 129.
-    seed_short_exchanges(&journal, 64);
-
-    let server = SequenceServer::start(Vec::new());
-    let output = fixture.chat(&journal, &server.endpoint, "next request");
-    server.finish();
-    assert_error_code(&output, "context");
-
-    let server = SequenceServer::start(vec![text("Sixty-four exchanges."), text("next reply")]);
-    let output = run_cli(
-        &fixture.data,
-        &[
+    // 320 short exchanges fill the 640-message history limit. Choose a model
+    // context large enough for the separate token estimate to stay below its trigger.
+    seed_short_exchanges(&journal, 320);
+    let chat = |endpoint: &str, extra: &[&str]| {
+        let mut args = vec![
             "chat",
             "--journal",
             path_arg(&journal),
             "--endpoint",
-            &server.endpoint,
+            endpoint,
             "--model",
             "fixture",
             "--context-tokens",
-            "131072",
+            "262144",
             "--max-output-tokens",
             "64",
-            "--auto-compact",
-            "next request",
-        ],
-    );
+        ];
+        args.extend_from_slice(extra);
+        args.push("next request");
+        run_cli(&fixture.data, &args)
+    };
+
+    let server = SequenceServer::start(Vec::new());
+    let output = chat(&server.endpoint, &[]);
+    server.finish();
+    assert_error_code(&output, "context");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("CLI error is JSON");
+    assert!(error["error"]["message"].as_str().is_some_and(|message| {
+        message.starts_with("Active history exceeds the prompt assembly limits")
+    }));
+
+    let mut replies = vec![text("Earlier exchanges in this chunk."); 5];
+    replies.extend([text("Earlier conversation."), text("next reply")]);
+    let server = SequenceServer::start(replies);
+    let output = chat(&server.endpoint, &["--auto-compact"]);
     let requests = server.finish();
     assert_success(&output);
     let result = json_output(&output);
     assert_eq!(result["reply"]["content"], "next reply");
-    assert_eq!(requests.len(), 2, "one summary and one chat request");
-    assert_eq!(result["context"]["compaction"]["compacted_messages"], 126);
+    assert_eq!(
+        requests.len(),
+        7,
+        "five chunks, one combination, and one chat"
+    );
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 638);
+}
+
+#[test]
+fn tool_chat_reserves_room_for_its_budget_before_starting_the_turn() {
+    let fixture = Fixture::new(NOTE);
+    fixture.set("--model-tools", true);
+    let journal = fixture.session();
+    // 384 saved messages fit the first prompt, but the pending request and
+    // 256 possible tool/interim messages would exceed 640 together.
+    seed_short_exchanges(&journal, 192);
+    let before = fs::read(&journal).expect("fixture journal");
+    let server = SequenceServer::start(Vec::new());
+    let output = fixture.chat(&journal, &server.endpoint, "next request");
+    assert!(server.finish().is_empty());
+    assert_error_code(&output, "context");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("CLI error is JSON");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with(
+                "Active history leaves insufficient room for a turn with 128 tool calls"
+            ))
+    );
+    assert_eq!(fs::read(&journal).expect("untouched journal"), before);
 }
 
 #[test]
@@ -1330,6 +1381,8 @@ fn more_older_messages_than_one_summary_request_accepts_compact_in_several_chunk
             "131072",
             "--max-output-tokens",
             "64",
+            "--compact-threshold",
+            "30000",
             "--auto-compact",
             "next request",
         ],

@@ -25,6 +25,7 @@ use crate::{
 };
 use omgcode_core::control::ProviderKind;
 use omgcode_core::provider::list_local_models;
+use omgcode_core::turn::{DEFAULT_MAX_TOOL_CALLS, MAX_TOOL_CALLS, MAX_TURN_DEADLINE};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -64,10 +65,14 @@ impl DesktopService {
                 model: preferences.model,
                 context_tokens: preferences.context_tokens,
                 max_output_tokens: preferences.max_output_tokens,
+                max_tool_calls: preferences.max_tool_calls,
+                turn_timeout_seconds: preferences.turn_timeout_seconds,
                 instructions: preferences.instructions,
                 compact_threshold: preferences.compact_threshold,
                 auto_compact: preferences.auto_compact,
             },
+            tool_call_limit_max: MAX_TOOL_CALLS,
+            turn_timeout_seconds_max: MAX_TURN_DEADLINE.as_secs(),
             preferences: source,
             enter_to_send: preferences.enter_to_send,
         }
@@ -354,6 +359,8 @@ fn built_in_preferences() -> ChatPreferencesDto {
         model: String::new(),
         context_tokens: 0,
         max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+        turn_timeout_seconds: crate::chat::DEFAULT_TURN_TIMEOUT_SECONDS,
         instructions: String::new(),
         compact_threshold: DEFAULT_COMPACT_THRESHOLD,
         auto_compact: false,
@@ -387,6 +394,8 @@ fn chat_settings(settings: ChatSettingsDto, endpoint: String) -> ChatSettings {
         model: settings.model,
         context_tokens: settings.context_tokens,
         max_output_tokens: settings.max_output_tokens,
+        max_tool_calls: settings.max_tool_calls,
+        turn_timeout_seconds: settings.turn_timeout_seconds,
         instructions: settings.instructions,
         compact_threshold: settings.compact_threshold,
         auto_compact: settings.auto_compact,

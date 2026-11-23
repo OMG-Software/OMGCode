@@ -14,9 +14,9 @@ pub const BASE_PROMPT_VERSION: &str = "0.1.4";
 
 const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 16 * 1024;
 const MAX_HISTORY_MESSAGE_BYTES: usize = 16 * 1024;
-/// Most history messages one assembled request accepts. Compaction chunks
-/// use the same limit.
-pub(crate) const MAX_HISTORY_MESSAGES: usize = 128;
+/// Allow 128 messages up to the user request and a full turn of tool results
+/// and interim assistant replies. The assembled byte limit applies separately.
+const MAX_HISTORY_MESSAGES: usize = 128 + 2 * crate::turn::MAX_TOOL_CALLS;
 const MAX_ASSEMBLED_BYTES: usize = 256 * 1024;
 const CUSTOM_INSTRUCTIONS_LABEL: &str = "Saved user preferences:\n";
 
@@ -119,8 +119,14 @@ pub enum PromptError {
     #[error("saved user preferences exceed 16 KiB")]
     CustomInstructionsTooLarge,
     /// The conversation contains too many messages.
-    #[error("conversation history exceeds 128 messages")]
+    #[error("conversation history exceeds {MAX_HISTORY_MESSAGES} messages")]
     TooManyHistoryMessages,
+    /// The starting history leaves too little room for a tool-enabled turn.
+    #[error("conversation history leaves insufficient room for {max_tool_calls} tool calls")]
+    ToolHistoryCapacity {
+        /// The turn's configured call budget.
+        max_tool_calls: usize,
+    },
     /// A conversation message exceeds its byte limit.
     #[error("a conversation message exceeds 16 KiB")]
     HistoryMessageTooLarge,
@@ -152,6 +158,24 @@ pub fn assemble(
     history: &[ConversationMessage],
 ) -> Result<Vec<ModelMessage>, PromptError> {
     assemble_with_skills(custom_instructions, &[], history)
+}
+
+/// Check that the history, including the pending user request, leaves room
+/// for up to one result and one interim assistant message per tool call.
+///
+/// # Errors
+/// Returns [`PromptError::ToolHistoryCapacity`] if the turn could exceed the
+/// history message limit. The assembled byte and model context limits apply
+/// independently to each request.
+pub fn check_tool_turn_history_capacity(
+    history_messages: usize,
+    max_tool_calls: usize,
+) -> Result<(), PromptError> {
+    let reserved = max_tool_calls.saturating_mul(2);
+    if history_messages.saturating_add(reserved) > MAX_HISTORY_MESSAGES {
+        return Err(PromptError::ToolHistoryCapacity { max_tool_calls });
+    }
+    Ok(())
 }
 
 /// Assemble like [`assemble`], with request-only skill messages.
@@ -331,6 +355,18 @@ mod tests {
             assemble("", &messages),
             Err(PromptError::TooManyHistoryMessages)
         );
+    }
+
+    #[test]
+    fn a_tool_turn_can_start_only_with_room_for_its_full_message_budget() {
+        assert_eq!(check_tool_turn_history_capacity(384, 128), Ok(()));
+        assert_eq!(
+            check_tool_turn_history_capacity(385, 128),
+            Err(PromptError::ToolHistoryCapacity {
+                max_tool_calls: 128
+            })
+        );
+        assert_eq!(check_tool_turn_history_capacity(385, 127), Ok(()));
     }
 
     #[test]

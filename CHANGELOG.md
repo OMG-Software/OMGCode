@@ -295,6 +295,24 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Version 0.52.1 budgets a model request for every tool call plus the final
+  reply. The four-request limit could stop a turn after creating the program
+  and before creating its tests. The tool-call budget defaults to 128 and can
+  be set from 1 to 256 in Chat settings or with `chat --max-tool-calls`. When a
+  response exceeds it, the error reports the cap and the number of calls used
+  and requested. The tool-enabled turn timeout defaults to 120 seconds and can
+  be set from 1 to 3600 in Chat settings or with `chat --turn-timeout-seconds`.
+  The history limit rises from 128 to 640 messages. Chat reserves space for the
+  tool budget before starting a turn, and summarizer chunks stay at 128 messages.
+  The exact-edit and multi-edit tools ask the model to read the file when the
+  current text is unknown or an edit misses (ADR-0075, ADR-0076, ADR-0077).
+  The eight tool definitions now serialize to 6,174 bytes, so chat reserves
+  7 KiB for them instead of 6 KiB.
+- CLI compaction tests seed their large history fixtures in one batch so
+  unrelated CLI tests can start within their subprocess deadlines.
+  The 128-call budget test sets its own 120-second deadline. It checks the
+  round budget, and on a busy Windows runner its journal syncs outlasted the
+  30-second core default.
 - The Testing build's publish job no longer fails when a lookup just after
   deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
   deleted the old release and tag with `gh release delete --cleanup-tag`. A

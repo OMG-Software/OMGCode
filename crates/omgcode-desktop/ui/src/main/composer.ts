@@ -55,9 +55,13 @@ function labelled(label: string, input: HTMLElement): HTMLElement {
   return el("label", { class: "field" }, el("span", { text: label }), input);
 }
 
-function numberInput(label: string, value: number, min: number): [HTMLElement, HTMLInputElement] {
+function numberInput(
+  label: string,
+  value: number | null,
+  min: number,
+): [HTMLElement, HTMLInputElement] {
   const input = el("input", { attrs: { type: "number", min: String(min), step: "1" } });
-  input.value = String(value);
+  if (value !== null) input.value = String(value);
   return [labelled(label, input), input];
 }
 
@@ -124,9 +128,23 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   let loadedKey: string | null = null;
   const [contextField, contextTokens] = numberInput("Context tokens", 0, 0);
   const [outputField, maxOutput] = numberInput("Max output tokens", 0, 0);
+  const [toolCallsField, toolCalls] = numberInput("Tool calls per turn", null, 1);
+  toolCalls.required = true;
+  const [timeoutField, turnTimeout] = numberInput("Tool-enabled turn timeout (seconds)", null, 1);
+  turnTimeout.required = true;
   const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
   const autoCompact = el("input", { attrs: { type: "checkbox" } });
   const instructions = el("textarea", { attrs: { rows: "3" } });
+  const settingsInputs = [
+    contextTokens,
+    maxOutput,
+    toolCalls,
+    turnTimeout,
+    compactThreshold,
+    autoCompact,
+    instructions,
+  ];
+  const editedSettings = new Set<HTMLInputElement | HTMLTextAreaElement>();
   // On until `chat_defaults` says otherwise, so it is on even when they cannot be read.
   const enterToSend = el("input", { attrs: { type: "checkbox" } });
   enterToSend.checked = true;
@@ -153,6 +171,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       ),
       contextField,
       outputField,
+      toolCallsField,
+      timeoutField,
       compactField,
       el(
         "label",
@@ -195,6 +215,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       model: model.value(),
       context_tokens: Number(contextTokens.value),
       max_output_tokens: Number(maxOutput.value),
+      max_tool_calls: Number(toolCalls.value),
+      turn_timeout_seconds: Number(turnTimeout.value),
       instructions: instructions.value,
       compact_threshold: Number(compactThreshold.value),
       auto_compact: autoCompact.checked,
@@ -229,6 +251,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       model: settings.model,
       context_tokens: settings.context_tokens,
       max_output_tokens: settings.max_output_tokens,
+      max_tool_calls: settings.max_tool_calls,
+      turn_timeout_seconds: settings.turn_timeout_seconds,
       instructions: settings.instructions,
       compact_threshold: settings.compact_threshold,
       auto_compact: settings.auto_compact,
@@ -237,6 +261,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   }
 
   function applyDefaults(defaults: ChatDefaults): void {
+    toolCalls.max = String(defaults.tool_call_limit_max);
+    turnTimeout.max = String(defaults.turn_timeout_seconds_max);
     writeSettings(defaults.settings);
     if (!enterToSendChanged) {
       enterToSend.checked = defaults.enter_to_send;
@@ -272,11 +298,17 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       fixedEndpoint = settings.endpoint;
       replaceChildren(endpointValue, settings.endpoint);
     }
-    contextTokens.value = String(settings.context_tokens);
-    maxOutput.value = String(settings.max_output_tokens);
-    compactThreshold.value = String(settings.compact_threshold);
-    autoCompact.checked = settings.auto_compact;
-    instructions.value = settings.instructions;
+    for (const [input, value] of [
+      [contextTokens, settings.context_tokens],
+      [maxOutput, settings.max_output_tokens],
+      [toolCalls, settings.max_tool_calls],
+      [turnTimeout, settings.turn_timeout_seconds],
+      [compactThreshold, settings.compact_threshold],
+      [instructions, settings.instructions],
+    ] as const) {
+      if (!editedSettings.has(input)) input.value = String(value);
+    }
+    if (!editedSettings.has(autoCompact)) autoCompact.checked = settings.auto_compact;
   }
 
   function currentProblem(): string | null {
@@ -289,6 +321,16 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     }
     if (!settingsValid(readSettings())) {
       return "Choose a model and set a positive context size in Chat settings.";
+    }
+    if (!toolCalls.validity.valid) {
+      return toolCalls.max === ""
+        ? "Set Tool calls per turn to a positive whole number."
+        : `Set Tool calls per turn to a whole number from ${toolCalls.min} to ${toolCalls.max}.`;
+    }
+    if (!turnTimeout.validity.valid) {
+      return turnTimeout.max === ""
+        ? "Set Tool-enabled turn timeout to a positive whole number of seconds."
+        : `Set Tool-enabled turn timeout to a whole number from ${turnTimeout.min} to ${turnTimeout.max} seconds.`;
     }
     return messageProblem(box.value);
   }
@@ -318,7 +360,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     replaceChildren(providerNote, connection.message());
     providerNote.hidden = connection.message() === "";
     choicesNote.hidden = connection.status()?.session_choices_unreadable !== true;
-    for (const input of [contextTokens, maxOutput, compactThreshold, autoCompact, instructions]) {
+    for (const input of settingsInputs) {
       input.disabled = !state.enabled;
     }
     const full = selectedSkills().length >= SKILLS_PER_TURN;
@@ -376,7 +418,12 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   providerSelect.render();
 
   box.addEventListener("input", refresh);
-  contextTokens.addEventListener("input", refresh);
+  for (const input of settingsInputs) {
+    input.addEventListener(input === autoCompact ? "change" : "input", () => {
+      editedSettings.add(input);
+      refresh();
+    });
+  }
   /** Shows the send key in the message box hint. */
   function showSendKey(): void {
     box.placeholder = enterToSend.checked ? PLACEHOLDER_ENTER : PLACEHOLDER_CTRL_ENTER;
