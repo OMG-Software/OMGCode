@@ -100,6 +100,13 @@ that crowded the toolbar.
   16 KiB.
 - A workspace file that cannot be read blocks that workspace's sessions from
   sending until the operator saves its instructions again.
+- No desktop, CLI, or core path unregisters a workspace, and a session is
+  created only in a registered one, so `chat_send` reads a session's
+  workspace file by its recorded identifier. A change that adds
+  unregistration must also remove that workspace's instructions file under
+  the preferences lock, so no file is left behind and no later turn sends
+  its text. Any new writer of these files must take the same lock and the
+  same pair check (decision 2).
 - The settings window gained two commands (42 in all, 14 for `settings`).
 - The composition was tested with a scripted loopback model server, and the
   windows under jsdom. It has not been checked with a real model.
