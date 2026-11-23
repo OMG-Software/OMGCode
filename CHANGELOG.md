@@ -297,9 +297,10 @@ Changes are recorded here before a release version is assigned.
   and before creating its tests. The tool-call budget defaults to 128 and can
   be set from 1 to 256 in Chat settings or with `chat --max-tool-calls`. When a
   response exceeds it, the error reports the cap and the number of calls used
-  and requested. Chat has a five-minute cooperative deadline. The exact-edit
-  tool asks the model to read the file when the current text is unknown or an
-  edit misses (ADR-0074, ADR-0075).
+  and requested. The tool-enabled turn timeout defaults to 60 seconds and can
+  be set from 1 to 3600 in Chat settings or with `chat --turn-timeout-seconds`.
+  The exact-edit tool asks the model to read the file when the current text is
+  unknown or an edit misses (ADR-0074, ADR-0075, ADR-0076).
 - The Testing build's publish job no longer fails when a lookup just after
   deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
   deleted the old release and tag with `gh release delete --cleanup-tag`. A

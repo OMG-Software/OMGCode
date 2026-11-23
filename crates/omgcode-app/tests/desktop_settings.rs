@@ -296,12 +296,14 @@ fn saved_chat_preferences_become_the_defaults_and_keep_the_fixed_endpoint() {
         service.chat_defaults().preferences,
         PreferencesSource::Defaults
     );
+    assert_eq!(service.chat_defaults().settings.turn_timeout_seconds, 60);
 
     let saved = service
         .chat_preferences_save(wire(json!({"preferences": {
             "model": "qwen3-coder",
             "context_tokens": 32_768,
             "max_output_tokens": 2048,
+            "turn_timeout_seconds": 900,
             "instructions": "Prefer short answers.",
             "compact_threshold": 24_000,
             "auto_compact": true,
@@ -315,6 +317,7 @@ fn saved_chat_preferences_become_the_defaults_and_keep_the_fixed_endpoint() {
     assert_eq!(saved.settings.model, "qwen3-coder");
     assert_eq!(saved.settings.context_tokens, 32_768);
     assert_eq!(saved.settings.max_output_tokens, 2048);
+    assert_eq!(saved.settings.turn_timeout_seconds, 900);
     assert_eq!(saved.settings.instructions, "Prefer short answers.");
     assert_eq!(saved.settings.compact_threshold, 24_000);
     assert!(saved.settings.auto_compact);

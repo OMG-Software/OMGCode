@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::DesktopError;
 use super::wire::ChatPreferencesDto;
-use crate::chat::validate_tool_call_limit;
+use crate::chat::validate_turn_budgets;
 
 /// The directory under the data root that holds desktop-only files.
 const DIRECTORY: &str = "desktop-v1";
@@ -85,7 +85,7 @@ fn check(preferences: &ChatPreferencesDto) -> Result<(), String> {
     if preferences.instructions.len() > MAX_INSTRUCTIONS_BYTES {
         return Err("The custom instructions are too long.".to_owned());
     }
-    validate_tool_call_limit(preferences.max_tool_calls)
+    validate_turn_budgets(preferences.max_tool_calls, preferences.turn_timeout_seconds)
 }
 
 /// Read the saved preferences.
@@ -250,6 +250,7 @@ mod tests {
             context_tokens: 32_768,
             max_output_tokens: 2048,
             max_tool_calls: 64,
+            turn_timeout_seconds: 600,
             instructions: "Prefer short answers.".to_owned(),
             compact_threshold: 24_000,
             auto_compact: true,
@@ -271,6 +272,7 @@ mod tests {
         let loaded = load(&root).expect("load").expect("present");
         assert!(loaded.enter_to_send);
         assert_eq!(loaded.max_tool_calls, 128);
+        assert_eq!(loaded.turn_timeout_seconds, 60);
         assert_eq!(loaded.model, "m");
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -318,7 +320,9 @@ mod tests {
         long_instructions.instructions = "i".repeat(MAX_INSTRUCTIONS_BYTES + 1);
         let mut tool_calls = sample();
         tool_calls.max_tool_calls = 257;
-        for preferences in [long_model, control, long_instructions, tool_calls] {
+        let mut timeout = sample();
+        timeout.turn_timeout_seconds = 3601;
+        for preferences in [long_model, control, long_instructions, tool_calls, timeout] {
             let error = save(&root, &preferences).expect_err("refused");
             assert_eq!(error.code(), "invalid_request");
         }

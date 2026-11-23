@@ -1,6 +1,6 @@
 # 0074: Budget model requests for sequential tool calls
 
-- Status: Accepted, amended by [ADR-0075](0075-configure-the-tool-call-budget-per-turn.md)
+- Status: Accepted, amended by [ADR-0075](0075-configure-the-tool-call-budget-per-turn.md) and [ADR-0076](0076-configure-the-tool-enabled-turn-timeout.md)
 - Date: 2026-11-23
 - Implemented: version 0.52.1
 

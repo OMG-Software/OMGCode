@@ -15,9 +15,9 @@ mod stream_cli;
 use clap::{Args, Parser, Subcommand};
 use omgcode_app::{
     AppError, ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput,
-    ConnectionSource, LmToken, LocalConnection, MODEL_TOOLS_SUPPORTED, compact_journal,
-    create_session, data_root, read_lm_token, redact_known_secret, resolve_local_connection,
-    run_chat_turn_with_clients,
+    ConnectionSource, DEFAULT_TURN_TIMEOUT_SECONDS, LmToken, LocalConnection,
+    MODEL_TOOLS_SUPPORTED, compact_journal, create_session, data_root, read_lm_token,
+    redact_known_secret, resolve_local_connection, run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
@@ -192,6 +192,9 @@ struct ChatArgs {
     /// Maximum tool calls per turn (1–256).
     #[arg(long, default_value_t = DEFAULT_MAX_TOOL_CALLS)]
     max_tool_calls: usize,
+    /// Cooperative timeout in seconds for a tool-enabled turn (1–3600).
+    #[arg(long, default_value_t = DEFAULT_TURN_TIMEOUT_SECONDS)]
+    turn_timeout_seconds: u64,
     /// User-level preferences. This cannot replace the compiled base prompt.
     #[arg(long, default_value = "")]
     instructions: String,
@@ -490,6 +493,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         context_tokens: args.context_tokens,
         max_output_tokens: args.max_output_tokens,
         max_tool_calls: args.max_tool_calls,
+        turn_timeout_seconds: args.turn_timeout_seconds,
         instructions: args.instructions,
         compact_threshold: args.compact_threshold,
         auto_compact: args.auto_compact,

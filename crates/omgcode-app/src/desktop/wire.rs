@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::DesktopError;
+use crate::chat::DEFAULT_TURN_TIMEOUT_SECONDS;
 
 /// Whether a listing or search covers active or archived sessions.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -113,6 +114,9 @@ pub struct ChatSettingsDto {
     /// Tool-call budget for the turn. Omitted fields read as the built-in default.
     #[serde(default = "default_max_tool_calls")]
     pub max_tool_calls: usize,
+    /// Cooperative deadline for a tool-enabled turn, in seconds.
+    #[serde(default = "default_turn_timeout_seconds")]
+    pub turn_timeout_seconds: u64,
     /// User-level preferences, sent as untrusted-origin custom instructions.
     pub instructions: String,
     /// Compact before a turn when the estimate reaches this value.
@@ -732,6 +736,9 @@ pub struct ChatPreferencesDto {
     /// Tool-call budget to start from. Older files read as the built-in default.
     #[serde(default = "default_max_tool_calls")]
     pub max_tool_calls: usize,
+    /// Cooperative deadline to start from. Older files read as 60 seconds.
+    #[serde(default = "default_turn_timeout_seconds")]
+    pub turn_timeout_seconds: u64,
     /// Custom instructions to start from. Untrusted-origin text, as in a turn.
     pub instructions: String,
     /// The compaction threshold to start from.
@@ -748,6 +755,10 @@ pub struct ChatPreferencesDto {
 
 const fn default_max_tool_calls() -> usize {
     DEFAULT_MAX_TOOL_CALLS
+}
+
+const fn default_turn_timeout_seconds() -> u64 {
+    DEFAULT_TURN_TIMEOUT_SECONDS
 }
 
 /// The built-in "Enter to send" choice, also used for a file that predates it.

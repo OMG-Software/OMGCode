@@ -87,7 +87,7 @@ pub const MAX_LIST_ENTRIES: usize = 512;
 /// Default number of listing entries returned to the model.
 pub const DEFAULT_LIST_ENTRIES: usize = 128;
 /// Hard upper bound for a caller-selected turn deadline.
-pub const MAX_TURN_DEADLINE: Duration = Duration::from_secs(300);
+pub const MAX_TURN_DEADLINE: Duration = Duration::from_secs(3_600);
 /// Most arguments accepted by one model command call.
 pub const MAX_COMMAND_ARGUMENTS: usize = 64;
 /// Longest one model command argument, in bytes.

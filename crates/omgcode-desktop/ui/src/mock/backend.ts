@@ -848,6 +848,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       context_tokens: 8192,
       max_output_tokens: 1024,
       max_tool_calls: 128,
+      turn_timeout_seconds: 60,
       instructions: "",
       compact_threshold: 6000,
       auto_compact: true,

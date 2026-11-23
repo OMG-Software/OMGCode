@@ -313,12 +313,13 @@ describe("conversation", () => {
       limit: 200,
     });
     expect(root.querySelector(".pane-header")?.textContent).toContain("Conversation one");
-    expect(root.textContent).toContain("first");
-    expect(root.textContent).not.toContain("second");
+    const transcript = root.querySelector(".transcript");
+    expect(transcript?.textContent).toContain("first");
+    expect(transcript?.textContent).not.toContain("second");
     buttonByText(root, "Load more").click();
     await settle();
     expect(ipc.callsTo("session_transcript")[1]?.args).toMatchObject({ after_seq: 1 });
-    expect(root.textContent).toContain("second");
+    expect(transcript?.textContent).toContain("second");
     expect(hasButton(root, "Load more")).toBe(false);
   });
 
@@ -648,6 +649,7 @@ describe("chat lifecycle", () => {
           context_tokens: 0,
           max_output_tokens: 0,
           max_tool_calls: 128,
+          turn_timeout_seconds: 60,
           instructions: "",
           compact_threshold: 0,
           auto_compact: false,
@@ -940,8 +942,13 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(buttonByText(root, "Send")).toBeDefined();
   });
 
-  it("saves the tool-call limit with the model settings and sends it with the next turn", async () => {
-    const saved = { ...SETTINGS, model: "saved-model", max_tool_calls: 192 };
+  it("saves the tool-call limit and timeout and sends them with the next turn", async () => {
+    const saved = {
+      ...SETTINGS,
+      model: "saved-model",
+      max_tool_calls: 192,
+      turn_timeout_seconds: 900,
+    };
     await open({
       chat_models: (args) => ({
         session_id: args.session_id as string,
@@ -959,10 +966,17 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       .find((label) => label.textContent === "Tool calls per turn")
       ?.querySelector("input") as HTMLInputElement;
     expect(field.value).toBe("128");
+    const timeoutField = Array.from(root.querySelectorAll(".settings label"))
+      .find((label) => label.textContent === "Tool-enabled turn timeout (seconds)")
+      ?.querySelector("input") as HTMLInputElement;
+    expect(timeoutField.value).toBe("60");
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
     type(field, "257");
     expect(buttonByText(root, "Send").disabled).toBe(true);
     type(field, "192");
+    type(timeoutField, "3601");
+    expect(buttonByText(root, "Send").disabled).toBe(true);
+    type(timeoutField, "900");
     buttonByText(root, "Save as defaults").click();
     await settle();
     const args = ipc.callsTo("chat_preferences_save")[0]?.args as {
@@ -973,6 +987,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       context_tokens: SETTINGS.context_tokens,
       max_output_tokens: SETTINGS.max_output_tokens,
       max_tool_calls: 192,
+      turn_timeout_seconds: 900,
       instructions: SETTINGS.instructions,
       compact_threshold: SETTINGS.compact_threshold,
       auto_compact: SETTINGS.auto_compact,
@@ -983,7 +998,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     buttonByText(root, "Send").click();
     await settle();
     expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
-      settings: { max_tool_calls: 192 },
+      settings: { max_tool_calls: 192, turn_timeout_seconds: 900 },
     });
   });
 

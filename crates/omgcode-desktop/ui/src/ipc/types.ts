@@ -109,6 +109,7 @@ export interface ChatSettings {
   context_tokens: number;
   max_output_tokens: number;
   max_tool_calls: number;
+  turn_timeout_seconds: number;
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
@@ -250,6 +251,7 @@ export interface ChatPreferences {
   context_tokens: number;
   max_output_tokens: number;
   max_tool_calls: number;
+  turn_timeout_seconds: number;
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;

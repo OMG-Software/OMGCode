@@ -1344,6 +1344,33 @@ fn an_elapsed_deadline_prevents_starting_a_turn() {
 }
 
 #[test]
+fn the_turn_runtime_accepts_a_one_hour_deadline_and_rejects_more() {
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let limits = TurnLimits {
+        deadline: Duration::from_secs(3600),
+        ..TurnLimits::default()
+    };
+    let report = fixture
+        .run(&mut model, limits)
+        .expect("maximum deadline is allowed");
+    assert_eq!(report.reply, "done");
+
+    let event_count = fixture.snapshot().event_count;
+    let limits = TurnLimits {
+        deadline: Duration::from_secs(3601),
+        ..limits
+    };
+    let journal = fixture.journal.as_mut().expect("journal is open");
+    assert!(matches!(
+        TurnRuntime::new(journal, &fixture.data, fixture.workspace_id, limits),
+        Err(TurnError::InvalidLimits)
+    ));
+    assert_eq!(model.requests.len(), 1);
+    assert_eq!(fixture.snapshot().event_count, event_count);
+}
+
+#[test]
 fn archived_and_active_turn_states_are_refused() {
     let mut fixture = Fixture::new();
     fixture

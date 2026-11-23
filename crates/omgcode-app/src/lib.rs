@@ -29,7 +29,8 @@ mod tool_mode;
 
 pub use chat::{
     ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput,
-    LoadedSkillSummary, run_chat_turn, run_chat_turn_with_clients, validate_skill_selection,
+    DEFAULT_TURN_TIMEOUT_SECONDS, LoadedSkillSummary, run_chat_turn, run_chat_turn_with_clients,
+    validate_skill_selection,
 };
 pub use context::{CompactionMeter, ContextMeter, compact_journal, summary_output_tokens};
 pub use credential_source::{
