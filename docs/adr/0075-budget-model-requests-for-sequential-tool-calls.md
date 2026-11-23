@@ -1,8 +1,8 @@
-# 0074: Budget model requests for sequential tool calls
+# 0075: Budget model requests for sequential tool calls
 
-- Status: Accepted, amended by [ADR-0075](0075-configure-the-tool-call-budget-per-turn.md) and [ADR-0076](0076-configure-the-tool-enabled-turn-timeout.md)
+- Status: Accepted, amended by [ADR-0076](0076-configure-the-tool-call-budget-per-turn.md) and [ADR-0077](0077-configure-the-tool-enabled-turn-timeout.md)
 - Date: 2026-11-23
-- Implemented: version 0.52.1 as amended by ADR-0075 and ADR-0076
+- Implemented: version 0.52.1 as amended by ADR-0076 and ADR-0077
 
 ## Context
 
@@ -19,11 +19,11 @@ calls when batched.
 Set the maximum model requests to the maximum tool calls plus one. A turn can
 use one request per call and still request a final reply. Keep explicit lower
 limits available to runtime callers. Keep the cap of eight calls per response,
-the byte limits, and the existing per-call checks. ADR-0075 replaced the
+the byte limits, and the existing per-call checks. ADR-0076 replaced the
 original 16-call cap before release.
 
 The original five-minute chat deadline was replaced before release by the
-configurable deadline in ADR-0076. Each model request still has a 30-second
+configurable deadline in ADR-0077. Each model request still has a 30-second
 timeout. The core library default stays at 30 seconds, and desktop approval
 waits are excluded from the turn deadline as before.
 

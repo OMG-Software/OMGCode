@@ -1,9 +1,9 @@
-# 0076: Configure the tool-enabled turn timeout
+# 0077: Configure the tool-enabled turn timeout
 
 - Status: Accepted
 - Date: 2026-11-23
 - Implemented: version 0.52.1
-- Amends: [ADR-0074](0074-budget-model-requests-for-sequential-tool-calls.md)
+- Amends: [ADR-0075](0075-budget-model-requests-for-sequential-tool-calls.md)
 
 ## Decision
 

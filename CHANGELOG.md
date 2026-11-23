@@ -6,6 +6,9 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Desktop chat centres every message bubble at 96% of the transcript's
+  available width and left-aligns its text (ADR-0074).
+
 - Version 0.52.0 reports a Windows data folder that grants another account
   access as `credential_storage_not_private`, not `credential_unavailable`,
   and lets the operator remove those grants from the desktop `settings`
@@ -302,7 +305,7 @@ Changes are recorded here before a release version is assigned.
   The history limit rises from 128 to 640 messages. Chat reserves space for the
   tool budget before starting a turn, and summarizer chunks stay at 128 messages.
   The exact-edit tool asks the model to read the file when the current text is
-  unknown or an edit misses (ADR-0074, ADR-0075, ADR-0076).
+  unknown or an edit misses (ADR-0075, ADR-0076, ADR-0077).
 - CLI compaction tests seed their large history fixtures in one batch so
   unrelated CLI tests can start within their subprocess deadlines.
 - The Testing build's publish job no longer fails when a lookup just after

@@ -1,9 +1,9 @@
-# 0075: Configure the tool-call budget per turn
+# 0076: Configure the tool-call budget per turn
 
 - Status: Accepted
 - Date: 2026-11-23
 - Implemented: version 0.52.1
-- Amends: [ADR-0074](0074-budget-model-requests-for-sequential-tool-calls.md)
+- Amends: [ADR-0075](0075-budget-model-requests-for-sequential-tool-calls.md)
 
 ## Decision
 
