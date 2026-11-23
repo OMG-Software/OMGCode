@@ -201,7 +201,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
 
   const settingsMenu = createPopover(
     "Chat settings",
-    { class: "open-up settings", label: "Chat settings" },
+    { class: "open-up settings", label: "Chat settings", icon: "gear" },
     el(
       "div",
       { class: "settings-grid" },

@@ -34,6 +34,16 @@ const ICONS = {
     ["circle", { cx: "9", cy: "12", r: "2" }],
     ["circle", { cx: "17", cy: "18", r: "2" }],
   ],
+  /** An eight-tooth gear: the composer's chat settings menu. */
+  gear: [
+    [
+      "path",
+      {
+        d: "M19.2 9.8L21.9 10.3L21.9 13.7L19.2 14.2L18.6 15.5L20.2 17.8L17.8 20.2L15.5 18.6L14.2 19.2L13.7 21.9L10.3 21.9L9.8 19.2L8.5 18.6L6.2 20.2L3.8 17.8L5.4 15.5L4.8 14.2L2.1 13.7L2.1 10.3L4.8 9.8L5.4 8.5L3.8 6.2L6.2 3.8L8.5 5.4L9.8 4.8L10.3 2.1L13.7 2.1L14.2 4.8L15.5 5.4L17.8 3.8L20.2 6.2L18.6 8.5z",
+      },
+    ],
+    ["circle", { cx: "12", cy: "12", r: "3" }],
+  ],
   terminal: [FRAME, ["path", { d: "M7 9l3 3-3 3M13 15h4" }]],
   /** A frame with an M and a down arrow: copy the reply's Markdown source. */
   markdown: [

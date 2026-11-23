@@ -355,6 +355,23 @@ pre {
   white-space: nowrap;
 }
 
+.popover > summary.icon-summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.popover > summary.icon-summary:hover,
+.popover[open] > summary.icon-summary {
+  color: var(--text);
+}
+
 .popover > summary::-webkit-details-marker {
   display: none;
 }
