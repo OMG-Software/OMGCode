@@ -33,7 +33,7 @@ const SCROLL_END_SLACK_PX = 8;
 export interface ConversationDeps {
   /** Called when the session list should be reloaded (status, title or archive changes). */
   onTreeChanged(): void;
-  /** The open session's provider and model, shared with the footer (ADR-0071). */
+  /** The open session's provider and model, shared with the composer (ADR-0071). */
   connection: ConnectionModel;
 }
 

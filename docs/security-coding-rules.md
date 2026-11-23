@@ -49,7 +49,7 @@ authorization. See
   webview is still web content, not a trusted computing base.
 - Resolve the provider endpoint and read the provider token outside the
   webview. A `main` webview request cannot supply either. The `settings`
-  window, and the `main` window's status bar, may request the active
+  window, and the `main` window's composer, may request the active
   connection by profile name only, among recorded local profiles with an
   endpoint; Rust records it only after a native confirmation that names the
   provider and endpoint, and a launch argument fixes it instead. The `settings` window may

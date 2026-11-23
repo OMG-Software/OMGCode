@@ -352,7 +352,7 @@ export interface ConnectionView {
   selectable: boolean;
 }
 
-/** One connection the main window's status bar may offer (ADR-0064). Never a credential. */
+/** One connection the main window's composer may offer (ADR-0071). Never a credential. */
 export interface ConnectionChoice {
   name: string;
   /** `lm_studio`, `ollama_local`, or `ollama_cloud`. */

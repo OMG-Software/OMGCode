@@ -2,10 +2,12 @@ import { button, el, neutralise, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import type { BranchView, SessionSummary } from "../ipc/types";
 import type { ConnectionModel } from "./connection_state";
-import { createProviderSelect } from "./provider_select";
 
 export interface StatusFooterDeps {
-  /** The open session's provider and model, shared with the composer (ADR-0071). */
+  /**
+   * The open session's provider and model. The footer shows none of it; it only asks for a fresh
+   * read when the window regains focus, so the composer follows a change made elsewhere.
+   */
   connection: ConnectionModel;
   /** Called when the operator chooses Review in the approvals segment. */
   onShowApprovals(): void;
@@ -41,9 +43,8 @@ export function branchText(branch: BranchView): string {
 
 /**
  * The bar along the bottom of the main window (ADR-0064): the open session's workspace, its Git
- * branch, and the model provider. The provider dropdown shares the open session's connection with
- * the composer's (ADR-0071). Choosing a provider names a profile only; Rust asks for a native
- * Yes/No confirmation before anything changes, so this window cannot switch on its own.
+ * branch, and the approvals segment. It no longer offers a provider choice (ADR-0084); the composer
+ * chooses the provider and model and shows a connection failure.
  */
 export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
   const workspace = el("span", { class: "status-segment", text: "No session open" });
@@ -65,8 +66,6 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
     attrs: { role: "status", "aria-live": "polite" },
   });
   let pendingShown = 0;
-  const providerSelect = createProviderSelect(deps.connection, "Model provider");
-  const message = el("span", { class: "status-message", attrs: { role: "status" } });
   const element = el(
     "footer",
     { class: "status-footer" },
@@ -76,21 +75,12 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
     approvals,
     approvalsLive,
     el("span", { class: "status-spacer" }),
-    message,
-    el("label", { class: "status-segment" }, el("span", { text: "Model" }), providerSelect.element),
   );
 
   let sessionId: string | null = null;
   // Each read carries the counter it started with; a stale answer is dropped.
   let branchRead = 0;
   let disposed = false;
-
-  function renderConnection(): void {
-    providerSelect.render();
-    replaceChildren(message, deps.connection.message());
-  }
-
-  const unsubscribe = deps.connection.subscribe(renderConnection);
 
   async function readBranch(): Promise<void> {
     const id = sessionId;
@@ -150,11 +140,9 @@ export function createStatusFooter(deps: StatusFooterDeps): StatusFooter {
     },
     dispose() {
       disposed = true;
-      unsubscribe();
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     },
   };
-  renderConnection();
   return footer;
 }

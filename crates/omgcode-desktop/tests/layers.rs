@@ -200,7 +200,7 @@ fn no_dialog_plugin_or_other_tauri_plugin_is_a_dependency() {
     assert!(!lib.contains(".plugin("), "no plugin is registered");
     // Only the settings handlers open dialogs, and in the main window's
     // handlers only `connection_select`, whose native Yes/No is the
-    // safeguard for a status bar switch (ADR-0064).
+    // safeguard for the composer's provider choice (ADR-0071, ADR-0084).
     for (path, text) in handler_sources() {
         let opens_dialogs = text.contains("NativePrompt");
         let main_handlers = path.ends_with("chat.rs");

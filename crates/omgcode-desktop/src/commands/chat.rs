@@ -1,5 +1,5 @@
 //! `main`-window handlers for chat settings, turns, status, and cancellation,
-//! and for the status bar's workspace branch and model connection (ADR-0064).
+//! and for the status bar's workspace branch (ADR-0064) and the composer's model connection (ADR-0071).
 
 use omgcode_app::desktop::{
     ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesSaveRequest,

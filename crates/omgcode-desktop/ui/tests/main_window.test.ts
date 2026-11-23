@@ -1480,52 +1480,9 @@ describe("settings window, saved defaults, and per-turn skills", () => {
 
 describe("status bar", () => {
   const s = session({ session_id: "s-foot", title: "Footer" });
-  const LMS = "http://127.0.0.1:1234/v1";
-  const OLLAMA = "http://127.0.0.1:11434/v1";
 
   function footer(): HTMLElement {
     return root.querySelector(".status-footer") as HTMLElement;
-  }
-
-  function provider(): HTMLSelectElement {
-    return footer().querySelector('select[aria-label="Model provider"]') as HTMLSelectElement;
-  }
-
-  function optionTexts(): string[] {
-    return Array.from(provider().options).map((option) => option.textContent ?? "");
-  }
-
-  function choose(value: string): void {
-    provider().value = value;
-    provider().dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
-  /** A status with the local profiles `lms` and `ollama`, `active` being the active one. */
-  function status(active: string | null, selectable = true): unknown {
-    const endpoint = active === "ollama" ? OLLAMA : LMS;
-    let kind: string | null = null;
-    if (active !== null) {
-      kind = active === "ollama" ? "ollama_local" : "lm_studio";
-    }
-    return {
-      connection: {
-        endpoint,
-        source: selectable ? "active" : "profile",
-        profile: active,
-        kind,
-        selectable,
-      },
-      origin: selectable ? "default" : "launch",
-      model: SETTINGS.model,
-      stale: false,
-      session_choices_unreadable: false,
-      choices: selectable
-        ? [
-            { name: "lms", kind: "lm_studio", endpoint: LMS, active: active === "lms" },
-            { name: "ollama", kind: "ollama_local", endpoint: OLLAMA, active: active === "ollama" },
-          ]
-        : [],
-    };
   }
 
   it("sits below the conversation and starts with no session open", async () => {
@@ -1536,104 +1493,31 @@ describe("status bar", () => {
     expect(ipc.callsTo("session_context")).toHaveLength(0);
   });
 
-  it("lists the default and each local connection and marks the active one", async () => {
+  it("offers no provider choice and shows no connection message (ADR-0084)", async () => {
     await start({
       session_tree: treeOf(s),
       session_transcript: () => page(s, []),
-      connection_status: () => status("ollama"),
+      connection_status: () => rejection("control", "The settings store is unhealthy."),
     });
     itemFor("s-foot").click();
     await settle();
-    expect(optionTexts()).toEqual([
-      `LM Studio: default (${LMS})`,
-      `LM Studio: lms (${LMS})`,
-      `Ollama: ollama (${OLLAMA})`,
-    ]);
-    expect(provider().value).toBe("ollama");
-    expect(provider().disabled).toBe(false);
-    // Like the rest of the main window, the footer uses no tooltips.
-    expect(footer().querySelectorAll("[title]")).toHaveLength(0);
+    expect(footer().querySelector("select")).toBeNull();
+    expect(footer().textContent).not.toContain("Model");
+    expect(footer().textContent).not.toContain("The settings store is unhealthy.");
+    // The composer still reports the failure.
+    expect(root.querySelector(".composer-model-status")?.textContent).toContain(
+      "The settings store is unhealthy. (control)",
+    );
   });
 
-  it("asks Rust to switch, then shows the new endpoint in the composer", async () => {
-    let active: string | null = null;
-    await start({
-      session_tree: treeOf(s),
-      session_transcript: () => page(s, [userMessage(1, "hi")]),
-      connection_status: () => status(active),
-      connection_select: (args) => {
-        active = args.profile as string | null;
-        return status(active);
-      },
-    });
-    itemFor("s-foot").click();
-    await settle();
-    const settings = root.querySelector(".settings") as HTMLElement;
-    expect(settings.textContent).toContain(LMS);
-
-    choose("ollama");
-    await settle();
-    expect(ipc.callsTo("connection_select").map((call) => call.args)).toEqual([
-      { session_id: "s-foot", profile: "ollama" },
-    ]);
-    expect(provider().value).toBe("ollama");
-    expect(settings.textContent).toContain(OLLAMA);
-
-    choose("");
-    await settle();
-    expect(ipc.callsTo("connection_select")[1]?.args).toEqual({
-      session_id: "s-foot",
-      profile: null,
-    });
-    expect(provider().value).toBe("");
-  });
-
-  it("changes nothing when the operator answers No", async () => {
-    await start({
-      session_tree: treeOf(s),
-      session_transcript: () => page(s, []),
-      connection_status: () => status("lms"),
-      connection_select: () => rejection("cancelled", "The change was not confirmed."),
-    });
+  it("reads the connection again when the window regains focus", async () => {
+    await start({ session_tree: treeOf(s), session_transcript: () => page(s, []) });
     itemFor("s-foot").click();
     await settle();
     const reads = ipc.callsTo("connection_status").length;
-    choose("ollama");
+    window.dispatchEvent(new Event("focus"));
     await settle();
-    expect(footer().textContent).toContain("The model provider was not changed.");
-    // The recorded choice is read again, so the dropdown shows what is really active.
     expect(ipc.callsTo("connection_status").length).toBeGreaterThan(reads);
-    expect(provider().value).toBe("lms");
-    expect(provider().disabled).toBe(false);
-  });
-
-  it("shows the core error and code when a switch fails", async () => {
-    await start({
-      session_tree: treeOf(s),
-      session_transcript: () => page(s, []),
-      connection_status: () => status(null),
-      connection_select: () => rejection("busy", "Another settings change is in progress."),
-    });
-    itemFor("s-foot").click();
-    await settle();
-    choose("lms");
-    await settle();
-    expect(footer().textContent).toContain("Another settings change is in progress. (busy)");
-    expect(provider().value).toBe("");
-  });
-
-  it("disables the choice when a launch argument fixed the connection", async () => {
-    await start({ connection_status: () => status("lms", false) });
-    expect(provider().disabled).toBe(true);
-    expect(optionTexts()).toEqual([`Set at launch: LM Studio (${LMS})`]);
-  });
-
-  it("says when the connection cannot be read", async () => {
-    await start({
-      connection_status: () => rejection("control", "The settings store is unhealthy."),
-    });
-    expect(footer().textContent).toContain("The settings store is unhealthy. (control)");
-    expect(provider().disabled).toBe(true);
   });
 
   it("shows the open session's workspace and branch", async () => {

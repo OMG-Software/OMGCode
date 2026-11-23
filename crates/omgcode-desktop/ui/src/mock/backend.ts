@@ -1038,7 +1038,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** What the composer and the status bar read for a session (ADR-0071). */
+  /** What the composer reads for a session (ADR-0071). */
   function connectionStatus(sessionId: string | null): ConnectionStatus {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
     const view = effectiveConnection(sessionId);
