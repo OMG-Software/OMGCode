@@ -634,12 +634,28 @@ fn every_save_keeps_the_global_and_workspace_instructions_sendable_together() {
     assert_eq!(overview.chat.instructions_max_bytes, Some(global_room));
     let error = save_global("g".repeat(global_room + 1)).expect_err("too long beside it");
     assert_eq!(error.code(), "invalid_request");
+    assert_eq!(
+        error.message(),
+        format!(
+            "The global instructions can be at most {global_room} bytes, so that a turn can send \
+             them with the longest workspace instructions and their headings. Shorten them, or \
+             that workspace's instructions."
+        )
+    );
     let overview = save_global("g".repeat(global_room)).expect("exactly fits");
     assert_eq!(room_of(&overview), Some(workspace_len));
 
     // Now the workspace text cannot grow, but can shrink or be removed.
     let error = save_workspace("w".repeat(workspace_len + 1)).expect_err("too long beside it");
     assert_eq!(error.code(), "invalid_request");
+    assert_eq!(
+        error.message(),
+        format!(
+            "The workspace instructions can be at most {workspace_len} bytes, so that a turn can \
+             send them with the global instructions and their headings. Shorten them, or the \
+             global instructions."
+        )
+    );
     save_workspace("short".to_owned()).expect("shorter");
     save_workspace(String::new()).expect("removed");
 
