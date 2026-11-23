@@ -259,7 +259,7 @@ describe("long labels", () => {
     expect(root.querySelector(".hit-snippet")?.classList.contains("clamp-3")).toBe(true);
   });
 
-  it("clamps the conversation header and offers the full text under Details", async () => {
+  it("clamps the conversation header and keeps the full text in a tooltip", async () => {
     await start({
       session_tree: () => tree([{ id: "g1", folder, sessions: [s] }]),
       session_transcript: () => page(s, [userMessage(1, "hi")], { folder_display: folder }),
@@ -269,11 +269,10 @@ describe("long labels", () => {
     const header = root.querySelector(".pane-header") as HTMLElement;
     expect(header.querySelector("h2")?.classList.contains("clamp-2")).toBe(true);
     expect(header.querySelector(".pane-folder")?.classList.contains("clamp-1")).toBe(true);
-    const details = header.querySelector("details") as HTMLDetailsElement;
-    expect(details.querySelector("summary")?.textContent).toBe("Details");
-    expect(details.querySelector(".pane-full-title")?.textContent).toBe(neutralise(title));
-    expect(details.querySelector(".pane-full-folder")?.textContent).toBe(neutralise(folder));
-    expect(details.querySelector("[title]")).toBeNull();
+    expect(header.querySelector("h2")?.getAttribute("title")).toBe(neutralise(title));
+    expect(header.querySelector(".pane-folder")?.getAttribute("title")).toBe(neutralise(folder));
+    expect(header.querySelector("details")).toBeNull();
+    expect(header.textContent).not.toContain("Details");
   });
 });
 

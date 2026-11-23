@@ -1,4 +1,4 @@
-import { append, button, el, replaceChildren } from "../dom";
+import { append, button, el, neutralise, replaceChildren } from "../dom";
 import { formatUpdated } from "../format";
 import { api } from "../ipc/client";
 import {
@@ -191,25 +191,22 @@ export function createConversation(deps: ConversationDeps): Conversation {
       el(
         "div",
         { class: "pane-heading" },
-        el("h2", { class: "clamp-2", text: current.title }),
+        el("h2", {
+          class: "clamp-2",
+          text: current.title,
+          attrs: { title: neutralise(current.title) },
+        }),
         el(
           "div",
           { class: "pane-sub" },
-          el("span", { class: "pane-folder clamp-1", text: folder }),
+          el("span", {
+            class: "pane-folder clamp-1",
+            text: folder,
+            attrs: { title: neutralise(folder) },
+          }),
           label === null ? null : el("span", { class: `chip chip-${current.status}`, text: label }),
           current.archived ? el("span", { class: "chip chip-archived", text: "Archived" }) : null,
           el("span", { text: `Updated ${formatUpdated(current.updated_at)}` }),
-        ),
-        el(
-          "details",
-          { class: "pane-details" },
-          el("summary", { text: "Details" }),
-          el(
-            "div",
-            { class: "pane-details-body" },
-            el("p", { class: "full-text pane-full-title", text: current.title }),
-            el("p", { class: "full-text pane-full-folder", text: folder }),
-          ),
         ),
       ),
       buttons,

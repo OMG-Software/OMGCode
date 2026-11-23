@@ -373,16 +373,6 @@ mark {
   overflow-wrap: anywhere;
 }
 
-.pane-details {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.pane-details-body {
-  max-height: 30vh;
-  overflow: auto;
-}
-
 .pane-sub {
   display: flex;
   flex-wrap: wrap;
