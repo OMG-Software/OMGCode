@@ -12,8 +12,6 @@
 //! strict read that refuses a link or non-regular entry, and an atomic
 //! replace. Saving empty text removes the file.
 
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -127,11 +125,8 @@ pub(super) fn save(
     let directory = directory(data_root);
     let name = file_name(workspace);
     if instructions.is_empty() {
-        return match fs::remove_file(directory.join(&name)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(DesktopError::workspace_instructions()),
-        };
+        return preferences::remove_synced(&directory, &name)
+            .map_err(|_| DesktopError::workspace_instructions());
     }
     let bytes = serde_json::to_vec_pretty(&InstructionsFile {
         version: VERSION,
@@ -170,6 +165,7 @@ pub(super) fn compose(global: &str, workspace: &str) -> Result<String, DesktopEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch(name: &str) -> PathBuf {
@@ -203,6 +199,19 @@ mod tests {
         assert_eq!(load(&root, workspace).expect("removed"), "");
         // Removing what is not there succeeds.
         save(&root, workspace, "").expect("remove again");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_removal_that_fails_is_reported() {
+        let root = scratch("remove-fails");
+        let workspace = Uuid::new_v4();
+        // A directory in the file's place cannot be removed as a file.
+        let entry = directory(&root).join(file_name(workspace));
+        fs::create_dir_all(&entry).expect("directory in the file's place");
+        let error = save(&root, workspace, "").expect_err("not removed");
+        assert_eq!(error.code(), DesktopError::workspace_instructions().code());
+        assert!(entry.is_dir(), "left in place");
         fs::remove_dir_all(root).expect("cleanup");
     }
 

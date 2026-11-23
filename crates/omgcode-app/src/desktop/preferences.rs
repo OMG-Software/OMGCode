@@ -238,6 +238,21 @@ pub(super) fn write_atomic(directory: &Path, file_name: &str, bytes: &[u8]) -> i
     sync_directory(directory)
 }
 
+/// Remove `file_name` from `directory`, then sync the directory as
+/// [`write_atomic`] does, so a removal is as durable as a replacement. A file
+/// that does not exist is already removed.
+///
+/// # Errors
+///
+/// Any other input or output failure.
+pub(super) fn remove_synced(directory: &Path, file_name: &str) -> io::Result<()> {
+    match fs::remove_file(directory.join(file_name)) {
+        Ok(()) => sync_directory(directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Write `bytes` through the new file `temporary` and rename it over `target`.
 ///
 /// The temporary file is removed on failure only when this call created it,

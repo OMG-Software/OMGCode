@@ -14,7 +14,8 @@ Changes are recorded here before a release version is assigned.
     by the new `settings_save_chat_defaults`. Each workspace has **Custom
     instructions**, saved by the new `settings_set_workspace_instructions`
     for a registered workspace in
-    `desktop-v1/workspace-instructions/<id>.json`; empty text removes them.
+    `desktop-v1/workspace-instructions/<id>.json`; empty text removes them,
+    and on Unix a removal syncs the directory as a write does.
     Neither shows a dialog or changes the settings revision. Each save keeps
     the global and every workspace text sendable together within 16 KiB,
     headings included, and the window's counters show the room left.
