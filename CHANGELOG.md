@@ -33,7 +33,7 @@ Changes are recorded here before a release version is assigned.
     `chat_defaults` at start, on window focus, and before each send. A saved
     threshold outside the range is shown and sent at its nearest end. After a
     send it removes only the sent text and skills, keeping anything typed or
-    ticked while the send was awaited.
+    changed while the send was awaited.
   - **Icons:** **Copy Markdown**, **Copy text**, **Copy image**, and
     **Workspace settings** are icon buttons named in their tooltips;
     **Workspace settings** moved beside **Send**.

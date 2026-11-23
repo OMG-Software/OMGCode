@@ -75,8 +75,8 @@ export interface Composer {
   setSession(id: string | null): void;
   /**
    * Removes what a successful send sent: the message, when the draft still starts with it, and
-   * the sent skills' selection. Text typed and skills chosen after the click are kept, since the
-   * send waits for the saved defaults and then for the turn.
+   * the sent skills' selection. Text typed and skills ticked or unticked after the click are kept,
+   * since the send waits for the saved defaults and then for the turn.
    */
   clearSent(message: string, skills: readonly string[]): void;
   readSettings(): ChatSettings;
@@ -246,6 +246,12 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   skillsMenu.panel.classList.add("composer-panel");
   skillsMenu.element.hidden = true;
   let skillBoxes: Array<[string, HTMLInputElement]> = [];
+  /** Counts skill ticks and unticks, so a send can tell which came after its click. */
+  let skillEdits = 0;
+  /** The count at each skill's last change; a skill never changed is absent. */
+  const skillEditedAt = new Map<string, number>();
+  /** The count when the send now being cleared was clicked. */
+  let sentSkillsAt = 0;
 
   let state: ComposerState = { visible: false, enabled: false, reason: null };
   let running = false;
@@ -274,9 +280,14 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   }
 
   function setSkills(names: readonly string[]): void {
+    skillEditedAt.clear();
     skillBoxes = names.map((name) => {
       const box = el("input", { attrs: { type: "checkbox" } });
-      box.addEventListener("change", refresh);
+      box.addEventListener("change", () => {
+        skillEdits += 1;
+        skillEditedAt.set(name, skillEdits);
+        refresh();
+      });
       return [name, box];
     });
     replaceChildren(
@@ -437,6 +448,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   async function submitFresh(): Promise<void> {
     const message = box.value;
     const skills = selectedSkills();
+    const skillsAt = skillEdits;
     const session = sessionId;
     sending = true;
     refresh();
@@ -454,6 +466,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       showProblem(issue);
       return;
     }
+    sentSkillsAt = skillsAt;
     handlers.onSend(message, readSettings(), skills);
   }
 
@@ -605,7 +618,9 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
         box.value = box.value.slice(message.length);
       }
       for (const [name, skillBox] of skillBoxes) {
-        if (skills.includes(name)) {
+        // A sent skill the operator changed after the click keeps its new state.
+        const changedSince = (skillEditedAt.get(name) ?? 0) > sentSkillsAt;
+        if (skills.includes(name) && !changedSince) {
           skillBox.checked = false;
         }
       }

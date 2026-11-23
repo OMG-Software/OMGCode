@@ -1055,6 +1055,24 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       expect(lint?.checked).toBe(true);
     });
 
+    it("keeps a sent skill that was unticked and ticked again during the send", async () => {
+      await open({
+        session_skills: () => ({ workspace_registered: true, skills: ["review", "lint"] }),
+      });
+      const [review, lint] = skillBoxes();
+      (review as HTMLInputElement).click();
+      (lint as HTMLInputElement).click();
+      type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+      const release = await sendHeld();
+      (review as HTMLInputElement).click();
+      (review as HTMLInputElement).click();
+      await release();
+      expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ skills: ["review", "lint"] });
+      // Chosen again after the click, so kept; lint was untouched, so cleared.
+      expect(review?.checked).toBe(true);
+      expect(lint?.checked).toBe(false);
+    });
+
     it("keeps the whole draft when it no longer starts with the sent text", async () => {
       await open();
       const box = root.querySelector(".message-box") as HTMLTextAreaElement;
