@@ -401,24 +401,21 @@ mark {
   justify-content: flex-end;
 }
 
-/* Transcript: your messages on the right, replies and notes on a quiet left edge. */
 .transcript {
-  --chat-column: 90%;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 16px var(--gap);
+  padding: 16px 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-/* Every entry sits in one centred column that takes a share of the transcript's width, so it
-   grows and shrinks with the window and the side panels (ADR-0072). */
 .entry {
   min-width: 0;
   align-self: center;
-  width: var(--chat-column);
+  width: 96%;
+  text-align: left;
 }
 
 .entry.highlight {
@@ -453,12 +450,7 @@ mark {
   white-space: nowrap;
 }
 
-/* The operator's bubble fits its text, up to the column's width, and is centred like a reply. */
 .bubble-user {
-  /* Stated again from `.entry`: a centred flex item is sized to its content, not stretched. */
-  align-self: center;
-  width: auto;
-  max-width: var(--chat-column);
   padding: 8px 12px;
   background: var(--surface-2);
   border-radius: var(--radius-lg);

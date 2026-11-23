@@ -6,6 +6,9 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Desktop chat centres every message bubble at 96% of the transcript's
+  available width and left-aligns its text (ADR-0074).
+
 - Version 0.52.0 reports a Windows data folder that grants another account
   access as `credential_storage_not_private`, not `credential_unavailable`,
   and lets the operator remove those grants from the desktop `settings`
