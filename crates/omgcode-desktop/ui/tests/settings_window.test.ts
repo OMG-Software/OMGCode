@@ -131,7 +131,8 @@ let app: SettingsApp | null = null;
 let root: HTMLElement;
 let ipc: FakeIpc;
 
-async function start(
+/** Opens the window on the Workspaces overview, as the operator first sees it. */
+async function startOverview(
   reply: () => unknown,
   more: Record<string, (args: Record<string, unknown>) => unknown> = {},
 ): Promise<void> {
@@ -139,6 +140,20 @@ async function start(
   root = mountRoot();
   app = startSettings(root);
   await settle();
+}
+
+/** Opens the window and then the first workspace listed under Workspaces, when there is one. */
+async function start(
+  reply: () => unknown,
+  more: Record<string, (args: Record<string, unknown>) => unknown> = {},
+): Promise<void> {
+  await startOverview(reply, more);
+  openWorkspace();
+}
+
+/** Shows a workspace as the operator would, by pressing its entry under Workspaces. */
+function openWorkspace(index = 0): void {
+  root.querySelectorAll<HTMLButtonElement>(".nav-child")[index]?.click();
 }
 
 function checkbox(label: string): HTMLInputElement {
@@ -274,6 +289,9 @@ describe("settings window", () => {
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);
+      if (section === "Workspaces") {
+        openWorkspace();
+      }
       for (const input of Array.from(root.querySelectorAll("input, textarea"))) {
         if (input instanceof HTMLInputElement && input.type === "checkbox") {
           continue;
@@ -302,6 +320,7 @@ describe("settings window", () => {
     const selects = Array.from(root.querySelectorAll("select"));
     expect(selects.map((s) => s.ariaLabel)).toEqual(providerLabels);
     go("Workspaces");
+    openWorkspace();
     expect(root.querySelectorAll("select")).toHaveLength(0);
     const groups = Array.from(root.querySelectorAll("[role=radiogroup]"));
     expect(groups).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length);
@@ -373,7 +392,7 @@ describe("settings window", () => {
   });
 
   it("registers a workspace with only the revision", async () => {
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_register_workspace: () =>
         overview({
           revision: 8,
@@ -490,7 +509,7 @@ describe("settings window", () => {
   });
 
   it("keeps a change's error and its failed read apart, and a later read clears only the read's", async () => {
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_choose_root: () =>
         rejection("stale_revision", "The settings changed since this window read them."),
     });
@@ -516,7 +535,7 @@ describe("settings window", () => {
   });
 
   it("shows a refusal and reads the configuration again", async () => {
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_choose_root: () =>
         rejection("stale_revision", "The settings changed since this window read them."),
     });
@@ -534,7 +553,7 @@ describe("settings window", () => {
 
   it("disables every control while a change waits for the operator", async () => {
     let answer: (value: SettingsOverview) => void = () => undefined;
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_choose_root: () =>
         new Promise<SettingsOverview>((resolve) => {
           answer = resolve;
@@ -549,15 +568,24 @@ describe("settings window", () => {
     const items = Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-item"));
     expect(items).toHaveLength(3);
     expect(items.every((item) => item.disabled)).toBe(true);
+    // The workspace entries and the group toggle are disabled too.
+    const group = Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-child, .nav-toggle"));
+    expect(group).toHaveLength(2);
+    expect(group.every((item) => item.disabled)).toBe(true);
 
     // A second click while the first waits sends nothing.
-    choose("Write", "allow");
+    buttonByText(root, "Register workspace").click();
     await settle();
-    expect(ipc.callsTo("settings_set_permissions")).toHaveLength(0);
+    expect(ipc.callsTo("settings_register_workspace")).toHaveLength(0);
 
     answer(overview({ revision: 8 }));
     await settle();
     expect(body().disabled).toBe(false);
+    expect(
+      Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-child, .nav-toggle")).every(
+        (item) => !item.disabled,
+      ),
+    ).toBe(true);
     expect(buttonByText(root, "Refresh").disabled).toBe(false);
   });
 
@@ -590,7 +618,7 @@ describe("settings window", () => {
   });
 
   it("renders hostile recorded text as text", async () => {
-    await start(() =>
+    await startOverview(() =>
       overview({
         development_root: HOSTILE.img,
         workspaces: [
@@ -607,6 +635,9 @@ describe("settings window", () => {
     expect(root.textContent).toContain(HOSTILE.img);
     expect(root.textContent).toContain(neutralise(HOSTILE.rtl));
     expect(root.textContent).not.toContain(String.fromCharCode(0x202e));
+    openWorkspace();
+    expect(root.querySelector("img, script")).toBeNull();
+    expect(root.textContent).toContain(HOSTILE.script);
   });
 
   it("shows the core error and keeps the Refresh button", async () => {

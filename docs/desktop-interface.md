@@ -798,9 +798,14 @@ store exists from the first launch.
 Since 0.45.0 (ADR-0065) a sidebar chooses one of three sections: **Model**,
 **Workspaces** (shown first), and **Advanced**. **Refresh** and the settings
 revision sit at the bottom of the sidebar, and errors and notices at the top
-of the section. The chosen section, the chosen workspace, and which
-disclosures are open are kept in memory only and survive a refresh and every
-change. The sidebar is disabled with every other control while a change
+of the section. **Workspaces** is a collapsible group: a chevron button
+beside it (`aria-expanded`, named "Workspaces list") opens or closes a list
+with one entry for each registered workspace, each showing its folder with an
+ellipsis and the full text as a tooltip. The group starts open and is hidden
+when no workspace is registered. The chosen section, the chosen workspace,
+whether the group is open, and which disclosures are open are kept in memory
+only and survive a refresh and every change. The sidebar, the chevron, and
+the workspace entries are disabled with every other control while a change
 waits. The window shows:
 
 - **Model.** The connection the next turn uses, with a **Model provider**
@@ -830,10 +835,12 @@ waits. The window shows:
   change keeps it. A note says when the saved file could not be read.
 - **Workspaces.** The meaning of Deny, Prompt, and Allow, stated once. The
   development root, with **Choose folder…** or **Change…**, and
-  **Register workspace…**, which is disabled until a root is set. With two or
-  more workspaces, a **Workspace** field chooses which one is shown; choosing
+  **Register workspace…**, which is disabled until a root is set, and a line
+  saying when no workspace is registered. That overview is what the
+  **Workspaces** entry shows. Choosing a workspace's entry under it shows that
+  workspace instead and marks only that entry as the current page; choosing
   sends nothing, and the window shows the first workspace when the chosen one
-  is gone. The shown workspace has its folder, a **Model tools** checkbox for
+  is gone, or the overview when none is left. The shown workspace has its folder, a **Model tools** checkbox for
   `model_tools`, and one row each for `read`, `write`, `execute`,
   `task_network`, and `host_services`, each with a short description and a
   Deny, Prompt, or Allow segmented control. Under Write, the disclosure
@@ -841,7 +848,10 @@ waits. The window shows:
   (edit, multi-edit, create, rename, and delete; since 0.43.0, ADR-0063). A
   tool whose limit is wider than `write` says "Limited by Write:" and the
   `write` state. Then the workspace identifier and its package cache root with
-  **Choose…** and, when one is set, **Clear**. Then **Custom instructions**
+  **Choose…** and, when one is set, **Clear**, and one line of help: the root
+  is where the trusted CLI command `omgcode packages fetch` stores downloads
+  for that workspace, a trusted run exposes it read-only, and the app never
+  fetches packages. Then **Custom instructions**
   (ADR-0080): a box with a byte counter and **Save instructions**, which
   calls `settings_set_workspace_instructions` with the workspace identifier
   and the text, with no dialog. Rust refuses a workspace that is not
@@ -892,8 +902,8 @@ waits. The window shows:
   Deny, Prompt, and Allow help, its folder, **Model tools**, the permission
   rows, **File-write tool limits**, its identifier, its package cache, and
   its **Custom instructions**.
-  It shows no development root, **Register workspace…**, or workspace
-  chooser. **All settings** calls `settings_clear_scope`, a `settings`
+  It shows no development root or **Register workspace…**, and the hidden
+  sidebar lists only that workspace. **All settings** calls `settings_clear_scope`, a `settings`
   command, and the window then shows the sections as before. **Settings** in
   the sidebar calls `settings_show_window`, which clears the scope first. If
   the scoped workspace is no longer registered, the window shows the full

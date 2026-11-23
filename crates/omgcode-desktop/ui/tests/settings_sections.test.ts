@@ -8,6 +8,7 @@ import type {
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
+import { PACKAGE_CACHE_HELP } from "../src/settings/workspaces_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -86,7 +87,8 @@ let app: SettingsApp | null = null;
 let root: HTMLElement;
 let ipc: FakeIpc;
 
-async function start(
+/** Opens the window on the Workspaces overview, as the operator first sees it. */
+async function startOverview(
   reply: () => unknown,
   more: Record<string, (args: Record<string, unknown>) => unknown> = {},
 ): Promise<void> {
@@ -95,6 +97,15 @@ async function start(
   root = mountRoot();
   app = startSettings(root);
   await settle();
+}
+
+/** Opens the window and then the first workspace listed under Workspaces, when there is one. */
+async function start(
+  reply: () => unknown,
+  more: Record<string, (args: Record<string, unknown>) => unknown> = {},
+): Promise<void> {
+  await startOverview(reply, more);
+  root.querySelector<HTMLButtonElement>(".nav-child")?.click();
 }
 
 function navItems(): HTMLButtonElement[] {
@@ -114,13 +125,36 @@ function current(): string | null {
   return marked.length === 1 ? (marked[0]?.textContent ?? null) : null;
 }
 
-function chooser(): HTMLSelectElement {
-  return root.querySelector('select[aria-label="Workspace"]') as HTMLSelectElement;
+/** The entries under Workspaces in the navigation, one per registered workspace. */
+function children(): HTMLButtonElement[] {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-child"));
 }
 
 function pick(select: HTMLSelectElement, value: string): void {
   select.value = value;
   select.dispatchEvent(new Event("change"));
+}
+
+function child(id: string): HTMLButtonElement {
+  const found = children().find((item) => item.dataset.workspaceId === id);
+  if (found === undefined) {
+    throw new Error(`No workspace entry ${id}`);
+  }
+  return found;
+}
+
+/** Shows a workspace as the operator would, by pressing its entry. */
+function openChild(id: string): void {
+  child(id).click();
+}
+
+function toggle(): HTMLButtonElement {
+  return root.querySelector(".nav-toggle") as HTMLButtonElement;
+}
+
+function shownChild(): string | null {
+  const marked = children().filter((item) => item.getAttribute("aria-current") === "page");
+  return marked.length === 1 ? (marked[0]?.dataset.workspaceId ?? null) : null;
 }
 
 function choose(label: string, value: string): void {
@@ -149,7 +183,7 @@ afterEach(() => {
 
 describe("settings navigation", () => {
   it("lists three sections, starts on Workspaces, and marks the shown one", async () => {
-    await start(() => overview());
+    await startOverview(() => overview());
     expect(navItems().map((item) => item.textContent)).toEqual(["Model", "Workspaces", "Advanced"]);
     expect(current()).toBe("Workspaces");
     expect(root.querySelector("h2")?.textContent).toBe("Workspaces");
@@ -219,23 +253,61 @@ describe("settings navigation", () => {
   });
 });
 
-describe("workspace chooser", () => {
-  it("is absent for one workspace and chooses between several", async () => {
-    await start(() => overview({ workspaces: [workspace(A, "/home/dev/a")] }));
-    expect(chooser()).toBeNull();
-    expect(heading()).toBe("/home/dev/a");
-
-    await start(() => overview());
-    expect(chooser().labels?.[0]?.textContent).toBe("Workspace");
-    expect(Array.from(chooser().options).map((o) => [o.value, o.textContent])).toEqual([
-      [A, "/home/dev/a"],
-      [B, "/home/dev/b"],
-    ]);
-    expect(heading()).toBe("/home/dev/a");
+describe("workspaces in the navigation", () => {
+  it("shows the overview first, with the root and no workspace block", async () => {
+    await startOverview(() => overview());
+    expect(current()).toBe("Workspaces");
+    expect(root.querySelector("h2")?.textContent).toBe("Workspaces");
+    expect(root.textContent).toContain("Development root");
+    expect(root.textContent).toContain("Register workspace");
+    expect(root.querySelector(".workspace-block")).toBeNull();
+    expect(root.querySelector("select")).toBeNull();
+    expect(shownChild()).toBeNull();
   });
 
-  it("shows the chosen workspace, sends its identifier, and remembers it by identifier", async () => {
-    await start(() => overview(), {
+  it("lists one entry per workspace with its full text in a tooltip", async () => {
+    await startOverview(() => overview());
+    expect(
+      children().map((item) => [item.dataset.workspaceId, item.textContent, item.title]),
+    ).toEqual([
+      [A, "/home/dev/a", "/home/dev/a"],
+      [B, "/home/dev/b", "/home/dev/b"],
+    ]);
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-controls")).toBe(root.querySelector(".nav-children")?.id);
+    expect(toggle().querySelector("svg.icon")).not.toBeNull();
+  });
+
+  it("lists a single workspace too, and shows an empty line and no group for none", async () => {
+    await startOverview(() => overview({ workspaces: [workspace(A, "/home/dev/a")] }));
+    expect(children()).toHaveLength(1);
+    openChild(A);
+    expect(heading()).toBe("/home/dev/a");
+
+    await startOverview(() => overview({ workspaces: [] }));
+    expect(children()).toHaveLength(0);
+    expect(toggle().hidden).toBe(true);
+    expect(root.querySelector(".empty")?.textContent).toBe("No workspace is registered.");
+  });
+
+  it("shows the chosen workspace, marks only its entry, and sends nothing", async () => {
+    await startOverview(() => overview());
+    openChild(B);
+    expect(heading()).toBe("/home/dev/b");
+    expect(shownChild()).toBe(B);
+    expect(navItems().some((item) => item.getAttribute("aria-current") === "page")).toBe(false);
+    expect(root.textContent).not.toContain("Development root");
+    expect(ipc.calls.map((call) => call.command)).toEqual(["settings_overview"]);
+
+    // The Workspaces entry returns to the overview.
+    go("Workspaces");
+    expect(current()).toBe("Workspaces");
+    expect(root.querySelector(".workspace-block")).toBeNull();
+    expect(shownChild()).toBeNull();
+  });
+
+  it("sends the shown workspace's identifier and keeps it shown by identifier", async () => {
+    await startOverview(() => overview(), {
       settings_set_permissions: () =>
         overview({
           revision: 4,
@@ -245,38 +317,71 @@ describe("workspace chooser", () => {
           ],
         }),
     });
-    pick(chooser(), B);
-    expect(heading()).toBe("/home/dev/b");
-    expect(chooser().value).toBe(B);
-    // Choosing a workspace to look at sends nothing.
-    expect(ipc.calls.map((call) => call.command)).toEqual(["settings_overview"]);
-
+    openChild(B);
     choose("Execute", "prompt");
     await settle();
     expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({
       workspace_id: B,
       revision: 3,
     });
-    // The order changed, but the same workspace is still shown.
+    // The order changed, but the same workspace is still shown and marked.
     expect(heading()).toBe("/home/dev/b");
-    expect(chooser().value).toBe(B);
-
-    go("Model");
-    go("Workspaces");
-    expect(heading()).toBe("/home/dev/b");
+    expect(shownChild()).toBe(B);
+    expect(children().map((item) => item.dataset.workspaceId)).toEqual([B, A]);
   });
 
-  it("keeps keyboard focus on the chooser after switching workspace", async () => {
-    await start(() => overview());
-    chooser().focus();
-    pick(chooser(), B);
+  it("collapses and expands the group, and remembers that across a refresh", async () => {
+    await startOverview(() => overview());
+    openChild(B);
+    const list = root.querySelector(".nav-children") as HTMLElement;
+    expect(list.hidden).toBe(false);
+
+    toggle().click();
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(list.hidden).toBe(true);
+    // Collapsing changes neither the page nor the choice.
     expect(heading()).toBe("/home/dev/b");
-    expect(document.activeElement).toBe(chooser());
+
+    ipc.on("settings_overview", () => overview({ revision: 4 }));
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(root.textContent).toContain("Revision 4");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(list.hidden).toBe(true);
+    expect(heading()).toBe("/home/dev/b");
+
+    toggle().click();
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(list.hidden).toBe(false);
+    expect(shownChild()).toBe(B);
+  });
+
+  it("keeps keyboard focus on the entry after choosing it", async () => {
+    await startOverview(() => overview());
+    child(B).focus();
+    openChild(B);
+    expect((document.activeElement as HTMLElement).dataset.workspaceId).toBe(B);
+  });
+
+  it("uses real buttons in tab order: Model, Workspaces, toggle, entries, Advanced", async () => {
+    await startOverview(() => overview());
+    const order = Array.from(root.querySelectorAll<HTMLElement>(".settings-nav button")).map(
+      (node) => node.getAttribute("aria-label") ?? node.textContent,
+    );
+    expect(order).toEqual([
+      "Model",
+      "Workspaces",
+      "Workspaces list",
+      "/home/dev/a",
+      "/home/dev/b",
+      "Advanced",
+      "Refresh",
+    ]);
   });
 
   it("falls back to the first workspace when the shown one disappears", async () => {
-    await start(() => overview());
-    pick(chooser(), B);
+    await startOverview(() => overview());
+    openChild(B);
     expect(heading()).toBe("/home/dev/b");
 
     ipc.on("settings_overview", () =>
@@ -285,7 +390,27 @@ describe("workspace chooser", () => {
     buttonByText(root, "Refresh").click();
     await settle();
     expect(heading()).toBe("/home/dev/a");
-    expect(chooser()).toBeNull();
+    expect(shownChild()).toBe(A);
+    expect(children()).toHaveLength(1);
+  });
+
+  it("falls back to the overview when the last workspace disappears", async () => {
+    await startOverview(() => overview());
+    openChild(B);
+    ipc.on("settings_overview", () => overview({ revision: 4, workspaces: [] }));
+    buttonByText(root, "Refresh").click();
+    await settle();
+    expect(root.querySelector(".workspace-block")).toBeNull();
+    expect(current()).toBe("Workspaces");
+    expect(root.querySelector(".empty")?.textContent).toBe("No workspace is registered.");
+  });
+
+  it("explains the package cache in one line under its row", async () => {
+    await start(() => overview());
+    const help = root.querySelector(".package-cache .perm-help");
+    expect(help?.textContent).toBe(PACKAGE_CACHE_HELP);
+    expect(help?.textContent).toContain("omgcode packages fetch");
+    expect(help?.textContent).toContain("read-only");
   });
 });
 
@@ -494,7 +619,7 @@ describe("advanced section", () => {
 describe("workspace scope", () => {
   const scoped = (id: string) => overview({ scope: { workspace_id: id } });
 
-  it("shows only the scoped workspace without sections, chooser, root, or registration", async () => {
+  it("shows only the scoped workspace without sections, root, registration, or other workspaces", async () => {
     await start(() => scoped(B));
 
     expect(heading()).toBe("/home/dev/b");
@@ -502,7 +627,7 @@ describe("workspace scope", () => {
     expect(root.textContent).not.toContain("/home/dev/a");
     expect(root.querySelector(".settings-window.scoped")).not.toBeNull();
     expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(true);
-    expect(chooser()).toBeNull();
+    expect(children().map((item) => item.dataset.workspaceId)).toEqual([B]);
     expect(root.textContent).not.toContain("Development root");
     expect(root.textContent).not.toContain("Register workspace");
     expect(root.querySelector(".tool-limits")).not.toBeNull();
@@ -510,8 +635,8 @@ describe("workspace scope", () => {
     expect((root.querySelector(".scope-bar") as HTMLElement).hidden).toBe(false);
   });
 
-  it("restores the sections and the chooser when All settings clears the scope", async () => {
-    await start(() => scoped(B), { settings_clear_scope: () => overview({ revision: 4 }) });
+  it("restores the sections and every workspace entry when All settings clears the scope", async () => {
+    await startOverview(() => scoped(B), { settings_clear_scope: () => overview({ revision: 4 }) });
     buttonByText(root, "All settings").click();
     await settle();
 
@@ -521,7 +646,7 @@ describe("workspace scope", () => {
     expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(false);
     expect((root.querySelector(".scope-bar") as HTMLElement).hidden).toBe(true);
     expect(root.querySelector(".settings-window.scoped")).toBeNull();
-    expect(chooser()).not.toBeNull();
+    expect(children()).toHaveLength(2);
     expect(current()).toBe("Workspaces");
   });
 
@@ -530,7 +655,7 @@ describe("workspace scope", () => {
 
     expect(root.textContent).toContain("no longer registered");
     expect((root.querySelector(".settings-nav") as HTMLElement).hidden).toBe(false);
-    expect(chooser()).not.toBeNull();
+    expect(children()).toHaveLength(2);
   });
 
   it("reads the scope again when the window gains focus", async () => {
@@ -774,15 +899,15 @@ describe("chat defaults and custom instructions (ADR-0080)", () => {
     );
 
     // The other workspace has its own box, empty.
-    pick(chooser(), B);
+    openChild(B);
     expect(field<HTMLTextAreaElement>(`workspace-instructions-${B}`).value).toBe("");
   });
 
-  it("keeps a typed workspace draft when the chooser moves away and back", async () => {
+  it("keeps a typed workspace draft when another workspace is shown and back", async () => {
     await start(() => overview());
     type(field(`workspace-instructions-${A}`), "Unsaved");
-    pick(chooser(), B);
-    pick(chooser(), A);
+    openChild(B);
+    openChild(A);
     expect(field<HTMLTextAreaElement>(`workspace-instructions-${A}`).value).toBe("Unsaved");
   });
 

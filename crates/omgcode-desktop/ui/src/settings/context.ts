@@ -57,8 +57,12 @@ export type SectionId = "model" | "workspaces" | "advanced";
 /** What the window remembers between renders. It lives in memory only; nothing is stored. */
 export interface ViewState {
   section: SectionId;
-  /** The workspace shown in the Workspaces section, by identifier. */
+  /** The workspace chosen under Workspaces in the navigation, by identifier. */
   workspaceId: string | null;
+  /** Whether the Workspaces section shows that workspace, not the overview. */
+  workspacePage: boolean;
+  /** Whether the navigation lists the workspaces under Workspaces. */
+  workspacesExpanded: boolean;
   toolLimitsOpen: boolean;
   addConnectionOpen: boolean;
   /** What the operator has typed into the add-connection form, kept until an add succeeds. */
