@@ -1,5 +1,5 @@
 import { append, el, replaceChildren, text } from "../dom";
-import { formatUpdated } from "../format";
+import { formatAbsolute, formatTimeAgo } from "../format";
 import type { SearchHit, SessionSummary, SessionTree, SnippetPart } from "../ipc/types";
 import { statusLabel } from "./model";
 
@@ -14,7 +14,17 @@ function statusChip(session: SessionSummary): HTMLElement | null {
   return label === null ? null : el("span", { class: `chip chip-${session.status}`, text: label });
 }
 
-function sessionRow(session: SessionSummary, selected: boolean): HTMLElement {
+/** Attribute that holds a row's RFC 3339 update time so the age can be drawn again in place. */
+const UPDATED_ATTR = "data-updated";
+
+/** Rewrites every session row's age against `now` without rebuilding the tree. */
+export function refreshTimes(root: HTMLElement, now: number): void {
+  for (const node of root.querySelectorAll<HTMLElement>(`.tree-time[${UPDATED_ATTR}]`)) {
+    node.textContent = formatTimeAgo(node.getAttribute(UPDATED_ATTR), now);
+  }
+}
+
+function sessionRow(session: SessionSummary, selected: boolean, now: number): HTMLElement {
   const item = el("li", {
     class: "tree-session",
     attrs: {
@@ -23,19 +33,25 @@ function sessionRow(session: SessionSummary, selected: boolean): HTMLElement {
       "data-kind": "session",
       "data-session-id": session.session_id,
       "aria-selected": selected ? "true" : "false",
+      title: `${session.title}
+Updated ${formatAbsolute(session.updated_at)}`,
     },
   });
+  const time = el("span", {
+    class: "tree-time",
+    text: formatTimeAgo(session.updated_at, now),
+  });
+  if (session.updated_at !== null) {
+    time.setAttribute(UPDATED_ATTR, session.updated_at);
+  }
   const top = el(
     "div",
     { class: "row" },
-    el("span", { class: "tree-title clamp-2", text: session.title }),
+    el("span", { class: "tree-title clamp-1", text: session.title }),
     statusChip(session),
+    time,
   );
-  const meta = el("div", {
-    class: "row-meta",
-    text: formatUpdated(session.updated_at),
-  });
-  append(item, top, meta);
+  append(item, top);
   if (session.status === "invalid" && session.invalid_code !== null) {
     append(item, el("div", { class: "row-meta row-error", text: session.invalid_code }));
   }
@@ -46,6 +62,7 @@ function sessionRow(session: SessionSummary, selected: boolean): HTMLElement {
 export function renderTree(
   tree: SessionTree,
   options: TreeOptions,
+  now: number = Date.now(),
 ): { element: HTMLElement; notes: HTMLElement[] } {
   const root = el("ul", {
     class: "tree",
@@ -57,13 +74,13 @@ export function renderTree(
       "div",
       { class: "row group-row" },
       el("span", { class: "caret", text: collapsed ? "+" : "-" }),
-      el("span", { class: "tree-title clamp-2", text: group.folder_display }),
+      el("span", { class: "tree-title clamp-1", text: group.folder_display }),
       el("span", { class: "count", text: String(group.sessions.length) }),
     );
     const children = el("ul", { class: "tree-children", attrs: { role: "group" } });
     children.hidden = collapsed;
     for (const session of group.sessions) {
-      children.appendChild(sessionRow(session, session.session_id === options.selectedId));
+      children.appendChild(sessionRow(session, session.session_id === options.selectedId, now));
     }
     const item = el(
       "li",

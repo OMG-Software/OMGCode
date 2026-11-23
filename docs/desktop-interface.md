@@ -350,7 +350,14 @@ The `main` window is laid out as follows.
   the search field with a **View** menu beside it. The menu holds Active or
   Archived as a segmented control, the sort field, and the direction toggle.
   The session tree follows, with quiet group labels and an accent bar on the
-  open session. **Approvals**, with the pending-count badge, and **Settings**
+  open session. Each session row is one line: the title, shortened with an
+  ellipsis when it does not fit, then any status chip, then a muted age of the
+  last update at the right ("now", "5m", "3h", "2d", "4w", then a short date;
+  a missing or unreadable time reads "unknown"). The ages are drawn again in
+  place every 30 seconds, and the timer stops when the panel is disposed. A
+  row's tooltip holds the full title and the full update time. A group label
+  is also one line. An unreadable session adds its reason as a second line.
+  Search hits keep their own layout. **Approvals**, with the pending-count badge, and **Settings**
   are rows at the bottom.
 - **Status bar.** The workspace, the branch, an approvals segment, and the
   **Model** dropdown. The segment reads "N approvals waiting" with a

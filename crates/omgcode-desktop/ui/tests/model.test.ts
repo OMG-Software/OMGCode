@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCountdown, formatUpdated, utf8Length } from "../src/format";
+import { formatCountdown, formatTimeAgo, formatUpdated, utf8Length } from "../src/format";
 import type { ChatOutcome } from "../src/ipc/types";
 import {
   composerState,
@@ -165,5 +165,35 @@ describe("format", () => {
     expect(formatUpdated("not a date")).toBe("unknown");
     const now = Date.parse("2026-01-02T10:00:00Z");
     expect(formatUpdated("2026-01-02T09:00:00Z", now)).not.toBe("unknown");
+  });
+});
+
+describe("formatTimeAgo", () => {
+  const now = Date.parse("2026-06-15T12:00:00Z");
+  const ago = (ms: number): string => new Date(now - ms).toISOString();
+  const minute = 60_000;
+  const day = 86_400_000;
+
+  it("shows compact ages", () => {
+    expect(formatTimeAgo(ago(0), now)).toBe("now");
+    expect(formatTimeAgo(ago(59_000), now)).toBe("now");
+    expect(formatTimeAgo(ago(5 * minute), now)).toBe("5m");
+    expect(formatTimeAgo(ago(59 * minute), now)).toBe("59m");
+    expect(formatTimeAgo(ago(180 * minute), now)).toBe("3h");
+    expect(formatTimeAgo(ago(2 * day), now)).toBe("2d");
+    expect(formatTimeAgo(ago(28 * day), now)).toBe("4w");
+  });
+
+  it("treats the future as now and bad input as unknown", () => {
+    expect(formatTimeAgo(ago(-5 * minute), now)).toBe("now");
+    expect(formatTimeAgo(null, now)).toBe("unknown");
+    expect(formatTimeAgo("nope", now)).toBe("unknown");
+  });
+
+  it("uses a short date for older times, with the year when it differs", () => {
+    const sameYear = formatTimeAgo("2026-02-03T12:00:00Z", now);
+    expect(sameYear).not.toMatch(/\d{4}/);
+    expect(sameYear).not.toMatch(/^\d+[mhdw]$/);
+    expect(formatTimeAgo("2024-02-03T12:00:00Z", now)).toMatch(/2024/);
   });
 });

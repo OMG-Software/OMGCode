@@ -112,9 +112,13 @@ describe("session tree", () => {
     expect(itemFor("s-bad").textContent).toContain("journal_hash_mismatch");
     expect(itemFor("s-bad").textContent).toContain("unknown");
     expect(root.textContent).toContain("2 entries in session storage were skipped.");
-    // Session titles and folders never reach a tooltip. The window's icon buttons carry fixed
-    // tooltips of their own (ADR-0072), so the check covers the session tree.
-    expect(root.querySelector(".sidebar-body")?.querySelectorAll("[title]")).toHaveLength(0);
+    // Only session rows carry a tooltip (title and full update time); group rows and the rest of
+    // the tree have none, and the window's icon buttons carry fixed tooltips of their own.
+    const tipped = root.querySelectorAll(".sidebar-body [title]");
+    expect(tipped).toHaveLength(5);
+    for (const node of tipped) {
+      expect(node.classList.contains("tree-session")).toBe(true);
+    }
   });
 
   it("explains an empty store and an empty archive", async () => {
@@ -235,6 +239,32 @@ describe("search", () => {
   });
 });
 
+describe("session rows", () => {
+  it("shows one line with a compact age, tooltip, and refreshes the age on a timer", async () => {
+    vi.setSystemTime(new Date("2026-01-02T10:05:00Z"));
+    const s = session({ session_id: "s-age", title: "Fix the build" });
+    await start({ session_tree: () => tree([{ id: "g1", folder: "/w", sessions: [s] }]) });
+    const row = root.querySelector(".tree-session") as HTMLElement;
+    expect(row.querySelectorAll(".row-meta").length).toBe(0);
+    expect(row.querySelector(".tree-title")?.textContent).toBe("Fix the build");
+    expect(row.querySelector(".tree-time")?.textContent).toBe("5m");
+    expect(row.title).toContain("Fix the build");
+    expect(row.title).toContain("Updated ");
+    expect(row.textContent).toContain("Fix the build");
+    vi.setSystemTime(new Date("2026-01-02T13:05:00Z"));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(root.querySelector(".tree-time")?.textContent).toBe("3h");
+    expect(root.querySelector(".tree-session")).toBe(row);
+  });
+
+  it("stops the refresh timer once disposed", async () => {
+    await start({ session_tree: treeOf(session({ session_id: "s-t" })) });
+    app?.dispose();
+    app = null;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe("long labels", () => {
   const folder = `${"f".repeat(5000)}\u202e`;
   const title = `${"t".repeat(300)}\u202e`;
@@ -248,8 +278,8 @@ describe("long labels", () => {
         hits: [{ session: s, folder_display: folder, seq: 1, role: "user", snippet: [] }],
       }),
     });
-    expect(root.querySelector(".group-row .tree-title")?.classList.contains("clamp-2")).toBe(true);
-    expect(root.querySelector(".tree-session .tree-title")?.classList.contains("clamp-2")).toBe(
+    expect(root.querySelector(".group-row .tree-title")?.classList.contains("clamp-1")).toBe(true);
+    expect(root.querySelector(".tree-session .tree-title")?.classList.contains("clamp-1")).toBe(
       true,
     );
     type(root.querySelector('input[type="search"]') as HTMLInputElement, "x");
