@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,7 @@ use omgcode_core::control::{ControlStore, SkillScope, SkillSetting};
 use omgcode_core::skills::SkillName;
 use serde_json::{Value, json};
 
+use support::mock_close::{await_client_close, refuse_until_stopped};
 use support::spawn_gate::without_child_spawns;
 use support::workspace_fixture::Fixture;
 use support::{assert_error_code, assert_success, json_output, path_arg, run_cli};
@@ -30,6 +31,8 @@ const BODY: &str = "UNIQUE-SKILL-BODY-MARKER follow these steps.";
 struct SequenceServer {
     endpoint: String,
     requests: Receiver<Value>,
+    /// Dropping it lets the worker release the port (see [`refuse_until_stopped`]).
+    stop: Sender<()>,
     worker: JoinHandle<Result<usize, String>>,
 }
 
@@ -39,37 +42,49 @@ impl SequenceServer {
         listener.set_nonblocking(true).expect("bounded accept mode");
         let address = listener.local_addr().expect("mock server address");
         let (sender, requests) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut served = 0;
-            for response in responses {
-                let Ok(mut stream) = accept(&listener) else {
-                    break;
-                };
-                let body = read_body(&mut stream)?;
-                let request: Value = serde_json::from_slice(&body)
-                    .map_err(|error| format!("request JSON: {error}"))?;
-                sender.send(request).map_err(|error| error.to_string())?;
-                let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len()
-                );
-                stream
-                    .write_all(head.as_bytes())
-                    .and_then(|()| stream.write_all(&bytes))
-                    .map_err(|error| error.to_string())?;
-                served += 1;
-            }
-            Ok(served)
+            let result = (|| {
+                let mut served = 0;
+                for response in responses {
+                    let Ok(mut stream) = accept(&listener) else {
+                        break;
+                    };
+                    let body = read_body(&mut stream)?;
+                    let request: Value = serde_json::from_slice(&body)
+                        .map_err(|error| format!("request JSON: {error}"))?;
+                    sender.send(request).map_err(|error| error.to_string())?;
+                    let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    );
+                    stream
+                        .write_all(head.as_bytes())
+                        .and_then(|()| stream.write_all(&bytes))
+                        .map_err(|error| error.to_string())?;
+                    if !await_client_close(&mut stream) {
+                        return Err(format!(
+                            "the client did not close connection {served} first"
+                        ));
+                    }
+                    served += 1;
+                }
+                Ok(served)
+            })();
+            refuse_until_stopped(&listener, &stopped);
+            result
         });
         Self {
             endpoint: format!("http://{address}/v1"),
             requests,
+            stop,
             worker,
         }
     }
 
     fn finish(self) -> Vec<Value> {
+        drop(self.stop);
         let served = self
             .worker
             .join()

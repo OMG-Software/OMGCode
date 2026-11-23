@@ -9,12 +9,14 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Security::{
@@ -160,13 +162,45 @@ fn workspace_round_trip(workspace: &Path) -> io::Result<()> {
 
 /// Windows drops loopback traffic from an AppContainer without a reply, so a
 /// plain connect only fails after the system timeout. A short bound keeps the
-/// run inside its deadline; any failure counts as denied.
+/// run inside its deadline; any failure counts as denied, and the host's
+/// accept count shows whether anything arrived.
+///
+/// The host closes each connection at once. Waiting for that close before
+/// dropping the stream leaves the TIME_WAIT on the host's side. If the probe
+/// closed first, Windows could give the grandchild's connect the same local
+/// port and refuse it with `WSAEADDRINUSE` (ADR-0078).
+///
+/// Windows can still hand out a local port whose earlier connection to this
+/// address, from another run, is in TIME_WAIT. That refusal says nothing about
+/// confinement, so the probe holds the refused port with a loopback listener
+/// and tries again, at most 64 times, as the model client does.
 fn tcp_connect() -> io::Result<()> {
+    /// Winsock's `WSAEADDRINUSE`.
+    const WSAEADDRINUSE: i32 = 10048;
     let address: SocketAddr = env::var(HOST_TCP)
         .map_err(io::Error::other)?
         .parse()
         .map_err(io::Error::other)?;
-    TcpStream::connect_timeout(&address, Duration::from_secs(2)).map(drop)
+    let mut held = Vec::new();
+    let mut stream = loop {
+        match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+            Err(error) if error.raw_os_error() == Some(WSAEADDRINUSE) && held.len() < 64 => {
+                held.push(TcpListener::bind("127.0.0.1:0")?);
+            }
+            result => break result?,
+        }
+    };
+    drop(held);
+    // The connect succeeded, so the probe reports `ok` whatever follows. Wait
+    // briefly for the host's close so the host holds the TIME_WAIT; if the
+    // wait fails, the next connect skips a refused port as above.
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .is_ok()
+    {
+        let _closed = stream.read(&mut [0_u8; 1]);
+    }
+    Ok(())
 }
 
 fn pipe_connect() -> io::Result<()> {
@@ -228,8 +262,31 @@ struct Scene {
     secret: PathBuf,
     pipe_name: String,
     _pipe: OwnedHandle,
-    tcp_listener: TcpListener,
+    tcp_address: SocketAddr,
+    /// Dropping it ends the host TCP service and releases its port.
+    tcp_stop: Option<Sender<()>>,
+    /// The host TCP service, which returns how many connections reached it.
+    tcp_service: Option<JoinHandle<usize>>,
     name: TestContainer,
+}
+
+/// Accept every host TCP connection and close it at once until `stop`
+/// disconnects, then return how many arrived. The listener must be
+/// non-blocking. After the stop it still accepts every queued connection, so
+/// one that arrived before the stop is counted.
+fn serve_host_tcp(listener: &TcpListener, stop: &Receiver<()>) -> usize {
+    let mut accepted = 0;
+    loop {
+        let stopping = !matches!(stop.try_recv(), Err(TryRecvError::Empty));
+        match listener.accept() {
+            Ok((stream, _)) => {
+                accepted += 1;
+                drop(stream);
+            }
+            Err(_) if stopping => return accepted,
+            Err(_) => thread::sleep(Duration::from_millis(5)),
+        }
+    }
 }
 
 impl Scene {
@@ -257,6 +314,12 @@ impl Scene {
         );
         let pipe = host_pipe(&pipe_name);
         let tcp_listener = TcpListener::bind("127.0.0.1:0").expect("host TCP listener");
+        tcp_listener
+            .set_nonblocking(true)
+            .expect("non-blocking host TCP listener");
+        let tcp_address = tcp_listener.local_addr().expect("TCP address");
+        let (tcp_stop, stopped) = mpsc::channel();
+        let tcp_service = thread::spawn(move || serve_host_tcp(&tcp_listener, &stopped));
         let name = unique_name();
         for (path, access) in [
             (&read_only_directory, ContainerAccess::ReadExecute),
@@ -274,9 +337,38 @@ impl Scene {
             secret,
             pipe_name,
             _pipe: pipe,
-            tcp_listener,
+            tcp_address,
+            tcp_stop: Some(tcp_stop),
+            tcp_service: Some(tcp_service),
             name,
         }
+    }
+
+    /// Stop the host TCP service, wait a bounded time for it to finish, and
+    /// return how many connections reached it. Call it once, after the run.
+    fn host_tcp_connections(&mut self) -> usize {
+        self.stop_host_tcp()
+            .expect("the host TCP service stops in time, and only once")
+            .expect("the host TCP service")
+    }
+
+    /// Stop the host TCP service and wait at most five seconds for it.
+    ///
+    /// Returns `None` when it was already stopped or did not finish in time,
+    /// and never panics, so [`Drop`] can call it after a failed assertion. A
+    /// service that misses the bound is left to end on its own: its stop
+    /// channel is already closed.
+    fn stop_host_tcp(&mut self) -> Option<thread::Result<usize>> {
+        drop(self.tcp_stop.take());
+        let service = self.tcp_service.take()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !service.is_finished() {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Some(service.join())
     }
 
     fn confinement(&self) -> Confinement {
@@ -299,7 +391,7 @@ impl Scene {
             env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA"),
         ));
         spec.working_directory = self.workspace.clone();
-        let tcp = self.tcp_listener.local_addr().expect("TCP address");
+        let tcp = self.tcp_address;
         let variables: [(&str, OsString); 5] = [
             (
                 READ_ONLY_FILE,
@@ -321,6 +413,10 @@ impl Scene {
 
 impl Drop for Scene {
     fn drop(&mut self) {
+        // A test that did not count connections, or failed before it did,
+        // still stops the service within the bound. Its count and any panic
+        // are not needed here, and panicking in `drop` would abort.
+        let _stopped = self.stop_host_tcp();
         for path in [&self.read_only_directory, &self.bin, &self.workspace] {
             // The temporary tree is removed next; a failed revoke only leaves
             // an entry on a directory that is about to disappear.
@@ -359,7 +455,7 @@ fn assert_results(results: &BTreeMap<String, String>, expected: &[(&str, &str)])
 /// contained tree, and the outcome reports the measured peak.
 #[test]
 fn the_disk_limit_ends_a_confined_run() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let growth = scene.workspace.join("growth.bin");
     let spec = grow_spec(scene.spec(), &growth);
     let outcome = run_confined(
@@ -380,11 +476,17 @@ fn the_disk_limit_ends_a_confined_run() {
         usage.peak_disk_bytes.expect("disk usage") >= 16 * 1024 * 1024,
         "{usage:?}"
     );
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "the growth run reached the host"
+    );
 }
 
 #[test]
 fn the_container_reaches_only_granted_paths_and_no_host_service() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let outcome = run_confined(
         &scene.spec(),
         &scene.confinement(),
@@ -425,6 +527,11 @@ fn the_container_reaches_only_granted_paths_and_no_host_service() {
             "{name}: {result:?}; all results: {results:?}"
         );
     }
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a connection reached the host"
+    );
     assert_eq!(fs::read(&scene.secret).expect("secret"), b"secret");
     assert_eq!(
         fs::read(scene.read_only_directory.join("tool.txt")).expect("tool"),
@@ -435,7 +542,7 @@ fn the_container_reaches_only_granted_paths_and_no_host_service() {
 
 #[test]
 fn the_same_probes_succeed_unconfined() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let outcome = run(&scene.spec(), &limits(), &CancelSignal::new()).expect("unconfined run");
     assert_eq!(outcome.confinement, AppliedConfinement::Unconfined);
     let results = results(&outcome);
@@ -453,6 +560,12 @@ fn the_same_probes_succeed_unconfined() {
             ("grandchild-tcp-connect-host", "ok"),
         ],
     );
+    // Each probe returns only after the host accepted and closed it.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        2,
+        "the child and the grandchild"
+    );
 }
 
 /// With network access the tree holds `internetClient` and nothing more:
@@ -460,7 +573,7 @@ fn the_same_probes_succeed_unconfined() {
 /// path.
 #[test]
 fn a_networked_container_holds_only_internet_client() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut confinement = scene.confinement();
     confinement.network = NetworkAccess::Internet;
     let outcome = run_confined(&scene.spec(), &confinement, &limits(), &CancelSignal::new())
@@ -491,6 +604,11 @@ fn a_networked_container_holds_only_internet_client() {
             "{name}: {result:?}; all results: {results:?}"
         );
     }
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a connection reached the host"
+    );
 }
 
 /// Live check that a networked container resolves and reaches an internet
@@ -500,7 +618,7 @@ fn a_networked_container_holds_only_internet_client() {
 #[ignore = "needs internet access and OMGCODE_TEST_INTERNET_HOST"]
 fn a_networked_container_reaches_the_internet() {
     let host = env::var_os("OMGCODE_TEST_INTERNET_HOST").expect("OMGCODE_TEST_INTERNET_HOST");
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut spec = scene.spec();
     spec.environment
         .push((OsString::from(INTERNET_HOST), host.clone()));
@@ -517,11 +635,17 @@ fn a_networked_container_reaches_the_internet() {
     let allowed =
         run_confined(&spec, &confinement, &limits(), &CancelSignal::new()).expect("networked run");
     assert_results(&results(&allowed), &[("internet-connect", "ok")]);
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a networked run reached the host"
+    );
 }
 
 #[test]
 fn missing_or_weaker_grants_start_nothing() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let record = scene.workspace.join("started.txt");
     let mut cases = Vec::new();
     let mut ungranted = scene.confinement();
@@ -551,11 +675,17 @@ fn missing_or_weaker_grants_start_nothing() {
         );
         assert!(!record.exists(), "{name}: the program started");
     }
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a refused run reached the host"
+    );
 }
 
 #[test]
 fn windows_refuses_host_services_and_incomplete_confinement() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut host_services = scene.confinement();
     host_services.unix_sockets = UnixSocketAccess::HostServices;
     let error = run_confined(
@@ -594,11 +724,17 @@ fn windows_refuses_host_services_and_incomplete_confinement() {
         matches!(&error, ProcessError::Confinement(cause) if cause.kind() == io::ErrorKind::NotFound),
         "{error}"
     );
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a refused run reached the host"
+    );
 }
 
 #[test]
 fn a_program_the_container_cannot_read_does_not_start() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut spec = scene.spec();
     spec.program = env::current_exe().expect("test executable");
     let error = run_confined(&spec, &scene.confinement(), &limits(), &CancelSignal::new())
@@ -606,5 +742,11 @@ fn a_program_the_container_cannot_read_does_not_start() {
     assert!(
         matches!(&error, ProcessError::Confinement(cause) if cause.kind() == io::ErrorKind::PermissionDenied),
         "{error}"
+    );
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a refused run reached the host"
     );
 }

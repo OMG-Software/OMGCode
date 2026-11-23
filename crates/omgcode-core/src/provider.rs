@@ -10,7 +10,7 @@ use crate::turn::{
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy;
-use reqwest::{Client, Response, StatusCode, Url};
+use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -32,7 +32,7 @@ const CANCEL_POLL: Duration = Duration::from_millis(25);
 const MESSAGE_OVERHEAD_ESTIMATE: u64 = 256;
 const PROMPT_HEADROOM_ESTIMATE: u64 = 512;
 /// Upper bound on advertised tool definitions in one request.
-const MAX_TOOL_DEFINITIONS: usize = 8;
+const MAX_TOOL_DEFINITIONS: usize = 9;
 /// Upper bound on raw tool calls accepted from one response before validation.
 /// The turn runtime applies its own, smaller per-round limit.
 const MAX_RESPONSE_TOOL_CALLS: usize = 64;
@@ -558,19 +558,23 @@ impl LocalModelClient {
         streaming: bool,
         cancel: &CancelToken,
     ) -> Result<Response, ProviderError> {
-        let mut request = client
-            .post(self.endpoint.clone())
-            .timeout(self.request_timeout)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
-        if streaming {
-            request = request.header(reqwest::header::ACCEPT, "text/event-stream");
-        }
-        if let Some(authorization) = &self.authorization {
-            request = request.header(AUTHORIZATION, authorization.clone());
-        }
-        until_cancelled(request.body(body).send(), cancel)
-            .await?
-            .map_err(|_| ProviderError::Transport)
+        // Each attempt sends a copy: a refused connect consumed nothing, but
+        // sending takes ownership of the body. Each attempt's timeout is the
+        // time left, so the request keeps one deadline (ADR-0078).
+        let build = |remaining: Duration| {
+            let mut request = client
+                .post(self.endpoint.clone())
+                .timeout(remaining)
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if streaming {
+                request = request.header(reqwest::header::ACCEPT, "text/event-stream");
+            }
+            if let Some(authorization) = &self.authorization {
+                request = request.header(AUTHORIZATION, authorization.clone());
+            }
+            request.body(body.clone())
+        };
+        send_request(self.request_timeout, build, cancel).await
     }
 
     /// Send a non-streaming request and read its whole body within 1 MiB.
@@ -661,6 +665,27 @@ async fn read_whole_body(
         }
         bytes.extend_from_slice(&chunk);
     }
+}
+
+/// Send the request that `build` makes, skipping local ports Windows refuses
+/// as still in use for this server (ADR-0078), while watching `cancel`.
+///
+/// Every send failure is `Transport`; its details never leave this module.
+///
+/// `build` must set the time it receives as the request's timeout, so every
+/// attempt shares the deadline `timeout` from now, including reading the body.
+async fn send_request(
+    timeout: Duration,
+    build: impl FnMut(Duration) -> RequestBuilder,
+    cancel: &CancelToken,
+) -> Result<Response, ProviderError> {
+    let deadline = std::time::Instant::now() + timeout;
+    until_cancelled(
+        crate::connect::send_skipping_reused_ports(deadline, build),
+        cancel,
+    )
+    .await?
+    .map_err(|_| ProviderError::Transport)
 }
 
 /// Await `future` while watching `cancel` every [`CANCEL_POLL`].

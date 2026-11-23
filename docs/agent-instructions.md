@@ -193,6 +193,9 @@ creates one bound to both names and the source's size and SHA-256, and
 consumes an approved record immediately before the no-replace rename. The
 `workspace_delete_file` tool creates one bound to the file's size and SHA-256,
 and consumes an approved record immediately before the checkpointed removal.
+The `workspace_create_directory` tool creates one bound to the normalized
+path, and consumes an approved record immediately before the single-directory
+create (ADR-0079).
 Since 0.43.0 the `workspace_read_file` and `workspace_list_directory` tools
 create a `file_read` request bound to the tool, path, and limit when `read` is
 `prompt`, and consume an approved record immediately before the broker read.

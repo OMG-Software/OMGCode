@@ -150,6 +150,7 @@ export interface WriteToolAccess {
   create: Access;
   rename: Access;
   delete: Access;
+  create_directory: Access;
 }
 
 export interface WorkspaceChoice {

@@ -41,6 +41,7 @@ export const WRITE_TOOL_LABELS: ReadonlyArray<[keyof WriteToolAccess, string]> =
   ["create", "Create tool"],
   ["rename", "Rename tool"],
   ["delete", "Delete tool"],
+  ["create_directory", "Create directory tool"],
 ];
 
 const TOOL_HELP: Readonly<Record<keyof WriteToolAccess, string>> = {
@@ -49,6 +50,7 @@ const TOOL_HELP: Readonly<Record<keyof WriteToolAccess, string>> = {
   create: "Make one new file.",
   rename: "Move a file to a name that does not exist.",
   delete: "Remove a file after saving a checkpoint.",
+  create_directory: "Make one new directory in a folder that exists.",
 };
 
 /** The states in the order a control offers them, with their labels. */

@@ -4,6 +4,79 @@ Changes are recorded here before a release version is assigned.
 
 ## Unreleased
 
+### Added
+
+- Version 0.55.0 adds the model tool `workspace_create_directory`, which
+  creates one directory beneath the workspace (ADR-0079). A model could create
+  `Cargo.toml` but not `src/main.rs` in an empty workspace, because a new
+  file's parent had to exist and no model tool could make one. The tool is
+  offered under the same preferences as the file-write tools. It has its own
+  `create_directory` limit (`workspace permissions --create-directory-tool`,
+  **Create directory tool** in desktop settings); a store without one takes
+  its `create` limit. It never replaces an entry or creates missing parents.
+  Approvals use the digest domain `omgcode-directory-create-v1`, and the model
+  action journal records `create_directory`. The tool schema version is
+  `0.6.0`, and up to nine tool definitions can be sent.
+
+### Fixed
+
+- On Windows, a settings command that waits for a withdrawn run, such as
+  `workspace profile-remove`, no longer fails with "run journal I/O failed"
+  (`os error 32`) when the run ends at that moment. The run's supervisor
+  removes its released owner lock file, and the removal opens that file for
+  deletion. A probe of the lock made at the same moment failed with a sharing
+  violation instead of seeing the run end. The probe now retries that
+  violation for up to the 10-second control wait. `runs acknowledge` probes
+  the same lock and benefits too.
+
+- A missing parent directory is reported as `parent_not_found` instead of
+  `not_found` by `workspace_create_file`, by the destination check of
+  `workspace_rename_file`, and by `workspace_create_directory` (ADR-0079).
+  Their descriptions say to create the parent first, with
+  `workspace_create_directory` when it is offered. A model had read
+  `not_found` as "the tool is unavailable" and stopped.
+
+- On Windows, a tool-enabled chat turn no longer fails with `model_error` when
+  its next model request is handed a local port whose previous connection to
+  the same server is still in TIME_WAIT (ADR-0078). Windows chose that port
+  again, and the connect was refused with `WSAEADDRINUSE` before any request
+  was sent. This happens whether or not the socket was bound before the
+  connect, as `hyper-util` does. A request refused that way now holds the port with a bound,
+  unconnected socket and retries, skipping at most 64 ports. The reservation
+  is best effort. Every attempt shares the request's original deadline, so a
+  retry never extends the model or model-list time limit. A model-list
+  request to a loopback server sends `Connection: close`, so a server that
+  closes promptly holds its TIME_WAIT; that order was not observed with LM
+  Studio. The HTTPS Ollama Cloud request does not send it.
+- When a `create_directory` limit withholds `workspace_create_directory`,
+  the create and rename tool descriptions no longer tell the model to call
+  it. They say that no offered tool creates a directory, so a missing parent
+  no longer leads the model into a refused call that ends the turn.
+- On Windows, a trusted `packages fetch` to the same registry no longer fails
+  with a transport error for the same reason. It uses the same reused-port
+  skip, which acts before any request byte or credential is sent (ADR-0078).
+- The Windows loopback test fixtures fail far less often. A mock that serves
+  the model client now waits for the client to close, so a large request no
+  longer leaves a server-side TIME_WAIT that stalls the next connect. Scripted
+  mocks keep their port bound until their test ends, and an endpoint that must
+  fail is a listener that closes each connection, so a released port can no
+  longer route one test's request to another test's mock. The core provider
+  tests' one-shot fixtures keep every port bound until the test binary exits,
+  so a later fixture never reuses an earlier one's port. On the development
+  host the core `local_provider` target still failed 1 of 30 back-to-back
+  runs with a connect stall; its cause was not confirmed (ADR-0078).
+- The Windows confinement test's unconfined TCP probe no longer fails at
+  random with `os-10048`. The host listener now accepts and closes each
+  connection, and the probe waits briefly for that close and skips a refused
+  local port. A successful connect is reported as `ok` even when that wait
+  fails. The confined tests now also stop the host listener and check its
+  final count, including queued connections, so no connection reached the
+  host.
+- An approval review no longer offers a file or directory creation whose
+  parent directory has been removed. Dispatch refuses that call with
+  `parent_not_found` before consuming the approval, so the review now reports
+  it as stale.
+
 ### Changed
 
 - Version 0.54.0 moves the desktop chat budgets into the `settings` window

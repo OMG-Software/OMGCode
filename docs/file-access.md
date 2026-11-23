@@ -554,7 +554,7 @@ the single edit. One approval and one checkpoint cover the whole call.
 allowed), bounded by the 4 KiB argument limit. Before recording any approval, a
 live audited read must find the path absent (an existing entry returns
 `file_exists`) and a one-entry listing must find its parent directory (a missing
-parent returns `not_found`); nothing is recorded in either case. The digest,
+parent returns `parent_not_found`, ADR-0079); nothing is recorded in either case. The digest,
 under `omgcode-file-create-v1`, covers the session, workspace, normalized path,
 and the size and SHA-256 of the content. After approval, the handler checks the
 success report fits, consumes the record, and calls the broker's exclusive
@@ -589,7 +589,7 @@ interpreted, so a non-UTF-8 source is accepted.
 `workspace_rename_file` takes `from` and `to`. The names must differ after
 normalization (`invalid_request`). Before an approval is recorded, `from` must
 read (`not_found`), `to` must be absent (`file_exists`), and its parent must
-list (`not_found`). The digest covers the session, workspace, both normalized
+list (`parent_not_found`, ADR-0079). The digest covers the session, workspace, both normalized
 names, and the source's size and SHA-256, and the summary is `rename {from} ->
 {to}: {n} bytes, sha256 {12}`. After approval, the handler checks the success
 report fits, consumes the record, and calls `FileBroker::rename_file`. That
@@ -672,11 +672,33 @@ checkpoint and `--removed` of a removal checkpoint are each refused as
 
 Neither tool detects a concurrent writer, and neither primitive is power-loss
 qualified. The desktop approvals window reproduces the digest from a recorded
-request of any of the five file-write tools (at most eight distinct candidates,
+request of any of the six file-write tools (at most eight distinct candidates,
 newest first) before it shows fields: `From`, `To`, `Size`, and `SHA-256` for
 a rename, and `File`, `Size`, and `SHA-256` for a delete. A rename review is
 stale once its source changed or its destination exists, and a delete review is
 stale once the file changed or is gone.
+
+### Model directory creation route (ADR-0079)
+
+`workspace_create_directory` is advertised and dispatched only under the same
+live `model_tools`, `read`, and `write` preferences as the other file-write
+tools, with the same per-call recheck, `edit_disabled` denial, `file_write`
+approvals, 900-second lifetime, and writers-stopped acknowledgement. Its
+per-tool limit `create_directory` inherits the `create` limit when a stored
+setting omits it. It takes only `path`. Before an approval is recorded, the
+path must be absent (`file_exists`) and its parent must list
+(`parent_not_found`). The digest, under `omgcode-directory-create-v1`, covers
+the session, workspace, and normalized path. After approval, the handler
+checks the success report fits, consumes the record, and calls the broker's
+single-directory `create_directory`, which creates no missing parent and
+replaces nothing; an entry created by another writer in between is
+`file_exists` and the approval stays spent. Under `allow` no approval is
+recorded or consumed. The creation is not checkpointed. No dedicated model
+tool removes a directory; `workspace_run_command` can, when its approved
+profile exposes a program that does. Recursive directory creation remains
+unavailable: the model creates nested directories one level at a time, each
+with its own approval under `prompt`. A directory review is stale once its
+path exists or its parent is missing.
 
 ### Private checkpoints, quota, and retention
 

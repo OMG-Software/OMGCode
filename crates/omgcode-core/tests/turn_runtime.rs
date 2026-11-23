@@ -560,7 +560,8 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
             "workspace_multi_edit_file".to_owned(),
             "workspace_create_file".to_owned(),
             "workspace_rename_file".to_owned(),
-            "workspace_delete_file".to_owned()
+            "workspace_delete_file".to_owned(),
+            "workspace_create_directory".to_owned()
         ])
     );
 
@@ -609,7 +610,8 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
             "workspace_multi_edit_file",
             "workspace_create_file",
             "workspace_rename_file",
-            "workspace_delete_file"
+            "workspace_delete_file",
+            "workspace_create_directory"
         ]
     );
 
@@ -680,7 +682,8 @@ fn allowed_read_and_list_produce_durable_source_labelled_results() {
             "workspace_multi_edit_file",
             "workspace_create_file",
             "workspace_rename_file",
-            "workspace_delete_file"
+            "workspace_delete_file",
+            "workspace_create_directory"
         ])
     );
 }
@@ -1688,7 +1691,8 @@ fn runtime_owns_custom_instruction_and_tool_manifest_fields() {
             "workspace_multi_edit_file".to_owned(),
             "workspace_create_file".to_owned(),
             "workspace_rename_file".to_owned(),
-            "workspace_delete_file".to_owned()
+            "workspace_delete_file".to_owned(),
+            "workspace_create_directory".to_owned()
         ])
     );
     fixture.close_journal();
@@ -2651,7 +2655,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
     assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.5.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.6.0");
 }
 
 /// A session whose earlier turn advertised tool schema 0.2.0 still replays and
@@ -2941,6 +2945,7 @@ fn an_approved_multi_edit_applies_once_through_one_checkpoint() {
             "workspace_create_file",
             "workspace_rename_file",
             "workspace_delete_file",
+            "workspace_create_directory",
         ]
     );
     assert_eq!(
@@ -3345,7 +3350,10 @@ fn create_refusals_are_recoverable_and_record_no_approval() {
     fixture.close_journal();
     assert_eq!(
         fixture.tool_codes(),
-        [Some("file_exists".to_owned()), Some("not_found".to_owned())]
+        [
+            Some("file_exists".to_owned()),
+            Some("parent_not_found".to_owned())
+        ]
     );
 }
 
@@ -3770,7 +3778,7 @@ fn rename_refusals_are_recoverable_and_record_no_approval() {
         [
             "not_found",
             "file_exists",
-            "not_found",
+            "parent_not_found",
             "edit_too_large",
             "invalid_request"
         ]
@@ -4012,10 +4020,10 @@ fn the_rename_and_delete_tools_require_live_read_and_write() {
     }
 }
 
-/// With `execute` also enabled, all eight tool slots are used, in the
+/// With `execute` also enabled, all nine tool slots are used, in the
 /// documented order, and the manifest records the same list.
 #[test]
-fn all_eight_tools_are_advertised_in_order_with_execute_enabled() {
+fn all_nine_tools_are_advertised_in_order_with_execute_enabled() {
     let mut fixture = Fixture::new();
     let workspace_id = fixture.workspace_id;
     let control = fixture.control_mut();
@@ -4042,6 +4050,7 @@ fn all_eight_tools_are_advertised_in_order_with_execute_enabled() {
         "workspace_create_file",
         "workspace_rename_file",
         "workspace_delete_file",
+        "workspace_create_directory",
         "workspace_run_command",
     ];
     assert_eq!(model.requests[0].tools, expected);
@@ -4897,4 +4906,260 @@ fn allowed_edits_renames_and_deletes_apply_without_approvals_and_are_journaled()
             .iter()
             .all(|record| record["payload"]["outcome"] == "succeeded")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Directory creation tool
+// ---------------------------------------------------------------------------
+
+fn create_directory_call(id: &str, path: &str) -> Value {
+    call(id, "workspace_create_directory", json!({"path": path}))
+}
+
+#[test]
+fn create_directory_tool_arguments_are_strictly_validated() {
+    let parsed = ToolCall::parse(&create_directory_call("d-1", "src/bin")).expect("valid path");
+    assert_eq!(
+        parsed.arguments,
+        ToolArguments::CreateDirectory {
+            path: "src/bin".into()
+        }
+    );
+    assert_eq!(parsed.name.as_str(), "workspace_create_directory");
+    for arguments in [
+        json!({}),
+        json!({"path": 1}),
+        json!({"path": "a", "content": "x"}),
+        json!({"path": "a", "recursive": true}),
+    ] {
+        assert!(
+            matches!(
+                ToolCall::parse(&call(
+                    "d-1",
+                    "workspace_create_directory",
+                    arguments.clone()
+                )),
+                Err(ToolCallError::InvalidArguments)
+            ),
+            "{arguments} was accepted"
+        );
+    }
+    for path in ["", "../outside", "sub/../../x", "./a", "/abs"] {
+        assert!(
+            matches!(
+                ToolCall::parse(&create_directory_call("d-1", path)),
+                Err(ToolCallError::InvalidPath)
+            ),
+            "{path:?} was accepted"
+        );
+    }
+    assert!(matches!(
+        ToolCall::parse(&raw_call(
+            "d-1",
+            "workspace_create_directory",
+            r#"{"path":"a","path":"b"}"#
+        )),
+        Err(ToolCallError::InvalidArguments)
+    ));
+}
+
+/// Under allow the directory is made without an approval, and a file can
+/// then be created inside it in the same turn.
+#[test]
+fn an_allowed_directory_creation_makes_the_directory_and_a_file_can_follow() {
+    let mut fixture = Fixture::new();
+    fixture.set_access(PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    });
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            create_directory_call("d-1", "scaffold"),
+            create_call("c-1", "scaffold/file.txt", "inside\n"),
+        ]),
+        text_reply("done"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("allowed directory creation");
+    assert!(fixture.workspace.join("scaffold").is_dir());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("scaffold/file.txt")).expect("file"),
+        "inside\n"
+    );
+    assert!(
+        model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_create_directory")
+    );
+    fixture.close_journal();
+    assert_eq!(fixture.tool_codes(), [None, None]);
+    assert!(fixture.file_write_approvals().is_empty());
+    let actions = fixture.actions();
+    let tools: Vec<&str> = actions
+        .iter()
+        .filter(|record| record["type"] == "action_started")
+        .map(|record| record["payload"]["tool"].as_str().expect("tool"))
+        .collect();
+    assert_eq!(tools, ["create_directory", "create_file"]);
+    // Each start has exactly one finish, with the same action, that succeeded.
+    let ids = |kind: &str| -> Vec<&Value> {
+        actions
+            .iter()
+            .filter(|record| record["type"] == kind)
+            .map(|record| &record["payload"]["action_id"])
+            .collect()
+    };
+    let started = ids("action_started");
+    let finished = ids("action_finished");
+    assert_eq!(finished.len(), 2, "{actions:?}");
+    assert_eq!(finished, started);
+    assert!(
+        actions
+            .iter()
+            .filter(|record| record["type"] == "action_finished")
+            .all(|record| record["payload"]["outcome"] == "succeeded"),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn directory_creation_refusals_are_recoverable_and_record_no_approval() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.workspace.join("present.txt"), "keep").expect("present file");
+    fs::create_dir(fixture.workspace.join("present-dir")).expect("present directory");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            create_directory_call("d-1", "present.txt"),
+            create_directory_call("d-2", "present-dir"),
+            create_directory_call("d-3", "no-such/child"),
+        ]),
+        text_reply("all refused"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("recoverable refusals keep the turn going");
+    assert_eq!(report.reply, "all refused");
+    assert!(fixture.file_write_approvals().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("present.txt")).expect("read"),
+        "keep"
+    );
+    assert!(!fixture.workspace.join("no-such").exists());
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        ["file_exists", "file_exists", "parent_not_found"].map(|code| Some(code.to_owned()))
+    );
+}
+
+/// Under prompt the first call only records an approval; the approved retry
+/// creates the directory once and spends the approval.
+#[test]
+fn an_approved_directory_creation_makes_the_directory_once() {
+    let mut fixture = Fixture::new();
+    let target = fixture.workspace.join("made");
+    fixture.edit_turn(vec![create_directory_call("d-1", "made")]);
+    assert!(!target.exists(), "nothing changes before approval");
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![create_directory_call("d-2", "made")]);
+    assert!(target.is_dir());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+    assert_eq!(fixture.checkpoint_operations(), 0);
+    let message = fixture.last_tool_message();
+    assert!(message.contains("\"status\":\"created\""), "{message}");
+    assert!(message.contains("\"path\":\"made\""), "{message}");
+
+    // The directory now exists: a repeat is refused and records nothing new.
+    fixture.edit_turn(vec![create_directory_call("d-3", "made")]);
+    assert_eq!(fixture.file_write_approvals().len(), 1);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [Some("approval_required"), None, Some("file_exists")].map(|code| code.map(str::to_owned))
+    );
+}
+
+#[test]
+fn a_directory_approval_does_not_cover_another_path_or_a_file() {
+    let mut fixture = Fixture::new();
+    fixture.edit_turn(vec![create_directory_call("d-1", "made")]);
+    let approval = fixture.approve_pending_edit();
+    fixture.edit_turn(vec![
+        create_directory_call("d-2", "other"),
+        create_call("c-1", "made", "file"),
+    ]);
+    assert!(!fixture.workspace.join("made").exists());
+    assert!(!fixture.workspace.join("other").exists());
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Approved);
+}
+
+#[test]
+fn a_denied_create_directory_limit_withholds_the_tool() {
+    let mut fixture = Fixture::new();
+    let mut permissions = PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    };
+    permissions
+        .write_tools
+        .set(WriteTool::CreateDirectory, Access::Deny);
+    fixture.set_access(permissions);
+    let mut model =
+        ScriptedModel::new(vec![tool_reply(vec![create_directory_call("d-1", "made")])]);
+    let error = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect_err("the call is denied");
+    assert!(matches!(error, TurnError::ToolDenied(_)), "{error:?}");
+    let offered = &model.requests[0].tools;
+    assert!(offered.iter().any(|name| name == "workspace_create_file"));
+    assert!(
+        !offered
+            .iter()
+            .any(|name| name == "workspace_create_directory"),
+        "a denied tool limit removes the tool"
+    );
+    assert!(!fixture.workspace.join("made").exists());
+    fixture.close_journal();
+    assert_eq!(fixture.last_tool_code().as_deref(), Some("edit_disabled"));
+}
+
+/// Without live read and write, the tool is not offered.
+#[test]
+fn the_create_directory_tool_requires_live_read_and_write() {
+    for (read, write) in [
+        (Access::Allow, Access::Deny),
+        (Access::Deny, Access::Prompt),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.set_access(PermissionSet {
+            model_tools: true,
+            read,
+            write,
+            ..PermissionSet::default()
+        });
+        let mut model =
+            ScriptedModel::new(vec![tool_reply(vec![create_directory_call("d-1", "made")])]);
+        let error = fixture
+            .run(&mut model, TurnLimits::default())
+            .expect_err("the call is denied");
+        assert!(matches!(error, TurnError::ToolDenied(_)), "{error:?}");
+        assert!(
+            !model.requests[0]
+                .tools
+                .iter()
+                .any(|name| name == "workspace_create_directory"),
+            "offered with read={read} write={write}"
+        );
+        assert!(!fixture.workspace.join("made").exists());
+        assert!(fixture.file_write_approvals().is_empty());
+    }
 }

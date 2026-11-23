@@ -140,7 +140,7 @@ struct Preference {
 }
 
 /// Every preference in display order, including the per-tool write limits.
-fn preferences_of(set: &PermissionSet) -> [Preference; 11] {
+fn preferences_of(set: &PermissionSet) -> [Preference; 12] {
     let tool = |name, effect, tool| Preference {
         name,
         effect,
@@ -205,6 +205,11 @@ fn preferences_of(set: &PermissionSet) -> [Preference; 11] {
             "delete tool",
             "the model may delete files (each is checkpointed first)",
             WriteTool::Delete,
+        ),
+        tool(
+            "create directory tool",
+            "the model may create new directories",
+            WriteTool::CreateDirectory,
         ),
     ]
 }

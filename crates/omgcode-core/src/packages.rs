@@ -414,13 +414,21 @@ fn perform(
                 status: None,
             })?;
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let mut request = client.get(url.as_str());
-        if let Some(value) = authorization {
+        // The outer timeout below bounds every attempt, so the time left is
+        // not needed here.
+        let build = |_remaining| {
+            let request = client.get(url.as_str());
             // The value is already marked sensitive. Redirects are refused,
             // so the credential cannot follow one to another origin.
-            request = request.header(AUTHORIZATION, value);
-        }
-        let mut response = match tokio::time::timeout(remaining, request.send()).await {
+            match &authorization {
+                Some(value) => request.header(AUTHORIZATION, value.clone()),
+                None => request,
+            }
+        };
+        // A local port that Windows refuses as still in use for this origin
+        // is skipped before any byte is sent (ADR-0078).
+        let send = crate::connect::send_skipping_reused_ports(deadline, build);
+        let mut response = match tokio::time::timeout(remaining, send).await {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 return Err(FailedFetch {

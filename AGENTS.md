@@ -25,8 +25,8 @@ copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only, with icon buttons named in their tooltips
 ([ADR-0069](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
-also enables `read` and `write`, five file-write tools (exact edit, multi-edit,
-create, rename, and delete); and, when it also enables `execute`, `read`, and
+also enables `read` and `write`, six file-write tools (exact edit, multi-edit,
+create, rename, delete, and directory creation); and, when it also enables `execute`, `read`, and
 `write`, one command tool. Each workspace preference except `model_tools` is
 `deny`, `prompt`, or `allow`, and each file-write tool has a limit that can
 only narrow `write` ([ADR-0063](docs/adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
@@ -39,8 +39,10 @@ existing file, each through checkpointed apply. The create tool makes one new
 file through the exclusive create, without a checkpoint. The rename tool moves
 one regular file to a name that does not exist and never replaces an entry,
 without a checkpoint. The delete tool removes one regular file of at most 1 MiB
-after a durable checkpoint of its bytes, which the trusted CLI can restore. All
-five need the operator's writers-stopped acknowledgement when approved. No model network,
+after a durable checkpoint of its bytes, which the trusted CLI can restore. The
+directory tool creates one directory whose parent exists, without a checkpoint
+([ADR-0079](docs/adr/0079-add-a-model-tool-that-creates-one-directory.md)). All
+six need the operator's writers-stopped acknowledgement when approved. No model network,
 Git, or MCP tool exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. A model write or command
 runs without a per-call approval only where the operator set it to `allow`.

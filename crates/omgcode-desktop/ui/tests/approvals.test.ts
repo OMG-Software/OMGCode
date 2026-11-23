@@ -259,6 +259,25 @@ describe("approvals window", () => {
     expect(created).toEqual(["hello", HOSTILE_IMG]);
   });
 
+  it("renders a directory creation as one plain field without a diff", async () => {
+    approvals = [view({ operation: "file_write" })];
+    current = detail(
+      {
+        tool: "workspace_create_directory",
+        fields: [{ label: "Directory", value: `src/${HOSTILE_IMG}`, multiline: false }],
+      },
+      { operation: "file_write" },
+    );
+    await start();
+    await select();
+    const review = root.querySelector(".review") as HTMLElement;
+    expect(review.textContent).toContain("workspace_create_directory");
+    expect(review.textContent).toContain("Directory");
+    expect(review.textContent).toContain(`src/${HOSTILE_IMG}`);
+    expect(review.querySelector("img")).toBeNull();
+    expect(review.querySelector(".diff")).toBeNull();
+  });
+
   it("renders the fields of the rename and delete tools as plain text", async () => {
     approvals = [view({ operation: "file_write" })];
     current = detail(

@@ -153,6 +153,8 @@ impl Recorded {
 /// A loopback model server that answers one scripted reply per connection.
 pub struct MockServer {
     pub endpoint: String,
+    /// Dropping it lets the worker release the port (see [`refuse_until_stopped`]).
+    stop: Sender<()>,
     worker: JoinHandle<Result<(usize, Vec<Recorded>), String>>,
 }
 
@@ -161,60 +163,17 @@ impl MockServer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock server");
         listener.set_nonblocking(true).expect("bounded accept");
         let address = listener.local_addr().expect("mock address");
+        let (stop, stopped) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut served = 0;
-            let mut recorded = Vec::new();
-            for step in steps {
-                let Ok(mut stream) = accept(&listener) else {
-                    break;
-                };
-                let (head, body) = read_request(&mut stream)?;
-                recorded.push(Recorded {
-                    head,
-                    body: String::from_utf8_lossy(&body).into_owned(),
-                });
-                if let Some(arrived) = &step.arrived {
-                    // The test may have stopped listening; that is not an error.
-                    arrived.send(()).ok();
-                }
-                if let Some(gate) = &step.gate {
-                    // A release and a dropped sender both let the reply go.
-                    gate.recv_timeout(SERVER_TIMEOUT).ok();
-                }
-                let (content_type, bytes) = match &step.event_stream {
-                    Some(body) => ("text/event-stream", body.clone().into_bytes()),
-                    None => (
-                        "application/json",
-                        serde_json::to_vec(&step.reply).map_err(|error| error.to_string())?,
-                    ),
-                };
-                let rest = step
-                    .held
-                    .as_ref()
-                    .map(|(_, rest)| rest.clone().into_bytes())
-                    .unwrap_or_default();
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len() + rest.len()
-                );
-                // The client may have given up (a cancelled turn); that is not an error.
-                stream.set_nodelay(true).ok();
-                stream
-                    .write_all(head.as_bytes())
-                    .and_then(|()| stream.write_all(&bytes))
-                    .and_then(|()| stream.flush())
-                    .ok();
-                if let Some((hold, _)) = &step.held {
-                    // A release and a dropped sender both let the rest go.
-                    hold.recv_timeout(SERVER_TIMEOUT).ok();
-                    stream.write_all(&rest).and_then(|()| stream.flush()).ok();
-                }
-                served += 1;
-            }
-            Ok((served, recorded))
+            let result = serve_steps(&listener, steps);
+            // A request past the script is closed here instead of reaching
+            // another test's server on a reused port.
+            refuse_until_stopped(&listener, &stopped);
+            result
         });
         Self {
             endpoint: format!("http://{address}/v1"),
+            stop,
             worker,
         }
     }
@@ -227,11 +186,71 @@ impl MockServer {
     /// Wait for the server thread and return how many requests it answered and
     /// each request it received, in order.
     pub fn finish_recorded(self) -> (usize, Vec<Recorded>) {
+        drop(self.stop);
         self.worker
             .join()
             .expect("mock server thread")
             .expect("mock server exchange")
     }
+}
+
+/// Answer each scripted step on its own connection.
+fn serve_steps(listener: &TcpListener, steps: Vec<Step>) -> Result<(usize, Vec<Recorded>), String> {
+    let mut served = 0;
+    let mut recorded = Vec::new();
+    for step in steps {
+        let Ok(mut stream) = accept(listener) else {
+            break;
+        };
+        let (head, body) = read_request(&mut stream)?;
+        recorded.push(Recorded {
+            head,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        });
+        if let Some(arrived) = &step.arrived {
+            // The test may have stopped listening; that is not an error.
+            arrived.send(()).ok();
+        }
+        if let Some(gate) = &step.gate {
+            // A release and a dropped sender both let the reply go.
+            gate.recv_timeout(SERVER_TIMEOUT).ok();
+        }
+        let (content_type, bytes) = match &step.event_stream {
+            Some(body) => ("text/event-stream", body.clone().into_bytes()),
+            None => (
+                "application/json",
+                serde_json::to_vec(&step.reply).map_err(|error| error.to_string())?,
+            ),
+        };
+        let rest = step
+            .held
+            .as_ref()
+            .map(|(_, rest)| rest.clone().into_bytes())
+            .unwrap_or_default();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len() + rest.len()
+        );
+        // The client may have given up (a cancelled turn); that is not an error.
+        stream.set_nodelay(true).ok();
+        stream
+            .write_all(head.as_bytes())
+            .and_then(|()| stream.write_all(&bytes))
+            .and_then(|()| stream.flush())
+            .ok();
+        if let Some((hold, _)) = &step.held {
+            // A release and a dropped sender both let the rest go.
+            hold.recv_timeout(SERVER_TIMEOUT).ok();
+            stream.write_all(&rest).and_then(|()| stream.flush()).ok();
+        }
+        if !await_client_close(&mut stream) {
+            return Err(format!(
+                "the client did not close connection {served} first"
+            ));
+        }
+        served += 1;
+    }
+    Ok((served, recorded))
 }
 
 fn accept(listener: &TcpListener) -> Result<TcpStream, String> {
@@ -254,6 +273,59 @@ fn accept(listener: &TcpListener) -> Result<TcpStream, String> {
                 thread::sleep(Duration::from_millis(5));
             }
             Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+/// Wait, within the stream's read timeout, until a client that received a
+/// complete `Connection: close` reply closes its side, and only then let the
+/// caller drop the stream.
+///
+/// The client then holds the connection's TIME_WAIT. On Windows the next
+/// client can receive the same local port, and a TIME_WAIT that the server
+/// holds after a large request delays that connect until it times out
+/// (ADR-0078). Call this only after a reply framed by `Content-Length`, never
+/// after a reply that the close delimits, and only on a stream with a read
+/// timeout. A read error or timeout ends the wait; the caller still closes.
+///
+/// Returns whether the client's close, orderly or abortive, was observed.
+/// Any other read error, including
+/// the timeout or `WouldBlock` on a stream left non-blocking, returns `false`:
+/// then the fixture, not the client, closes first. A shared fixture asserts
+/// the result so a regression of the close order fails loudly.
+pub fn await_client_close(stream: &mut impl Read) -> bool {
+    let mut sink = [0_u8; 512];
+    loop {
+        match stream.read(&mut sink) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            // An abortive close, as a cancelled client makes, leaves no
+            // TIME_WAIT on either side.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return true;
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Keep a non-blocking `listener` bound until `stop` disconnects, closing
+/// every further connection at once.
+///
+/// A scripted server that dropped its listener after the last reply would
+/// free the port while its client may still send a request. A concurrently
+/// started test's server can then bind that port and receive the request. The
+/// owner drops the sender when its test finishes or unwinds.
+pub fn refuse_until_stopped(listener: &TcpListener, stop: &Receiver<()>) {
+    while matches!(stop.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+        match listener.accept() {
+            Ok((stream, _)) => drop(stream),
+            Err(_) => thread::sleep(Duration::from_millis(5)),
         }
     }
 }
@@ -412,11 +484,21 @@ impl NoCallServer {
     }
 }
 
-/// An endpoint nothing listens on.
+/// An endpoint that answers no request: every connection is closed at once,
+/// so a request to it fails as a transport error.
+///
+/// The port stays bound until the test binary exits. A port that was bound
+/// and released could be bound again by a concurrently started test's server,
+/// which would then receive this request and lose its own scripted reply.
 pub fn unused_endpoint() -> String {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
     let port = listener.local_addr().expect("address").port();
-    drop(listener);
+    // The thread blocks in `accept` and ends with the test binary.
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            drop(stream);
+        }
+    });
     format!("http://127.0.0.1:{port}/v1")
 }
 

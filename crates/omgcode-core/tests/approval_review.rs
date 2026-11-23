@@ -960,6 +960,73 @@ fn a_create_approval_reviews_exact_fields_and_is_stale_once_the_file_exists() {
     );
 }
 
+#[test]
+fn a_directory_creation_approval_reviews_its_path_and_is_stale_once_it_exists() {
+    let mut fixture = Fixture::new();
+    fixture.turn(vec![call(
+        "dir-1",
+        "workspace_create_directory",
+        json!({"path": "made"}),
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let before = statuses_json(&fixture.approvals());
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, "workspace_create_directory");
+    let values: Vec<(&str, String, bool)> = request
+        .fields
+        .iter()
+        .map(|field| (field.label, field.value.clone(), field.multiline))
+        .collect();
+    assert_eq!(values, [("Directory", "made".to_owned(), false)]);
+    assert!(!fixture.workspace.join("made").exists());
+    assert_eq!(statuses_json(&fixture.approvals()), before);
+
+    // Another writer creates the directory: the request can no longer proceed.
+    fs::create_dir(fixture.workspace.join("made")).expect("other writer");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+/// Dispatch refuses a creation whose parent is missing before it consumes the
+/// approval, so the review does not offer one either.
+#[test]
+fn a_creation_whose_parent_was_removed_is_not_offered_for_review() {
+    let mut fixture = Fixture::new();
+    fs::create_dir(fixture.workspace.join("parent")).expect("parent");
+    fixture.turn(vec![
+        call(
+            "dir-1",
+            "workspace_create_directory",
+            json!({"path": "parent/made"}),
+        ),
+        create_call("create-1", "parent/new.txt", "content"),
+    ]);
+    let recorded = fixture.recorded();
+    let approvals = fixture.approvals();
+    assert_eq!(approvals.len(), 2, "both creations were requested");
+    for approval in &approvals {
+        assert!(matches!(
+            fixture.review(approval, &recorded).expect("review"),
+            ApprovalReview::Exact(_)
+        ));
+    }
+
+    // Another writer removes the parent: neither request can proceed.
+    fs::remove_dir(fixture.workspace.join("parent")).expect("other writer");
+    for approval in &approvals {
+        assert_eq!(
+            fixture.review(approval, &recorded).expect("review"),
+            ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+        );
+    }
+    assert!(!fixture.workspace.join("parent").exists());
+}
+
 /// After an exact review and an approval, the identical call creates the file.
 #[test]
 fn an_exactly_reviewed_create_is_the_call_that_creates() {

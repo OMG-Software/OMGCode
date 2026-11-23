@@ -253,6 +253,23 @@ fn validate_opened_file(file: &File) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Whether an open failed because another handle's access or sharing
+/// conflicts with ours (Windows `ERROR_SHARING_VIOLATION`). The handles this
+/// module opens share reading and writing but not deletion, so a handle that
+/// is deleting or renaming the file causes it. It is never reported elsewhere.
+pub(crate) fn is_sharing_violation(error: &io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        error.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
+}
+
 /// Distinguish an occupied lock from a lock-facility error.
 fn map_lock_error(error: std::fs::TryLockError) -> StorageError {
     match error {

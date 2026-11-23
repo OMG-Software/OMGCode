@@ -11,6 +11,7 @@ use std::net::TcpListener;
 use std::process::{Command, Output, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use support::mock_close::await_client_close;
 use support::{CLI_DEADLINE, run_with_deadline};
 
 const FIXTURE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -62,6 +63,9 @@ fn serve_once(body: &'static str) -> (String, JoinHandle<Result<String, String>>
         stream
             .write_all(response.as_bytes())
             .map_err(|error| error.to_string())?;
+        if !await_client_close(&mut stream) {
+            return Err("the CLI did not close the fixture connection first".to_owned());
+        }
         String::from_utf8(head).map_err(|error| error.to_string())
     });
     (endpoint, worker)

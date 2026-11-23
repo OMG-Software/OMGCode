@@ -17,17 +17,17 @@ use thiserror::Error;
 
 use super::{
     PreparedEdit, ReadRequest, TextEdit, ToolArguments, ToolCall, ToolName, artifact,
-    command_digest, command_run_request, create_digest, delete_digest, edit_digest, edit_target,
-    is_hidden_format, multi_edit_digest, normalized_path, prepare_edit, prepare_multi_edit,
-    read_edit_source, rename_digest,
+    command_digest, command_run_request, create_digest, create_directory_digest, delete_digest,
+    edit_digest, edit_target, is_hidden_format, list_parent, multi_edit_digest, normalized_path,
+    prepare_edit, prepare_multi_edit, read_edit_source, rename_digest,
 };
 use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
 use crate::file_audit::FileAuditError;
 use crate::files::FileError;
 use crate::replacement::CheckpointError;
 
-/// Most distinct file-write requests (edit, multi-edit, create, rename, and
-/// delete together) evaluated for one review.
+/// Most distinct file-write requests (edit, multi-edit, create, create
+/// directory, rename, and delete together) evaluated for one review.
 ///
 /// Each evaluation reads one or two workspace files through the audited broker
 /// and writes one audit record per read, so the work and the audit growth are
@@ -328,11 +328,20 @@ fn review_file_write<'a>(
         let target = edit_target(approval.session_id, approval.workspace_id, path);
         let current = match read_edit_source(&mut control, &binding, &target) {
             Ok(bytes) => Some(bytes),
-            // A creation is reviewable only while its path is absent.
+            // A creation is reviewable only while its path is absent and its
+            // parent exists. Dispatch refuses a missing parent before it
+            // consumes the approval, so such a request is not offered.
             Err(FileError::Native(native))
-                if tool == ToolName::CreateFile && is_missing_entry(&native) =>
+                if matches!(tool, ToolName::CreateFile | ToolName::CreateDirectory)
+                    && is_missing_entry(&native) =>
             {
-                None
+                match list_parent(&mut control, &binding, &target) {
+                    Ok(()) => None,
+                    Err(error) => {
+                        classify_review_read(error)?;
+                        continue;
+                    }
+                }
             }
             Err(error) => {
                 classify_review_read(error)?;
@@ -424,6 +433,12 @@ fn review_file_write<'a>(
                     })
                     .map(|content_artifact| create_fields(&normalized, content, &content_artifact))
             }
+            (ToolArguments::CreateDirectory { .. }, None) => {
+                let normalized = normalized_path(path);
+                (create_directory_digest(approval.session_id, approval.workspace_id, &normalized)
+                    == approval.request_sha256)
+                    .then(|| create_directory_fields(&normalized))
+            }
             _ => None,
         };
         if let Some(fields) = reviewed {
@@ -437,10 +452,11 @@ fn review_file_write<'a>(
 }
 
 /// Every tool whose requests a `FileWrite` approval can be bound to.
-const FILE_WRITE_TOOLS: [ToolName; 5] = [
+const FILE_WRITE_TOOLS: [ToolName; 6] = [
     ToolName::EditFile,
     ToolName::MultiEditFile,
     ToolName::CreateFile,
+    ToolName::CreateDirectory,
     ToolName::RenameFile,
     ToolName::DeleteFile,
 ];
@@ -656,6 +672,12 @@ fn create_fields(
             multiline: true,
         },
     ]
+}
+
+/// Create-directory fields. The path comes from the parsed arguments that
+/// reproduced the digest.
+fn create_directory_fields(normalized: &str) -> Vec<ReviewField> {
+    vec![single("Directory", display_safe_line(normalized))]
 }
 
 /// Rename fields. Both names come from the parsed arguments that reproduced

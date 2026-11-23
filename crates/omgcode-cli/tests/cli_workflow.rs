@@ -1,3 +1,9 @@
+#[allow(
+    dead_code,
+    reason = "this binary's one-request servers need only the close order"
+)]
+#[path = "support/mock_close.rs"]
+mod mock_close;
 #[path = "support/spawn_gate.rs"]
 mod spawn_gate;
 
@@ -59,7 +65,11 @@ impl MockServer {
                 sender
                     .send(Ok(request_json))
                     .map_err(|error| error.to_string())?;
-                write_http_response(&mut stream, content_type, &response)
+                write_http_response(&mut stream, content_type, &response)?;
+                if !mock_close::await_client_close(&mut stream) {
+                    return Err("the CLI did not close the mock connection first".to_owned());
+                }
+                Ok::<(), String>(())
             })();
             if let Err(error) = &result {
                 let _ = sender.send(Err(error.clone()));

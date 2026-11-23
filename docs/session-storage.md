@@ -134,8 +134,9 @@ The runtime supports `workspace_read_file` and `workspace_list_directory`,
 plus approval-gated tools offered only under their live settings:
 `workspace_edit_file` (ADR-0043), `workspace_multi_edit_file` and
 `workspace_create_file` (ADR-0054), `workspace_rename_file` and
-`workspace_delete_file` (ADR-0055), and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function calls,
-rejects unknown tools, malformed or duplicate arguments, absolute or parent
+`workspace_delete_file` (ADR-0055), `workspace_create_directory` (ADR-0079),
+and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function
+calls, rejects unknown tools, malformed or duplicate arguments, absolute or parent
 paths, and duplicate call identifiers before dispatch. For each operation it
 opens the control store, obtains a fresh session binding, releases the settings
 lock before the next model request, and never reconstructs authority from the
