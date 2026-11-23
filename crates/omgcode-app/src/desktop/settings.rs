@@ -25,8 +25,12 @@ use omgcode_core::policy::WorkspaceId;
 use omgcode_core::turn::display_safe_line;
 
 use super::error::DesktopError;
+use super::instructions;
 use super::preferences;
 use super::session_connections::{ChosenConnection, recorded_endpoint};
+use super::settings_chat::{
+    chat_defaults_view, global_for_room, longest_for_room, workspace_instructions_view,
+};
 use super::state::folder_of_directory;
 use super::wire::{
     BranchState, BranchView, ConnectionChoice, ConnectionOrigin, ConnectionSourceView,
@@ -62,7 +66,20 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
     let active = store
         .active_provider_profile()
         .map(|status| status.profile().id());
-    let workspaces = store
+    let mut chat = chat_defaults_view(&inner.data_root);
+    // The rooms follow the saves' rule (ADR-0080): `None` when the text they
+    // must fit beside cannot be read now. This read is not under the
+    // preferences lock, so the saves check again.
+    let workspace_room =
+        global_for_room(&inner.data_root).map(|global| instructions::workspace_room(&global));
+    chat.instructions_max_bytes = longest_for_room(
+        &inner.data_root,
+        store
+            .workspaces()
+            .map(|workspace| *workspace.id().as_uuid()),
+    )
+    .map(instructions::global_room);
+    let workspaces: Vec<WorkspaceSettingsView> = store
         .workspaces()
         .map(|workspace| {
             let permissions = workspace.permissions();
@@ -77,6 +94,11 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                 host_services: permissions.host_services,
                 write_tools: permissions.write_tools,
                 package_cache_root: store.package_cache_root_display(workspace.id()),
+                instructions: workspace_instructions_view(
+                    &inner.data_root,
+                    *workspace.id().as_uuid(),
+                ),
+                instructions_max_bytes: workspace_room,
             }
         })
         .collect();
@@ -170,6 +192,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         package_profiles,
         container_grants,
         skills,
+        chat,
         scope: inner.settings_scope(),
     };
     drop(store);

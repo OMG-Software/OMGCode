@@ -294,3 +294,32 @@
 .workspace-details {
   margin-top: 12px;
 }
+
+/* Chat defaults beside the model connection, and each workspace's instructions (ADR-0080). */
+.number-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.chat-defaults .form,
+.workspace-instructions {
+  max-width: 560px;
+}
+
+.workspace-instructions {
+  margin-top: 12px;
+}
+
+.chat-defaults textarea,
+.workspace-instructions textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.byte-counter.over {
+  color: var(--danger);
+}

@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 import { setInvoker } from "../src/ipc/client";
 import type {
+  ChatDefaultsView,
   ChatSettings,
   ConnectionStatus,
   SessionSummary,
@@ -31,11 +32,35 @@ export const SETTINGS: ChatSettings = {
   max_tool_calls: 128,
   turn_timeout_seconds: 120,
   instructions: "",
-  compact_threshold: 6000,
+  compact_threshold: 200_000,
   auto_compact: true,
 };
 
-export const CHAT_BUDGET_BOUNDS = { tool_call_limit_max: 256, turn_timeout_seconds_max: 3600 };
+export const CHAT_BUDGET_BOUNDS = {
+  tool_call_limit_max: 256,
+  turn_timeout_seconds_max: 3600,
+  compact_threshold_min: 128_000,
+  compact_threshold_max: 1_000_000,
+};
+
+/** The settings window's chat defaults (ADR-0080): the shared fixture's saved values. */
+export function chatDefaultsView(overrides: Partial<ChatDefaultsView> = {}): ChatDefaultsView {
+  return {
+    defaults: {
+      context_tokens: SETTINGS.context_tokens,
+      max_output_tokens: SETTINGS.max_output_tokens,
+      max_tool_calls: SETTINGS.max_tool_calls,
+      turn_timeout_seconds: SETTINGS.turn_timeout_seconds,
+      instructions: SETTINGS.instructions,
+    },
+    source: "saved",
+    max_output_tokens_max: 4_294_967_295,
+    tool_call_limit_max: 256,
+    turn_timeout_seconds_max: 3600,
+    instructions_max_bytes: 16 * 1024,
+    ...overrides,
+  };
+}
 
 export function rejection(code: string, message: string): never {
   throw { code, message };
@@ -182,6 +207,17 @@ export function mountRoot(): HTMLElement {
   root.id = "app";
   document.body.appendChild(root);
   return root;
+}
+
+/** The icon button whose accessible name (also its tooltip) is `label`. */
+export function buttonByLabel(scope: ParentNode, label: string): HTMLButtonElement {
+  const found = Array.from(scope.querySelectorAll("button")).find(
+    (b) => b.getAttribute("aria-label") === label,
+  );
+  if (found === undefined) {
+    throw new Error(`No button labelled ${label}`);
+  }
+  return found;
 }
 
 export function buttonByText(scope: ParentNode, label: string): HTMLButtonElement {

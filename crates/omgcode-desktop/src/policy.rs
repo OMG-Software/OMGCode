@@ -79,11 +79,13 @@ pub enum Command {
     SettingsSetApiKey,
     SettingsClearScope,
     SettingsRepairDataFolder,
+    SettingsSaveChatDefaults,
+    SettingsSetWorkspaceInstructions,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 42] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -124,6 +126,8 @@ impl Command {
         Self::SettingsSetApiKey,
         Self::SettingsClearScope,
         Self::SettingsRepairDataFolder,
+        Self::SettingsSaveChatDefaults,
+        Self::SettingsSetWorkspaceInstructions,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -170,6 +174,8 @@ impl Command {
             Self::SettingsSetApiKey => "settings_set_api_key",
             Self::SettingsClearScope => "settings_clear_scope",
             Self::SettingsRepairDataFolder => "settings_repair_data_folder",
+            Self::SettingsSaveChatDefaults => "settings_save_chat_defaults",
+            Self::SettingsSetWorkspaceInstructions => "settings_set_workspace_instructions",
         }
     }
 
@@ -191,7 +197,9 @@ impl Command {
             | Self::SettingsRemoveConnection
             | Self::SettingsSetApiKey
             | Self::SettingsClearScope
-            | Self::SettingsRepairDataFolder => WindowLabel::Settings,
+            | Self::SettingsRepairDataFolder
+            | Self::SettingsSaveChatDefaults
+            | Self::SettingsSetWorkspaceInstructions => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -254,10 +262,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 40);
+        assert_eq!(Command::ALL.len(), 42);
         assert_eq!(with_window(WindowLabel::Main).len(), 25);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 12);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 14);
     }
 
     #[test]
@@ -342,8 +350,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 40);
-        assert_eq!(shared.len(), 40);
+        assert_eq!(COMMAND_NAMES.len(), 42);
+        assert_eq!(shared.len(), 42);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

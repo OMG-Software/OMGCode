@@ -7,6 +7,7 @@ import type {
   SettingsOverview,
 } from "../ipc/types";
 import { DEFAULT_ENDPOINTS, providerName } from "../providers";
+import { chatDefaultsBlock } from "./chat_section";
 import type { ConnectionDraft, SectionContext } from "./context";
 import { facts, sectionHead } from "./parts";
 
@@ -347,6 +348,7 @@ export function renderModel(ctx: SectionContext): HTMLElement[] {
   return [
     ...sectionHead("Model", MODEL_HELP),
     activeConnection(ctx),
+    chatDefaultsBlock(ctx),
     connectionList(ctx),
     addConnection(ctx),
   ];

@@ -3,13 +3,15 @@ import { CANCELLED_CODE } from "../ipc/errors";
 import type {
   ApprovalDetail,
   ApprovalView,
+  ChatBudgets,
   ChatDefaults,
+  ChatDefaultsView,
   ChatEvent,
   ChatModels,
   ChatOutcome,
-  ChatPreferences,
   ChatSettings,
   ChatStatus,
+  ComposerPreferences,
   ConnectionStatus,
   ConnectionView,
   PermissionFlags,
@@ -97,6 +99,33 @@ function isSubscriber(value: unknown): value is Subscriber {
   );
 }
 
+/** The composer's compaction slider range (ADR-0080), as Rust reports it. */
+const COMPACT_MIN = 128_000;
+const COMPACT_MAX = 1_000_000;
+/** The bound Rust puts on each saved custom instruction text, in UTF-8 bytes. */
+const INSTRUCTIONS_MAX_BYTES = 16 * 1024;
+/** The largest value of Rust's `u32`, the type of the output reserve. */
+const U32_MAX = 4_294_967_295;
+/** Bytes of Rust's `Workspace instructions:` heading line. */
+const WORKSPACE_HEADING_BYTES = 24;
+/** Bytes both headings and the blank line between the texts add. */
+const BOTH_HEADINGS_BYTES = 47;
+
+/** The one saved chat defaults file: the settings window's fields and the composer's. */
+type MockPreferences = ChatBudgets & ComposerPreferences & { model: string };
+
+const BUILT_IN_PREFERENCES: MockPreferences = {
+  model: "qwen2.5-coder",
+  context_tokens: 8192,
+  max_output_tokens: 1024,
+  max_tool_calls: 128,
+  turn_timeout_seconds: 120,
+  instructions: "",
+  compact_threshold: 200_000,
+  auto_compact: true,
+  enter_to_send: true,
+};
+
 /** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
 export function createMockBackend(now: () => number = Date.now): { invoke: Invoker } {
   const { groups, sessions } = buildFixtures(now());
@@ -104,7 +133,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   const chats = new Map<string, ChatRecord>();
   const tokens = new Map<string, { id: string; expires: number }>();
   let subscriber: Subscriber | null = null;
-  let savedPreferences: ChatPreferences | null = null;
+  /** The saved chat defaults, as Rust keeps them in one file; `null` until something is saved. */
+  let savedPreferences: MockPreferences | null = null;
   /**
    * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
    * for it, as Rust records it, and its model.
@@ -602,9 +632,55 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
                   ],
         } satisfies ChatModels;
       }
-      case "chat_preferences_save":
-        savedPreferences = clone(args.preferences as ChatPreferences);
+      // Each window saves only its own fields; the rest keep their values (ADR-0080).
+      case "chat_preferences_save": {
+        const saved = clone(args.preferences as ComposerPreferences);
+        if (saved.compact_threshold < COMPACT_MIN || saved.compact_threshold > COMPACT_MAX) {
+          return fail(
+            "invalid_request",
+            `The compaction threshold must be from ${COMPACT_MIN} to ${COMPACT_MAX} tokens.`,
+          );
+        }
+        savedPreferences = { ...preferences(), ...saved };
+        settings.chat = chatView();
         return chatDefaults();
+      }
+      case "settings_save_chat_defaults": {
+        const saved = clone(args.defaults as ChatBudgets);
+        if (saved.context_tokens < 1 || saved.max_output_tokens < 1) {
+          return fail("invalid_request", "Set the context size to a positive number of tokens.");
+        }
+        // Rust's request type holds a 32-bit output reserve; a larger one never reaches the save.
+        if (saved.max_output_tokens > U32_MAX) {
+          return fail("invalid_request", "invalid value: integer, expected u32");
+        }
+        const globalRoom = overviewView().chat.instructions_max_bytes ?? 0;
+        if (new TextEncoder().encode(saved.instructions).length > globalRoom) {
+          return fail(
+            "invalid_request",
+            `The global instructions can be at most ${globalRoom} bytes beside the longest workspace instructions.`,
+          );
+        }
+        savedPreferences = { ...preferences(), ...saved };
+        settings.chat = chatView();
+        return overviewView();
+      }
+      case "settings_set_workspace_instructions": {
+        const workspace = mockWorkspace(args);
+        const instructions = str(args, "instructions");
+        // Rust's bound: UTF-8 bytes beside the global text, and a refusal keeps the saved text.
+        const room =
+          overviewView().workspaces.find((w) => w.workspace_id === workspace.workspace_id)
+            ?.instructions_max_bytes ?? 0;
+        if (new TextEncoder().encode(instructions).length > room) {
+          return fail(
+            "invalid_request",
+            `The workspace instructions can be at most ${room} bytes beside the global instructions.`,
+          );
+        }
+        workspace.instructions = instructions;
+        return overviewView();
+      }
       case "session_skills":
         str(args, "session_id");
         return { workspace_registered: true, skills: ["review-checklist", "release-notes"] };
@@ -625,13 +701,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       }
       case "settings_clear_scope":
         settings.scope = null;
-        return clone(settings);
+        return overviewView();
       case "settings_overview":
-        return clone(settings);
+        return overviewView();
       // The mock's data folder grants no extra account, so, like Rust for a private folder,
       // nothing is asked and nothing changes (ADR-0073).
       case "settings_repair_data_folder":
-        return clone(settings);
+        return overviewView();
       // The development mock stands in for the native dialogs: each folder dialog "chooses" a
       // fixed folder and each confirmation is accepted.
       case "settings_choose_root":
@@ -663,6 +739,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               delete: "allow",
             },
             package_cache_root: null,
+            instructions: "",
+            instructions_max_bytes: 0,
           });
         });
       case "settings_set_permissions":
@@ -842,26 +920,60 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     }
   }
 
+  /** The saved chat defaults, or the mock's built-in ones. */
+  function preferences(): MockPreferences {
+    return clone(savedPreferences ?? BUILT_IN_PREFERENCES);
+  }
+
   function chatDefaults(): ChatDefaults {
-    const preferences = savedPreferences ?? {
-      model: "qwen2.5-coder",
-      context_tokens: 8192,
-      max_output_tokens: 1024,
-      max_tool_calls: 128,
-      turn_timeout_seconds: 120,
-      instructions: "",
-      compact_threshold: 6000,
-      auto_compact: true,
-      enter_to_send: true,
-    };
-    // A request saved by an older window may lack the field; core reads that as on.
-    const { enter_to_send = true, ...turnSettings } = clone(preferences);
+    const { enter_to_send, ...turnSettings } = preferences();
     return {
       settings: { endpoint: currentEndpoint(), ...turnSettings } satisfies ChatSettings,
       tool_call_limit_max: 256,
       turn_timeout_seconds_max: 3600,
       preferences: savedPreferences === null ? "defaults" : "saved",
       enter_to_send,
+      compact_threshold_min: COMPACT_MIN,
+      compact_threshold_max: COMPACT_MAX,
+    };
+  }
+
+  /**
+   * The overview as Rust returns it, with each instruction room worked out as Rust does
+   * (ADR-0080): what is left of 16 KiB beside the other text and the headings a turn adds.
+   */
+  function overviewView(): SettingsOverview {
+    const view = clone(settings);
+    const bytes = (text: string): number => new TextEncoder().encode(text).length;
+    const global = bytes(preferences().instructions);
+    for (const workspace of view.workspaces) {
+      const used = global === 0 ? WORKSPACE_HEADING_BYTES : BOTH_HEADINGS_BYTES + global;
+      workspace.instructions_max_bytes = Math.max(0, INSTRUCTIONS_MAX_BYTES - used);
+    }
+    const longest = Math.max(0, ...view.workspaces.map((w) => bytes(w.instructions ?? "")));
+    view.chat.instructions_max_bytes =
+      longest === 0
+        ? INSTRUCTIONS_MAX_BYTES
+        : Math.max(0, INSTRUCTIONS_MAX_BYTES - BOTH_HEADINGS_BYTES - longest);
+    return view;
+  }
+
+  /** The chat defaults the settings window shows (ADR-0080). */
+  function chatView(): ChatDefaultsView {
+    const saved = preferences();
+    return {
+      defaults: {
+        context_tokens: saved.context_tokens,
+        max_output_tokens: saved.max_output_tokens,
+        max_tool_calls: saved.max_tool_calls,
+        turn_timeout_seconds: saved.turn_timeout_seconds,
+        instructions: saved.instructions,
+      },
+      source: savedPreferences === null ? "defaults" : "saved",
+      max_output_tokens_max: U32_MAX,
+      tool_call_limit_max: 256,
+      turn_timeout_seconds_max: 3600,
+      instructions_max_bytes: INSTRUCTIONS_MAX_BYTES,
     };
   }
 
@@ -959,7 +1071,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     }
     change();
     settings.revision += 1;
-    return clone(settings);
+    return overviewView();
   }
 
   function mockWorkspace(args: Record<string, unknown>): WorkspaceSettingsView {
@@ -994,6 +1106,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             delete: "prompt",
           },
           package_cache_root: null,
+          instructions: "Run the tests before answering.",
+          instructions_max_bytes: 0,
         },
         {
           workspace_id: "88888888-8888-4888-8888-888888888888",
@@ -1012,6 +1126,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             delete: "allow",
           },
           package_cache_root: null,
+          instructions: "",
+          instructions_max_bytes: 0,
         },
       ],
       connection: {
@@ -1059,6 +1175,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           workspace_overrides: [{ workspace_id: workspace, enabled: false }],
         },
       ],
+      chat: chatView(),
       scope: null,
     };
   }
@@ -1096,7 +1213,6 @@ export function isLocalEndpoint(endpoint: string): boolean {
   return v6 === undefined ? isIpv4Loopback(v4 ?? "") : isIpv6Loopback(v6);
 }
 
-/** `127.0.0.0/8` in strict dotted decimal: four parts, no leading zero. */
 /** The bound core's `Secret` applies to a key, in UTF-8 bytes. */
 const MAX_API_KEY_BYTES = 16 * 1024;
 
@@ -1118,6 +1234,7 @@ function checkApiKey(key: unknown): void {
   }
 }
 
+/** `127.0.0.0/8` in strict dotted decimal: four parts, no leading zero. */
 function isIpv4Loopback(host: string): boolean {
   const parts = host.split(".");
   return (

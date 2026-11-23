@@ -6,6 +6,7 @@ import { SESSION_CHOICES_UNREADABLE } from "../src/main/composer";
 import { CONNECTION_UNCHANGED } from "../src/main/connection_state";
 import { CLOUD_WARNING, HOSTED_SUFFIX, HOSTED_WARNING } from "../src/main/model_picker";
 import {
+  buttonByLabel,
   buttonByText,
   choose,
   connectionStatus,
@@ -427,7 +428,7 @@ describe("per-session provider and model", () => {
     await open("s-a");
     await open("s-b");
 
-    buttonByText(root, "Workspace settings").click();
+    buttonByLabel(root, "Workspace settings").click();
     await settle();
     expect(ipc.callsTo("settings_show_workspace")).toEqual([
       { command: "settings_show_workspace", args: { session_id: "s-b" } },
@@ -444,7 +445,7 @@ describe("per-session provider and model", () => {
         }),
     });
     await open("s-a");
-    buttonByText(root, "Workspace settings").click();
+    buttonByLabel(root, "Workspace settings").click();
     await settle();
     await open("s-b");
     fail({ code: "unknown_workspace", message: "The workspace is not registered." });

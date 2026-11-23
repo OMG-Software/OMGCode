@@ -7,7 +7,15 @@ import type {
   WriteToolAccess,
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
-import { buttonByText, type FakeIpc, installFakeIpc, mountRoot, settle } from "./helpers";
+import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
+import {
+  buttonByText,
+  chatDefaultsView,
+  type FakeIpc,
+  installFakeIpc,
+  mountRoot,
+  settle,
+} from "./helpers";
 
 const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -31,6 +39,8 @@ function workspace(id: string, folder: string, extra: Partial<WorkspaceSettingsV
     host_services: "deny",
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
+    instructions: "",
+    instructions_max_bytes: 16_360,
     ...extra,
   } satisfies WorkspaceSettingsView;
 }
@@ -65,6 +75,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     package_profiles: [],
     container_grants: [],
     skills: [],
+    chat: chatDefaultsView(),
     scope: null,
     ...overrides,
   };
@@ -608,5 +619,222 @@ describe("hostile configuration text", () => {
       expect(text, section).not.toContain(rtl);
       expect(text, section).not.toContain(bidi);
     }
+  });
+});
+
+describe("chat defaults and custom instructions (ADR-0080)", () => {
+  function field<T extends HTMLElement>(id: string): T {
+    const found = root.querySelector<T>(`#${id}`);
+    if (found === null) {
+      throw new Error(`No field ${id}`);
+    }
+    return found;
+  }
+
+  function type(control: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+    control.value = value;
+    control.dispatchEvent(new Event("input"));
+  }
+
+  it("shows the saved budgets beside the connection and saves them with the global instructions", async () => {
+    const saved = chatDefaultsView({
+      defaults: {
+        context_tokens: 65_536,
+        max_output_tokens: 4096,
+        max_tool_calls: 64,
+        turn_timeout_seconds: 600,
+        instructions: "Be brief.",
+      },
+    });
+    await start(() => overview(), {
+      settings_save_chat_defaults: () => overview({ chat: saved }),
+    });
+    go("Model");
+    const block = root.querySelector(".chat-defaults") as HTMLElement;
+    // After the active connection, before the list of connections.
+    const blocks = Array.from(root.querySelectorAll(".block > h3")).map((h) => h.textContent);
+    expect(blocks.slice(0, 3)).toEqual(["Active connection", "Chat defaults", "Connections"]);
+    expect(field<HTMLInputElement>("chat-context-tokens").value).toBe("8192");
+    expect(field<HTMLInputElement>("chat-max-tool-calls").max).toBe("256");
+    expect(field<HTMLInputElement>("chat-turn-timeout-seconds").max).toBe("3600");
+
+    type(field("chat-context-tokens"), "65536");
+    type(field("chat-max-output-tokens"), "4096");
+    type(field("chat-max-tool-calls"), "64");
+    type(field("chat-turn-timeout-seconds"), "600");
+    type(field("global-instructions"), "Be brief.");
+    expect(block.querySelector(".byte-counter")?.textContent).toBe("9 / 16384 bytes");
+    buttonByText(root, "Save chat defaults").click();
+    await settle();
+
+    expect(ipc.callsTo("settings_save_chat_defaults")).toEqual([
+      {
+        command: "settings_save_chat_defaults",
+        args: {
+          defaults: {
+            context_tokens: 65_536,
+            max_output_tokens: 4096,
+            max_tool_calls: 64,
+            turn_timeout_seconds: 600,
+            instructions: "Be brief.",
+          },
+        },
+      },
+    ]);
+    // No confirmation and no revision: none of it is a permission.
+    expect(field<HTMLTextAreaElement>("global-instructions").value).toBe("Be brief.");
+  });
+
+  it("refuses an output reserve larger than Rust's 32-bit field without sending", async () => {
+    await start(() => overview());
+    go("Model");
+    // A safe JavaScript integer, but over u32::MAX.
+    type(field("chat-max-output-tokens"), "5000000000");
+    buttonByText(root, "Save chat defaults").click();
+    await settle();
+    expect(ipc.callsTo("settings_save_chat_defaults")).toHaveLength(0);
+    expect(root.querySelector(".chat-defaults .error")?.textContent).toBe(
+      "Set Max output tokens to a whole number from 1 to 4294967295.",
+    );
+    expect(field<HTMLInputElement>("chat-max-output-tokens").max).toBe("4294967295");
+  });
+
+  it("refuses a value outside its range without sending, and keeps the draft across a redraw", async () => {
+    await start(() => overview());
+    go("Model");
+    type(field("chat-max-tool-calls"), "257");
+    type(field("global-instructions"), "Draft text");
+    buttonByText(root, "Save chat defaults").click();
+    await settle();
+    expect(ipc.callsTo("settings_save_chat_defaults")).toHaveLength(0);
+    expect(root.querySelector(".chat-defaults .error")?.textContent).toBe(
+      "Set Tool calls per turn to a whole number from 1 to 256.",
+    );
+    type(field("chat-max-tool-calls"), "");
+    buttonByText(root, "Save chat defaults").click();
+    expect(root.querySelector(".chat-defaults .error")?.textContent).toBe(
+      "Set Tool calls per turn to a whole number of at least 1.",
+    );
+
+    // Another section and back: what was typed is still there.
+    go("Workspaces");
+    go("Model");
+    expect(field<HTMLTextAreaElement>("global-instructions").value).toBe("Draft text");
+    expect(field<HTMLInputElement>("chat-max-tool-calls").value).toBe("");
+  });
+
+  it("says when the saved defaults could not be read", async () => {
+    await start(() => overview({ chat: chatDefaultsView({ source: "unreadable" }) }));
+    go("Model");
+    expect(root.querySelector(".chat-defaults")?.textContent).toContain(
+      "Saved chat defaults could not be read",
+    );
+  });
+
+  it("saves each workspace's own instructions, and empty text removes them", async () => {
+    await start(() => overview(), {
+      settings_set_workspace_instructions: (args) =>
+        overview({
+          workspaces: [
+            workspace(A, "/home/dev/a", { instructions: args.instructions as string }),
+            workspace(B, "/home/dev/b"),
+          ],
+        }),
+    });
+    const box = field<HTMLTextAreaElement>(`workspace-instructions-${A}`);
+    expect(box.value).toBe("");
+    type(box, "Run cargo test first.");
+    buttonByText(root, "Save instructions").click();
+    await settle();
+    expect(ipc.callsTo("settings_set_workspace_instructions")).toEqual([
+      {
+        command: "settings_set_workspace_instructions",
+        args: { workspace_id: A, instructions: "Run cargo test first." },
+      },
+    ]);
+    expect(field<HTMLTextAreaElement>(`workspace-instructions-${A}`).value).toBe(
+      "Run cargo test first.",
+    );
+
+    // The other workspace has its own box, empty.
+    pick(chooser(), B);
+    expect(field<HTMLTextAreaElement>(`workspace-instructions-${B}`).value).toBe("");
+  });
+
+  it("keeps a typed workspace draft when the chooser moves away and back", async () => {
+    await start(() => overview());
+    type(field(`workspace-instructions-${A}`), "Unsaved");
+    pick(chooser(), B);
+    pick(chooser(), A);
+    expect(field<HTMLTextAreaElement>(`workspace-instructions-${A}`).value).toBe("Unsaved");
+  });
+
+  it("counts against the room Rust leaves beside the global text and keeps longer text", async () => {
+    await start(() =>
+      overview({
+        workspaces: [
+          workspace(A, "/home/dev/a", { instructions_max_bytes: 10 }),
+          workspace(B, "/b"),
+        ],
+      }),
+    );
+    const box = field<HTMLTextAreaElement>(`workspace-instructions-${A}`);
+    type(box, "eleven byte");
+    const counter = root.querySelector(".workspace-instructions .byte-counter");
+    expect(counter?.textContent).toBe("11 / 10 bytes");
+    expect(counter?.classList.contains("over")).toBe(true);
+    buttonByText(root, "Save instructions").click();
+    await settle();
+    expect(ipc.callsTo("settings_set_workspace_instructions")).toHaveLength(0);
+    expect(root.querySelector(".workspace-instructions [role=alert]")?.textContent).toBe(
+      workspaceTooLong(10),
+    );
+    expect(box.value).toBe("eleven byte");
+  });
+
+  it("leaves an unknown room to Rust and says why the counter has no limit", async () => {
+    await start(() =>
+      overview({
+        chat: chatDefaultsView({ instructions_max_bytes: null }),
+        workspaces: [
+          workspace(A, "/home/dev/a", { instructions_max_bytes: null }),
+          workspace(B, "/b"),
+        ],
+      }),
+    );
+    const box = field<HTMLTextAreaElement>(`workspace-instructions-${A}`);
+    type(box, "Use tabs.");
+    const counter = root.querySelector(".workspace-instructions .byte-counter");
+    expect(counter?.textContent).toBe(`9 bytes; ${ROOM_UNKNOWN}`);
+    expect(counter?.classList.contains("over")).toBe(false);
+    buttonByText(root, "Save instructions").click();
+    await settle();
+    // Rust reads the global text again under its lock and decides.
+    expect(ipc.callsTo("settings_set_workspace_instructions")).toEqual([
+      {
+        command: "settings_set_workspace_instructions",
+        args: { workspace_id: A, instructions: "Use tabs." },
+      },
+    ]);
+
+    go("Model");
+    type(field("global-instructions"), "Be brief.");
+    expect(root.querySelector(".chat-defaults .byte-counter")?.textContent).toBe(
+      `9 bytes; ${ROOM_UNKNOWN}`,
+    );
+    buttonByText(root, "Save chat defaults").click();
+    await settle();
+    expect(ipc.callsTo("settings_save_chat_defaults")).toHaveLength(1);
+  });
+
+  it("says when a workspace's saved instructions could not be read", async () => {
+    await start(() =>
+      overview({
+        workspaces: [workspace(A, "/home/dev/a", { instructions: null }), workspace(B, "/b")],
+      }),
+    );
+    expect(root.querySelector(".workspace-instructions")?.textContent).toContain(
+      "could not be read",
+    );
   });
 });

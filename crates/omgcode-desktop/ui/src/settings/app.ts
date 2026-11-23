@@ -83,6 +83,10 @@ const ACTIONS: Actions = {
     settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
   setApiKey: (name, apiKey) => (revision) => settingsApi.setApiKey(revision, name, apiKey),
   removeConnection: (name) => (revision) => settingsApi.removeConnection(revision, name),
+  // Neither is a permission, so neither names the settings revision.
+  saveChatDefaults: (defaults) => () => settingsApi.saveChatDefaults(defaults),
+  setWorkspaceInstructions: (workspaceId, instructions) => () =>
+    settingsApi.setWorkspaceInstructions(workspaceId, instructions),
 };
 
 /**
@@ -97,6 +101,8 @@ export function startSettings(root: HTMLElement): SettingsApp {
     toolLimitsOpen: false,
     addConnectionOpen: false,
     connectionDraft: newConnectionDraft(),
+    chatDraft: null,
+    instructionDrafts: new Map(),
   };
   // A change's error stays until the next change starts; a read's failure until a read succeeds.
   // Two elements, so neither outcome can overwrite or clear the other.

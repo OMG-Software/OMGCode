@@ -26,6 +26,7 @@ import {
 } from "../src/settings/app";
 import {
   buttonByText,
+  chatDefaultsView,
   type FakeIpc,
   installFakeIpc,
   mountRoot,
@@ -54,6 +55,8 @@ function workspace(overrides: Partial<WorkspaceSettingsView> = {}): WorkspaceSet
     host_services: "deny",
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
+    instructions: "",
+    instructions_max_bytes: 16_360,
     ...overrides,
   };
 }
@@ -117,6 +120,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
         workspace_overrides: [{ workspace_id: WORKSPACE, enabled: false }],
       },
     ],
+    chat: chatDefaultsView(),
     scope: null,
     ...overrides,
   };
@@ -263,19 +267,33 @@ describe("settings window", () => {
   it("types no path and offers exactly three access states everywhere", async () => {
     await start(() => overview());
     // No control takes a typed path: folders come only from the system dialog. The only typed
-    // values are a new connection name, a loopback URL (ADR-0064), and the write-only API key
-    // of an Ollama Cloud connection (ADR-0071).
+    // values are a new connection name, a loopback URL (ADR-0064), the write-only API key of an
+    // Ollama Cloud connection (ADR-0071), the chat budgets as numbers, and the global and
+    // workspace custom instructions (ADR-0080).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);
-      expect(root.querySelectorAll("textarea")).toHaveLength(0);
-      for (const input of Array.from(root.querySelectorAll("input"))) {
-        if (input.type !== "checkbox") {
-          typed.push(input.getAttribute("aria-label"));
+      for (const input of Array.from(root.querySelectorAll("input, textarea"))) {
+        if (input instanceof HTMLInputElement && input.type === "checkbox") {
+          continue;
+        }
+        typed.push(input.getAttribute("aria-label") ?? input.id);
+        if (input instanceof HTMLInputElement && input.id.startsWith("chat-")) {
+          expect(input.type).toBe("number");
         }
       }
     }
-    expect(typed).toEqual(["New connection name", "New connection endpoint", "API key"]);
+    expect(typed).toEqual([
+      `workspace-instructions-${WORKSPACE}`,
+      "chat-context-tokens",
+      "chat-max-output-tokens",
+      "chat-max-tool-calls",
+      "chat-turn-timeout-seconds",
+      "global-instructions",
+      "New connection name",
+      "New connection endpoint",
+      "API key",
+    ]);
     // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
     // group, and the three labels are the same everywhere.
     go("Model");

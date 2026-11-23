@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
+import type { ChatDefaults, ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
 import { createMockBackend, isLocalEndpoint } from "../src/mock/backend";
 import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 
@@ -672,5 +672,98 @@ describe("mock backend", () => {
         execute: "deny",
       });
     });
+  });
+});
+
+describe("mock chat defaults (ADR-0080)", () => {
+  it("keeps each window's saved fields when the other window saves", async () => {
+    const { invoke } = createMockBackend();
+    await invoke("settings_save_chat_defaults", {
+      defaults: {
+        context_tokens: 65_536,
+        max_output_tokens: 2048,
+        max_tool_calls: 32,
+        turn_timeout_seconds: 300,
+        instructions: "Be brief.",
+      },
+    });
+    const saved = (await invoke("chat_preferences_save", {
+      preferences: { compact_threshold: 512_000, auto_compact: false, enter_to_send: false },
+    })) as ChatDefaults;
+    expect(saved.settings).toMatchObject({
+      context_tokens: 65_536,
+      instructions: "Be brief.",
+      compact_threshold: 512_000,
+      auto_compact: false,
+    });
+    expect(saved.enter_to_send).toBe(false);
+    const overview = (await invoke("settings_overview", {})) as SettingsOverview;
+    expect(overview.chat.defaults.context_tokens).toBe(65_536);
+    expect(overview.chat.source).toBe("saved");
+    await expect(
+      invoke("chat_preferences_save", {
+        preferences: { compact_threshold: 6000, auto_compact: false, enter_to_send: true },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+  });
+
+  it("stores a workspace's instructions without changing the revision", async () => {
+    const { invoke } = createMockBackend();
+    const before = (await invoke("settings_overview", {})) as SettingsOverview;
+    const id = before.workspaces[1]?.workspace_id ?? "";
+    const after = (await invoke("settings_set_workspace_instructions", {
+      workspace_id: id,
+      instructions: "Use tabs.",
+    })) as SettingsOverview;
+    expect(after.revision).toBe(before.revision);
+    expect(after.workspaces[1]?.instructions).toBe("Use tabs.");
+  });
+
+  it("refuses workspace instructions that do not fit beside the global text, in UTF-8 bytes", async () => {
+    const { invoke } = createMockBackend();
+    const before = (await invoke("settings_overview", {})) as SettingsOverview;
+    const id = before.workspaces[0]?.workspace_id ?? "";
+    const saved = before.workspaces[0]?.instructions;
+    // No global text: 16 KiB less the 24-byte workspace heading.
+    const room = before.workspaces[0]?.instructions_max_bytes ?? 0;
+    expect(room).toBe(16 * 1024 - 24);
+    // 5,454 three-byte characters are 16,362 bytes, though only 5,454 UTF-16 units.
+    for (const instructions of ["i".repeat(room + 1), "€".repeat(5454)]) {
+      await expect(
+        invoke("settings_set_workspace_instructions", { workspace_id: id, instructions }),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+    }
+    const after = (await invoke("settings_overview", {})) as SettingsOverview;
+    expect(after.workspaces[0]?.instructions).toBe(saved);
+    // The room itself fits.
+    await invoke("settings_set_workspace_instructions", {
+      workspace_id: id,
+      instructions: "i".repeat(room),
+    });
+  });
+
+  it("keeps the global and every workspace text sendable together", async () => {
+    const { invoke } = createMockBackend();
+    const start = (await invoke("settings_overview", {})) as SettingsOverview;
+    const id = start.workspaces[0]?.workspace_id ?? "";
+    await invoke("settings_set_workspace_instructions", {
+      workspace_id: id,
+      instructions: "w".repeat(10_000),
+    });
+    const overview = (await invoke("settings_overview", {})) as SettingsOverview;
+    // Both headings and the blank line take 47 bytes.
+    const globalRoom = 16 * 1024 - 47 - 10_000;
+    expect(overview.chat.instructions_max_bytes).toBe(globalRoom);
+    const defaults = { ...overview.chat.defaults, context_tokens: 8192 };
+    await expect(
+      invoke("settings_save_chat_defaults", {
+        defaults: { ...defaults, instructions: "g".repeat(globalRoom + 1) },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const saved = (await invoke("settings_save_chat_defaults", {
+      defaults: { ...defaults, instructions: "g".repeat(globalRoom) },
+    })) as SettingsOverview;
+    // With that global text saved, the workspace has exactly its own text's room.
+    expect(saved.workspaces[0]?.instructions_max_bytes).toBe(10_000);
   });
 });

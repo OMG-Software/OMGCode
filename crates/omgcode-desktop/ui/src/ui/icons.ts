@@ -35,6 +35,26 @@ const ICONS = {
     ["circle", { cx: "17", cy: "18", r: "2" }],
   ],
   terminal: [FRAME, ["path", { d: "M7 9l3 3-3 3M13 15h4" }]],
+  /** A frame with an M and a down arrow: copy the reply's Markdown source. */
+  markdown: [
+    ["rect", { x: "2", y: "5", width: "20", height: "14", rx: "2" }],
+    ["path", { d: "M6 15V9l3 3 3-3v6M17 9v6M15 13l2 2 2-2" }],
+  ],
+  /** Two overlapping sheets: copy the reply as plain text. */
+  copy: [
+    ["rect", { x: "9", y: "9", width: "11", height: "11", rx: "2" }],
+    ["path", { d: "M5 15V6a2 2 0 0 1 2-2h8" }],
+  ],
+  /** A picture frame: copy the reply as an image. */
+  image: [FRAME, ["circle", { cx: "9", cy: "10", r: "1.5" }], ["path", { d: "M21 16l-5-5-9 9" }]],
+  /** A folder: the open session's workspace settings. */
+  folder: [
+    ["path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }],
+  ],
+  /** A tick: an action that succeeded. */
+  check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
+  /** A cross: an action that failed. */
+  cross: [["path", { d: "M6 6l12 12M18 6L6 18" }]],
 } satisfies Record<string, readonly Shape[]>;
 
 export type IconName = keyof typeof ICONS;
@@ -81,4 +101,11 @@ export function iconButton(
   node.appendChild(icon(name));
   node.addEventListener("click", onClick);
   return node;
+}
+
+/** Shows `name` and `label` on an icon button made by `iconButton`, replacing its icon. */
+export function setIconButton(node: HTMLButtonElement, name: IconName, label: string): void {
+  node.setAttribute("aria-label", label);
+  node.title = label;
+  node.replaceChildren(icon(name));
 }

@@ -456,7 +456,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
     try {
       await runner.send(session.session_id, message, settings, skills);
       if (opening === submitted) {
-        composer.clear();
+        composer.clearSent(message, skills);
       }
     } catch (reason) {
       const error = toIpcError(reason);

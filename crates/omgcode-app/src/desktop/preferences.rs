@@ -1,10 +1,16 @@
-//! Saved chat preferences of the desktop `main` window (ADR-0059 decision 8).
+//! Saved chat preferences of the desktop shell (ADR-0059 decision 8, ADR-0080).
 //!
 //! The file is `<data_root>/desktop-v1/chat-preferences.json`. It holds
-//! non-authority defaults for the composer: the model name, budgets,
-//! compaction settings, and custom instructions. Nothing in it is a permission,
-//! an endpoint, a provider choice, or a secret, and `chat_send` validates every
-//! value again when a turn uses it.
+//! non-authority chat defaults: the model name, budgets, compaction settings,
+//! global custom instructions, and the composer's send key. Nothing in it is a
+//! permission, an endpoint, a provider choice, or a secret, and `chat_send`
+//! validates every value again when a turn uses it.
+//!
+//! Two windows write it, each its own fields (ADR-0080): the `settings`
+//! window the budgets and global instructions, the `main` window the
+//! compaction settings and the send key. [`update`] merges one window's fields
+//! into the file under the service's preferences lock, so neither window's
+//! save overwrites the other's.
 //!
 //! # Storage contract
 //!
@@ -30,12 +36,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
+use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
+
 use super::error::DesktopError;
-use super::wire::ChatPreferencesDto;
-use crate::chat::validate_turn_budgets;
+use super::wire::{ChatPreferencesDto, enter_to_send_default};
+use crate::chat::{DEFAULT_TURN_TIMEOUT_SECONDS, validate_turn_budgets};
+
+/// Output reserve of the built-in preferences.
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
 
 /// The directory under the data root that holds desktop-only files.
-const DIRECTORY: &str = "desktop-v1";
+pub(super) const DIRECTORY: &str = "desktop-v1";
 /// The preferences file name.
 const FILE_NAME: &str = "chat-preferences.json";
 /// The only file format version this build reads and writes.
@@ -43,8 +55,16 @@ const VERSION: u32 = 1;
 /// Largest model name accepted. Model identifiers are short; this only bounds
 /// what is stored.
 pub(super) const MAX_MODEL_BYTES: usize = 256;
-/// Largest custom-instruction text, equal to the `chat_send` prefilter.
+/// Largest custom-instruction text a file may hold, equal to the `chat_send`
+/// prefilter. Files written before ADR-0080 may hold this much.
 pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 64 * 1024;
+/// Largest global or workspace instruction text a new save accepts: the core
+/// prompt assembly bound on custom instructions (ADR-0080).
+pub(super) const MAX_SAVED_INSTRUCTIONS_BYTES: usize = 16 * 1024;
+/// Smallest compaction threshold the composer's slider offers (ADR-0080).
+pub(super) const COMPACT_THRESHOLD_MIN: u64 = 128_000;
+/// Largest compaction threshold the composer's slider offers.
+pub(super) const COMPACT_THRESHOLD_MAX: u64 = 1_000_000;
 /// Largest file read or written. JSON escaping can grow the instructions up to
 /// six times (`\u0000` for one byte), so this leaves room for that.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
@@ -96,8 +116,27 @@ fn check(preferences: &ChatPreferencesDto) -> Result<(), String> {
 ///
 /// A [`LoadError`] when the file exists but cannot be used.
 pub(super) fn load(data_root: &Path) -> Result<Option<ChatPreferencesDto>, LoadError> {
-    let path = file_path(data_root);
-    let metadata = match fs::symlink_metadata(&path) {
+    let Some(bytes) = read_bounded(&file_path(data_root), MAX_FILE_BYTES)? else {
+        return Ok(None);
+    };
+    let parsed: PreferencesFile = serde_json::from_slice(&bytes).map_err(|_| LoadError::Format)?;
+    if parsed.version != VERSION {
+        return Err(LoadError::Format);
+    }
+    check(&parsed.preferences).map_err(|_| LoadError::Invalid)?;
+    Ok(Some(parsed.preferences))
+}
+
+/// Read the regular file at `path`, at most `max` bytes.
+///
+/// `Ok(None)` means no entry exists. A link, a directory, or any other
+/// non-regular entry is [`LoadError::Io`].
+///
+/// # Errors
+///
+/// [`LoadError::Io`] or [`LoadError::TooLarge`].
+pub(super) fn read_bounded(path: &Path, max: u64) -> Result<Option<Vec<u8>>, LoadError> {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(LoadError::Io),
@@ -105,24 +144,60 @@ pub(super) fn load(data_root: &Path) -> Result<Option<ChatPreferencesDto>, LoadE
     if !metadata.file_type().is_file() {
         return Err(LoadError::Io);
     }
-    if metadata.len() > MAX_FILE_BYTES {
+    if metadata.len() > max {
         return Err(LoadError::TooLarge);
     }
-    let file = File::open(&path).map_err(|_| LoadError::Io)?;
+    let file = File::open(path).map_err(|_| LoadError::Io)?;
     let mut bytes = Vec::new();
     // One byte more than the bound shows a file that grew after the check.
-    file.take(MAX_FILE_BYTES + 1)
+    file.take(max.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|_| LoadError::Io)?;
-    if u64::try_from(bytes.len()).map_or(true, |length| length > MAX_FILE_BYTES) {
+    if u64::try_from(bytes.len()).map_or(true, |length| length > max) {
         return Err(LoadError::TooLarge);
     }
-    let parsed: PreferencesFile = serde_json::from_slice(&bytes).map_err(|_| LoadError::Format)?;
-    if parsed.version != VERSION {
-        return Err(LoadError::Format);
+    Ok(Some(bytes))
+}
+
+/// The preferences that apply when none are saved: an empty model and the
+/// CLI's budgets.
+pub(super) fn built_in() -> ChatPreferencesDto {
+    ChatPreferencesDto {
+        model: String::new(),
+        context_tokens: 0,
+        max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+        turn_timeout_seconds: DEFAULT_TURN_TIMEOUT_SECONDS,
+        instructions: String::new(),
+        compact_threshold: DEFAULT_COMPACT_THRESHOLD,
+        auto_compact: false,
+        enter_to_send: enter_to_send_default(),
     }
-    check(&parsed.preferences).map_err(|_| LoadError::Invalid)?;
-    Ok(Some(parsed.preferences))
+}
+
+/// Apply `change` to the saved preferences and save the result.
+///
+/// The change starts from the saved file, so the fields `change` leaves alone
+/// keep their saved values. A missing file, or a damaged one that this save
+/// replaces, starts from [`built_in`]. The caller must hold the service's
+/// preferences lock, so two windows' updates cannot interleave (ADR-0080).
+///
+/// # Errors
+///
+/// `preferences` when the file exists but cannot be read, for example while
+/// another program holds it: its fields are unknown, so saving would discard
+/// them, and the file is left unchanged. Otherwise as [`save`].
+pub(super) fn update(
+    data_root: &Path,
+    change: impl FnOnce(&mut ChatPreferencesDto),
+) -> Result<(), DesktopError> {
+    let mut preferences = match load(data_root) {
+        Ok(Some(saved)) => saved,
+        Ok(None) | Err(LoadError::TooLarge | LoadError::Format | LoadError::Invalid) => built_in(),
+        Err(LoadError::Io) => return Err(DesktopError::preferences_unreadable()),
+    };
+    change(&mut preferences);
+    save(data_root, &preferences)
 }
 
 /// Replace the saved preferences.
@@ -143,22 +218,48 @@ pub(super) fn save(data_root: &Path, preferences: &ChatPreferencesDto) -> Result
             "The preferences are too large.",
         ));
     }
-    let directory = data_root.join(DIRECTORY);
-    create_directory(&directory).map_err(|_| DesktopError::preferences())?;
-    replace(&directory, &directory.join(temporary_name()), &bytes)
-        .map_err(|_| DesktopError::preferences())?;
-    sync_directory(&directory).map_err(|_| DesktopError::preferences())
+    write_atomic(&data_root.join(DIRECTORY), FILE_NAME, &bytes)
+        .map_err(|_| DesktopError::preferences())
 }
 
-/// Write `bytes` through the new file `temporary` and rename it over the
-/// preferences file in `directory`.
+/// Create `directory` (private on Unix) and replace `file_name` in it with
+/// `bytes` through a new temporary file, then sync the directory.
+///
+/// # Errors
+///
+/// Any input or output failure. The previous file is then left in place.
+pub(super) fn write_atomic(directory: &Path, file_name: &str, bytes: &[u8]) -> io::Result<()> {
+    create_directory(directory)?;
+    replace(
+        &directory.join(temporary_name(file_name)),
+        &directory.join(file_name),
+        bytes,
+    )?;
+    sync_directory(directory)
+}
+
+/// Remove `file_name` from `directory`, then sync the directory as
+/// [`write_atomic`] does, so a removal is as durable as a replacement. A file
+/// that does not exist is already removed.
+///
+/// # Errors
+///
+/// Any other input or output failure.
+pub(super) fn remove_synced(directory: &Path, file_name: &str) -> io::Result<()> {
+    match fs::remove_file(directory.join(file_name)) {
+        Ok(()) => sync_directory(directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Write `bytes` through the new file `temporary` and rename it over `target`.
 ///
 /// The temporary file is removed on failure only when this call created it,
 /// so a name collision never deletes another save's file.
-fn replace(directory: &Path, temporary: &Path, bytes: &[u8]) -> io::Result<()> {
+fn replace(temporary: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
     let file = create_new(temporary)?;
-    let written =
-        write_synced(file, bytes).and_then(|()| fs::rename(temporary, directory.join(FILE_NAME)));
+    let written = write_synced(file, bytes).and_then(|()| fs::rename(temporary, target));
     if written.is_err() {
         // Best-effort cleanup of the file this call created; it holds no
         // secret. A failed removal leaves a stray file that no load reads,
@@ -171,13 +272,14 @@ fn replace(directory: &Path, temporary: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Distinguishes saves within this process, even within one clock tick.
 static SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// A temporary name unique to this process, this save, and this moment.
-fn temporary_name() -> String {
+/// A temporary name for `file_name`, unique to this process, this save, and
+/// this moment.
+fn temporary_name(file_name: &str) -> String {
     let sequence = SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    format!("{FILE_NAME}.{}-{sequence}-{nanos}.tmp", std::process::id())
+    format!("{file_name}.{}-{sequence}-{nanos}.tmp", std::process::id())
 }
 
 /// Create the desktop directory, private on Unix.
@@ -376,10 +478,10 @@ mod tests {
         let root = scratch("collision");
         let directory = root.join(DIRECTORY);
         fs::create_dir_all(&directory).expect("directory");
-        let temporary = directory.join(temporary_name());
+        let temporary = directory.join(temporary_name(FILE_NAME));
         fs::write(&temporary, b"another save").expect("the other save's file");
 
-        assert!(replace(&directory, &temporary, b"{}").is_err());
+        assert!(replace(&temporary, &directory.join(FILE_NAME), b"{}").is_err());
         assert_eq!(fs::read(&temporary).expect("still there"), b"another save");
         assert!(!directory.join(FILE_NAME).exists());
         fs::remove_dir_all(root).expect("cleanup");
@@ -387,7 +489,8 @@ mod tests {
 
     #[test]
     fn temporary_names_differ_within_one_process() {
-        let names: std::collections::HashSet<String> = (0..64).map(|_| temporary_name()).collect();
+        let names: std::collections::HashSet<String> =
+            (0..64).map(|_| temporary_name(FILE_NAME)).collect();
         assert_eq!(names.len(), 64);
     }
 

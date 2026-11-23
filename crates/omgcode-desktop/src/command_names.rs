@@ -44,4 +44,6 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_set_api_key",
     "settings_clear_scope",
     "settings_repair_data_folder",
+    "settings_save_chat_defaults",
+    "settings_set_workspace_instructions",
 ];

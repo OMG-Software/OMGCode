@@ -60,9 +60,14 @@ function turnStarted(seq: number): TranscriptEntry {
   return { seq, timestamp: at, kind: "turn_started", request_id: `t${seq}` };
 }
 
+/** The accessible name of an icon button, which is also its tooltip. */
+function nameOf(button: Element): string | null {
+  return button.getAttribute("aria-label");
+}
+
 function actionButton(node: Element, label: string): HTMLButtonElement {
   const found = Array.from(node.querySelectorAll<HTMLButtonElement>(".reply-action")).find(
-    (b) => b.textContent === label,
+    (b) => nameOf(b) === label,
   );
   if (found === undefined) {
     throw new Error(`no ${label} button`);
@@ -172,11 +177,15 @@ describe("reply actions", () => {
     const node = renderEntry(reply(1, SOURCE), { model: "m" });
     const row = node.querySelector(".reply-actions");
     expect(row?.getAttribute("data-capture")).toBe("skip");
-    expect(Array.from(node.querySelectorAll(".reply-action")).map((b) => b.textContent)).toEqual([
-      "Copy Markdown",
-      "Copy text",
-      "Copy image",
-    ]);
+    const buttons = Array.from(node.querySelectorAll<HTMLButtonElement>(".reply-action"));
+    expect(buttons.map(nameOf)).toEqual(["Copy Markdown", "Copy text", "Copy image"]);
+    // Icon buttons: no visible text, an icon, and the name in a tooltip.
+    for (const button of buttons) {
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg.icon")).not.toBeNull();
+      expect(button.title).toBe(nameOf(button));
+      expect(button.classList.contains("icon-button")).toBe(true);
+    }
     expect(renderEntry(userMessage(2, "hi")).querySelector(".reply-actions")).toBeNull();
     expect(createLiveEntry("m").element.querySelector(".reply-actions")).toBeNull();
   });
@@ -187,7 +196,7 @@ describe("reply actions", () => {
     const source = `${SOURCE}\n\n${RLO}txt`;
     const button = actionButton(renderEntry(reply(1, source)), "Copy Markdown");
     button.click();
-    await vi.waitFor(() => expect(button.textContent).toBe("Copied"));
+    await vi.waitFor(() => expect(nameOf(button)).toBe("Copied"));
     expect(writes).toEqual([source.replace(RLO, "[U+202E]")]);
   });
 
@@ -196,7 +205,7 @@ describe("reply actions", () => {
     stubClipboard({ writeText: async (value: string) => void writes.push(value) });
     const button = actionButton(renderEntry(reply(1, SOURCE)), "Copy text");
     button.click();
-    await vi.waitFor(() => expect(button.textContent).toBe("Copied"));
+    await vi.waitFor(() => expect(nameOf(button)).toBe("Copied"));
     expect(writes).toEqual([
       "Run server.py:\n\npython3 server.py\n\n• one\n• docs (https://x.example)",
     ]);
@@ -215,9 +224,11 @@ describe("reply actions", () => {
     stubClipboard({ writeText: () => Promise.reject(new Error("denied")) });
     const button = actionButton(renderEntry(reply(1, "x")), "Copy Markdown");
     button.click();
-    await vi.waitFor(() => expect(button.textContent).toBe("Copy failed"));
+    await vi.waitFor(() => expect(nameOf(button)).toBe("Copy failed"));
+    expect(button.title).toBe("Copy failed");
     vi.advanceTimersByTime(COPY_FEEDBACK_MS);
-    expect(button.textContent).toBe("Copy Markdown");
+    expect(nameOf(button)).toBe("Copy Markdown");
+    expect(button.title).toBe("Copy Markdown");
   });
 });
 
@@ -574,7 +585,7 @@ describe("copy image", () => {
     placeAt(node, 0, 0, 300, 80);
     const button = actionButton(node, "Copy image");
     button.click();
-    await vi.waitFor(() => expect(button.textContent).toBe("Copied"));
+    await vi.waitFor(() => expect(nameOf(button)).toBe("Copied"));
     expect(items).toHaveLength(1);
     expect(Object.keys(items[0] ?? {})).toEqual(["image/png"]);
     await expect(items[0]?.["image/png"]).resolves.toBe(png);
@@ -589,6 +600,6 @@ describe("copy image", () => {
     const node = renderEntry(reply(1, "Hello"));
     const button = actionButton(node, "Copy image");
     button.click();
-    await vi.waitFor(() => expect(button.textContent).toBe("Copy failed"));
+    await vi.waitFor(() => expect(nameOf(button)).toBe("Copy failed"));
   });
 });

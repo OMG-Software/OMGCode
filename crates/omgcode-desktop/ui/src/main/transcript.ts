@@ -3,7 +3,7 @@ import { formatAbsolute } from "../format";
 import type { TranscriptEntry } from "../ipc/types";
 import { renderPng } from "./capture";
 import type { ChatPreview } from "./chat_runner";
-import { copyPng, copyText, feedbackButton } from "./clipboard";
+import { copyPng, copyText, iconFeedbackButton } from "./clipboard";
 import { renderMarkdown } from "./markdown";
 import { plainText } from "./plain_text";
 
@@ -129,6 +129,9 @@ export function entryContexts(entries: readonly TranscriptEntry[]): EntryContext
   });
 }
 
+/** Reply actions are small icon buttons; each names its action in its tooltip. */
+const REPLY_ACTION_CLASS = "icon-button reply-action";
+
 /**
  * The actions of a recorded reply (ADR-0068): copy its Markdown source, copy it as plain text,
  * and copy an image of the whole entry. Each writes to the clipboard only on a click; nothing
@@ -142,15 +145,27 @@ function replyActions(entry: MessageEntry, node: HTMLElement, body: HTMLElement)
       class: "reply-actions",
       attrs: { role: "group", "aria-label": "Reply actions", "data-capture": "skip" },
     },
-    feedbackButton("Copy Markdown", "Copied", () => copyText(neutralise(entry.text)), {
-      class: "reply-action",
-    }),
-    feedbackButton("Copy text", "Copied", () => copyText(plainText(body)), {
-      class: "reply-action",
-    }),
-    feedbackButton("Copy image", "Copied", () => copyPng(renderPng(node)), {
-      class: "reply-action",
-    }),
+    iconFeedbackButton(
+      "markdown",
+      "Copy Markdown",
+      "Copied",
+      () => copyText(neutralise(entry.text)),
+      REPLY_ACTION_CLASS,
+    ),
+    iconFeedbackButton(
+      "copy",
+      "Copy text",
+      "Copied",
+      () => copyText(plainText(body)),
+      REPLY_ACTION_CLASS,
+    ),
+    iconFeedbackButton(
+      "image",
+      "Copy image",
+      "Copied",
+      () => copyPng(renderPng(node)),
+      REPLY_ACTION_CLASS,
+    ),
   );
 }
 

@@ -22,7 +22,11 @@ exact compiled bytes as a system-role message. The adapter rejects a different
 first message or another system-role message.
 
 The `chat --instructions` option adds one labelled user-level preference
-message. The current request and saved journal history use user and assistant
+message. The desktop shell builds the same message from the global custom
+instructions saved in its `settings` window and, when the session's
+workspace has its own, appends them under `Global instructions:` and
+`Workspace instructions:` headings; the composed text is bounded at 16 KiB
+(ADR-0080). The current request and saved journal history use user and assistant
 roles assigned by the core. Text inside these messages cannot create another
 role or a tool call. The CLI stores the current request and assistant response
 in the session journal. It records the compiled prompt, version and digest,
@@ -44,8 +48,10 @@ Prompt assembly limits custom instruction text and each history message to 16
 KiB, history to 640 messages, and the assembled UTF-8 text to 256 KiB. The
 adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
-prototype has no settings UI, application/workspace/session preference store,
-preview UI, exact token-count display, skills, memories, model
+desktop shell's saved global and workspace instructions are the only saved
+instruction scopes; they have no revision history, and the CLI has no
+preference store. The prototype has no session preference store, preview
+UI, exact token-count display, memories, model
 network, Git, or MCP tools, or provider-specific subscription routes.
 Its only model tools are read, list, the approval-gated exact edit,
 multi-edit, create, rename, and delete tools, and the approval-gated command
