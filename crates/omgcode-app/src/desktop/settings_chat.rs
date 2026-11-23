@@ -30,9 +30,11 @@ impl DesktopService {
     /// # Errors
     ///
     /// `invalid_request` for a value outside its bound or global instructions
-    /// that would not fit beside a workspace's, `preferences` when the
-    /// file cannot be written, `internal` for a poisoned lock, and the errors
-    /// of [`settings_overview`](Self::settings_overview).
+    /// that would not fit beside a workspace's; `preferences` when a
+    /// workspace's instructions file or the preferences file exists but
+    /// cannot be read, before anything is written, or when the file cannot be
+    /// written; `internal` for a poisoned lock; and the errors of
+    /// [`settings_overview`](Self::settings_overview).
     pub fn settings_save_chat_defaults(
         &self,
         request: ChatBudgetsSaveRequest,
@@ -69,10 +71,11 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `unknown_workspace`, `invalid_request` for text that would not fit
-    /// beside the saved global instructions,
-    /// `preferences` when the file cannot be written, `internal` for a
-    /// poisoned lock, and the errors of
+    /// `unknown_workspace`; `invalid_request` for text that would not fit
+    /// beside the saved global instructions; `preferences` when the saved
+    /// preferences file exists but cannot be read, before anything is
+    /// written, so the room is unknown, or when the file cannot be written
+    /// or removed; `internal` for a poisoned lock; and the errors of
     /// [`settings_overview`](Self::settings_overview).
     pub fn settings_set_workspace_instructions(
         &self,
