@@ -347,20 +347,28 @@ impl Scene {
     /// Stop the host TCP service, wait a bounded time for it to finish, and
     /// return how many connections reached it. Call it once, after the run.
     fn host_tcp_connections(&mut self) -> usize {
+        self.stop_host_tcp()
+            .expect("the host TCP service stops in time, and only once")
+            .expect("the host TCP service")
+    }
+
+    /// Stop the host TCP service and wait at most five seconds for it.
+    ///
+    /// Returns `None` when it was already stopped or did not finish in time,
+    /// and never panics, so [`Drop`] can call it after a failed assertion. A
+    /// service that misses the bound is left to end on its own: its stop
+    /// channel is already closed.
+    fn stop_host_tcp(&mut self) -> Option<thread::Result<usize>> {
         drop(self.tcp_stop.take());
-        let service = self
-            .tcp_service
-            .take()
-            .expect("the host TCP service is stopped once");
+        let service = self.tcp_service.take()?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while !service.is_finished() {
-            assert!(
-                Instant::now() < deadline,
-                "the host TCP service stops in time"
-            );
+            if Instant::now() >= deadline {
+                return None;
+            }
             thread::sleep(Duration::from_millis(5));
         }
-        service.join().expect("the host TCP service")
+        Some(service.join())
     }
 
     fn confinement(&self) -> Confinement {
@@ -405,6 +413,10 @@ impl Scene {
 
 impl Drop for Scene {
     fn drop(&mut self) {
+        // A test that did not count connections, or failed before it did,
+        // still stops the service within the bound. Its count and any panic
+        // are not needed here, and panicking in `drop` would abort.
+        let _stopped = self.stop_host_tcp();
         for path in [&self.read_only_directory, &self.bin, &self.workspace] {
             // The temporary tree is removed next; a failed revoke only leaves
             // an entry on a directory that is about to disappear.

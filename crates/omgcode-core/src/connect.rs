@@ -44,18 +44,18 @@ pub(crate) async fn send_skipping_reused_ports(
     let mut held = Vec::new();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        match build(remaining).send().await {
-            Err(error)
-                if is_reused_local_port(&error)
-                    && held.len() < MAX_SKIPPED_PORTS
-                    && Instant::now() < deadline =>
-            {
-                match reserve_next_port() {
-                    Some(port) => held.push(port),
-                    None => return Err(error),
-                }
-            }
+        let error = match build(remaining).send().await {
+            Err(error) if is_reused_local_port(&error) && held.len() < MAX_SKIPPED_PORTS => error,
             result => return result,
+        };
+        match reserve_next_port() {
+            Some(port) => held.push(port),
+            None => return Err(error),
+        }
+        // Checked after the reservation, so no attempt starts with no time
+        // left, however long the reservation took.
+        if Instant::now() >= deadline {
+            return Err(error);
         }
     }
 }
