@@ -555,7 +555,10 @@ timeout, and global instructions from `chat_defaults` when it starts, when
 the `main` window gains focus, and again just before each send, and sends
 them in `chat_send`; it has no control for them. Send is disabled while no
 context size is saved, and the composer says to set it in Settings, under
-Model.
+Model. The message and skills are taken at the click. After a successful
+send the composer removes the sent text from the draft only when the draft
+still starts with it, and unticks only the sent skills, so text typed or
+skills ticked while the defaults or the turn were awaited are kept.
 
 **Auto-compact** and the compaction slider stay in **Chat settings**. The
 slider runs from 128K to 1M tokens (128,000 to 1,000,000) in steps of 8,000

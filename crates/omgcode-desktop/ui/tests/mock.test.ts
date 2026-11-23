@@ -718,4 +718,24 @@ describe("mock chat defaults (ADR-0080)", () => {
     expect(after.revision).toBe(before.revision);
     expect(after.workspaces[1]?.instructions).toBe("Use tabs.");
   });
+
+  it("refuses workspace instructions over 16 KiB of UTF-8 and keeps the saved text", async () => {
+    const { invoke } = createMockBackend();
+    const before = (await invoke("settings_overview", {})) as SettingsOverview;
+    const id = before.workspaces[0]?.workspace_id ?? "";
+    const saved = before.workspaces[0]?.instructions;
+    // 5,462 three-byte characters are 16,386 bytes, though only 5,462 UTF-16 units.
+    for (const instructions of ["i".repeat(16 * 1024 + 1), "€".repeat(5462)]) {
+      await expect(
+        invoke("settings_set_workspace_instructions", { workspace_id: id, instructions }),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+    }
+    const after = (await invoke("settings_overview", {})) as SettingsOverview;
+    expect(after.workspaces[0]?.instructions).toBe(saved);
+    // The bound itself fits.
+    await invoke("settings_set_workspace_instructions", {
+      workspace_id: id,
+      instructions: "i".repeat(16 * 1024),
+    });
+  });
 });

@@ -102,6 +102,8 @@ function isSubscriber(value: unknown): value is Subscriber {
 /** The composer's compaction slider range (ADR-0080), as Rust reports it. */
 const COMPACT_MIN = 128_000;
 const COMPACT_MAX = 1_000_000;
+/** The bound Rust puts on each saved custom instruction text, in UTF-8 bytes. */
+const INSTRUCTIONS_MAX_BYTES = 16 * 1024;
 
 /** The one saved chat defaults file: the settings window's fields and the composer's. */
 type MockPreferences = ChatBudgets & ComposerPreferences & { model: string };
@@ -646,9 +648,16 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         settings.chat = chatView();
         return clone(settings);
       }
-      case "settings_set_workspace_instructions":
-        mockWorkspace(args).instructions = str(args, "instructions");
+      case "settings_set_workspace_instructions": {
+        const workspace = mockWorkspace(args);
+        const instructions = str(args, "instructions");
+        // Rust's bound: UTF-8 bytes, and a refusal keeps the saved text.
+        if (new TextEncoder().encode(instructions).length > INSTRUCTIONS_MAX_BYTES) {
+          return fail("invalid_request", "The workspace instructions are longer than 16 KiB.");
+        }
+        workspace.instructions = instructions;
         return clone(settings);
+      }
       case "session_skills":
         str(args, "session_id");
         return { workspace_registered: true, skills: ["review-checklist", "release-notes"] };
@@ -919,7 +928,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       source: savedPreferences === null ? "defaults" : "saved",
       tool_call_limit_max: 256,
       turn_timeout_seconds_max: 3600,
-      instructions_max_bytes: 16 * 1024,
+      instructions_max_bytes: INSTRUCTIONS_MAX_BYTES,
     };
   }
 

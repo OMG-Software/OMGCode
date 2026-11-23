@@ -73,8 +73,12 @@ export interface Composer {
   update(state: ComposerState, running: boolean): void;
   /** Names the open session for the Workspace settings button; `null` disables it. */
   setSession(id: string | null): void;
-  /** Clears the draft and the skill selection after a successful send. */
-  clear(): void;
+  /**
+   * Removes what a successful send sent: the message, when the draft still starts with it, and
+   * the sent skills' selection. Text typed and skills chosen after the click are kept, since the
+   * send waits for the saved defaults and then for the turn.
+   */
+  clearSent(message: string, skills: readonly string[]): void;
   readSettings(): ChatSettings;
   /** Offers these skill names for the next turn; an empty list hides the choice. */
   setSkills(names: readonly string[]): void;
@@ -596,10 +600,14 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       sessionId = id;
       refresh();
     },
-    clear() {
-      box.value = "";
-      for (const [, skillBox] of skillBoxes) {
-        skillBox.checked = false;
+    clearSent(message, skills) {
+      if (box.value.startsWith(message)) {
+        box.value = box.value.slice(message.length);
+      }
+      for (const [name, skillBox] of skillBoxes) {
+        if (skills.includes(name)) {
+          skillBox.checked = false;
+        }
       }
       refresh();
     },

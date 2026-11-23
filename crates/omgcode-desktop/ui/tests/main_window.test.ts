@@ -1010,6 +1010,63 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(ipc.callsTo("chat_send")).toHaveLength(1);
   });
 
+  describe("after a send, keeps what was typed or chosen during it", () => {
+    /** Clicks Send with the defaults read held open; the returned function lets it finish. */
+    async function sendHeld(): Promise<() => Promise<void>> {
+      let finish: (value: ChatDefaults) => void = () => undefined;
+      ipc.on(
+        "chat_defaults",
+        () =>
+          new Promise<ChatDefaults>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      buttonByText(root, "Send").click();
+      await settle();
+      return async () => {
+        finish({
+          ...CHAT_BUDGET_BOUNDS,
+          settings: SETTINGS,
+          preferences: "saved",
+          enter_to_send: true,
+        });
+        await settle();
+      };
+    }
+
+    it("removes only the sent text and the sent skills", async () => {
+      await open({
+        session_skills: () => ({ workspace_registered: true, skills: ["review", "lint"] }),
+      });
+      const [review, lint] = skillBoxes();
+      (review as HTMLInputElement).click();
+      const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+      type(box, "hello");
+      const release = await sendHeld();
+      type(box, "hello, and then the tests");
+      (lint as HTMLInputElement).click();
+      await release();
+      expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
+        message: "hello",
+        skills: ["review"],
+      });
+      expect(box.value).toBe(", and then the tests");
+      expect(review?.checked).toBe(false);
+      expect(lint?.checked).toBe(true);
+    });
+
+    it("keeps the whole draft when it no longer starts with the sent text", async () => {
+      await open();
+      const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+      type(box, "hello");
+      const release = await sendHeld();
+      type(box, "a different question");
+      await release();
+      expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({ message: "hello" });
+      expect(box.value).toBe("a different question");
+    });
+  });
+
   it("saves only the composer's own defaults: the threshold, auto-compact, and the send key", async () => {
     await open({
       chat_preferences_save: () => ({
