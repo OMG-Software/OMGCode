@@ -6,15 +6,14 @@
 //! approval, which the core checks; nothing here grants or widens it.
 
 use std::cell::RefCell;
-use std::time::Duration;
 
 use omgcode_core::policy::WorkspaceId;
 use omgcode_core::prompt::ModelMessage;
 use omgcode_core::provider::{LocalModelClient, LocalToolModel, ProviderError};
 use omgcode_core::session::{RequestManifest, SessionJournal};
 use omgcode_core::turn::{
-    ModelError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimits, TurnReport,
-    TurnRuntime,
+    MAX_TURN_DEADLINE, ModelError, ToolModel, ToolModelReply, ToolModelRequest, TurnError,
+    TurnLimits, TurnReport, TurnRuntime,
 };
 use serde_json::Value;
 
@@ -26,16 +25,12 @@ use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
 
-/// Cooperative deadline for one tool-enabled chat turn.
-///
-/// Each local model request may take up to 30 seconds, and a turn makes at most
-/// four requests, so the 30-second library default would stop ordinary turns.
-const CHAT_TURN_DEADLINE: Duration = Duration::from_secs(120);
-
 /// Runtime limits for tool-enabled chat: library maxima with a chat deadline.
 fn chat_limits() -> TurnLimits {
     TurnLimits {
-        deadline: CHAT_TURN_DEADLINE,
+        // Several model requests share the turn budget, and each retains its
+        // own shorter timeout. The core caps the cooperative deadline.
+        deadline: MAX_TURN_DEADLINE,
         ..TurnLimits::default()
     }
 }

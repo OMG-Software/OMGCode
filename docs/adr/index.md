@@ -88,3 +88,4 @@ meaningful alternative does not need an ADR.
 | [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted | 2026-11-20 |
 | [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted | 2026-11-20 |
 | [0073: Remove extra data folder grants after operator confirmation](0073-remove-extra-data-folder-grants-after-operator-confirmation.md) | Accepted | 2026-11-20 |
+| [0074: Budget model requests for sequential tool calls](0074-budget-model-requests-for-sequential-tool-calls.md) | Accepted | 2026-11-23 |

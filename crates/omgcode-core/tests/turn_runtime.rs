@@ -991,6 +991,30 @@ fn turn_limits_fail_before_dispatch_or_before_extra_operations() {
 }
 
 #[test]
+fn a_final_reply_fits_after_sixteen_sequential_tool_requests() {
+    let mut fixture = Fixture::new();
+    let mut replies: Vec<_> = (1..=16)
+        .map(|index| {
+            tool_reply(vec![call(
+                &format!("list-{index}"),
+                "workspace_list_directory",
+                json!({"path": ""}),
+            )])
+        })
+        .collect();
+    replies.push(text_reply("done"));
+    let mut model = ScriptedModel::new(replies);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("final reply fits");
+
+    assert_eq!(report.tool_calls, 16);
+    assert_eq!(report.rounds, 17);
+    assert_eq!(report.reply, "done");
+}
+
+#[test]
 fn prompt_capacity_is_reserved_before_dispatch() {
     let mut fixture = Fixture::new();
     for _ in 0..15 {
@@ -2548,6 +2572,79 @@ fn create_call(id: &str, path: &str, content: &str) -> Value {
         "workspace_create_file",
         json!({"path": path, "content": content}),
     )
+}
+
+#[test]
+fn a_turn_can_create_a_program_and_tests_after_a_failed_exact_edit() {
+    let mut fixture = Fixture::new();
+    fixture.set_access(PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    });
+    let program =
+        "#include <iostream>\n#include \"hello.h\"\nint main() { std::cout << greeting(); }\n";
+    let header = "inline const char* greeting() { return \"Hello, World!\"; }\n";
+    let tests = "#include <cassert>\n#include <string_view>\n#include \"hello.h\"\nint main() { assert(std::string_view(greeting()) == \"Hello, World!\"); }\n";
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "list",
+            "workspace_list_directory",
+            json!({"path": ""}),
+        )]),
+        tool_reply(vec![create_call("program", "hello.cpp", program)]),
+        tool_reply(vec![edit_call(
+            "edit",
+            "hello.cpp",
+            "[Existing content]",
+            "replacement",
+        )]),
+        tool_reply(vec![call(
+            "read",
+            "workspace_read_file",
+            json!({"path": "hello.cpp"}),
+        )]),
+        tool_reply(vec![create_call("header", "hello.h", header)]),
+        tool_reply(vec![create_call("tests", "test_hello.cpp", tests)]),
+        text_reply("created the program and tests"),
+    ]);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn finishes");
+
+    assert_eq!(report.rounds, 7);
+    assert_eq!(report.tool_calls, 6);
+    assert_eq!(report.reply, "created the program and tests");
+    assert!(
+        model.requests[3]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("edit_no_match"))
+    );
+    for (path, content) in [
+        ("hello.cpp", program),
+        ("hello.h", header),
+        ("test_hello.cpp", tests),
+    ] {
+        assert_eq!(
+            fs::read_to_string(fixture.workspace.join(path)).expect("created file"),
+            content
+        );
+    }
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [
+            None,
+            None,
+            Some("edit_no_match".to_owned()),
+            None,
+            None,
+            None
+        ]
+    );
 }
 
 impl Fixture {

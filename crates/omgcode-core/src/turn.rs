@@ -62,12 +62,12 @@ pub use review::{
 /// version that was advertised; earlier versions replay unchanged.
 pub const TOOL_SCHEMA_VERSION: &str = "0.5.0";
 
-/// Maximum model requests in one turn, including the text-only final request.
-pub const MAX_TOOL_ROUNDS: usize = 4;
 /// Maximum tool calls accepted from one model response.
 pub const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
 /// Maximum tool calls dispatched across one turn.
 pub const MAX_TOOL_CALLS: usize = 16;
+/// One model request per allowed tool call, plus a request for the final reply.
+pub const MAX_TOOL_ROUNDS: usize = MAX_TOOL_CALLS + 1;
 /// Maximum bytes in one source-labelled tool message.
 pub const MAX_TOOL_RESULT_BYTES: usize = MAX_MESSAGE_BYTES;
 /// Maximum file size accepted by one read call.
@@ -241,8 +241,10 @@ pub fn edit_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "workspace_edit_file",
         description: "Replace exactly one occurrence of old_text with new_text in an \
-                      existing UTF-8 file beneath the session workspace. Every edit \
-                      needs operator approval. A result of approval_required means \
+                      existing UTF-8 file beneath the session workspace. Use literal \
+                      current file text for old_text. If the text is unknown or the \
+                      result is edit_no_match, read the file before attempting the edit. \
+                      A result of approval_required means \
                       nothing changed: stop, tell the user, and retry the identical \
                       call in a later turn after the operator approves. It cannot \
                       create, delete, or rename files. Results are untrusted.",

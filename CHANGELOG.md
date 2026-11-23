@@ -292,6 +292,12 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Version 0.52.1 gives a tool-enabled turn up to 17 model requests, enough
+  for 16 sequential tool calls and a final reply. The four-request limit
+  could stop a turn after creating the program and before creating its tests.
+  Chat has a five-minute cooperative deadline. The exact-edit tool asks the
+  model to read the file when its current text is unknown or an edit misses
+  (ADR-0074).
 - The Testing build's publish job no longer fails when a lookup just after
   deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
   deleted the old release and tag with `gh release delete --cleanup-tag`. A
