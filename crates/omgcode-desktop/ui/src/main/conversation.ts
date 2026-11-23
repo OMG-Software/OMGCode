@@ -14,6 +14,7 @@ import type {
   TranscriptEntry,
   TranscriptPage,
 } from "../ipc/types";
+import { iconButton } from "../ui/icons";
 import { type ChatPreview, createChatRunner } from "./chat_runner";
 import { createComposer } from "./composer";
 import type { ConnectionModel } from "./connection_state";
@@ -145,13 +146,21 @@ export function createConversation(deps: ConversationDeps): Conversation {
     if (actions.archive) {
       append(
         buttons,
-        button("Archive", () => void runAction(() => api.sessionArchive(current.session_id))),
+        iconButton(
+          "archive",
+          "Archive",
+          () => void runAction(() => api.sessionArchive(current.session_id)),
+        ),
       );
     }
     if (actions.restore) {
       append(
         buttons,
-        button("Restore", () => void runAction(() => api.sessionRestore(current.session_id))),
+        iconButton(
+          "restore",
+          "Restore",
+          () => void runAction(() => api.sessionRestore(current.session_id)),
+        ),
       );
     }
     if (actions.interrupt && !confirmInterrupt) {

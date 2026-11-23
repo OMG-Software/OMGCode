@@ -77,6 +77,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function hasLabelled(scope: ParentNode, label: string): boolean {
+  return Array.from(scope.querySelectorAll("button")).some(
+    (b) => b.getAttribute("aria-label") === label,
+  );
+}
+
 describe("session tree", () => {
   it("groups sessions and shows status chips", async () => {
     const idle = session({ session_id: "s-idle", title: "Idle one" });
@@ -412,7 +418,8 @@ describe("conversation", () => {
         !expected.enabled,
       );
       for (const label of ["Archive", "Restore", "Interrupt", "Cancel"]) {
-        expect(hasButton(header, label)).toBe(expected.labels.includes(label));
+        const present = hasButton(header, label) || hasLabelled(header, label);
+        expect(present).toBe(expected.labels.includes(label));
       }
     }
   });
@@ -443,9 +450,30 @@ describe("conversation", () => {
     });
     itemFor("s-one").click();
     await settle();
-    buttonByText(root.querySelector(".pane-header") as HTMLElement, "Archive").click();
+    const archive = buttonByLabel(root.querySelector(".pane-header") as HTMLElement, "Archive");
+    expect(archive.title).toBe("Archive");
+    expect(archive.textContent).toBe("");
+    expect(archive.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    archive.click();
     await settle();
     expect(ipc.callsTo("session_archive")[0]?.args).toEqual({ session_id: "s-one" });
+  });
+
+  it("restores an archived session from an icon button named in its tooltip", async () => {
+    const archived = session({ session_id: "s-arch", title: "Old", archived: true });
+    await start({
+      session_tree: treeOf(archived),
+      session_transcript: () => page(archived, []),
+      session_restore: () => ({ ...archived, archived: false }),
+    });
+    itemFor("s-arch").click();
+    await settle();
+    const restore = buttonByLabel(root.querySelector(".pane-header") as HTMLElement, "Restore");
+    expect(restore.title).toBe("Restore");
+    expect(restore.textContent).toBe("");
+    restore.click();
+    await settle();
+    expect(ipc.callsTo("session_restore")[0]?.args).toEqual({ session_id: "s-arch" });
   });
 });
 

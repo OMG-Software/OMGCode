@@ -338,6 +338,9 @@ The `main` window is laid out as follows.
   operator expands it. Widths and collapsed
   states last until the window closes. The shell's two width properties are
   the frontend's only inline style.
+- **Session header actions.** **Archive** and **Restore** are icon buttons
+  named in their tooltip and accessible name; **Interrupt**, **Confirm
+  interrupt**, **Keep**, and **Cancel** stay text buttons.
 - **Collapsed panels.** A collapsed panel is a 44-pixel rail of icon buttons,
   each with an accessible name and a tooltip. The sessions rail holds Expand,
   **New session**, Search, Sessions, **Approvals** with the waiting count, and

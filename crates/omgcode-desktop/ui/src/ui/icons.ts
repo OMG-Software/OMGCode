@@ -51,6 +51,16 @@ const ICONS = {
   folder: [
     ["path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }],
   ],
+  /** A lidded box with a down arrow: archive the open session. */
+  archive: [
+    ["rect", { x: "3", y: "4", width: "18", height: "4", rx: "1" }],
+    ["path", { d: "M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M12 11v6M9.5 14.5L12 17l2.5-2.5" }],
+  ],
+  /** A lidded box with an up arrow: restore the archived session. */
+  restore: [
+    ["rect", { x: "3", y: "4", width: "18", height: "4", rx: "1" }],
+    ["path", { d: "M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M12 17v-6M9.5 13.5L12 11l2.5 2.5" }],
+  ],
   /** A tick: an action that succeeded. */
   check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
   /** A cross: an action that failed. */
