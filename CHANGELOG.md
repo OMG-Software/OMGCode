@@ -20,6 +20,15 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- On Windows, a settings command that waits for a withdrawn run, such as
+  `workspace profile-remove`, no longer fails with "run journal I/O failed"
+  (`os error 32`) when the run ends at that moment. The run's supervisor
+  removes its released owner lock file, and the removal opens that file for
+  deletion. A probe of the lock made at the same moment failed with a sharing
+  violation instead of seeing the run end. The probe now retries that
+  violation for up to the 10-second control wait. `runs acknowledge` probes
+  the same lock and benefits too.
+
 - A missing parent directory is reported as `parent_not_found` instead of
   `not_found` by `workspace_create_file`, by the destination check of
   `workspace_rename_file`, and by `workspace_create_directory` (ADR-0079).

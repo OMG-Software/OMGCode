@@ -340,14 +340,27 @@ enum Owner {
     Ended(Option<File>),
 }
 
+/// Probe a run's owner lock. On Windows, removing a released lock file opens
+/// it for deletion, and an open made at that moment fails with a sharing
+/// violation; that is retried for up to [`CONTROL_WAIT`], since the removal
+/// ends at once.
 fn probe_owner(journal_root: &Path, run_id: Uuid) -> Result<Owner, RunError> {
-    match storage::open_locked_file(&owner_path(journal_root, run_id), false) {
-        Ok(file) => Ok(Owner::Ended(Some(file))),
-        Err(StorageError::Busy) => Ok(Owner::Live),
-        Err(StorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(Owner::Ended(None))
+    let path = owner_path(journal_root, run_id);
+    let until = Instant::now() + CONTROL_WAIT;
+    loop {
+        match storage::open_locked_file(&path, false) {
+            Ok(file) => return Ok(Owner::Ended(Some(file))),
+            Err(StorageError::Busy) => return Ok(Owner::Live),
+            Err(StorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Owner::Ended(None));
+            }
+            Err(StorageError::Io(error))
+                if storage::is_sharing_violation(&error) && Instant::now() < until =>
+            {
+                thread::sleep(CONTROL_POLL);
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => Err(error.into()),
     }
 }
 
@@ -2124,5 +2137,59 @@ mod tests {
             .expect("start");
         let none = stop_withdrawn_runs(&data, Duration::from_secs(5), &[]).expect("check");
         assert!(none.unconfirmed.is_empty() && none.stopped.is_empty());
+    }
+
+    /// A probe that meets a released owner lock while its supervisor removes
+    /// it waits for the removal instead of failing. Windows only: there the
+    /// removal opens the file for deletion, which the probe's open does not
+    /// share, so the probe failed with `ERROR_SHARING_VIOLATION`.
+    #[cfg(windows)]
+    #[test]
+    fn an_owner_probe_waits_while_the_released_lock_is_removed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const DELETE: u32 = 0x0001_0000;
+        const SHARE_ALL: u32 = 0x0000_0007;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let journal_root = directory.path().to_path_buf();
+        let run_id = Uuid::new_v4();
+        // Release the lock but keep its file, as a supervisor leaves it just
+        // before the removal.
+        let mut lock = OwnerLock::acquire(&journal_root, run_id).expect("owner lock");
+        drop(lock.file.take());
+        drop(lock);
+        let path = owner_path(&journal_root, run_id);
+        assert!(path.is_file());
+        // The handle a removal holds for its duration.
+        let removal = fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(SHARE_ALL)
+            .open(&path)
+            .expect("deletion handle");
+        let open = storage::open_locked_file(&path, false).expect_err("sharing violation");
+        assert!(
+            matches!(&open, StorageError::Io(error) if storage::is_sharing_violation(error)),
+            "{open:?}"
+        );
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let probe = thread::spawn({
+            let journal_root = journal_root.clone();
+            move || {
+                let owner = probe_owner(&journal_root, run_id);
+                let _ = sender.send(());
+                owner
+            }
+        });
+        assert!(
+            receiver.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the probe returned while the removal was open"
+        );
+        drop(removal);
+        // The probe may open the file first, which makes this removal fail;
+        // either way it finds the lock released.
+        let _ = fs::remove_file(&path);
+        let owner = probe.join().expect("probe thread").expect("probe");
+        assert!(matches!(owner, Owner::Ended(_)));
     }
 }

@@ -536,7 +536,9 @@ The change itself stays recorded. Inspect the runs with `runs audit`. A change
 that withdraws nothing returns at once.
 
 Settings commands wait up to 10 seconds for another command's control lock,
-because run watchers hold it briefly while they reread the settings.
+because run watchers hold it briefly while they reread the settings. On
+Windows, a check of a run's owner lock also waits up to 10 seconds while the
+lock file is being removed, which the supervisor does as the run ends.
 
 ### Environment and confinement
 
