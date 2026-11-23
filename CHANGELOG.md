@@ -26,7 +26,8 @@ Changes are recorded here before a release version is assigned.
     unknown room as a `null` `instructions_max_bytes`, by the same rule as
     the saves, and the counter says the room is unknown. The composer shows a failed
     `chat_defaults` read, retries it on **Send**, and never sends without a
-    successful read.
+    successful read. When the saved defaults file cannot be read, its reason
+    beside **Send** says so, instead of only asking for a context size.
     The window refuses an output reserve over the 32-bit maximum before
     sending it.
   - **Turns:** `chat_send` adds the session workspace's instructions after

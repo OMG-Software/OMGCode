@@ -30,6 +30,13 @@ export const SESSION_CHOICES_UNREADABLE =
 /** Opens the message shown when the saved chat defaults cannot be read. */
 export const DEFAULTS_UNREADABLE = "The chat defaults could not be read; Send tries again.";
 /** Shown while no context size is saved; the settings window owns it (ADR-0080). */
+/**
+ * Shown instead when the saved chat defaults file could not be read, so the built-in values,
+ * which set no context size, are in use (ADR-0080).
+ */
+export const SAVED_DEFAULTS_UNREADABLE =
+  "The saved chat defaults could not be read, so no context size is set. Save the chat " +
+  "defaults in Settings, under Model, then send again.";
 export const SET_CONTEXT_IN_SETTINGS =
   "Set the context size in Settings, under Model, then send again.";
 /** The tooltip and accessible name of the workspace settings icon button. */
@@ -168,6 +175,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
 
   /** The saved budgets, read from `chat_defaults`; `null` until the first read succeeds. */
   let budgets: Budgets | null = null;
+  // Whether the last read reported the saved file unreadable and gave the built-in values.
+  let savedUnreadable = false;
   const autoCompact = el("input", { attrs: { type: "checkbox" } });
   const threshold = el("input", {
     attrs: {
@@ -348,11 +357,10 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       enterToSend.checked = defaults.enter_to_send;
       showSendKey();
     }
+    savedUnreadable = defaults.preferences === "unreadable";
     replaceChildren(
       preferencesNote,
-      defaults.preferences === "unreadable"
-        ? "Saved defaults could not be read; built-in defaults are shown."
-        : "",
+      savedUnreadable ? "Saved defaults could not be read; built-in defaults are shown." : "",
     );
   }
 
@@ -399,7 +407,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       return defaultsError === null ? "The chat defaults are being read." : null;
     }
     if (!settingsValid(readSettings())) {
-      return SET_CONTEXT_IN_SETTINGS;
+      return savedUnreadable ? SAVED_DEFAULTS_UNREADABLE : SET_CONTEXT_IN_SETTINGS;
     }
     return messageProblem(box.value);
   }

@@ -8,6 +8,7 @@ import {
   DEFAULTS_UNREADABLE,
   PLACEHOLDER_CTRL_ENTER,
   PLACEHOLDER_ENTER,
+  SAVED_DEFAULTS_UNREADABLE,
   SET_CONTEXT_IN_SETTINGS,
   tokenLabel,
 } from "../src/main/composer";
@@ -1343,6 +1344,24 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(root.querySelector(".preferences-row")?.textContent).toContain(
       "Saved defaults could not be read",
     );
+  });
+
+  it("names the unreadable saved defaults, not a missing context size, as the reason", async () => {
+    // Rust gives the built-in values, which set no context size, for a file it cannot read.
+    await open({
+      chat_defaults: () => ({
+        ...CHAT_BUDGET_BOUNDS,
+        settings: { ...SETTINGS, context_tokens: 0 },
+        preferences: "unreadable",
+        enter_to_send: true,
+      }),
+    });
+    const message = root.querySelector(".message-box") as HTMLTextAreaElement;
+    type(message, "hello");
+    expect(buttonByText(root, "Send").disabled).toBe(true);
+    message.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(root.querySelector(".composer-error")?.textContent).toBe(SAVED_DEFAULTS_UNREADABLE);
+    expect(ipc.callsTo("chat_send")).toHaveLength(0);
   });
 
   it("keeps edits made while defaults are being saved", async () => {

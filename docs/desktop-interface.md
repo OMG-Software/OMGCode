@@ -668,7 +668,11 @@ untouched controls take the returned values.
   syncs it, and renames it over the old one; on Unix it is created with mode
   0600 and the directory is synced. A missing file gives the built-in
   values. A file that cannot be read or parsed also gives the built-in values,
-  `chat_defaults` reports it as `unreadable`, and the composer shows a note.
+  `chat_defaults` reports it as `unreadable`, and the composer shows a note
+  in its **Chat settings** menu. Since the built-in values set no context
+  size, the composer's reason beside **Send** then says the saved defaults
+  could not be read and asks for them to be saved in Settings, instead of
+  only asking for a context size.
   Because each save keeps the other window's fields, it reads the file first.
   The next save replaces a damaged regular file (one too large, not valid
   JSON, or holding a value over its bound), starting from the built-in
@@ -851,8 +855,11 @@ waits. The window shows:
   workspace has text, or 16 KiB less 47 bytes and the longest workspace
   text. Both saves hold the service's preferences lock, so neither can
   overtake the other's check, and `chat_send` reads the workspace's file
-  under the same lock, so a turn sees one whole save. A damaged other text
-  counts as empty, as it does for a turn. One that exists but cannot be read
+  under the same lock, so a turn sees one whole save. For the room, a damaged
+  other text counts as empty. A turn sends a damaged global file as the
+  built-in empty text, but refuses a workspace whose own file is damaged
+  with `instructions_unreadable` until it is saved again, and that save
+  checks the room. An other text that exists but cannot be read
   now leaves the room unknown: a save of non-empty text is refused with
   `preferences`, but saving empty text needs no room and always proceeds.
   The overview applies the same rule without the lock and reports an
