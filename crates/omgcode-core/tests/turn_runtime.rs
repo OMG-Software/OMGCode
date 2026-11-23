@@ -1012,9 +1012,17 @@ fn a_final_reply_fits_after_one_hundred_twenty_eight_sequential_tool_requests() 
     replies.push(text_reply("done"));
     let mut model = ScriptedModel::new(replies);
 
-    let report = fixture
-        .run(&mut model, TurnLimits::default())
-        .expect("final reply fits");
+    // This test checks the round budget, not wall time. Each list call writes
+    // and syncs journal records. Alone the turn takes about 4 seconds on
+    // Windows, but in run 45163819874 on a windows-2025 runner it outlasted the
+    // 30-second core default while the other tests in this binary ran. A
+    // bounded 120-second deadline keeps a hang visible without letting runner
+    // contention decide a budget assertion.
+    let limits = TurnLimits {
+        deadline: Duration::from_secs(120),
+        ..TurnLimits::default()
+    };
+    let report = fixture.run(&mut model, limits).expect("final reply fits");
 
     assert_eq!(report.tool_calls, 128);
     assert_eq!(report.rounds, 129);

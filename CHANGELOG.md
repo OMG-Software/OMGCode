@@ -308,6 +308,9 @@ Changes are recorded here before a release version is assigned.
   current text is unknown or an edit misses (ADR-0075, ADR-0076, ADR-0077).
 - CLI compaction tests seed their large history fixtures in one batch so
   unrelated CLI tests can start within their subprocess deadlines.
+  The 128-call budget test sets its own 120-second deadline. It checks the
+  round budget, and on a busy Windows runner its journal syncs outlasted the
+  30-second core default.
 - The Testing build's publish job no longer fails when a lookup just after
   deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
   deleted the old release and tag with `gh release delete --cleanup-tag`. A
