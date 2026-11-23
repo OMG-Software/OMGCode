@@ -130,8 +130,9 @@ impl DesktopService {
     /// # Errors
     ///
     /// `invalid_request` for a compaction threshold outside the slider's
-    /// range, `preferences` when the file cannot be written, `internal` for a
-    /// poisoned lock.
+    /// range; `preferences` when the saved file exists but cannot be read,
+    /// before anything is written, or when the file cannot be written;
+    /// `internal` for a poisoned lock.
     pub fn chat_preferences_save(
         &self,
         request: ChatPreferencesSaveRequest,

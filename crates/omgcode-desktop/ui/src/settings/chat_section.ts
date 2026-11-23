@@ -11,7 +11,7 @@ export const GLOBAL_INSTRUCTIONS_HELP =
 export const WORKSPACE_INSTRUCTIONS_HELP =
   "Sent with messages in this workspace's sessions, after the global instructions, which the limit leaves room for. They grant no permission.";
 export const DEFAULTS_UNREADABLE =
-  "Saved chat defaults could not be read; built-in values are shown. Saving replaces them.";
+  "Saved chat defaults could not be read; built-in values are shown. Saving replaces a damaged file, but is refused while another program holds it.";
 export const INSTRUCTIONS_UNREADABLE =
   "Saved instructions for this workspace could not be read, and its sessions cannot send. Saving replaces them.";
 

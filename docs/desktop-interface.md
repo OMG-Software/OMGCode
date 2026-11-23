@@ -657,10 +657,12 @@ untouched controls take the returned values.
   refuses a file that has the field as unknown, reports it as `unreadable`,
   and uses its built-in values until the next save. They carry no
   endpoint and grant nothing. The request refuses an unknown field, so an
-  endpoint cannot be saved. A model name over 256 bytes or with a control
-  character, and instructions over 64 KiB, are refused with
-  `invalid_request` when the file is read; a file saved before 0.54.0 may
-  hold up to 64 KiB, which a turn refuses. The tool-call limit and turn
+  endpoint cannot be saved. A saved model name over 256 bytes or with a
+  control character, or instructions over 64 KiB, make the file damaged
+  when it is read: `chat_defaults` reports it as `unreadable` and gives the
+  built-in values until the next save replaces it. No save writes such
+  values. A file saved before 0.54.0 may hold global instructions up to
+  64 KiB, which a turn refuses. The tool-call limit and turn
   timeout are validated on save, load, and send.
   `chat_send` validates the other budgets before starting a turn. The file is
   `<data_root>/desktop-v1/chat-preferences.json`, at most 512 KiB, read only
