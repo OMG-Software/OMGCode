@@ -27,9 +27,9 @@ configurable deadline in ADR-0077. Each model request still has a 30-second
 timeout. The core library default stays at 30 seconds, and desktop approval
 waits are excluded from the turn deadline as before.
 
-Tell the model to read the file if `old_text` is unknown or an exact edit
-returns `edit_no_match`. The broker still requires a unique literal match in
-the live file.
+Both edit tools tell the model to read the file if `old_text` is unknown or the
+tool returns `edit_no_match`. The broker still requires a unique literal match
+in the live file for each replacement.
 
 ## Alternatives
 

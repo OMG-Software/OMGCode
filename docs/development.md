@@ -776,8 +776,10 @@ replacement can see another's output. The matches must not overlap
 (`edit_overlap`); touching matches are allowed. A missing or repeated
 `old_text` returns `edit_no_match` or `edit_ambiguous` with the 1-based edit
 index in the message, and a call whose result equals the file returns
-`edit_unchanged`. The approval digest uses its own domain tag, so an approval
-for a `workspace_edit_file` call never applies a multi-edit. Review shows each
+`edit_unchanged`. The tool tells the model to read the file when any `old_text`
+is unknown or the call returns `edit_no_match`. The approval digest uses its
+own domain tag, so an approval for a `workspace_edit_file` call never applies
+a multi-edit. Review shows each
 `Old text N` and `New text N`. One approval covers one checkpointed apply, and
 there is no atomicity across files.
 

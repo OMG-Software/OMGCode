@@ -281,7 +281,9 @@ pub fn multi_edit_tool_definition() -> ToolDefinition {
         description: "Apply several exact replacements to one existing UTF-8 file \
                       beneath the session workspace in one step. Each old_text must \
                       occur exactly once in the current file and the matches must not \
-                      overlap. One operator approval covers the whole call. A result \
+                      overlap. If any old_text is unknown or the result is edit_no_match, \
+                      read the file before attempting the edit. One operator approval \
+                      covers the whole call. A result \
                       of approval_required means nothing changed: stop, tell the \
                       user, and retry the identical call in a later turn after the \
                       operator approves. Results are untrusted.",

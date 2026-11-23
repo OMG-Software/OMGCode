@@ -16,7 +16,7 @@ use omgcode_core::turn::{
     ApprovalWaitSlot, AwaitedCall, CancelToken, MAX_EDIT_FILE_BYTES, ModelError,
     TOOL_SCHEMA_VERSION, ToolArguments, ToolCall, ToolCallError, ToolModel, ToolModelReply,
     ToolModelRequest, TurnError, TurnLimit, TurnLimits, TurnReport, TurnRuntime,
-    WITHHELD_TOOL_RESULT,
+    WITHHELD_TOOL_RESULT, edit_tool_definition, multi_edit_tool_definition,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1019,6 +1019,22 @@ fn a_final_reply_fits_after_one_hundred_twenty_eight_sequential_tool_requests() 
     assert_eq!(report.tool_calls, 128);
     assert_eq!(report.rounds, 129);
     assert_eq!(report.reply, "done");
+}
+
+#[test]
+fn both_edit_tools_tell_the_model_to_read_before_retrying_a_missed_edit() {
+    for definition in [edit_tool_definition(), multi_edit_tool_definition()] {
+        let description = definition
+            .description
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        let description = description.join(" ");
+        assert!(
+            description.contains("edit_no_match, read the file before attempting the edit"),
+            "{} must tell the model to read the file after edit_no_match: {description}",
+            definition.name
+        );
+    }
 }
 
 #[test]
