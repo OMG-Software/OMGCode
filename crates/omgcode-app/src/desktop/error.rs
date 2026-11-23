@@ -141,6 +141,15 @@ impl DesktopError {
         Self::new("preferences", "The chat preferences could not be saved.")
     }
 
+    /// A save found the saved chat preferences but could not read them, so it
+    /// changed nothing rather than overwrite fields it could not see.
+    pub(crate) fn preferences_unreadable() -> Self {
+        Self::new(
+            "preferences",
+            "The saved chat preferences could not be read, so nothing was saved. Close any program using the file, or correct its access, and save again.",
+        )
+    }
+
     /// A workspace's saved custom instructions could not be written.
     pub(crate) fn workspace_instructions() -> Self {
         Self::new(

@@ -664,10 +664,13 @@ untouched controls take the returned values.
   0600 and the directory is synced. A missing file gives the built-in
   values. A file that cannot be read or parsed also gives the built-in values,
   `chat_defaults` reports it as `unreadable`, and the composer shows a note.
-  The next save replaces a damaged regular file. It cannot replace a
-  directory or another entry at that name, or a file it is not allowed to
-  write: the save fails with `preferences`, and the operator must remove the
-  entry or correct its access before saving again.
+  Because each save keeps the other window's fields, it reads the file first.
+  The next save replaces a damaged regular file (one too large, not valid
+  JSON, or holding a value over its bound), starting from the built-in
+  values. A file that exists but cannot be read, such as one another program
+  holds, a link, or a directory, is left unchanged: the save fails with
+  `preferences`, since its fields are unknown, and the operator must close the
+  program, remove the entry, or correct its access before saving again.
 - **Skills.** When a session opens, `main` calls `session_skills`. It returns
   the names of the skills effectively enabled for the session's registered
   workspace, and nothing for a workspace that is not registered here or when

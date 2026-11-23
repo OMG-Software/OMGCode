@@ -781,7 +781,9 @@ pub struct ComposerPreferencesDto {
     pub compact_threshold: u64,
     /// Whether auto-compaction starts enabled.
     pub auto_compact: bool,
-    /// Whether Enter sends the message (ADR-0062).
+    /// Whether Enter sends the message (ADR-0062). A request without it reads
+    /// as `true`, as the saved file does.
+    #[serde(default = "enter_to_send_default")]
     pub enter_to_send: bool,
 }
 

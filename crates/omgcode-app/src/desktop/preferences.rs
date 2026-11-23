@@ -177,19 +177,25 @@ pub(super) fn built_in() -> ChatPreferencesDto {
 
 /// Apply `change` to the saved preferences and save the result.
 ///
-/// The change starts from the saved file, or from [`built_in`] when none
-/// exists or it cannot be read, so the fields `change` leaves alone keep
-/// their saved values. The caller must hold the service's preferences lock,
-/// so two windows' updates cannot interleave (ADR-0080).
+/// The change starts from the saved file, so the fields `change` leaves alone
+/// keep their saved values. A missing file, or a damaged one that this save
+/// replaces, starts from [`built_in`]. The caller must hold the service's
+/// preferences lock, so two windows' updates cannot interleave (ADR-0080).
 ///
 /// # Errors
 ///
-/// As [`save`].
+/// `preferences` when the file exists but cannot be read, for example while
+/// another program holds it: its fields are unknown, so saving would discard
+/// them, and the file is left unchanged. Otherwise as [`save`].
 pub(super) fn update(
     data_root: &Path,
     change: impl FnOnce(&mut ChatPreferencesDto),
 ) -> Result<(), DesktopError> {
-    let mut preferences = load(data_root).ok().flatten().unwrap_or_else(built_in);
+    let mut preferences = match load(data_root) {
+        Ok(Some(saved)) => saved,
+        Ok(None) | Err(LoadError::TooLarge | LoadError::Format | LoadError::Invalid) => built_in(),
+        Err(LoadError::Io) => return Err(DesktopError::preferences_unreadable()),
+    };
     change(&mut preferences);
     save(data_root, &preferences)
 }

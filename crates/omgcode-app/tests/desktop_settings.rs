@@ -486,6 +486,98 @@ fn a_damaged_preferences_file_is_reported_and_replaced_by_a_save() {
 }
 
 #[test]
+fn a_composer_save_without_enter_to_send_reads_it_as_on() {
+    let fixture = Fixture::bare();
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let saved = service
+        .chat_preferences_save(wire(json!({"preferences": {
+            "compact_threshold": 200_000,
+            "auto_compact": true
+        }})))
+        .expect("a request without the field is accepted");
+    assert!(saved.enter_to_send);
+}
+
+/// Saves chat defaults, then holds the preferences file so it cannot be read,
+/// and checks that neither window's save changes it.
+fn assert_saves_refused_while(hold: impl FnOnce(&Path) -> Box<dyn FnOnce()>) {
+    let fixture = Fixture::bare();
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    service
+        .settings_save_chat_defaults(wire(json!({"defaults": {
+            "context_tokens": 65_536,
+            "max_output_tokens": 4096,
+            "max_tool_calls": 32,
+            "turn_timeout_seconds": 300,
+            "instructions": "Keep these."
+        }})))
+        .expect("first save");
+    let file = fixture
+        .data
+        .join("desktop-v1")
+        .join("chat-preferences.json");
+    let before = fs::read(&file).expect("saved file");
+    let release = hold(&file);
+
+    let composer = service
+        .chat_preferences_save(wire(json!({"preferences": {
+            "compact_threshold": 400_000,
+            "auto_compact": true,
+            "enter_to_send": false
+        }})))
+        .expect_err("the composer's save is refused");
+    assert_eq!(composer.code(), "preferences");
+    let settings = service
+        .settings_save_chat_defaults(wire(json!({"defaults": {
+            "context_tokens": 8192,
+            "max_output_tokens": 1024,
+            "max_tool_calls": 8,
+            "turn_timeout_seconds": 60,
+            "instructions": ""
+        }})))
+        .expect_err("the settings window's save is refused");
+    assert_eq!(settings.code(), "preferences");
+
+    release();
+    assert_eq!(fs::read(&file).expect("file after"), before, "unchanged");
+    let reply = service.chat_defaults();
+    assert_eq!(reply.settings.context_tokens, 65_536);
+    assert_eq!(reply.settings.instructions, "Keep these.");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_save_changes_nothing_while_another_program_holds_the_preferences_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// Lets others delete or rename the file, but not read or write it.
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    assert_saves_refused_while(|file| {
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_DELETE)
+            .open(file)
+            .expect("hold the file");
+        Box::new(move || drop(held))
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_changes_nothing_when_the_preferences_file_is_a_link() {
+    assert_saves_refused_while(|file| {
+        // The link points at the saved bytes, which a merge could not read.
+        let target = file.with_extension("target");
+        fs::rename(file, &target).expect("move the file aside");
+        std::os::unix::fs::symlink(&target, file).expect("link");
+        let file = file.to_path_buf();
+        Box::new(move || {
+            fs::remove_file(&file).expect("remove link");
+            fs::rename(&target, &file).expect("restore the file");
+        })
+    });
+}
+
+#[test]
 fn enter_to_send_must_be_a_boolean() {
     let refused = serde_json::from_value::<omgcode_app::desktop::ChatPreferencesSaveRequest>(
         json!({"preferences": {

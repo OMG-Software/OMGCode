@@ -27,8 +27,11 @@ Changes are recorded here before a release version is assigned.
     **Enter to send**, and **Save as defaults**, and replaces the compaction
     threshold field with a slider from 128K to 1M tokens in steps of 8,000.
     `chat_preferences_save` now takes only the threshold, auto-compact, and
-    the send key, refuses a threshold outside 128,000 to 1,000,000, and
-    keeps the other saved fields; both windows' saves merge under one lock.
+    the send key (a request without the send key reads it as on), refuses a
+    threshold outside 128,000 to 1,000,000, and keeps the other saved fields;
+    both windows' saves merge under one lock. A save that finds the file but
+    cannot read it, such as while another program holds it, changes nothing
+    and fails with `preferences`; a damaged file is still replaced.
     The composer reads the budgets and the global instructions from
     `chat_defaults` at start, on window focus, and before each send. A saved
     threshold outside the range is shown and sent at its nearest end. After a
