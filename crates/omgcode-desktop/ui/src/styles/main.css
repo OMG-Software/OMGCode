@@ -1012,11 +1012,6 @@ mark {
   flex: 1;
 }
 
-.status-message {
-  color: var(--muted);
-  white-space: nowrap;
-}
-
 .status-provider {
   max-width: 360px;
   font-size: 12px;

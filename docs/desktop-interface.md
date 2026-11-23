@@ -39,13 +39,15 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
-- Since version 0.44.0 (ADR-0064), the `settings` window and a status bar at
-  the bottom of the `main` window choose the model connection from a
-  dropdown: the default LM Studio endpoint or a recorded `lm_studio` or
-  `ollama_local` profile, after a native confirmation. The `settings` window
-  can also add and remove local connections without a credential. The status
-  bar also shows the open session's workspace and its Git branch. A launch
-  argument still fixes the connection for the process.
+- Since version 0.44.0 (ADR-0064), the `settings` window chooses the model
+  connection from a dropdown: the default LM Studio endpoint or a recorded
+  `lm_studio` or `ollama_local` profile, after a native confirmation. The
+  `settings` window can also add and remove local connections without a
+  credential. The status bar at the bottom of the `main` window shows the
+  open session's workspace and its Git branch. It offered the same
+  dropdown until ADR-0084 removed it; the composer still chooses a
+  session's provider. A launch argument still fixes the connection for the
+  process.
 - Since version 0.32.0 (Phase D4 and E6, ADR-0049), a chat turn streams the
   local model's reply and the shell pushes chat events to the `main` window
   through one caller-scoped channel. The window shows the provisional text
@@ -365,8 +367,9 @@ The `main` window is laid out as follows.
   is also one line. An unreadable session adds its reason as a second line.
   Search hits keep their own layout. **Approvals**, with the pending-count badge, and **Settings**
   are rows at the bottom.
-- **Status bar.** The workspace, the branch, an approvals segment, and the
-  **Model** dropdown. The segment reads "N approvals waiting" with a
+- **Status bar.** The workspace, the branch, and an approvals segment.
+  It has no model or provider control and shows no connection message
+  (ADR-0084). The segment reads "N approvals waiting" with a
   **Review** button while the advisory count is above zero, and is hidden at
   zero. **Review** and the sidebar row only call `approvals_show_window`. The
   notice line above the status bar now only reports a failure to open a
@@ -612,7 +615,7 @@ untouched controls take the returned values.
   composer keeps an answer only when it is for the session still shown and no
   later request or reset began; it never compares the endpoint of an answer
   with another endpoint. It once did, and discarded the whole list
-  whenever the connection had changed outside the footer (a regression test
+  whenever the connection had changed outside this window (a regression test
   covers it). The list loads when a session opens, after a provider is
   chosen for it, when the connection read for it changes, and on
   **Refresh**, which is disabled while a list is being read. While it loads,
@@ -634,9 +637,8 @@ untouched controls take the returned values.
   as before. Embedding models are listed too and cannot answer a turn.
 - **Provider and model per session** (ADR-0071 decisions 6 to 11). The
   provider and the model belong to the open session. The composer's
-  **Provider** dropdown and the footer's provider dropdown both render one
-  shared state read from `connection_status` for the session, so they cannot
-  disagree. Opening a session reads its connection and model and lists its
+  **Provider** dropdown renders a state read from `connection_status` for
+  the session; the status bar no longer has a provider dropdown (ADR-0084). Opening a session reads its connection and model and lists its
   models; switching sessions switches both and shows no dialog, because the
   choice was confirmed when it was made. Choosing a provider calls
   `connection_select` with the session id and the profile name or `null`;
@@ -918,28 +920,22 @@ waits. The window shows:
   could already change every workspace, and the scope grants and removes
   nothing. A poisoned scope lock reads as no scope.
 - **Status bar.** A footer along the bottom of `main` shows the open
-  session's workspace folder, its Git branch, and the model provider
-  (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
-  selectable profile, from `connection_status`, labelled with provider,
-  profile name, and endpoint. A profile is selectable when it is a local
-  profile with a recorded endpoint, or an `ollama_cloud` profile with the
-  cloud endpoint and a bound credential. Since ADR-0071 the dropdown acts on
-  the open session and is the same control, over the same state, as the
-  composer's **Provider** dropdown: choosing one calls `connection_select`
-  with the session id and the profile name only. Rust refuses an unknown
-  session, an unchanged choice, an unselectable profile, and a launch-fixed
-  connection before any dialog, then asks the native Yes/No dialog and records
-  the choice only on Yes. A declined dialog shows "The model provider was not
-  changed.". With no session open the dropdown is disabled. When a launch
-  argument fixed the connection, it is disabled and shows "Set at launch".
-  A recorded choice that no longer holds (its profile was removed, is no
-  longer selectable, or has another endpoint) shows "Choose again" and the
-  next send is refused with `session_connection_stale`. The branch comes from
+  session's workspace folder, its Git branch, and the approvals segment
+  (ADR-0064). Until ADR-0084 it also held a **Model** provider dropdown and
+  a connection message; both are removed because the composer chooses the
+  provider and model per session (ADR-0071) and shows the failure or
+  "The model provider was not changed." note beside its own dropdowns, so no
+  connection message is lost. The footer calls no connection command, but
+  its focus and tree-change refresh still asks the shared connection state
+  to read `connection_status` again, so the composer follows a connection
+  changed in the `settings` window. `connection_select` stays in the `main`
+  capability only for the composer's **Provider** dropdown, with the native
+  Yes/No dialog described there. The branch comes from
   `session_context`, which reads only `HEAD` through the anchored broker (see
-  "Git branch display"). The footer reads both again when the window regains
-  focus, when a session opens, and after a turn settles. Like the rest of
-  `main`, it uses no `title` tooltips; the reason a branch is unavailable is
-  shown as text.
+  "Git branch display"). The footer reads the branch again when the window
+  regains focus, when a session opens, and after a turn settles. Like the
+  rest of `main`, it uses no `title` tooltips; the reason a branch is
+  unavailable is shown as text.
 - **Git branch display.** `session_context` opens the session's registered
   workspace by its recorded root and workspace identities and reads
   `.git/HEAD`, at most 4096 bytes, without following a link. No Git program
@@ -1561,8 +1557,8 @@ ACLs the private store refuses, see the notes in
   differs from the composer's; `ui/tests/session_connection.test.ts` covers
   reading a session's provider and model when it opens, switching sessions
   without a dialog, choosing a provider for the open session (the model is
-  cleared and disabled until the list arrives), the footer and the composer
-  staying in step, a status or list that arrives for a session that was left,
+  cleared and disabled until the list arrives), the status bar showing
+  no provider dropdown, a status or list that arrives for a session that was left,
   the hosted warning, launch-fixed connections, and a stale choice.
   `ui/tests/settings_window.test.ts` and `ui/tests/settings_sections.test.ts`
   also cover the Ollama Cloud form (the endpoint hidden and the fixed one

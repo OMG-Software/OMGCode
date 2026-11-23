@@ -123,12 +123,6 @@ function composerProvider(): HTMLSelectElement {
   return root.querySelector('.composer select[aria-label="Provider"]') as HTMLSelectElement;
 }
 
-function footerProvider(): HTMLSelectElement {
-  return root.querySelector(
-    '.status-footer select[aria-label="Model provider"]',
-  ) as HTMLSelectElement;
-}
-
 function modelLabels(): string[] {
   return Array.from(modelSelect(root).options).map((option) => option.textContent ?? "");
 }
@@ -158,7 +152,6 @@ describe("per-session provider and model", () => {
     });
     expect(ipc.callsTo("chat_models").map((call) => call.args)).toEqual([{ session_id: "s-a" }]);
     expect(composerProvider().value).toBe("ollama");
-    expect(footerProvider().value).toBe("ollama");
     expect(modelSelect(root).value).toBe("ollama-model");
     expect(modelLabels()).toContain("ollama-model");
   });
@@ -174,7 +167,6 @@ describe("per-session provider and model", () => {
     expect(composerProvider().value).toBe("ollama");
     await open("s-b");
     expect(composerProvider().value).toBe("lms");
-    expect(footerProvider().value).toBe("lms");
     expect(modelSelect(root).value).toBe("lms-model");
     expect(modelLabels()).not.toContain("ollama-model");
     await open("s-a");
@@ -217,15 +209,15 @@ describe("per-session provider and model", () => {
     await settle();
     expect(modelSelect(root).disabled).toBe(false);
     expect(modelLabels()).toContain("ollama-model");
-    // The footer shows the same choice: one source of truth.
-    expect(footerProvider().value).toBe("ollama");
+    // The status bar has no provider dropdown (ADR-0084).
+    expect(root.querySelector(".status-footer select")).toBeNull();
     expect(ipc.callsTo("session_model_select")).toHaveLength(0);
   });
 
-  it("changes the same session's provider from the footer and keeps the composer in step", async () => {
+  it("changes the same session's provider from the composer", async () => {
     await start(backend());
     await open("s-a");
-    choose(footerProvider(), "lms");
+    choose(composerProvider(), "lms");
     await settle();
     expect(ipc.callsTo("connection_select")[0]?.args).toEqual({
       session_id: "s-a",
@@ -260,7 +252,6 @@ describe("per-session provider and model", () => {
       CONNECTION_UNCHANGED,
     );
     expect(composerProvider().value).toBe("lms");
-    expect(footerProvider().value).toBe("lms");
     expect(modelSelect(root).value).toBe("lms-model");
     expect(ipc.callsTo("chat_models")).toHaveLength(lists);
   });
@@ -353,11 +344,10 @@ describe("per-session provider and model", () => {
     expect(warning()).toBe(CLOUD_WARNING);
   });
 
-  it("disables both provider dropdowns when a launch argument fixed the connection", async () => {
+  it("disables the provider dropdown when a launch argument fixed the connection", async () => {
     await start(backend({}, false));
     await open("s-a");
     expect(composerProvider().disabled).toBe(true);
-    expect(footerProvider().disabled).toBe(true);
     expect(composerProvider().textContent).toContain("Set at launch");
     // The model is still chosen from the fixed connection's list.
     expect(modelSelect(root).disabled).toBe(false);

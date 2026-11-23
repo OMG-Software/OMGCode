@@ -52,7 +52,7 @@ export function startMain(root: HTMLElement): MainApp {
   }
 
   // The open session's provider and model: one source of truth for the composer's dropdowns and
-  // the footer's (ADR-0071).
+  // the open session's status read (ADR-0071).
   const connection = createConnectionModel();
   void connection.open(null);
   const footer = createStatusFooter({
