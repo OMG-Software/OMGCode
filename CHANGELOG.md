@@ -306,6 +306,8 @@ Changes are recorded here before a release version is assigned.
   tool budget before starting a turn, and summarizer chunks stay at 128 messages.
   The exact-edit and multi-edit tools ask the model to read the file when the
   current text is unknown or an edit misses (ADR-0075, ADR-0076, ADR-0077).
+  The eight tool definitions now serialize to 6,174 bytes, so chat reserves
+  7 KiB for them instead of 6 KiB.
 - CLI compaction tests seed their large history fixtures in one batch so
   unrelated CLI tests can start within their subprocess deadlines.
   The 128-call budget test sets its own 120-second deadline. It checks the
