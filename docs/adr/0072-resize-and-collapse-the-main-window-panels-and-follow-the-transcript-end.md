@@ -76,7 +76,8 @@ Constraints:
    window closes.
 8. **A centred column of entries.** Every transcript entry is centred and
    takes 90% of the transcript's width. The operator's bubble fits its text
-   up to that width.
+   up to that width. [ADR-0074](0074-give-chat-bubbles-a-shared-width.md)
+   replaces this sizing rule.
 9. **Following the end.** Sending a message scrolls the transcript to its end
    and pins it there. Content that arrives while it is pinned, a turn's end,
    and a change in the transcript's size keep the end in view. A scroll event

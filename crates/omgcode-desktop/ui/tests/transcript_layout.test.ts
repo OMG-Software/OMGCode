@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import mainCss from "../src/styles/main.css?raw";
 
-// jsdom computes the cascade but no layout, so these checks read the properties that decide how
-// an entry is sized: a centred flex item fits its content; a stretched one fills the column.
+// jsdom computes the cascade but no layout, so check the properties that size and align a bubble.
 let style: HTMLStyleElement;
 let transcript: HTMLElement;
 
@@ -27,22 +26,14 @@ afterEach(() => {
   style.remove();
 });
 
-describe("the transcript column (ADR-0072)", () => {
-  it("is a share of the transcript's width, not a character count", () => {
-    expect(mainCss).not.toMatch(/\d+ch\b/);
-    expect(getComputedStyle(transcript).getPropertyValue("--chat-column").trim()).toBe("90%");
-  });
-
-  it("centres a reply at the column's width", () => {
-    const reply = getComputedStyle(entry("entry bubble bubble-assistant"));
-    expect(reply.alignSelf).toBe("center");
-    expect(reply.width).toBe("90%");
-  });
-
-  it("centres the operator's bubble and sizes it to its text, up to the column's width", () => {
-    const own = getComputedStyle(entry("entry bubble bubble-user"));
-    expect(own.alignSelf).toBe("center");
-    expect(own.width).toBe("auto");
-    expect(own.maxWidth).toBe("90%");
-  });
+describe("the transcript column", () => {
+  it.each(["bubble-user", "bubble-assistant", "bubble-assistant bubble-live"])(
+    "centres %s within the transcript with left-aligned text",
+    (classes) => {
+      const bubble = getComputedStyle(entry(`entry bubble ${classes}`));
+      expect(bubble.alignSelf).toBe("center");
+      expect(bubble.width).toBe("96%");
+      expect(bubble.textAlign).toBe("left");
+    },
+  );
 });
