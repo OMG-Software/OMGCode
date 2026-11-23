@@ -42,8 +42,8 @@ pub(crate) async fn send_skipping_reused_ports(
     mut build: impl FnMut(Duration) -> RequestBuilder,
 ) -> Result<Response, reqwest::Error> {
     let mut held = Vec::new();
+    let mut remaining = deadline.saturating_duration_since(Instant::now());
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
         let error = match build(remaining).send().await {
             Err(error) if is_reused_local_port(&error) && held.len() < MAX_SKIPPED_PORTS => error,
             result => return result,
@@ -52,9 +52,10 @@ pub(crate) async fn send_skipping_reused_ports(
             Some(port) => held.push(port),
             None => return Err(error),
         }
-        // Checked after the reservation, so no attempt starts with no time
-        // left, however long the reservation took.
-        if Instant::now() >= deadline {
+        // The next attempt's budget is fixed after the reservation and is
+        // the value checked, so no retry starts with no time left.
+        remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Err(error);
         }
     }

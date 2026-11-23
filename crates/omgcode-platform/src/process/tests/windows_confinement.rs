@@ -455,7 +455,7 @@ fn assert_results(results: &BTreeMap<String, String>, expected: &[(&str, &str)])
 /// contained tree, and the outcome reports the measured peak.
 #[test]
 fn the_disk_limit_ends_a_confined_run() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let growth = scene.workspace.join("growth.bin");
     let spec = grow_spec(scene.spec(), &growth);
     let outcome = run_confined(
@@ -475,6 +475,12 @@ fn the_disk_limit_ends_a_confined_run() {
     assert!(
         usage.peak_disk_bytes.expect("disk usage") >= 16 * 1024 * 1024,
         "{usage:?}"
+    );
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "the growth run reached the host"
     );
 }
 
@@ -612,7 +618,7 @@ fn a_networked_container_holds_only_internet_client() {
 #[ignore = "needs internet access and OMGCODE_TEST_INTERNET_HOST"]
 fn a_networked_container_reaches_the_internet() {
     let host = env::var_os("OMGCODE_TEST_INTERNET_HOST").expect("OMGCODE_TEST_INTERNET_HOST");
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut spec = scene.spec();
     spec.environment
         .push((OsString::from(INTERNET_HOST), host.clone()));
@@ -629,11 +635,17 @@ fn a_networked_container_reaches_the_internet() {
     let allowed =
         run_confined(&spec, &confinement, &limits(), &CancelSignal::new()).expect("networked run");
     assert_results(&results(&allowed), &[("internet-connect", "ok")]);
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a networked run reached the host"
+    );
 }
 
 #[test]
 fn missing_or_weaker_grants_start_nothing() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let record = scene.workspace.join("started.txt");
     let mut cases = Vec::new();
     let mut ungranted = scene.confinement();
@@ -663,11 +675,17 @@ fn missing_or_weaker_grants_start_nothing() {
         );
         assert!(!record.exists(), "{name}: the program started");
     }
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a refused run reached the host"
+    );
 }
 
 #[test]
 fn windows_refuses_host_services_and_incomplete_confinement() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut host_services = scene.confinement();
     host_services.unix_sockets = UnixSocketAccess::HostServices;
     let error = run_confined(
@@ -706,11 +724,17 @@ fn windows_refuses_host_services_and_incomplete_confinement() {
         matches!(&error, ProcessError::Confinement(cause) if cause.kind() == io::ErrorKind::NotFound),
         "{error}"
     );
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a refused run reached the host"
+    );
 }
 
 #[test]
 fn a_program_the_container_cannot_read_does_not_start() {
-    let scene = Scene::new();
+    let mut scene = Scene::new();
     let mut spec = scene.spec();
     spec.program = env::current_exe().expect("test executable");
     let error = run_confined(&spec, &scene.confinement(), &limits(), &CancelSignal::new())
@@ -718,5 +742,11 @@ fn a_program_the_container_cannot_read_does_not_start() {
     assert!(
         matches!(&error, ProcessError::Confinement(cause) if cause.kind() == io::ErrorKind::PermissionDenied),
         "{error}"
+    );
+    // Stop the host TCP service on the normal path and check its count.
+    assert_eq!(
+        scene.host_tcp_connections(),
+        0,
+        "a refused run reached the host"
     );
 }

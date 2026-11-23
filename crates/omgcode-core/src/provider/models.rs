@@ -94,10 +94,12 @@ fn list_with_timeout(
             .timeout(timeout)
             .build()
             .map_err(|_| ProviderError::Transport)?;
-        // `Connection: close` lets the server close first, so the TIME_WAIT
-        // a list leaves is the server's and cannot refuse a later Windows
-        // connect to the same server. A server-held TIME_WAIT can delay a
-        // reconnect only after a large request, not a list (ADR-0078).
+        // `Connection: close` asks the server to close after its reply. A
+        // server that closes at once then holds the TIME_WAIT, which cannot
+        // refuse a later Windows connect. That order was not observed: when
+        // the server waits, the client still closes first, and the reused-port
+        // skip handles the TIME_WAIT it holds. A server-held TIME_WAIT delays
+        // a reconnect only after a large request, not a list (ADR-0078).
         let build = |remaining: Duration| {
             let mut request = client
                 .get(endpoint.clone())

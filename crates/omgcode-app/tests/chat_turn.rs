@@ -99,7 +99,11 @@ fn serve_sequence(
             .write_all(head.as_bytes())
             .and_then(|()| stream.write_all(&bytes))
             .map_err(|error| error.to_string())?;
-        common::await_client_close(&mut stream);
+        if !common::await_client_close(&mut stream) {
+            return Err(format!(
+                "the client did not close connection {served} first"
+            ));
+        }
         served += 1;
     }
     Ok(served)

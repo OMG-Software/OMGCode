@@ -243,7 +243,11 @@ fn serve_steps(listener: &TcpListener, steps: Vec<Step>) -> Result<(usize, Vec<R
             hold.recv_timeout(SERVER_TIMEOUT).ok();
             stream.write_all(&rest).and_then(|()| stream.flush()).ok();
         }
-        await_client_close(&mut stream);
+        if !await_client_close(&mut stream) {
+            return Err(format!(
+                "the client did not close connection {served} first"
+            ));
+        }
         served += 1;
     }
     Ok((served, recorded))
@@ -283,9 +287,31 @@ fn accept(listener: &TcpListener) -> Result<TcpStream, String> {
 /// (ADR-0078). Call this only after a reply framed by `Content-Length`, never
 /// after a reply that the close delimits, and only on a stream with a read
 /// timeout. A read error or timeout ends the wait; the caller still closes.
-pub fn await_client_close(stream: &mut impl Read) {
+///
+/// Returns whether the client's close, orderly or abortive, was observed.
+/// Any other read error, including
+/// the timeout or `WouldBlock` on a stream left non-blocking, returns `false`:
+/// then the fixture, not the client, closes first. A shared fixture asserts
+/// the result so a regression of the close order fails loudly.
+pub fn await_client_close(stream: &mut impl Read) -> bool {
     let mut sink = [0_u8; 512];
-    while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+    loop {
+        match stream.read(&mut sink) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            // An abortive close, as a cancelled client makes, leaves no
+            // TIME_WAIT on either side.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return true;
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 /// Keep a non-blocking `listener` bound until `stop` disconnects, closing

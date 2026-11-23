@@ -23,7 +23,8 @@ Changes are recorded here before a release version is assigned.
 - A missing parent directory is reported as `parent_not_found` instead of
   `not_found` by `workspace_create_file`, by the destination check of
   `workspace_rename_file`, and by `workspace_create_directory` (ADR-0079).
-  Their descriptions say to create the parent first. A model had read
+  Their descriptions say to create the parent first, with
+  `workspace_create_directory` when it is offered. A model had read
   `not_found` as "the tool is unavailable" and stopped.
 
 - On Windows, a tool-enabled chat turn no longer fails with `model_error` when
@@ -35,7 +36,12 @@ Changes are recorded here before a release version is assigned.
   unconnected socket and retries, skipping at most 64 ports. The reservation
   is best effort. Every attempt shares the request's original deadline, so a
   retry never extends the model or model-list time limit. The model-list
-  request sends `Connection: close`, so the server holds its TIME_WAIT.
+  request sends `Connection: close`, so a server that closes promptly holds
+  its TIME_WAIT; that order was not observed with LM Studio.
+- When a `create_directory` limit withholds `workspace_create_directory`,
+  the create and rename tool descriptions no longer tell the model to call
+  it. They say that no offered tool creates a directory, so a missing parent
+  no longer leads the model into a refused call that ends the turn.
 - On Windows, a trusted `packages fetch` to the same registry no longer fails
   with a transport error for the same reason. It uses the same reused-port
   skip, which acts before any request byte or credential is sent (ADR-0078).

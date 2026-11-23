@@ -176,7 +176,10 @@ tests for documentation-only work.
   the next connect to it until the connect timeout (ADR-0078). A mock that
   serves the model provider client must read until the client closes, with
   `await_client_close`, so the client holds the TIME_WAIT and its reused-port
-  skip applies. Do not use that order for a client without the skip.
+  skip applies. The helper reports whether the client closed, orderly or
+  abortively, and the shared scripted mocks fail when it did not, so a
+  regression of the close order is a test failure rather than a returning
+  flake. Do not use that order for a client without the skip.
 - CLI compaction tests seed large, private journal fixtures in one batch and
   let the child replay them. This keeps hundreds of fixture syncs from holding
   the spawn gate while unrelated tests are trying to start.

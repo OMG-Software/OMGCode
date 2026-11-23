@@ -54,9 +54,14 @@ request's documented limit, including reading the body; no retry starts
 after the deadline. The check is compiled only on Windows. The code is in
 `crates/omgcode-core/src/connect.rs`.
 
-Send `Connection: close` on the model-list request. LM Studio then closes the
-connection first and holds the TIME_WAIT itself, which cannot refuse a later
-client connect. A list request is a few hundred bytes, which is too small to
+Send `Connection: close` on the model-list request. A server that honours it by
+closing at once after its reply holds the TIME_WAIT itself, which cannot
+refuse a later client connect. That close order was not observed with LM
+Studio. In a loopback probe, a server that replied with `Connection: close`
+but did not close saw the client close first, about 0.1 ms after the reply,
+in three of three rounds. The header therefore helps only with a server that
+closes promptly; otherwise the reused-port skip handles the TIME_WAIT the
+client holds. A list request is a few hundred bytes, which is too small to
 delay a reconnect either (see Consequences). Chat requests do not send it,
 because it did not change the close order for a streamed reply (see
 Alternatives).

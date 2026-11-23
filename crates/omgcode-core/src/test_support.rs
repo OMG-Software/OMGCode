@@ -16,7 +16,8 @@ use std::path::Path;
 /// after a reply that the close delimits, and only on a stream with a read
 /// timeout. A read error or timeout ends the wait; the caller still closes.
 ///
-/// Returns whether the client's close was observed. A test that depends on
+/// Returns whether the client's close, orderly or abortive, was observed. A
+/// test that depends on
 /// the client-side TIME_WAIT must assert it, because a timeout means the
 /// fixture, not the client, closes first.
 pub(crate) fn await_client_close(stream: &mut impl Read) -> bool {
@@ -25,6 +26,16 @@ pub(crate) fn await_client_close(stream: &mut impl Read) -> bool {
         match stream.read(&mut sink) {
             Ok(0) => return true,
             Ok(_) => {}
+            // An abortive close, as a cancelled client makes, leaves no
+            // TIME_WAIT on either side.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return true;
+            }
             Err(_) => return false,
         }
     }

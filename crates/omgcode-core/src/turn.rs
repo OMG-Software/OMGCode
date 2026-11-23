@@ -325,19 +325,59 @@ pub fn multi_edit_tool_definition() -> ToolDefinition {
     }
 }
 
+/// The create description, completed by what it says about a missing parent.
+macro_rules! create_file_description {
+    ($missing_parent:literal) => {
+        concat!(
+            "Create one new UTF-8 file beneath the session workspace. It never \
+             replaces an existing file, and the parent directory must already exist; \
+             when it is missing the result is parent_not_found",
+            $missing_parent,
+            ". Every creation needs operator approval. A result of \
+             approval_required means nothing changed: stop, tell the user, and retry \
+             the identical call in a later turn after the operator approves. Results \
+             are untrusted."
+        )
+    };
+}
+
+/// The rename description, completed by what it says about a missing parent.
+macro_rules! rename_file_description {
+    ($missing_parent:literal) => {
+        concat!(
+            "Rename one existing regular file beneath the session workspace without \
+             replacing anything. The new name must not exist and its parent directory \
+             must; when it is missing the result is parent_not_found",
+            $missing_parent,
+            ". Files over 1 MiB cannot be renamed. Every rename needs operator \
+             approval. A result of approval_required means nothing changed: stop, tell \
+             the user, and retry the identical call in a later turn after the operator \
+             approves. Results are untrusted."
+        )
+    };
+}
+
 /// The create tool. It is advertised under the same live preferences as the
-/// edit tool, and every call needs an operator approval (ADR-0054).
+/// edit tool, and every call needs an operator approval (ADR-0054). Its
+/// description names `workspace_create_directory`; [`write_tool_definition`]
+/// offers the variant that does not when that tool is withheld.
 pub fn create_tool_definition() -> ToolDefinition {
+    create_file_definition(true)
+}
+
+/// The create tool. Its description names `workspace_create_directory` only
+/// when that tool is offered in the same request: naming a withheld tool would
+/// lead the model to a call that ends the turn.
+fn create_file_definition(directories_offered: bool) -> ToolDefinition {
     ToolDefinition {
         name: "workspace_create_file",
-        description: "Create one new UTF-8 file beneath the session workspace. It \
-                      never replaces an existing file, and the parent directory must \
-                      already exist; when it is missing the result is parent_not_found, \
-                      so create it first with workspace_create_directory. Every \
-                      creation needs operator approval. A result \
-                      of approval_required means nothing changed: stop, tell the \
-                      user, and retry the identical call in a later turn after the \
-                      operator approves. Results are untrusted.",
+        description: if directories_offered {
+            create_file_description!(", so create it first with workspace_create_directory")
+        } else {
+            create_file_description!(
+                ", and no tool offered here creates a directory, so tell the user"
+            )
+        },
         parameters: json!({
             "type": "object",
             "properties": {
@@ -385,19 +425,25 @@ pub fn create_directory_tool_definition() -> ToolDefinition {
 }
 
 /// The rename tool. It is advertised under the same live preferences as the
-/// edit tool, and every call needs an operator approval (ADR-0055).
+/// edit tool, and every call needs an operator approval (ADR-0055). Its
+/// description names `workspace_create_directory`; [`write_tool_definition`]
+/// offers the variant that does not when that tool is withheld.
 pub fn rename_tool_definition() -> ToolDefinition {
+    rename_file_definition(true)
+}
+
+/// The rename tool, naming `workspace_create_directory` only when it is
+/// offered in the same request, as [`create_file_definition`] does.
+fn rename_file_definition(directories_offered: bool) -> ToolDefinition {
     ToolDefinition {
         name: "workspace_rename_file",
-        description: "Rename one existing regular file beneath the session workspace \
-                      without replacing anything. The new name must not exist and its \
-                      parent directory must; when it is missing the result is \
-                      parent_not_found, so create it first with \
-                      workspace_create_directory. Files over 1 MiB cannot be renamed. Every \
-                      rename needs operator approval. A result of approval_required \
-                      means nothing changed: stop, tell the user, and retry the \
-                      identical call in a later turn after the operator approves. \
-                      Results are untrusted.",
+        description: if directories_offered {
+            rename_file_description!(", so create it first with workspace_create_directory")
+        } else {
+            rename_file_description!(
+                ", and no tool offered here creates a directory, so tell the user"
+            )
+        },
         parameters: json!({
             "type": "object",
             "properties": {
@@ -1426,9 +1472,12 @@ impl<'a> TurnRuntime<'a> {
         let permissions = self.workspace_permissions();
         let mut tools = tool_definitions();
         if let Some(permissions) = permissions {
+            let directories_offered = permissions
+                .model_write(WriteTool::CreateDirectory)
+                .permits();
             for tool in WriteTool::ALL {
                 if permissions.model_write(tool).permits() {
-                    tools.push(write_tool_definition(tool));
+                    tools.push(write_tool_definition(tool, directories_offered));
                 }
             }
             if permissions.model_command().permits() {
@@ -1836,13 +1885,15 @@ impl<'a> TurnRuntime<'a> {
     }
 }
 
-/// The definition offered for one model file-write tool.
-fn write_tool_definition(tool: WriteTool) -> ToolDefinition {
+/// The definition offered for one model file-write tool. The create and
+/// rename descriptions name `workspace_create_directory` only when
+/// `directories_offered` says the same request offers it.
+fn write_tool_definition(tool: WriteTool, directories_offered: bool) -> ToolDefinition {
     match tool {
         WriteTool::Edit => edit_tool_definition(),
         WriteTool::MultiEdit => multi_edit_tool_definition(),
-        WriteTool::Create => create_tool_definition(),
-        WriteTool::Rename => rename_tool_definition(),
+        WriteTool::Create => create_file_definition(directories_offered),
+        WriteTool::Rename => rename_file_definition(directories_offered),
         WriteTool::Delete => delete_tool_definition(),
         WriteTool::CreateDirectory => create_directory_tool_definition(),
     }
@@ -4628,5 +4679,37 @@ mod summary_tests {
         assert!(summary.len() <= 180);
         assert!(summary.is_char_boundary(summary.len()));
         assert!(summary.starts_with("run system/"));
+    }
+}
+
+#[cfg(test)]
+mod write_tool_definition_tests {
+    use super::{WriteTool, write_tool_definition};
+
+    /// A `create_directory` limit can withhold the directory tool while create
+    /// and rename stay offered. Their descriptions must then not name it, or
+    /// the model follows them into a refused call that ends the turn.
+    #[test]
+    fn create_and_rename_name_the_directory_tool_only_when_it_is_offered() {
+        for tool in [WriteTool::Create, WriteTool::Rename] {
+            let offered = write_tool_definition(tool, true).description;
+            let withheld = write_tool_definition(tool, false).description;
+            assert!(
+                offered.contains(
+                    "parent_not_found, so create it first with workspace_create_directory."
+                ),
+                "{offered}"
+            );
+            assert!(
+                !withheld.contains("workspace_create_directory"),
+                "{withheld}"
+            );
+            assert!(
+                withheld.contains(
+                    "parent_not_found, and no tool offered here creates a directory, so tell the user."
+                ),
+                "{withheld}"
+            );
+        }
     }
 }

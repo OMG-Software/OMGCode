@@ -60,7 +60,10 @@ impl Fixture {
                 .write_all(response.as_bytes())
                 .expect("write fixture response headers");
             stream.write_all(&body).expect("write fixture body");
-            await_client_close(&mut stream);
+            assert!(
+                await_client_close(&mut stream),
+                "the client closes the fixture connection first"
+            );
             (head, request_body)
         });
         Self {
@@ -115,9 +118,31 @@ fn bind_fixture_listener() -> TcpListener {
 /// (ADR-0078). Call this only after a reply framed by `Content-Length`, never
 /// after a reply that the close delimits, and only on a stream with a read
 /// timeout. A read error or timeout ends the wait; the caller still closes.
-fn await_client_close(stream: &mut impl Read) {
+///
+/// Returns whether the client's close, orderly or abortive, was observed.
+/// Any other read error, including
+/// the timeout or `WouldBlock` on a stream left non-blocking, returns `false`:
+/// then the fixture, not the client, closes first. A shared fixture asserts
+/// the result so a regression of the close order fails loudly.
+fn await_client_close(stream: &mut impl Read) -> bool {
     let mut sink = [0_u8; 512];
-    while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+    loop {
+        match stream.read(&mut sink) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            // An abortive close, as a cancelled client makes, leaves no
+            // TIME_WAIT on either side.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return true;
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 /// Validate fixture framing and cap allocations before reading a declared body.
