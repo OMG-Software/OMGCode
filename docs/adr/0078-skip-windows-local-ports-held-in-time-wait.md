@@ -54,7 +54,10 @@ request's documented limit, including reading the body; no retry starts
 after the deadline. The check is compiled only on Windows. The code is in
 `crates/omgcode-core/src/connect.rs`.
 
-Send `Connection: close` on the model-list request. A server that honours it by
+Send `Connection: close` on a model-list request to a plain-HTTP loopback
+server. The HTTPS Ollama Cloud endpoint does not receive it: HTTP/2 forbids the
+header. This build negotiates only HTTP/1.1, so the header would be valid
+there today, but it has no purpose there. A server that honours it by
 closing at once after its reply holds the TIME_WAIT itself, which cannot
 refuse a later client connect. That close order was not observed with LM
 Studio. In a loopback probe, a server that replied with `Connection: close`

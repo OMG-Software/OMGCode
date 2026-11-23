@@ -100,12 +100,18 @@ fn list_with_timeout(
         // the server waits, the client still closes first, and the reused-port
         // skip handles the TIME_WAIT it holds. A server-held TIME_WAIT delays
         // a reconnect only after a large request, not a list (ADR-0078).
+        // Only a plain-HTTP loopback request sends it: HTTP/2 forbids the
+        // header, and the cloud endpoint is HTTPS. This build negotiates
+        // HTTP/1.1 only, so the cloud request would accept it today.
+        let close_after_reply = !https_only;
         let build = |remaining: Duration| {
             let mut request = client
                 .get(endpoint.clone())
                 .timeout(remaining)
-                .header(ACCEPT, "application/json")
-                .header(CONNECTION, "close");
+                .header(ACCEPT, "application/json");
+            if close_after_reply {
+                request = request.header(CONNECTION, "close");
+            }
             if let Some(authorization) = &authorization {
                 request = request.header(AUTHORIZATION, authorization.clone());
             }

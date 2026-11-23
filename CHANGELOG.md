@@ -35,9 +35,10 @@ Changes are recorded here before a release version is assigned.
   connect, as `hyper-util` does. A request refused that way now holds the port with a bound,
   unconnected socket and retries, skipping at most 64 ports. The reservation
   is best effort. Every attempt shares the request's original deadline, so a
-  retry never extends the model or model-list time limit. The model-list
-  request sends `Connection: close`, so a server that closes promptly holds
-  its TIME_WAIT; that order was not observed with LM Studio.
+  retry never extends the model or model-list time limit. A model-list
+  request to a loopback server sends `Connection: close`, so a server that
+  closes promptly holds its TIME_WAIT; that order was not observed with LM
+  Studio. The HTTPS Ollama Cloud request does not send it.
 - When a `create_directory` limit withholds `workspace_create_directory`,
   the create and rename tool descriptions no longer tell the model to call
   it. They say that no offered tool creates a directory, so a missing parent
