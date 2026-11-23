@@ -589,6 +589,67 @@ fn enter_to_send_must_be_a_boolean() {
     assert!(refused.is_err(), "a non-boolean value is refused");
 }
 
+/// Both headings and the blank line a turn adds when it sends both texts.
+const BOTH_HEADINGS: usize = "Global instructions:\n".len() + 2 + "Workspace instructions:\n".len();
+const INSTRUCTIONS_MAX: usize = 16 * 1024;
+
+#[test]
+fn every_save_keeps_the_global_and_workspace_instructions_sendable_together() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let room_of = |overview: &omgcode_app::desktop::SettingsOverview| {
+        overview
+            .workspaces
+            .iter()
+            .find(|view| view.workspace_id == workspace.id)
+            .expect("the workspace")
+            .instructions_max_bytes
+    };
+    let save_global = |text: String| {
+        service.settings_save_chat_defaults(wire(json!({"defaults": {
+            "context_tokens": 8192,
+            "max_output_tokens": 1024,
+            "max_tool_calls": 8,
+            "turn_timeout_seconds": 60,
+            "instructions": text
+        }})))
+    };
+    let save_workspace = |text: String| {
+        service.settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": text
+        })))
+    };
+
+    // Nothing saved: a workspace text leaves room for its own heading.
+    let overview = service.settings_overview().expect("overview");
+    assert_eq!(room_of(&overview), INSTRUCTIONS_MAX - 24);
+    assert_eq!(overview.chat.instructions_max_bytes, INSTRUCTIONS_MAX);
+
+    // A long workspace text shrinks the global room to exactly what fits.
+    let workspace_len = 10_000;
+    let overview = save_workspace("w".repeat(workspace_len)).expect("workspace");
+    let global_room = INSTRUCTIONS_MAX - BOTH_HEADINGS - workspace_len;
+    assert_eq!(overview.chat.instructions_max_bytes, global_room);
+    let error = save_global("g".repeat(global_room + 1)).expect_err("too long beside it");
+    assert_eq!(error.code(), "invalid_request");
+    let overview = save_global("g".repeat(global_room)).expect("exactly fits");
+    assert_eq!(room_of(&overview), workspace_len);
+
+    // Now the workspace text cannot grow, but can shrink or be removed.
+    let error = save_workspace("w".repeat(workspace_len + 1)).expect_err("too long beside it");
+    assert_eq!(error.code(), "invalid_request");
+    save_workspace("short".to_owned()).expect("shorter");
+    save_workspace(String::new()).expect("removed");
+
+    // Every accepted pair is sent: a turn composes them within the core bound.
+    let overview = save_global("g".repeat(INSTRUCTIONS_MAX)).expect("alone, the whole bound");
+    assert_eq!(room_of(&overview), 0);
+    let error = save_workspace("w".to_owned()).expect_err("no room left");
+    assert_eq!(error.code(), "invalid_request");
+}
+
 #[test]
 fn workspace_instructions_are_saved_for_a_registered_workspace_only() {
     let fixture = Fixture::new();

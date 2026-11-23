@@ -320,6 +320,8 @@ export interface WorkspaceSettingsView {
   package_cache_root: string | null;
   /** The workspace's custom instructions (ADR-0080); `null` when the saved file is unreadable. */
   instructions: string | null;
+  /** Largest text this workspace's save accepts: 16 KiB less the global text and headings. */
+  instructions_max_bytes: number;
 }
 
 /** The complete preference set a permissions change sends. Every field is required. */
@@ -444,7 +446,10 @@ export interface ChatDefaultsView {
   source: PreferencesSource;
   tool_call_limit_max: number;
   turn_timeout_seconds_max: number;
-  /** Largest global or workspace instruction text, in UTF-8 bytes; also their sum with headings. */
+  /**
+   * Largest global instruction text a save accepts, in UTF-8 bytes: 16 KiB less the longest
+   * saved workspace text and the headings a turn adds (ADR-0080).
+   */
   instructions_max_bytes: number;
 }
 

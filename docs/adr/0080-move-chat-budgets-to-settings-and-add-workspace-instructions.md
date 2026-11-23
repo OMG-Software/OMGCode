@@ -31,8 +31,13 @@ that crowded the toolbar.
 2. Each workspace in the **Workspaces** section has **Custom instructions**,
    saved by `settings_set_workspace_instructions` for a registered workspace
    only, in `<data_root>/desktop-v1/workspace-instructions/<id>.json`. Empty
-   text removes the file. Each text is at most 16 KiB, the core's bound on
-   custom instructions.
+   text removes the file. Each save keeps the global text and every
+   workspace's text sendable together within 16 KiB, the core's bound on
+   custom instructions, with the headings of decision 3: the workspace save
+   checks against the saved global text, and the global save against the
+   longest saved workspace text, both under the preferences lock. The
+   overview reports each remaining room, which the window's counters show,
+   so text the window accepts never makes a turn fail.
 3. `chat_send` composes the turn's custom instructions in Rust. The window
    sends the global text; Rust reads the session's recorded workspace's text.
    With no workspace text the global text is sent unchanged, so manifests keep
@@ -76,6 +81,10 @@ that crowded the toolbar.
 - **A logarithmic slider or free entry for the threshold.** Free entry allowed
   values that compact on every turn. A linear slider with 8,000-token steps
   reaches the 200,000 default exactly and is enough at this range.
+- **Bound each text alone, less the headings.** It keeps one text from
+  failing alone, but a long global text and a long workspace text still fail
+  together on every turn. Checking the pair on each save keeps every accepted
+  combination sendable.
 - **Text buttons with shorter labels.** Icons with tooltips keep the reply
   row and the toolbar compact and still name each action for assistive
   technology.

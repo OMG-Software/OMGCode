@@ -104,6 +104,10 @@ const COMPACT_MIN = 128_000;
 const COMPACT_MAX = 1_000_000;
 /** The bound Rust puts on each saved custom instruction text, in UTF-8 bytes. */
 const INSTRUCTIONS_MAX_BYTES = 16 * 1024;
+/** Bytes of Rust's `Workspace instructions:` heading line. */
+const WORKSPACE_HEADING_BYTES = 24;
+/** Bytes both headings and the blank line between the texts add. */
+const BOTH_HEADINGS_BYTES = 47;
 
 /** The one saved chat defaults file: the settings window's fields and the composer's. */
 type MockPreferences = ChatBudgets & ComposerPreferences & { model: string };
@@ -644,19 +648,32 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         if (saved.context_tokens < 1 || saved.max_output_tokens < 1) {
           return fail("invalid_request", "Set the context size to a positive number of tokens.");
         }
+        const globalRoom = overviewView().chat.instructions_max_bytes;
+        if (new TextEncoder().encode(saved.instructions).length > globalRoom) {
+          return fail(
+            "invalid_request",
+            `The global instructions can be at most ${globalRoom} bytes beside the longest workspace instructions.`,
+          );
+        }
         savedPreferences = { ...preferences(), ...saved };
         settings.chat = chatView();
-        return clone(settings);
+        return overviewView();
       }
       case "settings_set_workspace_instructions": {
         const workspace = mockWorkspace(args);
         const instructions = str(args, "instructions");
-        // Rust's bound: UTF-8 bytes, and a refusal keeps the saved text.
-        if (new TextEncoder().encode(instructions).length > INSTRUCTIONS_MAX_BYTES) {
-          return fail("invalid_request", "The workspace instructions are longer than 16 KiB.");
+        // Rust's bound: UTF-8 bytes beside the global text, and a refusal keeps the saved text.
+        const room =
+          overviewView().workspaces.find((w) => w.workspace_id === workspace.workspace_id)
+            ?.instructions_max_bytes ?? 0;
+        if (new TextEncoder().encode(instructions).length > room) {
+          return fail(
+            "invalid_request",
+            `The workspace instructions can be at most ${room} bytes beside the global instructions.`,
+          );
         }
         workspace.instructions = instructions;
-        return clone(settings);
+        return overviewView();
       }
       case "session_skills":
         str(args, "session_id");
@@ -678,13 +695,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       }
       case "settings_clear_scope":
         settings.scope = null;
-        return clone(settings);
+        return overviewView();
       case "settings_overview":
-        return clone(settings);
+        return overviewView();
       // The mock's data folder grants no extra account, so, like Rust for a private folder,
       // nothing is asked and nothing changes (ADR-0073).
       case "settings_repair_data_folder":
-        return clone(settings);
+        return overviewView();
       // The development mock stands in for the native dialogs: each folder dialog "chooses" a
       // fixed folder and each confirmation is accepted.
       case "settings_choose_root":
@@ -717,6 +734,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             },
             package_cache_root: null,
             instructions: "",
+            instructions_max_bytes: 0,
           });
         });
       case "settings_set_permissions":
@@ -915,6 +933,26 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   }
 
   /** The chat defaults the settings window shows (ADR-0080). */
+  /**
+   * The overview as Rust returns it, with each instruction room worked out as Rust does
+   * (ADR-0080): what is left of 16 KiB beside the other text and the headings a turn adds.
+   */
+  function overviewView(): SettingsOverview {
+    const view = clone(settings);
+    const bytes = (text: string): number => new TextEncoder().encode(text).length;
+    const global = bytes(preferences().instructions);
+    for (const workspace of view.workspaces) {
+      const used = global === 0 ? WORKSPACE_HEADING_BYTES : BOTH_HEADINGS_BYTES + global;
+      workspace.instructions_max_bytes = Math.max(0, INSTRUCTIONS_MAX_BYTES - used);
+    }
+    const longest = Math.max(0, ...view.workspaces.map((w) => bytes(w.instructions ?? "")));
+    view.chat.instructions_max_bytes =
+      longest === 0
+        ? INSTRUCTIONS_MAX_BYTES
+        : Math.max(0, INSTRUCTIONS_MAX_BYTES - BOTH_HEADINGS_BYTES - longest);
+    return view;
+  }
+
   function chatView(): ChatDefaultsView {
     const saved = preferences();
     return {
@@ -1026,7 +1064,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     }
     change();
     settings.revision += 1;
-    return clone(settings);
+    return overviewView();
   }
 
   function mockWorkspace(args: Record<string, unknown>): WorkspaceSettingsView {
@@ -1062,6 +1100,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           },
           package_cache_root: null,
           instructions: "Run the tests before answering.",
+          instructions_max_bytes: 0,
         },
         {
           workspace_id: "88888888-8888-4888-8888-888888888888",
@@ -1081,6 +1120,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           },
           package_cache_root: null,
           instructions: "",
+          instructions_max_bytes: 0,
         },
       ],
       connection: {

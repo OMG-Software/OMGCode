@@ -33,6 +33,34 @@ const MAX_FILE_BYTES: u64 = 128 * 1024;
 const GLOBAL_HEADING: &str = "Global instructions:\n";
 /// Heading of a workspace's instructions.
 const WORKSPACE_HEADING: &str = "Workspace instructions:\n";
+/// Bytes [`compose`] adds when both texts are sent: both headings and the
+/// blank line between the texts.
+const BOTH_OVERHEAD: usize = GLOBAL_HEADING.len() + 2 + WORKSPACE_HEADING.len();
+
+/// The longest workspace text, in bytes, that a turn can send beside the
+/// global text `global`.
+///
+/// Each save keeps the pair within the core's bound on custom instructions,
+/// so text the `settings` window accepts never makes a turn fail
+/// ([`compose`] still checks every turn).
+pub(super) fn workspace_room(global: &str) -> usize {
+    let used = if global.is_empty() {
+        WORKSPACE_HEADING.len()
+    } else {
+        BOTH_OVERHEAD + global.len()
+    };
+    MAX_SAVED_INSTRUCTIONS_BYTES.saturating_sub(used)
+}
+
+/// The longest global text, in bytes, that a turn can send beside a workspace
+/// text of `longest_workspace` bytes, the longest any workspace has saved.
+pub(super) fn global_room(longest_workspace: usize) -> usize {
+    if longest_workspace == 0 {
+        MAX_SAVED_INSTRUCTIONS_BYTES
+    } else {
+        MAX_SAVED_INSTRUCTIONS_BYTES.saturating_sub(BOTH_OVERHEAD + longest_workspace)
+    }
+}
 
 /// The file's on-disk shape.
 #[derive(Deserialize, Serialize)]
@@ -230,6 +258,36 @@ mod tests {
             compose("Be brief.", "Use tabs.").expect("both"),
             "Global instructions:\nBe brief.\n\nWorkspace instructions:\nUse tabs."
         );
+    }
+
+    #[test]
+    fn the_rooms_are_exactly_what_composes() {
+        for global in [String::new(), "g".repeat(100), "g".repeat(16_000)] {
+            let room = workspace_room(&global);
+            assert!(
+                compose(&global, &"w".repeat(room)).is_ok(),
+                "{}",
+                global.len()
+            );
+            assert!(
+                compose(&global, &"w".repeat(room + 1)).is_err(),
+                "{}",
+                global.len()
+            );
+        }
+        assert_eq!(global_room(0), MAX_SAVED_INSTRUCTIONS_BYTES);
+        for longest in [1, 100, 16_000] {
+            let room = global_room(longest);
+            let workspace = "w".repeat(longest);
+            assert!(compose(&"g".repeat(room), &workspace).is_ok(), "{longest}");
+            assert!(
+                compose(&"g".repeat(room + 1), &workspace).is_err(),
+                "{longest}"
+            );
+        }
+        // Text too long for any pairing leaves no room, rather than wrapping.
+        assert_eq!(workspace_room(&"g".repeat(MAX_SAVED_INSTRUCTIONS_BYTES)), 0);
+        assert_eq!(global_room(MAX_SAVED_INSTRUCTIONS_BYTES), 0);
     }
 
     #[test]

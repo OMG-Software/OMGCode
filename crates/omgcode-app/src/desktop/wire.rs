@@ -843,8 +843,9 @@ pub struct ChatDefaultsView {
     pub tool_call_limit_max: usize,
     /// Largest supported turn timeout, in seconds.
     pub turn_timeout_seconds_max: u64,
-    /// Largest global or workspace instruction text, in UTF-8 bytes. The two
-    /// together must fit it too, with their headings, when a turn uses them.
+    /// Largest global instruction text a save accepts, in UTF-8 bytes: 16 KiB
+    /// less the longest saved workspace text and the headings a turn adds,
+    /// so the two always fit together.
     pub instructions_max_bytes: usize,
 }
 
@@ -920,6 +921,9 @@ pub struct WorkspaceSettingsView {
     /// saved, or `None` when the saved file cannot be read. Operator-typed,
     /// untrusted-origin text; shown only as a form value.
     pub instructions: Option<String>,
+    /// Largest text a save of this workspace's instructions accepts, in UTF-8
+    /// bytes: 16 KiB less the saved global text and the headings a turn adds.
+    pub instructions_max_bytes: usize,
 }
 
 /// Arguments of a settings change that names only the expected revision

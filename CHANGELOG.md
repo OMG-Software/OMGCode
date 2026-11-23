@@ -15,8 +15,9 @@ Changes are recorded here before a release version is assigned.
     instructions**, saved by the new `settings_set_workspace_instructions`
     for a registered workspace in
     `desktop-v1/workspace-instructions/<id>.json`; empty text removes them.
-    Neither shows a dialog or changes the settings revision. Each text is at
-    most 16 KiB.
+    Neither shows a dialog or changes the settings revision. Each save keeps
+    the global and every workspace text sendable together within 16 KiB,
+    headings included, and the window's counters show the room left.
   - **Turns:** `chat_send` adds the session workspace's instructions after
     the global ones, under `Global instructions:` and `Workspace
     instructions:` headings, and sends the global text unchanged when the

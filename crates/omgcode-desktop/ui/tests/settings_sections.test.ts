@@ -7,6 +7,7 @@ import type {
   WriteToolAccess,
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
+import { workspaceTooLong } from "../src/settings/chat_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -39,6 +40,7 @@ function workspace(id: string, folder: string, extra: Partial<WorkspaceSettingsV
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
     instructions: "",
+    instructions_max_bytes: 16_360,
     ...extra,
   } satisfies WorkspaceSettingsView;
 }
@@ -751,6 +753,29 @@ describe("chat defaults and custom instructions (ADR-0080)", () => {
     pick(chooser(), B);
     pick(chooser(), A);
     expect(field<HTMLTextAreaElement>(`workspace-instructions-${A}`).value).toBe("Unsaved");
+  });
+
+  it("counts against the room Rust leaves beside the global text and keeps longer text", async () => {
+    await start(() =>
+      overview({
+        workspaces: [
+          workspace(A, "/home/dev/a", { instructions_max_bytes: 10 }),
+          workspace(B, "/b"),
+        ],
+      }),
+    );
+    const box = field<HTMLTextAreaElement>(`workspace-instructions-${A}`);
+    type(box, "eleven byte");
+    const counter = root.querySelector(".workspace-instructions .byte-counter");
+    expect(counter?.textContent).toBe("11 / 10 bytes");
+    expect(counter?.classList.contains("over")).toBe(true);
+    buttonByText(root, "Save instructions").click();
+    await settle();
+    expect(ipc.callsTo("settings_set_workspace_instructions")).toHaveLength(0);
+    expect(root.querySelector(".workspace-instructions [role=alert]")?.textContent).toBe(
+      workspaceTooLong(10),
+    );
+    expect(box.value).toBe("eleven byte");
   });
 
   it("says when a workspace's saved instructions could not be read", async () => {

@@ -644,7 +644,8 @@ untouched controls take the returned values.
   tool-enabled turn timeout, and global custom instructions to
   `settings_save_chat_defaults`, which refuses a zero context size or output
   reserve, a tool-call limit or timeout out of range, and global
-  instructions over 16 KiB. Neither saves the model name; a file's saved
+  instructions longer than the room the overview reports (see "Settings
+  window"). Neither saves the model name; a file's saved
   name is kept. A file without `max_tool_calls` reads as 128, and one
   without `turn_timeout_seconds` reads as 120. A file or request
   without `enter_to_send`, such
@@ -812,7 +813,7 @@ waits. The window shows:
   (ADR-0080) holds number fields for **Context tokens**, **Max output
   tokens**, **Tool calls per turn**, and **Tool-enabled turn timeout
   (seconds)**, a **Global custom instructions** box with a UTF-8 byte
-  counter, and **Save chat defaults**, which calls
+  counter against the room left beside the longest workspace text, and **Save chat defaults**, which calls
   `settings_save_chat_defaults` with no native dialog and no settings
   revision, because none of it is a permission. What the operator types is
   kept in window memory until a save succeeds, so a redraw or a section
@@ -834,8 +835,19 @@ waits. The window shows:
   (ADR-0080): a box with a byte counter and **Save instructions**, which
   calls `settings_set_workspace_instructions` with the workspace identifier
   and the text, with no dialog. Rust refuses a workspace that is not
-  registered and text over 16 KiB; saving empty text removes the
-  workspace's file. Each workspace's typed draft is kept in window memory
+  registered and text longer than the workspace's `instructions_max_bytes`;
+  saving empty text removes the workspace's file. The counter counts against
+  that room, and the window refuses longer text before sending it.
+
+  A turn sends the global and workspace texts together under headings,
+  within 16 KiB (ADR-0080). So that every accepted save can be sent, each
+  save checks the pair: a workspace's room is 16 KiB less its 24-byte heading
+  when no global text is saved, or less the global text and 47 bytes of both
+  headings and the blank line otherwise; the global room is 16 KiB when no
+  workspace has text, or 16 KiB less 47 bytes and the longest workspace
+  text. Both saves hold the service's preferences lock, so neither can
+  overtake the other's check. Shortening or removing text is always allowed
+  when it fits. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.
 - **Advanced.** Read-only, with no control that changes anything: toolchain

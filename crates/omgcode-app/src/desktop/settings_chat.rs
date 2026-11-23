@@ -29,7 +29,8 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `invalid_request` for a value outside its bound, `preferences` when the
+    /// `invalid_request` for a value outside its bound or global instructions
+    /// that would not fit beside a workspace's, `preferences` when the
     /// file cannot be written, `internal` for a poisoned lock, and the errors
     /// of [`settings_overview`](Self::settings_overview).
     pub fn settings_save_chat_defaults(
@@ -44,6 +45,14 @@ impl DesktopService {
                 .preferences
                 .lock()
                 .map_err(|_| DesktopError::poisoned())?;
+            // Under the lock, so no workspace save can lengthen a text after
+            // this check.
+            let room = instructions::global_room(self.longest_workspace_instructions()?);
+            if defaults.instructions.len() > room {
+                return Err(DesktopError::invalid_request(format!(
+                    "The global instructions can be at most {room} bytes, so that a turn can send                      them with the longest workspace instructions and their headings. Shorten                      them, or that workspace's instructions."
+                )));
+            }
             preferences::update(&self.inner.data_root, |saved| {
                 saved.context_tokens = defaults.context_tokens;
                 saved.max_output_tokens = defaults.max_output_tokens;
@@ -60,7 +69,8 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `unknown_workspace`, `invalid_request` for text over the bound,
+    /// `unknown_workspace`, `invalid_request` for text that would not fit
+    /// beside the saved global instructions,
     /// `preferences` when the file cannot be written, `internal` for a
     /// poisoned lock, and the errors of
     /// [`settings_overview`](Self::settings_overview).
@@ -80,6 +90,19 @@ impl DesktopService {
                 .preferences
                 .lock()
                 .map_err(|_| DesktopError::poisoned())?;
+            // A turn sends the saved global text with these. A file that
+            // cannot be read gives the built-in empty text, as a turn does.
+            let global = preferences::load(&self.inner.data_root)
+                .ok()
+                .flatten()
+                .map(|saved| saved.instructions)
+                .unwrap_or_default();
+            let room = instructions::workspace_room(&global);
+            if request.instructions.len() > room {
+                return Err(DesktopError::invalid_request(format!(
+                    "The workspace instructions can be at most {room} bytes, so that a turn can                      send them with the global instructions and their headings. Shorten them, or                      the global instructions."
+                )));
+            }
             instructions::save(
                 &self.inner.data_root,
                 request.workspace_id,
@@ -87,6 +110,25 @@ impl DesktopService {
             )?;
         }
         self.settings_overview()
+    }
+}
+
+impl DesktopService {
+    /// The length of the longest saved instruction text of any registered
+    /// workspace; a file that cannot be read counts as none, as it blocks
+    /// that workspace's turns anyway.
+    fn longest_workspace_instructions(&self) -> Result<usize, DesktopError> {
+        let Some(store) = self.inner.open_control()? else {
+            return Ok(0);
+        };
+        Ok(store
+            .workspaces()
+            .filter_map(|workspace| {
+                instructions::load(&self.inner.data_root, *workspace.id().as_uuid()).ok()
+            })
+            .map(|text| text.len())
+            .max()
+            .unwrap_or(0))
     }
 }
 

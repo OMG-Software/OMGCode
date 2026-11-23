@@ -7,9 +7,9 @@ import type { ChatDraft, SectionContext } from "./context";
 export const CHAT_DEFAULTS_HELP =
   "Used by every session's next message. The composer keeps auto-compact and the send key.";
 export const GLOBAL_INSTRUCTIONS_HELP =
-  "Sent with every message, before the workspace's own instructions. Instructions grant no permission.";
+  "Sent with every message, before the workspace's own instructions, which the limit leaves room for. Instructions grant no permission.";
 export const WORKSPACE_INSTRUCTIONS_HELP =
-  "Sent with messages in this workspace's sessions, after the global instructions. They grant no permission.";
+  "Sent with messages in this workspace's sessions, after the global instructions, which the limit leaves room for. They grant no permission.";
 export const DEFAULTS_UNREADABLE =
   "Saved chat defaults could not be read; built-in values are shown. Saving replaces them.";
 export const INSTRUCTIONS_UNREADABLE =
@@ -61,7 +61,7 @@ export function budgetsOf(draft: ChatDraft, chat: ChatDefaultsView): ChatBudgets
     numbers[key] = value;
   }
   if (utf8Length(draft.instructions) > chat.instructions_max_bytes) {
-    return `The global instructions are longer than ${chat.instructions_max_bytes} bytes.`;
+    return `Shorten the global instructions to at most ${chat.instructions_max_bytes} bytes, so they fit beside the longest workspace instructions.`;
   }
   return {
     context_tokens: numbers.context_tokens ?? 0,
@@ -70,6 +70,11 @@ export function budgetsOf(draft: ChatDraft, chat: ChatDefaultsView): ChatBudgets
     turn_timeout_seconds: numbers.turn_timeout_seconds ?? 0,
     instructions: draft.instructions,
   };
+}
+
+/** What the window says when a workspace's text would not fit beside the global text. */
+export function workspaceTooLong(maxBytes: number): string {
+  return `Shorten these instructions to at most ${maxBytes} bytes, so they fit beside the global instructions.`;
 }
 
 /** A byte counter for an instructions box, updated as the operator types. */
@@ -176,11 +181,13 @@ export function chatDefaultsBlock({
  */
 export function workspaceInstructionsBlock(
   workspace: WorkspaceSettingsView,
-  { overview, view, submit, actions }: SectionContext,
+  { view, submit, actions }: SectionContext,
 ): HTMLElement {
   const id = workspace.workspace_id;
-  const maxBytes = overview.chat.instructions_max_bytes;
+  const maxBytes = workspace.instructions_max_bytes;
   const saved = workspace.instructions;
+  const problem = el("p", { class: "error", attrs: { role: "alert" } });
+  problem.hidden = true;
   const text = view.instructionDrafts.get(id) ?? saved ?? "";
   const box = el("textarea", {
     attrs: { id: `workspace-instructions-${id}`, rows: "5", spellcheck: "true" },
@@ -194,6 +201,12 @@ export function workspaceInstructionsBlock(
   });
   const save = button("Save instructions", () => {
     const value = box.value;
+    // Rust checks again; this only keeps text that cannot be sent from leaving the window.
+    if (utf8Length(value) > maxBytes) {
+      replaceChildren(problem, workspaceTooLong(maxBytes));
+      problem.hidden = false;
+      return;
+    }
     const change = actions.setWorkspaceInstructions(id, value);
     submit(async (revision) => {
       const result = await change(revision);
@@ -212,6 +225,7 @@ export function workspaceInstructionsBlock(
       counter.element,
       el("span", { class: "muted", text: WORKSPACE_INSTRUCTIONS_HELP }),
     ),
+    problem,
     el("div", { class: "row-actions" }, save),
   );
 }

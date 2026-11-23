@@ -719,23 +719,51 @@ describe("mock chat defaults (ADR-0080)", () => {
     expect(after.workspaces[1]?.instructions).toBe("Use tabs.");
   });
 
-  it("refuses workspace instructions over 16 KiB of UTF-8 and keeps the saved text", async () => {
+  it("refuses workspace instructions that do not fit beside the global text, in UTF-8 bytes", async () => {
     const { invoke } = createMockBackend();
     const before = (await invoke("settings_overview", {})) as SettingsOverview;
     const id = before.workspaces[0]?.workspace_id ?? "";
     const saved = before.workspaces[0]?.instructions;
-    // 5,462 three-byte characters are 16,386 bytes, though only 5,462 UTF-16 units.
-    for (const instructions of ["i".repeat(16 * 1024 + 1), "€".repeat(5462)]) {
+    // No global text: 16 KiB less the 24-byte workspace heading.
+    const room = before.workspaces[0]?.instructions_max_bytes ?? 0;
+    expect(room).toBe(16 * 1024 - 24);
+    // 5,454 three-byte characters are 16,362 bytes, though only 5,454 UTF-16 units.
+    for (const instructions of ["i".repeat(room + 1), "€".repeat(5454)]) {
       await expect(
         invoke("settings_set_workspace_instructions", { workspace_id: id, instructions }),
       ).rejects.toMatchObject({ code: "invalid_request" });
     }
     const after = (await invoke("settings_overview", {})) as SettingsOverview;
     expect(after.workspaces[0]?.instructions).toBe(saved);
-    // The bound itself fits.
+    // The room itself fits.
     await invoke("settings_set_workspace_instructions", {
       workspace_id: id,
-      instructions: "i".repeat(16 * 1024),
+      instructions: "i".repeat(room),
     });
+  });
+
+  it("keeps the global and every workspace text sendable together", async () => {
+    const { invoke } = createMockBackend();
+    const start = (await invoke("settings_overview", {})) as SettingsOverview;
+    const id = start.workspaces[0]?.workspace_id ?? "";
+    await invoke("settings_set_workspace_instructions", {
+      workspace_id: id,
+      instructions: "w".repeat(10_000),
+    });
+    const overview = (await invoke("settings_overview", {})) as SettingsOverview;
+    // Both headings and the blank line take 47 bytes.
+    const globalRoom = 16 * 1024 - 47 - 10_000;
+    expect(overview.chat.instructions_max_bytes).toBe(globalRoom);
+    const defaults = { ...overview.chat.defaults, context_tokens: 8192 };
+    await expect(
+      invoke("settings_save_chat_defaults", {
+        defaults: { ...defaults, instructions: "g".repeat(globalRoom + 1) },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const saved = (await invoke("settings_save_chat_defaults", {
+      defaults: { ...defaults, instructions: "g".repeat(globalRoom) },
+    })) as SettingsOverview;
+    // With that global text saved, the workspace has exactly its own text's room.
+    expect(saved.workspaces[0]?.instructions_max_bytes).toBe(10_000);
   });
 });

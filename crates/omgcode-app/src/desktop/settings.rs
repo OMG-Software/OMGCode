@@ -25,6 +25,7 @@ use omgcode_core::policy::WorkspaceId;
 use omgcode_core::turn::display_safe_line;
 
 use super::error::DesktopError;
+use super::instructions;
 use super::preferences;
 use super::session_connections::{ChosenConnection, recorded_endpoint};
 use super::settings_chat::{chat_defaults_view, workspace_instructions_view};
@@ -63,7 +64,8 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
     let active = store
         .active_provider_profile()
         .map(|status| status.profile().id());
-    let workspaces = store
+    let mut chat = chat_defaults_view(&inner.data_root);
+    let workspaces: Vec<WorkspaceSettingsView> = store
         .workspaces()
         .map(|workspace| {
             let permissions = workspace.permissions();
@@ -82,9 +84,18 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                     &inner.data_root,
                     *workspace.id().as_uuid(),
                 ),
+                instructions_max_bytes: instructions::workspace_room(&chat.defaults.instructions),
             }
         })
         .collect();
+    // Each save keeps the global text and every workspace's text sendable
+    // together (ADR-0080), so the global room leaves space for the longest.
+    let longest = workspaces
+        .iter()
+        .filter_map(|workspace| workspace.instructions.as_ref().map(String::len))
+        .max()
+        .unwrap_or(0);
+    chat.instructions_max_bytes = instructions::global_room(longest);
     let provider_profiles = store
         .provider_profiles()
         .iter()
@@ -175,7 +186,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         package_profiles,
         container_grants,
         skills,
-        chat: chat_defaults_view(&inner.data_root),
+        chat,
         scope: inner.settings_scope(),
     };
     drop(store);

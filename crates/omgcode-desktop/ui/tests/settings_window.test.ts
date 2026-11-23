@@ -56,6 +56,7 @@ function workspace(overrides: Partial<WorkspaceSettingsView> = {}): WorkspaceSet
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
     instructions: "",
+    instructions_max_bytes: 16_360,
     ...overrides,
   };
 }
