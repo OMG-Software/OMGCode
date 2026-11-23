@@ -1471,7 +1471,10 @@ fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_non_streamed_reply() 
             stream.write_all(piece).expect("write piece");
             stream.flush().expect("flush piece");
         }
-        await_client_close(&mut stream);
+        assert!(
+            await_client_close(&mut stream),
+            "the client closes the fixture connection first"
+        );
     });
 
     // When the request runs with a token nobody cancels.

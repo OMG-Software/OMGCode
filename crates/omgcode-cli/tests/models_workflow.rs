@@ -63,7 +63,9 @@ fn serve_once(body: &'static str) -> (String, JoinHandle<Result<String, String>>
         stream
             .write_all(response.as_bytes())
             .map_err(|error| error.to_string())?;
-        await_client_close(&mut stream);
+        if !await_client_close(&mut stream) {
+            return Err("the CLI did not close the fixture connection first".to_owned());
+        }
         String::from_utf8(head).map_err(|error| error.to_string())
     });
     (endpoint, worker)

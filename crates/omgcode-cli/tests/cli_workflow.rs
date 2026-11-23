@@ -66,7 +66,9 @@ impl MockServer {
                     .send(Ok(request_json))
                     .map_err(|error| error.to_string())?;
                 write_http_response(&mut stream, content_type, &response)?;
-                mock_close::await_client_close(&mut stream);
+                if !mock_close::await_client_close(&mut stream) {
+                    return Err("the CLI did not close the mock connection first".to_owned());
+                }
                 Ok::<(), String>(())
             })();
             if let Err(error) = &result {

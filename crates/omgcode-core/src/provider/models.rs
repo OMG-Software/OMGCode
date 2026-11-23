@@ -373,7 +373,11 @@ mod tests {
             }
             // The client may already have given up; the head is what matters.
             let _ignored = stream.write_all(response);
-            await_client_close(&mut stream);
+            // A client that gave up still closes or resets first.
+            assert!(
+                await_client_close(&mut stream),
+                "the client closes the fixture connection first"
+            );
             String::from_utf8(head).expect("ASCII head")
         });
         (base_url, task)

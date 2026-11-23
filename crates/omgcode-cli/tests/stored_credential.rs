@@ -154,7 +154,10 @@ fn serve(stream: &mut TcpStream, reply: &str) -> Option<Recorded> {
         .write_all(response.as_bytes())
         .and_then(|()| stream.write_all(&payload))
         .ok()?;
-    await_client_close(stream);
+    // A fixture that closes first is a failed exchange, like a short read.
+    if !await_client_close(stream) {
+        return None;
+    }
     Some(Recorded {
         head,
         body: body_text,
