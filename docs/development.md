@@ -562,8 +562,8 @@ trusted application-data directory, and the workspace ID. The runtime:
 - parses strict OpenAI-style function calls for `workspace_read_file`,
   `workspace_list_directory`, `workspace_edit_file`,
   `workspace_multi_edit_file`, `workspace_create_file`,
-  `workspace_rename_file`, `workspace_delete_file`, and
-  `workspace_run_command`;
+  `workspace_rename_file`, `workspace_delete_file`,
+  `workspace_create_directory`, and `workspace_run_command`;
 - rejects unknown tools, malformed or duplicate arguments, absolute or parent
   paths, and duplicate call identifiers before dispatch;
 - opens the control store for each broker call, obtains a fresh session binding,
@@ -585,18 +585,18 @@ trusted application-data directory, and the workspace ID. The runtime:
   `model_tools` and `read` preferences both allow it, and otherwise replaces
   each with a fixed withheld notice;
 - offers `workspace_edit_file`, `workspace_multi_edit_file`,
-  `workspace_create_file`, `workspace_rename_file`, and
-  `workspace_delete_file` only under live `model_tools`, `read`, and `write`,
-  and `workspace_run_command` only when `execute` is also enabled; every
-  edit, multi-edit, creation, rename, deletion, or command first needs a
+  `workspace_create_file`, `workspace_rename_file`, `workspace_delete_file`,
+  and `workspace_create_directory` only under live `model_tools`, `read`, and
+  `write`, and `workspace_run_command` only when `execute` is also enabled;
+  every edit, multi-edit, creation, rename, deletion, or command first needs a
   trusted single-use approval;
 - reports the final reply's provider `finish_reason`.
 
 The runtime has no Git, MCP, or network tool. Its only writes are the approved
 exact edit and multi-edit through checkpointed apply, the approved creation of
 one new file through the exclusive create, the approved rename through the
-no-replace rename, and the approved deletion through the checkpointed removal,
-and its only process execution is the approved command through the trusted
+no-replace rename, the approved deletion through the checkpointed removal, and
+the approved creation of one directory whose parent exists, and its only process execution is the approved command through the trusted
 runner.
 `LocalToolModel` adapts the LM Studio client to its model interface. The adapter
 sends the tool definitions in the OpenAI-compatible `tools` field, parses the
@@ -638,7 +638,8 @@ remains text.
 When the workspace enables `model_tools`, chat offers `workspace_read_file` and
 `workspace_list_directory`. When `read` and `write` also allow it, it offers
 the approval-gated `workspace_edit_file`, `workspace_multi_edit_file`,
-`workspace_create_file`, `workspace_rename_file`, and `workspace_delete_file`.
+`workspace_create_file`, `workspace_rename_file`, `workspace_delete_file`, and
+`workspace_create_directory`.
 When `execute`, `read`, and `write`
 also allow it, it offers the approval-gated `workspace_run_command`. Set
 `--max-tool-calls <1–256>` to override the default of 128 for this turn. A batch
@@ -786,8 +787,8 @@ there is no atomicity across files.
 `workspace_create_file` takes a `path` and `content` (possibly empty) within the
 same 4 KiB limit, which also bounds the new file. Before recording an approval
 it reads the path through the audited broker and lists its parent: an existing
-file returns `file_exists`, and a missing parent returns `not_found`, and
-neither records an approval. After approval, the approval is consumed and the
+file returns `file_exists`, and a missing parent returns `parent_not_found`,
+and neither records an approval. After approval, the approval is consumed and the
 broker's exclusive create runs. If another writer created the file in the
 meantime, the create returns `file_exists`, replaces nothing, and the approval
 is spent. An uncertain creation outcome is a terminal failure that leaves the
@@ -798,9 +799,10 @@ path, size, SHA-256, and operation ID, never the content.
 `workspace_rename_file` takes `from` and `to`, which must differ. Before
 recording an approval it reads `from` through the audited broker (at most
 1 MiB, any bytes), requires `to` to be absent, and lists its parent: a missing
-source or parent returns `not_found`, an existing destination returns
-`file_exists`, a source over 1 MiB returns `edit_too_large`, and identical names
-return `invalid_request`; none records an approval. After approval, the
+source returns `not_found`, a missing parent returns `parent_not_found`, an
+existing destination returns `file_exists`, a source over 1 MiB returns
+`edit_too_large`, and identical names return `invalid_request`; none records an
+approval. After approval, the
 broker pins the source, rechecks its size and SHA-256, and renames it without
 ever replacing an entry. A destination that another writer created in the
 meantime returns `file_exists` and the approval is spent. An uncertain outcome
@@ -818,6 +820,14 @@ size, SHA-256, and the checkpoint's operation ID, which the trusted
 approval conflicts and records no removal. An uncertain outcome leaves the
 checkpoint operation unresolved until the trusted acknowledgement. Neither tool
 detects a concurrent writer, and neither is power-loss qualified.
+
+`workspace_create_directory` takes a `path`. Before recording an approval it
+reads the path and lists its parent: an existing entry returns `file_exists`
+and a missing parent returns `parent_not_found`, and neither records an
+approval. After approval, the broker creates exactly that one directory; it
+creates no missing parent and replaces nothing, so nested directories need one
+approved call per level. Creation is not checkpointed, and no model tool
+removes a directory (ADR-0079).
 
 ## Saved sessions
 

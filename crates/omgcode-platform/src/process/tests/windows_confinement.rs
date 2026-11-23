@@ -9,11 +9,15 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -160,13 +164,40 @@ fn workspace_round_trip(workspace: &Path) -> io::Result<()> {
 
 /// Windows drops loopback traffic from an AppContainer without a reply, so a
 /// plain connect only fails after the system timeout. A short bound keeps the
-/// run inside its deadline; any failure counts as denied.
+/// run inside its deadline; any failure counts as denied, and the host's
+/// accept count shows whether anything arrived.
+///
+/// The host closes each connection at once. Waiting for that close before
+/// dropping the stream leaves the TIME_WAIT on the host's side. If the probe
+/// closed first, Windows could give the grandchild's connect the same local
+/// port and refuse it with `WSAEADDRINUSE` (ADR-0078).
+///
+/// Windows can still hand out a local port whose earlier connection to this
+/// address, from another run, is in TIME_WAIT. That refusal says nothing about
+/// confinement, so the probe holds the refused port with a loopback listener
+/// and tries again, at most 64 times, as the model client does.
 fn tcp_connect() -> io::Result<()> {
+    /// Winsock's `WSAEADDRINUSE`.
+    const WSAEADDRINUSE: i32 = 10048;
     let address: SocketAddr = env::var(HOST_TCP)
         .map_err(io::Error::other)?
         .parse()
         .map_err(io::Error::other)?;
-    TcpStream::connect_timeout(&address, Duration::from_secs(2)).map(drop)
+    let mut held = Vec::new();
+    let mut stream = loop {
+        match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+            Err(error) if error.raw_os_error() == Some(WSAEADDRINUSE) && held.len() < 64 => {
+                held.push(TcpListener::bind("127.0.0.1:0")?);
+            }
+            result => break result?,
+        }
+    };
+    drop(held);
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    match stream.read(&mut [0_u8; 1])? {
+        0 => Ok(()),
+        _ => Err(io::Error::other("the host sent data")),
+    }
 }
 
 fn pipe_connect() -> io::Result<()> {
@@ -228,8 +259,26 @@ struct Scene {
     secret: PathBuf,
     pipe_name: String,
     _pipe: OwnedHandle,
-    tcp_listener: TcpListener,
+    tcp_address: SocketAddr,
+    /// How many connections reached the host TCP listener.
+    tcp_accepted: Arc<AtomicUsize>,
+    /// Dropping it ends the host TCP service and releases its port.
+    _tcp_stop: Sender<()>,
     name: TestContainer,
+}
+
+/// Accept every host TCP connection and close it at once, counting each,
+/// until `stop` disconnects. The listener must be non-blocking.
+fn serve_host_tcp(listener: &TcpListener, accepted: &AtomicUsize, stop: &Receiver<()>) {
+    while matches!(stop.try_recv(), Err(TryRecvError::Empty)) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+            Err(_) => thread::sleep(Duration::from_millis(5)),
+        }
+    }
 }
 
 impl Scene {
@@ -257,6 +306,14 @@ impl Scene {
         );
         let pipe = host_pipe(&pipe_name);
         let tcp_listener = TcpListener::bind("127.0.0.1:0").expect("host TCP listener");
+        tcp_listener
+            .set_nonblocking(true)
+            .expect("non-blocking host TCP listener");
+        let tcp_address = tcp_listener.local_addr().expect("TCP address");
+        let tcp_accepted = Arc::new(AtomicUsize::new(0));
+        let (tcp_stop, stopped) = mpsc::channel();
+        let counter = Arc::clone(&tcp_accepted);
+        thread::spawn(move || serve_host_tcp(&tcp_listener, &counter, &stopped));
         let name = unique_name();
         for (path, access) in [
             (&read_only_directory, ContainerAccess::ReadExecute),
@@ -274,9 +331,16 @@ impl Scene {
             secret,
             pipe_name,
             _pipe: pipe,
-            tcp_listener,
+            tcp_address,
+            tcp_accepted,
+            _tcp_stop: tcp_stop,
             name,
         }
+    }
+
+    /// How many connections have reached the host TCP listener so far.
+    fn tcp_accepted(&self) -> usize {
+        self.tcp_accepted.load(Ordering::SeqCst)
     }
 
     fn confinement(&self) -> Confinement {
@@ -299,7 +363,7 @@ impl Scene {
             env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA"),
         ));
         spec.working_directory = self.workspace.clone();
-        let tcp = self.tcp_listener.local_addr().expect("TCP address");
+        let tcp = self.tcp_address;
         let variables: [(&str, OsString); 5] = [
             (
                 READ_ONLY_FILE,
@@ -425,6 +489,7 @@ fn the_container_reaches_only_granted_paths_and_no_host_service() {
             "{name}: {result:?}; all results: {results:?}"
         );
     }
+    assert_eq!(scene.tcp_accepted(), 0, "a connection reached the host");
     assert_eq!(fs::read(&scene.secret).expect("secret"), b"secret");
     assert_eq!(
         fs::read(scene.read_only_directory.join("tool.txt")).expect("tool"),
@@ -453,6 +518,8 @@ fn the_same_probes_succeed_unconfined() {
             ("grandchild-tcp-connect-host", "ok"),
         ],
     );
+    // Each probe returns only after the host accepted and closed it.
+    assert_eq!(scene.tcp_accepted(), 2, "the child and the grandchild");
 }
 
 /// With network access the tree holds `internetClient` and nothing more:
@@ -491,6 +558,7 @@ fn a_networked_container_holds_only_internet_client() {
             "{name}: {result:?}; all results: {results:?}"
         );
     }
+    assert_eq!(scene.tcp_accepted(), 0, "a connection reached the host");
 }
 
 /// Live check that a networked container resolves and reaches an internet

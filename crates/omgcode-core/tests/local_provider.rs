@@ -6,7 +6,7 @@ use omgcode_core::turn::{CancelToken, ToolCall, ToolModelReply, tool_definitions
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ struct Fixture {
 impl Fixture {
     /// Serve one bounded local exchange without depending on production retries.
     fn start(status: &str, body: &[u8], extra_headers: &str) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+        let listener = bind_fixture_listener();
         listener
             .set_nonblocking(true)
             .expect("make fixture accept bounded");
@@ -60,6 +60,7 @@ impl Fixture {
                 .write_all(response.as_bytes())
                 .expect("write fixture response headers");
             stream.write_all(&body).expect("write fixture body");
+            await_client_close(&mut stream);
             (head, request_body)
         });
         Self {
@@ -82,6 +83,41 @@ fn join_bounded<T>(task: JoinHandle<T>, message: &str) -> T {
         thread::sleep(Duration::from_millis(2));
     }
     task.join().expect(message)
+}
+
+/// Bind a loopback fixture listener whose port stays bound until the test
+/// binary exits.
+///
+/// On Windows a new listener can receive a port that an earlier fixture used,
+/// and the client can receive its earlier local port too. That recreates a
+/// closed connection's addresses: a TIME_WAIT the client holds refuses the
+/// connect, and one the fixture holds can delay it until the connect timeout
+/// (ADR-0078). A port that stays bound is never handed to a later fixture.
+/// The held handle never accepts, so a connection that arrives after the
+/// fixture finished waits in the backlog until the client's own timeout.
+fn bind_fixture_listener() -> TcpListener {
+    static HELD: Mutex<Vec<TcpListener>> = Mutex::new(Vec::new());
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    let held = listener.try_clone().expect("hold the fixture port");
+    HELD.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(held);
+    listener
+}
+
+/// Wait, within the stream's read timeout, until a client that received a
+/// complete `Connection: close` reply closes its side, and only then let the
+/// caller drop the stream.
+///
+/// The client then holds the connection's TIME_WAIT. On Windows the next
+/// client can receive the same local port, and a TIME_WAIT that the server
+/// holds after a large request delays that connect until it times out
+/// (ADR-0078). Call this only after a reply framed by `Content-Length`, never
+/// after a reply that the close delimits, and only on a stream with a read
+/// timeout. A read error or timeout ends the wait; the caller still closes.
+fn await_client_close(stream: &mut impl Read) {
+    let mut sink = [0_u8; 512];
+    while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
 }
 
 /// Validate fixture framing and cap allocations before reading a declared body.
@@ -164,7 +200,7 @@ fn client(address: String, token: Option<String>) -> LocalModelClient {
 
 /// Observe the listening socket so rejection proves the prompt was not sent.
 fn assert_prompt_rejected_before_connect(messages: &[ModelMessage]) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind no-call fixture");
+    let listener = bind_fixture_listener();
     listener
         .set_nonblocking(true)
         .expect("make no-call fixture nonblocking");
@@ -431,7 +467,7 @@ fn rejects_destinations_outside_literal_loopback_http_before_connecting() {
 
 #[test]
 fn context_budget_fails_before_network_request() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind no-call fixture");
+    let listener = bind_fixture_listener();
     listener
         .set_nonblocking(true)
         .expect("make no-call fixture nonblocking");
@@ -480,7 +516,7 @@ fn requires_exact_compiled_base_as_the_only_system_message() {
 
 #[test]
 fn wire_size_limit_fails_before_network_request() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind no-call fixture");
+    let listener = bind_fixture_listener();
     listener
         .set_nonblocking(true)
         .expect("make no-call fixture nonblocking");
@@ -1032,7 +1068,7 @@ fn holding_server(
     response: Option<Vec<u8>>,
     request_read: mpsc::Sender<()>,
 ) -> (String, JoinHandle<bool>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    let listener = bind_fixture_listener();
     listener
         .set_nonblocking(true)
         .expect("make fixture accept bounded");
@@ -1164,7 +1200,7 @@ fn held_body(head_and_events: &str) -> Option<Vec<u8>> {
 #[test]
 fn a_token_cancelled_before_the_call_makes_no_connection() {
     // Given a listening socket and a token that is already cancelled.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind no-call fixture");
+    let listener = bind_fixture_listener();
     listener
         .set_nonblocking(true)
         .expect("make no-call fixture nonblocking");
@@ -1319,7 +1355,7 @@ fn a_cancel_after_done_does_not_change_a_streamed_tool_reply() {
 #[test]
 fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_stream() {
     // Given a server that sends its pieces more than one poll interval apart.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    let listener = bind_fixture_listener();
     listener.set_nonblocking(true).expect("bounded accept");
     let address = format!("http://{}/v1", listener.local_addr().expect("address"));
     let server = thread::spawn(move || {
@@ -1386,7 +1422,7 @@ fn cancelling_a_non_streamed_request_while_the_head_is_awaited_stops_it() {
 fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_non_streamed_reply() {
     // Given a server that sends its head and body in pieces more than one
     // poll interval apart.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture");
+    let listener = bind_fixture_listener();
     listener.set_nonblocking(true).expect("bounded accept");
     let address = format!("http://{}/v1", listener.local_addr().expect("address"));
     let server = thread::spawn(move || {
@@ -1410,6 +1446,7 @@ fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_non_streamed_reply() 
             stream.write_all(piece).expect("write piece");
             stream.flush().expect("flush piece");
         }
+        await_client_close(&mut stream);
     });
 
     // When the request runs with a token nobody cancels.

@@ -4,6 +4,52 @@ Changes are recorded here before a release version is assigned.
 
 ## Unreleased
 
+### Added
+
+- Version 0.53.0 adds the model tool `workspace_create_directory`, which
+  creates one directory beneath the workspace (ADR-0079). A model could create
+  `Cargo.toml` but not `src/main.rs` in an empty workspace, because a new
+  file's parent had to exist and no model tool could make one. The tool is
+  offered under the same preferences as the file-write tools. It has its own
+  `create_directory` limit (`workspace permissions --create-directory-tool`,
+  **Create directory tool** in desktop settings); a store without one takes
+  its `create` limit. It never replaces an entry or creates missing parents.
+  Approvals use the digest domain `omgcode-directory-create-v1`, and the model
+  action journal records `create_directory`. The tool schema version is
+  `0.6.0`, and up to nine tool definitions can be sent.
+
+### Fixed
+
+- A missing parent directory is reported as `parent_not_found` instead of
+  `not_found` by `workspace_create_file`, by the destination check of
+  `workspace_rename_file`, and by `workspace_create_directory` (ADR-0079).
+  Their descriptions say to create the parent first. A model had read
+  `not_found` as "the tool is unavailable" and stopped.
+
+- On Windows, a tool-enabled chat turn no longer fails with `model_error` when
+  its next model request is handed a local port whose previous connection to
+  the same server is still in TIME_WAIT (ADR-0078). Windows chose that port
+  again, and the connect was refused with `WSAEADDRINUSE` before any request
+  was sent. This happens whether or not the socket was bound before the
+  connect, as `hyper-util` does. A request refused that way now holds the port with a bound,
+  unconnected socket and retries, skipping at most 64 ports. The model-list
+  request sends `Connection: close`, so the server holds its TIME_WAIT.
+- On Windows, a trusted `packages fetch` to the same registry no longer fails
+  with a transport error for the same reason. It uses the same reused-port
+  skip, which acts before any request byte or credential is sent (ADR-0078).
+- The Windows loopback test fixtures no longer fail at random. A mock that
+  serves the model client now waits for the client to close, so a large
+  request no longer leaves a server-side TIME_WAIT that stalls the next
+  connect. Scripted mocks keep their port bound until their test ends, and an
+  endpoint that must fail is a listener that closes each connection, so a
+  released port can no longer route one test's request to another test's mock.
+  The core provider tests' one-shot fixtures keep every port bound until the
+  test binary exits, so a later fixture never reuses an earlier one's port.
+- The Windows confinement test's unconfined TCP probe no longer fails at
+  random with `os-10048`. The host listener now accepts and closes each
+  connection, the probe waits for that close and skips a refused local port,
+  and the confined tests now also check that no connection reached the host.
+
 ### Changed
 
 - Desktop chat centres every message bubble at 96% of the transcript's

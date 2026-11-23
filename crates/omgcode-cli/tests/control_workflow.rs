@@ -165,7 +165,8 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
                 "multi_edit": "allow",
                 "create": "allow",
                 "rename": "allow",
-                "delete": "allow"
+                "delete": "allow",
+                "create_directory": "allow"
             }
         })
     );
@@ -188,6 +189,30 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
     assert_success(&permissions);
     let permissions = json_output(&permissions);
     assert_eq!(permissions["revision"], 4);
+    let limited = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "permissions",
+            first_id,
+            "--revision",
+            "4",
+            "--create-directory-tool",
+            "prompt",
+        ],
+    );
+    assert_success(&limited);
+    let limited = json_output(&limited);
+    assert_eq!(limited["revision"], 5);
+    let limits = limited["workspaces"]
+        .as_array()
+        .expect("workspace registrations")
+        .iter()
+        .find(|workspace| workspace["id"] == first_id)
+        .expect("first workspace registration")["permissions"]["write_tools"]
+        .clone();
+    assert_eq!(limits["create_directory"], "prompt");
+    assert_eq!(limits["create"], "allow");
     let stale = run_cli(
         &data_root,
         &[

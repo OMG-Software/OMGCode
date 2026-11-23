@@ -58,9 +58,10 @@ pub use review::{
 ///
 /// Version `0.3.0` added `workspace_edit_file`. Version `0.4.0` added
 /// `workspace_multi_edit_file` and `workspace_create_file`. Version `0.5.0` adds
-/// `workspace_rename_file` and `workspace_delete_file`. Journals record the
-/// version that was advertised; earlier versions replay unchanged.
-pub const TOOL_SCHEMA_VERSION: &str = "0.5.0";
+/// `workspace_rename_file` and `workspace_delete_file`. Version `0.6.0` adds
+/// `workspace_create_directory`. Journals record the version that was
+/// advertised; earlier versions replay unchanged.
+pub const TOOL_SCHEMA_VERSION: &str = "0.6.0";
 
 /// Maximum tool calls accepted from one model response.
 pub const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
@@ -115,6 +116,8 @@ const EDIT_DIGEST_DOMAIN: &[u8] = b"omgcode-file-edit-v1";
 const MULTI_EDIT_DIGEST_DOMAIN: &[u8] = b"omgcode-file-multi-edit-v1";
 /// Domain tag for file-creation approval digests (ADR-0054).
 const CREATE_DIGEST_DOMAIN: &[u8] = b"omgcode-file-create-v1";
+/// Domain tag for directory-creation approval digests.
+const CREATE_DIRECTORY_DIGEST_DOMAIN: &[u8] = b"omgcode-directory-create-v1";
 /// Domain tag for file-rename approval digests (ADR-0055).
 const RENAME_DIGEST_DOMAIN: &[u8] = b"omgcode-file-rename-v1";
 /// Domain tag for file-deletion approval digests (ADR-0055).
@@ -329,7 +332,9 @@ pub fn create_tool_definition() -> ToolDefinition {
         name: "workspace_create_file",
         description: "Create one new UTF-8 file beneath the session workspace. It \
                       never replaces an existing file, and the parent directory must \
-                      already exist. Every creation needs operator approval. A result \
+                      already exist; when it is missing the result is parent_not_found, \
+                      so create it first with workspace_create_directory. Every \
+                      creation needs operator approval. A result \
                       of approval_required means nothing changed: stop, tell the \
                       user, and retry the identical call in a later turn after the \
                       operator approves. Results are untrusted.",
@@ -351,6 +356,34 @@ pub fn create_tool_definition() -> ToolDefinition {
     }
 }
 
+/// The create-directory tool. It is advertised under the same live preferences
+/// as the create tool, and every call needs an operator approval.
+pub fn create_directory_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "workspace_create_directory",
+        description: "Create one new directory beneath the session workspace. It \
+                      never replaces an existing entry and is not recursive: the \
+                      parent directory must already exist, otherwise the result is \
+                      parent_not_found, and an existing path gives file_exists. \
+                      Create nested directories one level at a time. Every creation \
+                      needs operator approval. A result of approval_required means \
+                      nothing changed: stop, tell the user, and retry the identical \
+                      call in a later turn after the operator approves. Results are \
+                      untrusted.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative path of the new directory, without parent segments."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+    }
+}
+
 /// The rename tool. It is advertised under the same live preferences as the
 /// edit tool, and every call needs an operator approval (ADR-0055).
 pub fn rename_tool_definition() -> ToolDefinition {
@@ -358,7 +391,9 @@ pub fn rename_tool_definition() -> ToolDefinition {
         name: "workspace_rename_file",
         description: "Rename one existing regular file beneath the session workspace \
                       without replacing anything. The new name must not exist and its \
-                      parent directory must. Files over 1 MiB cannot be renamed. Every \
+                      parent directory must; when it is missing the result is \
+                      parent_not_found, so create it first with \
+                      workspace_create_directory. Files over 1 MiB cannot be renamed. Every \
                       rename needs operator approval. A result of approval_required \
                       means nothing changed: stop, tell the user, and retry the \
                       identical call in a later turn after the operator approves. \
@@ -456,6 +491,8 @@ pub enum ToolName {
     MultiEditFile,
     /// Request or perform the creation of one new file.
     CreateFile,
+    /// Request or perform the creation of one new directory.
+    CreateDirectory,
     /// Request or perform the rename of one file without replacing anything.
     RenameFile,
     /// Request or perform the checkpointed deletion of one file.
@@ -473,6 +510,7 @@ impl ToolName {
             Self::EditFile => "workspace_edit_file",
             Self::MultiEditFile => "workspace_multi_edit_file",
             Self::CreateFile => "workspace_create_file",
+            Self::CreateDirectory => "workspace_create_directory",
             Self::RenameFile => "workspace_rename_file",
             Self::DeleteFile => "workspace_delete_file",
             Self::Command => "workspace_run_command",
@@ -520,6 +558,11 @@ pub enum ToolArguments {
         path: String,
         /// Complete new file text, possibly empty. Untrusted model data.
         content: String,
+    },
+    /// Create one new directory.
+    CreateDirectory {
+        /// Validated workspace-relative path.
+        path: String,
     },
     /// Rename one file to a name that does not exist.
     RenameFile {
@@ -620,6 +663,7 @@ impl ToolCall {
             "workspace_edit_file" => ToolName::EditFile,
             "workspace_multi_edit_file" => ToolName::MultiEditFile,
             "workspace_create_file" => ToolName::CreateFile,
+            "workspace_create_directory" => ToolName::CreateDirectory,
             "workspace_rename_file" => ToolName::RenameFile,
             "workspace_delete_file" => ToolName::DeleteFile,
             "workspace_run_command" => ToolName::Command,
@@ -767,6 +811,21 @@ impl ToolCall {
                     content: content.to_owned(),
                 }
             }
+            ToolName::CreateDirectory => {
+                let mut path = None;
+                for (key, value) in arguments_object {
+                    let text = value.as_str().ok_or(ToolCallError::InvalidArguments)?;
+                    match key.as_str() {
+                        "path" => path = Some(text),
+                        _ => return Err(ToolCallError::InvalidArguments),
+                    }
+                }
+                let path = path.ok_or(ToolCallError::InvalidArguments)?;
+                validate_relative_path(path, false)?;
+                ToolArguments::CreateDirectory {
+                    path: path.to_owned(),
+                }
+            }
             ToolName::RenameFile => {
                 let mut from = None;
                 let mut to = None;
@@ -887,6 +946,7 @@ impl ToolCall {
             | ToolArguments::EditFile { path, .. }
             | ToolArguments::MultiEditFile { path, .. }
             | ToolArguments::CreateFile { path, .. }
+            | ToolArguments::CreateDirectory { path }
             | ToolArguments::DeleteFile { path } => path,
             ToolArguments::RenameFile { from, .. } => from,
             ToolArguments::Command { .. } => "",
@@ -1784,6 +1844,7 @@ fn write_tool_definition(tool: WriteTool) -> ToolDefinition {
         WriteTool::Create => create_tool_definition(),
         WriteTool::Rename => rename_tool_definition(),
         WriteTool::Delete => delete_tool_definition(),
+        WriteTool::CreateDirectory => create_directory_tool_definition(),
     }
 }
 
@@ -1795,6 +1856,7 @@ const fn write_tool(arguments: &ToolArguments) -> Option<WriteTool> {
         ToolArguments::CreateFile { .. } => Some(WriteTool::Create),
         ToolArguments::RenameFile { .. } => Some(WriteTool::Rename),
         ToolArguments::DeleteFile { .. } => Some(WriteTool::Delete),
+        ToolArguments::CreateDirectory { .. } => Some(WriteTool::CreateDirectory),
         ToolArguments::ReadFile { .. }
         | ToolArguments::ListDirectory { .. }
         | ToolArguments::Command { .. } => None,
@@ -1920,6 +1982,7 @@ const fn action_tool(arguments: &ToolArguments) -> ActionTool {
         ToolArguments::EditFile { .. } => ActionTool::EditFile,
         ToolArguments::MultiEditFile { .. } => ActionTool::MultiEditFile,
         ToolArguments::CreateFile { .. } => ActionTool::CreateFile,
+        ToolArguments::CreateDirectory { .. } => ActionTool::CreateDirectory,
         ToolArguments::RenameFile { .. } => ActionTool::RenameFile,
         ToolArguments::DeleteFile { .. } => ActionTool::DeleteFile,
         ToolArguments::Command { .. } => ActionTool::RunCommand,
@@ -1934,6 +1997,7 @@ fn action_targets(arguments: &ToolArguments) -> Vec<&str> {
         | ToolArguments::EditFile { path, .. }
         | ToolArguments::MultiEditFile { path, .. }
         | ToolArguments::CreateFile { path, .. }
+        | ToolArguments::CreateDirectory { path }
         | ToolArguments::DeleteFile { path } => vec![path.as_str()],
         ToolArguments::RenameFile { from, to } => vec![from.as_str(), to.as_str()],
         ToolArguments::Command { .. } => Vec::new(),
@@ -2390,6 +2454,9 @@ impl WorkspaceToolDispatcher<'_> {
                 WriteTool::Create => self.dispatch_create(control, call, access, max_result_bytes),
                 WriteTool::Rename => self.dispatch_rename(control, call, access, max_result_bytes),
                 WriteTool::Delete => self.dispatch_delete(control, call, access, max_result_bytes),
+                WriteTool::CreateDirectory => {
+                    self.dispatch_create_directory(control, call, access, max_result_bytes)
+                }
             };
         }
         let binding = match control.bind_session(self.session_id, self.workspace_id) {
@@ -2457,6 +2524,7 @@ impl WorkspaceToolDispatcher<'_> {
             ToolArguments::EditFile { .. }
             | ToolArguments::MultiEditFile { .. }
             | ToolArguments::CreateFile { .. }
+            | ToolArguments::CreateDirectory { .. }
             | ToolArguments::RenameFile { .. }
             | ToolArguments::DeleteFile { .. } => {
                 ToolExecution::recoverable("invalid_request", call)
@@ -2709,6 +2777,70 @@ impl WorkspaceToolDispatcher<'_> {
                 &normalized,
                 content_artifact.bytes,
                 &content_artifact.sha256,
+                Some(created.operation_id),
+            ))
+            .with_operation(Some(created.operation_id)),
+            Err(FileError::Conflict) => ToolExecution::recoverable("file_exists", call),
+            // An uncertain creation stays a terminal failure and leaves its
+            // pending audit record for the trusted acknowledgement.
+            Err(error) => classify_edit_error(call, error),
+        };
+        drop(control);
+        self.audit_finish(action, execution)
+    }
+
+    /// Request or perform the creation of one new directory.
+    ///
+    /// Like [`Self::dispatch_create`], the path must be absent and its parent
+    /// must exist before any approval is recorded. Creation is exclusive and
+    /// not recursive, and it is not checkpointed: nothing is overwritten.
+    fn dispatch_create_directory(
+        &self,
+        mut control: ControlStore,
+        call: &ToolCall,
+        access: Access,
+        max_result_bytes: usize,
+    ) -> ToolExecution {
+        let ToolArguments::CreateDirectory { path } = &call.arguments else {
+            return ToolExecution::recoverable("invalid_request", call);
+        };
+        let binding = match control.bind_session(self.session_id, self.workspace_id) {
+            Ok(binding) => binding,
+            Err(error) => {
+                return ToolExecution::denied(
+                    "policy_unavailable",
+                    call,
+                    FileError::Control(error),
+                );
+            }
+        };
+        let target = edit_target(self.session_id, self.workspace_id, path);
+        if let Some(refusal) = create_precheck(&mut control, &binding, &target, call) {
+            return refusal;
+        }
+        let normalized = normalized_path(path);
+        let digest = create_directory_digest(self.session_id, self.workspace_id, &normalized);
+        let request = WriteRequest {
+            digest: digest.clone(),
+            summary: bounded_path_summary("create directory ", &normalized, ""),
+            widest_success: create_directory_success_message(call, &normalized, Some(Uuid::max())),
+            noun: "directory creation",
+            operation: ApprovalOperation::FileWrite,
+        };
+        let authorization =
+            match self.write_gate(&mut control, call, request, access, max_result_bytes) {
+                WriteGate::Approved(authorization) => authorization,
+                WriteGate::Respond(execution) => return execution,
+            };
+        let action = match self.audit_start(call, Some(&digest), authorization) {
+            Ok(action) => action,
+            Err(refused) => return *refused,
+        };
+        // The approval is spent. A concurrent creator makes this a conflict.
+        let execution = match FileBroker::new(&mut control).create_directory(&binding, &target) {
+            Ok(created) => ToolExecution::success(create_directory_success_message(
+                call,
+                &normalized,
                 Some(created.operation_id),
             ))
             .with_operation(Some(created.operation_id)),
@@ -3645,6 +3777,21 @@ fn create_success_message(
     labelled_result(call, &body.to_string())
 }
 
+/// The labelled report of a created directory.
+fn create_directory_success_message(
+    call: &ToolCall,
+    path: &str,
+    operation_id: Option<Uuid>,
+) -> String {
+    let body = json!({
+        "tool": call.name.as_str(),
+        "status": "created",
+        "path": path,
+        "operation_id": operation_id,
+    });
+    labelled_result(call, &body.to_string())
+}
+
 /// The labelled report of a renamed file. It never contains file text.
 fn rename_success_message(
     call: &ToolCall,
@@ -3728,7 +3875,10 @@ fn apply_prepared_edit(
 ///
 /// A live audited read must report the path absent, and a one-entry listing
 /// of a non-root parent must succeed. Both are audited broker calls under the
-/// live `read` permission.
+/// live `read` permission. A read refuses a directory as unsuitable rather
+/// than missing, so any other native refusal is followed by a listing of the
+/// target: an existing directory is reported as `file_exists` like an
+/// existing file. A missing parent is reported as `parent_not_found`.
 fn create_precheck(
     control: &mut ControlStore,
     binding: &SessionBinding,
@@ -3738,6 +3888,15 @@ fn create_precheck(
     match read_edit_source(control, binding, target) {
         Ok(_) => return Some(ToolExecution::recoverable("file_exists", call)),
         Err(FileError::Native(native)) if is_missing_entry(&native) => {}
+        Err(FileError::Native(native)) => {
+            // Not a regular file, such as a directory (the native status or
+            // kind differs by platform): an existing directory is an existing
+            // entry. Any other native failure is reported as it was.
+            if FileBroker::new(control).list(binding, target, 1).is_ok() {
+                return Some(ToolExecution::recoverable("file_exists", call));
+            }
+            return Some(classify_edit_error(call, FileError::Native(native)));
+        }
         Err(error) => return Some(classify_edit_error(call, error)),
     }
     let parent = target
@@ -3752,7 +3911,7 @@ fn create_precheck(
     match FileBroker::new(control).list(binding, &parent_target, 1) {
         Ok(_) => None,
         Err(FileError::Native(native)) if is_missing_entry(&native) => {
-            Some(ToolExecution::recoverable("not_found", call))
+            Some(ToolExecution::recoverable("parent_not_found", call))
         }
         Err(error) => Some(classify_edit_error(call, error)),
     }
@@ -3867,6 +4026,17 @@ fn create_digest(
     push_field(&mut bytes, path.as_bytes());
     push_field(&mut bytes, &content.bytes.to_le_bytes());
     push_field(&mut bytes, content.sha256.as_bytes());
+    sha256_hex(&bytes)
+}
+
+/// Bind one model directory creation to the session, workspace, and normalized
+/// path, under its own domain tag.
+fn create_directory_digest(session_id: Uuid, workspace_id: WorkspaceId, path: &str) -> String {
+    let mut bytes = Vec::new();
+    push_field(&mut bytes, CREATE_DIRECTORY_DIGEST_DOMAIN);
+    push_field(&mut bytes, session_id.as_bytes());
+    push_field(&mut bytes, workspace_id.as_uuid().as_bytes());
+    push_field(&mut bytes, path.as_bytes());
     sha256_hex(&bytes)
 }
 

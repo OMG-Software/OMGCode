@@ -40,6 +40,7 @@ const ALL_TOOLS: WriteToolAccess = {
   create: "allow",
   rename: "allow",
   delete: "allow",
+  create_directory: "allow",
 };
 
 function workspace(overrides: Partial<WorkspaceSettingsView> = {}): WorkspaceSettingsView {
@@ -309,6 +310,7 @@ describe("settings window", () => {
       "deny",
     ]);
     expect(WRITE_TOOL_LABELS.map(([, label]) => stateOf(label))).toEqual([
+      "allow",
       "allow",
       "allow",
       "allow",

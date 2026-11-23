@@ -161,7 +161,7 @@ pub(crate) mod legacy_prompt {
     }
 }
 
-/// One of the five model file-write tools.
+/// One of the six model file-write tools.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WriteTool {
     /// `workspace_edit_file`.
@@ -174,16 +174,19 @@ pub enum WriteTool {
     Rename,
     /// `workspace_delete_file`.
     Delete,
+    /// `workspace_create_directory`.
+    CreateDirectory,
 }
 
 impl WriteTool {
     /// Every write tool, in the order they are offered.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Edit,
         Self::MultiEdit,
         Self::Create,
         Self::Rename,
         Self::Delete,
+        Self::CreateDirectory,
     ];
 
     /// The stored and displayed name.
@@ -194,18 +197,23 @@ impl WriteTool {
             Self::Create => "create",
             Self::Rename => "rename",
             Self::Delete => "delete",
+            Self::CreateDirectory => "create_directory",
         }
     }
 }
 
-/// Per-tool limits on the five model file-write tools.
+/// Per-tool limits on the six model file-write tools.
 ///
 /// Each value can only narrow the workspace `write` preference: the effective
 /// state of a tool is the more restrictive of the two. Every value defaults
 /// to `Allow`, which adds no restriction, so the field is omitted from
 /// persisted settings until one value is narrowed.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Settings stored before `create_directory` existed have no such field. It
+/// then takes the stored `create` limit, because creating a directory is a
+/// creation and an operator who narrowed `create` keeps that narrowing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredWriteToolAccess")]
 pub struct WriteToolAccess {
     /// Limit on `workspace_edit_file`.
     pub edit: Access,
@@ -217,6 +225,35 @@ pub struct WriteToolAccess {
     pub rename: Access,
     /// Limit on `workspace_delete_file`.
     pub delete: Access,
+    /// Limit on `workspace_create_directory`.
+    pub create_directory: Access,
+}
+
+/// The persisted form of [`WriteToolAccess`], which tolerates a missing
+/// `create_directory` field and refuses every unknown field.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredWriteToolAccess {
+    edit: Access,
+    multi_edit: Access,
+    create: Access,
+    rename: Access,
+    delete: Access,
+    #[serde(default)]
+    create_directory: Option<Access>,
+}
+
+impl From<StoredWriteToolAccess> for WriteToolAccess {
+    fn from(stored: StoredWriteToolAccess) -> Self {
+        Self {
+            edit: stored.edit,
+            multi_edit: stored.multi_edit,
+            create: stored.create,
+            rename: stored.rename,
+            delete: stored.delete,
+            create_directory: stored.create_directory.unwrap_or(stored.create),
+        }
+    }
 }
 
 impl Default for WriteToolAccess {
@@ -228,6 +265,7 @@ impl Default for WriteToolAccess {
             create: Access::Allow,
             rename: Access::Allow,
             delete: Access::Allow,
+            create_directory: Access::Allow,
         }
     }
 }
@@ -241,6 +279,7 @@ impl WriteToolAccess {
             WriteTool::Create => self.create,
             WriteTool::Rename => self.rename,
             WriteTool::Delete => self.delete,
+            WriteTool::CreateDirectory => self.create_directory,
         }
     }
 
@@ -252,6 +291,7 @@ impl WriteToolAccess {
             WriteTool::Create => self.create = access,
             WriteTool::Rename => self.rename = access,
             WriteTool::Delete => self.delete = access,
+            WriteTool::CreateDirectory => self.create_directory = access,
         }
     }
 
@@ -304,5 +344,45 @@ mod tests {
         assert!(!narrowed.is_unrestricted());
         assert_eq!(narrowed.get(WriteTool::Delete), Access::Prompt);
         assert_eq!(narrowed.get(WriteTool::Edit), Access::Allow);
+    }
+
+    fn stored(create: &str, create_directory: Option<&str>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "edit": "allow", "multi_edit": "allow", "create": create,
+            "rename": "allow", "delete": "allow",
+        });
+        if let Some(limit) = create_directory {
+            value["create_directory"] = serde_json::json!(limit);
+        }
+        value
+    }
+
+    #[test]
+    fn absent_create_directory_inherits_create() {
+        for create in [Access::Prompt, Access::Deny, Access::Allow] {
+            let limits: WriteToolAccess =
+                serde_json::from_value(stored(create.as_str(), None)).expect("decode");
+            assert_eq!(limits.create, create);
+            assert_eq!(limits.create_directory, create);
+        }
+    }
+
+    #[test]
+    fn explicit_create_directory_round_trips() {
+        let limits: WriteToolAccess =
+            serde_json::from_value(stored("prompt", Some("deny"))).expect("decode");
+        assert_eq!(limits.create, Access::Prompt);
+        assert_eq!(limits.create_directory, Access::Deny);
+        let encoded = serde_json::to_value(limits).expect("encode");
+        assert_eq!(encoded["create_directory"], "deny");
+        let again: WriteToolAccess = serde_json::from_value(encoded).expect("decode again");
+        assert_eq!(again, limits);
+    }
+
+    #[test]
+    fn unknown_write_tool_limits_are_refused() {
+        let mut value = stored("allow", Some("allow"));
+        value["chmod"] = serde_json::json!("allow");
+        assert!(serde_json::from_value::<WriteToolAccess>(value).is_err());
     }
 }

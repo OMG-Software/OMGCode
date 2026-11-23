@@ -766,7 +766,8 @@ it writes only through the checkpointed apply in the
 record requires `approvals approve <id> --writers-stopped`, which the command
 operation refuses. The `workspace_multi_edit_file` and `workspace_create_file`
 tools (0.36.0, ADR-0054) and the `workspace_rename_file` and
-`workspace_delete_file` tools (0.38.0, ADR-0055) use the same `file_write`
+`workspace_delete_file` tools (0.38.0, ADR-0055) and the
+`workspace_create_directory` tool (0.53.0, ADR-0079) use the same `file_write`
 records, each under its own digest domain, and start no process either.
 
 ### Toolchain profiles
@@ -1073,7 +1074,11 @@ These remain true after C6:
 - **Package fetch limits.** The fetch is trusted-CLI only. It sends no
   credentials unless one is bound to the matched origin
   ([registry credentials](#registry-credentials)), follows no redirects,
-  ignores proxy variables, and uses the system TLS store. The cache is the selected per-workspace root or, on Linux,
+  ignores proxy variables, and uses the system TLS store. On Windows a connect
+  refused because the chosen local port still holds a TIME_WAIT connection to
+  the same origin is retried on another port before any byte is sent
+  ([ADR-0078](adr/0078-skip-windows-local-ports-held-in-time-wait.md)); no
+  other failure is retried. The cache is the selected per-workspace root or, on Linux,
   the application-storage fallback. It makes no power-loss claim. Tests use
   loopback HTTP; a live HTTPS registry is not qualified.
 - **Package cache exposure.** A run receives `OMGCODE_PACKAGE_CACHE` when the

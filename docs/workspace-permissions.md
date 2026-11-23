@@ -343,8 +343,8 @@ and `true` is `allow` for `--read` and `prompt` for the others, which is what
 preference and confirms any change towards `allow` (ADR-0060).
 
 **Per-tool write limits.** `--edit-tool`, `--multi-edit-tool`, `--create-tool`,
-`--rename-tool`, and `--delete-tool` set a limit for one model file-write tool.
-Each defaults to `allow`. A limit can only narrow `write`: the tool's state is
+`--rename-tool`, `--delete-tool`, and `--create-directory-tool` set a limit for
+one model file-write tool. Each defaults to `allow`. A limit can only narrow `write`: the tool's state is
 the more restrictive of the two, and a `deny` limit removes the tool. For
 example, `--write allow --delete-tool prompt` lets the model edit, create, and
 rename files freely but still asks before each delete. `workspace status`
@@ -357,7 +357,7 @@ denied. Otherwise:
   `prompt` each call records a `file_read` approval for the exact path and
   limit, and nothing is read until it is approved. A read approval needs no
   writers-stopped acknowledgement.
-- The five file-write tools use `write` and their own limit. They are denied
+- The six file-write tools use `write` and their own limit. They are denied
   unless `read` permits, because each reads the file first. A `prompt` read
   adds no prompt here: that read returns no file text to the model.
 - `workspace_run_command` uses the most restrictive of `execute`, `read`, and
@@ -381,7 +381,9 @@ identical call consumes the approved record.
 **Stored form.** Settings keep their earlier bytes. A stored `false` is
 `deny` and a stored `true` keeps its earlier meaning; a string is written only
 for a state a boolean cannot express, such as `"allow"` for `write`.
-`write_tools` is omitted while every limit is `allow`. A settings log that uses
+`write_tools` is omitted while every limit is `allow`. A stored `write_tools`
+without `create_directory` takes its `create` limit for directory creation
+([ADR-0079](adr/0079-add-a-model-tool-that-creates-one-directory.md)). A settings log that uses
 a new state cannot be read by version 0.42.0 or earlier. A non-canonical value,
 such as the string `"deny"`, is refused.
 
@@ -461,10 +463,21 @@ Both refuse a source over 1 MiB. They share the edit tool's `file_write`
 approvals, writers-stopped acknowledgement, per-call recheck, and
 `edit_disabled` denial, and each has its own digest domain. Renaming is not
 checkpointed; a deleted file is restored with the trusted
-`file restore --removed`. Disabling `write` or `read` removes all five file-write
+`file restore --removed`. Disabling `write` or `read` removes all six file-write
 tools. See
 [model rename and delete routes](file-access.md#model-rename-and-delete-routes-adr-0055)
 and [ADR-0055](adr/0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md).
+
+The same three preferences also offer `workspace_create_directory`, which
+creates one directory through the broker's exclusive single-directory creation
+without a checkpoint. It never replaces an entry and creates no missing
+parents: an existing path is `file_exists` and a missing parent is
+`parent_not_found`, which `workspace_create_file` and the destination check of
+`workspace_rename_file` now also report. It shares the edit tool's `file_write`
+approvals, writers-stopped acknowledgement, per-call recheck, and
+`edit_disabled` denial, and its digest domain is `omgcode-directory-create-v1`.
+No model tool removes a directory. See
+[ADR-0079](adr/0079-add-a-model-tool-that-creates-one-directory.md).
 
 When `model_tools`, `execute`, `read`, and `write` are all enabled, the runtime
 also offers `workspace_run_command`. Its first call records a pending approval
@@ -473,11 +486,12 @@ consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.5.0, which added `workspace_rename_file` and
-`workspace_delete_file`; 0.4.0 added `workspace_multi_edit_file` and
+The tool schema version is 0.6.0, which added `workspace_create_directory`;
+0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added
+`workspace_multi_edit_file` and
 `workspace_create_file`, and 0.3.0 added `workspace_edit_file`. Each request
 manifest records the version it advertised, and sessions that recorded 0.2.0,
-0.3.0, or 0.4.0 still replay and accept new turns.
+0.3.0, 0.4.0, or 0.5.0 still replay and accept new turns.
 
 `workspace status` always reports `model_tools`. Persisted settings omit the
 field while it is `false`, so settings that never enable it keep their exact

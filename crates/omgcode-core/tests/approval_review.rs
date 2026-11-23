@@ -960,6 +960,38 @@ fn a_create_approval_reviews_exact_fields_and_is_stale_once_the_file_exists() {
     );
 }
 
+#[test]
+fn a_directory_creation_approval_reviews_its_path_and_is_stale_once_it_exists() {
+    let mut fixture = Fixture::new();
+    fixture.turn(vec![call(
+        "dir-1",
+        "workspace_create_directory",
+        json!({"path": "made"}),
+    )]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+    let before = statuses_json(&fixture.approvals());
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, "workspace_create_directory");
+    let values: Vec<(&str, String, bool)> = request
+        .fields
+        .iter()
+        .map(|field| (field.label, field.value.clone(), field.multiline))
+        .collect();
+    assert_eq!(values, [("Directory", "made".to_owned(), false)]);
+    assert!(!fixture.workspace.join("made").exists());
+    assert_eq!(statuses_json(&fixture.approvals()), before);
+
+    // Another writer creates the directory: the request can no longer proceed.
+    fs::create_dir(fixture.workspace.join("made")).expect("other writer");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
 /// After an exact review and an approval, the identical call creates the file.
 #[test]
 fn an_exactly_reviewed_create_is_the_call_that_creates() {

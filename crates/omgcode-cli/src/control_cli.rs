@@ -287,6 +287,9 @@ pub(crate) struct PermissionsArgs {
     /// Limit on the model delete tool; it can only narrow `--write`.
     #[arg(long = "delete-tool", value_parser = parse_tool_limit)]
     delete_tool: Option<Access>,
+    /// Limit on the model create-directory tool; it can only narrow `--write`.
+    #[arg(long = "create-directory-tool", value_parser = parse_tool_limit)]
+    create_directory_tool: Option<Access>,
 }
 
 /// Parse a preference whose legacy `true` meant `prompt`.
@@ -659,6 +662,7 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         && args.create_tool.is_none()
         && args.rename_tool.is_none()
         && args.delete_tool.is_none()
+        && args.create_directory_tool.is_none()
     {
         return Err(CliError::new(
             "configuration",
@@ -678,6 +682,7 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         (WriteTool::Create, args.create_tool),
         (WriteTool::Rename, args.rename_tool),
         (WriteTool::Delete, args.delete_tool),
+        (WriteTool::CreateDirectory, args.create_directory_tool),
     ] {
         if let Some(limit) = limit {
             write_tools.set(tool, limit);

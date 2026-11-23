@@ -21,10 +21,10 @@ pub const MODEL_TOOLS_SUPPORTED: bool = cfg!(any(target_os = "linux", target_os 
 
 /// Conservative byte allowance for the advertised tool definitions.
 ///
-/// The largest set (read, list, edit, multi-edit, create, rename, delete, and
-/// command) serializes to 6,174 bytes in the adapter's wire shape; a unit test
-/// keeps this allowance above it.
-pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 7 * 1024;
+/// The largest set (read, list, edit, multi-edit, create, create directory,
+/// rename, delete, and command) serializes to 7,167 bytes in the adapter's
+/// wire shape; a unit test keeps this allowance above it.
+pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 8 * 1024;
 
 /// Whether this chat turn offers the model the workspace tools.
 #[derive(Debug)]
@@ -117,8 +117,9 @@ pub fn tool_replay_allowed(
 #[cfg(test)]
 mod tests {
     use omgcode_core::turn::{
-        command_tool_definition, create_tool_definition, delete_tool_definition,
-        edit_tool_definition, multi_edit_tool_definition, rename_tool_definition, tool_definitions,
+        command_tool_definition, create_directory_tool_definition, create_tool_definition,
+        delete_tool_definition, edit_tool_definition, multi_edit_tool_definition,
+        rename_tool_definition, tool_definitions,
     };
     use serde_json::{Value, json};
 
@@ -134,8 +135,9 @@ mod tests {
         definitions.push(create_tool_definition());
         definitions.push(rename_tool_definition());
         definitions.push(delete_tool_definition());
+        definitions.push(create_directory_tool_definition());
         definitions.push(command_tool_definition());
-        assert_eq!(definitions.len(), 8, "the eight-tool cap is fully used");
+        assert_eq!(definitions.len(), 9, "the nine-tool cap is fully used");
         let wire: Vec<Value> = definitions
             .iter()
             .map(|definition| json!({"type": "function", "function": definition}))

@@ -344,6 +344,12 @@ crate.
   afterwards on Linux). Neither retries, repairs, or deletes after an uncertain
   outcome, and neither reports concurrent-writer detection. Keep file text and
   full paths out of results. See ADR-0055.
+- The `workspace_create_directory` model tool follows the same advertisement,
+  live-recheck, approval, and writers-stopped rules under its own digest domain
+  tag (`omgcode-directory-create-v1`). It must find the path absent and its
+  parent present through audited broker calls before recording an approval,
+  and uses only the broker's single-directory create after consuming it: no
+  recursive creation, no replacement, and no retry. See ADR-0079.
 - The `workspace_run_command` model tool may be advertised only under live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; only a later exact call may consume an

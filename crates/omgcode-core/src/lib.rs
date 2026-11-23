@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action_journal;
+mod connect;
 pub mod context;
 pub mod control;
 pub mod edit;

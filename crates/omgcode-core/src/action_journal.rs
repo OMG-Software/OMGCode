@@ -90,6 +90,8 @@ pub enum ActionTool {
     MultiEditFile,
     /// Create one new file.
     CreateFile,
+    /// Create one new directory.
+    CreateDirectory,
     /// Rename one regular file; names both source and destination.
     RenameFile,
     /// Delete one regular file after a checkpoint.

@@ -2,6 +2,11 @@
 
 #[allow(
     dead_code,
+    reason = "only the test binaries with a loopback mock server use it"
+)]
+pub(crate) mod mock_close;
+#[allow(
+    dead_code,
     reason = "only the run workflow and model command test binaries use the run scene"
 )]
 pub(crate) mod run_scene;

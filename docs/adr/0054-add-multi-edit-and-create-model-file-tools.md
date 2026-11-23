@@ -1,6 +1,6 @@
 # 0054: Add multi-edit and create model file tools
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0079](0079-add-a-model-tool-that-creates-one-directory.md)
 - Date: 2026-11-17
 
 ## Context

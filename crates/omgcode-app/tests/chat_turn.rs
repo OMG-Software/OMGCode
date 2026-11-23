@@ -35,6 +35,8 @@ const SECRET: &str = "fixture-token-7f3a91";
 /// Serve one scripted response per connection and optionally cancel a turn first.
 struct SequenceServer {
     endpoint: String,
+    /// Dropping it lets the worker release the port.
+    stop: mpsc::Sender<()>,
     worker: JoinHandle<Result<usize, String>>,
 }
 
@@ -45,47 +47,62 @@ impl SequenceServer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock server");
         listener.set_nonblocking(true).expect("bounded accept");
         let address = listener.local_addr().expect("mock address");
+        let (stop, stopped) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut served = 0;
-            for response in responses {
-                let Ok(mut stream) = accept(&listener) else {
-                    break;
-                };
-                read_body(&mut stream)?;
-                if served == 0
-                    && let Some(source) = &cancel_source
-                {
-                    let token = source
-                        .recv_timeout(MOCK_TIMEOUT)
-                        .map_err(|error| error.to_string())?;
-                    token.cancel();
-                }
-                let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len()
-                );
-                stream
-                    .write_all(head.as_bytes())
-                    .and_then(|()| stream.write_all(&bytes))
-                    .map_err(|error| error.to_string())?;
-                served += 1;
-            }
-            Ok(served)
+            let result = serve_sequence(&listener, responses, cancel_source.as_ref());
+            common::refuse_until_stopped(&listener, &stopped);
+            result
         });
         Self {
             endpoint: format!("http://{address}/v1"),
+            stop,
             worker,
         }
     }
 
     /// Wait for the server thread and return how many requests it answered.
     fn finish(self) -> usize {
+        drop(self.stop);
         self.worker
             .join()
             .expect("mock server thread")
             .expect("mock server exchange")
     }
+}
+
+/// Answer each scripted response on its own connection.
+fn serve_sequence(
+    listener: &TcpListener,
+    responses: Vec<Value>,
+    cancel_source: Option<&Receiver<CancelToken>>,
+) -> Result<usize, String> {
+    let mut served = 0;
+    for response in responses {
+        let Ok(mut stream) = accept(listener) else {
+            break;
+        };
+        read_body(&mut stream)?;
+        if served == 0
+            && let Some(source) = cancel_source
+        {
+            let token = source
+                .recv_timeout(MOCK_TIMEOUT)
+                .map_err(|error| error.to_string())?;
+            token.cancel();
+        }
+        let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        stream
+            .write_all(head.as_bytes())
+            .and_then(|()| stream.write_all(&bytes))
+            .map_err(|error| error.to_string())?;
+        common::await_client_close(&mut stream);
+        served += 1;
+    }
+    Ok(served)
 }
 
 fn accept(listener: &TcpListener) -> Result<TcpStream, String> {
@@ -305,13 +322,6 @@ fn last_failure_code(events: &[Value]) -> Option<String> {
         .and_then(|event| event["payload"]["code"].as_str().map(str::to_owned))
 }
 
-fn unused_endpoint() -> String {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-    let port = listener.local_addr().expect("address").port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}/v1")
-}
-
 #[test]
 fn an_archived_session_is_refused_with_the_published_message() {
     let fixture = Fixture::new(false);
@@ -320,7 +330,7 @@ fn an_archived_session_is_refused_with_the_published_message() {
     let error = turn(
         &mut journal,
         &fixture.data,
-        &settings(&unused_endpoint()),
+        &settings(&common::unused_endpoint()),
         None,
         "hello",
         &mut ChatHooks::default(),
@@ -341,7 +351,7 @@ fn an_incomplete_previous_turn_is_refused_with_the_published_message() {
     let error = turn(
         &mut journal,
         &fixture.data,
-        &settings(&unused_endpoint()),
+        &settings(&common::unused_endpoint()),
         None,
         "hello",
         &mut ChatHooks::default(),
@@ -358,7 +368,7 @@ fn an_incomplete_previous_turn_is_refused_with_the_published_message() {
 fn reaching_the_trigger_without_auto_compact_is_a_context_error() {
     let fixture = Fixture::new(false);
     let mut journal = fixture.journal();
-    let mut chat = settings(&unused_endpoint());
+    let mut chat = settings(&common::unused_endpoint());
     chat.compact_threshold = 1;
     let error = turn(
         &mut journal,
@@ -391,7 +401,7 @@ fn reaching_the_trigger_without_auto_compact_is_a_context_error() {
 fn a_zero_threshold_is_a_configuration_error() {
     let fixture = Fixture::new(false);
     let mut journal = fixture.journal();
-    let mut chat = settings(&unused_endpoint());
+    let mut chat = settings(&common::unused_endpoint());
     chat.compact_threshold = 0;
     let error = turn(
         &mut journal,
@@ -433,7 +443,7 @@ fn a_transport_failure_is_recorded_and_never_mentions_the_token() {
     let error = turn(
         &mut journal,
         &fixture.data,
-        &settings(&unused_endpoint()),
+        &settings(&common::unused_endpoint()),
         Some(SECRET),
         "hello",
         &mut ChatHooks::default(),

@@ -7,12 +7,12 @@
 //! a listed id is untrusted provider text for display and selection only.
 
 use super::{
-    CONNECT_TIMEOUT, ModelEndpoint, ProviderError, bearer_header, read_whole_body, until_cancelled,
+    CONNECT_TIMEOUT, ModelEndpoint, ProviderError, bearer_header, read_whole_body, send_request,
 };
 use crate::storage::parse_strict_json;
 use crate::turn::CancelToken;
 use reqwest::Client;
-use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONNECTION};
 use reqwest::redirect::Policy;
 use serde::Serialize;
 use serde_json::Value;
@@ -94,13 +94,21 @@ fn list_with_timeout(
             .timeout(timeout)
             .build()
             .map_err(|_| ProviderError::Transport)?;
-        let mut request = client.get(endpoint).header(ACCEPT, "application/json");
-        if let Some(authorization) = authorization {
-            request = request.header(AUTHORIZATION, authorization);
-        }
-        let response = until_cancelled(request.send(), &never)
-            .await?
-            .map_err(|_| ProviderError::Transport)?;
+        // `Connection: close` lets the server close first, so the TIME_WAIT
+        // a list leaves is the server's and cannot refuse a later Windows
+        // connect to the same server. A server-held TIME_WAIT can delay a
+        // reconnect only after a large request, not a list (ADR-0078).
+        let build = || {
+            let mut request = client
+                .get(endpoint.clone())
+                .header(ACCEPT, "application/json")
+                .header(CONNECTION, "close");
+            if let Some(authorization) = &authorization {
+                request = request.header(AUTHORIZATION, authorization.clone());
+            }
+            request
+        };
+        let response = send_request(build, &never).await?;
         read_whole_body(response, &never).await
     })?;
     parse_model_list(&bytes)
@@ -163,6 +171,7 @@ fn has_cloud_tag(id: &str) -> bool {
 mod tests {
     use super::*;
     use crate::provider::REFUSED_ENDPOINTS;
+    use crate::test_support::await_client_close;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -361,6 +370,7 @@ mod tests {
             }
             // The client may already have given up; the head is what matters.
             let _ignored = stream.write_all(response);
+            await_client_close(&mut stream);
             String::from_utf8(head).expect("ASCII head")
         });
         (base_url, task)
@@ -453,5 +463,60 @@ mod tests {
         task.join().expect("fixture thread");
         assert_eq!(result, Err(ProviderError::Transport));
         assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+    }
+
+    /// Back-to-back requests to a server that never closes first all succeed.
+    ///
+    /// The fixture ignores `Connection: close` and holds each connection until
+    /// the client closes it, so every request leaves a client-side TIME_WAIT
+    /// to the fixture. On Windows the next pre-bound connect is then usually
+    /// handed that same local port and refused with `WSAEADDRINUSE` (ADR-0078);
+    /// the client must skip it. Elsewhere the requests simply succeed.
+    #[test]
+    fn consecutive_requests_survive_client_side_time_wait() {
+        const REQUESTS: usize = 6;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("private fixture");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("address"));
+        let task = thread::spawn(move || {
+            let end = Instant::now() + Duration::from_secs(10);
+            let body = LM_STUDIO_LIST.as_bytes();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            for _ in 0..REQUESTS {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < end, "fixture accept deadline");
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("fixture accept: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).expect("blocking stream");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("read deadline");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).expect("request bytes");
+                    assert!(count > 0 && request.len() < 16 * 1024, "bounded head");
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                stream.write_all(head.as_bytes()).expect("response head");
+                stream.write_all(body).expect("response body");
+                await_client_close(&mut stream);
+            }
+        });
+        for request in 0..REQUESTS {
+            let models = list_local_models(&base_url, None)
+                .unwrap_or_else(|error| panic!("request {request}: {error}"));
+            assert_eq!(models.len(), 3, "request {request}");
+        }
+        task.join().expect("fixture thread");
     }
 }

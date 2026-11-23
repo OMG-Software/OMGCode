@@ -661,6 +661,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               create: "allow",
               rename: "allow",
               delete: "allow",
+              create_directory: "allow",
             },
             package_cache_root: null,
           });
@@ -992,6 +993,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             create: "allow",
             rename: "allow",
             delete: "prompt",
+            create_directory: "allow",
           },
           package_cache_root: null,
         },
@@ -1010,6 +1012,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             create: "allow",
             rename: "allow",
             delete: "allow",
+            create_directory: "allow",
           },
           package_cache_root: null,
         },

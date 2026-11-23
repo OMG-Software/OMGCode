@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use omgcode_core::control::{CredentialId, CredentialStore};
 use serde_json::{Value, json};
 
+use support::mock_close::await_client_close;
 use support::workspace_fixture::Fixture;
 use support::{
     CLI_DEADLINE, assert_error_code, assert_success, cli_command, json_output, path_arg, run_cli,
@@ -153,6 +154,7 @@ fn serve(stream: &mut TcpStream, reply: &str) -> Option<Recorded> {
         .write_all(response.as_bytes())
         .and_then(|()| stream.write_all(&payload))
         .ok()?;
+    await_client_close(stream);
     Some(Recorded {
         head,
         body: body_text,

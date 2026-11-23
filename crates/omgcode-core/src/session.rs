@@ -49,7 +49,7 @@ const MAX_TOOL_NAME_BYTES: usize = 64;
 const MAX_TOOL_ARGUMENTS_BYTES: usize = 4 * 1024;
 const MAX_TOOL_ERROR_CODE_BYTES: usize = 128;
 const MAX_TOOL_OUTPUT_DIGEST_BYTES: usize = 64;
-const MAX_TOOL_NAMES: usize = 8;
+const MAX_TOOL_NAMES: usize = 9;
 const MAX_TOOL_SCHEMA_VERSION_BYTES: usize = 32;
 // A terminal envelope plus the most-escaped allowed failure code fits in 1 KiB.
 const TERMINAL_RESERVE_BYTES: usize = 1024;

@@ -161,6 +161,22 @@ tests for documentation-only work.
   `crates/omgcode-cli/tests/support/spawn_gate.rs`. Do not retry on `Busy`, which
   would hide real contention. Serial runs cannot detect this race, so run the
   default parallel suite as well.
+- A loopback port is private only while a socket holds it. A port that a test
+  binds and then releases can be bound by a concurrently started test's mock
+  server, which then receives a request meant to fail and loses its own
+  scripted reply. Keep a scripted server's listener bound until its test
+  finishes, closing connections past the script at once, and give an endpoint
+  that must fail a listener that closes every connection rather than a
+  released port. The helpers are `refuse_until_stopped` and `unused_endpoint`
+  in the CLI and desktop test support. The core provider tests' one-shot
+  fixtures keep each port bound until the test binary exits, through
+  `bind_fixture_listener`, so no later fixture in that binary receives a port
+  whose earlier connection is still in TIME_WAIT.
+- On Windows, a mock server that closes first after a large request can delay
+  the next connect to it until the connect timeout (ADR-0078). A mock that
+  serves the model provider client must read until the client closes, with
+  `await_client_close`, so the client holds the TIME_WAIT and its reused-port
+  skip applies. Do not use that order for a client without the skip.
 - CLI compaction tests seed large, private journal fixtures in one batch and
   let the child replay them. This keeps hundreds of fixture syncs from holding
   the spawn gate while unrelated tests are trying to start.

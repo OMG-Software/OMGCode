@@ -17,6 +17,7 @@ const ALL_TOOLS: WriteToolAccess = {
   create: "allow",
   rename: "allow",
   delete: "allow",
+  create_directory: "allow",
 };
 
 function workspace(id: string, folder: string, extra: Partial<WorkspaceSettingsView> = {}) {
@@ -317,6 +318,17 @@ describe("permission controls", () => {
     });
   });
 
+  it("send the create directory tool limit on its own", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () => overview({ revision: 4 }),
+    });
+    choose("Create directory tool", "deny");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({
+      permissions: { write_tools: { ...ALL_TOOLS, create_directory: "deny" } },
+    });
+  });
+
   it("send nothing for the state already chosen", async () => {
     await start(() => overview());
     choose("Write", "prompt");
@@ -336,7 +348,7 @@ describe("permission controls", () => {
   it("show a muted note beside a tool wider than Write", async () => {
     await start(() => overview());
     const notes = Array.from(root.querySelectorAll(".perm-note")).map((n) => n.textContent);
-    expect(notes).toEqual(Array(5).fill("Limited by Write: Prompt"));
+    expect(notes).toEqual(Array(6).fill("Limited by Write: Prompt"));
 
     await start(() =>
       overview({
@@ -348,12 +360,17 @@ describe("permission controls", () => {
         ],
       }),
     );
-    // Only the tools wider than Write carry the note: multi-edit, rename, delete.
+    // Only the tools wider than Write carry the note: multi-edit, rename, delete, create directory.
     const rows = Array.from(root.querySelectorAll(".tool-limits .perm-row"));
     const noted = rows
       .filter((row) => row.querySelector(".perm-note") !== null)
       .map((row) => row.querySelector(".perm-label")?.textContent);
-    expect(noted).toEqual(["Multi-edit tool", "Rename tool", "Delete tool"]);
+    expect(noted).toEqual([
+      "Multi-edit tool",
+      "Rename tool",
+      "Delete tool",
+      "Create directory tool",
+    ]);
 
     await start(() => overview({ workspaces: [workspace(A, "/home/dev/a", { write: "allow" })] }));
     expect(root.querySelectorAll(".perm-note")).toHaveLength(0);
@@ -365,7 +382,7 @@ describe("permission controls", () => {
     });
     const details = root.querySelector("details.tool-limits") as HTMLDetailsElement;
     expect(details.querySelector("summary")?.textContent).toBe("File-write tool limits");
-    expect(details.querySelectorAll("[role=radiogroup]")).toHaveLength(5);
+    expect(details.querySelectorAll("[role=radiogroup]")).toHaveLength(6);
     expect(details.open).toBe(false);
     details.open = true;
     details.dispatchEvent(new Event("toggle"));

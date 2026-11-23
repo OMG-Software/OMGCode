@@ -548,6 +548,7 @@ describe("mock backend", () => {
         create: "allow",
         rename: "allow",
         delete: "prompt",
+        create_directory: "allow",
       },
     };
 

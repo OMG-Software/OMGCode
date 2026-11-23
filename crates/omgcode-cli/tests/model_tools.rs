@@ -7,13 +7,14 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use support::mock_close::{await_client_close, refuse_until_stopped};
 use support::run_scene::{Scene, run_command, shell};
 use support::spawn_gate::without_child_spawns;
 use support::workspace_fixture::Fixture;
@@ -32,6 +33,8 @@ const MAX_HTTP_BYTES: usize = 1024 * 1024;
 struct SequenceServer {
     endpoint: String,
     requests: Receiver<Value>,
+    /// Dropping it lets the worker release the port (see [`refuse_until_stopped`]).
+    stop: Sender<()>,
     worker: JoinHandle<Result<usize, String>>,
 }
 
@@ -49,46 +52,56 @@ impl SequenceServer {
         listener.set_nonblocking(true).expect("bounded accept mode");
         let address = listener.local_addr().expect("mock server address");
         let (sender, requests) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut served = 0;
-            for response in responses {
-                // The CLI stops early after a refused call; that is not an error.
-                let Ok(mut stream) = accept(&listener) else {
-                    break;
-                };
-                let body = read_body(&mut stream)?;
-                let request: Value = serde_json::from_slice(&body)
-                    .map_err(|error| format!("request JSON: {error}"))?;
-                sender.send(request).map_err(|error| error.to_string())?;
-                if before_reply
-                    .as_ref()
-                    .is_some_and(|(index, _)| *index == served)
-                    && let Some((_, work)) = before_reply.take()
-                {
-                    work();
+            let result = (|| {
+                let mut served = 0;
+                for response in responses {
+                    // The CLI stops early after a refused call; that is not an error.
+                    let Ok(mut stream) = accept(&listener) else {
+                        break;
+                    };
+                    let body = read_body(&mut stream)?;
+                    let request: Value = serde_json::from_slice(&body)
+                        .map_err(|error| format!("request JSON: {error}"))?;
+                    sender.send(request).map_err(|error| error.to_string())?;
+                    if before_reply
+                        .as_ref()
+                        .is_some_and(|(index, _)| *index == served)
+                        && let Some((_, work)) = before_reply.take()
+                    {
+                        work();
+                    }
+                    let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    );
+                    stream
+                        .write_all(head.as_bytes())
+                        .and_then(|()| stream.write_all(&bytes))
+                        .map_err(|error| error.to_string())?;
+                    await_client_close(&mut stream);
+                    served += 1;
                 }
-                let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len()
-                );
-                stream
-                    .write_all(head.as_bytes())
-                    .and_then(|()| stream.write_all(&bytes))
-                    .map_err(|error| error.to_string())?;
-                served += 1;
-            }
-            Ok(served)
+                Ok(served)
+            })();
+            // A request past the script, such as the follow-up after a
+            // refused call, is closed here instead of reaching another test.
+            refuse_until_stopped(&listener, &stopped);
+            result
         });
         Self {
             endpoint: format!("http://{address}/v1"),
             requests,
+            stop,
             worker,
         }
     }
 
     /// Return every captured request after the server thread has finished.
     fn finish(self) -> Vec<Value> {
+        drop(self.stop);
         let served = self
             .worker
             .join()
@@ -341,7 +354,8 @@ fn an_enabled_preference_lets_the_model_read_the_workspace_through_the_runtime()
                 "workspace_multi_edit_file",
                 "workspace_create_file",
                 "workspace_rename_file",
-                "workspace_delete_file"
+                "workspace_delete_file",
+                "workspace_create_directory"
             ]
         );
         // The compiled base prompt remains the only system message.
