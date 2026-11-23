@@ -12,6 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use support::run_scene::{Scene, run_command, shell};
 use support::spawn_gate::without_child_spawns;
@@ -1239,27 +1240,42 @@ fn an_oversized_request_without_auto_compaction_is_refused_before_the_provider()
     assert!(!events.contains("context.compacted"), "{events}");
 }
 
-/// Record `count` short exchanges directly. The journal lock is held only
-/// inside the spawn gate, so no parallel test's child can inherit it.
+/// Seed a fresh private journal before handing it to the CLI. These tests
+/// exercise replay and compaction. Writing the fixture in one batch avoids
+/// blocking unrelated child spawns behind hundreds of durable appends.
 fn seed_short_exchanges(journal: &Path, count: usize) {
-    without_child_spawns(|| {
-        let mut session =
-            omgcode_core::session::SessionJournal::open(journal).expect("open journal");
-        for index in 0..count {
-            session
-                .record_message(
-                    omgcode_core::session::MessageRole::User,
-                    &format!("request {index}"),
-                )
-                .expect("user message");
-            session
-                .record_message(
-                    omgcode_core::session::MessageRole::Assistant,
-                    &format!("reply {index}"),
-                )
-                .expect("assistant message");
-        }
+    let initial = fs::read(journal).expect("read fresh journal");
+    assert_eq!(initial.last(), Some(&b'\n'));
+    let start: Value = serde_json::from_slice(&initial).expect("one session start event");
+    assert_eq!(start["type"], "session.started");
+    assert_eq!(start["seq"], 0);
+
+    let mut records = Vec::new();
+    let messages = (0..count).flat_map(|index| {
+        [
+            ("user", "user_cli", format!("request {index}")),
+            ("assistant", "provider", format!("reply {index}")),
+        ]
     });
+    for (index, (role, source, text)) in messages.enumerate() {
+        let event = json!({
+            "schema_version": start["schema_version"],
+            "session_id": start["session_id"],
+            "event_id": Uuid::new_v4(),
+            "seq": index + 1,
+            "timestamp": start["timestamp"],
+            "type": "message.recorded",
+            "payload": {"role": role, "source": source, "text": text},
+        });
+        serde_json::to_writer(&mut records, &event).expect("encode fixture event");
+        records.push(b'\n');
+    }
+    fs::OpenOptions::new()
+        .append(true)
+        .open(journal)
+        .expect("open fixture journal for append")
+        .write_all(&records)
+        .expect("append fixture events");
 }
 
 #[test]
@@ -1292,6 +1308,10 @@ fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() 
     let output = chat(&server.endpoint, &[]);
     server.finish();
     assert_error_code(&output, "context");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("CLI error is JSON");
+    assert!(error["error"]["message"].as_str().is_some_and(|message| {
+        message.starts_with("Active history exceeds the prompt assembly limits")
+    }));
 
     let mut replies = vec![text("Earlier exchanges in this chunk."); 5];
     replies.extend([text("Earlier conversation."), text("next reply")]);

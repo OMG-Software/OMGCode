@@ -301,6 +301,8 @@ Changes are recorded here before a release version is assigned.
   be set from 1 to 3600 in Chat settings or with `chat --turn-timeout-seconds`.
   The exact-edit tool asks the model to read the file when the current text is
   unknown or an edit misses (ADR-0074, ADR-0075, ADR-0076).
+- CLI compaction tests seed their large history fixtures in one batch so
+  unrelated CLI tests can start within their subprocess deadlines.
 - The Testing build's publish job no longer fails when a lookup just after
   deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
   deleted the old release and tag with `gh release delete --cleanup-tag`. A
