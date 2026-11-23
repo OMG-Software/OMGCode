@@ -40,6 +40,11 @@ impl DesktopError {
         }
     }
 
+    /// A skill registry or import failure with core's stable code (ADR-0082).
+    pub(crate) fn skill(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
     /// The stable machine-readable code.
     pub const fn code(&self) -> &'static str {
         self.code

@@ -87,6 +87,10 @@ const ACTIONS: Actions = {
   saveChatDefaults: (defaults) => () => settingsApi.saveChatDefaults(defaults),
   setWorkspaceInstructions: (workspaceId, instructions) => () =>
     settingsApi.setWorkspaceInstructions(workspaceId, instructions),
+  importSkill: () => (revision) => settingsApi.importSkill(revision),
+  setSkillState: (name, workspaceId, state) => (revision) =>
+    settingsApi.setSkillState(revision, name, workspaceId, state),
+  removeSkill: (name) => (revision) => settingsApi.removeSkill(revision, name),
 };
 
 /**
@@ -167,7 +171,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
       case "workspaces":
         return renderWorkspaces(context);
       case "advanced":
-        return renderAdvanced(context.overview);
+        return renderAdvanced(context);
     }
   }
 

@@ -75,6 +75,8 @@ pub enum FolderPurpose {
     Workspace,
     /// One workspace's package cache root.
     PackageCache,
+    /// A skill folder to import.
+    Skill,
 }
 
 impl FolderPurpose {
@@ -85,6 +87,7 @@ impl FolderPurpose {
             Self::DevelopmentRoot => "Choose the development root",
             Self::Workspace => "Choose a workspace folder",
             Self::PackageCache => "Choose a package cache folder",
+            Self::Skill => "Choose a skill folder",
         }
     }
 }
@@ -491,7 +494,7 @@ fn roll_back_profile(
     }
 }
 
-fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopError> {
+pub(super) fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopError> {
     if store.revision() == expected {
         Ok(())
     } else {
@@ -499,7 +502,10 @@ fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopErro
     }
 }
 
-fn confirm(prompt: &dyn SettingsPrompt, confirmation: &Confirmation) -> Result<(), DesktopError> {
+pub(super) fn confirm(
+    prompt: &dyn SettingsPrompt,
+    confirmation: &Confirmation,
+) -> Result<(), DesktopError> {
     if prompt.confirm(confirmation) {
         Ok(())
     } else {

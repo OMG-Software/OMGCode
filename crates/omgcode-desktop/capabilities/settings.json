@@ -12,14 +12,17 @@
     "allow-settings-choose-root",
     "allow-settings-clear-package-cache",
     "allow-settings-clear-scope",
+    "allow-settings-import-skill",
     "allow-settings-overview",
     "allow-settings-register-workspace",
     "allow-settings-remove-connection",
+    "allow-settings-remove-skill",
     "allow-settings-repair-data-folder",
     "allow-settings-save-chat-defaults",
     "allow-settings-select-connection",
     "allow-settings-set-api-key",
     "allow-settings-set-permissions",
+    "allow-settings-set-skill-state",
     "allow-settings-set-workspace-instructions"
   ]
 }

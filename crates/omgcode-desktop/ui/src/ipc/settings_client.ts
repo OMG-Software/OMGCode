@@ -77,4 +77,29 @@ export const settingsApi = {
       workspace_id: workspaceId,
       instructions,
     }),
+  /**
+   * Asks Rust to open its system folder dialog and import the chosen skill folder through core,
+   * disabled (ADR-0082). It sends only the revision: the window never names a path.
+   */
+  importSkill: (revision: number) =>
+    invokeCommand<SettingsOverview>("settings_import_skill", { revision }),
+  /**
+   * Sets a skill's application setting (`workspaceId` null) or one workspace's override. Rust
+   * confirms in a system dialog, naming the skill, before any change that leaves it enabled.
+   */
+  setSkillState: (
+    revision: number,
+    name: string,
+    workspaceId: string | null,
+    state: "enabled" | "disabled" | "inherit",
+  ) =>
+    invokeCommand<SettingsOverview>("settings_set_skill_state", {
+      revision,
+      name,
+      workspace_id: workspaceId,
+      skill_state: state,
+    }),
+  /** Removes a skill and its stored copy after a system confirmation that names it. */
+  removeSkill: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_skill", { revision, name }),
 };

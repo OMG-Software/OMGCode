@@ -94,20 +94,23 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing toolchain profiles, container grants, package-network profiles,
-  and skills in the desktop application, binding a credential to a local
+- Changing toolchain profiles, container grants, and package-network profiles
+  in the desktop application, binding a credential to a local
   LM Studio profile, and adding any cloud provider other than Ollama Cloud.
   They change only through the trusted CLI. The `settings` window adds an
   Ollama Cloud connection with its API key, replaces the key, and removes the
   connection, through the write-only key field (ADR-0071). The rest of phase
   S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: execution setup and skill management.
+  are not implemented: execution setup. Skills are imported, enabled, and
+  removed in the `settings` window since ADR-0082.
 - Development panels: a working terminal, task logs, diffs, and a file
   browser. The terminal panel (ADR-0072) only says that no terminal is
   available; it starts no shell and runs no command.
-- Git, MCP, and memory interfaces, and skill management. The `main` window
-  can only select an already enabled skill for one turn.
+- Git, MCP, and memory interfaces. The `main` window
+  can only select an already enabled skill for one turn; the `settings`
+  window manages skills (ADR-0082). Skill updates, Git sources, and the
+  per-skill description and body view are not implemented.
 - A recovery interface for damaged journals or an incomplete tail.
 - A provider other than a local LM Studio or Ollama server and Ollama Cloud.
   Stored API keys are used only for an LM Studio server's token and an Ollama
@@ -234,7 +237,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 39 commands. No other command exists.
+The shell has three webview windows and 45 commands (17 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -282,6 +285,9 @@ their registered identifier, and approvals by identifier.
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
+| `settings_import_skill` | settings | Import a skill folder, chosen in a native dialog, through core as `omgcode skills add` does; the skill arrives disabled and no confirmation follows (ADR-0082) |
+| `settings_set_skill_state` | settings | Set a skill's application setting or one workspace's override (`enabled`, `disabled`, `inherit`); a change that leaves it enabled needs a native confirmation that names it (ADR-0082) |
+| `settings_remove_skill` | settings | Remove a skill and delete its stored copy after a native confirmation that names it; the source folder is kept (ADR-0082) |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -870,13 +876,40 @@ waits. The window shows:
   which reads the other text again. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.
-- **Advanced.** Read-only, with no control that changes anything: toolchain
-  profiles with their platform, read-only roots, path entries, and
+- **Advanced.** Read-only groups, with no control that changes anything:
+  toolchain profiles with their platform, read-only roots, path entries, and
   environment variable names, without values; package-network profiles with
-  their origins and how many credentials are bound; container grants with
-  their folder, access, and state; and each imported skill's name, its
-  application setting, and its workspace overrides, with the workspace shown
-  by its folder. A line says these change only through the trusted CLI.
+  their origins and how many credentials are bound; and container grants
+  with their folder, access, and state. A line says these three change only
+  through the trusted CLI.
+
+  The **Skills** group is the exception (ADR-0082). **Import skill…** calls
+  `settings_import_skill` with only the revision; Rust opens a native folder
+  dialog and imports the folder through the call `omgcode skills add` uses,
+  so the skill arrives disabled, nothing in it runs, and core's checks apply
+  (a folder named as the skill, `SKILL.md`, the size and shape bounds, at
+  most 64 skills). A refusal comes back as a controlled error with core's
+  code and fixed text that names no path. Each skill then has one select
+  for its **Application** setting (enabled or disabled; "Not set (disabled)"
+  while unset) and one select per registered workspace, shown by its folder,
+  with **Inherit the application setting**, **Enabled**, and **Disabled**,
+  which call `settings_set_skill_state` (a `null` workspace is the
+  application scope; `skill_state` is `enabled`, `disabled`, or `inherit`),
+  and a **Remove** button, which calls `settings_remove_skill`. Enabling lets
+  the `main` window select the skill for a turn, which sends its text to the
+  model as a labelled untrusted message, so Rust shows a native confirmation
+  that names the skill, its scope, and a bounded display-safe description
+  before any change that leaves the skill enabled at that scope, including an
+  inherit that ends enabled; a change that leaves it as it was, and every
+  disable, asks nothing. Removing is always confirmed: the text says the
+  registration, its settings, and its stored copy in private storage are
+  deleted, the imported folder is not touched, and the skill must be imported
+  again, disabled, to return. When the registration is removed but the stored
+  copy cannot be fully deleted, the command fails with `package_orphaned`;
+  the copy is inert, and the window reads the settings again and shows the
+  skill gone. Each select shows the recorded state again after a declined
+  dialog or a refusal. The window shows a skill's name only; its description
+  and body stay unrendered.
 - **Workspace scope** (ADR-0071). **Workspace settings**, an icon button
   with a folder beside **Send** (ADR-0080), calls `settings_show_workspace` with
   the open session's identifier and nothing else; it is disabled until a
@@ -1274,8 +1307,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the eleven settings-window
-  commands. The `settings` file grants only those eleven. Every handler also calls the Rust
+  not grant the three approval commands or any of the seventeen settings-window
+  commands. The `settings` file grants only those seventeen. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -1372,7 +1405,7 @@ What the design does:
   `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
   test checks that no approvals asset contains it.
 - **The configuration view and changes only in `settings`.** The settings
-  window loads its own bundle. The six settings-window command names appear
+  window loads its own bundle. The seventeen settings-window command names appear
   only in `src/ipc/settings_client.ts`. Bundle tests check that no main or
   approvals asset contains any of them, and that no settings asset contains
   `approval_decide`, `approval_detail`, or `chat_subscribe`.
@@ -1396,9 +1429,12 @@ What it does not do:
   settings window. It cannot call any settings-window command.
 - A compromised `settings` webview can read the configuration view: recorded
   paths, profile names, endpoints, origins, and skill names. It can turn
-  preferences off, clear package cache roots, and open the native dialogs
+  preferences off, clear package cache roots, disable a skill
+  and open the native dialogs
   again and again, one at a time. It cannot choose a folder, answer a
-  dialog, widen access, read a secret, or call any other window's command.
+  dialog, widen access or enable a skill without the native confirmation,
+  read a secret, or call any other window's command. It can ask to import a
+  folder only through the native folder dialog, so it cannot name one.
 - On Windows the native confirmation's default button is Yes, because `rfd`
   offers no way to change it. A keyboard Enter confirms.
 - The approvals webview is still web content. The design reduces what reaches
@@ -1538,7 +1574,8 @@ ACLs the private store refuses, see the notes in
   key, and that a late detail answer is dropped;
   `ui/tests/settings_sections.test.ts` the sections, the workspace field, the
   workspace scope (one workspace, no sidebar, **All settings**, a focus read),
-  permission rows, and the read-only Advanced section; and
+  permission rows, and the read-only Advanced groups; `ui/tests/settings_skills.test.ts`
+  the Skills controls and the mock skill commands (ADR-0082); and
   `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
   segment, the composer menus and counter, and the compact transcript rows.
   Since ADR-0071: `ui/tests/model_picker.test.ts` covers the model
@@ -1634,6 +1671,11 @@ ACLs the private store refuses, see the notes in
   selection were checked by unit, service, and bundle tests and in the Vite
   development server against the mock backend. The real shell's windows were
   not driven for 0.40.0.
+- ADR-0082: the skill commands were checked by service tests with a scripted
+  prompt (`crates/omgcode-app/tests/desktop_settings_skills.rs`), by unit,
+  layer, and bundle tests, and against the mock backend. The native dialogs
+  and the real shell's settings window were not driven by automation, and
+  nothing ran on Linux.
 - Phase S2 (0.41.0): the change commands were checked by service tests with a
   scripted prompt, by unit, layer, and bundle tests, and in the Vite
   development server against the mock backend. The native dialogs and the

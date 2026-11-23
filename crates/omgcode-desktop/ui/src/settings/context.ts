@@ -38,6 +38,12 @@ export interface Actions {
   saveChatDefaults(defaults: ChatBudgets): Change;
   /** Replaces one workspace's custom instructions; empty text removes them. */
   setWorkspaceInstructions(workspaceId: string, instructions: string): Change;
+  /** Opens Rust's system folder dialog and imports the chosen skill folder, disabled (ADR-0082). */
+  importSkill(): Change;
+  /** Sets a skill's application setting (`workspaceId` null) or one workspace's override. */
+  setSkillState(name: string, workspaceId: string | null, state: SkillState): Change;
+  /** Removes a skill and its stored copy after a system confirmation. */
+  removeSkill(name: string): Change;
 }
 
 /**
@@ -51,6 +57,9 @@ export function scopedWorkspace(overview: SettingsOverview): WorkspaceSettingsVi
   }
   return overview.workspaces.find((w) => w.workspace_id === scope.workspace_id) ?? null;
 }
+
+/** A skill's setting at one scope. `inherit` applies only to a workspace. */
+export type SkillState = "enabled" | "disabled" | "inherit";
 
 export type SectionId = "model" | "workspaces" | "advanced";
 
