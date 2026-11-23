@@ -341,6 +341,9 @@ The `main` window is laid out as follows.
 - **Conversation header.** The title clamps to two lines and the workspace
   folder to one. Each carries its full text, neutralised, as a `title`
   tooltip; there is no separate disclosure that repeats them.
+- **Session header actions.** **Archive** and **Restore** are icon buttons
+  named in their tooltip and accessible name; **Interrupt**, **Confirm
+  interrupt**, **Keep**, and **Cancel** stay text buttons.
 - **Collapsed panels.** A collapsed panel is a 44-pixel rail of icon buttons,
   each with an accessible name and a tooltip. The sessions rail holds Expand,
   **New session**, Search, Sessions, **Approvals** with the waiting count, and
