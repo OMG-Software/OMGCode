@@ -108,6 +108,7 @@ export interface ChatSettings {
   model: string;
   context_tokens: number;
   max_output_tokens: number;
+  max_tool_calls: number;
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
@@ -248,6 +249,7 @@ export interface ChatPreferences {
   model: string;
   context_tokens: number;
   max_output_tokens: number;
+  max_tool_calls: number;
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;

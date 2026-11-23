@@ -139,8 +139,10 @@ rejects unknown tools, malformed or duplicate arguments, absolute or parent
 paths, and duplicate call identifiers before dispatch. For each operation it
 opens the control store, obtains a fresh session binding, releases the settings
 lock before the next model request, and never reconstructs authority from the
-journal. The hard maxima are 17 model requests, eight calls per response, sixteen
-calls per turn, 16 KiB per tool message, and 256 KiB of aggregate tool messages.
+journal. The runtime allows eight calls per response and 1 to 256 calls per
+turn, defaulting to 128. It reserves one model request per allowed call and
+one for the final reply. Tool messages are bounded to 16 KiB each and 256 KiB
+in aggregate.
 The core defaults to a 30-second cooperative deadline. Chat uses the core's
 five-minute maximum. A read call accepts at most
 15 KiB of file content and defaults to 8 KiB; larger files are refused rather

@@ -647,6 +647,7 @@ describe("chat lifecycle", () => {
           model: "",
           context_tokens: 0,
           max_output_tokens: 0,
+          max_tool_calls: 128,
           instructions: "",
           compact_threshold: 0,
           auto_compact: false,
@@ -939,8 +940,8 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(buttonByText(root, "Send")).toBeDefined();
   });
 
-  it("saves the model settings as defaults without the endpoint", async () => {
-    const saved = { ...SETTINGS, model: "saved-model" };
+  it("saves the tool-call limit with the model settings and sends it with the next turn", async () => {
+    const saved = { ...SETTINGS, model: "saved-model", max_tool_calls: 192 };
     await open({
       chat_models: (args) => ({
         session_id: args.session_id as string,
@@ -954,6 +955,14 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       chat_preferences_save: () => ({ settings: saved, preferences: "saved", enter_to_send: true }),
     });
     choose(modelSelect(root), "saved-model");
+    const field = Array.from(root.querySelectorAll(".settings label"))
+      .find((label) => label.textContent === "Tool calls per turn")
+      ?.querySelector("input") as HTMLInputElement;
+    expect(field.value).toBe("128");
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    type(field, "257");
+    expect(buttonByText(root, "Send").disabled).toBe(true);
+    type(field, "192");
     buttonByText(root, "Save as defaults").click();
     await settle();
     const args = ipc.callsTo("chat_preferences_save")[0]?.args as {
@@ -963,6 +972,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       model: "saved-model",
       context_tokens: SETTINGS.context_tokens,
       max_output_tokens: SETTINGS.max_output_tokens,
+      max_tool_calls: 192,
       instructions: SETTINGS.instructions,
       compact_threshold: SETTINGS.compact_threshold,
       auto_compact: SETTINGS.auto_compact,
@@ -970,6 +980,11 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     });
     expect("endpoint" in args.preferences).toBe(false);
     expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
+      settings: { max_tool_calls: 192 },
+    });
   });
 
   describe("Enter to send", () => {

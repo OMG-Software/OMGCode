@@ -5,7 +5,7 @@
 //! are untrusted model output and are injected as labelled user-level evidence.
 //! They never grant authority, approve work, or replace core-owned state.
 
-use crate::prompt::{BASE_PROMPT, ConversationMessage, ConversationRole, MAX_HISTORY_MESSAGES};
+use crate::prompt::{BASE_PROMPT, ConversationMessage, ConversationRole};
 use crate::provider::ProviderError;
 use crate::session::{CompactionRecord, MessageRole, SessionError, SessionJournal};
 use crate::turn::replay_active;
@@ -13,9 +13,10 @@ use thiserror::Error;
 
 /// Default auto-compaction trigger, in requested tokens.
 pub const DEFAULT_COMPACT_THRESHOLD: u64 = 200_000;
-/// Most summarizer chunks in one round. Each chunk holds at most the prompt's
-/// history-message limit.
+/// Most summarizer chunks in one round.
 pub const MAX_SUMMARY_CHUNKS: usize = 16;
+/// Most source messages in one summarizer chunk.
+const MAX_CHUNK_MESSAGES: usize = 128;
 /// Most recursive combination rounds.
 pub const MAX_SUMMARY_DEPTH: usize = 4;
 /// A readable summary is bounded below the 16 KiB session message limit.
@@ -261,7 +262,7 @@ where
         summarize(chunk)
     };
 
-    let chunks = chunk_history(&history, limits.max_chunk_bytes, MAX_HISTORY_MESSAGES)?;
+    let chunks = chunk_history(&history, limits.max_chunk_bytes, MAX_CHUNK_MESSAGES)?;
     if chunks.len() > MAX_SUMMARY_CHUNKS {
         return Err(ContextError::TooLarge);
     }
@@ -286,7 +287,7 @@ where
             return Err(ContextError::NoProgress);
         }
         depth = depth.saturating_add(1);
-        let combined = chunk_history(&summaries, limits.max_chunk_bytes, MAX_HISTORY_MESSAGES)?;
+        let combined = chunk_history(&summaries, limits.max_chunk_bytes, MAX_CHUNK_MESSAGES)?;
         if combined.len() > MAX_SUMMARY_CHUNKS {
             return Err(ContextError::TooLarge);
         }
@@ -378,7 +379,7 @@ fn json_escaped_len(content: &str) -> usize {
 
 /// Split history at message boundaries without exceeding the byte budget or
 /// `max_messages`. Each chunk becomes the history of one assembled summarizer
-/// request, so callers pass the prompt's history-message limit.
+/// request, so callers pass the summarizer's chunk message limit.
 fn chunk_history(
     history: &[ConversationMessage],
     max_bytes: usize,
@@ -659,11 +660,11 @@ mod tests {
                 content: "b".repeat(256),
             },
         ];
-        let chunks = chunk_history(&history, 600, MAX_HISTORY_MESSAGES).expect("chunks");
+        let chunks = chunk_history(&history, 600, MAX_CHUNK_MESSAGES).expect("chunks");
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0][0].content.len(), 256);
         assert!(matches!(
-            chunk_history(&history, 300, MAX_HISTORY_MESSAGES),
+            chunk_history(&history, 300, MAX_CHUNK_MESSAGES),
             Err(ContextError::TooLarge)
         ));
         // The message limit splits chunks that the byte budget would allow.
@@ -675,10 +676,10 @@ mod tests {
         ));
     }
 
-    /// More short messages than one request accepts are summarized in
+    /// More short messages than one chunk accepts are summarized in
     /// several chunks, and every chunk assembles as a summarizer request.
     #[test]
-    fn more_history_messages_than_one_request_accepts_compact_in_several_chunks() {
+    fn history_above_the_chunk_message_limit_compacts_in_several_chunks() {
         let (_temporary, mut journal) = session();
         for index in 0..70 {
             journal
@@ -714,7 +715,7 @@ mod tests {
         .expect("compaction succeeds");
         assert_eq!(outcome.compacted, 140);
         // Two history chunks of 128 and 12 messages, then one combination.
-        assert_eq!(sizes, [MAX_HISTORY_MESSAGES, 12, 2]);
+        assert_eq!(sizes, [MAX_CHUNK_MESSAGES, 12, 2]);
         assert_eq!(outcome.calls, 3);
     }
 
@@ -783,7 +784,7 @@ mod tests {
             });
         }
         assert_eq!(
-            chunk_history(&chunk, chunk_bytes, MAX_HISTORY_MESSAGES)
+            chunk_history(&chunk, chunk_bytes, MAX_CHUNK_MESSAGES)
                 .expect("one chunk")
                 .len(),
             1

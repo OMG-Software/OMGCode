@@ -268,7 +268,7 @@ describe("composer toolbar", () => {
     const tools = root.querySelector(".composer-tools") as HTMLElement;
     expect(tools.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
     expect(tools.querySelectorAll('select[aria-label="Provider"]')).toHaveLength(1);
-    expect(settings.querySelectorAll("input[type=number]")).toHaveLength(3);
+    expect(settings.querySelectorAll("input[type=number]")).toHaveLength(4);
   });
 
   it("keeps Send and the draft working with both menus closed", async () => {

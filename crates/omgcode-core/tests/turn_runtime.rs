@@ -965,20 +965,27 @@ fn turn_limits_fail_before_dispatch_or_before_extra_operations() {
             "workspace_list_directory",
             json!({"path": ""}),
         )]),
-        tool_reply(vec![call(
-            "list-2",
-            "workspace_list_directory",
-            json!({"path": ""}),
-        )]),
+        tool_reply(vec![
+            call("list-2", "workspace_list_directory", json!({"path": ""})),
+            call("list-3", "workspace_list_directory", json!({"path": ""})),
+        ]),
     ]);
     let limits = TurnLimits {
-        max_tool_calls: 1,
+        max_tool_calls: 2,
+        max_rounds: 3,
         ..TurnLimits::default()
     };
     let error = fixture
         .run(&mut model, limits)
         .expect_err("total call limit");
-    assert!(matches!(error, TurnError::Limit(TurnLimit::ToolCalls)));
+    assert!(matches!(
+        error,
+        TurnError::Limit(TurnLimit::ToolCalls {
+            limit: 2,
+            used: 1,
+            requested: 2
+        })
+    ));
     assert_eq!(
         fixture
             .audit_events()
@@ -986,14 +993,14 @@ fn turn_limits_fail_before_dispatch_or_before_extra_operations() {
             .filter(|event| event["action"]["type"] == "operation_started")
             .count(),
         1,
-        "the second round must be refused before dispatch"
+        "the oversized batch must be refused in full before dispatch"
     );
 }
 
 #[test]
-fn a_final_reply_fits_after_sixteen_sequential_tool_requests() {
+fn a_final_reply_fits_after_one_hundred_twenty_eight_sequential_tool_requests() {
     let mut fixture = Fixture::new();
-    let mut replies: Vec<_> = (1..=16)
+    let mut replies: Vec<_> = (1..=128)
         .map(|index| {
             tool_reply(vec![call(
                 &format!("list-{index}"),
@@ -1009,8 +1016,8 @@ fn a_final_reply_fits_after_sixteen_sequential_tool_requests() {
         .run(&mut model, TurnLimits::default())
         .expect("final reply fits");
 
-    assert_eq!(report.tool_calls, 16);
-    assert_eq!(report.rounds, 17);
+    assert_eq!(report.tool_calls, 128);
+    assert_eq!(report.rounds, 129);
     assert_eq!(report.reply, "done");
 }
 

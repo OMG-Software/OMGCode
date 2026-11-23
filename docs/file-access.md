@@ -126,10 +126,11 @@ exclusive create semantics, so a collision never truncates an existing file.
 Parent directories must already exist. New Unix files request mode 0600 and
 new directories mode 0700. Windows inherits the workspace ACL.
 
-Tool-runtime limits are separate from the broker limits: 17 model requests,
-eight calls per round, sixteen calls per turn, 16 KiB per source-labelled tool
-message, 256 KiB aggregate tool text, and a 30-second cooperative deadline by
-default. See the [session contract](session-storage.md) and
+Tool-runtime limits are separate from the broker limits. The tool-call budget
+defaults to 128 and accepts 1 to 256, with one model request per allowed call
+plus the final reply. Other bounds are eight calls per response, 16 KiB per
+source-labelled tool message, 256 KiB aggregate tool text, and a 30-second
+cooperative deadline by default. See the [session contract](session-storage.md) and
 [development guide](development.md).
 
 A new file is visible while bytes are written. Interrupted writes can leave a

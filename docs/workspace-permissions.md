@@ -517,8 +517,8 @@ beneath the development root. Parsing rejects absolute, drive-qualified, root,
 current-directory, and parent paths before dispatch. The broker refuses links,
 junctions, hard links, and names outside the workspace. Results are
 source-labelled, untrusted user content; the compiled base prompt stays the
-only system message. Limits are 17 model requests, eight calls per response,
-16 calls per turn, and 256 KiB of tool output per turn.
+only system message. Limits are eight calls per response, 128 calls per turn
+by default (configurable from 1 to 256), and 256 KiB of tool output per turn.
 
 The journal selects the workspace. A crafted journal can therefore select
 another registered workspace that has `model_tools` enabled. Calls remain inside

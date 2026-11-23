@@ -15,6 +15,7 @@
 use omgcode_core::control::{ApprovalOperation, ApprovalState};
 use omgcode_core::policy::{Access, WriteToolAccess};
 use omgcode_core::session::{MessageRole, MessageSource, ToolOutcome};
+use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -109,6 +110,9 @@ pub struct ChatSettingsDto {
     pub context_tokens: u64,
     /// Output reserve for each model request.
     pub max_output_tokens: u32,
+    /// Tool-call budget for the turn. Omitted fields read as the built-in default.
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: usize,
     /// User-level preferences, sent as untrusted-origin custom instructions.
     pub instructions: String,
     /// Compact before a turn when the estimate reaches this value.
@@ -725,6 +729,9 @@ pub struct ChatPreferencesDto {
     pub context_tokens: u64,
     /// The output reserve to start from.
     pub max_output_tokens: u32,
+    /// Tool-call budget to start from. Older files read as the built-in default.
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: usize,
     /// Custom instructions to start from. Untrusted-origin text, as in a turn.
     pub instructions: String,
     /// The compaction threshold to start from.
@@ -737,6 +744,10 @@ pub struct ChatPreferencesDto {
     /// request saved before the field existed reads as `true`.
     #[serde(default = "enter_to_send_default")]
     pub enter_to_send: bool,
+}
+
+const fn default_max_tool_calls() -> usize {
+    DEFAULT_MAX_TOOL_CALLS
 }
 
 /// The built-in "Enter to send" choice, also used for a file that predates it.

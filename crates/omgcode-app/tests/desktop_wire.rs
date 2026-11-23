@@ -653,6 +653,7 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
         model: "m".to_owned(),
         context_tokens: 1,
         max_output_tokens: 1,
+        max_tool_calls: 128,
         instructions: String::new(),
         compact_threshold: 1,
         auto_compact: false,

@@ -292,12 +292,14 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
-- Version 0.52.1 gives a tool-enabled turn up to 17 model requests, enough
-  for 16 sequential tool calls and a final reply. The four-request limit
-  could stop a turn after creating the program and before creating its tests.
-  Chat has a five-minute cooperative deadline. The exact-edit tool asks the
-  model to read the file when its current text is unknown or an edit misses
-  (ADR-0074).
+- Version 0.52.1 budgets a model request for every tool call plus the final
+  reply. The four-request limit could stop a turn after creating the program
+  and before creating its tests. The tool-call budget defaults to 128 and can
+  be set from 1 to 256 in Chat settings or with `chat --max-tool-calls`. When a
+  response exceeds it, the error reports the cap and the number of calls used
+  and requested. Chat has a five-minute cooperative deadline. The exact-edit
+  tool asks the model to read the file when the current text is unknown or an
+  edit misses (ADR-0074, ADR-0075).
 - The Testing build's publish job no longer fails when a lookup just after
   deleting the `latest` tag still lists it. Run 44796356985 for `64adb84`
   deleted the old release and tag with `gh release delete --cleanup-tag`. A

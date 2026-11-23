@@ -25,6 +25,7 @@ use crate::{
 };
 use omgcode_core::control::ProviderKind;
 use omgcode_core::provider::list_local_models;
+use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -64,6 +65,7 @@ impl DesktopService {
                 model: preferences.model,
                 context_tokens: preferences.context_tokens,
                 max_output_tokens: preferences.max_output_tokens,
+                max_tool_calls: preferences.max_tool_calls,
                 instructions: preferences.instructions,
                 compact_threshold: preferences.compact_threshold,
                 auto_compact: preferences.auto_compact,
@@ -354,6 +356,7 @@ fn built_in_preferences() -> ChatPreferencesDto {
         model: String::new(),
         context_tokens: 0,
         max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
         instructions: String::new(),
         compact_threshold: DEFAULT_COMPACT_THRESHOLD,
         auto_compact: false,
@@ -387,6 +390,7 @@ fn chat_settings(settings: ChatSettingsDto, endpoint: String) -> ChatSettings {
         model: settings.model,
         context_tokens: settings.context_tokens,
         max_output_tokens: settings.max_output_tokens,
+        max_tool_calls: settings.max_tool_calls,
         instructions: settings.instructions,
         compact_threshold: settings.compact_threshold,
         auto_compact: settings.auto_compact,

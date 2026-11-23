@@ -28,6 +28,7 @@ export const SETTINGS: ChatSettings = {
   model: "test-model",
   context_tokens: 8192,
   max_output_tokens: 1024,
+  max_tool_calls: 128,
   instructions: "",
   compact_threshold: 6000,
   auto_compact: true,

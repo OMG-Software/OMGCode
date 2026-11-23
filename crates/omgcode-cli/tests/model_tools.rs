@@ -1266,40 +1266,47 @@ fn seed_short_exchanges(journal: &Path, count: usize) {
 fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() {
     let fixture = Fixture::new(NOTE);
     let journal = fixture.session();
-    // 64 short exchanges fill the 128-message history limit far below the
-    // token trigger; the pending request would be message 129.
-    seed_short_exchanges(&journal, 64);
-
-    let server = SequenceServer::start(Vec::new());
-    let output = fixture.chat(&journal, &server.endpoint, "next request");
-    server.finish();
-    assert_error_code(&output, "context");
-
-    let server = SequenceServer::start(vec![text("Sixty-four exchanges."), text("next reply")]);
-    let output = run_cli(
-        &fixture.data,
-        &[
+    // 320 short exchanges fill the 640-message history limit. Choose a model
+    // context large enough for the separate token estimate to stay below its trigger.
+    seed_short_exchanges(&journal, 320);
+    let chat = |endpoint: &str, extra: &[&str]| {
+        let mut args = vec![
             "chat",
             "--journal",
             path_arg(&journal),
             "--endpoint",
-            &server.endpoint,
+            endpoint,
             "--model",
             "fixture",
             "--context-tokens",
-            "131072",
+            "262144",
             "--max-output-tokens",
             "64",
-            "--auto-compact",
-            "next request",
-        ],
-    );
+        ];
+        args.extend_from_slice(extra);
+        args.push("next request");
+        run_cli(&fixture.data, &args)
+    };
+
+    let server = SequenceServer::start(Vec::new());
+    let output = chat(&server.endpoint, &[]);
+    server.finish();
+    assert_error_code(&output, "context");
+
+    let mut replies = vec![text("Earlier exchanges in this chunk."); 5];
+    replies.extend([text("Earlier conversation."), text("next reply")]);
+    let server = SequenceServer::start(replies);
+    let output = chat(&server.endpoint, &["--auto-compact"]);
     let requests = server.finish();
     assert_success(&output);
     let result = json_output(&output);
     assert_eq!(result["reply"]["content"], "next reply");
-    assert_eq!(requests.len(), 2, "one summary and one chat request");
-    assert_eq!(result["context"]["compaction"]["compacted_messages"], 126);
+    assert_eq!(
+        requests.len(),
+        7,
+        "five chunks, one combination, and one chat"
+    );
+    assert_eq!(result["context"]["compaction"]["compacted_messages"], 638);
 }
 
 #[test]
@@ -1330,6 +1337,8 @@ fn more_older_messages_than_one_summary_request_accepts_compact_in_several_chunk
             "131072",
             "--max-output-tokens",
             "64",
+            "--compact-threshold",
+            "30000",
             "--auto-compact",
             "next request",
         ],

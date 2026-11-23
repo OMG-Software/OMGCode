@@ -13,7 +13,7 @@ use omgcode_core::provider::{LocalModelClient, LocalToolModel, ProviderError};
 use omgcode_core::session::{RequestManifest, SessionJournal};
 use omgcode_core::turn::{
     MAX_TURN_DEADLINE, ModelError, ToolModel, ToolModelReply, ToolModelRequest, TurnError,
-    TurnLimits, TurnReport, TurnRuntime,
+    TurnLimit, TurnLimits, TurnReport, TurnRuntime,
 };
 use serde_json::Value;
 
@@ -25,9 +25,11 @@ use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
 
-/// Runtime limits for tool-enabled chat: library maxima with a chat deadline.
-fn chat_limits() -> TurnLimits {
+/// Runtime limits for a validated chat budget, with room for the final reply.
+fn chat_limits(max_tool_calls: usize) -> TurnLimits {
     TurnLimits {
+        max_rounds: max_tool_calls + 1,
+        max_tool_calls,
         // Several model requests share the turn budget, and each retains its
         // own shorter timeout. The core caps the cooperative deadline.
         deadline: MAX_TURN_DEADLINE,
@@ -78,7 +80,8 @@ pub(super) fn run(
     // Tool results are recorded before the next model request, so they need
     // their own redaction; the model wrapper sees them only afterwards.
     let redact_tool_text = |text: &str| redact_known_secret(text, token);
-    let report: TurnReport = TurnRuntime::new(journal, turn.data_root, workspace_id, chat_limits())
+    let limits = chat_limits(turn.settings.max_tool_calls);
+    let report: TurnReport = TurnRuntime::new(journal, turn.data_root, workspace_id, limits)
         .and_then(|runtime| {
             let runtime = runtime
                 .with_cancel_token(turn.cancel.clone())
@@ -217,6 +220,10 @@ fn turn_error(error: TurnError, provider: Option<ProviderError>) -> AppError {
             ErrorKind::ToolCall,
             format!("The model returned an invalid tool call: {error}"),
         ),
+        TurnError::Limit(limit @ TurnLimit::ToolCalls { .. }) => AppError::new(
+            ErrorKind::ToolLimit,
+            format!("{limit}. Start a new turn or increase the limit."),
+        ),
         TurnError::Limit(limit) => AppError::new(
             ErrorKind::ToolLimit,
             format!("Turn limit exceeded: {limit}"),
@@ -246,12 +253,39 @@ pub(super) const ACTIVE_TURN_MESSAGE: &str = "The previous turn is incomplete; i
 #[cfg(test)]
 mod tests {
     use omgcode_core::session::SessionError;
-    use omgcode_core::turn::TurnLimit;
 
     use super::*;
 
     fn pair(error: AppError) -> (&'static str, String) {
         (error.code(), error.into_message())
+    }
+
+    #[test]
+    fn chat_reserves_a_final_request_for_each_valid_tool_call_budget() {
+        use crate::chat::{ChatClients, ChatSettings};
+
+        let mut settings = ChatSettings::new("http://127.0.0.1:1234/v1", "model", 8192);
+        assert_eq!(settings.max_tool_calls, 128);
+        for limit in [1, 128, 256] {
+            settings.max_tool_calls = limit;
+            assert!(ChatClients::new(&settings, None).is_ok());
+            let limits = chat_limits(limit);
+            assert_eq!(limits.max_tool_calls, limit);
+            assert_eq!(limits.max_rounds, limit + 1);
+        }
+        for limit in [0, 257] {
+            settings.max_tool_calls = limit;
+            let error = ChatClients::new(&settings, None)
+                .err()
+                .expect("invalid budget");
+            assert_eq!(
+                pair(error),
+                (
+                    "configuration",
+                    "Tool calls per turn must be between 1 and 256.".to_owned()
+                )
+            );
+        }
     }
 
     #[test]
@@ -291,6 +325,12 @@ mod tests {
                 "tool_limit",
                 "Turn limit exceeded: model round limit".to_owned()
             )
+        );
+        assert_eq!(
+            pair(turn_error(TurnError::Limit(TurnLimit::ToolCalls {
+                limit: 128, used: 127, requested: 2,
+            }), None)),
+            ("tool_limit", "The latest response would exceed the per-turn limit of 128 tool calls (127 used, 2 requested). Skipped all calls in that response. Start a new turn or increase the limit.".to_owned())
         );
         assert_eq!(
             pair(turn_error(TurnError::Cancelled, None)),

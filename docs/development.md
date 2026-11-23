@@ -570,9 +570,11 @@ trusted application-data directory, and the workspace ID. The runtime:
   and releases the settings lock before the next model request;
 - reserves assembled-prompt capacity and enforces the selected per-message limit
   before recording any tool intent, result, or message;
-- enforces hard maxima of 17 model requests, eight calls per response, sixteen
-  calls per turn, 16 KiB per source-labelled tool message, and 256 KiB aggregate
-  tool text. The cooperative deadline defaults to 30 seconds. Chat uses five minutes.
+- enforces a configurable per-turn limit of 1 to 256 tool calls, defaulting
+  to 128. It budgets a model request per allowed call plus the final reply.
+  Other maxima include eight calls per response, 16 KiB per source-labelled tool
+  message, and 256 KiB of aggregate tool text. The cooperative deadline defaults
+  to 30 seconds. Chat uses five minutes.
 - records `tool.requested`, `tool.completed`, and schema-version-2 tool messages,
   and records the exact tool schema version and names in the request manifest;
 - treats every tool result as source-labelled untrusted user-level content and
@@ -638,8 +640,11 @@ When the workspace enables `model_tools`, chat offers `workspace_read_file` and
 the approval-gated `workspace_edit_file`, `workspace_multi_edit_file`,
 `workspace_create_file`, `workspace_rename_file`, and `workspace_delete_file`.
 When `execute`, `read`, and `write`
-also allow it, it offers the approval-gated `workspace_run_command`. A turn may
-make up to 17 model requests, including the final reply. Each read/list call is
+also allow it, it offers the approval-gated `workspace_run_command`. Set
+`--max-tool-calls <1–256>` to override the default of 128 for this turn. A batch
+that would exceed the cap is refused before any of its calls run. The `tool_limit`
+error reports the configured cap, calls used, and calls requested. Start a new
+turn or raise the limit to continue. Each read/list call is
 rechecked against live settings and stays inside the workspace. Results return
 to the model as source-labelled user messages. The configured LM Studio token is removed from
 each result before it is recorded or sent. A tool call that contains the token
@@ -697,7 +702,8 @@ omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --mode
 ```
 
 Each text-only invocation sends one request, which is not streamed unless
-`--stream` is given. A tool-enabled turn sends at most 17. When `--auto-compact`
+`--stream` is given. A tool-enabled turn sends at most one request more than
+its tool-call budget. When `--auto-compact`
 compacts before the turn, the summarizer requests come first, with at most 16
 requests per round and at most four combination rounds after the first.
 `session compact` sends only summarizer
@@ -862,7 +868,7 @@ can archive, restore, and interrupt a session; see the
 | --- | --- |
 | Custom instructions | 16 KiB of UTF-8 text |
 | Each user/assistant message | 16 KiB of UTF-8 text |
-| History in one request | 128 messages |
+| History in one request | 640 messages |
 | Assembled text / encoded request | 256 KiB each, checked separately |
 | Encoded provider response | 1 MiB |
 | Encoded journal event, including LF | 64 KiB |
@@ -876,8 +882,8 @@ can archive, restore, and interrupt a session; see the
 | Edit preview lines | 65,536 per side when changed |
 | Edit preview diff | 64 KiB |
 | Source-labelled tool message | 16 KiB |
-| Model requests per tool-enabled turn, including the final reply | 17 |
-| Tool calls per round / per turn | 8 / 16 |
+| Model requests per tool-enabled turn, including the final reply | 129 default, 257 maximum |
+| Tool calls per response / per turn | 8 / 128 default, configurable from 1 to 256 |
 | Aggregate tool text per turn | 256 KiB |
 | Cooperative turn deadline | 30 seconds by default; 5 minutes for chat |
 | Raw tool calls accepted from one response | 64 before runtime validation |

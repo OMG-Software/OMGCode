@@ -124,6 +124,9 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   let loadedKey: string | null = null;
   const [contextField, contextTokens] = numberInput("Context tokens", 0, 0);
   const [outputField, maxOutput] = numberInput("Max output tokens", 0, 0);
+  const [toolCallsField, toolCalls] = numberInput("Tool calls per turn", 128, 1);
+  toolCalls.max = "256";
+  toolCalls.required = true;
   const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
   const autoCompact = el("input", { attrs: { type: "checkbox" } });
   const instructions = el("textarea", { attrs: { rows: "3" } });
@@ -153,6 +156,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       ),
       contextField,
       outputField,
+      toolCallsField,
       compactField,
       el(
         "label",
@@ -195,6 +199,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       model: model.value(),
       context_tokens: Number(contextTokens.value),
       max_output_tokens: Number(maxOutput.value),
+      max_tool_calls: Number(toolCalls.value),
       instructions: instructions.value,
       compact_threshold: Number(compactThreshold.value),
       auto_compact: autoCompact.checked,
@@ -229,6 +234,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       model: settings.model,
       context_tokens: settings.context_tokens,
       max_output_tokens: settings.max_output_tokens,
+      max_tool_calls: settings.max_tool_calls,
       instructions: settings.instructions,
       compact_threshold: settings.compact_threshold,
       auto_compact: settings.auto_compact,
@@ -274,6 +280,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     }
     contextTokens.value = String(settings.context_tokens);
     maxOutput.value = String(settings.max_output_tokens);
+    toolCalls.value = String(settings.max_tool_calls);
     compactThreshold.value = String(settings.compact_threshold);
     autoCompact.checked = settings.auto_compact;
     instructions.value = settings.instructions;
@@ -289,6 +296,9 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     }
     if (!settingsValid(readSettings())) {
       return "Choose a model and set a positive context size in Chat settings.";
+    }
+    if (!toolCalls.validity.valid) {
+      return `Set Tool calls per turn to a whole number from ${toolCalls.min} to ${toolCalls.max}.`;
     }
     return messageProblem(box.value);
   }
@@ -318,7 +328,14 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     replaceChildren(providerNote, connection.message());
     providerNote.hidden = connection.message() === "";
     choicesNote.hidden = connection.status()?.session_choices_unreadable !== true;
-    for (const input of [contextTokens, maxOutput, compactThreshold, autoCompact, instructions]) {
+    for (const input of [
+      contextTokens,
+      maxOutput,
+      toolCalls,
+      compactThreshold,
+      autoCompact,
+      instructions,
+    ]) {
       input.disabled = !state.enabled;
     }
     const full = selectedSkills().length >= SKILLS_PER_TURN;
@@ -377,6 +394,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
 
   box.addEventListener("input", refresh);
   contextTokens.addEventListener("input", refresh);
+  toolCalls.addEventListener("input", refresh);
   /** Shows the send key in the message box hint. */
   function showSendKey(): void {
     box.placeholder = enterToSend.checked ? PLACEHOLDER_ENTER : PLACEHOLDER_CTRL_ENTER;

@@ -14,9 +14,9 @@ pub const BASE_PROMPT_VERSION: &str = "0.1.4";
 
 const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 16 * 1024;
 const MAX_HISTORY_MESSAGE_BYTES: usize = 16 * 1024;
-/// Most history messages one assembled request accepts. Compaction chunks
-/// use the same limit.
-pub(crate) const MAX_HISTORY_MESSAGES: usize = 128;
+/// Allow 128 messages up to the user request and a full turn of tool results
+/// and interim assistant replies. The assembled byte limit applies separately.
+const MAX_HISTORY_MESSAGES: usize = 128 + 2 * crate::turn::MAX_TOOL_CALLS;
 const MAX_ASSEMBLED_BYTES: usize = 256 * 1024;
 const CUSTOM_INSTRUCTIONS_LABEL: &str = "Saved user preferences:\n";
 
@@ -119,7 +119,7 @@ pub enum PromptError {
     #[error("saved user preferences exceed 16 KiB")]
     CustomInstructionsTooLarge,
     /// The conversation contains too many messages.
-    #[error("conversation history exceeds 128 messages")]
+    #[error("conversation history exceeds {MAX_HISTORY_MESSAGES} messages")]
     TooManyHistoryMessages,
     /// A conversation message exceeds its byte limit.
     #[error("a conversation message exceeds 16 KiB")]

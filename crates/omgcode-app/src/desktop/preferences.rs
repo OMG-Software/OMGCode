@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::DesktopError;
 use super::wire::ChatPreferencesDto;
+use crate::chat::validate_tool_call_limit;
 
 /// The directory under the data root that holds desktop-only files.
 const DIRECTORY: &str = "desktop-v1";
@@ -74,17 +75,17 @@ fn file_path(data_root: &Path) -> PathBuf {
 }
 
 /// Check every bound. The same check runs on save and on load.
-fn check(preferences: &ChatPreferencesDto) -> Result<(), &'static str> {
+fn check(preferences: &ChatPreferencesDto) -> Result<(), String> {
     if preferences.model.len() > MAX_MODEL_BYTES {
-        return Err("The model name is too long.");
+        return Err("The model name is too long.".to_owned());
     }
     if preferences.model.chars().any(char::is_control) {
-        return Err("The model name contains a control character.");
+        return Err("The model name contains a control character.".to_owned());
     }
     if preferences.instructions.len() > MAX_INSTRUCTIONS_BYTES {
-        return Err("The custom instructions are too long.");
+        return Err("The custom instructions are too long.".to_owned());
     }
-    Ok(())
+    validate_tool_call_limit(preferences.max_tool_calls)
 }
 
 /// Read the saved preferences.
@@ -248,6 +249,7 @@ mod tests {
             model: "qwen3-coder".to_owned(),
             context_tokens: 32_768,
             max_output_tokens: 2048,
+            max_tool_calls: 64,
             instructions: "Prefer short answers.".to_owned(),
             compact_threshold: 24_000,
             auto_compact: true,
@@ -268,6 +270,7 @@ mod tests {
         .expect("write an older file");
         let loaded = load(&root).expect("load").expect("present");
         assert!(loaded.enter_to_send);
+        assert_eq!(loaded.max_tool_calls, 128);
         assert_eq!(loaded.model, "m");
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -313,7 +316,9 @@ mod tests {
         control.model = "model\u{1b}[2J".to_owned();
         let mut long_instructions = sample();
         long_instructions.instructions = "i".repeat(MAX_INSTRUCTIONS_BYTES + 1);
-        for preferences in [long_model, control, long_instructions] {
+        let mut tool_calls = sample();
+        tool_calls.max_tool_calls = 257;
+        for preferences in [long_model, control, long_instructions, tool_calls] {
             let error = save(&root, &preferences).expect_err("refused");
             assert_eq!(error.code(), "invalid_request");
         }

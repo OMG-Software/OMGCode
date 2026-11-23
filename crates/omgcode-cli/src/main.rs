@@ -25,7 +25,7 @@ use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig, li
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
 use omgcode_core::skills::SkillName;
-use omgcode_core::turn::CancelToken;
+use omgcode_core::turn::{CancelToken, DEFAULT_MAX_TOOL_CALLS};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{self, Write};
@@ -189,6 +189,9 @@ struct ChatArgs {
     context_tokens: u64,
     #[arg(long, default_value_t = 1024)]
     max_output_tokens: u32,
+    /// Maximum tool calls per turn (1–256).
+    #[arg(long, default_value_t = DEFAULT_MAX_TOOL_CALLS)]
+    max_tool_calls: usize,
     /// User-level preferences. This cannot replace the compiled base prompt.
     #[arg(long, default_value = "")]
     instructions: String,
@@ -486,6 +489,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         model: args.model,
         context_tokens: args.context_tokens,
         max_output_tokens: args.max_output_tokens,
+        max_tool_calls: args.max_tool_calls,
         instructions: args.instructions,
         compact_threshold: args.compact_threshold,
         auto_compact: args.auto_compact,

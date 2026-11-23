@@ -65,7 +65,9 @@ pub const TOOL_SCHEMA_VERSION: &str = "0.5.0";
 /// Maximum tool calls accepted from one model response.
 pub const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
 /// Maximum tool calls dispatched across one turn.
-pub const MAX_TOOL_CALLS: usize = 16;
+pub const MAX_TOOL_CALLS: usize = 256;
+/// Default tool-call budget for a turn.
+pub const DEFAULT_MAX_TOOL_CALLS: usize = 128;
 /// One model request per allowed tool call, plus a request for the final reply.
 pub const MAX_TOOL_ROUNDS: usize = MAX_TOOL_CALLS + 1;
 /// Maximum bytes in one source-labelled tool message.
@@ -1001,9 +1003,9 @@ pub struct TurnLimits {
 impl Default for TurnLimits {
     fn default() -> Self {
         Self {
-            max_rounds: MAX_TOOL_ROUNDS,
+            max_rounds: DEFAULT_MAX_TOOL_CALLS + 1,
             max_calls_per_round: MAX_TOOL_CALLS_PER_ROUND,
-            max_tool_calls: MAX_TOOL_CALLS,
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
             max_result_bytes: MAX_TOOL_RESULT_BYTES,
             max_total_tool_bytes: MAX_TOTAL_TOOL_BYTES,
             deadline: Duration::from_secs(30),
@@ -1038,8 +1040,17 @@ pub enum TurnLimit {
     #[error("tool calls per round limit")]
     CallsPerRound,
     /// The turn's total tool-call limit was reached.
-    #[error("total tool call limit")]
-    ToolCalls,
+    #[error(
+        "The latest response would exceed the per-turn limit of {limit} tool calls ({used} used, {requested} requested). Skipped all calls in that response"
+    )]
+    ToolCalls {
+        /// The configured maximum.
+        limit: usize,
+        /// Calls already accounted for in earlier responses.
+        used: usize,
+        /// Calls requested by the refused response.
+        requested: usize,
+    },
     /// The aggregate tool-output limit was reached.
     #[error("total tool output limit")]
     TotalToolBytes,
@@ -1486,18 +1497,24 @@ impl<'a> TurnRuntime<'a> {
                 });
             }
 
-            if reply.tool_calls.len() > self.limits.max_calls_per_round {
-                let error = TurnError::Limit(TurnLimit::CallsPerRound);
-                return Err(self.abort_for(request_id, error));
-            }
-            total_calls = match total_calls.checked_add(reply.tool_calls.len()) {
+            let requested = reply.tool_calls.len();
+            let next_total = match total_calls.checked_add(requested) {
                 Some(total) => total,
                 None => return Err(self.abort_for(request_id, TurnError::InvalidLimits)),
             };
-            if total_calls > self.limits.max_tool_calls {
-                let error = TurnError::Limit(TurnLimit::ToolCalls);
+            if next_total > self.limits.max_tool_calls {
+                let error = TurnError::Limit(TurnLimit::ToolCalls {
+                    limit: self.limits.max_tool_calls,
+                    used: total_calls,
+                    requested,
+                });
                 return Err(self.abort_for(request_id, error));
             }
+            if requested > self.limits.max_calls_per_round {
+                let error = TurnError::Limit(TurnLimit::CallsPerRound);
+                return Err(self.abort_for(request_id, error));
+            }
+            total_calls = next_total;
 
             if !reply.content.is_empty() {
                 if let Err(error) = self
