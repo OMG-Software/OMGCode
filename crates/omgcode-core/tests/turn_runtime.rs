@@ -8,7 +8,7 @@ use omgcode_core::control::{
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::prompt::{
-    self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, SkillPrompt,
+    self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole, PromptError, SkillPrompt,
 };
 use omgcode_core::session::{MessageRole, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -1068,6 +1068,56 @@ fn both_edit_tools_tell_the_model_to_read_before_retrying_a_missed_edit() {
             definition.name
         );
     }
+}
+
+#[test]
+fn the_tool_history_reserve_counts_the_pending_request() {
+    // A 256-call budget reserves 512 of the 640 history messages, so the
+    // replayed history plus the pending request may hold at most 128.
+    let limits = TurnLimits {
+        max_tool_calls: 256,
+        max_rounds: 257,
+        ..TurnLimits::default()
+    };
+    let seeded = |count: usize| {
+        let mut fixture = Fixture::new();
+        let journal = fixture.journal.as_mut().expect("journal is open");
+        for index in 0..count {
+            let role = if index % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Assistant
+            };
+            journal
+                .record_message(role, "earlier")
+                .expect("record history message");
+        }
+        fixture
+    };
+
+    let mut fixture = seeded(127);
+    let mut model = ScriptedModel::new(vec![text_reply("done")]);
+    let report = fixture
+        .run(&mut model, limits)
+        .expect("127 messages plus the pending request fit");
+    assert_eq!(report.reply, "done");
+
+    let mut fixture = seeded(128);
+    let mut model = ScriptedModel::new(vec![text_reply("unused")]);
+    let error = fixture
+        .run(&mut model, limits)
+        .expect_err("128 messages plus the pending request exceed the reserve");
+    assert!(
+        matches!(
+            error,
+            TurnError::Prompt(PromptError::ToolHistoryCapacity {
+                max_tool_calls: 256
+            })
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(model.requests.is_empty(), "no model request may be sent");
+    assert_eq!(fixture.snapshot().active_turn, None);
 }
 
 #[test]
