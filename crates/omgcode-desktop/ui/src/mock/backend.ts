@@ -938,7 +938,6 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** The chat defaults the settings window shows (ADR-0080). */
   /**
    * The overview as Rust returns it, with each instruction room worked out as Rust does
    * (ADR-0080): what is left of 16 KiB beside the other text and the headings a turn adds.
@@ -959,6 +958,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     return view;
   }
 
+  /** The chat defaults the settings window shows (ADR-0080). */
   function chatView(): ChatDefaultsView {
     const saved = preferences();
     return {
@@ -1213,7 +1213,6 @@ export function isLocalEndpoint(endpoint: string): boolean {
   return v6 === undefined ? isIpv4Loopback(v4 ?? "") : isIpv6Loopback(v6);
 }
 
-/** `127.0.0.0/8` in strict dotted decimal: four parts, no leading zero. */
 /** The bound core's `Secret` applies to a key, in UTF-8 bytes. */
 const MAX_API_KEY_BYTES = 16 * 1024;
 
@@ -1235,6 +1234,7 @@ function checkApiKey(key: unknown): void {
   }
 }
 
+/** `127.0.0.0/8` in strict dotted decimal: four parts, no leading zero. */
 function isIpv4Loopback(host: string): boolean {
   const parts = host.split(".");
   return (

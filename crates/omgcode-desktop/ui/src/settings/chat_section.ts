@@ -83,7 +83,6 @@ export function workspaceTooLong(maxBytes: number): string {
   return `Shorten these instructions to at most ${maxBytes} bytes, so they fit beside the global instructions.`;
 }
 
-/** A byte counter for an instructions box, updated as the operator types. */
 /**
  * A byte counter against a room. A `null` room is unknown: other saved instructions cannot be
  * read now, so the counter says so and Rust decides on save.

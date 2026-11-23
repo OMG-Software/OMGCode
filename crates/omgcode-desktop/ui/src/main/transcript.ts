@@ -129,15 +129,15 @@ export function entryContexts(entries: readonly TranscriptEntry[]): EntryContext
   });
 }
 
+/** Reply actions are small icon buttons; each names its action in its tooltip. */
+const REPLY_ACTION_CLASS = "icon-button reply-action";
+
 /**
  * The actions of a recorded reply (ADR-0068): copy its Markdown source, copy it as plain text,
  * and copy an image of the whole entry. Each writes to the clipboard only on a click; nothing
  * reads it. The row is left out of the image. The source is copied with the same visible markers
  * the screen shows in place of bidirectional overrides.
  */
-/** Reply actions are small icon buttons; each names its action in its tooltip. */
-const REPLY_ACTION_CLASS = "icon-button reply-action";
-
 function replyActions(entry: MessageEntry, node: HTMLElement, body: HTMLElement): HTMLElement {
   return el(
     "div",

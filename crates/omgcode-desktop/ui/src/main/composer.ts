@@ -27,9 +27,9 @@ export const SESSION_CHOICES_UNREADABLE =
   "Saved provider and model choices could not be read, so this session follows the default " +
   "connection. Choosing a provider or model replaces the damaged file and every other session's " +
   "saved choice.";
-/** Shown while no context size is saved; the settings window owns it (ADR-0080). */
 /** Opens the message shown when the saved chat defaults cannot be read. */
 export const DEFAULTS_UNREADABLE = "The chat defaults could not be read; Send tries again.";
+/** Shown while no context size is saved; the settings window owns it (ADR-0080). */
 export const SET_CONTEXT_IN_SETTINGS =
   "Set the context size in Settings, under Model, then send again.";
 /** The tooltip and accessible name of the workspace settings icon button. */

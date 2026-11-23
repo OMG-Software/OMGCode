@@ -246,7 +246,6 @@ export function isChatEvent(value: unknown): value is ChatEvent {
   }
 }
 
-/** Saved composer defaults (ADR-0059). They grant nothing and carry no endpoint. */
 /**
  * The chat defaults the composer saves (ADR-0080). The budgets and the global instructions are
  * saved by the settings window and keep their values.
