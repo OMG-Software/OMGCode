@@ -147,7 +147,9 @@ The core defaults to a 30-second cooperative deadline. Chat defaults to 60
 seconds and can use up to the core maximum of 3600 seconds. Approval waits
 are excluded. A read call accepts at most
 15 KiB of file content and defaults to 8 KiB; larger files are refused rather
-than truncated. Before each dispatch the runtime reserves the largest possible
+than truncated. Before a tool-enabled turn starts, the history and pending
+user message must leave room for two messages per configured tool call.
+Before each dispatch the runtime reserves the largest possible
 tool message against the assembled-prompt budget; if the next request could not
 fit, it fails the turn before recording an intent or opening the target. Every
 rendered tool message, including an error, must fit the selected per-message

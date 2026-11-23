@@ -1404,6 +1404,7 @@ impl<'a> TurnRuntime<'a> {
 
         // Catch deterministic prompt-size failures before creating a turn.
         prompt::assemble_with_skills(custom_instructions, &self.skills, &history)?;
+        prompt::check_tool_turn_history_capacity(history.len(), self.limits.max_tool_calls)?;
         // A skill withdrawn since the caller loaded it ends the turn before
         // anything is recorded.
         if !self.skills_current() {

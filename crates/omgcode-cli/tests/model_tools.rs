@@ -1330,6 +1330,30 @@ fn the_history_message_limit_triggers_compaction_before_prompt_assembly_fails() 
 }
 
 #[test]
+fn tool_chat_reserves_room_for_its_budget_before_starting_the_turn() {
+    let fixture = Fixture::new(NOTE);
+    fixture.set("--model-tools", true);
+    let journal = fixture.session();
+    // 384 saved messages fit the first prompt, but the pending request and
+    // 256 possible tool/interim messages would exceed 640 together.
+    seed_short_exchanges(&journal, 192);
+    let before = fs::read(&journal).expect("fixture journal");
+    let server = SequenceServer::start(Vec::new());
+    let output = fixture.chat(&journal, &server.endpoint, "next request");
+    assert!(server.finish().is_empty());
+    assert_error_code(&output, "context");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("CLI error is JSON");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with(
+                "Active history leaves insufficient room for a turn with 128 tool calls"
+            ))
+    );
+    assert_eq!(fs::read(&journal).expect("untouched journal"), before);
+}
+
+#[test]
 fn more_older_messages_than_one_summary_request_accepts_compact_in_several_chunks() {
     let fixture = Fixture::new(NOTE);
     let journal = fixture.session();

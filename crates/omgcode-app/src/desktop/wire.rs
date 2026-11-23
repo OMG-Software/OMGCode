@@ -793,6 +793,10 @@ pub enum PreferencesSource {
 pub struct ChatDefaults {
     /// The settings the composer starts from. The endpoint is the fixed one.
     pub settings: ChatSettingsDto,
+    /// Largest supported value for the tool-call limit control.
+    pub tool_call_limit_max: usize,
+    /// Largest supported value for the turn timeout control.
+    pub turn_timeout_seconds_max: u64,
     /// Where `settings` came from.
     pub preferences: PreferencesSource,
     /// Whether Enter sends the message (ADR-0062). It is not a turn setting,

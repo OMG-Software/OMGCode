@@ -18,6 +18,8 @@ bounded operations, excludes desktop approval waits, and retains the separate
 30-second timeout per model request. Pre-turn compaction and text-only chat
 use their existing request budgets. The core library's default stays at 30
 seconds, and the core caps any configured deadline at one hour.
+The call budget and timeout are independent. A slow model can exhaust the
+60-second default before using every allowed tool call.
 
 ## Alternatives
 

@@ -27,8 +27,10 @@ omgcode session compact <journal> --endpoint URL --model MODEL \
 - The trigger is the smaller of `--compact-threshold` and that safe input
   budget. Compaction is also due when active history plus the pending request
   would exceed the prompt-assembly limits (640 history messages or 256 KiB
-  assembled). Without `--auto-compact`, either case is refused before the
-  provider call with a manual-compaction hint.
+  assembled). Tool-enabled chat also reserves two history messages per
+  configured tool call. Without `--auto-compact`, chat refuses an over-budget
+  turn before the provider call and suggests manual compaction. Lowering the
+  tool-call limit also reduces the history reserve.
 - `session compact` requires an idle, unarchived session. It summarizes active
   messages before the latest user message, retains the latest user message and
   all later assistant/tool messages, and records a schema-v3

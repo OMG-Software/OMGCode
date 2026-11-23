@@ -263,6 +263,8 @@ export type PreferencesSource = "defaults" | "saved" | "unreadable";
 
 export interface ChatDefaults {
   settings: ChatSettings;
+  tool_call_limit_max: number;
+  turn_timeout_seconds_max: number;
   preferences: PreferencesSource;
   /** A composer keyboard choice, not a turn setting (ADR-0062). */
   enter_to_send: boolean;

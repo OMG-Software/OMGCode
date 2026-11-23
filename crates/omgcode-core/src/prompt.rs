@@ -121,6 +121,12 @@ pub enum PromptError {
     /// The conversation contains too many messages.
     #[error("conversation history exceeds {MAX_HISTORY_MESSAGES} messages")]
     TooManyHistoryMessages,
+    /// The starting history leaves too little room for a tool-enabled turn.
+    #[error("conversation history leaves insufficient room for {max_tool_calls} tool calls")]
+    ToolHistoryCapacity {
+        /// The turn's configured call budget.
+        max_tool_calls: usize,
+    },
     /// A conversation message exceeds its byte limit.
     #[error("a conversation message exceeds 16 KiB")]
     HistoryMessageTooLarge,
@@ -152,6 +158,24 @@ pub fn assemble(
     history: &[ConversationMessage],
 ) -> Result<Vec<ModelMessage>, PromptError> {
     assemble_with_skills(custom_instructions, &[], history)
+}
+
+/// Check that the history, including the pending user request, leaves room
+/// for up to one result and one interim assistant message per tool call.
+///
+/// # Errors
+/// Returns [`PromptError::ToolHistoryCapacity`] if the turn could exceed the
+/// history message limit. The assembled byte and model context limits apply
+/// independently to each request.
+pub fn check_tool_turn_history_capacity(
+    history_messages: usize,
+    max_tool_calls: usize,
+) -> Result<(), PromptError> {
+    let reserved = max_tool_calls.saturating_mul(2);
+    if history_messages.saturating_add(reserved) > MAX_HISTORY_MESSAGES {
+        return Err(PromptError::ToolHistoryCapacity { max_tool_calls });
+    }
+    Ok(())
 }
 
 /// Assemble like [`assemble`], with request-only skill messages.
@@ -331,6 +355,18 @@ mod tests {
             assemble("", &messages),
             Err(PromptError::TooManyHistoryMessages)
         );
+    }
+
+    #[test]
+    fn a_tool_turn_can_start_only_with_room_for_its_full_message_budget() {
+        assert_eq!(check_tool_turn_history_capacity(384, 128), Ok(()));
+        assert_eq!(
+            check_tool_turn_history_capacity(385, 128),
+            Err(PromptError::ToolHistoryCapacity {
+                max_tool_calls: 128
+            })
+        );
+        assert_eq!(check_tool_turn_history_capacity(385, 127), Ok(()));
     }
 
     #[test]

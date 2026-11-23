@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { neutralise } from "../src/dom";
 import { setInvoker } from "../src/ipc/client";
-import type { SearchResult, SessionSummary } from "../src/ipc/types";
+import type { ChatDefaults, SearchResult, SessionSummary } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
 import { PLACEHOLDER_CTRL_ENTER, PLACEHOLDER_ENTER } from "../src/main/composer";
 import { createMockBackend } from "../src/mock/backend";
 import { HOSTILE } from "../src/mock/fixtures";
 import {
   buttonByText,
+  CHAT_BUDGET_BOUNDS,
   choose,
   connectionStatus,
   type FakeIpc,
@@ -643,6 +644,7 @@ describe("chat lifecycle", () => {
       session_tree: treeOf(s),
       session_transcript: () => page(s, []),
       chat_defaults: () => ({
+        ...CHAT_BUDGET_BOUNDS,
         settings: {
           endpoint: SETTINGS.endpoint,
           model: "",
@@ -950,6 +952,13 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       turn_timeout_seconds: 900,
     };
     await open({
+      chat_defaults: () => ({
+        settings: SETTINGS,
+        tool_call_limit_max: 200,
+        turn_timeout_seconds_max: 1200,
+        preferences: "defaults",
+        enter_to_send: true,
+      }),
       chat_models: (args) => ({
         session_id: args.session_id as string,
         endpoint: SETTINGS.endpoint,
@@ -971,10 +980,12 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       ?.querySelector("input") as HTMLInputElement;
     expect(timeoutField.value).toBe("60");
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
-    type(field, "257");
+    expect(field.max).toBe("200");
+    expect(timeoutField.max).toBe("1200");
+    type(field, "201");
     expect(buttonByText(root, "Send").disabled).toBe(true);
     type(field, "192");
-    type(timeoutField, "3601");
+    type(timeoutField, "1201");
     expect(buttonByText(root, "Send").disabled).toBe(true);
     type(timeoutField, "900");
     buttonByText(root, "Save as defaults").click();
@@ -1000,6 +1011,48 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
       settings: { max_tool_calls: 192, turn_timeout_seconds: 900 },
     });
+  });
+
+  it("keeps early chat settings edits and restores untouched values when defaults arrive", async () => {
+    let finish: (value: ChatDefaults) => void = () => undefined;
+    await open({
+      chat_defaults: () =>
+        new Promise<ChatDefaults>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const input = (label: string) => {
+      const field = Array.from(root.querySelectorAll(".settings label")).find(
+        (candidate) => candidate.querySelector("span")?.textContent === label,
+      );
+      const control = field?.querySelector("input, textarea");
+      if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement)) {
+        throw new Error(`No chat setting for ${label}`);
+      }
+      return control;
+    };
+    const calls = input("Tool calls per turn");
+    const timeout = input("Tool-enabled turn timeout (seconds)");
+    const instructions = input("Custom instructions");
+    const autoCompact = input("Auto-compact") as HTMLInputElement;
+    type(calls, "12");
+    type(timeout, "90");
+    type(instructions, "Preserve my edit.");
+    autoCompact.click();
+    finish({
+      ...CHAT_BUDGET_BOUNDS,
+      settings: { ...SETTINGS, instructions: "Saved instructions", auto_compact: false },
+      preferences: "saved",
+      enter_to_send: true,
+    });
+    await settle();
+    expect(calls.value).toBe("12");
+    expect(timeout.value).toBe("90");
+    expect(instructions.value).toBe("Preserve my edit.");
+    expect(autoCompact.checked).toBe(true);
+    expect(input("Context tokens").value).toBe("8192");
+    expect(input("Max output tokens").value).toBe("1024");
+    expect(input("Compaction threshold").value).toBe("6000");
   });
 
   describe("Enter to send", () => {
@@ -1048,6 +1101,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     it("when saved off, keeps Enter as a newline and sends on Ctrl+Enter", async () => {
       await open({
         chat_defaults: () => ({
+          ...CHAT_BUDGET_BOUNDS,
           settings: { ...SETTINGS },
           preferences: "saved",
           enter_to_send: false,
@@ -1104,7 +1158,12 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       enterToSendBox().click();
       expect(enterToSendBox().checked).toBe(false);
 
-      finish({ settings: { ...SETTINGS }, preferences: "saved", enter_to_send: true });
+      finish({
+        ...CHAT_BUDGET_BOUNDS,
+        settings: { ...SETTINGS },
+        preferences: "saved",
+        enter_to_send: true,
+      });
       await settle();
       expect(enterToSendBox().checked).toBe(false);
       expect(messageBox().placeholder).toBe(PLACEHOLDER_CTRL_ENTER);
@@ -1129,6 +1188,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
   it("says when saved defaults could not be read", async () => {
     await open({
       chat_defaults: () => ({
+        ...CHAT_BUDGET_BOUNDS,
         settings: { ...SETTINGS },
         preferences: "unreadable",
         enter_to_send: true,

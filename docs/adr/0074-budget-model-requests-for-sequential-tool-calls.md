@@ -2,7 +2,7 @@
 
 - Status: Accepted, amended by [ADR-0075](0075-configure-the-tool-call-budget-per-turn.md) and [ADR-0076](0076-configure-the-tool-enabled-turn-timeout.md)
 - Date: 2026-11-23
-- Implemented: version 0.52.1
+- Implemented: version 0.52.1 as amended by ADR-0075 and ADR-0076
 
 ## Context
 
@@ -18,13 +18,14 @@ calls when batched.
 
 Set the maximum model requests to the maximum tool calls plus one. A turn can
 use one request per call and still request a final reply. Keep explicit lower
-limits available to runtime callers. Keep the caps of eight calls per response
-and sixteen per turn, the byte limits, and the existing per-call checks.
+limits available to runtime callers. Keep the cap of eight calls per response,
+the byte limits, and the existing per-call checks. ADR-0075 replaced the
+original 16-call cap before release.
 
-Use the existing core hard maximum of five minutes as chat's cooperative
-deadline to accommodate more requests. Each model request still has a
-30-second timeout. The core library default stays at 30 seconds, and desktop
-approval waits are excluded from the turn deadline as before.
+The original five-minute chat deadline was replaced before release by the
+configurable deadline in ADR-0076. Each model request still has a 30-second
+timeout. The core library default stays at 30 seconds, and desktop approval
+waits are excluded from the turn deadline as before.
 
 Tell the model to read the file if `old_text` is unknown or an exact edit
 returns `edit_no_match`. The broker still requires a unique literal match in

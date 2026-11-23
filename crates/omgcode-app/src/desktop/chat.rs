@@ -25,7 +25,7 @@ use crate::{
 };
 use omgcode_core::control::ProviderKind;
 use omgcode_core::provider::list_local_models;
-use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
+use omgcode_core::turn::{DEFAULT_MAX_TOOL_CALLS, MAX_TOOL_CALLS, MAX_TURN_DEADLINE};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
@@ -71,6 +71,8 @@ impl DesktopService {
                 compact_threshold: preferences.compact_threshold,
                 auto_compact: preferences.auto_compact,
             },
+            tool_call_limit_max: MAX_TOOL_CALLS,
+            turn_timeout_seconds_max: MAX_TURN_DEADLINE.as_secs(),
             preferences: source,
             enter_to_send: preferences.enter_to_send,
         }

@@ -858,6 +858,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     const { enter_to_send = true, ...turnSettings } = clone(preferences);
     return {
       settings: { endpoint: currentEndpoint(), ...turnSettings } satisfies ChatSettings,
+      tool_call_limit_max: 256,
+      turn_timeout_seconds_max: 3600,
       preferences: savedPreferences === null ? "defaults" : "saved",
       enter_to_send,
     };

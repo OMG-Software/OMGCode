@@ -542,6 +542,9 @@ calls used, and calls requested. Calls from that batch are skipped.
 numbers from 1 to 3600. **Save as defaults** keeps the value for future runs.
 The runtime checks the deadline between operations and excludes approval waits.
 Each model request still has a 30-second timeout of its own.
+The composer gets the maximum tool-call and timeout values from `chat_defaults`.
+When defaults arrive after the operator has begun editing, only untouched
+controls take the returned values.
 
 - **Send key.** With **Enter to send** on, the default, Enter sends the
   message and Shift+Enter or Alt+Enter adds a newline. With it off, Enter

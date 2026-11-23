@@ -21,9 +21,11 @@ The cap grants no new permissions. The tool authorization, byte limits, and
 deadlines still apply.
 
 Allow 640 history messages so a request can carry 128 messages through the
-user request and up to two messages per call at the 256-call maximum. The 256 KiB assembled
-text limit and provider context limit still constrain every request.
-Summarizer chunks remain capped at 128 messages.
+user request and up to two messages per call at the 256-call maximum. Before
+the first request, require room for the pending user message and two messages
+per configured tool call. This can trigger compaction before any tool runs.
+The 256 KiB assembled text limit and provider context limit still constrain
+every request. Summarizer chunks remain capped at 128 messages.
 
 ## Alternatives
 

@@ -35,6 +35,8 @@ export const SETTINGS: ChatSettings = {
   auto_compact: true,
 };
 
+export const CHAT_BUDGET_BOUNDS = { tool_call_limit_max: 256, turn_timeout_seconds_max: 3600 };
+
 export function rejection(code: string, message: string): never {
   throw { code, message };
 }
@@ -85,6 +87,7 @@ export function mainHandlers(overrides: Record<string, Handler> = {}): Record<st
     session_tree: () => tree([]),
     chat_defaults: () => ({
       settings: { ...SETTINGS },
+      ...CHAT_BUDGET_BOUNDS,
       preferences: "defaults",
       enter_to_send: true,
     }),
