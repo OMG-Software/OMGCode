@@ -13,7 +13,7 @@ export const WORKSPACE_INSTRUCTIONS_HELP =
 export const DEFAULTS_UNREADABLE =
   "Saved chat defaults could not be read; built-in values are shown. Saving replaces a damaged file, but is refused while another program holds it.";
 export const INSTRUCTIONS_UNREADABLE =
-  "Saved instructions for this workspace could not be read, and its sessions cannot send. Saving replaces them.";
+  "Saved instructions for this workspace could not be read, and its sessions cannot send. Saving replaces them, but is refused while another program holds the file.";
 
 /** One numeric chat default: its draft key, label, and smallest value. */
 const NUMBER_FIELDS: ReadonlyArray<

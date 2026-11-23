@@ -154,7 +154,7 @@ impl DesktopError {
     pub(crate) fn workspace_instructions() -> Self {
         Self::new(
             "preferences",
-            "The workspace instructions could not be saved.",
+            "The workspace instructions could not be saved. Close any program using the file, or correct its access, and save again.",
         )
     }
 
