@@ -359,7 +359,7 @@ macro_rules! rename_file_description {
 
 /// The create tool. It is advertised under the same live preferences as the
 /// edit tool, and every call needs an operator approval (ADR-0054). Its
-/// description names `workspace_create_directory`; [`write_tool_definition`]
+/// description names `workspace_create_directory`; `write_tool_definition`
 /// offers the variant that does not when that tool is withheld.
 pub fn create_tool_definition() -> ToolDefinition {
     create_file_definition(true)
@@ -426,7 +426,7 @@ pub fn create_directory_tool_definition() -> ToolDefinition {
 
 /// The rename tool. It is advertised under the same live preferences as the
 /// edit tool, and every call needs an operator approval (ADR-0055). Its
-/// description names `workspace_create_directory`; [`write_tool_definition`]
+/// description names `workspace_create_directory`; `write_tool_definition`
 /// offers the variant that does not when that tool is withheld.
 pub fn rename_tool_definition() -> ToolDefinition {
     rename_file_definition(true)

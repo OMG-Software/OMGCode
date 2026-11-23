@@ -34,9 +34,13 @@ const MAX_SKIPPED_PORTS: usize = 64;
 /// attempt rather than starting a new one; that timeout also covers reading
 /// the body. Any other error, a refusal after [`MAX_SKIPPED_PORTS`] skips or
 /// at the deadline, or a refusal that no port could be reserved for, is
-/// returned as `send` reported it. The caller cancels the wait. The held
-/// sockets are bound but never listen or connect, so they accept nothing, and
-/// they are closed when this returns.
+/// returned as `send` reported it. This function only stops retrying at
+/// `deadline`; it enforces no timeout on an attempt and has no cancellation.
+/// The caller bounds each attempt, for example with the per-request timeout
+/// that `build` sets, and cancels the wait if it must: the model provider
+/// client wraps it in its cancellation check, and the package fetch in a
+/// `tokio` timeout. The held sockets are bound but never listen or connect, so
+/// they accept nothing, and they are closed when this returns.
 pub(crate) async fn send_skipping_reused_ports(
     deadline: Instant,
     mut build: impl FnMut(Duration) -> RequestBuilder,
