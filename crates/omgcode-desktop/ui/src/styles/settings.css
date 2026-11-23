@@ -52,17 +52,57 @@
   flex: 1;
 }
 
-.nav-item {
+.nav-item,
+.nav-child {
   text-align: left;
   background: transparent;
   border-color: transparent;
   color: var(--muted);
 }
 
-.nav-item[aria-current="page"] {
+.nav-item[aria-current="page"],
+.nav-child[aria-current="page"] {
   background: var(--surface-3);
   color: var(--text);
   font-weight: 600;
+}
+
+.nav-group-head {
+  display: flex;
+  gap: 2px;
+}
+
+.nav-group-head .nav-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-toggle {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 4px 6px;
+}
+
+.nav-toggle .icon {
+  transition: transform 0.15s;
+}
+
+.nav-toggle[aria-expanded="false"] .icon {
+  transform: rotate(-90deg);
+}
+
+.nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 14px;
+}
+
+.nav-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-foot {

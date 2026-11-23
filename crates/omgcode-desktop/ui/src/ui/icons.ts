@@ -71,6 +71,8 @@ const ICONS = {
     ["rect", { x: "3", y: "4", width: "18", height: "4", rx: "1" }],
     ["path", { d: "M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M12 17v-6M9.5 13.5L12 11l2.5 2.5" }],
   ],
+  /** A chevron pointing down: an expanded group; a collapsed one is drawn turned aside. */
+  chevronDown: [["path", { d: "M6 9l6 6 6-6" }]],
   /** A tick: an action that succeeded. */
   check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
   /** A cross: an action that failed. */

@@ -204,6 +204,11 @@ function modelToolsToggle(workspace: WorkspaceSettingsView, ctx: SectionContext)
   );
 }
 
+/** What the package cache root is for; the desktop itself never fetches a package. */
+export const PACKAGE_CACHE_HELP =
+  "Where the trusted CLI command omgcode packages fetch stores downloads for this workspace. " +
+  "A trusted run exposes it read-only. This app never fetches packages.";
+
 function packageCache(workspace: WorkspaceSettingsView, { submit, actions }: SectionContext) {
   const id = workspace.workspace_id;
   const buttons = [button("Choose…", () => submit(actions.choosePackageCache(id)))];
@@ -212,10 +217,15 @@ function packageCache(workspace: WorkspaceSettingsView, { submit, actions }: Sec
   }
   return el(
     "div",
-    { class: "row-actions" },
-    el("span", { class: "muted", text: "Package cache" }),
-    el("span", { class: "root", text: workspace.package_cache_root ?? "not set" }),
-    ...buttons,
+    { class: "package-cache" },
+    el(
+      "div",
+      { class: "row-actions" },
+      el("span", { class: "muted", text: "Package cache" }),
+      el("span", { class: "root", text: workspace.package_cache_root ?? "not set" }),
+      ...buttons,
+    ),
+    el("p", { class: "perm-help", text: PACKAGE_CACHE_HELP }),
   );
 }
 
@@ -274,30 +284,6 @@ function shownWorkspace(ctx: SectionContext): WorkspaceSettingsView | null {
   return shown ?? null;
 }
 
-function chooser(shown: WorkspaceSettingsView, ctx: SectionContext): HTMLElement | null {
-  const { workspaces } = ctx.overview;
-  if (workspaces.length < 2) {
-    return null;
-  }
-  const select = el("select", { attrs: { id: "workspace-chooser", "aria-label": "Workspace" } });
-  for (const workspace of workspaces) {
-    select.append(
-      el("option", { text: workspace.folder_display, attrs: { value: workspace.workspace_id } }),
-    );
-  }
-  select.value = shown.workspace_id;
-  select.addEventListener("change", () => {
-    ctx.view.workspaceId = select.value;
-    ctx.rerender();
-  });
-  return el(
-    "div",
-    { class: "row-actions" },
-    el("label", { class: "muted", text: "Workspace", attrs: { for: "workspace-chooser" } }),
-    select,
-  );
-}
-
 export const SCOPED_HELP = "Settings for the open session's workspace only.";
 
 /** Shown with the full view when the scoped workspace is no longer registered. */
@@ -307,7 +293,7 @@ export const SCOPE_GONE =
 export function renderWorkspaces(ctx: SectionContext): HTMLElement[] {
   const scoped = scopedWorkspace(ctx.overview);
   if (scoped !== null) {
-    // One workspace: no root, no registration, and no chooser (ADR-0071).
+    // One workspace: no root, no registration, and no navigation group (ADR-0071).
     ctx.view.workspaceId = scoped.workspace_id;
     return [
       ...sectionHead("Workspace settings", SCOPED_HELP),
@@ -316,21 +302,22 @@ export function renderWorkspaces(ctx: SectionContext): HTMLElement[] {
     ];
   }
   const gone = ctx.overview.scope === null ? null : el("p", { class: "notice", text: SCOPE_GONE });
-  const shown = shownWorkspace(ctx);
-  if (shown === null) {
+  const shown = ctx.view.workspacePage ? shownWorkspace(ctx) : null;
+  ctx.view.workspacePage = shown !== null;
+  if (shown !== null) {
     return [
       ...sectionHead("Workspaces", WORKSPACES_HELP),
       gone,
-      developmentRoot(ctx.overview, ctx),
-      emptyLine("No workspace is registered."),
+      el("p", { class: "access-help", text: ACCESS_HELP }),
+      workspaceBlock(shown, ctx),
     ].filter((node): node is HTMLElement => node !== null);
   }
+  const empty =
+    ctx.overview.workspaces.length === 0 ? emptyLine("No workspace is registered.") : null;
   return [
     ...sectionHead("Workspaces", WORKSPACES_HELP),
     gone,
-    el("p", { class: "access-help", text: ACCESS_HELP }),
     developmentRoot(ctx.overview, ctx),
-    chooser(shown, ctx),
-    workspaceBlock(shown, ctx),
+    empty,
   ].filter((node): node is HTMLElement => node !== null);
 }
