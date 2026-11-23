@@ -89,12 +89,14 @@ mod chat;
 mod data_folder;
 mod error;
 mod events;
+mod instructions;
 mod preferences;
 mod review_tokens;
 mod session_connections;
 mod sessions;
 mod settings;
 mod settings_changes;
+mod settings_chat;
 mod state;
 mod turns;
 mod wire;
@@ -119,9 +121,10 @@ use self::turns::TurnTable;
 pub use self::wire::{
     ApiKeySetRequest, ApiKeyText, ApprovalDecideRequest, ApprovalDetail, ApprovalField,
     ApprovalList, ApprovalOperationDto, ApprovalRequest, ApprovalStateDto, ApprovalView,
-    ApprovalsSummary, Binding, BranchState, BranchView, ChatDefaults, ChatEvent, ChatModels,
-    ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
-    ChatState, ChatStatus, ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest,
+    ApprovalsSummary, Binding, BranchState, BranchView, ChatBudgetsDto, ChatBudgetsSaveRequest,
+    ChatDefaults, ChatDefaultsView, ChatEvent, ChatModels, ChatOutcome, ChatPreferencesDto,
+    ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
+    ComposerPreferencesDto, ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest,
     ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView,
     ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView, ContextMeterDto,
     Decision, EntryKind, MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView,
@@ -131,8 +134,8 @@ pub use self::wire::{
     SessionTree, SettingsOverview, SettingsRevisionRequest, SettingsScope, SkillOverrideView,
     SkillSettingView, SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode,
     TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
-    WorkspaceChoice, WorkspaceGroup, WorkspaceList, WorkspaceRevisionRequest,
-    WorkspaceSettingsView,
+    WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest, WorkspaceList,
+    WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
 use crate::credential_source::resolve_connection_and_kind;
 use crate::{
@@ -291,6 +294,10 @@ struct Inner {
     /// Serializes the read-modify-write cycles of the per-session choices file
     /// (ADR-0071). Held for file input and output only.
     session_choices: Mutex<()>,
+    /// Serializes the read-modify-write cycles of the chat preferences file
+    /// and the workspace instruction files, which the `main` and `settings`
+    /// windows both write (ADR-0080). Held for file input and output only.
+    preferences: Mutex<()>,
 }
 
 /// The desktop command service. See the [module documentation](self).
@@ -347,6 +354,7 @@ impl DesktopService {
                 settings_change: AtomicBool::new(false),
                 settings_scope: Mutex::new(None),
                 session_choices: Mutex::new(()),
+                preferences: Mutex::new(()),
             }),
         })
     }

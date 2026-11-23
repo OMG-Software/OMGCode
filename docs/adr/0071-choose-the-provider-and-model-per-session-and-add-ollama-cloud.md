@@ -1,6 +1,6 @@
 # 0071: Choose the provider and model per session and add Ollama Cloud
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0080](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)
 - Date: 2026-11-20
 
 ## Context

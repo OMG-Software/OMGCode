@@ -7,6 +7,7 @@ import { COUNTER_SHOW_RATIO, SKILLS_PER_TURN } from "../src/main/composer";
 import { MESSAGE_MAX_BYTES } from "../src/main/model";
 import { argumentPreview, renderEntry, TOOL_PREVIEW_CHARS } from "../src/main/transcript";
 import {
+  buttonByLabel,
   buttonByText,
   type FakeIpc,
   type Handler,
@@ -268,7 +269,32 @@ describe("composer toolbar", () => {
     const tools = root.querySelector(".composer-tools") as HTMLElement;
     expect(tools.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
     expect(tools.querySelectorAll('select[aria-label="Provider"]')).toHaveLength(1);
-    expect(settings.querySelectorAll("input[type=number]")).toHaveLength(5);
+    // Budgets and instructions moved to the settings window (ADR-0080); a slider sets the
+    // compaction threshold.
+    expect(settings.querySelectorAll("input[type=number]")).toHaveLength(0);
+    expect(settings.querySelectorAll("textarea")).toHaveLength(0);
+    const slider = settings.querySelector<HTMLInputElement>('input[type="range"]');
+    expect(slider?.getAttribute("aria-label")).toBe("Compaction threshold");
+    expect([slider?.min, slider?.max, slider?.step]).toEqual(["128000", "1000000", "8000"]);
+    expect(settings.querySelector(".slider-value")?.textContent).toBe("200K tokens");
+    expect(settings.textContent).toContain("Auto-compact");
+    expect(settings.textContent).toContain("Enter to send");
+  });
+
+  it("puts Workspace settings beside Send as an icon button with a tooltip", async () => {
+    await open();
+    const send = root.querySelector(".composer-send") as HTMLElement;
+    const workspace = buttonByLabel(send, "Workspace settings");
+    expect(workspace.title).toBe("Workspace settings");
+    expect(workspace.textContent).toBe("");
+    expect(workspace.querySelector("svg.icon")).not.toBeNull();
+    expect(root.querySelector(".composer-tools")?.contains(workspace)).toBe(false);
+    // It sits just before the Send button, on the right.
+    const order = Array.from(send.querySelectorAll("button")).filter((b) => !b.hidden);
+    expect(order.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+      "Workspace settings",
+      "Send",
+    ]);
   });
 
   it("keeps Send and the draft working with both menus closed", async () => {

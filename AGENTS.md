@@ -22,7 +22,7 @@ transcript follows its end after a send until the operator scrolls up
 ([ADR-0072](docs/adr/0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md)).
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
-the clipboard only
+the clipboard only, with icon buttons named in their tooltips
 ([ADR-0069](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
 also enables `read` and `write`, six file-write tools (exact edit, multi-edit,
@@ -122,8 +122,13 @@ repairs them automatically
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
 connections and Ollama Cloud connections, whose API key is typed once into a
-write-only field. A **Workspace settings** button beside the composer shows
-the same window scoped to the open session's workspace. The provider and model
+write-only field. A **Workspace settings** icon button beside **Send** shows
+the same window scoped to the open session's workspace. The `settings` window
+also saves the chat budgets and global custom instructions beside the model
+connection, and each workspace's own custom instructions, which a turn sends
+after the global ones as untrusted user-level text; the composer keeps
+auto-compact, a 128K to 1M token compaction slider, and the send key
+([ADR-0080](docs/adr/0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)). The provider and model
 are chosen per session in the composer; a provider change needs the native
 confirmation, and each turn re-checks the session's recorded endpoint
 (ADR-0071). A status bar at the bottom of the `main`

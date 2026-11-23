@@ -141,6 +141,41 @@ impl DesktopError {
         Self::new("preferences", "The chat preferences could not be saved.")
     }
 
+    /// A save found the saved chat preferences but could not read them, so it
+    /// changed nothing rather than overwrite fields it could not see.
+    pub(crate) fn preferences_unreadable() -> Self {
+        Self::new(
+            "preferences",
+            "The saved chat preferences could not be read, so nothing was saved. Close any program using the file, or correct its access, and save again.",
+        )
+    }
+
+    /// A workspace's saved custom instructions could not be written.
+    pub(crate) fn workspace_instructions() -> Self {
+        Self::new(
+            "preferences",
+            "The workspace instructions could not be saved. Close any program using the file, or correct its access, and save again.",
+        )
+    }
+
+    /// An instruction save could not read the other saved text it must fit
+    /// beside, so the room is unknown and nothing was saved (ADR-0080).
+    pub(crate) fn instructions_room_unknown() -> Self {
+        Self::new(
+            "preferences",
+            "Other saved instructions could not be read, so nothing was saved: the room left for this text is unknown. Close any program using the settings files and save again.",
+        )
+    }
+
+    /// A workspace's saved custom instructions could not be read, so a turn
+    /// that would use them is refused rather than sent without them.
+    pub(crate) fn instructions_unreadable() -> Self {
+        Self::new(
+            "instructions_unreadable",
+            "The workspace instructions could not be read. Save them again in Settings.",
+        )
+    }
+
     /// The per-session connection and model choices could not be saved.
     pub(crate) fn session_choices() -> Self {
         Self::new(

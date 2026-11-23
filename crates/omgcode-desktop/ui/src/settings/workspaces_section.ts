@@ -7,6 +7,7 @@ import type {
   WriteToolAccess,
 } from "../ipc/types";
 import { segmented } from "../ui/segmented";
+import { workspaceInstructionsBlock } from "./chat_section";
 import { type SectionContext, scopedWorkspace } from "./context";
 import { emptyLine, facts, sectionHead } from "./parts";
 
@@ -234,6 +235,7 @@ function workspaceBlock(workspace: WorkspaceSettingsView, ctx: SectionContext): 
       facts([["Identifier", workspace.workspace_id]]),
       packageCache(workspace, ctx),
     ),
+    workspaceInstructionsBlock(workspace, ctx),
   );
 }
 

@@ -1,6 +1,6 @@
 # 0059: Configure trusted settings in an isolated desktop settings window
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0080](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)
 - Date: 2026-11-18
 - Implemented: phase S1 in version 0.40.0; phase S2 in version 0.41.0
   ([ADR-0060](0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md),

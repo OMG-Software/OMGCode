@@ -117,7 +117,9 @@ pub struct ChatSettingsDto {
     /// Cooperative deadline for a tool-enabled turn, in seconds.
     #[serde(default = "default_turn_timeout_seconds")]
     pub turn_timeout_seconds: u64,
-    /// User-level preferences, sent as untrusted-origin custom instructions.
+    /// The global custom instructions, sent as untrusted-origin user-level
+    /// preferences. `chat_send` adds the session workspace's own instructions
+    /// from storage (ADR-0080).
     pub instructions: String,
     /// Compact before a turn when the estimate reaches this value.
     pub compact_threshold: u64,
@@ -767,12 +769,89 @@ pub const fn enter_to_send_default() -> bool {
     true
 }
 
+/// The chat defaults the `main` window's composer saves (ADR-0080): the
+/// compaction settings and the send key. Every other saved field keeps its
+/// value.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComposerPreferencesDto {
+    /// Compact before a turn when the estimate reaches this value. It must be
+    /// within [`ChatDefaults::compact_threshold_min`] and
+    /// [`ChatDefaults::compact_threshold_max`].
+    pub compact_threshold: u64,
+    /// Whether auto-compaction starts enabled.
+    pub auto_compact: bool,
+    /// Whether Enter sends the message (ADR-0062). A request without it reads
+    /// as `true`, as the saved file does.
+    #[serde(default = "enter_to_send_default")]
+    pub enter_to_send: bool,
+}
+
 /// Arguments of `chat_preferences_save`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ChatPreferencesSaveRequest {
-    /// The preferences to save.
-    pub preferences: ChatPreferencesDto,
+    /// The composer's preferences to save.
+    pub preferences: ComposerPreferencesDto,
+}
+
+/// The chat defaults the `settings` window saves beside the model connection
+/// (ADR-0080). Every other saved field keeps its value. They grant nothing;
+/// `chat_send` validates every value again.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatBudgetsDto {
+    /// Validated context capacity of the loaded model; positive.
+    pub context_tokens: u64,
+    /// Output reserve for each model request; positive.
+    pub max_output_tokens: u32,
+    /// Tool-call budget of a tool-enabled turn.
+    pub max_tool_calls: usize,
+    /// Cooperative deadline of a tool-enabled turn, in seconds.
+    pub turn_timeout_seconds: u64,
+    /// Global custom instructions for every workspace. Untrusted-origin text.
+    pub instructions: String,
+}
+
+/// Arguments of `settings_save_chat_defaults`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChatBudgetsSaveRequest {
+    /// The defaults to save.
+    pub defaults: ChatBudgetsDto,
+}
+
+/// Arguments of `settings_set_workspace_instructions`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceInstructionsRequest {
+    /// A registered workspace.
+    pub workspace_id: Uuid,
+    /// The workspace's custom instructions; empty removes them.
+    pub instructions: String,
+}
+
+/// The chat defaults the `settings` window shows beside the model connection
+/// (ADR-0080).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChatDefaultsView {
+    /// The saved values, or the built-in ones.
+    pub defaults: ChatBudgetsDto,
+    /// Where `defaults` came from.
+    pub source: PreferencesSource,
+    /// Largest output reserve the request type holds, so the window can
+    /// refuse a larger one before sending it.
+    pub max_output_tokens_max: u32,
+    /// Largest supported tool-call limit.
+    pub tool_call_limit_max: usize,
+    /// Largest supported turn timeout, in seconds.
+    pub turn_timeout_seconds_max: u64,
+    /// Largest global instruction text a save accepts, in UTF-8 bytes: 16 KiB
+    /// less the longest saved workspace text and the headings a turn adds,
+    /// so the two always fit together. `None` when a workspace's saved text
+    /// cannot be read now, so the room is unknown and a save of non-empty
+    /// text is refused.
+    pub instructions_max_bytes: Option<usize>,
 }
 
 /// Where the chat defaults came from.
@@ -802,6 +881,10 @@ pub struct ChatDefaults {
     /// Whether Enter sends the message (ADR-0062). It is not a turn setting,
     /// so it is not part of `settings`.
     pub enter_to_send: bool,
+    /// Smallest compaction threshold the composer's slider offers (ADR-0080).
+    pub compact_threshold_min: u64,
+    /// Largest compaction threshold the composer's slider offers.
+    pub compact_threshold_max: u64,
 }
 
 /// The `session_skills` response: skills the operator may select for one turn
@@ -839,6 +922,15 @@ pub struct WorkspaceSettingsView {
     pub write_tools: WriteToolAccess,
     /// Display-safe text of the selected package cache root, if any.
     pub package_cache_root: Option<String>,
+    /// The workspace's custom instructions (ADR-0080), empty when none are
+    /// saved, or `None` when the saved file cannot be read. Operator-typed,
+    /// untrusted-origin text; shown only as a form value.
+    pub instructions: Option<String>,
+    /// Largest text a save of this workspace's instructions accepts, in UTF-8
+    /// bytes: 16 KiB less the saved global text and the headings a turn adds.
+    /// `None` when the saved global text cannot be read now, so the room is
+    /// unknown and a save of non-empty text is refused.
+    pub instructions_max_bytes: Option<usize>,
 }
 
 /// Arguments of a settings change that names only the expected revision
@@ -1298,6 +1390,8 @@ pub struct SettingsOverview {
     pub container_grants: Vec<ContainerGrantView>,
     /// Registered skills and their settings.
     pub skills: Vec<SkillSettingView>,
+    /// The chat defaults shown beside the model connection (ADR-0080).
+    pub chat: ChatDefaultsView,
     /// The workspace the window is scoped to, or `null` for the full view. It
     /// is display state only: it grants and removes nothing.
     pub scope: Option<SettingsScope>,

@@ -2,10 +2,10 @@
 //! and for the status bar's workspace branch and model connection (ADR-0064).
 
 use omgcode_app::desktop::{
-    ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesDto,
-    ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatStatus,
-    ConnectionChooseRequest, ConnectionStatus, ConnectionStatusRequest, SessionContext,
-    SessionModelSelectRequest, SessionRequest, SessionSkills,
+    ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesSaveRequest,
+    ChatSendRequest, ChatSettingsDto, ChatStatus, ComposerPreferencesDto, ConnectionChooseRequest,
+    ConnectionStatus, ConnectionStatusRequest, SessionContext, SessionModelSelectRequest,
+    SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
@@ -42,7 +42,7 @@ pub async fn chat_defaults(
 pub async fn chat_preferences_save(
     webview: Webview,
     state: Service<'_>,
-    preferences: ChatPreferencesDto,
+    preferences: ComposerPreferencesDto,
 ) -> Result<ChatDefaults, CommandError> {
     authorize(Command::ChatPreferencesSave, webview.label())?;
     let request = ChatPreferencesSaveRequest { preferences };

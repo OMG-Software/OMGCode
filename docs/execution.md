@@ -767,7 +767,7 @@ record requires `approvals approve <id> --writers-stopped`, which the command
 operation refuses. The `workspace_multi_edit_file` and `workspace_create_file`
 tools (0.36.0, ADR-0054) and the `workspace_rename_file` and
 `workspace_delete_file` tools (0.38.0, ADR-0055) and the
-`workspace_create_directory` tool (0.53.0, ADR-0079) use the same `file_write`
+`workspace_create_directory` tool (0.55.0, ADR-0079) use the same `file_write`
 records, each under its own digest domain, and start no process either.
 
 ### Toolchain profiles

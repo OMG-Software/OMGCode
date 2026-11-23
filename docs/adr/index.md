@@ -73,7 +73,7 @@ meaningful alternative does not need an ADR.
 | [0056: Send registry credentials to one declared origin](0056-send-registry-credentials-to-one-declared-origin.md) | Accepted | 2026-11-17 |
 | [0057: Import skills into a private registry and load them on explicit selection](0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md) | Accepted | 2026-11-18 |
 | [0058: Stage the latest release as a draft before the swap](0058-stage-the-latest-release-as-a-draft-before-the-swap.md) | Accepted | 2026-11-18 |
-| [0059: Configure trusted settings in an isolated desktop settings window](0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md) | Accepted | 2026-11-18 |
+| [0059: Configure trusted settings in an isolated desktop settings window](0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md) | Accepted, amended by ADR-0080 | 2026-11-18 |
 | [0060: Change workspace settings from the desktop with native dialogs](0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md) | Accepted | 2026-11-19 |
 | [0061: Check every recorded settings state in run watchers](0061-check-every-recorded-settings-state-in-run-watchers.md) | Accepted | 2026-11-19 |
 | [0062: Send the desktop message on Enter as a saved chat preference](0062-send-the-desktop-message-on-enter-as-a-saved-chat-preference.md) | Accepted | 2026-11-19 |
@@ -82,15 +82,16 @@ meaningful alternative does not need an ADR.
 | [0065: Redesign the desktop windows with one dark theme and split layouts](0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md) | Accepted | 2026-11-19 |
 | [0066: Choose the chat model from the local server's model list](0066-choose-the-chat-model-from-the-local-servers-model-list.md) | Accepted | 2026-11-19 |
 | [0067: Render recorded replies as inert Markdown](0067-render-recorded-replies-as-inert-markdown.md) | Accepted | 2026-11-20 |
-| [0068: Name replies by model and copy them as Markdown, text, or an image](0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md) | Accepted | 2026-11-20 |
+| [0068: Name replies by model and copy them as Markdown, text, or an image](0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md) | Accepted, amended by ADR-0080 | 2026-11-20 |
 | [0069: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) | Accepted | 2026-11-20 |
 | [0070: Keep checkpoints in a protected per-workspace `.OMGCode` folder](0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md) | Accepted | 2026-11-20 |
-| [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted | 2026-11-20 |
+| [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted, amended by ADR-0080 | 2026-11-20 |
 | [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted | 2026-11-20 |
 | [0073: Remove extra data folder grants after operator confirmation](0073-remove-extra-data-folder-grants-after-operator-confirmation.md) | Accepted | 2026-11-20 |
 | [0074: Give chat bubbles a shared width](0074-give-chat-bubbles-a-shared-width.md) | Accepted | 2026-11-23 |
 | [0075: Budget model requests for sequential tool calls](0075-budget-model-requests-for-sequential-tool-calls.md) | Accepted, amended by ADR-0076 and ADR-0077 | 2026-11-23 |
-| [0076: Configure the tool-call budget per turn](0076-configure-the-tool-call-budget-per-turn.md) | Accepted | 2026-11-23 |
-| [0077: Configure the tool-enabled turn timeout](0077-configure-the-tool-enabled-turn-timeout.md) | Accepted | 2026-11-23 |
+| [0076: Configure the tool-call budget per turn](0076-configure-the-tool-call-budget-per-turn.md) | Accepted, amended by ADR-0080 | 2026-11-23 |
+| [0077: Configure the tool-enabled turn timeout](0077-configure-the-tool-enabled-turn-timeout.md) | Accepted, amended by ADR-0080 | 2026-11-23 |
 | [0078: Skip Windows local ports held in TIME_WAIT](0078-skip-windows-local-ports-held-in-time-wait.md) | Accepted | 2026-11-23 |
 | [0079: Add a model tool that creates one directory](0079-add-a-model-tool-that-creates-one-directory.md) | Accepted | 2026-11-23 |
+| [0080: Move chat budgets to settings and add workspace instructions](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md) | Accepted | 2026-11-23 |
