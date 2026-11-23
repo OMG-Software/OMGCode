@@ -42,9 +42,12 @@ window shows **Create directory tool**.
 
 A missing parent is now reported as `parent_not_found` by
 `workspace_create_file`, by the destination check of `workspace_rename_file`,
-and by the new tool. Their descriptions tell the model to create the parent
-with `workspace_create_directory` first. A missing source file is still
-`not_found`.
+and by the new tool. When `workspace_create_directory` is offered in the same
+turn, the create and rename descriptions tell the model to create the parent
+with it first. When the directory tool is withheld, they say that no offered
+tool creates a directory and tell the model to tell the user, because a call
+to a tool that was not offered can end the turn. A missing source file is
+still `not_found`.
 
 ## Alternatives considered
 

@@ -154,10 +154,12 @@ fn serve(stream: &mut TcpStream, reply: &str) -> Option<Recorded> {
         .write_all(response.as_bytes())
         .and_then(|()| stream.write_all(&payload))
         .ok()?;
-    // A fixture that closes first is a failed exchange, like a short read.
-    if !await_client_close(stream) {
-        return None;
-    }
+    // A request answered but not closed by the client fails the test through
+    // `finish`, so it is never dropped from what a negative check inspects.
+    assert!(
+        await_client_close(stream),
+        "the client did not close the connection first"
+    );
     Some(Recorded {
         head,
         body: body_text,
