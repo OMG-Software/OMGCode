@@ -45,7 +45,13 @@ function type(input: HTMLInputElement | HTMLTextAreaElement, value: string): voi
 
 function menu(label: string): HTMLDetailsElement {
   const found = Array.from(root.querySelectorAll<HTMLDetailsElement>("details.popover")).find(
-    (details) => details.querySelector("summary")?.textContent?.startsWith(label) === true,
+    (details) => {
+      const summary = details.querySelector("summary");
+      return (
+        summary?.textContent?.startsWith(label) === true ||
+        summary?.getAttribute("aria-label") === label
+      );
+    },
   );
   if (found === undefined) {
     throw new Error(`No menu starting with "${label}"`);
@@ -227,6 +233,26 @@ describe("composer toolbar", () => {
     expect(buttonByText(send, "Send").classList.contains("primary")).toBe(true);
     expect(row.querySelectorAll("button.primary")).toHaveLength(1);
     expect(root.querySelector(".composer-panel .settings-grid")).not.toBeNull();
+  });
+
+  it("opens Chat settings from a gear icon button with a tooltip and expanded state", async () => {
+    await open();
+    const settings = menu("Chat settings");
+    const trigger = settings.querySelector("summary") as HTMLElement;
+    expect(trigger.textContent).toBe("");
+    expect(trigger.title).toBe("Chat settings");
+    expect(trigger.getAttribute("aria-label")).toBe("Chat settings");
+    expect(trigger.querySelector("svg.icon")).not.toBeNull();
+    const panel = settings.querySelector(".popover-panel") as HTMLElement;
+    expect(trigger.getAttribute("aria-controls")).toBe(panel.id);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    settings.open = true;
+    await settle();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    settings.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settle();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("counts the chosen skills in the summary and keeps the at-most-four rule", async () => {

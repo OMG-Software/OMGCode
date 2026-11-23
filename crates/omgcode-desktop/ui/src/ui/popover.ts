@@ -1,10 +1,19 @@
 import { type Child, el } from "../dom";
+import { type IconName, icon } from "./icons";
+
+let nextPanelId = 0;
 
 export interface PopoverOptions {
   /** An extra class on the `<details>`: `align-end` and `open-up` position the panel. */
   class?: string;
   /** Accessible name for the panel when the summary text alone is unclear. */
   label?: string;
+  /**
+   * Shows this icon as the trigger instead of the summary text. The text then becomes the
+   * trigger's accessible name and tooltip, and the trigger reports `aria-expanded` and
+   * `aria-controls`.
+   */
+  icon?: IconName;
 }
 
 export interface Popover {
@@ -26,7 +35,8 @@ export function createPopover(
   options: PopoverOptions,
   ...content: Child[]
 ): Popover {
-  const summary = el("summary", { text: summaryText });
+  const summary =
+    options.icon === undefined ? el("summary", { text: summaryText }) : el("summary", {});
   const panel = el("div", { class: "popover-panel" }, ...content);
   if (options.label !== undefined) {
     panel.setAttribute("aria-label", options.label);
@@ -37,6 +47,20 @@ export function createPopover(
     summary,
     panel,
   );
+
+  if (options.icon !== undefined) {
+    nextPanelId += 1;
+    panel.id = `popover-panel-${nextPanelId}`;
+    summary.classList.add("icon-summary");
+    summary.setAttribute("aria-label", summaryText);
+    summary.title = summaryText;
+    summary.setAttribute("aria-controls", panel.id);
+    summary.setAttribute("aria-expanded", "false");
+    summary.appendChild(icon(options.icon));
+    element.addEventListener("toggle", () => {
+      summary.setAttribute("aria-expanded", String(element.open));
+    });
+  }
 
   function close(): void {
     element.open = false;

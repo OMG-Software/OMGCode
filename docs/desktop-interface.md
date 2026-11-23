@@ -390,7 +390,9 @@ The `main` window is laid out as follows.
   where n counts the skills chosen for the turn, hidden when no skill is
   enabled; a **Provider** dropdown and a **Model** dropdown with its
   **Refresh** button for the open session (see "Provider and model per
-  session"); and a **Chat settings** menu with the read-only endpoint,
+  session"); and a **Chat settings** menu, opened by a gear icon button named and
+  tooltipped "Chat settings" that reports `aria-expanded` and `aria-controls`
+  (distinct from the three-slider **Settings** icon), with the read-only endpoint,
   **Auto-compact**, the compaction slider, **Enter to send**, and **Save as
   defaults**. On the right are the byte counter, the running label, the
   **Workspace settings** icon button (see "Settings window"), **Cancel**, and
