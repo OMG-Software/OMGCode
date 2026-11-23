@@ -6,6 +6,36 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.54.0 moves the desktop chat budgets into the `settings` window
+  and adds per-workspace custom instructions (ADR-0080).
+  - **Settings window:** the **Model** section has **Chat defaults** beside
+    the connection: context tokens, max output tokens, tool calls per turn,
+    the tool-enabled turn timeout, and **Global custom instructions**, saved
+    by the new `settings_save_chat_defaults`. Each workspace has **Custom
+    instructions**, saved by the new `settings_set_workspace_instructions`
+    for a registered workspace in
+    `desktop-v1/workspace-instructions/<id>.json`; empty text removes them.
+    Neither shows a dialog or changes the settings revision. Each text is at
+    most 16 KiB.
+  - **Turns:** `chat_send` adds the session workspace's instructions after
+    the global ones, under `Global instructions:` and `Workspace
+    instructions:` headings, and sends the global text unchanged when the
+    workspace has none. A composition over 16 KiB is refused with
+    `invalid_request`; an unreadable workspace file with
+    `instructions_unreadable`.
+  - **Composer:** **Chat settings** keeps the endpoint, **Auto-compact**,
+    **Enter to send**, and **Save as defaults**, and replaces the compaction
+    threshold field with a slider from 128K to 1M tokens in steps of 8,000.
+    `chat_preferences_save` now takes only the threshold, auto-compact, and
+    the send key, refuses a threshold outside 128,000 to 1,000,000, and
+    keeps the other saved fields; both windows' saves merge under one lock.
+    The composer reads the budgets and the global instructions from
+    `chat_defaults` at start, on window focus, and before each send. A saved
+    threshold outside the range is shown and sent at its nearest end.
+  - **Icons:** **Copy Markdown**, **Copy text**, **Copy image**, and
+    **Workspace settings** are icon buttons named in their tooltips;
+    **Workspace settings** moved beside **Send**.
+
 - Desktop chat centres every message bubble at 96% of the transcript's
   available width and left-aligns its text (ADR-0074).
 

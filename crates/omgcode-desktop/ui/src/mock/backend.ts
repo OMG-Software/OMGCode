@@ -3,13 +3,15 @@ import { CANCELLED_CODE } from "../ipc/errors";
 import type {
   ApprovalDetail,
   ApprovalView,
+  ChatBudgets,
   ChatDefaults,
+  ChatDefaultsView,
   ChatEvent,
   ChatModels,
   ChatOutcome,
-  ChatPreferences,
   ChatSettings,
   ChatStatus,
+  ComposerPreferences,
   ConnectionStatus,
   ConnectionView,
   PermissionFlags,
@@ -97,6 +99,25 @@ function isSubscriber(value: unknown): value is Subscriber {
   );
 }
 
+/** The composer's compaction slider range (ADR-0080), as Rust reports it. */
+const COMPACT_MIN = 128_000;
+const COMPACT_MAX = 1_000_000;
+
+/** The one saved chat defaults file: the settings window's fields and the composer's. */
+type MockPreferences = ChatBudgets & ComposerPreferences & { model: string };
+
+const BUILT_IN_PREFERENCES: MockPreferences = {
+  model: "qwen2.5-coder",
+  context_tokens: 8192,
+  max_output_tokens: 1024,
+  max_tool_calls: 128,
+  turn_timeout_seconds: 120,
+  instructions: "",
+  compact_threshold: 200_000,
+  auto_compact: true,
+  enter_to_send: true,
+};
+
 /** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
 export function createMockBackend(now: () => number = Date.now): { invoke: Invoker } {
   const { groups, sessions } = buildFixtures(now());
@@ -104,7 +125,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   const chats = new Map<string, ChatRecord>();
   const tokens = new Map<string, { id: string; expires: number }>();
   let subscriber: Subscriber | null = null;
-  let savedPreferences: ChatPreferences | null = null;
+  /** The saved chat defaults, as Rust keeps them in one file; `null` until something is saved. */
+  let savedPreferences: MockPreferences | null = null;
   /**
    * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
    * for it, as Rust records it, and its model.
@@ -602,9 +624,31 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
                   ],
         } satisfies ChatModels;
       }
-      case "chat_preferences_save":
-        savedPreferences = clone(args.preferences as ChatPreferences);
+      // Each window saves only its own fields; the rest keep their values (ADR-0080).
+      case "chat_preferences_save": {
+        const saved = clone(args.preferences as ComposerPreferences);
+        if (saved.compact_threshold < COMPACT_MIN || saved.compact_threshold > COMPACT_MAX) {
+          return fail(
+            "invalid_request",
+            `The compaction threshold must be from ${COMPACT_MIN} to ${COMPACT_MAX} tokens.`,
+          );
+        }
+        savedPreferences = { ...preferences(), ...saved };
+        settings.chat = chatView();
         return chatDefaults();
+      }
+      case "settings_save_chat_defaults": {
+        const saved = clone(args.defaults as ChatBudgets);
+        if (saved.context_tokens < 1 || saved.max_output_tokens < 1) {
+          return fail("invalid_request", "Set the context size to a positive number of tokens.");
+        }
+        savedPreferences = { ...preferences(), ...saved };
+        settings.chat = chatView();
+        return clone(settings);
+      }
+      case "settings_set_workspace_instructions":
+        mockWorkspace(args).instructions = str(args, "instructions");
+        return clone(settings);
       case "session_skills":
         str(args, "session_id");
         return { workspace_registered: true, skills: ["review-checklist", "release-notes"] };
@@ -663,6 +707,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               delete: "allow",
             },
             package_cache_root: null,
+            instructions: "",
           });
         });
       case "settings_set_permissions":
@@ -842,26 +887,39 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     }
   }
 
+  /** The saved chat defaults, or the mock's built-in ones. */
+  function preferences(): MockPreferences {
+    return clone(savedPreferences ?? BUILT_IN_PREFERENCES);
+  }
+
   function chatDefaults(): ChatDefaults {
-    const preferences = savedPreferences ?? {
-      model: "qwen2.5-coder",
-      context_tokens: 8192,
-      max_output_tokens: 1024,
-      max_tool_calls: 128,
-      turn_timeout_seconds: 120,
-      instructions: "",
-      compact_threshold: 6000,
-      auto_compact: true,
-      enter_to_send: true,
-    };
-    // A request saved by an older window may lack the field; core reads that as on.
-    const { enter_to_send = true, ...turnSettings } = clone(preferences);
+    const { enter_to_send, ...turnSettings } = preferences();
     return {
       settings: { endpoint: currentEndpoint(), ...turnSettings } satisfies ChatSettings,
       tool_call_limit_max: 256,
       turn_timeout_seconds_max: 3600,
       preferences: savedPreferences === null ? "defaults" : "saved",
       enter_to_send,
+      compact_threshold_min: COMPACT_MIN,
+      compact_threshold_max: COMPACT_MAX,
+    };
+  }
+
+  /** The chat defaults the settings window shows (ADR-0080). */
+  function chatView(): ChatDefaultsView {
+    const saved = preferences();
+    return {
+      defaults: {
+        context_tokens: saved.context_tokens,
+        max_output_tokens: saved.max_output_tokens,
+        max_tool_calls: saved.max_tool_calls,
+        turn_timeout_seconds: saved.turn_timeout_seconds,
+        instructions: saved.instructions,
+      },
+      source: savedPreferences === null ? "defaults" : "saved",
+      tool_call_limit_max: 256,
+      turn_timeout_seconds_max: 3600,
+      instructions_max_bytes: 16 * 1024,
     };
   }
 
@@ -994,6 +1052,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             delete: "prompt",
           },
           package_cache_root: null,
+          instructions: "Run the tests before answering.",
         },
         {
           workspace_id: "88888888-8888-4888-8888-888888888888",
@@ -1012,6 +1071,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             delete: "allow",
           },
           package_cache_root: null,
+          instructions: "",
         },
       ],
       connection: {
@@ -1059,6 +1119,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           workspace_overrides: [{ workspace_id: workspace, enabled: false }],
         },
       ],
+      chat: chatView(),
       scope: null,
     };
   }

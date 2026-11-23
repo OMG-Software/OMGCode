@@ -16,8 +16,10 @@
     "allow-settings-register-workspace",
     "allow-settings-remove-connection",
     "allow-settings-repair-data-folder",
+    "allow-settings-save-chat-defaults",
     "allow-settings-select-connection",
     "allow-settings-set-api-key",
-    "allow-settings-set-permissions"
+    "allow-settings-set-permissions",
+    "allow-settings-set-workspace-instructions"
   ]
 }

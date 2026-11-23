@@ -853,7 +853,28 @@ mark {
 }
 
 .composer-tools > .settings > .composer-panel {
-  width: 560px;
+  width: 420px;
+}
+
+/* A setting that spans the whole chat settings panel: the endpoint and the compaction slider. */
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.slider-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.slider-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
 }
 
 .counter {
@@ -1040,15 +1061,16 @@ mark {
 .reply-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px;
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
 
-.reply-action {
-  padding: 2px 8px;
-  font-size: 12px;
+/* Icon buttons; each names its action in a tooltip and its accessible name. */
+.icon-button.reply-action {
+  width: 28px;
+  height: 28px;
 }
 
 /* While a reply is painted into an image, its controls leave the layout (src/main/capture.ts). */

@@ -2,7 +2,8 @@ import { button, el, replaceChildren } from "../dom";
 import { utf8Length } from "../format";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
-import type { ChatDefaults, ChatPreferences, ChatSettings } from "../ipc/types";
+import type { ChatDefaults, ChatSettings, ComposerPreferences } from "../ipc/types";
+import { iconButton } from "../ui/icons";
 import { createPopover } from "../ui/popover";
 import type { ConnectionChange, ConnectionModel } from "./connection_state";
 import {
@@ -26,9 +27,39 @@ export const SESSION_CHOICES_UNREADABLE =
   "Saved provider and model choices could not be read, so this session follows the default " +
   "connection. Choosing a provider or model replaces the damaged file and every other session's " +
   "saved choice.";
+/** Shown while no context size is saved; the settings window owns it (ADR-0080). */
+export const SET_CONTEXT_IN_SETTINGS =
+  "Set the context size in Settings, under Model, then send again.";
+/** The tooltip and accessible name of the workspace settings icon button. */
+export const WORKSPACE_SETTINGS_LABEL = "Workspace settings";
 
 /** The counter appears once the message uses more than this share of the byte limit. */
 export const COUNTER_SHOW_RATIO = 0.8;
+
+/**
+ * The compaction slider's range and step until Rust's defaults arrive (ADR-0080). Rust refuses a
+ * saved value outside its own range, which it reports in `chat_defaults`.
+ */
+export const COMPACT_THRESHOLD_MIN = 128_000;
+export const COMPACT_THRESHOLD_MAX = 1_000_000;
+export const COMPACT_THRESHOLD_STEP = 8_000;
+
+/** A token count as the slider shows it: "200K", "1M". */
+export function tokenLabel(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) {
+    return `${tokens / 1_000_000}M`;
+  }
+  return `${Math.round(tokens / 1000)}K`;
+}
+
+/** `value` moved into `[min, max]` and onto the slider's step from `min`. */
+export function clampThreshold(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  const stepped = min + Math.round((value - min) / COMPACT_THRESHOLD_STEP) * COMPACT_THRESHOLD_STEP;
+  return Math.min(max, Math.max(min, stepped));
+}
 
 export interface ComposerHandlers {
   /** `skills` are the names selected for this turn only. */
@@ -47,29 +78,26 @@ export interface Composer {
   readSettings(): ChatSettings;
   /** Offers these skill names for the next turn; an empty list hides the choice. */
   setSkills(names: readonly string[]): void;
-  /** Removes the listeners the two menus put on the document. */
+  /** Removes the listeners the menus and the window focus put on the document. */
   dispose(): void;
 }
 
-function labelled(label: string, input: HTMLElement): HTMLElement {
-  return el("label", { class: "field" }, el("span", { text: label }), input);
-}
-
-function numberInput(
-  label: string,
-  value: number | null,
-  min: number,
-): [HTMLElement, HTMLInputElement] {
-  const input = el("input", { attrs: { type: "number", min: String(min), step: "1" } });
-  if (value !== null) input.value = String(value);
-  return [labelled(label, input), input];
+/** The saved chat defaults the settings window owns; the composer only reads them (ADR-0080). */
+interface Budgets {
+  context_tokens: number;
+  max_output_tokens: number;
+  max_tool_calls: number;
+  turn_timeout_seconds: number;
+  instructions: string;
 }
 
 /**
- * Builds the composer. The numeric chat settings are kept in this closure for the app run and are
- * filled from `chat_defaults` the first time they are available. The provider, the endpoint, and
- * the model belong to the open session (ADR-0071): they come from `connection`, which the footer's
- * provider dropdown shares.
+ * Builds the composer. The budgets and the global instructions are saved in the settings window
+ * (ADR-0080); the composer reads them from `chat_defaults` when it starts, when the window gains
+ * focus, and again just before each send, so a turn uses what was saved last. The compaction
+ * settings and the send key are the composer's own. The provider, the endpoint, and the model
+ * belong to the open session (ADR-0071): they come from `connection`, which the footer's provider
+ * dropdown shares.
  */
 export function createComposer(handlers: ComposerHandlers, connection: ConnectionModel): Composer {
   const box = el("textarea", {
@@ -91,23 +119,28 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   let workspaceError: string | null = null;
   /** Counts Workspace settings requests; a failure is shown only for the latest, in its session. */
   let workspaceRequest = 0;
-  const workspaceButton = button("Workspace settings", () => {
-    const id = sessionId;
-    if (id === null) {
-      return;
-    }
-    workspaceError = null;
-    workspaceRequest += 1;
-    const mine = workspaceRequest;
-    api.settingsShowWorkspace(id).catch((failure: unknown) => {
-      if (mine !== workspaceRequest || sessionId !== id) {
+  const workspaceButton = iconButton(
+    "folder",
+    WORKSPACE_SETTINGS_LABEL,
+    () => {
+      const id = sessionId;
+      if (id === null) {
         return;
       }
-      workspaceError = toIpcError(failure).message;
+      workspaceError = null;
+      workspaceRequest += 1;
+      const mine = workspaceRequest;
+      api.settingsShowWorkspace(id).catch((failure: unknown) => {
+        if (mine !== workspaceRequest || sessionId !== id) {
+          return;
+        }
+        workspaceError = toIpcError(failure).message;
+        refresh();
+      });
       refresh();
-    });
-    refresh();
-  });
+    },
+    "icon-button workspace-settings",
+  );
 
   const endpointValue = el("span", { class: "fixed-value" });
   const providerNote = el("span", { class: "muted", attrs: { role: "status" } });
@@ -126,25 +159,23 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   const providerSelect = createProviderSelect(connection, "Provider");
   /** What the model list was last requested for, so only a real change reloads it. */
   let loadedKey: string | null = null;
-  const [contextField, contextTokens] = numberInput("Context tokens", 0, 0);
-  const [outputField, maxOutput] = numberInput("Max output tokens", 0, 0);
-  const [toolCallsField, toolCalls] = numberInput("Tool calls per turn", null, 1);
-  toolCalls.required = true;
-  const [timeoutField, turnTimeout] = numberInput("Tool-enabled turn timeout (seconds)", null, 1);
-  turnTimeout.required = true;
-  const [compactField, compactThreshold] = numberInput("Compaction threshold", 0, 0);
+
+  /** The saved budgets, read from `chat_defaults`; `null` until the first read succeeds. */
+  let budgets: Budgets | null = null;
   const autoCompact = el("input", { attrs: { type: "checkbox" } });
-  const instructions = el("textarea", { attrs: { rows: "3" } });
-  const settingsInputs = [
-    contextTokens,
-    maxOutput,
-    toolCalls,
-    turnTimeout,
-    compactThreshold,
-    autoCompact,
-    instructions,
-  ];
-  const editedSettings = new Set<HTMLInputElement | HTMLTextAreaElement>();
+  const threshold = el("input", {
+    attrs: {
+      type: "range",
+      min: String(COMPACT_THRESHOLD_MIN),
+      max: String(COMPACT_THRESHOLD_MAX),
+      step: String(COMPACT_THRESHOLD_STEP),
+      "aria-label": "Compaction threshold",
+    },
+  });
+  threshold.value = String(COMPACT_THRESHOLD_MIN);
+  const thresholdValue = el("output", { class: "slider-value" });
+  const composerInputs: Array<HTMLInputElement> = [autoCompact, threshold];
+  const editedSettings = new Set<HTMLInputElement>();
   // On until `chat_defaults` says otherwise, so it is on even when they cannot be read.
   const enterToSend = el("input", { attrs: { type: "checkbox" } });
   enterToSend.checked = true;
@@ -161,7 +192,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       { class: "settings-grid" },
       el(
         "div",
-        { class: "field" },
+        { class: "field field-wide" },
         el("span", { text: "Endpoint" }),
         endpointValue,
         el("span", {
@@ -169,25 +200,34 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
           text: "Follows the session's provider, or is fixed when OMGCode starts.",
         }),
       ),
-      contextField,
-      outputField,
-      toolCallsField,
-      timeoutField,
-      compactField,
       el(
         "label",
-        { class: "field field-check" },
+        { class: "field field-check field-wide" },
         autoCompact,
         el("span", { text: "Auto-compact" }),
       ),
-      labelled("Custom instructions", instructions),
+      el(
+        "div",
+        { class: "field field-wide" },
+        el(
+          "span",
+          { class: "slider-label" },
+          el("span", { text: "Compact when the conversation reaches" }),
+          thresholdValue,
+        ),
+        threshold,
+        el("span", {
+          class: "muted",
+          text: "Or earlier, when the model's context is smaller. Budgets and instructions are in Settings.",
+        }),
+      ),
       el(
         "label",
-        { class: "field field-check" },
+        { class: "field field-check field-wide" },
         enterToSend,
         el("span", { text: "Enter to send" }),
       ),
-      el("div", { class: "field preferences-row" }, saveDefaultsButton, preferencesNote),
+      el("div", { class: "field field-wide preferences-row" }, saveDefaultsButton, preferencesNote),
     ),
   );
   settingsMenu.panel.classList.add("composer-panel");
@@ -205,6 +245,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
 
   let state: ComposerState = { visible: false, enabled: false, reason: null };
   let running = false;
+  /** Set while a send re-reads the defaults, so a second click does not send twice. */
+  let sending = false;
   let defaultsError: string | null = null;
   /** The open session's endpoint from the connection, or the launch default until it arrives. */
   let fixedEndpoint = "";
@@ -213,12 +255,12 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     return {
       endpoint: fixedEndpoint,
       model: model.value(),
-      context_tokens: Number(contextTokens.value),
-      max_output_tokens: Number(maxOutput.value),
-      max_tool_calls: Number(toolCalls.value),
-      turn_timeout_seconds: Number(turnTimeout.value),
-      instructions: instructions.value,
-      compact_threshold: Number(compactThreshold.value),
+      context_tokens: budgets?.context_tokens ?? 0,
+      max_output_tokens: budgets?.max_output_tokens ?? 0,
+      max_tool_calls: budgets?.max_tool_calls ?? 0,
+      turn_timeout_seconds: budgets?.turn_timeout_seconds ?? 0,
+      instructions: budgets?.instructions ?? "",
+      compact_threshold: Number(threshold.value),
       auto_compact: autoCompact.checked,
     };
   }
@@ -246,24 +288,45 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     refresh();
   }
 
-  function preferencesOf(settings: ChatSettings): ChatPreferences {
+  function preferencesOf(): ComposerPreferences {
     return {
-      model: settings.model,
+      compact_threshold: Number(threshold.value),
+      auto_compact: autoCompact.checked,
+      enter_to_send: enterToSend.checked,
+    };
+  }
+
+  function showThreshold(): void {
+    replaceChildren(thresholdValue, `${tokenLabel(Number(threshold.value))} tokens`);
+  }
+
+  function applyDefaults(defaults: ChatDefaults): void {
+    const { settings } = defaults;
+    budgets = {
       context_tokens: settings.context_tokens,
       max_output_tokens: settings.max_output_tokens,
       max_tool_calls: settings.max_tool_calls,
       turn_timeout_seconds: settings.turn_timeout_seconds,
       instructions: settings.instructions,
-      compact_threshold: settings.compact_threshold,
-      auto_compact: settings.auto_compact,
-      enter_to_send: enterToSend.checked,
     };
-  }
-
-  function applyDefaults(defaults: ChatDefaults): void {
-    toolCalls.max = String(defaults.tool_call_limit_max);
-    turnTimeout.max = String(defaults.turn_timeout_seconds_max);
-    writeSettings(defaults.settings);
+    if (connection.status() === null) {
+      fixedEndpoint = settings.endpoint;
+      replaceChildren(endpointValue, settings.endpoint);
+    }
+    threshold.min = String(defaults.compact_threshold_min);
+    threshold.max = String(defaults.compact_threshold_max);
+    if (!editedSettings.has(threshold)) {
+      // A value saved before the slider existed is shown, and sent, at the nearest stop.
+      threshold.value = String(
+        clampThreshold(
+          settings.compact_threshold,
+          defaults.compact_threshold_min,
+          defaults.compact_threshold_max,
+        ),
+      );
+    }
+    showThreshold();
+    if (!editedSettings.has(autoCompact)) autoCompact.checked = settings.auto_compact;
     if (!enterToSendChanged) {
       enterToSend.checked = defaults.enter_to_send;
       showSendKey();
@@ -276,12 +339,23 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     );
   }
 
+  /** Reads the saved defaults again. A failure keeps the last ones read and is shown. */
+  async function loadDefaults(): Promise<void> {
+    try {
+      applyDefaults(await api.chatDefaults());
+      defaultsError = null;
+    } catch (failure) {
+      defaultsError = toIpcError(failure).message;
+    }
+    refresh();
+  }
+
   async function saveDefaults(): Promise<void> {
     saveDefaultsButton.disabled = true;
     try {
       // Only the note changes: the inputs keep any edit made while the save
       // was in flight, so the returned copy is not written back.
-      await api.chatPreferencesSave(preferencesOf(readSettings()));
+      await api.chatPreferencesSave(preferencesOf());
       replaceChildren(preferencesNote, "Saved as defaults.");
     } catch (reason) {
       const error = toIpcError(reason);
@@ -292,25 +366,6 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     }
   }
 
-  /** Fills the numeric settings. The endpoint and model come from the session's connection. */
-  function writeSettings(settings: ChatSettings): void {
-    if (connection.status() === null) {
-      fixedEndpoint = settings.endpoint;
-      replaceChildren(endpointValue, settings.endpoint);
-    }
-    for (const [input, value] of [
-      [contextTokens, settings.context_tokens],
-      [maxOutput, settings.max_output_tokens],
-      [toolCalls, settings.max_tool_calls],
-      [turnTimeout, settings.turn_timeout_seconds],
-      [compactThreshold, settings.compact_threshold],
-      [instructions, settings.instructions],
-    ] as const) {
-      if (!editedSettings.has(input)) input.value = String(value);
-    }
-    if (!editedSettings.has(autoCompact)) autoCompact.checked = settings.auto_compact;
-  }
-
   function currentProblem(): string | null {
     const status = connection.status();
     if (status === null) {
@@ -319,18 +374,14 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     if (status.stale) {
       return "The provider chosen for this session changed. Choose the provider again.";
     }
+    if (model.value().trim() === "") {
+      return "Choose a model.";
+    }
+    if (budgets === null) {
+      return defaultsError === null ? "The chat defaults are being read." : null;
+    }
     if (!settingsValid(readSettings())) {
-      return "Choose a model and set a positive context size in Chat settings.";
-    }
-    if (!toolCalls.validity.valid) {
-      return toolCalls.max === ""
-        ? "Set Tool calls per turn to a positive whole number."
-        : `Set Tool calls per turn to a whole number from ${toolCalls.min} to ${toolCalls.max}.`;
-    }
-    if (!turnTimeout.validity.valid) {
-      return turnTimeout.max === ""
-        ? "Set Tool-enabled turn timeout to a positive whole number of seconds."
-        : `Set Tool-enabled turn timeout to a whole number from ${turnTimeout.min} to ${turnTimeout.max} seconds.`;
+      return SET_CONTEXT_IN_SETTINGS;
     }
     return messageProblem(box.value);
   }
@@ -345,7 +396,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     const issue = currentProblem();
     element.hidden = !state.visible;
     box.disabled = !state.enabled;
-    sendButton.disabled = !state.enabled || issue !== null;
+    sendButton.disabled = !state.enabled || sending || budgets === null || issue !== null;
     sendButton.hidden = running;
     cancelButton.hidden = !running;
     runningLabel.hidden = !running;
@@ -360,7 +411,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     replaceChildren(providerNote, connection.message());
     providerNote.hidden = connection.message() === "";
     choicesNote.hidden = connection.status()?.session_choices_unreadable !== true;
-    for (const input of settingsInputs) {
+    for (const input of composerInputs) {
       input.disabled = !state.enabled;
     }
     const full = selectedSkills().length >= SKILLS_PER_TURN;
@@ -369,14 +420,49 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     }
   }
 
-  function submit(): void {
+  function showProblem(issue: string | null): void {
+    replaceChildren(problem, issue ?? "");
+    problem.hidden = issue === null;
+  }
+
+  /**
+   * Sends with the defaults saved last: they are read again first, since the settings window may
+   * have changed them. The message, the skills, and the session are taken at the click; a send
+   * whose session changed while the defaults were read is dropped.
+   */
+  async function submitFresh(): Promise<void> {
+    const message = box.value;
+    const skills = selectedSkills();
+    const session = sessionId;
+    sending = true;
+    refresh();
+    try {
+      await loadDefaults();
+    } finally {
+      sending = false;
+    }
+    refresh();
     const issue = currentProblem();
-    if (!state.enabled || issue !== null) {
-      replaceChildren(problem, issue ?? "");
-      problem.hidden = issue === null;
+    if (session !== sessionId || !state.enabled || running) {
       return;
     }
-    handlers.onSend(box.value, readSettings(), selectedSkills());
+    if (issue !== null || budgets === null) {
+      showProblem(issue);
+      return;
+    }
+    handlers.onSend(message, readSettings(), skills);
+  }
+
+  function submit(): void {
+    if (sending) {
+      return;
+    }
+    const issue = currentProblem();
+    if (!state.enabled || issue !== null) {
+      showProblem(issue);
+      return;
+    }
+    void submitFresh();
   }
 
   /**
@@ -418,12 +504,16 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   providerSelect.render();
 
   box.addEventListener("input", refresh);
-  for (const input of settingsInputs) {
-    input.addEventListener(input === autoCompact ? "change" : "input", () => {
-      editedSettings.add(input);
-      refresh();
-    });
-  }
+  autoCompact.addEventListener("change", () => {
+    editedSettings.add(autoCompact);
+    refresh();
+  });
+  threshold.addEventListener("input", () => {
+    editedSettings.add(threshold);
+    showThreshold();
+    refresh();
+  });
+  showThreshold();
   /** Shows the send key in the message box hint. */
   function showSendKey(): void {
     box.placeholder = enterToSend.checked ? PLACEHOLDER_ENTER : PLACEHOLDER_CTRL_ENTER;
@@ -461,9 +551,16 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
         ),
         el("div", { class: "toolbar-field" }, el("span", { text: "Model" }), model.element),
         settingsMenu.element,
-        workspaceButton,
       ),
-      el("div", { class: "composer-send" }, counter, runningLabel, cancelButton, sendButton),
+      el(
+        "div",
+        { class: "composer-send" },
+        counter,
+        runningLabel,
+        workspaceButton,
+        cancelButton,
+        sendButton,
+      ),
     ),
     el(
       "div",
@@ -478,16 +575,10 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   );
   element.hidden = true;
 
-  void api
-    .chatDefaults()
-    .then((defaults) => {
-      applyDefaults(defaults);
-      refresh();
-    })
-    .catch((failure: unknown) => {
-      defaultsError = toIpcError(failure).message;
-      refresh();
-    });
+  // The settings window may have saved new budgets while this window was in the background.
+  const onFocus = (): void => void loadDefaults();
+  window.addEventListener("focus", onFocus);
+  void loadDefaults();
 
   return {
     element,
@@ -516,6 +607,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     setSkills,
     dispose() {
       unsubscribe();
+      window.removeEventListener("focus", onFocus);
       settingsMenu.dispose();
       skillsMenu.dispose();
     },

@@ -251,7 +251,7 @@ their registered identifier, and approvals by identifier.
 | `session_create` | main | Create a session in a registered workspace |
 | `chat_defaults` | main | Return the endpoint the next turn uses and the saved or built-in chat preferences |
 | `chat_models` | main | List the model ids a session's connection reports, for the composer's model choice; takes the session id |
-| `chat_preferences_save` | main | Save the chat preferences the composer starts from |
+| `chat_preferences_save` | main | Save the composer's own chat defaults: compaction threshold, auto-compact, and the send key (ADR-0080) |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
@@ -269,6 +269,8 @@ their registered identifier, and approvals by identifier.
 | `approval_detail` | approvals | Review one approval and obtain a review token |
 | `approval_decide` | approvals | Approve or deny one approval |
 | `settings_overview` | settings | Return the trusted configuration, creating an empty settings store when none exists |
+| `settings_save_chat_defaults` | settings | Save the chat budgets and the global custom instructions; no dialog (ADR-0080) |
+| `settings_set_workspace_instructions` | settings | Replace one registered workspace's custom instructions; empty removes them; no dialog (ADR-0080) |
 | `settings_choose_root` | settings | Choose the development root in a native folder dialog, after a native confirmation |
 | `settings_register_workspace` | settings | Register a folder below the root, chosen in a native dialog, after a native confirmation |
 | `settings_set_permissions` | settings | Set one workspace's preferences and per-tool write limits; widening any needs a native confirmation |
@@ -369,10 +371,12 @@ The `main` window is laid out as follows.
   the clipboard. Links and images are inert text that show their destination.
   A reply over 100,000 UTF-16 code units is shown as plain text. A reply is
   labelled with the model id from its turn's request manifest, or "Assistant"
-  when none is loaded (ADR-0068). Under it, **Copy Markdown** copies the
+  when none is loaded (ADR-0068). Under it are three icon buttons, each named
+  in its tooltip and accessible name (ADR-0080): **Copy Markdown** copies the
   recorded text, **Copy text** copies the rendered reply without Markdown
   symbols, and **Copy image** copies a PNG of the whole reply without its
-  buttons, repainted on a canvas from the computed layout and bounded at
+  buttons. After a click a tick or a cross replaces the icon, and the
+  tooltip says "Copied" or "Copy failed", for 1.5 seconds. The image is repainted on a canvas from the computed layout and bounded at
   8,192 pixels on a side, 4096 × 4096 in area, and 50,000 text runs. Each
   writes to the clipboard on a click and nothing reads it. A
   tool request is a collapsed row whose summary shows the tool name and a
@@ -386,10 +390,11 @@ The `main` window is laid out as follows.
   where n counts the skills chosen for the turn, hidden when no skill is
   enabled; a **Provider** dropdown and a **Model** dropdown with its
   **Refresh** button for the open session (see "Provider and model per
-  session"); a **Chat settings** menu with the numeric settings grid, the
-  read-only endpoint, and **Save as defaults**; a **Workspace settings**
-  button (see "Settings window"); then the byte counter, the running
-  label, **Cancel**, and **Send**. The counter appears only above 80% of the
+  session"); and a **Chat settings** menu with the read-only endpoint,
+  **Auto-compact**, the compaction slider, **Enter to send**, and **Save as
+  defaults**. On the right are the byte counter, the running label, the
+  **Workspace settings** icon button (see "Settings window"), **Cancel**, and
+  **Send**. The counter appears only above 80% of the
   message limit or when the message is over it.
 - **No waiting marker.** The `main` window cannot tell which session an
   approval belongs to: `chat_status`, the chat events, and `approvals_summary`
@@ -533,18 +538,33 @@ context size must match what the server loaded. A context of
 8,192 tokens was too small for a tool-enabled turn in testing, because the
 estimate reached the compaction trigger. A context of 32,768 tokens worked.
 
-**Tool calls per turn** in **Chat settings** accepts a whole number from 1 to
-256 and defaults to 128. **Save as defaults** keeps the value for future runs.
+**Tool calls per turn**, under **Chat defaults** in the settings window's
+**Model** section (ADR-0080), accepts a whole number from 1 to 256 and
+defaults to 128. **Save chat defaults** keeps the value.
 If the next batch would exceed the cap, the turn stops and reports the cap,
 calls used, and calls requested. Calls from that batch are skipped.
 
-**Tool-enabled turn timeout (seconds)** defaults to 120 and accepts whole
-numbers from 1 to 3600. **Save as defaults** keeps the value for future runs.
+**Tool-enabled turn timeout (seconds)**, beside it, defaults to 120 and
+accepts whole numbers from 1 to 3600.
 The runtime checks the deadline between operations and excludes approval waits.
 Each model request still has a 30-second timeout of its own.
-The composer gets the maximum tool-call and timeout values from `chat_defaults`.
-When defaults arrive after the operator has begun editing, only untouched
-controls take the returned values.
+The settings window gets the maximum tool-call and timeout values from the
+overview's `chat` block, and refuses a value outside them before sending.
+The composer reads the saved context size, output reserve, tool-call limit,
+timeout, and global instructions from `chat_defaults` when it starts, when
+the `main` window gains focus, and again just before each send, and sends
+them in `chat_send`; it has no control for them. Send is disabled while no
+context size is saved, and the composer says to set it in Settings, under
+Model.
+
+**Auto-compact** and the compaction slider stay in **Chat settings**. The
+slider runs from 128K to 1M tokens (128,000 to 1,000,000) in steps of 8,000
+and shows its value, such as "200K tokens"; `chat_defaults` reports the
+range. Compaction still triggers earlier when the model's safe input is
+smaller (`min(threshold, safe input)`). A saved threshold outside the range,
+such as one saved before 0.54.0, is shown and sent at the nearest end of
+the range. When defaults arrive after the operator has begun editing, only
+untouched controls take the returned values.
 
 - **Send key.** With **Enter to send** on, the default, Enter sends the
   message and Shift+Enter or Alt+Enter adds a newline. With it off, Enter
@@ -604,20 +624,25 @@ controls take the returned values.
   dialog. A status or list that arrives for a session that is no longer open
   is ignored. A session that never chose follows the global default chosen in
   the `settings` window. **Chat settings** keeps the endpoint as read-only text
-  (the open session's endpoint) and the numeric settings; **Save as defaults**
-  still saves the chat preferences, the model included, and these are the
-  model a session without its own choice starts from. A launch argument
+  (the open session's endpoint). A launch argument
   (`--endpoint` or `--provider-profile`) fixes the connection of every
   session: both provider dropdowns are disabled and show "Set at launch", and
   the model is still chosen from that connection's list. `chat_send` keeps
   sending the composer's endpoint and model; Send is disabled without a model
   and while the session's provider is being read or has gone stale.
-- **Saved preferences.** **Save as defaults** sends the model name, context
-  size, output reserve, tool-call limit, tool-enabled turn timeout, custom
-  instructions, compaction threshold, the automatic compaction switch, and
-  the **Enter to send** choice to
-  `chat_preferences_save`. A file or request without `max_tool_calls` reads as
-  128, and one without `turn_timeout_seconds` reads as 120. A file or request
+- **Saved preferences.** Two windows save one file, each its own fields,
+  under one service lock, so neither overwrites the other's (ADR-0080). The
+  composer's **Save as defaults** sends the compaction threshold, the
+  automatic compaction switch, and the **Enter to send** choice to
+  `chat_preferences_save`, which refuses a threshold outside 128,000 to
+  1,000,000 and any other field. The settings window's **Save chat
+  defaults** sends the context size, output reserve, tool-call limit,
+  tool-enabled turn timeout, and global custom instructions to
+  `settings_save_chat_defaults`, which refuses a zero context size or output
+  reserve, a tool-call limit or timeout out of range, and global
+  instructions over 16 KiB. Neither saves the model name; a file's saved
+  name is kept. A file without `max_tool_calls` reads as 128, and one
+  without `turn_timeout_seconds` reads as 120. A file or request
   without `enter_to_send`, such
   as a file saved before version 0.42.0, reads it as on. An older build
   refuses a file that has the field as unknown, reports it as `unreadable`,
@@ -625,7 +650,9 @@ controls take the returned values.
   endpoint and grant nothing. The request refuses an unknown field, so an
   endpoint cannot be saved. A model name over 256 bytes or with a control
   character, and instructions over 64 KiB, are refused with
-  `invalid_request`. The tool-call limit and turn timeout are validated on save, load, and send.
+  `invalid_request` when the file is read; a file saved before 0.54.0 may
+  hold up to 64 KiB, which a turn refuses. The tool-call limit and turn
+  timeout are validated on save, load, and send.
   `chat_send` validates the other budgets before starting a turn. The file is
   `<data_root>/desktop-v1/chat-preferences.json`, at most 512 KiB, read only
   as a regular file and parsed strictly. A save writes a new temporary file,
@@ -774,6 +801,15 @@ waits. The window shows:
   `http://127.0.0.1:1234/v1`). For Ollama Cloud the endpoint field is hidden
   and the fixed endpoint `https://ollama.com/v1` is shown as read-only text,
   and a labelled **API key** password field (`autocomplete="off"`) appears.
+  Between the active connection and the connection list, **Chat defaults**
+  (ADR-0080) holds number fields for **Context tokens**, **Max output
+  tokens**, **Tool calls per turn**, and **Tool-enabled turn timeout
+  (seconds)**, a **Global custom instructions** box with a UTF-8 byte
+  counter, and **Save chat defaults**, which calls
+  `settings_save_chat_defaults` with no native dialog and no settings
+  revision, because none of it is a permission. What the operator types is
+  kept in window memory until a save succeeds, so a redraw or a section
+  change keeps it. A note says when the saved file could not be read.
 - **Workspaces.** The meaning of Deny, Prompt, and Allow, stated once. The
   development root, with **Choose folder…** or **Change…**, and
   **Register workspace…**, which is disabled until a root is set. With two or
@@ -787,7 +823,14 @@ waits. The window shows:
   (edit, multi-edit, create, rename, and delete; since 0.43.0, ADR-0063). A
   tool whose limit is wider than `write` says "Limited by Write:" and the
   `write` state. Then the workspace identifier and its package cache root with
-  **Choose…** and, when one is set, **Clear**.
+  **Choose…** and, when one is set, **Clear**. Then **Custom instructions**
+  (ADR-0080): a box with a byte counter and **Save instructions**, which
+  calls `settings_set_workspace_instructions` with the workspace identifier
+  and the text, with no dialog. Rust refuses a workspace that is not
+  registered and text over 16 KiB; saving empty text removes the
+  workspace's file. Each workspace's typed draft is kept in window memory
+  until its save succeeds. A note says when the saved file could not be
+  read; until it is saved again, that workspace's sessions cannot send.
 - **Advanced.** Read-only, with no control that changes anything: toolchain
   profiles with their platform, read-only roots, path entries, and
   environment variable names, without values; package-network profiles with
@@ -795,8 +838,8 @@ waits. The window shows:
   their folder, access, and state; and each imported skill's name, its
   application setting, and its workspace overrides, with the workspace shown
   by its folder. A line says these change only through the trusted CLI.
-- **Workspace scope** (ADR-0071). **Workspace settings**, next to **Chat
-  settings** in the composer toolbar, calls `settings_show_workspace` with
+- **Workspace scope** (ADR-0071). **Workspace settings**, an icon button
+  with a folder beside **Send** (ADR-0080), calls `settings_show_workspace` with
   the open session's identifier and nothing else; it is disabled until a
   session is open. Rust resolves the workspace the session was recorded in
   through the session index and the settings store, never from the webview.
@@ -808,7 +851,8 @@ waits. The window shows:
   the scope names a registered workspace, the window hides the section
   sidebar and shows only **Workspace settings** for that workspace: the
   Deny, Prompt, and Allow help, its folder, **Model tools**, the permission
-  rows, **File-write tool limits**, its identifier, and its package cache.
+  rows, **File-write tool limits**, its identifier, its package cache, and
+  its **Custom instructions**.
   It shows no development root, **Register workspace…**, or workspace
   chooser. **All settings** calls `settings_clear_scope`, a `settings`
   command, and the window then shows the sections as before. **Settings** in

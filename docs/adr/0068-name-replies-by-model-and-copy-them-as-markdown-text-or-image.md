@@ -1,6 +1,6 @@
 # 0068: Name replies by model and copy them as Markdown, text, or an image
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0080](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)
 - Date: 2026-11-20
 
 ## Context

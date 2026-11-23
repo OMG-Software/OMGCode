@@ -288,7 +288,7 @@ fn an_enabled_skill_reaches_the_model_request_for_that_turn_only() {
 }
 
 #[test]
-fn saved_chat_preferences_become_the_defaults_and_keep_the_fixed_endpoint() {
+fn the_settings_window_and_the_composer_each_save_their_own_chat_defaults() {
     let fixture = Fixture::bare();
     let endpoint = "http://127.0.0.1:1234/v1";
     let service = fixture.service(endpoint);
@@ -306,69 +306,156 @@ fn saved_chat_preferences_become_the_defaults_and_keep_the_fixed_endpoint() {
         defaults.turn_timeout_seconds_max,
         omgcode_core::turn::MAX_TURN_DEADLINE.as_secs()
     );
+    assert_eq!(
+        (
+            defaults.compact_threshold_min,
+            defaults.compact_threshold_max
+        ),
+        (128_000, 1_000_000)
+    );
+    let overview = service.settings_overview().expect("overview");
+    assert_eq!(json_of(&overview.chat)["source"], "defaults");
+    assert_eq!(overview.chat.defaults.context_tokens, 0);
+    assert_eq!(overview.chat.instructions_max_bytes, 16 * 1024);
 
-    let saved = service
-        .chat_preferences_save(wire(json!({"preferences": {
-            "model": "qwen3-coder",
+    // The settings window saves the budgets and the global instructions.
+    let overview = service
+        .settings_save_chat_defaults(wire(json!({"defaults": {
             "context_tokens": 32_768,
             "max_output_tokens": 2048,
+            "max_tool_calls": 64,
             "turn_timeout_seconds": 900,
-            "instructions": "Prefer short answers.",
-            "compact_threshold": 24_000,
+            "instructions": "Prefer short answers."
+        }})))
+        .expect("settings save");
+    assert_eq!(json_of(&overview.chat)["source"], "saved");
+    assert_eq!(overview.chat.defaults.context_tokens, 32_768);
+
+    // The composer saves its own fields; the settings window's stay.
+    let saved = service
+        .chat_preferences_save(wire(json!({"preferences": {
+            "compact_threshold": 256_000,
             "auto_compact": true,
             "enter_to_send": false
         }})))
-        .expect("save");
+        .expect("composer save");
     assert_eq!(saved.preferences, PreferencesSource::Saved);
     assert!(!saved.enter_to_send);
     assert_eq!(json_of(&saved)["enter_to_send"], false);
     assert_eq!(saved.settings.endpoint, endpoint);
-    assert_eq!(saved.settings.model, "qwen3-coder");
     assert_eq!(saved.settings.context_tokens, 32_768);
     assert_eq!(saved.settings.max_output_tokens, 2048);
+    assert_eq!(saved.settings.max_tool_calls, 64);
     assert_eq!(saved.settings.turn_timeout_seconds, 900);
     assert_eq!(saved.settings.instructions, "Prefer short answers.");
-    assert_eq!(saved.settings.compact_threshold, 24_000);
+    assert_eq!(saved.settings.compact_threshold, 256_000);
     assert!(saved.settings.auto_compact);
 
-    // A new service in the same data root starts from them.
+    // A later settings save keeps the composer's fields.
+    service
+        .settings_save_chat_defaults(wire(json!({"defaults": {
+            "context_tokens": 65_536,
+            "max_output_tokens": 4096,
+            "max_tool_calls": 32,
+            "turn_timeout_seconds": 300,
+            "instructions": ""
+        }})))
+        .expect("second settings save");
     let reopened = fixture.service(endpoint).chat_defaults();
-    assert_eq!(reopened, saved);
+    assert_eq!(reopened.settings.context_tokens, 65_536);
+    assert_eq!(reopened.settings.instructions, "");
+    assert_eq!(reopened.settings.compact_threshold, 256_000);
+    assert!(reopened.settings.auto_compact);
+    assert!(!reopened.enter_to_send);
     assert_eq!(json_of(&reopened)["preferences"], "saved");
 }
 
 #[test]
-fn chat_preferences_cannot_carry_an_endpoint_or_oversized_values() {
+fn composer_preferences_carry_only_their_own_fields_within_the_slider_range() {
     let fixture = Fixture::bare();
     let service = fixture.service("http://127.0.0.1:1234/v1");
-    let with_endpoint = serde_json::from_value::<omgcode_app::desktop::ChatPreferencesSaveRequest>(
-        json!({"preferences": {
-            "endpoint": "http://example.com/v1",
-            "model": "m",
-            "context_tokens": 1,
-            "max_output_tokens": 1,
-            "instructions": "",
-            "compact_threshold": 1,
-            "auto_compact": false
-        }}),
-    );
-    assert!(with_endpoint.is_err(), "an endpoint field is refused");
+    for extra in [
+        json!({"endpoint": "http://example.com/v1"}),
+        json!({"model": "m"}),
+        json!({"context_tokens": 1}),
+        json!({"instructions": "x"}),
+    ] {
+        let mut preferences =
+            json!({"compact_threshold": 200_000, "auto_compact": false, "enter_to_send": true});
+        for (key, value) in extra.as_object().expect("object") {
+            preferences[key] = value.clone();
+        }
+        let parsed = serde_json::from_value::<omgcode_app::desktop::ChatPreferencesSaveRequest>(
+            json!({ "preferences": preferences }),
+        );
+        assert!(parsed.is_err(), "{extra} is refused");
+    }
 
-    let error = service
-        .chat_preferences_save(wire(json!({"preferences": {
-            "model": "m".repeat(257),
-            "context_tokens": 1,
-            "max_output_tokens": 1,
-            "instructions": "",
-            "compact_threshold": 1,
-            "auto_compact": false
-        }})))
-        .expect_err("too long");
-    assert_eq!(error.code(), "invalid_request");
+    for threshold in [0_u64, 127_999, 1_000_001] {
+        let error = service
+            .chat_preferences_save(wire(json!({"preferences": {
+                "compact_threshold": threshold,
+                "auto_compact": false,
+                "enter_to_send": true
+            }})))
+            .expect_err("outside the range");
+        assert_eq!(error.code(), "invalid_request");
+    }
     assert_eq!(
         service.chat_defaults().preferences,
         PreferencesSource::Defaults
     );
+    for threshold in [128_000_u64, 1_000_000] {
+        service
+            .chat_preferences_save(wire(json!({"preferences": {
+                "compact_threshold": threshold,
+                "auto_compact": false,
+                "enter_to_send": true
+            }})))
+            .expect("an end of the range");
+    }
+}
+
+#[test]
+fn settings_chat_defaults_are_checked_and_nothing_is_written_when_refused() {
+    let fixture = Fixture::bare();
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let valid = json!({
+        "context_tokens": 8192,
+        "max_output_tokens": 512,
+        "max_tool_calls": 16,
+        "turn_timeout_seconds": 120,
+        "instructions": ""
+    });
+    for (field, value) in [
+        ("context_tokens", json!(0)),
+        ("max_output_tokens", json!(0)),
+        ("max_tool_calls", json!(0)),
+        (
+            "max_tool_calls",
+            json!(omgcode_core::turn::MAX_TOOL_CALLS + 1),
+        ),
+        ("turn_timeout_seconds", json!(0)),
+        ("instructions", json!("i".repeat(16 * 1024 + 1))),
+    ] {
+        let mut defaults = valid.clone();
+        defaults[field] = value;
+        let error = service
+            .settings_save_chat_defaults(wire(json!({ "defaults": defaults })))
+            .expect_err("refused");
+        assert_eq!(error.code(), "invalid_request", "{field}");
+    }
+    assert_eq!(
+        service.chat_defaults().preferences,
+        PreferencesSource::Defaults
+    );
+    let parsed = serde_json::from_value::<omgcode_app::desktop::ChatBudgetsSaveRequest>(
+        json!({"defaults": {
+            "context_tokens": 1, "max_output_tokens": 1, "max_tool_calls": 1,
+            "turn_timeout_seconds": 1, "instructions": "", "compact_threshold": 1
+        }}),
+    );
+    assert!(parsed.is_err(), "a composer field is refused");
 }
 
 #[test]
@@ -382,19 +469,19 @@ fn a_damaged_preferences_file_is_reported_and_replaced_by_a_save() {
     let reply = service.chat_defaults();
     assert_eq!(reply.preferences, PreferencesSource::Unreadable);
     assert_eq!(reply.settings.model, "");
+    let overview = service.settings_overview().expect("overview");
+    assert_eq!(json_of(&overview.chat)["source"], "unreadable");
 
     let saved = service
         .chat_preferences_save(wire(json!({"preferences": {
-            "model": "m",
-            "context_tokens": 8192,
-            "max_output_tokens": 512,
-            "instructions": "",
-            "compact_threshold": 4096,
-            "auto_compact": false
+            "compact_threshold": 200_000,
+            "auto_compact": false,
+            "enter_to_send": true
         }})))
         .expect("save replaces the damaged file");
     assert_eq!(saved.preferences, PreferencesSource::Saved);
-    // A request without the field keeps the built-in choice.
+    // The damaged file's other fields are not recovered; the built-in ones apply.
+    assert_eq!(saved.settings.context_tokens, 0);
     assert!(saved.enter_to_send);
 }
 
@@ -402,16 +489,176 @@ fn a_damaged_preferences_file_is_reported_and_replaced_by_a_save() {
 fn enter_to_send_must_be_a_boolean() {
     let refused = serde_json::from_value::<omgcode_app::desktop::ChatPreferencesSaveRequest>(
         json!({"preferences": {
-            "model": "m",
-            "context_tokens": 1,
-            "max_output_tokens": 1,
-            "instructions": "",
-            "compact_threshold": 1,
+            "compact_threshold": 200_000,
             "auto_compact": false,
             "enter_to_send": "yes"
         }}),
     );
     assert!(refused.is_err(), "a non-boolean value is refused");
+}
+
+#[test]
+fn workspace_instructions_are_saved_for_a_registered_workspace_only() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let shown = |overview: &omgcode_app::desktop::SettingsOverview| {
+        overview
+            .workspaces
+            .iter()
+            .find(|view| view.workspace_id == workspace.id)
+            .expect("the workspace")
+            .instructions
+            .clone()
+    };
+    assert_eq!(
+        shown(&service.settings_overview().expect("overview")),
+        Some(String::new())
+    );
+
+    let overview = service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": "Run cargo test before answering."
+        })))
+        .expect("save");
+    assert_eq!(
+        shown(&overview),
+        Some("Run cargo test before answering.".to_owned())
+    );
+
+    let error = service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": Uuid::new_v4(),
+            "instructions": "x"
+        })))
+        .expect_err("unknown workspace");
+    assert_eq!(error.code(), "unknown_workspace");
+    let error = service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": "i".repeat(16 * 1024 + 1)
+        })))
+        .expect_err("too long");
+    assert_eq!(error.code(), "invalid_request");
+
+    let overview = service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": ""
+        })))
+        .expect("remove");
+    assert_eq!(shown(&overview), Some(String::new()));
+
+    // A damaged file is shown as unreadable.
+    let file = fixture
+        .data
+        .join("desktop-v1")
+        .join("workspace-instructions")
+        .join(format!("{}.json", workspace.id));
+    fs::create_dir_all(file.parent().expect("parent")).expect("directory");
+    fs::write(&file, b"{ not json").expect("damage");
+    assert_eq!(shown(&service.settings_overview().expect("overview")), None);
+}
+
+/// The request's labelled preference message, if any.
+fn preference_message(recorded: &common::Recorded) -> Option<String> {
+    let body: Value = serde_json::from_str(&recorded.body).expect("request JSON");
+    body["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .find(|content| content.starts_with("Saved user preferences:\n"))
+        .map(str::to_owned)
+}
+
+#[test]
+fn a_turn_sends_the_global_and_the_workspace_instructions_together() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let server = MockServer::start(vec![Step::reply(text("one")), Step::reply(text("two"))]);
+    let service = fixture.service(&server.endpoint);
+    let session = new_session(&service, &workspace);
+    let mut settings = settings_json(&server.endpoint);
+    settings["instructions"] = json!("Be brief.");
+    let send = |settings: &Value| {
+        service
+            .chat_send(wire(json!({
+                "session_id": session,
+                "message": "hi",
+                "settings": settings,
+                "skills": [],
+            })))
+            .expect("send");
+        assert_eq!(wait_finished(&service, session).state, ChatState::Completed);
+    };
+
+    // The global text alone keeps its earlier shape.
+    send(&settings);
+    service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": "Use tabs."
+        })))
+        .expect("save");
+    send(&settings);
+
+    let (_, requests) = server.finish_recorded();
+    assert_eq!(
+        preference_message(&requests[0]).as_deref(),
+        Some("Saved user preferences:\nBe brief.")
+    );
+    assert_eq!(
+        preference_message(&requests[1]).as_deref(),
+        Some(
+            "Saved user preferences:\nGlobal instructions:\nBe brief.\n\nWorkspace instructions:\nUse tabs."
+        )
+    );
+}
+
+#[test]
+fn a_turn_is_refused_when_its_workspace_instructions_cannot_be_used() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let server = NoCallServer::start();
+    let service = fixture.service(&server.endpoint);
+    let session = new_session(&service, &workspace);
+    let half = "h".repeat(8 * 1024);
+    service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": half
+        })))
+        .expect("save");
+    let mut settings = settings_json(&server.endpoint);
+    settings["instructions"] = json!(half);
+    let error = service
+        .chat_send(wire(json!({
+            "session_id": session,
+            "message": "hi",
+            "settings": settings,
+            "skills": [],
+        })))
+        .expect_err("together they are too long");
+    assert_eq!(error.code(), "invalid_request");
+
+    let file = fixture
+        .data
+        .join("desktop-v1")
+        .join("workspace-instructions")
+        .join(format!("{}.json", workspace.id));
+    fs::write(&file, b"{ not json").expect("damage");
+    let error = service
+        .chat_send(wire(json!({
+            "session_id": session,
+            "message": "hi",
+            "settings": settings_json(&server.endpoint),
+            "skills": [],
+        })))
+        .expect_err("unreadable");
+    assert_eq!(error.code(), "instructions_unreadable");
+    server.assert_untouched();
 }
 
 /// The status bar's branch (ADR-0064) is read from the workspace's `HEAD` for

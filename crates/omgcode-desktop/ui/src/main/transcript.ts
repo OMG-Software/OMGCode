@@ -3,7 +3,7 @@ import { formatAbsolute } from "../format";
 import type { TranscriptEntry } from "../ipc/types";
 import { renderPng } from "./capture";
 import type { ChatPreview } from "./chat_runner";
-import { copyPng, copyText, feedbackButton } from "./clipboard";
+import { copyPng, copyText, iconFeedbackButton } from "./clipboard";
 import { renderMarkdown } from "./markdown";
 import { plainText } from "./plain_text";
 
@@ -135,6 +135,9 @@ export function entryContexts(entries: readonly TranscriptEntry[]): EntryContext
  * reads it. The row is left out of the image. The source is copied with the same visible markers
  * the screen shows in place of bidirectional overrides.
  */
+/** Reply actions are small icon buttons; each names its action in its tooltip. */
+const REPLY_ACTION_CLASS = "icon-button reply-action";
+
 function replyActions(entry: MessageEntry, node: HTMLElement, body: HTMLElement): HTMLElement {
   return el(
     "div",
@@ -142,15 +145,27 @@ function replyActions(entry: MessageEntry, node: HTMLElement, body: HTMLElement)
       class: "reply-actions",
       attrs: { role: "group", "aria-label": "Reply actions", "data-capture": "skip" },
     },
-    feedbackButton("Copy Markdown", "Copied", () => copyText(neutralise(entry.text)), {
-      class: "reply-action",
-    }),
-    feedbackButton("Copy text", "Copied", () => copyText(plainText(body)), {
-      class: "reply-action",
-    }),
-    feedbackButton("Copy image", "Copied", () => copyPng(renderPng(node)), {
-      class: "reply-action",
-    }),
+    iconFeedbackButton(
+      "markdown",
+      "Copy Markdown",
+      "Copied",
+      () => copyText(neutralise(entry.text)),
+      REPLY_ACTION_CLASS,
+    ),
+    iconFeedbackButton(
+      "copy",
+      "Copy text",
+      "Copied",
+      () => copyText(plainText(body)),
+      REPLY_ACTION_CLASS,
+    ),
+    iconFeedbackButton(
+      "image",
+      "Copy image",
+      "Copied",
+      () => copyPng(renderPng(node)),
+      REPLY_ACTION_CLASS,
+    ),
   );
 }
 

@@ -4,9 +4,9 @@ import type {
   AppInfo,
   ChatDefaults,
   ChatModels,
-  ChatPreferences,
   ChatSettings,
   ChatStatus,
+  ComposerPreferences,
   ConnectionStatus,
   SearchResult,
   SessionContext,
@@ -107,7 +107,8 @@ export const api = {
   /** The models the session's connection reports (ADR-0066, ADR-0071). */
   chatModels: (sessionId: string) =>
     invokeCommand<ChatModels>("chat_models", { session_id: sessionId }),
-  chatPreferencesSave: (preferences: ChatPreferences) =>
+  /** Saves the composer's own chat defaults; every other saved field keeps its value. */
+  chatPreferencesSave: (preferences: ComposerPreferences) =>
     invokeCommand<ChatDefaults>("chat_preferences_save", { preferences }),
   chatSend: (sessionId: string, message: string, settings: ChatSettings, skills: string[]) =>
     invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings, skills }),

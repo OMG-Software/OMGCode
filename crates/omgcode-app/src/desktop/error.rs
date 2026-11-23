@@ -141,6 +141,23 @@ impl DesktopError {
         Self::new("preferences", "The chat preferences could not be saved.")
     }
 
+    /// A workspace's saved custom instructions could not be written.
+    pub(crate) fn workspace_instructions() -> Self {
+        Self::new(
+            "preferences",
+            "The workspace instructions could not be saved.",
+        )
+    }
+
+    /// A workspace's saved custom instructions could not be read, so a turn
+    /// that would use them is refused rather than sent without them.
+    pub(crate) fn instructions_unreadable() -> Self {
+        Self::new(
+            "instructions_unreadable",
+            "The workspace instructions could not be read. Save them again in Settings.",
+        )
+    }
+
     /// The per-session connection and model choices could not be saved.
     pub(crate) fn session_choices() -> Self {
         Self::new(

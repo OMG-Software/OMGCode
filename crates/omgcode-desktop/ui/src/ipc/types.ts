@@ -110,6 +110,7 @@ export interface ChatSettings {
   max_output_tokens: number;
   max_tool_calls: number;
   turn_timeout_seconds: number;
+  /** The global custom instructions; Rust adds the session workspace's own (ADR-0080). */
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
@@ -246,17 +247,25 @@ export function isChatEvent(value: unknown): value is ChatEvent {
 }
 
 /** Saved composer defaults (ADR-0059). They grant nothing and carry no endpoint. */
-export interface ChatPreferences {
-  model: string;
-  context_tokens: number;
-  max_output_tokens: number;
-  max_tool_calls: number;
-  turn_timeout_seconds: number;
-  instructions: string;
+/**
+ * The chat defaults the composer saves (ADR-0080). The budgets and the global instructions are
+ * saved by the settings window and keep their values.
+ */
+export interface ComposerPreferences {
   compact_threshold: number;
   auto_compact: boolean;
   /** Enter sends and Shift+Enter adds a newline; otherwise Ctrl+Enter sends (ADR-0062). */
   enter_to_send: boolean;
+}
+
+/** The chat defaults the settings window saves beside the model connection (ADR-0080). */
+export interface ChatBudgets {
+  context_tokens: number;
+  max_output_tokens: number;
+  max_tool_calls: number;
+  turn_timeout_seconds: number;
+  /** Global custom instructions for every workspace. */
+  instructions: string;
 }
 
 export type PreferencesSource = "defaults" | "saved" | "unreadable";
@@ -268,6 +277,9 @@ export interface ChatDefaults {
   preferences: PreferencesSource;
   /** A composer keyboard choice, not a turn setting (ADR-0062). */
   enter_to_send: boolean;
+  /** The range the composer's compaction slider offers (ADR-0080). */
+  compact_threshold_min: number;
+  compact_threshold_max: number;
 }
 
 /** One model the next turn's connection reports (ADR-0066). */
@@ -306,6 +318,8 @@ export interface WorkspaceSettingsView {
   host_services: Access;
   write_tools: WriteToolAccess;
   package_cache_root: string | null;
+  /** The workspace's custom instructions (ADR-0080); `null` when the saved file is unreadable. */
+  instructions: string | null;
 }
 
 /** The complete preference set a permissions change sends. Every field is required. */
@@ -425,6 +439,15 @@ export interface SkillSettingView {
 }
 
 /** The read-only configuration shown in the settings window only. */
+export interface ChatDefaultsView {
+  defaults: ChatBudgets;
+  source: PreferencesSource;
+  tool_call_limit_max: number;
+  turn_timeout_seconds_max: number;
+  /** Largest global or workspace instruction text, in UTF-8 bytes; also their sum with headings. */
+  instructions_max_bytes: number;
+}
+
 export interface SettingsOverview {
   revision: number;
   development_root: string | null;
@@ -435,6 +458,8 @@ export interface SettingsOverview {
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
   skills: SkillSettingView[];
+  /** The chat defaults shown beside the model connection (ADR-0080). */
+  chat: ChatDefaultsView;
   /** The workspace the window is scoped to (ADR-0071), or `null` for the full view. Display only. */
   scope: { workspace_id: string } | null;
 }

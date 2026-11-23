@@ -1,6 +1,6 @@
 # 0076: Configure the tool-call budget per turn
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0080](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)
 - Date: 2026-11-23
 - Implemented: version 0.52.1
 - Amends: [ADR-0075](0075-budget-model-requests-for-sequential-tool-calls.md)

@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
 use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
@@ -11,13 +10,13 @@ use omgcode_core::turn::ApprovalWaitSlot;
 
 use super::ChatEventSink;
 use super::error::DesktopError;
-use super::preferences;
+use super::instructions;
+use super::preferences::{self, COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN};
 use super::session_connections::SessionConnection;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
-    ChatDefaults, ChatModels, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest,
-    ChatSettingsDto, ChatState, ChatStatus, ModelChoice, PreferencesSource, SessionRequest,
-    enter_to_send_default,
+    ChatDefaults, ChatModels, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
+    ChatState, ChatStatus, ModelChoice, PreferencesSource, SessionRequest,
 };
 use super::{DesktopService, Inner};
 use crate::{
@@ -25,15 +24,13 @@ use crate::{
 };
 use omgcode_core::control::ProviderKind;
 use omgcode_core::provider::list_local_models;
-use omgcode_core::turn::{DEFAULT_MAX_TOOL_CALLS, MAX_TOOL_CALLS, MAX_TURN_DEADLINE};
+use omgcode_core::turn::{MAX_TOOL_CALLS, MAX_TURN_DEADLINE};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
 /// keeps an oversized request from being copied into a turn thread.
 const MAX_MESSAGE_INPUT_BYTES: usize = 64 * 1024;
 /// Largest custom-instruction text accepted before core applies its bound.
 const MAX_INSTRUCTIONS_INPUT_BYTES: usize = 64 * 1024;
-/// Output reserve of the default settings.
-const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
 
 impl DesktopService {
     /// The settings the interface starts from: the endpoint the next turn
@@ -51,8 +48,8 @@ impl DesktopService {
     pub fn chat_defaults(&self) -> ChatDefaults {
         let (preferences, source) = match preferences::load(&self.inner.data_root) {
             Ok(Some(saved)) => (saved, PreferencesSource::Saved),
-            Ok(None) => (built_in_preferences(), PreferencesSource::Defaults),
-            Err(_) => (built_in_preferences(), PreferencesSource::Unreadable),
+            Ok(None) => (preferences::built_in(), PreferencesSource::Defaults),
+            Err(_) => (preferences::built_in(), PreferencesSource::Unreadable),
         };
         let endpoint = self
             .inner
@@ -75,6 +72,8 @@ impl DesktopService {
             turn_timeout_seconds_max: MAX_TURN_DEADLINE.as_secs(),
             preferences: source,
             enter_to_send: preferences.enter_to_send,
+            compact_threshold_min: COMPACT_THRESHOLD_MIN,
+            compact_threshold_max: COMPACT_THRESHOLD_MAX,
         }
     }
 
@@ -120,20 +119,41 @@ impl DesktopService {
         })
     }
 
-    /// Save the chat preferences the composer starts from next time.
+    /// Save the composer's own chat defaults: the compaction settings and the
+    /// send key (ADR-0080). The budgets and the global instructions keep their
+    /// saved values; the `settings` window saves those.
     ///
     /// They grant nothing; `chat_send` validates every value when it is used.
-    /// The file is replaced atomically in application storage.
+    /// The file is replaced atomically in application storage, under the
+    /// preferences lock that the `settings` window's save also takes.
     ///
     /// # Errors
     ///
-    /// `invalid_request` for a value over its bound, `preferences` when the
-    /// file cannot be written.
+    /// `invalid_request` for a compaction threshold outside the slider's
+    /// range, `preferences` when the file cannot be written, `internal` for a
+    /// poisoned lock.
     pub fn chat_preferences_save(
         &self,
         request: ChatPreferencesSaveRequest,
     ) -> Result<ChatDefaults, DesktopError> {
-        preferences::save(&self.inner.data_root, &request.preferences)?;
+        let saved = request.preferences;
+        if !(COMPACT_THRESHOLD_MIN..=COMPACT_THRESHOLD_MAX).contains(&saved.compact_threshold) {
+            return Err(DesktopError::invalid_request(format!(
+                "The compaction threshold must be from {COMPACT_THRESHOLD_MIN} to {COMPACT_THRESHOLD_MAX} tokens."
+            )));
+        }
+        {
+            let _lock = self
+                .inner
+                .preferences
+                .lock()
+                .map_err(|_| DesktopError::poisoned())?;
+            preferences::update(&self.inner.data_root, |preferences| {
+                preferences.compact_threshold = saved.compact_threshold;
+                preferences.auto_compact = saved.auto_compact;
+                preferences.enter_to_send = saved.enter_to_send;
+            })?;
+        }
         Ok(self.chat_defaults())
     }
 
@@ -198,6 +218,17 @@ impl DesktopService {
         if session.active_turn.is_some() {
             return Err(DesktopError::turn_open());
         }
+        // The window sends the global instructions; the session's workspace
+        // adds its own from storage (ADR-0080). An unreadable file refuses
+        // the turn rather than sending it without the operator's text.
+        let workspace_instructions = match session.workspace_id {
+            Some(workspace) => instructions::load(&inner.data_root, workspace)
+                .map_err(|_| DesktopError::instructions_unreadable())?,
+            None => String::new(),
+        };
+        let mut turn_settings = request.settings;
+        turn_settings.instructions =
+            instructions::compose(&turn_settings.instructions, &workspace_instructions)?;
 
         // Resolve the connection and build the clients now, so an unreadable
         // credential, a profile whose endpoint changed since launch, a bad
@@ -212,10 +243,10 @@ impl DesktopService {
             connection: LocalConnection { endpoint, token },
             ..
         } = inner.resolve_session(session_id)?;
-        if endpoint != request.settings.endpoint {
+        if endpoint != turn_settings.endpoint {
             return Err(DesktopError::connection_changed());
         }
-        let settings = chat_settings(request.settings, endpoint);
+        let settings = chat_settings(turn_settings, endpoint);
         let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
             .map_err(|error| DesktopError::from_app(&error))?;
         let approval_wait = ApprovalWaitSlot::new();
@@ -350,22 +381,6 @@ fn check_slot(inner: &Inner, session_id: Uuid) -> Result<(), DesktopError> {
         return Err(DesktopError::too_many_turns());
     }
     Ok(())
-}
-
-/// The preferences that apply when none are saved: an empty model and the
-/// CLI's budgets.
-fn built_in_preferences() -> ChatPreferencesDto {
-    ChatPreferencesDto {
-        model: String::new(),
-        context_tokens: 0,
-        max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
-        max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-        turn_timeout_seconds: crate::chat::DEFAULT_TURN_TIMEOUT_SECONDS,
-        instructions: String::new(),
-        compact_threshold: DEFAULT_COMPACT_THRESHOLD,
-        auto_compact: false,
-        enter_to_send: enter_to_send_default(),
-    }
 }
 
 /// Parse the turn's skill names and check the selection shape (at most four,

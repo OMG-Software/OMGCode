@@ -3,10 +3,17 @@ import { neutralise } from "../src/dom";
 import { setInvoker } from "../src/ipc/client";
 import type { ChatDefaults, SearchResult, SessionSummary } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
-import { PLACEHOLDER_CTRL_ENTER, PLACEHOLDER_ENTER } from "../src/main/composer";
+import {
+  clampThreshold,
+  PLACEHOLDER_CTRL_ENTER,
+  PLACEHOLDER_ENTER,
+  SET_CONTEXT_IN_SETTINGS,
+  tokenLabel,
+} from "../src/main/composer";
 import { createMockBackend } from "../src/mock/backend";
 import { HOSTILE } from "../src/mock/fixtures";
 import {
+  buttonByLabel,
   buttonByText,
   CHAT_BUDGET_BOUNDS,
   choose,
@@ -639,35 +646,33 @@ describe("chat lifecycle", () => {
     expect(notice.classList.contains("error")).toBe(true);
   });
 
-  it("keeps Send disabled until a model and context size are set", async () => {
+  it("asks for a context size in Settings until one is saved, and reads it again on focus", async () => {
+    const unset = {
+      ...CHAT_BUDGET_BOUNDS,
+      settings: { ...SETTINGS, model: "", context_tokens: 0 },
+      preferences: "defaults" as const,
+      enter_to_send: true,
+    };
     await start({
       session_tree: treeOf(s),
       session_transcript: () => page(s, []),
-      chat_defaults: () => ({
-        ...CHAT_BUDGET_BOUNDS,
-        settings: {
-          endpoint: SETTINGS.endpoint,
-          model: "",
-          context_tokens: 0,
-          max_output_tokens: 0,
-          max_tool_calls: 128,
-          turn_timeout_seconds: 120,
-          instructions: "",
-          compact_threshold: 0,
-          auto_compact: false,
-        },
-        preferences: "defaults",
-        enter_to_send: true,
-      }),
+      chat_defaults: () => unset,
     });
     itemFor("s-chat").click();
     await settle();
-    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    const message = root.querySelector(".message-box") as HTMLTextAreaElement;
+    type(message, "hello");
     expect(buttonByText(root, "Send").disabled).toBe(true);
     choose(modelSelect(root), SETTINGS.model);
     expect(buttonByText(root, "Send").disabled).toBe(true);
-    const numbers = root.querySelectorAll<HTMLInputElement>(".settings input[type=number]");
-    type(numbers[0] as HTMLInputElement, "4096");
+    message.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(root.querySelector(".composer-error")?.textContent).toBe(SET_CONTEXT_IN_SETTINGS);
+    expect(ipc.callsTo("chat_send")).toHaveLength(0);
+
+    // The settings window saves a context size; this window reads it when it gains focus.
+    ipc.on("chat_defaults", () => ({ ...unset, settings: { ...SETTINGS, model: "" } }));
+    window.dispatchEvent(new Event("focus"));
+    await settle();
     expect(buttonByText(root, "Send").disabled).toBe(false);
   });
 });
@@ -842,17 +847,17 @@ describe("settings window, saved defaults, and per-turn skills", () => {
 
   it("disables Workspace settings until a session is open", async () => {
     await start({ session_tree: treeOf(s) });
-    expect(buttonByText(root, "Workspace settings").disabled).toBe(true);
+    expect(buttonByLabel(root, "Workspace settings").disabled).toBe(true);
 
     itemFor("s-skills").click();
     await settle();
-    expect(buttonByText(root, "Workspace settings").disabled).toBe(false);
+    expect(buttonByLabel(root, "Workspace settings").disabled).toBe(false);
     expect(ipc.callsTo("settings_show_workspace")).toHaveLength(0);
   });
 
   it("opens the settings window for the open session's workspace by session id only", async () => {
     await open();
-    buttonByText(root, "Workspace settings").click();
+    buttonByLabel(root, "Workspace settings").click();
     await settle();
     expect(ipc.callsTo("settings_show_workspace")).toEqual([
       { command: "settings_show_workspace", args: { session_id: "s-skills" } },
@@ -865,7 +870,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       settings_show_workspace: () =>
         rejection("unknown_workspace", "The workspace is not registered."),
     });
-    buttonByText(root, "Workspace settings").click();
+    buttonByLabel(root, "Workspace settings").click();
     await settle();
     expect(root.querySelector(".composer-error")?.textContent).toContain(
       "The workspace is not registered.",
@@ -944,76 +949,109 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(buttonByText(root, "Send")).toBeDefined();
   });
 
-  it("saves the tool-call limit and timeout and sends them with the next turn", async () => {
-    const saved = {
-      ...SETTINGS,
-      model: "saved-model",
-      max_tool_calls: 192,
-      turn_timeout_seconds: 900,
-    };
-    await open({
-      chat_defaults: () => ({
-        settings: SETTINGS,
-        tool_call_limit_max: 200,
-        turn_timeout_seconds_max: 1200,
-        preferences: "defaults",
-        enter_to_send: true,
-      }),
-      chat_models: (args) => ({
-        session_id: args.session_id as string,
-        endpoint: SETTINGS.endpoint,
-        kind: null,
-        models: [
-          { id: "saved-model", cloud_tag: false },
-          { id: SETTINGS.model, cloud_tag: false },
-        ],
-      }),
-      chat_preferences_save: () => ({ settings: saved, preferences: "saved", enter_to_send: true }),
-    });
-    choose(modelSelect(root), "saved-model");
-    const field = Array.from(root.querySelectorAll(".settings label"))
-      .find((label) => label.textContent === "Tool calls per turn")
-      ?.querySelector("input") as HTMLInputElement;
-    expect(field.value).toBe("128");
-    const timeoutField = Array.from(root.querySelectorAll(".settings label"))
-      .find((label) => label.textContent === "Tool-enabled turn timeout (seconds)")
-      ?.querySelector("input") as HTMLInputElement;
-    expect(timeoutField.value).toBe("120");
+  it("sends the budgets and instructions saved last, read again just before the send", async () => {
+    await open();
     type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
-    expect(field.max).toBe("200");
-    expect(timeoutField.max).toBe("1200");
-    type(field, "201");
-    expect(buttonByText(root, "Send").disabled).toBe(true);
-    type(field, "192");
-    type(timeoutField, "1201");
-    expect(buttonByText(root, "Send").disabled).toBe(true);
-    type(timeoutField, "900");
+    // The settings window saves new values while this window keeps focus.
+    ipc.on("chat_defaults", () => ({
+      ...CHAT_BUDGET_BOUNDS,
+      settings: {
+        ...SETTINGS,
+        context_tokens: 65_536,
+        max_tool_calls: 192,
+        turn_timeout_seconds: 900,
+        instructions: "From the settings window.",
+      },
+      preferences: "saved",
+      enter_to_send: true,
+    }));
+    const before = ipc.callsTo("chat_defaults").length;
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(ipc.callsTo("chat_defaults").length).toBe(before + 1);
+    const commands = ipc.calls.map((call) => call.command);
+    expect(commands.lastIndexOf("chat_defaults")).toBeLessThan(commands.indexOf("chat_send"));
+    expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
+      message: "hello",
+      settings: {
+        context_tokens: 65_536,
+        max_tool_calls: 192,
+        turn_timeout_seconds: 900,
+        instructions: "From the settings window.",
+        compact_threshold: SETTINGS.compact_threshold,
+      },
+    });
+  });
+
+  it("sends nothing twice when Send is clicked again while the defaults are read", async () => {
+    await open();
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    let finish: (value: ChatDefaults) => void = () => undefined;
+    ipc.on(
+      "chat_defaults",
+      () =>
+        new Promise<ChatDefaults>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const send = buttonByText(root, "Send");
+    send.click();
+    expect(send.disabled).toBe(true);
+    send.click();
+    await settle();
+    expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    finish({
+      ...CHAT_BUDGET_BOUNDS,
+      settings: SETTINGS,
+      preferences: "saved",
+      enter_to_send: true,
+    });
+    await settle();
+    expect(ipc.callsTo("chat_send")).toHaveLength(1);
+  });
+
+  it("saves only the composer's own defaults: the threshold, auto-compact, and the send key", async () => {
+    await open({
+      chat_preferences_save: () => ({
+        ...CHAT_BUDGET_BOUNDS,
+        settings: SETTINGS,
+        preferences: "saved",
+        enter_to_send: false,
+      }),
+    });
+    const settings = root.querySelector(".settings") as HTMLElement;
+    const slider = settings.querySelector<HTMLInputElement>('input[type="range"]');
+    if (slider === null) throw new Error("no slider");
+    type(slider, "256000");
+    expect(settings.querySelector(".slider-value")?.textContent).toBe("256K tokens");
+    const checks = Array.from(settings.querySelectorAll("label.field-check"));
+    const box = (label: string) =>
+      checks
+        .find((candidate) => candidate.textContent === label)
+        ?.querySelector("input") as HTMLInputElement;
+    box("Auto-compact").click();
+    box("Enter to send").click();
     buttonByText(root, "Save as defaults").click();
     await settle();
     const args = ipc.callsTo("chat_preferences_save")[0]?.args as {
       preferences: Record<string, unknown>;
     };
     expect(args.preferences).toEqual({
-      model: "saved-model",
-      context_tokens: SETTINGS.context_tokens,
-      max_output_tokens: SETTINGS.max_output_tokens,
-      max_tool_calls: 192,
-      turn_timeout_seconds: 900,
-      instructions: SETTINGS.instructions,
-      compact_threshold: SETTINGS.compact_threshold,
-      auto_compact: SETTINGS.auto_compact,
-      enter_to_send: true,
+      compact_threshold: 256_000,
+      auto_compact: !SETTINGS.auto_compact,
+      enter_to_send: false,
     });
-    expect("endpoint" in args.preferences).toBe(false);
     expect(root.querySelector(".preferences-row")?.textContent).toContain("Saved as defaults.");
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    box("Enter to send").click();
     buttonByText(root, "Send").click();
     await settle();
     expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
-      settings: { max_tool_calls: 192, turn_timeout_seconds: 900 },
+      settings: { compact_threshold: 256_000, auto_compact: !SETTINGS.auto_compact },
     });
   });
 
-  it("keeps early chat settings edits and restores untouched values when defaults arrive", async () => {
+  it("keeps early composer edits and shows a saved threshold outside the range at its end", async () => {
     let finish: (value: ChatDefaults) => void = () => undefined;
     await open({
       chat_defaults: () =>
@@ -1021,38 +1059,30 @@ describe("settings window, saved defaults, and per-turn skills", () => {
           finish = resolve;
         }),
     });
-    const input = (label: string) => {
-      const field = Array.from(root.querySelectorAll(".settings label")).find(
-        (candidate) => candidate.querySelector("span")?.textContent === label,
-      );
-      const control = field?.querySelector("input, textarea");
-      if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement)) {
-        throw new Error(`No chat setting for ${label}`);
-      }
-      return control;
-    };
-    const calls = input("Tool calls per turn");
-    const timeout = input("Tool-enabled turn timeout (seconds)");
-    const instructions = input("Custom instructions");
-    const autoCompact = input("Auto-compact") as HTMLInputElement;
-    type(calls, "12");
-    type(timeout, "90");
-    type(instructions, "Preserve my edit.");
-    autoCompact.click();
+    const settings = root.querySelector(".settings") as HTMLElement;
+    const slider = settings.querySelector<HTMLInputElement>('input[type="range"]');
+    if (slider === null) throw new Error("no slider");
+    const autoCompact = Array.from(settings.querySelectorAll("label.field-check"))
+      .find((candidate) => candidate.textContent === "Auto-compact")
+      ?.querySelector("input") as HTMLInputElement;
+    type(slider, "512000");
     finish({
       ...CHAT_BUDGET_BOUNDS,
-      settings: { ...SETTINGS, instructions: "Saved instructions", auto_compact: false },
+      settings: { ...SETTINGS, compact_threshold: 6000, auto_compact: false },
       preferences: "saved",
       enter_to_send: true,
     });
     await settle();
-    expect(calls.value).toBe("12");
-    expect(timeout.value).toBe("90");
-    expect(instructions.value).toBe("Preserve my edit.");
-    expect(autoCompact.checked).toBe(true);
-    expect(input("Context tokens").value).toBe("8192");
-    expect(input("Max output tokens").value).toBe("1024");
-    expect(input("Compaction threshold").value).toBe("6000");
+    // The edited slider keeps its value; the untouched check box shows the saved one.
+    expect(slider.value).toBe("512000");
+    expect(autoCompact.checked).toBe(false);
+
+    // A fresh composer shows a saved value below the range at the range's start.
+    expect(clampThreshold(6000, 128_000, 1_000_000)).toBe(128_000);
+    expect(clampThreshold(2_000_000, 128_000, 1_000_000)).toBe(1_000_000);
+    expect(clampThreshold(203_000, 128_000, 1_000_000)).toBe(200_000);
+    expect(tokenLabel(1_000_000)).toBe("1M");
+    expect(tokenLabel(128_000)).toBe("128K");
   });
 
   describe("Enter to send", () => {

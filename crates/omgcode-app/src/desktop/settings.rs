@@ -27,6 +27,7 @@ use omgcode_core::turn::display_safe_line;
 use super::error::DesktopError;
 use super::preferences;
 use super::session_connections::{ChosenConnection, recorded_endpoint};
+use super::settings_chat::{chat_defaults_view, workspace_instructions_view};
 use super::state::folder_of_directory;
 use super::wire::{
     BranchState, BranchView, ConnectionChoice, ConnectionOrigin, ConnectionSourceView,
@@ -77,6 +78,10 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                 host_services: permissions.host_services,
                 write_tools: permissions.write_tools,
                 package_cache_root: store.package_cache_root_display(workspace.id()),
+                instructions: workspace_instructions_view(
+                    &inner.data_root,
+                    *workspace.id().as_uuid(),
+                ),
             }
         })
         .collect();
@@ -170,6 +175,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         package_profiles,
         container_grants,
         skills,
+        chat: chat_defaults_view(&inner.data_root),
         scope: inner.settings_scope(),
     };
     drop(store);

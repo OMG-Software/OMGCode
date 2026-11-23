@@ -10,9 +10,10 @@
 //! store block.
 
 use omgcode_app::desktop::{
-    ApiKeySetRequest, ApiKeyText, ConnectionAddRequest, ConnectionRemoveRequest,
-    ConnectionSelectRequest, NewConnectionKind, PermissionFlags, PermissionsChangeRequest,
-    SettingsOverview, SettingsRevisionRequest, WorkspaceRevisionRequest,
+    ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ConnectionAddRequest,
+    ConnectionRemoveRequest, ConnectionSelectRequest, NewConnectionKind, PermissionFlags,
+    PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
+    WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -311,6 +312,53 @@ pub async fn settings_clear_scope(
     blocking(&state, |service| {
         service.settings_scope_clear()?;
         service.settings_overview()
+    })
+    .await
+}
+
+/// `settings` only. Saves the chat budgets and the global custom instructions
+/// (ADR-0080). They grant nothing, so no native confirmation is shown.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `preferences`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_save_chat_defaults(
+    webview: Webview,
+    state: Service<'_>,
+    defaults: ChatBudgetsDto,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSaveChatDefaults, webview.label())?;
+    let request = ChatBudgetsSaveRequest { defaults };
+    blocking(&state, move |service| {
+        service.settings_save_chat_defaults(request)
+    })
+    .await
+}
+
+/// `settings` only. Replaces one registered workspace's custom instructions
+/// (ADR-0080); empty text removes them. They grant nothing, so no native
+/// confirmation is shown.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unknown_workspace`,
+/// `invalid_request`, `preferences`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_set_workspace_instructions(
+    webview: Webview,
+    state: Service<'_>,
+    workspace_id: Uuid,
+    instructions: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSetWorkspaceInstructions, webview.label())?;
+    let request = WorkspaceInstructionsRequest {
+        workspace_id,
+        instructions,
+    };
+    blocking(&state, move |service| {
+        service.settings_set_workspace_instructions(request)
     })
     .await
 }

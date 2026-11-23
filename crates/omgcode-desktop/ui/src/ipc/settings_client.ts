@@ -1,5 +1,5 @@
 import { invokeCommand } from "./client";
-import type { NewConnectionKind, PermissionFlags, SettingsOverview } from "./types";
+import type { ChatBudgets, NewConnectionKind, PermissionFlags, SettingsOverview } from "./types";
 
 /**
  * Commands that only the settings window may call (ADR-0059, ADR-0060, ADR-0064). Imported by
@@ -68,4 +68,13 @@ export const settingsApi = {
   clearScope: () => invokeCommand<SettingsOverview>("settings_clear_scope", {}),
   removeConnection: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_connection", { revision, name }),
+  /** Saves the chat budgets and the global custom instructions (ADR-0080). Grants nothing. */
+  saveChatDefaults: (defaults: ChatBudgets) =>
+    invokeCommand<SettingsOverview>("settings_save_chat_defaults", { defaults }),
+  /** Replaces one workspace's custom instructions; empty text removes them (ADR-0080). */
+  setWorkspaceInstructions: (workspaceId: string, instructions: string) =>
+    invokeCommand<SettingsOverview>("settings_set_workspace_instructions", {
+      workspace_id: workspaceId,
+      instructions,
+    }),
 };

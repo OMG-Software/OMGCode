@@ -1,4 +1,5 @@
 import type {
+  ChatBudgets,
   NewConnectionKind,
   PermissionFlags,
   SettingsOverview,
@@ -33,6 +34,10 @@ export interface Actions {
   /** Replaces an Ollama Cloud profile's stored API key. */
   setApiKey(name: string, apiKey: string): Change;
   removeConnection(name: string): Change;
+  /** Saves the chat budgets and the global custom instructions (ADR-0080). */
+  saveChatDefaults(defaults: ChatBudgets): Change;
+  /** Replaces one workspace's custom instructions; empty text removes them. */
+  setWorkspaceInstructions(workspaceId: string, instructions: string): Change;
 }
 
 /**
@@ -58,6 +63,19 @@ export interface ViewState {
   addConnectionOpen: boolean;
   /** What the operator has typed into the add-connection form, kept until an add succeeds. */
   connectionDraft: ConnectionDraft;
+  /** Typed but unsaved chat defaults, or `null` to show the saved ones (ADR-0080). */
+  chatDraft: ChatDraft | null;
+  /** Typed but unsaved workspace instructions, by workspace identifier. */
+  instructionDrafts: Map<string, string>;
+}
+
+/** The chat defaults form's values as typed; numbers stay text until a save checks them. */
+export interface ChatDraft {
+  context_tokens: string;
+  max_output_tokens: string;
+  max_tool_calls: string;
+  turn_timeout_seconds: string;
+  instructions: string;
 }
 
 /** The add-connection form's values. It never holds an API key: that stays in its input. */
