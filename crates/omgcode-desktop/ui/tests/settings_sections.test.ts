@@ -685,6 +685,20 @@ describe("chat defaults and custom instructions (ADR-0080)", () => {
     expect(field<HTMLTextAreaElement>("global-instructions").value).toBe("Be brief.");
   });
 
+  it("refuses an output reserve larger than Rust's 32-bit field without sending", async () => {
+    await start(() => overview());
+    go("Model");
+    // A safe JavaScript integer, but over u32::MAX.
+    type(field("chat-max-output-tokens"), "5000000000");
+    buttonByText(root, "Save chat defaults").click();
+    await settle();
+    expect(ipc.callsTo("settings_save_chat_defaults")).toHaveLength(0);
+    expect(root.querySelector(".chat-defaults .error")?.textContent).toBe(
+      "Set Max output tokens to a whole number from 1 to 4294967295.",
+    );
+    expect(field<HTMLInputElement>("chat-max-output-tokens").max).toBe("4294967295");
+  });
+
   it("refuses a value outside its range without sending, and keeps the draft across a redraw", async () => {
     await start(() => overview());
     go("Model");

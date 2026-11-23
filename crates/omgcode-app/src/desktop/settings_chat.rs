@@ -166,6 +166,7 @@ pub(super) fn chat_defaults_view(data_root: &Path) -> ChatDefaultsView {
             instructions: saved.instructions,
         },
         source,
+        max_output_tokens_max: u32::MAX,
         tool_call_limit_max: MAX_TOOL_CALLS,
         turn_timeout_seconds_max: MAX_TURN_DEADLINE.as_secs(),
         instructions_max_bytes: MAX_SAVED_INSTRUCTIONS_BYTES,

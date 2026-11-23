@@ -839,6 +839,9 @@ pub struct ChatDefaultsView {
     pub defaults: ChatBudgetsDto,
     /// Where `defaults` came from.
     pub source: PreferencesSource,
+    /// Largest output reserve the request type holds, so the window can
+    /// refuse a larger one before sending it.
+    pub max_output_tokens_max: u32,
     /// Largest supported tool-call limit.
     pub tool_call_limit_max: usize,
     /// Largest supported turn timeout, in seconds.

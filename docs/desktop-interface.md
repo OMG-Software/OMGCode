@@ -548,8 +548,9 @@ calls used, and calls requested. Calls from that batch are skipped.
 accepts whole numbers from 1 to 3600.
 The runtime checks the deadline between operations and excludes approval waits.
 Each model request still has a 30-second timeout of its own.
-The settings window gets the maximum tool-call and timeout values from the
-overview's `chat` block, and refuses a value outside them before sending.
+The settings window gets the maximum output reserve (4,294,967,295, the
+largest 32-bit count the request holds), tool-call, and timeout values from
+the overview's `chat` block, and refuses a value outside them before sending.
 The composer reads the saved context size, output reserve, tool-call limit,
 timeout, and global instructions from `chat_defaults` when it starts, when
 the `main` window gains focus, and again just before each send, and sends
@@ -846,7 +847,8 @@ waits. The window shows:
   headings and the blank line otherwise; the global room is 16 KiB when no
   workspace has text, or 16 KiB less 47 bytes and the longest workspace
   text. Both saves hold the service's preferences lock, so neither can
-  overtake the other's check. Shortening or removing text is always allowed
+  overtake the other's check, and `chat_send` reads the workspace's file
+  under the same lock, so a turn sees one whole save. Shortening or removing text is always allowed
   when it fits. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.

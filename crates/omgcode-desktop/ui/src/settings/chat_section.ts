@@ -38,6 +38,7 @@ export function draftOf(defaults: ChatBudgets): ChatDraft {
 
 /** The largest value each numeric field accepts, or `null` for none the window knows. */
 function maxOf(key: keyof ChatDraft, chat: ChatDefaultsView): number | null {
+  if (key === "max_output_tokens") return chat.max_output_tokens_max;
   if (key === "max_tool_calls") return chat.tool_call_limit_max;
   if (key === "turn_timeout_seconds") return chat.turn_timeout_seconds_max;
   return null;

@@ -444,6 +444,8 @@ export interface SkillSettingView {
 export interface ChatDefaultsView {
   defaults: ChatBudgets;
   source: PreferencesSource;
+  /** Largest output reserve Rust's request type holds (a 32-bit count). */
+  max_output_tokens_max: number;
   tool_call_limit_max: number;
   turn_timeout_seconds_max: number;
   /**

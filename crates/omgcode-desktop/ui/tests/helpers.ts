@@ -54,6 +54,7 @@ export function chatDefaultsView(overrides: Partial<ChatDefaultsView> = {}): Cha
       instructions: SETTINGS.instructions,
     },
     source: "saved",
+    max_output_tokens_max: 4_294_967_295,
     tool_call_limit_max: 256,
     turn_timeout_seconds_max: 3600,
     instructions_max_bytes: 16 * 1024,

@@ -18,6 +18,9 @@ Changes are recorded here before a release version is assigned.
     Neither shows a dialog or changes the settings revision. Each save keeps
     the global and every workspace text sendable together within 16 KiB,
     headings included, and the window's counters show the room left.
+    `chat_send` reads a workspace's text under the same lock as its saves.
+    The window refuses an output reserve over the 32-bit maximum before
+    sending it.
   - **Turns:** `chat_send` adds the session workspace's instructions after
     the global ones, under `Global instructions:` and `Workspace
     instructions:` headings, and sends the global text unchanged when the

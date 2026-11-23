@@ -104,6 +104,8 @@ const COMPACT_MIN = 128_000;
 const COMPACT_MAX = 1_000_000;
 /** The bound Rust puts on each saved custom instruction text, in UTF-8 bytes. */
 const INSTRUCTIONS_MAX_BYTES = 16 * 1024;
+/** The largest value of Rust's `u32`, the type of the output reserve. */
+const U32_MAX = 4_294_967_295;
 /** Bytes of Rust's `Workspace instructions:` heading line. */
 const WORKSPACE_HEADING_BYTES = 24;
 /** Bytes both headings and the blank line between the texts add. */
@@ -648,6 +650,10 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         if (saved.context_tokens < 1 || saved.max_output_tokens < 1) {
           return fail("invalid_request", "Set the context size to a positive number of tokens.");
         }
+        // Rust's request type holds a 32-bit output reserve; a larger one never reaches the save.
+        if (saved.max_output_tokens > U32_MAX) {
+          return fail("invalid_request", "invalid value: integer, expected u32");
+        }
         const globalRoom = overviewView().chat.instructions_max_bytes;
         if (new TextEncoder().encode(saved.instructions).length > globalRoom) {
           return fail(
@@ -964,6 +970,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         instructions: saved.instructions,
       },
       source: savedPreferences === null ? "defaults" : "saved",
+      max_output_tokens_max: U32_MAX,
       tool_call_limit_max: 256,
       turn_timeout_seconds_max: 3600,
       instructions_max_bytes: INSTRUCTIONS_MAX_BYTES,

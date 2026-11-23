@@ -220,10 +220,19 @@ impl DesktopService {
         }
         // The window sends the global instructions; the session's workspace
         // adds its own from storage (ADR-0080). An unreadable file refuses
-        // the turn rather than sending it without the operator's text.
+        // the turn rather than sending it without the operator's text. The
+        // read holds the preferences lock that every writer of these files
+        // holds, so it sees one whole save and never overlaps a replace or
+        // removal. No other lock is held here.
         let workspace_instructions = match session.workspace_id {
-            Some(workspace) => instructions::load(&inner.data_root, workspace)
-                .map_err(|_| DesktopError::instructions_unreadable())?,
+            Some(workspace) => {
+                let _lock = inner
+                    .preferences
+                    .lock()
+                    .map_err(|_| DesktopError::poisoned())?;
+                instructions::load(&inner.data_root, workspace)
+                    .map_err(|_| DesktopError::instructions_unreadable())?
+            }
             None => String::new(),
         };
         let mut turn_settings = request.settings;
