@@ -100,6 +100,7 @@ mod settings_chat;
 mod state;
 mod turns;
 mod wire;
+mod workspace_entries;
 mod workspaces;
 
 use std::path::{Path, PathBuf};
@@ -137,11 +138,13 @@ pub use self::wire::{
     WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest, WorkspaceList,
     WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
+pub use self::workspace_entries::WorkspaceEntriesRequest;
 use crate::credential_source::resolve_connection_and_kind;
 use crate::{
     AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
     resolve_local_endpoint,
 };
+pub use omgcode_core::workspace_entries::{EntryClass, WorkspaceEntry, WorkspaceListing};
 
 /// Fixed settings of one desktop process.
 #[derive(Clone, Debug, Eq, PartialEq)]

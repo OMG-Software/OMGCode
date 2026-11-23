@@ -33,6 +33,13 @@ unavailable. A content check followed by rename cannot guarantee no
 lost updates against independent writers. See
 [ADR-0013](adr/0013-enforce-file-access-with-native-handles-and-exclusive-creation.md).
 
+The desktop `main` window's Files tab lists one directory of a session's
+registered workspace through the same broker listing, without the `read`
+preference and without an audit record, because it is the operator's own
+view and returns names and kinds only. It hides the reserved store name and
+grants nothing; see
+[ADR-0083](adr/0083-show-a-names-only-workspace-file-tree-in-the-right-panel.md).
+
 ## Authorization
 
 Each operation requires a process-local session binding and explicit request

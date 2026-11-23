@@ -17,6 +17,7 @@ import type {
   TreeSort,
   TreeView,
   WorkspaceList,
+  WorkspaceListing,
 } from "./types";
 
 /** The only module that imports `@tauri-apps/api`. All IPC goes through `invokeCommand`. */
@@ -114,6 +115,9 @@ export const api = {
     invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings, skills }),
   sessionSkills: (sessionId: string) =>
     invokeCommand<SessionSkills>("session_skills", { session_id: sessionId }),
+  /** One directory of the session's workspace; `path` is relative name components (ADR-0083). */
+  workspaceEntries: (sessionId: string, path: string[]) =>
+    invokeCommand<WorkspaceListing>("workspace_entries", { session_id: sessionId, path }),
   sessionContext: (sessionId: string) =>
     invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
   /** The session's connection and model; `null` describes the default when no session is open. */

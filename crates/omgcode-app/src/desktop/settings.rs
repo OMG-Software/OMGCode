@@ -401,7 +401,7 @@ impl DesktopService {
     /// The settings store, with the registered workspace a session was
     /// recorded in, or `None` when there is no store or the workspace is not
     /// registered here.
-    fn session_workspace(
+    pub(super) fn session_workspace(
         &self,
         request: SessionRequest,
     ) -> Result<Option<(ControlStore, WorkspaceId)>, DesktopError> {

@@ -290,3 +290,19 @@ export function buildFixtures(base: number): {
   ];
   return { groups, sessions };
 }
+
+type MockTree = { [name: string]: MockTree | null };
+
+/** A small fake workspace for the Files tab: a `null` value is a file, an object a directory. */
+export const MOCK_WORKSPACE_TREE: MockTree = {
+  src: {
+    main: { "app.ts": null, "layout.ts": null },
+    "lib.rs": null,
+    "emoji \u{1f4c1} dir": { "readme.md": null },
+  },
+  docs: { adr: { "0083.md": null }, "README.md": null },
+  empty: {},
+  "Cargo.toml": null,
+  "README.md": null,
+  [HOSTILE.img]: null,
+};

@@ -3,7 +3,8 @@
 
 use omgcode_app::desktop::{
     SearchRequest, SearchResult, SessionCreateRequest, SessionRequest, SessionSummary, SessionTree,
-    TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceList,
+    TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceEntriesRequest,
+    WorkspaceList, WorkspaceListing,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -155,4 +156,25 @@ pub async fn session_create(
         title,
     };
     blocking(&state, move |service| service.session_create(request)).await
+}
+
+/// `main` only. Lists one directory of the open session's registered workspace:
+/// names and kinds, directories first, bounded (ADR-0083). The workspace comes
+/// from the session's recorded workspace and `path` holds only relative name
+/// components, so the webview supplies no host path. Not a model action, not
+/// journaled, and it grants nothing.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn workspace_entries(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+    path: Vec<String>,
+) -> Result<WorkspaceListing, CommandError> {
+    authorize(Command::WorkspaceEntries, webview.label())?;
+    let request = WorkspaceEntriesRequest { session_id, path };
+    blocking(&state, move |service| service.workspace_entries(request)).await
 }
