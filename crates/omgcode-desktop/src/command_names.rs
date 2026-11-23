@@ -46,4 +46,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_repair_data_folder",
     "settings_save_chat_defaults",
     "settings_set_workspace_instructions",
+    "settings_import_skill",
+    "settings_set_skill_state",
+    "settings_remove_skill",
 ];

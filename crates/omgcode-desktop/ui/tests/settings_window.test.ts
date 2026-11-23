@@ -277,7 +277,9 @@ describe("settings window", () => {
     go("Advanced");
     expect(root.textContent).toContain(ADVANCED_HELP);
     expect(ADVANCED_HELP).toContain("omgcode workspace");
-    expect(ADVANCED_HELP).toContain("omgcode skills");
+    // Skills change in this window; the other three groups still change only through the CLI.
+    expect(ADVANCED_HELP).toContain("Skills are imported, enabled, and removed here");
+    expect(ADVANCED_HELP).not.toContain("omgcode skills");
   });
 
   it("types no path and offers exactly three access states everywhere", async () => {
@@ -370,7 +372,9 @@ describe("settings window", () => {
     // A skill override names the workspace by its folder.
     const skill = rowOf("review");
     expect(skill.textContent).toContain("/home/dev/project");
-    expect(skill.textContent).toContain("disabled");
+    const [application, inWorkspace] = Array.from(skill.querySelectorAll("select"));
+    expect(application?.value).toBe("enabled");
+    expect(inWorkspace?.value).toBe("disabled");
   });
 
   it("asks the core to choose the root with the revision it read and shows the reply", async () => {

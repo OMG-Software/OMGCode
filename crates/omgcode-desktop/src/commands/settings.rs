@@ -12,8 +12,8 @@
 use omgcode_app::desktop::{
     ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ConnectionAddRequest,
     ConnectionRemoveRequest, ConnectionSelectRequest, NewConnectionKind, PermissionFlags,
-    PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
-    WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
+    PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest, SkillChoice,
+    SkillRemoveRequest, SkillStateRequest, WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -359,6 +359,88 @@ pub async fn settings_set_workspace_instructions(
     };
     blocking(&state, move |service| {
         service.settings_set_workspace_instructions(request)
+    })
+    .await
+}
+
+/// `settings` only. Opens a native folder dialog and imports the chosen skill
+/// folder through the same core path as `omgcode skills add`. The skill is
+/// registered disabled and nothing in it runs (ADR-0082). The request carries
+/// only the revision; no path comes from the webview.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`, `stale_revision`,
+/// and core's skill codes such as `skill_name_taken` or `skill_md_missing`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_import_skill(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsImportSkill, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = SettingsRevisionRequest { revision };
+    blocking(&state, move |service| {
+        service.settings_import_skill(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Sets a skill's application setting (`workspace_id` null)
+/// or one workspace's override (`enabled`, `disabled`, or `inherit`). A change
+/// that leaves the skill enabled there first needs a native confirmation that
+/// names it; disabling needs none (ADR-0082).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`skill_not_found`,
+/// `skill_workspace_unknown`, `skill_inherit_needs_workspace`, `cancelled`,
+/// `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_set_skill_state(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+    workspace_id: Option<Uuid>,
+    skill_state: SkillChoice,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSetSkillState, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = SkillStateRequest {
+        revision,
+        name,
+        workspace_id,
+        state: skill_state,
+    };
+    blocking(&state, move |service| {
+        service.settings_set_skill_state(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the skill and says
+/// its stored copy is deleted, removes it as `omgcode skills remove` does
+/// (ADR-0082). The folder it was imported from is never touched.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`skill_not_found`, `cancelled`,
+/// `stale_revision`, `package_orphaned` when the removal is recorded but the
+/// stored copy was not fully deleted).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_remove_skill(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRemoveSkill, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = SkillRemoveRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_remove_skill(request, &prompt)
     })
     .await
 }

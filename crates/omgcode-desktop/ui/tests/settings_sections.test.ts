@@ -529,7 +529,7 @@ describe("permission controls", () => {
 });
 
 describe("advanced section", () => {
-  it("is read-only: no button, field, or checkbox changes anything", async () => {
+  it("keeps the toolchain, package-network, and container-grant groups read-only (ADR-0082)", async () => {
     await start(() =>
       overview({
         toolchain_profiles: [
@@ -557,8 +557,14 @@ describe("advanced section", () => {
       }),
     );
     go("Advanced");
-    expect(root.querySelector(".settings-body button")).toBeNull();
-    expect(root.querySelector(".settings-body input, .settings-body select")).toBeNull();
+    // Only the Skills group has controls (ADR-0082); the other three groups have none.
+    const readOnly = Array.from(root.querySelectorAll<HTMLElement>(".block")).filter(
+      (block) => block.querySelector("h3")?.textContent !== "Skills",
+    );
+    expect(readOnly).toHaveLength(3);
+    for (const block of readOnly) {
+      expect(block.querySelector("button, input, select, textarea")).toBeNull();
+    }
     expect(root.querySelector(".settings-body textarea")).toBeNull();
     const headings = Array.from(root.querySelectorAll("h3")).map((h) => h.textContent);
     expect(headings).toEqual([
@@ -571,7 +577,7 @@ describe("advanced section", () => {
     expect(text).toContain("https://crates.io");
     expect(text).toContain("read and write");
     expect(text).toContain("/home/dev/a");
-    expect(text).toContain("not set (disabled)");
+    expect(text).toContain("Not set (disabled)");
   });
 
   it("labels a hosted profile, offers Set key, and keeps Remove for a stored key", async () => {

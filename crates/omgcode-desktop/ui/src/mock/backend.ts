@@ -135,6 +135,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   let subscriber: Subscriber | null = null;
   /** The saved chat defaults, as Rust keeps them in one file; `null` until something is saved. */
   let savedPreferences: MockPreferences | null = null;
+  let nextSkillFolder = 0;
   /**
    * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
    * for it, as Rust records it, and its model.
@@ -866,6 +867,64 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           checkApiKey(args.api_key);
           profile.credential_bound = true;
         });
+      // The mock stands in for the native folder dialog: each import "chooses" the next sample
+      // folder, and the last one is already registered, so the refusal shows (ADR-0082).
+      case "settings_import_skill":
+        return changeSettings(args, () => {
+          const name = SAMPLE_SKILL_FOLDERS[nextSkillFolder % SAMPLE_SKILL_FOLDERS.length] ?? "";
+          nextSkillFolder += 1;
+          if (settings.skills.some((skill) => skill.name === name)) {
+            fail(
+              "skill_name_taken",
+              "a skill with this name is already registered; remove it first",
+            );
+          }
+          if (settings.skills.length >= MAX_SKILLS) {
+            fail("too_many_skills", `at most ${MAX_SKILLS} skills may be registered`);
+          }
+          settings.skills.push({ name, application: null, workspace_overrides: [] });
+        });
+      // Rust confirms in a native dialog before a change that enables the skill; the mock accepts.
+      case "settings_set_skill_state":
+        return changeSettings(args, () => {
+          const skill = settings.skills.find((entry) => entry.name === str(args, "name"));
+          const state = str(args, "skill_state");
+          const workspaceId = args.workspace_id ?? null;
+          if (state !== "enabled" && state !== "disabled" && state !== "inherit") {
+            fail("invalid_argument", "Bad skill state.");
+          }
+          if (skill === undefined) {
+            fail("skill_not_found", "no registered skill has this name or identifier");
+          }
+          if (workspaceId === null) {
+            if (state === "inherit") {
+              fail("skill_inherit_needs_workspace", "inherit applies only to a workspace scope");
+            }
+            skill.application = state === "enabled";
+            return;
+          }
+          if (typeof workspaceId !== "string") {
+            fail("invalid_argument", "Bad workspace_id.");
+          }
+          mockWorkspace({ workspace_id: workspaceId });
+          skill.workspace_overrides = skill.workspace_overrides.filter(
+            (entry) => entry.workspace_id !== workspaceId,
+          );
+          if (state !== "inherit") {
+            skill.workspace_overrides.push({
+              workspace_id: workspaceId,
+              enabled: state === "enabled",
+            });
+          }
+        });
+      case "settings_remove_skill":
+        return changeSettings(args, () => {
+          const index = settings.skills.findIndex((entry) => entry.name === str(args, "name"));
+          if (index < 0) {
+            fail("skill_not_found", "no registered skill has this name or identifier");
+          }
+          settings.skills.splice(index, 1);
+        });
       case "settings_remove_connection":
         return changeSettings(args, () => {
           const name = str(args, "name");
@@ -1187,6 +1246,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
 }
 
 export const mockInvoke: Invoker = createMockBackend().invoke;
+
+/** The sample folders the mock's skill import cycles through; the last is already registered. */
+const SAMPLE_SKILL_FOLDERS = ["release-notes", "api-docs", "review-checklist"];
+
+/** The most skills core registers. */
+const MAX_SKILLS = 64;
 
 /** The most bytes a recorded provider endpoint may have, as in core. */
 const MAX_ENDPOINT_BYTES = 256;
