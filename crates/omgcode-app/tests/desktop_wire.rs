@@ -654,7 +654,7 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
         context_tokens: 1,
         max_output_tokens: 1,
         max_tool_calls: 128,
-        turn_timeout_seconds: 60,
+        turn_timeout_seconds: 120,
         instructions: String::new(),
         compact_threshold: 1,
         auto_compact: false,

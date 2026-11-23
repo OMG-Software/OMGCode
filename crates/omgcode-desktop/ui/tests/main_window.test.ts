@@ -651,7 +651,7 @@ describe("chat lifecycle", () => {
           context_tokens: 0,
           max_output_tokens: 0,
           max_tool_calls: 128,
-          turn_timeout_seconds: 60,
+          turn_timeout_seconds: 120,
           instructions: "",
           compact_threshold: 0,
           auto_compact: false,
