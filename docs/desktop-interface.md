@@ -852,9 +852,13 @@ waits. The window shows:
   text. Both saves hold the service's preferences lock, so neither can
   overtake the other's check, and `chat_send` reads the workspace's file
   under the same lock, so a turn sees one whole save. A damaged other text
-  counts as empty, as it does for a turn; one that exists but cannot be read
-  now refuses the save with `preferences`, since its length is unknown. Shortening or removing text is always allowed
-  when it fits. Each workspace's typed draft is kept in window memory
+  counts as empty, as it does for a turn. One that exists but cannot be read
+  now leaves the room unknown: a save of non-empty text is refused with
+  `preferences`, but saving empty text needs no room and always proceeds.
+  The overview applies the same rule without the lock and reports an
+  unknown room as a `null` `instructions_max_bytes`; the counter then says
+  the room is unknown, and the window leaves the decision to Rust's save,
+  which reads the other text again. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.
 - **Advanced.** Read-only, with no control that changes anything: toolchain

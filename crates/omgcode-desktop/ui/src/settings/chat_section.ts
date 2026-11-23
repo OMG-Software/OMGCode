@@ -61,8 +61,10 @@ export function budgetsOf(draft: ChatDraft, chat: ChatDefaultsView): ChatBudgets
     }
     numbers[key] = value;
   }
-  if (utf8Length(draft.instructions) > chat.instructions_max_bytes) {
-    return `Shorten the global instructions to at most ${chat.instructions_max_bytes} bytes, so they fit beside the longest workspace instructions.`;
+  // An unknown room is left to Rust, which reads the other text again when it saves.
+  const room = chat.instructions_max_bytes;
+  if (room !== null && utf8Length(draft.instructions) > room) {
+    return `Shorten the global instructions to at most ${room} bytes, so they fit beside the longest workspace instructions.`;
   }
   return {
     context_tokens: numbers.context_tokens ?? 0,
@@ -73,20 +75,30 @@ export function budgetsOf(draft: ChatDraft, chat: ChatDefaultsView): ChatBudgets
   };
 }
 
+/** What a counter says when other saved instructions cannot be read now. */
+export const ROOM_UNKNOWN = "room unknown until the other saved instructions can be read";
+
 /** What the window says when a workspace's text would not fit beside the global text. */
 export function workspaceTooLong(maxBytes: number): string {
   return `Shorten these instructions to at most ${maxBytes} bytes, so they fit beside the global instructions.`;
 }
 
 /** A byte counter for an instructions box, updated as the operator types. */
-function byteCounter(maxBytes: number): { element: HTMLElement; show(text: string): void } {
+/**
+ * A byte counter against a room. A `null` room is unknown: other saved instructions cannot be
+ * read now, so the counter says so and Rust decides on save.
+ */
+function byteCounter(maxBytes: number | null): { element: HTMLElement; show(text: string): void } {
   const element = el("span", { class: "muted byte-counter", attrs: { "aria-live": "polite" } });
   return {
     element,
     show(text) {
       const bytes = utf8Length(text);
-      replaceChildren(element, `${bytes} / ${maxBytes} bytes`);
-      element.classList.toggle("over", bytes > maxBytes);
+      replaceChildren(
+        element,
+        maxBytes === null ? `${bytes} bytes; ${ROOM_UNKNOWN}` : `${bytes} / ${maxBytes} bytes`,
+      );
+      element.classList.toggle("over", maxBytes !== null && bytes > maxBytes);
     },
   };
 }
@@ -203,7 +215,7 @@ export function workspaceInstructionsBlock(
   const save = button("Save instructions", () => {
     const value = box.value;
     // Rust checks again; this only keeps text that cannot be sent from leaving the window.
-    if (utf8Length(value) > maxBytes) {
+    if (maxBytes !== null && utf8Length(value) > maxBytes) {
       replaceChildren(problem, workspaceTooLong(maxBytes));
       problem.hidden = false;
       return;

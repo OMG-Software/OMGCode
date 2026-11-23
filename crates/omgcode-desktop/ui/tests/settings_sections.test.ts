@@ -7,7 +7,7 @@ import type {
   WriteToolAccess,
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
-import { workspaceTooLong } from "../src/settings/chat_section";
+import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -790,6 +790,41 @@ describe("chat defaults and custom instructions (ADR-0080)", () => {
       workspaceTooLong(10),
     );
     expect(box.value).toBe("eleven byte");
+  });
+
+  it("leaves an unknown room to Rust and says why the counter has no limit", async () => {
+    await start(() =>
+      overview({
+        chat: chatDefaultsView({ instructions_max_bytes: null }),
+        workspaces: [
+          workspace(A, "/home/dev/a", { instructions_max_bytes: null }),
+          workspace(B, "/b"),
+        ],
+      }),
+    );
+    const box = field<HTMLTextAreaElement>(`workspace-instructions-${A}`);
+    type(box, "Use tabs.");
+    const counter = root.querySelector(".workspace-instructions .byte-counter");
+    expect(counter?.textContent).toBe(`9 bytes; ${ROOM_UNKNOWN}`);
+    expect(counter?.classList.contains("over")).toBe(false);
+    buttonByText(root, "Save instructions").click();
+    await settle();
+    // Rust reads the global text again under its lock and decides.
+    expect(ipc.callsTo("settings_set_workspace_instructions")).toEqual([
+      {
+        command: "settings_set_workspace_instructions",
+        args: { workspace_id: A, instructions: "Use tabs." },
+      },
+    ]);
+
+    go("Model");
+    type(field("global-instructions"), "Be brief.");
+    expect(root.querySelector(".chat-defaults .byte-counter")?.textContent).toBe(
+      `9 bytes; ${ROOM_UNKNOWN}`,
+    );
+    buttonByText(root, "Save chat defaults").click();
+    await settle();
+    expect(ipc.callsTo("settings_save_chat_defaults")).toHaveLength(1);
   });
 
   it("says when a workspace's saved instructions could not be read", async () => {

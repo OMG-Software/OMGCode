@@ -654,7 +654,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         if (saved.max_output_tokens > U32_MAX) {
           return fail("invalid_request", "invalid value: integer, expected u32");
         }
-        const globalRoom = overviewView().chat.instructions_max_bytes;
+        const globalRoom = overviewView().chat.instructions_max_bytes ?? 0;
         if (new TextEncoder().encode(saved.instructions).length > globalRoom) {
           return fail(
             "invalid_request",

@@ -19,8 +19,11 @@ Changes are recorded here before a release version is assigned.
     the global and every workspace text sendable together within 16 KiB,
     headings included, and the window's counters show the room left.
     `chat_send` reads a workspace's text under the same lock as its saves.
-    An instruction save refuses with `preferences` when the other text it
-    must fit beside exists but cannot be read. The composer shows a failed
+    An instruction save of non-empty text refuses with `preferences` when the
+    other text it must fit beside exists but cannot be read; saving empty
+    text needs no room and always proceeds. The overview reports such an
+    unknown room as a `null` `instructions_max_bytes`, by the same rule as
+    the saves, and the counter says the room is unknown. The composer shows a failed
     `chat_defaults` read, retries it on **Send**, and never sends without a
     successful read.
     The window refuses an output reserve over the 32-bit maximum before

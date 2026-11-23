@@ -316,7 +316,7 @@ fn the_settings_window_and_the_composer_each_save_their_own_chat_defaults() {
     let overview = service.settings_overview().expect("overview");
     assert_eq!(json_of(&overview.chat)["source"], "defaults");
     assert_eq!(overview.chat.defaults.context_tokens, 0);
-    assert_eq!(overview.chat.instructions_max_bytes, 16 * 1024);
+    assert_eq!(overview.chat.instructions_max_bytes, Some(16 * 1024));
 
     // The settings window saves the budgets and the global instructions.
     let overview = service
@@ -624,18 +624,18 @@ fn every_save_keeps_the_global_and_workspace_instructions_sendable_together() {
 
     // Nothing saved: a workspace text leaves room for its own heading.
     let overview = service.settings_overview().expect("overview");
-    assert_eq!(room_of(&overview), INSTRUCTIONS_MAX - 24);
-    assert_eq!(overview.chat.instructions_max_bytes, INSTRUCTIONS_MAX);
+    assert_eq!(room_of(&overview), Some(INSTRUCTIONS_MAX - 24));
+    assert_eq!(overview.chat.instructions_max_bytes, Some(INSTRUCTIONS_MAX));
 
     // A long workspace text shrinks the global room to exactly what fits.
     let workspace_len = 10_000;
     let overview = save_workspace("w".repeat(workspace_len)).expect("workspace");
     let global_room = INSTRUCTIONS_MAX - BOTH_HEADINGS - workspace_len;
-    assert_eq!(overview.chat.instructions_max_bytes, global_room);
+    assert_eq!(overview.chat.instructions_max_bytes, Some(global_room));
     let error = save_global("g".repeat(global_room + 1)).expect_err("too long beside it");
     assert_eq!(error.code(), "invalid_request");
     let overview = save_global("g".repeat(global_room)).expect("exactly fits");
-    assert_eq!(room_of(&overview), workspace_len);
+    assert_eq!(room_of(&overview), Some(workspace_len));
 
     // Now the workspace text cannot grow, but can shrink or be removed.
     let error = save_workspace("w".repeat(workspace_len + 1)).expect_err("too long beside it");
@@ -645,7 +645,7 @@ fn every_save_keeps_the_global_and_workspace_instructions_sendable_together() {
 
     // Every accepted pair is sent: a turn composes them within the core bound.
     let overview = save_global("g".repeat(INSTRUCTIONS_MAX)).expect("alone, the whole bound");
-    assert_eq!(room_of(&overview), 0);
+    assert_eq!(room_of(&overview), Some(0));
     let error = save_workspace("w".to_owned()).expect_err("no room left");
     assert_eq!(error.code(), "invalid_request");
 }
@@ -679,7 +679,7 @@ fn hold_unreadable(file: &Path) -> Box<dyn FnOnce()> {
 }
 
 #[test]
-fn an_instruction_save_is_refused_while_the_text_it_must_fit_beside_cannot_be_read() {
+fn a_room_is_unknown_while_the_text_it_must_fit_beside_cannot_be_read() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let service = fixture.service("http://127.0.0.1:1234/v1");
@@ -698,33 +698,65 @@ fn an_instruction_save_is_refused_while_the_text_it_must_fit_beside_cannot_be_re
             "instructions": text
         })))
     };
+    let workspace_room = || {
+        service
+            .settings_overview()
+            .expect("overview")
+            .workspaces
+            .iter()
+            .find(|view| view.workspace_id == workspace.id)
+            .expect("the workspace")
+            .instructions_max_bytes
+    };
     let desktop = fixture.data.join("desktop-v1");
+    let preferences_file = desktop.join("chat-preferences.json");
     let workspace_file = desktop
         .join("workspace-instructions")
         .join(format!("{}.json", workspace.id));
 
-    // The global text cannot be read: a workspace save cannot know its room.
-    save_global("Be brief.").expect("global");
-    let release = hold_unreadable(&desktop.join("chat-preferences.json"));
-    let error = save_workspace("Use tabs.").expect_err("room unknown");
-    assert_eq!(error.code(), "preferences");
-    release();
-    assert!(!workspace_file.exists(), "nothing was saved");
-
-    // A workspace text cannot be read: a global save cannot know its room.
+    // The global text cannot be read: the overview shows no workspace room,
+    // and a workspace save of text is refused, but removing the text is not.
     save_workspace("Use tabs.").expect("workspace");
-    let before = fs::read(desktop.join("chat-preferences.json")).expect("saved");
-    let release = hold_unreadable(&workspace_file);
-    let error = save_global("A longer global text.").expect_err("room unknown");
+    save_global("Be brief.").expect("global");
+    let saved = fs::read(&workspace_file).expect("saved");
+    let release = hold_unreadable(&preferences_file);
+    assert_eq!(workspace_room(), None);
+    let error = save_workspace("Use spaces.").expect_err("room unknown");
     assert_eq!(error.code(), "preferences");
-    release();
     assert_eq!(
-        fs::read(desktop.join("chat-preferences.json")).expect("after"),
-        before,
+        fs::read(&workspace_file).expect("kept"),
+        saved,
         "nothing was saved"
     );
+    save_workspace("").expect("removing needs no room");
+    assert!(!workspace_file.exists(), "removed");
+    release();
+    assert_eq!(workspace_room(), Some(INSTRUCTIONS_MAX - BOTH_HEADINGS - 9));
 
-    // Readable again, both saves go through.
+    // A workspace text cannot be read: the overview shows no global room,
+    // and a global save of text is refused, but removing the text is not.
+    save_workspace("Use tabs.").expect("workspace");
+    let saved = fs::read(&preferences_file).expect("saved");
+    let release = hold_unreadable(&workspace_file);
+    let overview = service.settings_overview().expect("overview");
+    assert_eq!(overview.chat.instructions_max_bytes, None);
+    let error = save_global("A longer global text.").expect_err("room unknown");
+    assert_eq!(error.code(), "preferences");
+    assert_eq!(
+        fs::read(&preferences_file).expect("kept"),
+        saved,
+        "nothing was saved"
+    );
+    let overview = save_global("").expect("removing needs no room");
+    assert_eq!(overview.chat.defaults.instructions, "");
+    release();
+
+    // Readable again, both rooms are known and both saves go through.
+    let overview = service.settings_overview().expect("overview");
+    assert_eq!(
+        overview.chat.instructions_max_bytes,
+        Some(INSTRUCTIONS_MAX - BOTH_HEADINGS - 9)
+    );
     save_global("A longer global text.").expect("global");
     save_workspace("Use spaces.").expect("workspace");
 }

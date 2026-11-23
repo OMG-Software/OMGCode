@@ -28,7 +28,9 @@ use super::error::DesktopError;
 use super::instructions;
 use super::preferences;
 use super::session_connections::{ChosenConnection, recorded_endpoint};
-use super::settings_chat::{chat_defaults_view, workspace_instructions_view};
+use super::settings_chat::{
+    chat_defaults_view, global_for_room, longest_for_room, workspace_instructions_view,
+};
 use super::state::folder_of_directory;
 use super::wire::{
     BranchState, BranchView, ConnectionChoice, ConnectionOrigin, ConnectionSourceView,
@@ -65,6 +67,18 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         .active_provider_profile()
         .map(|status| status.profile().id());
     let mut chat = chat_defaults_view(&inner.data_root);
+    // The rooms follow the saves' rule (ADR-0080): `None` when the text they
+    // must fit beside cannot be read now. This read is not under the
+    // preferences lock, so the saves check again.
+    let workspace_room =
+        global_for_room(&inner.data_root).map(|global| instructions::workspace_room(&global));
+    chat.instructions_max_bytes = longest_for_room(
+        &inner.data_root,
+        store
+            .workspaces()
+            .map(|workspace| *workspace.id().as_uuid()),
+    )
+    .map(instructions::global_room);
     let workspaces: Vec<WorkspaceSettingsView> = store
         .workspaces()
         .map(|workspace| {
@@ -84,18 +98,10 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                     &inner.data_root,
                     *workspace.id().as_uuid(),
                 ),
-                instructions_max_bytes: instructions::workspace_room(&chat.defaults.instructions),
+                instructions_max_bytes: workspace_room,
             }
         })
         .collect();
-    // Each save keeps the global text and every workspace's text sendable
-    // together (ADR-0080), so the global room leaves space for the longest.
-    let longest = workspaces
-        .iter()
-        .filter_map(|workspace| workspace.instructions.as_ref().map(String::len))
-        .max()
-        .unwrap_or(0);
-    chat.instructions_max_bytes = instructions::global_room(longest);
     let provider_profiles = store
         .provider_profiles()
         .iter()

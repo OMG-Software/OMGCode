@@ -848,8 +848,10 @@ pub struct ChatDefaultsView {
     pub turn_timeout_seconds_max: u64,
     /// Largest global instruction text a save accepts, in UTF-8 bytes: 16 KiB
     /// less the longest saved workspace text and the headings a turn adds,
-    /// so the two always fit together.
-    pub instructions_max_bytes: usize,
+    /// so the two always fit together. `None` when a workspace's saved text
+    /// cannot be read now, so the room is unknown and a save of non-empty
+    /// text is refused.
+    pub instructions_max_bytes: Option<usize>,
 }
 
 /// Where the chat defaults came from.
@@ -926,7 +928,9 @@ pub struct WorkspaceSettingsView {
     pub instructions: Option<String>,
     /// Largest text a save of this workspace's instructions accepts, in UTF-8
     /// bytes: 16 KiB less the saved global text and the headings a turn adds.
-    pub instructions_max_bytes: usize,
+    /// `None` when the saved global text cannot be read now, so the room is
+    /// unknown and a save of non-empty text is refused.
+    pub instructions_max_bytes: Option<usize>,
 }
 
 /// Arguments of a settings change that names only the expected revision

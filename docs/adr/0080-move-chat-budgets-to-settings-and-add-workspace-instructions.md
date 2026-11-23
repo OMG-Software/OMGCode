@@ -35,8 +35,11 @@ that crowded the toolbar.
    workspace's text sendable together within 16 KiB, the core's bound on
    custom instructions, with the headings of decision 3: the workspace save
    checks against the saved global text, and the global save against the
-   longest saved workspace text, both under the preferences lock. The
-   overview reports each remaining room, which the window's counters show,
+   longest saved workspace text, both under the preferences lock. Empty text
+   needs no room and skips the check. A damaged other text counts as empty;
+   one that cannot be read now makes the room unknown, and a save of
+   non-empty text is then refused. The overview reports each remaining room
+   by the same rule, `null` when unknown, which the window's counters show,
    so text the window accepts never makes a turn fail.
 3. `chat_send` composes the turn's custom instructions in Rust. The window
    sends the global text; Rust reads the session's recorded workspace's text.
