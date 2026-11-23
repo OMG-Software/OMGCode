@@ -262,12 +262,6 @@ pre {
   font-size: 13px;
 }
 
-.full-text {
-  margin: 4px 0 0;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
 /* Shared components (src/ui/). */
 
 /* The group does not clip its children, so the shared focus outline draws in full outside the
