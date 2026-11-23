@@ -5,6 +5,7 @@ import type { ChatDefaults, SearchResult, SessionSummary } from "../src/ipc/type
 import { type MainApp, startMain } from "../src/main/app";
 import {
   clampThreshold,
+  DEFAULTS_UNREADABLE,
   PLACEHOLDER_CTRL_ENTER,
   PLACEHOLDER_ENTER,
   SET_CONTEXT_IN_SETTINGS,
@@ -1008,6 +1009,46 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     });
     await settle();
     expect(ipc.callsTo("chat_send")).toHaveLength(1);
+  });
+
+  it("says when the defaults cannot be read, retries on Send, and never sends without them", async () => {
+    await open({ chat_defaults: () => rejection("internal", "store offline") });
+    const problem = (): string | null | undefined =>
+      root.querySelector(".composer-error")?.textContent;
+    expect(problem()).toBe(`${DEFAULTS_UNREADABLE} store offline (internal)`);
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    // Enabled, so a click reads the defaults again; a second failure still sends nothing.
+    const send = buttonByText(root, "Send");
+    expect(send.disabled).toBe(false);
+    const before = ipc.callsTo("chat_defaults").length;
+    send.click();
+    await settle();
+    expect(ipc.callsTo("chat_defaults").length).toBe(before + 1);
+    expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    expect(problem()).toBe(`${DEFAULTS_UNREADABLE} store offline (internal)`);
+
+    // Once the read succeeds, the same click sends.
+    ipc.on("chat_defaults", () => ({
+      ...CHAT_BUDGET_BOUNDS,
+      settings: SETTINGS,
+      preferences: "saved",
+      enter_to_send: true,
+    }));
+    send.click();
+    await settle();
+    expect(ipc.callsTo("chat_send")).toHaveLength(1);
+  });
+
+  it("does not send with older defaults when the read before the send fails", async () => {
+    await open();
+    type(root.querySelector(".message-box") as HTMLTextAreaElement, "hello");
+    ipc.on("chat_defaults", () => rejection("internal", "store offline"));
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(ipc.callsTo("chat_send")).toHaveLength(0);
+    expect(root.querySelector(".composer-error")?.textContent).toBe(
+      `${DEFAULTS_UNREADABLE} store offline (internal)`,
+    );
   });
 
   describe("after a send, keeps what was typed or chosen during it", () => {

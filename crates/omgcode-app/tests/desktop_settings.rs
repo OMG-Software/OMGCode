@@ -650,6 +650,85 @@ fn every_save_keeps_the_global_and_workspace_instructions_sendable_together() {
     assert_eq!(error.code(), "invalid_request");
 }
 
+/// Makes `file` exist but be unreadable until the returned function runs: a
+/// handle that lets others only delete or rename it on Windows, a link (which
+/// the bounded read refuses) on Unix.
+fn hold_unreadable(file: &Path) -> Box<dyn FnOnce()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_DELETE)
+            .open(file)
+            .expect("hold the file");
+        Box::new(move || drop(held))
+    }
+    #[cfg(unix)]
+    {
+        let target = file.with_extension("target");
+        fs::rename(file, &target).expect("move the file aside");
+        std::os::unix::fs::symlink(&target, file).expect("link");
+        let file = file.to_path_buf();
+        Box::new(move || {
+            fs::remove_file(&file).expect("remove link");
+            fs::rename(&target, &file).expect("restore the file");
+        })
+    }
+}
+
+#[test]
+fn an_instruction_save_is_refused_while_the_text_it_must_fit_beside_cannot_be_read() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let save_global = |text: &str| {
+        service.settings_save_chat_defaults(wire(json!({"defaults": {
+            "context_tokens": 8192,
+            "max_output_tokens": 1024,
+            "max_tool_calls": 8,
+            "turn_timeout_seconds": 60,
+            "instructions": text
+        }})))
+    };
+    let save_workspace = |text: &str| {
+        service.settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": text
+        })))
+    };
+    let desktop = fixture.data.join("desktop-v1");
+    let workspace_file = desktop
+        .join("workspace-instructions")
+        .join(format!("{}.json", workspace.id));
+
+    // The global text cannot be read: a workspace save cannot know its room.
+    save_global("Be brief.").expect("global");
+    let release = hold_unreadable(&desktop.join("chat-preferences.json"));
+    let error = save_workspace("Use tabs.").expect_err("room unknown");
+    assert_eq!(error.code(), "preferences");
+    release();
+    assert!(!workspace_file.exists(), "nothing was saved");
+
+    // A workspace text cannot be read: a global save cannot know its room.
+    save_workspace("Use tabs.").expect("workspace");
+    let before = fs::read(desktop.join("chat-preferences.json")).expect("saved");
+    let release = hold_unreadable(&workspace_file);
+    let error = save_global("A longer global text.").expect_err("room unknown");
+    assert_eq!(error.code(), "preferences");
+    release();
+    assert_eq!(
+        fs::read(desktop.join("chat-preferences.json")).expect("after"),
+        before,
+        "nothing was saved"
+    );
+
+    // Readable again, both saves go through.
+    save_global("A longer global text.").expect("global");
+    save_workspace("Use spaces.").expect("workspace");
+}
+
 #[test]
 fn workspace_instructions_are_saved_for_a_registered_workspace_only() {
     let fixture = Fixture::new();

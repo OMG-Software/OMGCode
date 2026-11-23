@@ -556,7 +556,10 @@ timeout, and global instructions from `chat_defaults` when it starts, when
 the `main` window gains focus, and again just before each send, and sends
 them in `chat_send`; it has no control for them. Send is disabled while no
 context size is saved, and the composer says to set it in Settings, under
-Model. The message and skills are taken at the click. After a successful
+Model. When `chat_defaults` cannot be read, the composer says so and keeps
+**Send** enabled: a click reads them again, and nothing is sent until a
+read succeeds, even with values read earlier. The message and skills are
+taken at the click. After a successful
 send the composer removes the sent text from the draft only when the draft
 still starts with it, and unticks only sent skills left unchanged since the
 click, so text typed, or skills ticked or unticked, while the defaults or the
@@ -848,7 +851,9 @@ waits. The window shows:
   workspace has text, or 16 KiB less 47 bytes and the longest workspace
   text. Both saves hold the service's preferences lock, so neither can
   overtake the other's check, and `chat_send` reads the workspace's file
-  under the same lock, so a turn sees one whole save. Shortening or removing text is always allowed
+  under the same lock, so a turn sees one whole save. A damaged other text
+  counts as empty, as it does for a turn; one that exists but cannot be read
+  now refuses the save with `preferences`, since its length is unknown. Shortening or removing text is always allowed
   when it fits. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.

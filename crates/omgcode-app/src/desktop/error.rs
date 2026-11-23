@@ -158,6 +158,15 @@ impl DesktopError {
         )
     }
 
+    /// An instruction save could not read the other saved text it must fit
+    /// beside, so the room is unknown and nothing was saved (ADR-0080).
+    pub(crate) fn instructions_room_unknown() -> Self {
+        Self::new(
+            "preferences",
+            "Other saved instructions could not be read, so nothing was saved: the room left for this text is unknown. Close any program using the settings files and save again.",
+        )
+    }
+
     /// A workspace's saved custom instructions could not be read, so a turn
     /// that would use them is refused rather than sent without them.
     pub(crate) fn instructions_unreadable() -> Self {

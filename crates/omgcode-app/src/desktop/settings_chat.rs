@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::DesktopService;
 use super::error::DesktopError;
 use super::instructions;
-use super::preferences::{self, MAX_SAVED_INSTRUCTIONS_BYTES};
+use super::preferences::{self, LoadError, MAX_SAVED_INSTRUCTIONS_BYTES};
 use super::wire::{
     ChatBudgetsDto, ChatBudgetsSaveRequest, ChatDefaultsView, PreferencesSource, SettingsOverview,
     WorkspaceInstructionsRequest,
@@ -90,13 +90,14 @@ impl DesktopService {
                 .preferences
                 .lock()
                 .map_err(|_| DesktopError::poisoned())?;
-            // A turn sends the saved global text with these. A file that
-            // cannot be read gives the built-in empty text, as a turn does.
-            let global = preferences::load(&self.inner.data_root)
-                .ok()
-                .flatten()
-                .map(|saved| saved.instructions)
-                .unwrap_or_default();
+            // A turn sends the saved global text with these. A damaged file
+            // gives the built-in empty text, as it does for a turn; one that
+            // exists but cannot be read now leaves the room unknown.
+            let global = match preferences::load(&self.inner.data_root) {
+                Ok(saved) => saved.map(|saved| saved.instructions).unwrap_or_default(),
+                Err(LoadError::Io) => return Err(DesktopError::instructions_room_unknown()),
+                Err(LoadError::TooLarge | LoadError::Format | LoadError::Invalid) => String::new(),
+            };
             let room = instructions::workspace_room(&global);
             if request.instructions.len() > room {
                 return Err(DesktopError::invalid_request(format!(
@@ -115,20 +116,26 @@ impl DesktopService {
 
 impl DesktopService {
     /// The length of the longest saved instruction text of any registered
-    /// workspace; a file that cannot be read counts as none, as it blocks
-    /// that workspace's turns anyway.
+    /// workspace. A damaged file counts as none, since it blocks that
+    /// workspace's turns until it is saved again, which checks the room.
+    ///
+    /// # Errors
+    ///
+    /// `preferences` when a file exists but cannot be read now: its length
+    /// is unknown, and it could become readable again.
     fn longest_workspace_instructions(&self) -> Result<usize, DesktopError> {
         let Some(store) = self.inner.open_control()? else {
             return Ok(0);
         };
-        Ok(store
-            .workspaces()
-            .filter_map(|workspace| {
-                instructions::load(&self.inner.data_root, *workspace.id().as_uuid()).ok()
-            })
-            .map(|text| text.len())
-            .max()
-            .unwrap_or(0))
+        let mut longest = 0;
+        for workspace in store.workspaces() {
+            match instructions::load(&self.inner.data_root, *workspace.id().as_uuid()) {
+                Ok(text) => longest = longest.max(text.len()),
+                Err(LoadError::Io) => return Err(DesktopError::instructions_room_unknown()),
+                Err(LoadError::TooLarge | LoadError::Format | LoadError::Invalid) => {}
+            }
+        }
+        Ok(longest)
     }
 }
 

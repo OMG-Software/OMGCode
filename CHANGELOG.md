@@ -19,6 +19,10 @@ Changes are recorded here before a release version is assigned.
     the global and every workspace text sendable together within 16 KiB,
     headings included, and the window's counters show the room left.
     `chat_send` reads a workspace's text under the same lock as its saves.
+    An instruction save refuses with `preferences` when the other text it
+    must fit beside exists but cannot be read. The composer shows a failed
+    `chat_defaults` read, retries it on **Send**, and never sends without a
+    successful read.
     The window refuses an output reserve over the 32-bit maximum before
     sending it.
   - **Turns:** `chat_send` adds the session workspace's instructions after
