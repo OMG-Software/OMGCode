@@ -782,6 +782,30 @@ fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check(
 /// round-trips through `parse`.
 #[test]
 fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
+    use crate::provider::OutputLimitField;
+
+    // Listed in full, so a new kind fails to compile until its field is chosen.
+    const fn documented_output_field(kind: ProviderKind) -> OutputLimitField {
+        match kind {
+            ProviderKind::OpenAi
+            | ProviderKind::Moonshot
+            | ProviderKind::MiniMax
+            | ProviderKind::XAi => OutputLimitField::MaxCompletionTokens,
+            ProviderKind::LmStudio
+            | ProviderKind::OllamaLocal
+            | ProviderKind::OllamaCloud
+            | ProviderKind::Anthropic
+            | ProviderKind::Google
+            | ProviderKind::Meta
+            | ProviderKind::Tencent
+            | ProviderKind::ThinkingMachines
+            | ProviderKind::OpenRouter
+            | ProviderKind::ZAi
+            | ProviderKind::DeepSeek
+            | ProviderKind::OpenAiCompatible => OutputLimitField::MaxTokens,
+        }
+    }
+
     assert_eq!(ProviderKind::ALL.len(), 16);
     for kind in ProviderKind::ALL {
         assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
@@ -794,9 +818,15 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
             Some(endpoint) => {
                 assert!(kind.is_hosted(), "{kind:?}");
                 assert!(endpoint.starts_with("https://"), "{kind:?}");
+                // The kind's endpoint must be a row of the client's fixed table,
+                // not a URL that only passes the typed-endpoint rule, and carry
+                // the output field ADR-0091 records for that provider.
+                let (_, field) = crate::provider::fixed_endpoint(endpoint)
+                    .unwrap_or_else(|| panic!("{kind:?}: endpoint missing from the fixed table"));
+                assert_eq!(field, documented_output_field(kind), "{kind:?}");
                 assert!(
                     crate::provider::ModelEndpoint::parse(endpoint)
-                        .is_ok_and(|parsed| parsed.is_hosted()),
+                        .is_ok_and(|parsed| parsed.is_hosted() && parsed.output_field() == field),
                     "{kind:?}"
                 );
             }

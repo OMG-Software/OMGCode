@@ -311,7 +311,7 @@ their registered identifier, and approvals by identifier.
 | `settings_unregister_workspace` | settings | Remove one workspace's registration after a native confirmation that names its folder; its settings and instructions file go, its files and sessions stay (ADR-0081) |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0091) |
-| `settings_set_api_key` | settings | Replace the stored API key of a hosted profile; the key is write-only and no dialog is shown |
+| `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
@@ -1475,7 +1475,8 @@ revision check and validation (ADR-0064, ADR-0071).
   identifier (and any item it replaced), as the CLI does, for the operator to
   check with `provider-profile-show`. No error shows the key or native error
   text. `settings_set_api_key` replaces the key
-  of a hosted profile (and refuses a local kind or an unknown
+  of a hosted `api_key` profile (and refuses a local kind, a `subscription`
+  profile, which never holds a key and shows no **Set key…**, or an unknown
   name) the way the CLI's `provider-credential-set` does: the new item is
   stored, then bound, then the old item is deleted. It shows no dialog,
   because the key goes only to the same host the profile already names

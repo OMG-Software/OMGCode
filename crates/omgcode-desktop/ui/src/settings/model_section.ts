@@ -189,7 +189,8 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
       }),
       el("div", { class: "row-meta", text: credentialLine(profile) }),
       hosted ? el("div", { class: "row-meta", text: hostedNotice(profile.endpoint) }) : null,
-      hosted ? setKeyDisclosure(profile, ctx) : null,
+      // A subscription profile never holds a key, so it has no key field.
+      hosted && profile.auth === "api_key" ? setKeyDisclosure(profile, ctx) : null,
     ),
     remove,
   );

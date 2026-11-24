@@ -1127,7 +1127,7 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `invalid_request` for a profile that is not a hosted profile
+    /// `invalid_request` for a profile that is not a hosted `api_key` profile
     /// or a key that is empty, too long, or has a control character; `control`
     /// for an unknown profile; `credential_unavailable`, `credential_locked`,
     /// `credential_io`, `credential_orphaned` (the new key is bound but the
@@ -1155,9 +1155,13 @@ impl DesktopService {
             let status = store
                 .provider_profile(&name)
                 .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
-            if !status.profile().kind().is_hosted() {
+            // A subscription profile can never hold a key (core's
+            // `require_api_key`), so refuse it here with the same message.
+            if !status.profile().kind().is_hosted()
+                || status.profile().auth() != ProviderAuth::ApiKey
+            {
                 return Err(DesktopError::invalid_request(
-                    "Only a hosted connection has an API key set here.",
+                    "Only a hosted connection that uses an API key has a key set here.",
                 ));
             }
             match store.set_provider_credential(&credentials, &name, &secret, revision) {

@@ -483,6 +483,30 @@ fn setting_a_key_replaces_the_stored_item() {
     assert_eq!(bound(&fixture, "lms"), None);
 }
 
+/// A hosted `subscription` profile (kept for replay, ADR-0091) never takes a
+/// key: the request is refused before the core is asked, records nothing, and
+/// leaves the profile unbound, so it can never be chosen.
+#[test]
+fn a_subscription_profile_is_refused_a_key() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let vault = Vault::new(&fixture.data);
+    vault.add_profile_at(
+        "plan",
+        "anthropic",
+        "subscription",
+        "https://api.anthropic.com/v1",
+    );
+    let before = revision(&fixture);
+    let refused = set_key(&service, &fixture, "plan", KEY).expect_err("refused");
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(refused.message().contains("uses an API key"), "{refused:?}");
+    assert!(!text_of(&refused).contains(KEY));
+    assert_eq!(revision(&fixture), before);
+    assert_eq!(bound(&fixture, "plan"), None);
+    assert_no_file_holds(&fixture.data, KEY);
+}
+
 /// Removing a profile with a stored key asks first, says the key is deleted,
 /// and on Yes removes the profile and the native item. No keeps both.
 #[test]

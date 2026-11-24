@@ -7,7 +7,7 @@ pub use hosted::{
     MOONSHOT_ENDPOINT, OLLAMA_CLOUD_ENDPOINT, OPENAI_ENDPOINT, OPENROUTER_ENDPOINT,
     OutputLimitField, TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT,
 };
-pub(crate) use hosted::{matches_fixed, validate_custom_url};
+pub(crate) use hosted::{fixed_endpoint, matches_fixed, validate_custom_url};
 pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models};
 
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
@@ -76,7 +76,7 @@ impl ModelEndpoint {
     ///
     /// `InvalidConfiguration` for any other text.
     pub fn parse(text: &str) -> Result<Self, ProviderError> {
-        if let Some((url, field)) = hosted::fixed_endpoint(text) {
+        if let Some((url, field)) = fixed_endpoint(text) {
             return Ok(Self(EndpointRule::Hosted { url, field }));
         }
         if text.starts_with("https://") {
@@ -114,7 +114,7 @@ impl ModelEndpoint {
     }
 
     /// The request field that carries the output budget.
-    const fn output_field(&self) -> OutputLimitField {
+    pub(crate) const fn output_field(&self) -> OutputLimitField {
         match self.0 {
             EndpointRule::Loopback(_) => OutputLimitField::MaxTokens,
             EndpointRule::Hosted { field, .. } => field,

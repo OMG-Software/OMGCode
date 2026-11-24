@@ -683,6 +683,29 @@ describe("advanced section", () => {
     expect(local?.querySelector("input")).toBeNull();
   });
 
+  it("offers no Set key on a hosted subscription profile, which never holds a key", async () => {
+    await start(() =>
+      overview({
+        provider_profiles: [
+          profile({
+            name: "plan",
+            kind: "anthropic",
+            auth: "subscription",
+            endpoint: "https://api.anthropic.com/v1",
+            credential_bound: false,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const row = Array.from(root.querySelectorAll<HTMLElement>(".row")).find(
+      (candidate) => candidate.querySelector(".row-title")?.textContent === "plan",
+    );
+    expect(row?.textContent).toContain("Hosted");
+    expect(row?.textContent).not.toContain("Set key");
+    expect(row?.querySelector("input[type=password]")).toBeNull();
+  });
+
   it("gives each empty group one line", async () => {
     await start(() => overview());
     go("Advanced");

@@ -1067,8 +1067,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (profile === undefined) {
             fail("control", "unknown provider profile");
           }
-          if (!isHostedKind(profile.kind)) {
-            fail("invalid_request", "Only a hosted connection has an API key set here.");
+          if (!isHostedKind(profile.kind) || profile.auth !== "api_key") {
+            fail(
+              "invalid_request",
+              "Only a hosted connection that uses an API key has a key set here.",
+            );
           }
           checkApiKey(args.api_key);
           profile.credential_bound = true;

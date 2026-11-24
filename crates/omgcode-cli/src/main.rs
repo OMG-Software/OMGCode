@@ -331,8 +331,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Dispatch trusted operator commands without providing any model execution route.
-/// `run` is an operator command; no model tool reaches it.
 /// The stored spellings of the provider kinds `filter` keeps, in the order
 /// `ProviderKind::ALL` lists them. Every kind is served by the one
 /// OpenAI-compatible adapter (ADR-0091).
@@ -344,6 +342,8 @@ fn adapter_kinds(filter: impl Fn(ProviderKind) -> bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// Dispatch trusted operator commands without providing any model execution route.
+/// `run` is an operator command; no model tool reaches it.
 fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Prompt => print_json(&json!({
