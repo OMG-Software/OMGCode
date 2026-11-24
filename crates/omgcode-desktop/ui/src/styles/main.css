@@ -1179,3 +1179,199 @@ mark {
 .capturing [data-capture="skip"] {
   display: none;
 }
+
+/*
+ * Context tab (ADR-0087): a stacked bar and a table of the parts of the next turn's context.
+ * Every part has a colour and a text label, so colour is never the only cue. The bar is an SVG
+ * whose rects take their size from attributes; no inline style is used.
+ */
+.context-tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  gap: 10px;
+}
+
+.ctx-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ctx-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ctx-body[aria-busy="true"] {
+  opacity: 0.7;
+}
+
+.ctx-empty,
+.ctx-bar-note,
+.ctx-scope {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ctx-error {
+  margin: 0;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.ctx-report {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ctx-bar {
+  display: block;
+  width: 100%;
+  height: 24px;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ctx-track {
+  fill: var(--surface-3);
+}
+
+.ctx-seg {
+  stroke: var(--surface);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.ctx-trigger {
+  stroke: var(--text);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.ctx-fill-system {
+  fill: var(--control-border);
+  background: var(--control-border);
+}
+
+.ctx-fill-global_instructions {
+  fill: var(--accent);
+  background: var(--accent);
+}
+
+.ctx-fill-workspace_instructions {
+  fill: var(--accent-fg);
+  background: var(--accent-fg);
+}
+
+.ctx-fill-tools {
+  fill: var(--warn);
+  background: var(--warn);
+}
+
+.ctx-fill-summary {
+  fill: var(--success);
+  background: var(--success);
+}
+
+.ctx-fill-history {
+  fill: var(--muted);
+  background: var(--muted);
+}
+
+.ctx-fill-skills {
+  fill: var(--mark);
+  background: var(--mark);
+}
+
+.ctx-fill-framing {
+  fill: var(--border);
+  background: var(--border);
+}
+
+.ctx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ctx-table th,
+.ctx-table td {
+  padding: 4px 6px;
+  text-align: left;
+  font-weight: 400;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.ctx-table thead th {
+  color: var(--muted);
+}
+
+.ctx-table .ctx-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ctx-note {
+  color: var(--muted);
+}
+
+.ctx-table .ctx-row-off th,
+.ctx-table .ctx-row-off td {
+  color: var(--muted);
+}
+
+.ctx-table .ctx-sum th,
+.ctx-table .ctx-sum td {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ctx-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 2px;
+}
+
+.ctx-swatch-off {
+  background: transparent;
+  border: 1px dashed var(--control-border);
+}
+
+.ctx-totals {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ctx-total {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ctx-total dt {
+  color: var(--muted);
+}
+
+.ctx-total dd {
+  margin: 0;
+  text-align: right;
+}

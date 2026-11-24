@@ -4,8 +4,8 @@
 use omgcode_app::desktop::{
     ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesSaveRequest,
     ChatSendRequest, ChatSettingsDto, ChatStatus, ComposerPreferencesDto, ConnectionChooseRequest,
-    ConnectionStatus, ConnectionStatusRequest, SessionContext, SessionModelSelectRequest,
-    SessionRequest, SessionSkills,
+    ConnectionStatus, ConnectionStatusRequest, ContextBreakdown, SessionContext,
+    SessionModelSelectRequest, SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
@@ -171,6 +171,30 @@ pub async fn chat_models(
     authorize(Command::ChatModels, webview.label())?;
     let request = SessionRequest { session_id };
     blocking(&state, move |service| service.chat_models(request)).await
+}
+
+/// `main` only. Estimates, by part, what the session's next turn would send
+/// (ADR-0087). Nothing goes to a model and nothing is recorded; the result
+/// holds names and numbers only. The session is resolved by Rust from its
+/// identifier, and the journal, saved budgets, instructions, and live tool
+/// settings are read from trusted state.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`not_found`, `busy` while a turn
+/// runs for the session, `invalid_journal`, `instructions_unreadable`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn session_context_breakdown(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+) -> Result<ContextBreakdown, CommandError> {
+    authorize(Command::SessionContextBreakdown, webview.label())?;
+    let request = SessionRequest { session_id };
+    blocking(&state, move |service| {
+        service.session_context_breakdown(request)
+    })
+    .await
 }
 
 /// `main` only. Starts one chat turn on a service thread and returns at once.

@@ -397,6 +397,45 @@ export interface SessionContext {
   branch: BranchView;
 }
 
+/** The parts of a context estimate, in display order (ADR-0087). */
+export type ContextPartId =
+  | "system"
+  | "global_instructions"
+  | "workspace_instructions"
+  | "tools"
+  | "summary"
+  | "history"
+  | "skills"
+  | "framing";
+
+/** One part of the estimate. It holds numbers and a fixed code, never instruction or message text. */
+export interface ContextPart {
+  id: ContextPartId;
+  /** Conservative token estimate; zero when the part is not included. */
+  tokens: number;
+  /** Whether the next turn would send this part. */
+  included: boolean;
+  /** For `history`: the retained messages after the compaction boundary. */
+  messages?: number;
+  /** A fixed code that says why the part is not included. */
+  reason?: string;
+}
+
+/** What the open session's next turn would send, by part. Nothing was sent or recorded. */
+export interface ContextBreakdown {
+  session_id: string;
+  parts: ContextPart[];
+  /** The sum of the parts. */
+  estimated_input_tokens: number;
+  max_output_tokens: number;
+  /** The estimate at which compaction triggers. */
+  effective_trigger: number;
+  /** The saved context capacity, or `null` when none is saved. */
+  context_tokens: number | null;
+  auto_compaction: boolean;
+  estimate_scope: string;
+}
+
 export interface ProviderProfileView {
   name: string;
   kind: string;

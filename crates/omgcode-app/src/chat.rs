@@ -25,6 +25,7 @@ use omgcode_core::turn::{
 };
 
 pub use self::output::ChatTurnOutput;
+pub(crate) use self::preflight::{NextTurnParts, estimate_next_turn_parts};
 pub use self::skills::{LoadedSkillSummary, validate_selection as validate_skill_selection};
 use crate::context::summary_output_tokens;
 use crate::error::{AppError, ErrorKind};

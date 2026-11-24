@@ -8,6 +8,7 @@ import type {
   ChatStatus,
   ComposerPreferences,
   ConnectionStatus,
+  ContextBreakdown,
   SearchResult,
   SessionContext,
   SessionSkills,
@@ -118,6 +119,9 @@ export const api = {
   /** One directory of the session's workspace; `path` is relative name components (ADR-0083). */
   workspaceEntries: (sessionId: string, path: string[]) =>
     invokeCommand<WorkspaceListing>("workspace_entries", { session_id: sessionId, path }),
+  /** What the session's next turn would send, by part (ADR-0087). Sends nothing to a model. */
+  sessionContextBreakdown: (sessionId: string) =>
+    invokeCommand<ContextBreakdown>("session_context_breakdown", { session_id: sessionId }),
   sessionContext: (sessionId: string) =>
     invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
   /** The session's connection and model; `null` describes the default when no session is open. */

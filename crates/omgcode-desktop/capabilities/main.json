@@ -32,6 +32,7 @@
     "allow-connection-status",
     "allow-connection-select",
     "allow-session-model-select",
-    "allow-chat-models"
+    "allow-chat-models",
+    "allow-session-context-breakdown"
   ]
 }
