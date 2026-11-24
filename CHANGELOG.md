@@ -43,8 +43,9 @@ Changes are recorded here before a release version is assigned.
     configuration is not applied, so no filter, diff driver, hook, or
     fsmonitor program runs, not even from an included file, and nothing is
     written. A run stops after 10 seconds and holds no settings lock, so it
-    never makes a send or a settings change busy (ADR-0085). The dependency
-    adds 81 lockfile packages.
+    never makes a send or a settings change busy (ADR-0085). A `.git` it
+    cannot read is named as a pointer file, a folder without `HEAD`, or a
+    link, without following it. The dependency adds 81 lockfile packages.
   - **Processes** lists the session's model command-tool calls, newest first,
     through `session_processes`, joined from the model action, run, and
     session journals. It never starts, stops, or re-runs anything, returns no

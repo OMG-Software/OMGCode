@@ -60,12 +60,17 @@ function partLabel(id: ContextPartId): string {
   return PART_LABELS[id] ?? id;
 }
 
-function noteOf(part: ContextPart): string {
+/**
+ * The note column. History names a compaction boundary only when a summary is sent, so an
+ * uncompacted session reads as plain retained messages.
+ */
+function noteOf(part: ContextPart, compacted: boolean): string {
   if (!part.included) {
     return (part.reason === undefined ? undefined : REASON_LABELS[part.reason]) ?? NOT_INCLUDED;
   }
   if (part.id === "history" && part.messages !== undefined) {
-    return `${part.messages} ${part.messages === 1 ? "message" : "messages"} after the compaction boundary`;
+    const count = `${part.messages} ${part.messages === 1 ? "message" : "messages"}`;
+    return compacted ? `${count} after the compaction boundary` : count;
   }
   return "";
 }
@@ -133,6 +138,7 @@ function row(label: string, value: string): HTMLElement {
 
 function buildTable(data: ContextBreakdown): HTMLTableElement {
   const body = el("tbody");
+  const compacted = data.parts.some((part) => part.id === "summary" && part.included);
   for (const part of data.parts) {
     const swatch = el("span", {
       class: part.included ? `ctx-swatch ctx-fill-${part.id}` : "ctx-swatch ctx-swatch-off",
@@ -151,7 +157,7 @@ function buildTable(data: ContextBreakdown): HTMLTableElement {
           class: "ctx-num",
           text: part.included ? percent(part.tokens, data.estimated_input_tokens) : "0%",
         }),
-        el("td", { class: "ctx-note", text: noteOf(part) }),
+        el("td", { class: "ctx-note", text: noteOf(part, compacted) }),
       ),
     );
   }

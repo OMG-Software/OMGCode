@@ -149,12 +149,8 @@ describe("context tab", () => {
     const cells = (id: string): string[] =>
       Array.from(rowOf(root, id).children).map((cell) => textOf(cell));
     expect(cells("system")).toEqual(["System prompt", "1,000", "30.1%", ""]);
-    expect(cells("history")).toEqual([
-      "Conversation history",
-      "1,000",
-      "30.1%",
-      "3 messages after the compaction boundary",
-    ]);
+    // No summary is sent, so there is no compaction boundary to name.
+    expect(cells("history")).toEqual(["Conversation history", "1,000", "30.1%", "3 messages"]);
     expect(cells("workspace_instructions")).toEqual([
       "Workspace instructions",
       "0",
@@ -183,6 +179,25 @@ describe("context tab", () => {
       "framing",
       "total",
     ]);
+  });
+
+  it("names the compaction boundary only when a summary is sent", async () => {
+    installFakeIpc({
+      session_context_breakdown: () =>
+        breakdown({
+          parts: [
+            part("system", 1000),
+            part("summary", 400),
+            part("history", 600, { messages: 1 }),
+            part("framing", 320),
+          ],
+        }),
+    });
+    const tab = createContextTab();
+    tab.showSession(SESSION);
+    await settle();
+    const note = Array.from(rowOf(tab.element, "history").children).map((cell) => textOf(cell))[3];
+    expect(note).toBe("1 message after the compaction boundary");
   });
 
   it("names why tools are not offered", async () => {

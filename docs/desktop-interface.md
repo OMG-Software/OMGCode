@@ -772,8 +772,8 @@ untouched controls take the returned values.
   the `settings` window. **Chat settings** keeps the endpoint as read-only text
   (the open session's endpoint). A launch argument
   (`--endpoint` or `--provider-profile`) fixes the connection of every
-  session: both provider dropdowns are disabled and show "Set at launch", and
-  the model is still chosen from that connection's list. `chat_send` keeps
+  session: the model box's **Provider** dropdown is disabled and shows "Set
+  at launch", and the model is still chosen from that connection's list. `chat_send` keeps
   sending the endpoint of the shared connection and the model the model box shows; Send is disabled without a model
   and while the session's provider is being read or has gone stale.
 - **Saved preferences.** Two windows save one file, each its own fields,
@@ -943,7 +943,8 @@ changes while it is shown, and again when a turn settles; see
   message overhead), global instructions, workspace instructions (including the
   headings that join the two texts), tool definitions, the compaction summary,
   the conversation history after the compaction boundary (with its message
-  count), selected skills, and message framing. Framing is the fixed overhead
+  count; the boundary is named only when a summary is sent), selected skills,
+  and message framing. Framing is the fixed overhead
   no part owns (the instructions label and the instruction message's
   overhead), reported as its own part so the parts add up to the estimate.
   Tool definitions count only when live settings would offer tools (the same
@@ -1650,8 +1651,12 @@ when a turn settles, so the status run never starts for a hidden tab; see
   recorded workspace, opens it by its recorded identities as the branch reader
   does, and refuses an unregistered workspace with `unknown_workspace`. A
   folder with no `.git` is the `not_repository` state, shown as "Not a Git
-  repository.", not an error. A `.git` file (a linked worktree or submodule
-  pointer) is not followed and shows "Git status unavailable".
+  repository.", not an error. When `.git/HEAD` cannot be read, the anchored
+  handle names what `.git` is, and nothing is followed: a `.git` file (a
+  linked worktree or submodule pointer) shows "Git status unavailable: the
+  .git entry is a file, so linked worktrees and submodules are not shown"; a
+  `.git` folder without a readable `HEAD`, and a `.git` link or special entry,
+  each show their own reason.
 - **No program runs.** The repository is read in process with the `gix` crate,
   opened with isolated permissions (no system, global, user, or environment
   configuration, no includes). Every section of the repository's own

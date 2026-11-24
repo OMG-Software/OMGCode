@@ -48,7 +48,7 @@ use gix::status::index_worktree::Item as WorktreeItem;
 use crate::control::{ControlError, ControlStore, FileScope};
 use crate::git_head::{MAX_HEAD_BYTES, OpenedScope, open_scope};
 use crate::policy::WorkspaceId;
-use omgcode_platform::broker::{RelativePath, is_missing_entry};
+use omgcode_platform::broker::{self, RelativePath, Workspace, is_missing_entry};
 
 /// The most changed paths reported. More set `truncated`.
 pub const MAX_CHANGED_PATHS: usize = 1000;
@@ -158,23 +158,37 @@ pub fn workspace_status(scope: &StatusScope) -> WorkspaceStatus {
     // folder inside the workspace, not a link or a pointer file.
     let head = RelativePath::new(Path::new(".git/HEAD"))
         .and_then(|path| workspace.read(&path, MAX_HEAD_BYTES));
-    match head {
-        Ok(_) => {}
-        Err(error) if is_missing_entry(&error) => {
-            return match RelativePath::new(Path::new(".git"))
-                .and_then(|path| workspace.read(&path, MAX_HEAD_BYTES))
-            {
-                Err(error) if is_missing_entry(&error) => WorkspaceStatus::NotRepository,
-                _ => WorkspaceStatus::Unavailable(
-                    "the .git entry is not a plain folder, so linked worktrees are not shown",
-                ),
-            };
-        }
-        Err(_) => {
-            return WorkspaceStatus::Unavailable("the .git entry cannot be read");
-        }
+    if let Err(error) = head {
+        // `.git/HEAD` below a `.git` file fails as "not a directory", not as a
+        // missing entry, so every failure names what `.git` is.
+        return without_head(&workspace, is_missing_entry(&error));
     }
     status_of_directory(&workspace_path)
+}
+
+/// Name what `.git` is when `.git/HEAD` could not be read: nothing, a pointer
+/// file, a folder whose `HEAD` is missing or unreadable, or a link or special
+/// entry, each through the anchored handle, so nothing is followed.
+fn without_head(workspace: &Workspace, head_missing: bool) -> WorkspaceStatus {
+    let Ok(git) = RelativePath::new(Path::new(".git")) else {
+        return WorkspaceStatus::Unavailable("the .git entry cannot be read");
+    };
+    match workspace.read(&git, MAX_HEAD_BYTES) {
+        Err(error) if is_missing_entry(&error) => WorkspaceStatus::NotRepository,
+        // A readable file is the pointer of a linked worktree or a submodule.
+        Ok(_) => WorkspaceStatus::Unavailable(
+            "the .git entry is a file, so linked worktrees and submodules are not shown",
+        ),
+        // A folder the handle can list has a missing or unreadable `HEAD`;
+        // anything else is a link or a special entry, which is never followed.
+        Err(_) => match workspace.list(&git, 1, broker::MAX_DIRECTORY_NAME_UNITS) {
+            Ok(_) if head_missing => WorkspaceStatus::Unavailable("the .git folder has no HEAD"),
+            Ok(_) => WorkspaceStatus::Unavailable("the .git/HEAD file cannot be read"),
+            Err(_) => WorkspaceStatus::Unavailable(
+                "the .git entry is a link or special entry and is not followed",
+            ),
+        },
+    }
 }
 
 /// The status of the repository whose worktree is exactly `directory`.

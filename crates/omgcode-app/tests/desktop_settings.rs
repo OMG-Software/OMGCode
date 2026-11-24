@@ -1033,6 +1033,34 @@ fn workspace_git_status_reports_states_without_failing() {
     assert_eq!(unknown.code(), "not_found");
 }
 
+/// A `.git` entry without `HEAD` is named by what it is: a folder that has no
+/// `HEAD` is not reported as a pointer file, and a pointer file is.
+#[test]
+fn a_git_entry_without_head_is_named_by_what_it_is() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let session = new_session(&service, &workspace);
+    let note = || {
+        let status = service
+            .workspace_git_status(wire(session_request(session)))
+            .expect("status");
+        assert_eq!(status.state, GitStatusState::Unavailable);
+        status.note.expect("note")
+    };
+
+    let git = workspace.path.join(".git");
+    fs::create_dir(&git).expect("git dir");
+    assert_eq!(note(), "the .git folder has no HEAD");
+
+    fs::remove_dir(&git).expect("remove dir");
+    fs::write(&git, "gitdir: ../elsewhere\n").expect("git file");
+    assert_eq!(
+        note(),
+        "the .git entry is a file, so linked worktrees and submodules are not shown"
+    );
+}
+
 /// The `settings` window's scope (ADR-0071) comes from the session's recorded
 /// workspace, is carried by every overview, and is cleared on request.
 #[test]

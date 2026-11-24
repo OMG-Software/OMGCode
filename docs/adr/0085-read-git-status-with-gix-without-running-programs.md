@@ -68,7 +68,11 @@ and never run an external program.
    reader now shares), and requires `.git/HEAD` to be readable through that
    anchored handle, so `.git` is a plain folder inside the workspace. A
    `.git` file (a linked worktree or submodule pointer) is reported as
-   unavailable and not followed. After the open, the repository's worktree
+   unavailable and not followed. When `.git/HEAD` cannot be read, the same
+   handle names what `.git` is, without following it: missing
+   (`not_repository`), a pointer file, a folder whose `HEAD` is missing or
+   unreadable, or a link or special entry, each with its own unavailable
+   reason. After the open, the repository's worktree
    and Git folder must be the workspace and its `.git` by canonical path, so
    a `core.worktree` or alternative layout is refused. An unregistered
    workspace returns the `unknown_workspace` error. A folder with no `.git`
@@ -107,8 +111,8 @@ and never run an external program.
    filter kept. Other tests cover a clean repository,
    worktree and staged changes, collapsed untracked folders, the 1,000-path
    bound, a `core.worktree` that points elsewhere, a `.git` folder that is not
-   a repository, and a corrupt index; the last two are controlled
-   `unavailable` values.
+   a repository, a corrupt index, a `.git` folder without `HEAD`, and a `.git`
+   pointer file; the last four are controlled `unavailable` values.
 
 ## What `gix` still reads
 
