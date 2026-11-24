@@ -14,6 +14,7 @@ import {
   type Handler,
   installFakeIpc,
   mainHandlers,
+  modelRefresh,
   modelSelect,
   mountRoot,
   page,
@@ -324,7 +325,7 @@ describe("per-session provider and model", () => {
     finish(null);
     await settle();
     expect(modelSelect(root).disabled).toBe(false);
-    expect(buttonByText(root, "Refresh").disabled).toBe(false);
+    expect(modelRefresh(root).disabled).toBe(false);
   });
 
   it("warns that Ollama Cloud models leave this computer", async () => {

@@ -236,13 +236,22 @@ export function choose(select: HTMLSelectElement, value: string): void {
   select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-/** The composer's model choice. */
+/** The model choice in the side panel's model box (ADR-0089). */
 export function modelSelect(scope: ParentNode): HTMLSelectElement {
   const found = scope.querySelector<HTMLSelectElement>('.model-box select[aria-label="Model"]');
   if (found === null) {
     throw new Error("No model choice");
   }
   return found;
+}
+
+/** The model box's Refresh button; the side panel tabs have Refresh buttons of their own. */
+export function modelRefresh(scope: ParentNode): HTMLButtonElement {
+  const box = scope.querySelector<HTMLElement>(".model-box");
+  if (box === null) {
+    throw new Error("No model box");
+  }
+  return buttonByText(box, "Refresh");
 }
 
 export function hasButton(scope: ParentNode, label: string): boolean {

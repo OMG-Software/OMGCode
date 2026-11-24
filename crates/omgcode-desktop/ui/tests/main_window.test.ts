@@ -25,6 +25,7 @@ import {
   hasButton,
   installFakeIpc,
   mainHandlers,
+  modelRefresh,
   modelSelect,
   mountRoot,
   page,
@@ -1438,7 +1439,7 @@ describe("settings window, saved defaults, and per-turn skills", () => {
         { id: "second", cloud_tag: false },
       ],
     }));
-    buttonByText(root, "Refresh").click();
+    modelRefresh(root).click();
     await settle();
     const model = modelSelect(root);
     choose(model, "first");

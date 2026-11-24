@@ -459,8 +459,8 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
 - **A tab strip and a collapse button.** The strip follows the WAI-ARIA tabs
   pattern through `ui/src/ui/tabs.ts`: arrow keys move focus and select, and
   each tab controls a `tabpanel`. The selected tab is remembered until the
-  window closes; no storage is used. Today the tabs are **Terminal** and
-  **Files**. A new tab is one entry in the list `app.ts` gives
+  window closes; no storage is used. The tabs are **Terminal**, **Files**,
+  **Git**, **Processes**, and **Context**. A new tab is one entry in the list `app.ts` gives
   `createSidePanel`: an id, a label, a rail icon, its content, and an optional
   callback that says when it becomes visible or hidden.
 - **A rail.** Collapsed, the panel shows one icon button per tab. A click
@@ -481,6 +481,17 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
   session accepts a message or a turn runs. Only the place changed.
 
 **Terminal tab.** The note from ADR-0072; no command is called.
+
+**Git, Processes, and Context tabs.** Each wraps one session view
+(`createGitTab`, `createProcessesTab`, `createContextTab`) through
+`ui/src/main/panel_tab.ts`, which reads only while the tab is visible: a
+hidden or collapsed tab is cleared, so it reads nothing, polls nothing, and
+keeps no stale data, and showing it again reads the open session afresh.
+Opening a session passes it to every tab; a visible tab reads it at once.
+When a turn settles, or the session tree changes after an action, the visible
+tab reads again. The Processes tab's own two-second poll therefore runs only
+while it is visible. See [Git status tab](#git-status-tab),
+[Processes tab](#processes-tab), and [Context tab](#context-tab).
 
 **Files tab.** A lazily expanded tree of the open session's workspace. It
 loads nothing while the tab is hidden or collapsed. Opening a session clears
@@ -895,14 +906,11 @@ A panicked turn thread is recorded as a failed turn with the code `internal`.
 
 ## Context tab
 
-**Status: built, not yet wired.** `ui/src/main/context_tab.ts` exports
-`createContextTab()`, which returns a `PanelView` (`element`,
-`showSession(sessionId | null)`, `refresh()`, `dispose()`), and the
-`session_context_breakdown` command serves it (ADR-0087). Nothing in the
-`main` window mounts the view yet, so no operator sees it. The right-hand panel
-tab framework is a separate change; once it mounts the view, it is to call
-`showSession` when the open session changes and `refresh` after each turn
-ends, and this section must say where it appears.
+The **Context** tab of the right-hand panel shows `createContextTab()` from
+`ui/src/main/context_tab.ts`, which the `session_context_breakdown` command
+serves (ADR-0087). The tab reads when it is shown, when the open session
+changes while it is shown, and again when a turn settles; see
+[right-hand panel](#right-hand-panel).
 
 - **Command.** `session_context_breakdown { session_id }` is `main`-only. Rust
   resolves everything from trusted state by session id: the journal through the
@@ -958,11 +966,9 @@ ends, and this section must say where it appears.
 
 ## Processes tab
 
-Status: the Rust command and a self-contained view module exist; the view is
-**not yet wired** into the `main` window. The right-hand panel's tab
-framework, and the tab that shows this view, are separate work. The
-coordinator of that work adjusts this section when the tab exists
+The **Processes** tab of the right-hand panel shows `createProcessesTab()`
 ([ADR-0086](adr/0086-show-the-sessions-subprocesses-in-the-main-window.md)).
+It reads only while it is visible; see [right-hand panel](#right-hand-panel).
 
 The only subprocess a session starts is a model `workspace_run_command` call.
 `session_processes { session_id }` lists those calls for one session, newest
@@ -1608,10 +1614,11 @@ misled by a request that uses such text.
 `workspace_git_status` and the view in `ui/src/main/git_tab.ts` show the open
 session's Git branch and changed files, read-only
 ([ADR-0085](adr/0085-read-git-status-with-gix-without-running-programs.md)).
-The view (`createGitTab()`, a `PanelView` with `element`, `showSession`,
-`refresh`, and `dispose`) and the `gitStatus` icon exist, but the right-hand
-panel does not mount them yet, so no window shows the tab. Its stylesheet,
-`ui/src/styles/git_tab.css`, is not linked yet either.
+The **Git** tab of the right-hand panel shows `createGitTab()` with the
+`gitStatus` rail icon, and its styles are part of `ui/src/styles/main.css`. It
+reads when it is shown, when the open session changes while it is shown, and
+when a turn settles, so the status run never starts for a hidden tab; see
+[right-hand panel](#right-hand-panel).
 
 - **Scope.** The command takes only a session id. Rust resolves the session's
   recorded workspace, opens it by its recorded identities as the branch reader

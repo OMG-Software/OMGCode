@@ -2,8 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-11-24
-- Implemented: the command and the view are built; the view is not yet mounted
-  in the `main` window
+- Implemented: the command, and the view as the right-hand panel's
+  **Context** tab
 
 ## Context
 
@@ -98,15 +98,15 @@ cannot assemble the parts itself.
 
 - The estimate is the conservative byte-based one: one byte counts as one
   token, so it overstates a real tokenizer's count. It is not provider-reported
-  usage and is not updated while a turn runs. The coordinator-owned panel is to
-  call `refresh()` after each turn ends.
+  usage and is not updated while a turn runs. The panel calls `refresh()`
+  when a turn settles while the tab is visible.
 - The command opens the journal for reading its state, so a concurrent
   `chat_send` for the same session can see `busy` for the instant it is open.
-- The command count rises by one (43 commands, 26 for `main`).
+- The command count rises by one.
 - Verification: core and app unit tests for the sum, an integration test per
   case (plain, compacted, tools on and off, instructions, totals, unregistered
   workspace, unknown session), and jsdom tests of the view. Not checked in a
-  running window, because the view is not yet mounted.
+  running Tauri window.
 
 ## References
 

@@ -1455,3 +1455,84 @@ mark {
   color: var(--warn);
   border-color: var(--warn);
 }
+
+/*
+ * The Git status tab (ADR-0085). It uses only tokens.css values.
+ * Nothing here sets `display` on an element that is hidden by the `hidden` attribute.
+ */
+.git-tab {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-size: 12px;
+}
+
+.git-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-branch {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.git-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+
+.git-message {
+  margin: 4px 0;
+}
+
+.git-error {
+  color: var(--danger);
+}
+
+.git-group-title {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.git-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.git-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 1px 0;
+  min-width: 0;
+}
+
+.git-state {
+  flex: none;
+  width: 1.2em;
+  font-family: var(--mono);
+  font-weight: 600;
+  text-align: center;
+  color: var(--accent-fg);
+}
+
+.git-path {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+}

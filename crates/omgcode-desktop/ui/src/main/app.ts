@@ -2,11 +2,15 @@ import { button, el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { createPoller } from "../poll";
 import { createConnectionModel } from "./connection_state";
+import { createContextTab } from "./context_tab";
 import { createConversation } from "./conversation";
 import { createFilesTab } from "./files_tab";
+import { createGitTab } from "./git_tab";
 import { createShellLayout } from "./layout";
 import { createModelBox, MODEL_RAIL_LABEL } from "./model_box";
 import { createNewSessionDialog } from "./new_session";
+import { panelTab } from "./panel_tab";
+import { createProcessesTab } from "./processes_tab";
 import { createSidePanel } from "./side_panel";
 import { createSidebar } from "./sidebar";
 import { createStatusFooter } from "./status_footer";
@@ -69,12 +73,16 @@ export function startMain(root: HTMLElement): MainApp {
     onTreeChanged: () => {
       void sidebar.refresh();
       footer.refresh();
+      // A turn may have edited files, run commands, or grown the history.
+      for (const tab of sessionTabs) {
+        tab.refresh();
+      }
     },
   });
   const sidebar = createSidebar({
     onOpen: (session, folder, seq) => {
       void connection.open(session.session_id);
-      files.setSession(session.session_id);
+      showSession(session.session_id);
       footer.showSession(session, folder);
       void conversation.open(session, folder, seq);
     },
@@ -84,10 +92,22 @@ export function startMain(root: HTMLElement): MainApp {
     onCollapse: () => layout.left.setCollapsed(true),
     onExpand: () => layout.left.setCollapsed(false),
   });
-  // The right-hand panel's tabs (ADR-0072, ADR-0083). One entry adds one tab.
+  // The right-hand panel's tabs (ADR-0072, ADR-0083, ADR-0085 to ADR-0087). One entry adds one
+  // tab. The session views read only while their tab is visible.
   const files = createFilesTab();
+  const sessionTabs = [
+    panelTab({ id: "git", label: "Git", icon: "gitStatus" }, createGitTab()),
+    panelTab({ id: "processes", label: "Processes", icon: "processes" }, createProcessesTab()),
+    panelTab({ id: "context", label: "Context", icon: "context" }, createContextTab()),
+  ];
+  function showSession(sessionId: string): void {
+    files.setSession(sessionId);
+    for (const tab of sessionTabs) {
+      tab.setSession(sessionId);
+    }
+  }
   const sidePanel = createSidePanel(
-    [terminalTab(), files],
+    [terminalTab(), files, ...sessionTabs],
     {
       onCollapse: () => layout.right.setCollapsed(true),
       onExpand: () => layout.right.setCollapsed(false),
@@ -104,7 +124,7 @@ export function startMain(root: HTMLElement): MainApp {
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);
     void connection.open(session.session_id);
-    files.setSession(session.session_id);
+    showSession(session.session_id);
     footer.showSession(session, folder);
     void conversation.open(session, folder, null);
     void sidebar.refresh();
@@ -128,6 +148,9 @@ export function startMain(root: HTMLElement): MainApp {
       layout.dispose();
       conversation.dispose();
       modelBox.dispose();
+      for (const tab of sessionTabs) {
+        tab.dispose();
+      }
       sidebar.dispose();
       footer.dispose();
       connection.dispose();

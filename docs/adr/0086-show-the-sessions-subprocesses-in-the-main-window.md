@@ -31,9 +31,8 @@ and is untrusted.
 ## Decision
 
 Add the `main`-window command `session_processes { session_id }` and a
-self-contained view module `createProcessesTab()` that the right-hand panel
-will host. The view is not wired in by this decision; the panel's tab
-framework is separate work.
+self-contained view module `createProcessesTab()`, shown as the right-hand
+panel's **Processes** tab, which reads only while it is visible.
 
 The command is read-only and resolves everything from trusted state by the
 session identifier. On the blocking pool it reads:
