@@ -7,7 +7,7 @@ pub use hosted::{
     MOONSHOT_ENDPOINT, OLLAMA_CLOUD_ENDPOINT, OPENAI_ENDPOINT, OPENROUTER_ENDPOINT,
     OutputLimitField, TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT,
 };
-pub(crate) use hosted::{fixed_endpoint, matches_fixed, validate_custom_url};
+pub(crate) use hosted::{disables_thinking, fixed_endpoint, matches_fixed, validate_custom_url};
 pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models};
 
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
@@ -63,8 +63,13 @@ enum EndpointRule {
     /// A literal loopback IP, an explicit port, and the `/v1` path.
     Loopback(Url),
     /// An HTTPS base URL: a fixed provider endpoint, or one that passed the
-    /// operator-typed rule. `field` names the output budget field it takes.
-    Hosted { url: Url, field: OutputLimitField },
+    /// operator-typed rule. `field` names the output budget field it takes,
+    /// and `thinking_off` whether requests switch the provider's thinking off.
+    Hosted {
+        url: Url,
+        field: OutputLimitField,
+        thinking_off: bool,
+    },
 }
 
 impl ModelEndpoint {
@@ -77,13 +82,18 @@ impl ModelEndpoint {
     /// `InvalidConfiguration` for any other text.
     pub fn parse(text: &str) -> Result<Self, ProviderError> {
         if let Some((url, field)) = fixed_endpoint(text) {
-            return Ok(Self(EndpointRule::Hosted { url, field }));
+            return Ok(Self(EndpointRule::Hosted {
+                url,
+                field,
+                thinking_off: disables_thinking(text),
+            }));
         }
         if text.starts_with("https://") {
             return validate_custom_url(text).map(|url| {
                 Self(EndpointRule::Hosted {
                     url,
                     field: OutputLimitField::MaxTokens,
+                    thinking_off: false,
                 })
             });
         }
@@ -118,6 +128,16 @@ impl ModelEndpoint {
         match self.0 {
             EndpointRule::Loopback(_) => OutputLimitField::MaxTokens,
             EndpointRule::Hosted { field, .. } => field,
+        }
+    }
+
+    /// Whether requests send `"thinking": {"type": "disabled"}`, because the
+    /// provider would otherwise require reasoning text this client does not
+    /// keep (ADR-0091).
+    pub(crate) const fn disables_thinking(&self) -> bool {
+        match self.0 {
+            EndpointRule::Loopback(_) => false,
+            EndpointRule::Hosted { thinking_off, .. } => thinking_off,
         }
     }
 
@@ -172,6 +192,7 @@ pub struct LocalModelClient {
     endpoint: Url,
     https_only: bool,
     output_field: OutputLimitField,
+    thinking: Option<Thinking>,
     model: String,
     context_tokens: u64,
     max_output_tokens: u32,
@@ -259,6 +280,8 @@ struct ChatRequest<'a> {
     stream: bool,
     #[serde(flatten)]
     limit: OutputLimit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
 }
 
 /// The text request plus the advertised function tools.
@@ -269,6 +292,8 @@ struct ToolChatRequest<'a> {
     stream: bool,
     #[serde(flatten)]
     limit: OutputLimit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
     tools: &'a [WireTool<'a>],
     tool_choice: &'static str,
 }
@@ -281,6 +306,14 @@ struct OutputLimit {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_completion_tokens: Option<u32>,
+}
+
+/// The provider's thinking-mode switch, sent only where the endpoint needs it
+/// off (ADR-0091). It serializes as `{"type": "disabled"}`.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct Thinking {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 /// One OpenAI-compatible function tool definition.
@@ -326,6 +359,9 @@ impl LocalModelClient {
             endpoint,
             https_only: model_endpoint.https_only(),
             output_field: model_endpoint.output_field(),
+            thinking: model_endpoint
+                .disables_thinking()
+                .then_some(Thinking { kind: "disabled" }),
             model: config.model,
             context_tokens: config.context_tokens,
             max_output_tokens: config.max_output_tokens,
@@ -442,6 +478,7 @@ impl LocalModelClient {
             messages,
             stream: streaming,
             limit: self.output_limit(),
+            thinking: self.thinking,
         })
         .map_err(|_| ProviderError::MalformedResponse)
     }
@@ -524,6 +561,7 @@ impl LocalModelClient {
             messages,
             stream: streaming,
             limit: self.output_limit(),
+            thinking: self.thinking,
             tools: &tools,
             tool_choice: "auto",
         })
@@ -1415,6 +1453,64 @@ mod tests {
             };
             assert_eq!(body.get(field), Some(&Value::from(64)), "{base}");
             assert!(body.get(other).is_none(), "{base}");
+        }
+    }
+
+    /// DeepSeek thinks by default and answers 400 to a tool request that does
+    /// not send earlier reasoning back, which this client never keeps, so every
+    /// DeepSeek request (text or tools, first or later in a turn) switches
+    /// thinking off. No other endpoint gets the field (ADR-0091).
+    #[test]
+    fn only_deepseek_requests_switch_thinking_off() {
+        // A later request in a tool turn: earlier assistant text and a tool result.
+        let history = [
+            ModelMessage {
+                role: ModelRole::System,
+                content: BASE_PROMPT.to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "read the notes".to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: "Reading notes.md.".to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "tool result: notes".to_owned(),
+            },
+        ];
+        let tools = crate::turn::tool_definitions();
+        for (base, off) in [
+            (DEEPSEEK_ENDPOINT, true),
+            ("https://api.deepseek.com/", true),
+            (OPENAI_ENDPOINT, false),
+            (MOONSHOT_ENDPOINT, false),
+            ("https://provider-api.example.org/v1", false),
+            ("http://127.0.0.1:1234/v1", false),
+        ] {
+            let client = LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: base.to_owned(),
+                    ..cloud_config()
+                },
+                Some("not-a-real-key".to_owned()),
+            )
+            .unwrap_or_else(|error| panic!("{base}: {error}"));
+            for streaming in [false, true] {
+                let bodies = [
+                    client.text_body(&history, streaming).expect("text body"),
+                    client
+                        .tool_body(&history, &tools, streaming)
+                        .expect("tool body"),
+                ];
+                for bytes in bodies {
+                    let body: Value = serde_json::from_slice(&bytes).expect("json");
+                    let expected = off.then(|| serde_json::json!({"type": "disabled"}));
+                    assert_eq!(body.get("thinking").cloned(), expected, "{base}");
+                }
+            }
         }
     }
 

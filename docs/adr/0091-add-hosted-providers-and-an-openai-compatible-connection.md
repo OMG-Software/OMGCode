@@ -100,6 +100,13 @@ unauthenticated requests. No API key was used for any provider.
 9. **CLI.** `capabilities` lists every kind except `ollama_local` in
    `stored_credential_adapters`, and every kind in `streaming_adapters` and
    `cancellable_adapters`. `provider_adapters` stays `false`.
+10. **DeepSeek runs without thinking.** DeepSeek's documentation says
+    thinking is enabled by default and that a request with `tools` must send
+    the `reasoning_content` of all previous turns back, or the API answers
+    400. The client discards reasoning text and the journals do not keep it,
+    so every request to the DeepSeek endpoint, or to a typed endpoint equal
+    to it, sends DeepSeek's documented `"thinking": {"type": "disabled"}`. No
+    other endpoint is sent the field.
 
 ## Alternatives considered
 
@@ -120,6 +127,13 @@ unauthenticated requests. No API key was used for any provider.
   confirmation says that the address was typed.
 - **Normalise a typed endpoint.** Rejected. The URL a request uses would then
   differ from the text the operator confirmed.
+- **Keep DeepSeek's reasoning and send it back.** Deferred. It would put model
+  reasoning text into the session journals and every later request, which
+  changes the session schema, the context budget, and what replay and
+  compaction must treat as untrusted model output. That needs its own
+  decision. Disabling thinking only for tool requests was also rejected: with
+  tools, DeepSeek wants the reasoning of every earlier turn, including turns
+  that had no tools.
 
 ## Consequences
 
@@ -136,6 +150,10 @@ unauthenticated requests. No API key was used for any provider.
     network call to a hosted provider.
   - Meta's Llama API is a waitlisted preview.
   - xAI's output field was not confirmed.
+  - Moonshot documents passing `reasoning_content` back unchanged in tool
+    loops for its thinking models, without documenting an error when it is
+    missing. This client never sends it; a Moonshot tool turn may reason
+    less well or fail, and only a request with a real key would show which.
   - Google model ids may carry a `models/` prefix; the list reports them as
     the server sends them.
   - A finish reason outside the OpenAI set is refused as a malformed reply,

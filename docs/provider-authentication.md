@@ -262,8 +262,13 @@ OpenAI-compatible APIs, and both returned
 
 - **Request.** `omgcode models [--endpoint URL | --provider-profile NAME]`
   and the desktop `chat_models` command resolve the connection as `chat`
-  does and send one `GET /v1/models`. The endpoint passes the same loopback
-  rule, and a stored `lm_studio` credential is sent as the same bearer
+  does and send one `GET` for `/models` appended to the endpoint's base path.
+  For a local server that is `GET /v1/models`, and the endpoint passes the
+  same loopback rule. For a hosted profile (since ADR-0091) the endpoint
+  passes its hosted rule instead, so DeepSeek is asked at
+  `https://api.deepseek.com/models` and Z.ai at
+  `https://api.z.ai/api/paas/v4/models`; a hosted request needs the
+  profile's stored key. A stored credential is sent as the same bearer
   header. No proxy, redirect, or retry; a five-second connect timeout, a
   ten-second deadline, and a 4 MiB body (1 MiB before ADR-0091).
 - **Response.** Parsed strictly: a `data` array of at most 2048 objects (512
@@ -411,9 +416,16 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   providers with a key, and no test makes a network call to one. The reply,
   stream, and tool-call shapes are assumed to match the OpenAI-compatible
   shapes the client parses. A finish reason outside the OpenAI set is refused
-  as a malformed reply. Meta's Llama API is a waitlisted preview. xAI's output
+  as a malformed reply. Moonshot documents passing `reasoning_content` back
+  unchanged in tool loops for its thinking models, without documenting an
+  error when it is missing; this client never sends it. Meta's Llama API is a waitlisted preview. xAI's output
   field was not confirmed. Anthropic and Google document their compatibility
   layers as for testing and beta respectively.
+- **DeepSeek thinking.** DeepSeek enables thinking by default and documents
+  a 400 for a tool request that does not send every earlier turn's
+  `reasoning_content` back. This client keeps no reasoning text, so every
+  request to the DeepSeek endpoint sends `"thinking": {"type": "disabled"}`.
+  DeepSeek turns therefore run without thinking.
 - **Not covered.** Native provider APIs (for example Anthropic Messages),
   subscription sign-in, provider-specific parameters such as OpenRouter
   routing or reasoning settings, and reasoning text, which is ignored.

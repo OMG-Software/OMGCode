@@ -72,6 +72,20 @@ const FIXED_ENDPOINTS: &[(&str, OutputLimitField)] = &[
     (XAI_ENDPOINT, OutputLimitField::MaxCompletionTokens),
 ];
 
+/// Fixed endpoints whose provider reasons ("thinks") by default and then
+/// answers HTTP 400 to a tool request that does not send every earlier
+/// turn's `reasoning_content` back. This client keeps no reasoning text, so
+/// requests to these endpoints send `"thinking": {"type": "disabled"}`
+/// (ADR-0091). DeepSeek documents both the default and the 400.
+const THINKING_OFF_ENDPOINTS: &[&str] = &[DEEPSEEK_ENDPOINT];
+
+/// Whether requests to `text` must switch the provider's thinking mode off.
+pub(crate) fn disables_thinking(text: &str) -> bool {
+    THINKING_OFF_ENDPOINTS
+        .iter()
+        .any(|fixed| matches_fixed(text, fixed))
+}
+
 /// Longest endpoint text either hosted rule reads, checked before parsing.
 const MAX_ENDPOINT_BYTES: usize = 256;
 
