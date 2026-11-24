@@ -301,8 +301,9 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     fixedText,
   );
   const hostedText = el("p", { class: "muted" });
-  // Shows the fields the chosen provider takes. The endpoint and key fields are hidden, not
-  // rebuilt, so what was typed in a visible one stays.
+  // Shows the fields the chosen provider takes. The endpoint field is hidden, not rebuilt, so
+  // what was typed in it stays. The key field is cleared on a provider change instead: a key
+  // belongs to one provider and must not be sent to another.
   const arrange = (): void => {
     const chosen = kind.value as NewConnectionKind;
     const fixed = isFixedHostedKind(chosen) ? FIXED_ENDPOINTS[chosen] : null;
@@ -326,6 +327,7 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   endpoint.addEventListener("input", remember);
   kind.addEventListener("change", () => {
     const chosen = kind.value as NewConnectionKind;
+    key.input.value = "";
     // Only replace values the operator has not edited.
     const untouched =
       endpoint.value === "" || Object.values(DEFAULT_ENDPOINTS).includes(endpoint.value);

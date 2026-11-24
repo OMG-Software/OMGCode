@@ -949,6 +949,25 @@ describe("settings window", () => {
       expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
     });
 
+    it("clears a typed key when the provider changes, so it never reaches another provider", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () => choosable({ revision: 8, provider_profiles: [] }),
+      });
+      go("Model");
+      const kind = picker("New connection provider");
+      kind.value = "openai";
+      kind.dispatchEvent(new Event("change"));
+      field("API key").value = KEY;
+      kind.value = "deepseek";
+      kind.dispatchEvent(new Event("change"));
+      expect(field("API key").value).toBe("");
+      buttonByText(root, "Add connection").click();
+      await settle();
+      const carrying = ipc.calls.filter((call) => JSON.stringify(call.args).includes(KEY));
+      expect(carrying).toHaveLength(0);
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
     it("sends the key once, with no endpoint, and clears the field after a success", async () => {
       await start(() => choosable({ provider_profiles: [] }), {
         settings_add_connection: () => choosable({ revision: 8, provider_profiles: [cloud()] }),

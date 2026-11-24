@@ -45,7 +45,8 @@ pub const XAI_ENDPOINT: &str = "https://api.x.ai/v1";
 ///
 /// OpenAI rejects `max_tokens` for its reasoning models and documents
 /// `max_completion_tokens`; Moonshot and MiniMax document `max_tokens` as
-/// deprecated. DeepSeek and Z.ai document only `max_tokens`, so the field is
+/// deprecated; Tinker documents only `max_completion_tokens` and ignores
+/// fields it does not list, so `max_tokens` would leave its output unbounded. DeepSeek and Z.ai document only `max_tokens`, so the field is
 /// chosen per endpoint rather than sending both.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputLimitField {
@@ -64,7 +65,10 @@ const FIXED_ENDPOINTS: &[(&str, OutputLimitField)] = &[
     (META_ENDPOINT, OutputLimitField::MaxTokens),
     (MOONSHOT_ENDPOINT, OutputLimitField::MaxCompletionTokens),
     (TENCENT_ENDPOINT, OutputLimitField::MaxTokens),
-    (THINKING_MACHINES_ENDPOINT, OutputLimitField::MaxTokens),
+    (
+        THINKING_MACHINES_ENDPOINT,
+        OutputLimitField::MaxCompletionTokens,
+    ),
     (MINIMAX_ENDPOINT, OutputLimitField::MaxCompletionTokens),
     (OPENROUTER_ENDPOINT, OutputLimitField::MaxTokens),
     (Z_AI_ENDPOINT, OutputLimitField::MaxTokens),

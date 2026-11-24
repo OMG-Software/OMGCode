@@ -35,7 +35,7 @@ unauthenticated requests. No API key was used for any provider.
 | Meta | `https://api.llama.com/compat/v1` | `max_tokens` | The Llama API is a preview with a waitlist. |
 | Moonshot | `https://api.moonshot.ai/v1` | `max_completion_tokens` | Replies may carry `reasoning_content`, which is ignored. |
 | Tencent | `https://api.hunyuan.cloud.tencent.com/v1` | `max_tokens` | No international endpoint is documented. |
-| Thinking Machines Lab | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_tokens` | Beta and documented for testing. No model list, tool calls, or streaming are documented. Model ids are checkpoint paths. |
+| Thinking Machines Lab | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_completion_tokens` | Beta and documented for testing. The only documented output field; unlisted fields are ignored, so `max_tokens` would leave output unbounded. No model list, tool calls, or streaming are documented. Model ids are checkpoint paths. |
 | MiniMax | `https://api.minimax.io/v1` | `max_completion_tokens` | The recommended field. |
 | OpenRouter | `https://openrouter.ai/api/v1` | `max_tokens` | Its unauthenticated model list returned 473 models in a 918 KB body. |
 | Z.ai | `https://api.z.ai/api/paas/v4` | `max_tokens` | Some finish reasons are outside the OpenAI set. |

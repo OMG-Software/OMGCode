@@ -369,7 +369,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
 | `meta` | `https://api.llama.com/compat/v1` | `max_tokens` |
 | `moonshot` | `https://api.moonshot.ai/v1` | `max_completion_tokens` |
 | `tencent` | `https://api.hunyuan.cloud.tencent.com/v1` | `max_tokens` |
-| `thinking_machines` | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_tokens` |
+| `thinking_machines` | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_completion_tokens` |
 | `minimax` | `https://api.minimax.io/v1` | `max_completion_tokens` |
 | `open_router` | `https://openrouter.ai/api/v1` | `max_tokens` |
 | `z_ai` | `https://api.z.ai/api/paas/v4` | `max_tokens` |
@@ -443,7 +443,9 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
 
 [ADR-0047](adr/0047-read-the-local-provider-token-from-the-credential-store.md)
 lets the local LM Studio adapter take its optional server token from a stored
-credential. It is the only adapter that reads one.
+credential. In 0.30.0 it was the only adapter that read one; an
+`ollama_cloud` profile (ADR-0071) and every hosted profile (ADR-0092) now
+read one too, through the same profile selection.
 
 - **Selection.** The operator names a profile with `omgcode chat
   --provider-profile <name>` or `omgcode session compact --provider-profile

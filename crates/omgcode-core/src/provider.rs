@@ -1430,6 +1430,11 @@ mod tests {
                 "max_completion_tokens",
             ),
             (
+                THINKING_MACHINES_ENDPOINT,
+                "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1/chat/completions",
+                "max_completion_tokens",
+            ),
+            (
                 "https://provider-api.example.org/v1/",
                 "https://provider-api.example.org/v1/chat/completions",
                 "max_tokens",

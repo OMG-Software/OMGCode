@@ -16,7 +16,7 @@ Changes are recorded here before a release version is assigned.
   than rewritten when it is not in the form the URL parser writes. Every
   hosted kind needs a stored API key and is used through the existing Chat
   Completions client, which sends `max_completion_tokens` to OpenAI, Moonshot,
-  MiniMax, and xAI and `max_tokens` elsewhere, appends request paths to the
+  Thinking Machines Lab, MiniMax, and xAI and `max_tokens` elsewhere, appends request paths to the
   endpoint's base path, and switches DeepSeek's default thinking mode off,
   because DeepSeek refuses a tool request without earlier reasoning text,
   which the client does not keep. The desktop **Add connection** form lists every

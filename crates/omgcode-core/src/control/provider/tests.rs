@@ -836,6 +836,7 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
             ProviderKind::OpenAi
             | ProviderKind::Moonshot
             | ProviderKind::MiniMax
+            | ProviderKind::ThinkingMachines
             | ProviderKind::XAi => OutputLimitField::MaxCompletionTokens,
             ProviderKind::LmStudio
             | ProviderKind::OllamaLocal
@@ -844,7 +845,6 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
             | ProviderKind::Google
             | ProviderKind::Meta
             | ProviderKind::Tencent
-            | ProviderKind::ThinkingMachines
             | ProviderKind::OpenRouter
             | ProviderKind::ZAi
             | ProviderKind::DeepSeek
