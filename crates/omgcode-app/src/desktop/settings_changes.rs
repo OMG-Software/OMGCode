@@ -318,7 +318,7 @@ const fn provider_label(kind: ProviderKind) -> &'static str {
 /// What the confirmation adds for a hosted service. Prompts, tool results,
 /// and command output are the model's whole view of the workspace, so the
 /// operator is told before a turn can send them off this computer, and to
-/// which host (ADR-0071, ADR-0090). An operator-typed address is called out as
+/// which host (ADR-0071, ADR-0091). An operator-typed address is called out as
 /// such, because no rule in OMGCode vouches for it.
 fn hosted_notice(kind: ProviderKind, endpoint: &str) -> String {
     let host = ModelEndpoint::parse(endpoint)
@@ -841,7 +841,7 @@ impl DesktopService {
     /// `settings` only. Choose the global default model connection: a
     /// selectable recorded profile by name (local, or hosted with a bound
     /// credential), or `None` for the default endpoint (ADR-0064, ADR-0071,
-    /// ADR-0090). It applies to sessions that have no connection of their own. A
+    /// ADR-0091). It applies to sessions that have no connection of their own. A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///
@@ -980,7 +980,7 @@ impl DesktopService {
     /// CLI's `provider-profile-add`: a local LM Studio or Ollama connection
     /// with no credential and a typed loopback endpoint, a named hosted
     /// provider with its fixed endpoint and an API key (ADR-0071 decision 5,
-    /// ADR-0090), or an OpenAI-compatible service with a typed HTTPS base URL
+    /// ADR-0091), or an OpenAI-compatible service with a typed HTTPS base URL
     /// and an API key. Recording it grants nothing and sends nothing; only
     /// selecting it does, after a confirmation that names the host. No dialog
     /// is shown.

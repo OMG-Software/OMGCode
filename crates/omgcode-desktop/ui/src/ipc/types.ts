@@ -534,7 +534,7 @@ export interface ProviderProfileView {
 /** A local provider the settings window may record (ADR-0064). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
 
-/** A hosted provider with one fixed endpoint that Rust supplies (ADR-0071, ADR-0090). */
+/** A hosted provider with one fixed endpoint that Rust supplies (ADR-0071, ADR-0091). */
 export type FixedHostedKind =
   | "ollama_cloud"
   | "anthropic"
@@ -552,7 +552,7 @@ export type FixedHostedKind =
 
 /**
  * A provider the settings window may add: a local one, a named hosted one, or any
- * OpenAI-compatible service at an HTTPS address the operator types (ADR-0090).
+ * OpenAI-compatible service at an HTTPS address the operator types (ADR-0091).
  */
 export type NewConnectionKind = LocalProviderKind | FixedHostedKind | "openai_compatible";
 

@@ -647,7 +647,7 @@ describe("mock backend", () => {
           ...fields,
         });
       await expect(add({ kind: "bogus" })).rejects.toMatchObject({ code: "invalid_argument" });
-      // A named hosted provider takes a key and no endpoint (ADR-0090).
+      // A named hosted provider takes a key and no endpoint (ADR-0091).
       await expect(add({ kind: "openai" })).rejects.toMatchObject({ code: "invalid_request" });
       await expect(add({ endpoint: "http://example.com:11434/v1" })).rejects.toMatchObject({
         code: "control",

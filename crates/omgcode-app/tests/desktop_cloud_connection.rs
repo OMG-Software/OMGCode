@@ -225,7 +225,7 @@ fn adding_ollama_cloud_records_the_profile_and_binds_the_key() {
 
 /// Each named hosted provider is added with only a name and a key: Rust
 /// supplies its one documented endpoint, stores and binds the key, and the
-/// key can be replaced later (ADR-0090).
+/// key can be replaced later (ADR-0091).
 #[test]
 fn adding_a_named_hosted_provider_records_its_fixed_endpoint() {
     let fixture = Fixture::new();
@@ -270,7 +270,7 @@ fn adding_a_named_hosted_provider_records_its_fixed_endpoint() {
 
 /// An OpenAI-compatible connection records the HTTPS base URL the operator
 /// typed, exactly, with its key. Plain HTTP and other text its rule refuses
-/// leave no profile and no stored key (ADR-0090).
+/// leave no profile and no stored key (ADR-0091).
 #[test]
 fn adding_an_openai_compatible_connection_records_the_typed_endpoint() {
     let fixture = Fixture::new();

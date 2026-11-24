@@ -1,4 +1,4 @@
-//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0090).
+//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0091).
 //!
 //! Every hosted provider is reached through its OpenAI-compatible Chat
 //! Completions API with a bearer key. Each named provider has one fixed base

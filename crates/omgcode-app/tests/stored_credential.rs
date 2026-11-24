@@ -121,7 +121,7 @@ fn every_refusal_is_a_credential_error_with_its_cause_code() {
 
     let (_, message) = refusal(&fixture, &profile("missing"));
     assert!(message.starts_with("unknown_profile:"), "{message}");
-    // Every kind is served by the one adapter (ADR-0090), so an OpenAI key
+    // Every kind is served by the one adapter (ADR-0091), so an OpenAI key
     // recorded before endpoints existed is refused for its missing endpoint,
     // before the key is read, and a subscription is never used.
     let (_, message) = refusal(&fixture, &profile("openai-key"));

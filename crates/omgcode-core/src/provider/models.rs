@@ -1,4 +1,4 @@
-//! Model discovery on an OpenAI-compatible server (ADR-0066, ADR-0090).
+//! Model discovery on an OpenAI-compatible server (ADR-0066, ADR-0091).
 //!
 //! LM Studio, Ollama, and the hosted providers answer `GET {base}/models` with
 //! `{"object":"list","data":[{"id":...}, ...]}`. The list lets an operator pick
@@ -45,7 +45,7 @@ pub struct ListedModel {
 /// List the models the local server at `base_url` reports, sorted by id.
 ///
 /// `base_url` must pass the same endpoint rule as a chat connection: the
-/// loopback rule (ADR-0048) or a hosted rule (ADR-0071, ADR-0090), which also
+/// loopback rule (ADR-0048) or a hosted rule (ADR-0071, ADR-0091), which also
 /// requires a token. `token`, when present, is sent exactly as a chat request
 /// sends it. The request is one `GET {base}/models` with no proxy, no
 /// redirect, no retry, a five-second connect timeout, a ten-second total

@@ -1,7 +1,7 @@
 import type { FixedHostedKind, LocalProviderKind, NewConnectionKind } from "./ipc/types";
 
 /**
- * How every window names the provider kinds the core reports (ADR-0064, ADR-0090). Shared by the
+ * How every window names the provider kinds the core reports (ADR-0064, ADR-0091). Shared by the
  * main window's model box and the settings window, so it imports no window code.
  */
 export const PROVIDER_NAMES: Readonly<Record<NewConnectionKind, string>> = {
@@ -101,7 +101,7 @@ export function hostOf(endpoint: string): string {
   }
 }
 
-/** What a hosted connection's row and the add form say about where prompts go (ADR-0090). */
+/** What a hosted connection's row and the add form say about where prompts go (ADR-0091). */
 export function hostedNotice(endpoint: string | null): string {
   const where = endpoint === null || endpoint === "" ? "the address you enter" : hostOf(endpoint);
   return `Hosted: prompts, workspace text read by tools, and command output leave this computer for ${where}.`;

@@ -6,7 +6,7 @@
 //! through `credential`, never the secret.
 //!
 //! Every kind is served by one adapter that speaks the OpenAI-compatible Chat
-//! Completions API (ADR-0064, ADR-0071, ADR-0090). An `lm_studio` or
+//! Completions API (ADR-0064, ADR-0071, ADR-0091). An `lm_studio` or
 //! `ollama_local` profile may record a loopback endpoint that passes
 //! `provider::validate_base_url`. A named hosted kind accepts exactly its one
 //! fixed HTTPS endpoint ([`ProviderKind::fixed_endpoint`]), and an
@@ -151,7 +151,7 @@ impl ProviderKind {
     }
 
     /// Whether this kind is a hosted service: every request leaves this
-    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0090).
+    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0091).
     pub const fn is_hosted(self) -> bool {
         !self.is_local()
     }
@@ -366,7 +366,7 @@ impl ControlStore {
     }
 
     /// Check that the named profile can be chosen as a connection now
-    /// (ADR-0071, ADR-0090): a profile that records an endpoint and, for a
+    /// (ADR-0071, ADR-0091): a profile that records an endpoint and, for a
     /// hosted kind, has a bound credential. It reads no
     /// native storage and so cannot show that the stored secret still exists;
     /// a turn without a usable credential fails with the `credential` errors.
@@ -542,7 +542,7 @@ pub(super) fn apply(
 
 /// Whether a profile can be the active connection: it records the endpoint
 /// its turns use, which replay has already checked against its kind's rule
-/// (ADR-0071, ADR-0090). Replay applies exactly this; the credential is not
+/// (ADR-0071, ADR-0091). Replay applies exactly this; the credential is not
 /// read there.
 const fn selectable(profile: &ProviderProfile) -> bool {
     profile.endpoint.is_some()

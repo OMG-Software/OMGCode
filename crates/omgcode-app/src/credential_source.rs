@@ -171,7 +171,7 @@ pub struct LocalConnection {
 }
 
 /// The profile kind the model adapter reads `name` as. Every kind is served
-/// by the one OpenAI-compatible adapter (ADR-0090), so this is the profile's
+/// by the one OpenAI-compatible adapter (ADR-0091), so this is the profile's
 /// own kind; an unknown name is read as `lm_studio`, and core then refuses it
 /// as an unknown profile.
 fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
@@ -290,7 +290,7 @@ pub(crate) fn resolve_connection_and_kind(
 fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
     // The environment token is a local server's token. It is never sent to a
     // hosted endpoint, whose key comes from a bound credential only (ADR-0071,
-    // ADR-0090).
+    // ADR-0091).
     if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_hosted()) {
         return Err(credential_error(
             "cloud_needs_profile: a hosted endpoint is used only through a provider profile with a stored key".to_owned(),

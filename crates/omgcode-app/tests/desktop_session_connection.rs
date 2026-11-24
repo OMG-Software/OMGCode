@@ -513,7 +513,7 @@ fn choosing_ollama_cloud_names_the_hosted_service_in_the_dialog() {
 /// A named hosted provider and an operator-typed OpenAI-compatible service are
 /// offered once their keys are bound. Each dialog names the provider and the
 /// host that receives the turn, and the typed address is called out as typed
-/// (ADR-0090). Nothing is sent: choosing records the session's choice only.
+/// (ADR-0091). Nothing is sent: choosing records the session's choice only.
 #[test]
 fn choosing_a_hosted_provider_names_its_host_and_flags_a_typed_address() {
     let fixture = Fixture::new();

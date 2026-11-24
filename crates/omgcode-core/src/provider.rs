@@ -42,8 +42,8 @@ const MAX_RESPONSE_TOOL_CALLS: usize = 64;
 
 /// A validated model endpoint: a literal loopback HTTP endpoint
 /// ([`validate_base_url`], ADR-0048), one of the fixed hosted endpoints
-/// (ADR-0071, ADR-0090), or an operator-typed HTTPS base URL that passes the
-/// `openai_compatible` rule (ADR-0090). There is no other destination.
+/// (ADR-0071, ADR-0091), or an operator-typed HTTPS base URL that passes the
+/// `openai_compatible` rule (ADR-0091). There is no other destination.
 ///
 /// A hosted endpoint sends prompts, tool results, and command output off this
 /// computer, so a client built on it requires a token. A token comes only from
@@ -1225,7 +1225,7 @@ mod tests {
 
     /// The endpoint type accepts a loopback endpoint, a fixed hosted endpoint
     /// with its output field, or a well-formed HTTPS base URL, and refuses
-    /// every malformed variant (ADR-0071, ADR-0090). Which hosted URL a
+    /// every malformed variant (ADR-0071, ADR-0091). Which hosted URL a
     /// profile may record is decided by its kind, in the control store.
     #[test]
     fn the_endpoint_type_accepts_loopback_fixed_or_well_formed_https_endpoints() {
@@ -1340,7 +1340,7 @@ mod tests {
 
     /// Each hosted endpoint's chat path is its base path plus
     /// `/chat/completions`, every hosted client needs a token, and the output
-    /// budget goes in the one field the endpoint takes (ADR-0090).
+    /// budget goes in the one field the endpoint takes (ADR-0091).
     #[test]
     fn hosted_clients_append_the_chat_path_and_name_the_output_field() {
         for (base, path, field) in [

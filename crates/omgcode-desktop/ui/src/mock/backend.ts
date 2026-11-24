@@ -1018,7 +1018,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
           }
-          // The same three shapes Rust accepts (ADR-0090).
+          // The same three shapes Rust accepts (ADR-0091).
           let recorded: string;
           if (isLocalKind(kind)) {
             if (typeof endpoint !== "string" || apiKey !== null) {
