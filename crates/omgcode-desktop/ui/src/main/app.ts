@@ -73,7 +73,9 @@ export function startMain(root: HTMLElement): MainApp {
     onTreeChanged: () => {
       void sidebar.refresh();
       footer.refresh();
-      // A turn may have edited files, run commands, or grown the history.
+      // A turn may have edited files, run commands, or grown the history. Each tab reads again
+      // only while visible; a hidden one reads when it is next shown.
+      files.refresh();
       for (const tab of sessionTabs) {
         tab.refresh();
       }

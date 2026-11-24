@@ -11,14 +11,16 @@ Changes are recorded here before a release version is assigned.
   **Remove workspace…** in the desktop settings window record one
   `workspace_unregistered` event. It drops the registration with its
   preferences, package cache selection, skill overrides, and checkpoint-folder
-  record, and deletes the saved workspace instructions file. The folder, its
+  record, and deletes the saved workspace instructions file. A file that
+  cannot be deleted is reported as `instructions_orphaned` only after the
+  withdrawn runs are stopped and waited for, and is never sent. The folder, its
   `.OMGCode` folder, and its sessions are not touched; the sessions chat
   without tools. A container grant refuses the removal until it is revoked,
   and the desktop also refuses while a turn runs in the workspace.
   Registering the folder again gives a new identifier. A control journal that
   records the event cannot be read by 0.55.0 or earlier. `chat_send` and the
   Context tab now count workspace instructions only for a registered
-  workspace.
+  workspace, checked under the same lock as the file read.
 - The desktop `settings` window imports a skill from a native folder dialog,
   enables or disables it for the application and per workspace, and removes
   it, each after a native confirmation where access widens or data is

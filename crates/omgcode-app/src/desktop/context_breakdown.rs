@@ -71,17 +71,21 @@ impl DesktopService {
         // these files holds, so one whole save is seen. As there, a workspace
         // that is no longer registered contributes none, even when a file
         // remains (ADR-0081).
+        // The registration is checked under that lock too, as `chat_send`
+        // checks it.
         let workspace_id = journal.snapshot().workspace_id;
-        let registered = inner.workspace_registered(workspace_id)?;
-        let workspace_text = if registered {
+        let (registered, workspace_text) = {
             let _lock = inner
                 .preferences
                 .lock()
                 .map_err(|_| DesktopError::poisoned())?;
-            instructions::load(&inner.data_root, workspace_id)
-                .map_err(|_| DesktopError::instructions_unreadable())?
-        } else {
-            String::new()
+            if inner.workspace_registered(workspace_id)? {
+                let text = instructions::load(&inner.data_root, workspace_id)
+                    .map_err(|_| DesktopError::instructions_unreadable())?;
+                (true, text)
+            } else {
+                (false, String::new())
+            }
         };
         let workspace_reason = if !registered {
             Some("workspace_unregistered")

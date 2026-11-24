@@ -162,6 +162,21 @@ describe("the Files tab", () => {
     expect(names()).toEqual(["src", "main", "lib.rs", "empty", "Cargo.toml"]);
   });
 
+  it("reads nothing on a refresh while hidden and lists again when shown", async () => {
+    const tab = mount();
+    tab.setSession("s-1");
+    tab.onVisible?.(true);
+    await settle();
+    tab.onVisible?.(false);
+    const before = ipc.callsTo("workspace_entries").length;
+    tab.refresh();
+    await settle();
+    expect(ipc.callsTo("workspace_entries").length).toBe(before);
+    tab.onVisible?.(true);
+    await settle();
+    expect(ipc.callsTo("workspace_entries").length).toBe(before + 1);
+  });
+
   it("clears on a session change and drops a reply that arrives for the old session", async () => {
     let release: (value: WorkspaceListing) => void = () => undefined;
     const tab = mount((args) =>

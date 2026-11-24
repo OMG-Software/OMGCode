@@ -1420,6 +1420,12 @@ pub fn audit_existing(data_root: &Path, limit: usize) -> Result<RecentRuns, RunE
         Err(error) => return Err(error.into()),
     };
     let (root, store_id) = control.file_audit_context()?;
+    // The settings store stays open across the read. [`archive`] moves the
+    // journal holding only that lock, after it releases the journal's own,
+    // and a Windows journal handle denies delete sharing, so a read opened
+    // in that gap would make the archive fail. The journal is bounded by
+    // its byte and event limits, and the desktop waits two seconds for the
+    // store, so this read delays a send or a settings change, not refuses it.
     let journal = match RunJournal::try_open_existing(&root, store_id) {
         Ok(Some(journal)) => journal,
         Ok(None) => return Ok(RecentRuns::Absent),

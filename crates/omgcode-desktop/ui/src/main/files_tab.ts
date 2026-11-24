@@ -16,7 +16,10 @@ export const FILES_LOADING = "Loading…";
 export interface FilesTab extends SideTab {
   /** Follows the open session: clears the tree, and loads it again once visible. */
   setSession(sessionId: string | null): void;
-  /** Lists the workspace again, keeping the directories that are open. */
+  /**
+   * Lists the workspace again, keeping the directories that are open. A hidden tab reads nothing
+   * now and lists again when it is next shown, as the other session tabs do after a turn.
+   */
   refresh(): void;
 }
 
@@ -188,6 +191,11 @@ export function createFilesTab(): FilesTab {
 
   function refresh(): void {
     if (sessionId === null) {
+      return;
+    }
+    if (!visible) {
+      // Stale now, so showing the tab lists it again.
+      loaded = false;
       return;
     }
     generation += 1;

@@ -1152,9 +1152,11 @@ waits. The window shows:
   touched, and that its sessions stay and can chat without tools only. On
   Yes, one `workspace_unregistered` event is recorded and the workspace's
   instructions file is deleted under the preferences lock. If that file cannot
-  be deleted, the command fails with `instructions_orphaned` after the removal
-  is recorded; no turn sends it, because `chat_send` reads a workspace's
-  instructions only while that workspace is registered. A turn that starts
+  be deleted, the command still stops and waits for the runs the removal
+  withdraws, then fails with `instructions_orphaned` (a run that was not
+  stopped is reported first); no turn sends the file, because `chat_send`
+  checks registration and reads a workspace's instructions under the same
+  lock, only while that workspace is registered. A turn that starts
   while the dialog is open is found again before the change; a turn that
   starts in the instant after that loses its tools, because every tool call
   reads the live settings. A `settings` window opened for the removed

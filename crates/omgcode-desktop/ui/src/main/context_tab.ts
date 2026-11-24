@@ -307,6 +307,11 @@ export function createContextTab(): PanelView {
       if (disposed) {
         return;
       }
+      if (next !== sessionId) {
+        // Another session's report must not stay up while this one loads; a
+        // refresh of the same session keeps its report until the answer.
+        replaceChildren(body);
+      }
       sessionId = next;
       load();
     },

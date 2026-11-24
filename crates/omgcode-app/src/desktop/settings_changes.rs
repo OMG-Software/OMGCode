@@ -729,7 +729,8 @@ impl DesktopService {
     /// of the workspace (checked before the dialog and again before the
     /// change); `control` with core's refusal while a container grant names
     /// the workspace; `instructions_orphaned` when the workspace was removed
-    /// but its instructions file could not be deleted; otherwise as
+    /// and its withdrawn runs were stopped, but its instructions file could
+    /// not be deleted; otherwise as
     /// [`settings_choose_root`](Self::settings_choose_root).
     pub fn settings_unregister_workspace(
         &self,
@@ -768,7 +769,7 @@ impl DesktopService {
         // The preferences lock comes first, as in every other save that also
         // reads settings, so the removal of the instructions file never
         // overlaps a save or a turn's read of it.
-        let listed = {
+        let (listed, removed) = {
             let _lock = self
                 .inner
                 .preferences
@@ -778,11 +779,19 @@ impl DesktopService {
             store
                 .unregister_workspace(workspace_id, request.revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
-            instructions::remove(&self.inner.data_root, *workspace_id.as_uuid())
-                .map_err(|_| DesktopError::removed_instructions_orphaned())?;
-            run::withdrawn_runs(&store)
+            // The removal is recorded, so the runs it withdraws are listed
+            // before anything else can fail, and are stopped and waited for
+            // even when the file below cannot be deleted.
+            let listed = run::withdrawn_runs(&store);
+            let removed = instructions::remove(&self.inner.data_root, *workspace_id.as_uuid());
+            (listed, removed)
         };
-        self.finish_change(listed, AlsoWithdrawn::default())
+        // A run that was not stopped is reported first; a remaining
+        // instructions file is never sent, because the workspace is no longer
+        // registered.
+        let overview = self.finish_change(listed, AlsoWithdrawn::default())?;
+        removed.map_err(|_| DesktopError::removed_instructions_orphaned())?;
+        Ok(overview)
     }
 
     /// Refuse while a chat turn runs in any session recorded in this workspace.

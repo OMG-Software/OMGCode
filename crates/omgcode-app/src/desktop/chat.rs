@@ -224,19 +224,27 @@ impl DesktopService {
         // the turn rather than sending it without the operator's text. The
         // read holds the preferences lock that every writer of these files
         // holds, so it sees one whole save and never overlaps a replace or
-        // removal. No other lock is held here.
+        // removal.
         // A workspace that is no longer registered contributes none, even when
-        // a file remains (ADR-0081).
+        // a file remains (ADR-0081). The registration is checked under the
+        // same lock, which the window's unregister holds while it records the
+        // removal and deletes the file, so the check cannot go stale before
+        // the read. The settings store is opened after the preferences lock,
+        // the order every save that reads settings uses.
         let workspace_instructions = match session.workspace_id {
-            Some(workspace) if inner.workspace_registered(workspace)? => {
+            Some(workspace) => {
                 let _lock = inner
                     .preferences
                     .lock()
                     .map_err(|_| DesktopError::poisoned())?;
-                instructions::load(&inner.data_root, workspace)
-                    .map_err(|_| DesktopError::instructions_unreadable())?
+                if inner.workspace_registered(workspace)? {
+                    instructions::load(&inner.data_root, workspace)
+                        .map_err(|_| DesktopError::instructions_unreadable())?
+                } else {
+                    String::new()
+                }
             }
-            _ => String::new(),
+            None => String::new(),
         };
         let mut turn_settings = request.settings;
         turn_settings.instructions =

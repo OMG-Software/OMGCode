@@ -271,6 +271,30 @@ describe("context tab", () => {
     expect(ipc.callsTo("session_context_breakdown")).toHaveLength(3);
   });
 
+  it("drops the previous session's report while another session loads, but not on a refresh", async () => {
+    const gate = deferred<ContextBreakdown>();
+    let answer: () => ContextBreakdown | Promise<ContextBreakdown> = () =>
+      breakdown({ parts: [part("system", 111)] });
+    installFakeIpc({ session_context_breakdown: () => answer() });
+    const tab = createContextTab();
+    tab.showSession(SESSION);
+    await settle();
+    expect(textOf(rowOf(tab.element, "system"))).toContain("111");
+
+    // A refresh of the same session keeps its report until the answer arrives.
+    answer = () => gate.promise;
+    tab.refresh();
+    await settle();
+    expect(tab.element.querySelector(".ctx-report")).not.toBeNull();
+
+    // Another session's numbers are never shown under this one.
+    tab.showSession("22222222-2222-4222-8222-222222222222");
+    expect(tab.element.querySelector(".ctx-report")).toBeNull();
+    expect(textOf(tab.element)).not.toContain("111");
+    gate.resolve(breakdown({ parts: [part("system", 222)] }));
+    await settle();
+  });
+
   it("ignores a slow answer for a session that is no longer open", async () => {
     const first = deferred<ContextBreakdown>();
     const second = deferred<ContextBreakdown>();

@@ -674,6 +674,53 @@ fn unregistering_confirms_removes_the_instructions_and_keeps_the_sessions() {
     assert!(!requests[0].body.contains("workspace_read_file"));
 }
 
+/// An instructions file that cannot be deleted does not skip the run check:
+/// the removal is recorded, the withdrawn runs are still listed and waited
+/// for, and a run problem is reported ahead of the remaining file, which no
+/// turn sends. A folder in the file's place makes the deletion fail, and an
+/// unreadable run journal makes the run check fail.
+#[test]
+fn a_failed_instructions_deletion_still_checks_the_withdrawn_runs() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let service = service(&fixture.data);
+    let file = instructions_file(&fixture, workspace.id);
+    fs::create_dir_all(&file).expect("a folder where the file belongs");
+    let start = current_revision(&fixture.data);
+
+    // Only the deletion fails: the change is recorded and the orphan named.
+    let error = service
+        .settings_unregister_workspace(
+            for_workspace(workspace.id, start),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect_err("the file cannot be deleted");
+    assert_eq!(error.code(), "instructions_orphaned");
+    assert_eq!(current_revision(&fixture.data), start + 1);
+
+    // With the run journal unreadable as well, the run check still runs and
+    // its failure is reported first. An unchecked run list shares the
+    // `runs_not_stopped` code and says that the runs could not be checked.
+    let other = fixture.workspace("second", read_tools());
+    let other_file = instructions_file(&fixture, other.id);
+    fs::create_dir_all(&other_file).expect("a folder where the file belongs");
+    fs::write(fixture.data.join("runs-v1.jsonl"), b"not a journal\n").expect("journal");
+    let revision = current_revision(&fixture.data);
+    let error = service
+        .settings_unregister_workspace(
+            for_workspace(other.id, revision),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect_err("the runs cannot be checked");
+    assert_eq!(error.code(), "runs_not_stopped");
+    assert!(
+        error.message().contains("could not be checked"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(current_revision(&fixture.data), revision + 1);
+}
+
 #[test]
 fn unregistering_refuses_unknown_stale_or_declined_requests_without_changing_anything() {
     let fixture = Fixture::new();
