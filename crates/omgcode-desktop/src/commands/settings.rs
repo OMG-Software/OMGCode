@@ -161,6 +161,33 @@ pub async fn settings_clear_package_cache(
     .await
 }
 
+/// `settings` only. After a native confirmation that names the folder and what
+/// is removed, unregisters one workspace (ADR-0081). The folder and its files
+/// are not touched.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unknown_workspace`,
+/// `turn_running`, `cancelled`, `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_unregister_workspace(
+    webview: Webview,
+    state: Service<'_>,
+    workspace_id: Uuid,
+    revision: u64,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsUnregisterWorkspace, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = WorkspaceRevisionRequest {
+        workspace_id,
+        revision,
+    };
+    blocking(&state, move |service| {
+        service.settings_unregister_workspace(request, &prompt)
+    })
+    .await
+}
+
 /// `settings` only. After a native confirmation that names the provider and
 /// endpoint, makes a recorded local profile (or the default endpoint, for a
 /// `null` profile) the active model connection (ADR-0064).

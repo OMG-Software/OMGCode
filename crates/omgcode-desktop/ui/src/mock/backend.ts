@@ -756,6 +756,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         return changeSettings(args, () => {
           mockWorkspace(args).package_cache_root = null;
         });
+      // Like core: the registration goes; the folder and the sessions recorded in it stay (ADR-0081).
+      case "settings_unregister_workspace":
+        return changeSettings(args, () => {
+          const removed = mockWorkspace(args);
+          settings.workspaces = settings.workspaces.filter((w) => w !== removed);
+        });
       // Like core: only a local profile with an endpoint can be chosen, and the confirmation
       // (a native dialog in the application) is accepted here.
       case "settings_select_connection":

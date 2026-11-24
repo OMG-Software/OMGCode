@@ -179,6 +179,37 @@ when there are none, so settings without grants keep their exact output.
 Version 0.14.0 refuses a settings log that records a grant. The
 [execution guide](execution.md#container-grants) owns the rules.
 
+## Unregistering a workspace
+
+`workspace unregister <workspace-id> --revision <n>` removes one registration
+([ADR-0081](adr/0081-unregister-a-workspace.md)). It needs the expected revision
+and increments it, through one `workspace_unregistered` event that replay
+applies. The event also drops what names the workspace: its preferences, its
+package cache root selection, its skill workspace overrides, and its bound
+`.OMGCode` checkpoint folder record (as `file forget-checkpoint-store` does). Nothing
+on disk changes: the folder, its `.OMGCode` folder, cached packages, and the
+sessions recorded in the workspace stay. Approval records, package-fetch
+records, and policy-audit records stay as history. The revision change makes
+every outstanding approval unusable, and a started run of the workspace is
+withdrawn like any run whose workspace is no longer registered.
+
+The command is refused while any container grant, in any state, names the
+workspace (`grant refused`): revoke it with `workspace container-revoke`
+first. An unknown workspace and a stale revision are refused as for any other
+settings change. Registering the same folder afterwards assigns a new
+identifier and the default preferences; the old identifier is never reused.
+
+The desktop `settings` window removes the workspace's saved custom
+instructions file with the same event
+([ADR-0080](adr/0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)),
+and the CLI deletes it right after the event is recorded. Sessions recorded in
+the removed workspace keep their journals and index entries. A turn in one
+finds no registered workspace, so chat is text only with the reason
+`workspace_unregistered`, as described under
+[model tools](#model-readlist-and-command-tools), and sends no workspace
+instructions. A control journal that records `workspace_unregistered` cannot be
+read by 0.55.0 or earlier.
+
 ## Toolchain profiles
 
 `workspace profile-add`, `profile-show`, and `profile-remove` manage the

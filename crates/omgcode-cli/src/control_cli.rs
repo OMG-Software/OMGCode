@@ -50,6 +50,17 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
+    /// Remove one workspace's registration and the settings that name it: its
+    /// preferences, package cache selection, skill overrides, checkpoint
+    /// record, and saved desktop instructions. The folder and its files are
+    /// not touched. Refused while a container grant names the workspace; revoke
+    /// it with `container-revoke` first. Registering the folder again assigns a
+    /// new identifier.
+    Unregister {
+        workspace: String,
+        #[arg(long)]
+        revision: u64,
+    },
     /// Change one or more policy flags using an expected revision.
     Permissions(PermissionsArgs),
     /// Evaluate one diagnostic policy request and record it in the audit log.
@@ -411,6 +422,40 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             print_json(&json!({
                 "registration_id": registration.id(),
                 "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::Unregister {
+            workspace,
+            revision,
+        } => {
+            let workspace_id = parse_workspace_id(&workspace)?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            store
+                .unregister_workspace(workspace_id, revision)
+                .map_err(control_error)?;
+            let snapshot = store.snapshot();
+            let listed = withdrawn_runs(&store);
+            drop(store);
+            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
+            listed?;
+            // The change is recorded. A saved desktop instructions file is
+            // removed next, without the desktop's in-process lock; a file that
+            // remains is never sent, because a turn reads it only for a
+            // registered workspace.
+            omgcode_app::desktop::remove_workspace_instructions(
+                data_root,
+                *workspace_id.as_uuid(),
+            )
+            .map_err(|_| {
+                CliError::new(
+                    "preferences",
+                    "The workspace was unregistered, but its saved instructions file could not be deleted",
+                )
+            })?;
+            print_json(&json!({
+                "unregistered_workspace_id": workspace_id,
+                "snapshot": snapshot,
             }))
         }
         WorkspaceCommand::Permissions(args) => set_permissions(args, data_root),

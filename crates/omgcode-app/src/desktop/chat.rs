@@ -225,8 +225,10 @@ impl DesktopService {
         // read holds the preferences lock that every writer of these files
         // holds, so it sees one whole save and never overlaps a replace or
         // removal. No other lock is held here.
+        // A workspace that is no longer registered contributes none, even when
+        // a file remains (ADR-0081).
         let workspace_instructions = match session.workspace_id {
-            Some(workspace) => {
+            Some(workspace) if inner.workspace_registered(workspace)? => {
                 let _lock = inner
                     .preferences
                     .lock()
@@ -234,7 +236,7 @@ impl DesktopService {
                 instructions::load(&inner.data_root, workspace)
                     .map_err(|_| DesktopError::instructions_unreadable())?
             }
-            None => String::new(),
+            _ => String::new(),
         };
         let mut turn_settings = request.settings;
         turn_settings.instructions =

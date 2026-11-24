@@ -78,6 +78,8 @@ const ACTIONS: Actions = {
     settingsApi.choosePackageCache(workspaceId, revision),
   clearPackageCache: (workspaceId) => (revision) =>
     settingsApi.clearPackageCache(workspaceId, revision),
+  unregisterWorkspace: (workspaceId) => (revision) =>
+    settingsApi.unregisterWorkspace(workspaceId, revision),
   selectConnection: (profile) => (revision) => settingsApi.selectConnection(revision, profile),
   addConnection: (name, kind, endpoint, apiKey) => (revision) =>
     settingsApi.addConnection(revision, name, kind, endpoint, apiKey),

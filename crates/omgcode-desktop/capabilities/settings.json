@@ -20,6 +20,7 @@
     "allow-settings-select-connection",
     "allow-settings-set-api-key",
     "allow-settings-set-permissions",
-    "allow-settings-set-workspace-instructions"
+    "allow-settings-set-workspace-instructions",
+    "allow-settings-unregister-workspace"
   ]
 }

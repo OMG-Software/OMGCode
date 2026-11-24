@@ -239,10 +239,14 @@ omgcode --data-dir C:\omgcode-data workspace audit --limit 20
 omgcode --data-dir C:\omgcode-data workspace container-grant WORKSPACE_ID C:\dev\project --access read-write --revision 4
 omgcode --data-dir C:\omgcode-data workspace container-grant WORKSPACE_ID C:\Users\me\.cargo --access read-execute --revision 5
 omgcode --data-dir C:\omgcode-data workspace container-revoke GRANT_UUID
+omgcode --data-dir C:\omgcode-data workspace unregister WORKSPACE_ID --revision 6
 ```
 
 `status` initializes an absent store at revision zero. `check` and `audit`
-require existing state. Flags take explicit `true` or `false` values. Read/write
+require existing state. `unregister` removes a registration and its settings,
+deletes its saved desktop instructions, and touches no file in the folder; a
+container grant refuses it until it is revoked
+([ADR-0081](adr/0081-unregister-a-workspace.md)). Flags take explicit `true` or `false` values. Read/write
 default to enabled; execute, task-network, host-services, and model-tools
 default to disabled. All decisions still report `execution_allowed: false`;
 only the trusted `run` command starts a process, and the model command tool

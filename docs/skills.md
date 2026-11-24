@@ -50,8 +50,8 @@ permission grants or trusted application extensions.
   registration write's outcome is uncertain, `add` keeps the copy and reports
   `registration_uncertain` with its identifier; `skills list` shows whether
   it was recorded. An import never deletes a package directory it did not
-  create. `list` and `show` refuse an unregistered `--workspace`. The control
-  journal has no workspace removal, so no override is dropped that way yet.
+  create. `list` and `show` refuse an unregistered `--workspace`. Unregistering a workspace
+  drops its overrides in the same event (ADR-0081).
 - **Loading.** `omgcode chat --skill <name>` selects up to four skills for one
   turn. Each must be registered and effectively enabled for the session's
   workspace, and its stored `SKILL.md` must match the recorded size and

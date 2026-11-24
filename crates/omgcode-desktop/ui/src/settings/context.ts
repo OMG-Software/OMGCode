@@ -23,6 +23,8 @@ export interface Actions {
   setPermissions(workspaceId: string, permissions: PermissionFlags): Change;
   choosePackageCache(workspaceId: string): Change;
   clearPackageCache(workspaceId: string): Change;
+  /** Removes one workspace's registration; Rust confirms and touches no file (ADR-0081). */
+  unregisterWorkspace(workspaceId: string): Change;
   selectConnection(profile: string | null): Change;
   /** `endpoint` is for a local kind; `apiKey` is for Ollama Cloud. The other is `null`. */
   addConnection(

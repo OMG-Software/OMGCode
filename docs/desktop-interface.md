@@ -234,7 +234,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 39 commands. No other command exists.
+The shell has three webview windows and 43 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -276,6 +276,7 @@ their registered identifier, and approvals by identifier.
 | `settings_set_permissions` | settings | Set one workspace's preferences and per-tool write limits; widening any needs a native confirmation |
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
+| `settings_unregister_workspace` | settings | Remove one workspace's registration after a native confirmation that names its folder; its settings and instructions file go, its files and sessions stay (ADR-0081) |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, or an `ollama_cloud` profile with its fixed endpoint and a write-only API key |
 | `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
@@ -870,6 +871,26 @@ waits. The window shows:
   which reads the other text again. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.
+
+  **Remove workspace…** (ADR-0081) ends the shown workspace's block in this
+  full view only; the scoped view has none. It calls
+  `settings_unregister_workspace` with the workspace identifier and the
+  revision the window read, never a path. Rust refuses an unknown workspace, a
+  stale revision, a workspace that a container grant names (revoke it with the
+  trusted CLI first), and a workspace in which a chat turn is running, all
+  before any dialog. A native Yes/No confirmation then names the folder and
+  states that its preferences, instructions, package cache selection, skill
+  overrides, and checkpoint record are removed, that its files are not
+  touched, and that its sessions stay and can chat without tools only. On
+  Yes, one `workspace_unregistered` event is recorded and the workspace's
+  instructions file is deleted under the preferences lock. If that file cannot
+  be deleted, the command fails with `instructions_orphaned` after the removal
+  is recorded; no turn sends it, because `chat_send` reads a workspace's
+  instructions only while that workspace is registered. A turn that starts
+  while the dialog is open is found again before the change; a turn that
+  starts in the instant after that loses its tools, because every tool call
+  reads the live settings. A `settings` window opened for the removed
+  workspace shows the full view with the existing notice.
 - **Advanced.** Read-only, with no control that changes anything: toolchain
   profiles with their platform, read-only roots, path entries, and
   environment variable names, without values; package-network profiles with
@@ -1274,8 +1295,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the eleven settings-window
-  commands. The `settings` file grants only those eleven. Every handler also calls the Rust
+  not grant the three approval commands or any of the fifteen settings-window
+  commands. The `settings` file grants only those fifteen. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core

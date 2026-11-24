@@ -389,6 +389,25 @@ impl DesktopError {
         )
     }
 
+    /// A chat turn is running in a session of the workspace the operator is
+    /// removing, so nothing is removed (ADR-0081).
+    pub(crate) fn workspace_turn_running() -> Self {
+        Self::new(
+            "turn_running",
+            "A chat turn is running in a session of this workspace. Wait for it to finish, or cancel it in the main window, and remove the workspace again.",
+        )
+    }
+
+    /// The workspace is removed, but its instructions file was not deleted
+    /// (ADR-0081). The workspace's identifier is never reused, so no turn
+    /// sends the text.
+    pub(crate) fn removed_instructions_orphaned() -> Self {
+        Self::new(
+            "instructions_orphaned",
+            "The workspace was removed, but its saved instructions file could not be deleted. No turn sends it. Delete the file from the application's workspace-instructions folder.",
+        )
+    }
+
     /// The connection is removed, but its stored item was not deleted. No
     /// profile names the item any more, so its opaque identifier is reported.
     pub(crate) fn removed_key_orphaned(credential_id: &CredentialId) -> Self {

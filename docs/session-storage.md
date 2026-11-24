@@ -22,6 +22,10 @@ From 0.49.0 new checkpoints live in each workspace's `.OMGCode` folder, and
 the control journal records `workspace_store_bound` and
 `workspace_store_forgotten` events; session storage is unchanged
 ([ADR-0070](adr/0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md)).
+Unregistering a workspace (`workspace_unregistered`,
+[ADR-0081](adr/0081-unregister-a-workspace.md)) leaves its sessions' journals,
+index entries, and recorded `workspace_id` unchanged. The identifier then
+matches no registration, so a later turn in such a session is text only.
 
 ## Implemented prototype (v0.4.0)
 

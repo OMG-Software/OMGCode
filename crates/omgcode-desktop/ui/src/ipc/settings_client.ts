@@ -29,6 +29,15 @@ export const settingsApi = {
       workspace_id: workspaceId,
       revision,
     }),
+  /**
+   * Removes one workspace's registration after a native confirmation Rust shows (ADR-0081). The
+   * folder and its files are not touched. Sends the identifier and revision, never a path.
+   */
+  unregisterWorkspace: (workspaceId: string, revision: number) =>
+    invokeCommand<SettingsOverview>("settings_unregister_workspace", {
+      workspace_id: workspaceId,
+      revision,
+    }),
   /** Chooses the active model connection: a recorded profile, or `null` for the default. */
   selectConnection: (revision: number, profile: string | null) =>
     invokeCommand<SettingsOverview>("settings_select_connection", { revision, profile }),
