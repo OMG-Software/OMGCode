@@ -5,8 +5,8 @@ export interface SegmentedOptions<T extends string> {
   label: string;
   /** The choices in display order, as [value, visible label]. */
   choices: ReadonlyArray<readonly [T, string]>;
-  /** The value shown as chosen. */
-  value: T;
+  /** The value shown as chosen, or `null` when none is, such as for a mixed set. */
+  value: T | null;
   /** Called with a newly chosen value; never with the current one. */
   onChoose: (value: T) => void;
   /** An extra class on the group, such as `access`. */

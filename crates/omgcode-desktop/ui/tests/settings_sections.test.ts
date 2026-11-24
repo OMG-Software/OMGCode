@@ -8,7 +8,7 @@ import type {
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
-import { PACKAGE_CACHE_HELP } from "../src/settings/workspaces_section";
+import { ALL_TOOLS_LABEL, PACKAGE_CACHE_HELP } from "../src/settings/workspaces_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -526,6 +526,74 @@ describe("permission controls", () => {
     choose("Delete tool", "prompt");
     await settle();
     expect((root.querySelector("details.tool-limits") as HTMLDetailsElement).open).toBe(true);
+  });
+
+  it("set every tool limit at once with one request and leave Write alone", async () => {
+    await start(() => overview(), {
+      settings_set_permissions: () => overview({ revision: 4 }),
+    });
+    // Set all sits beside the closed disclosure, not inside it or its summary.
+    const details = root.querySelector("details.tool-limits") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    const all = root.querySelector(`[role=radiogroup][aria-label="${ALL_TOOLS_LABEL}"]`);
+    expect(all?.closest("details")).toBeNull();
+    expect(all?.closest(".tool-limits-group")).toBe(details.parentElement);
+    choose(ALL_TOOLS_LABEL, "deny");
+    await settle();
+    const calls = ipc.callsTo("settings_set_permissions");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toEqual({
+      workspace_id: A,
+      revision: 3,
+      permissions: {
+        model_tools: true,
+        read: "allow",
+        write: "prompt",
+        execute: "deny",
+        task_network: "deny",
+        host_services: "deny",
+        write_tools: {
+          edit: "deny",
+          multi_edit: "deny",
+          create: "deny",
+          rename: "deny",
+          delete: "deny",
+          create_directory: "deny",
+        },
+      },
+    });
+  });
+
+  it("mark Set all only while every tool limit shares one state", async () => {
+    await start(() => overview());
+    const checked = () =>
+      root
+        .querySelector(`[role=radiogroup][aria-label="${ALL_TOOLS_LABEL}"]`)
+        ?.querySelector('[aria-checked="true"]')
+        ?.getAttribute("data-value") ?? null;
+    expect(checked()).toBe("allow");
+
+    await start(() =>
+      overview({
+        workspaces: [
+          workspace(A, "/home/dev/a", { write_tools: { ...ALL_TOOLS, delete: "prompt" } }),
+        ],
+      }),
+    );
+    expect(checked()).toBeNull();
+    // With none marked, choosing the state most tools already have still sends the change.
+    choose(ALL_TOOLS_LABEL, "allow");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toMatchObject({
+      permissions: { write: "prompt", write_tools: ALL_TOOLS },
+    });
+  });
+
+  it("send nothing when Set all chooses the state every tool already has", async () => {
+    await start(() => overview());
+    choose(ALL_TOOLS_LABEL, "allow");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")).toHaveLength(0);
   });
 });
 
