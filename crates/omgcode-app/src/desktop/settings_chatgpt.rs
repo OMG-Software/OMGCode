@@ -1,4 +1,4 @@
-//! ChatGPT sign-in and sign-out from the `settings` window (ADR-0092).
+//! ChatGPT sign-in and sign-out from the `settings` window (ADR-0093).
 //!
 //! Rust asks a native confirmation, opens the system browser, waits for the
 //! loopback callback, and stores the tokens. The webview receives only the

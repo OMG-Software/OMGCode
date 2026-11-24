@@ -249,12 +249,12 @@ data upstream; check the server's configuration before sending sensitive text.
 
 - **Release-qualified model providers.** One bounded Chat Completions path
   serves LM Studio, Ollama Local, Ollama Cloud, twelve other hosted providers,
-  and an OpenAI-compatible service in the prototype (ADR-0091). None of the
+  and an OpenAI-compatible service in the prototype (ADR-0092). None of the
   hosted connections was tested with a real key, and the path's compatibility
   and security are not release-qualified.
 - **Subscription authentication:** Required ChatGPT and Claude subscription
   connections, alongside separate API-key connections. A ChatGPT sign-in
-  prototype exists (ADR-0092) but plan usage has not been verified with a real
+  prototype exists (ADR-0093) but plan usage has not been verified with a real
   account; Claude subscription sign-in still needs provider approval.
 - **Development tools:** Compilers, linkers, SDKs, formatters, linters, script
   interpreters, build systems, package managers, and test tools.
@@ -304,15 +304,15 @@ data upstream; check the server's configuration before sending sensitive text.
 
 | Connection profile | Current state |
 | --- | --- |
-| OpenAI API | Prototype: Chat Completions at `https://api.openai.com/v1` with a stored API key (ADR-0091); not tested with a real key |
-| ChatGPT subscription | Prototype: Sign in with ChatGPT through OpenAI's documented browser flow and plan usage through the Responses API (ADR-0092); tested only against mock servers, no real sign-in or plan-backed request was made |
-| Anthropic API | Prototype: Anthropic's OpenAI SDK compatibility layer with a stored API key (ADR-0091), documented by Anthropic for testing; the native Messages API is planned; not tested with a real key |
+| OpenAI API | Prototype: Chat Completions at `https://api.openai.com/v1` with a stored API key (ADR-0092); not tested with a real key |
+| ChatGPT subscription | Prototype: Sign in with ChatGPT through OpenAI's documented browser flow and plan usage through the Responses API (ADR-0093); tested only against mock servers, no real sign-in or plan-backed request was made |
+| Anthropic API | Prototype: Anthropic's OpenAI SDK compatibility layer with a stored API key (ADR-0092), documented by Anthropic for testing; the native Messages API is planned; not tested with a real key |
 | Claude subscription | Required; provider approval and route remain unresolved |
 | Ollama Local | Prototype: Ollama's OpenAI-compatible `/v1` API over literal loopback HTTP (ADR-0064) |
 | Ollama Cloud | Prototype: the fixed endpoint `https://ollama.com/v1` with a stored API key (ADR-0071); chat not tested with a real key |
-| OpenRouter | Prototype: `https://openrouter.ai/api/v1` with a stored API key (ADR-0091); upstream routing controls are planned; not tested with a real key |
-| Google, Meta, Moonshot, Tencent, Thinking Machines Lab, MiniMax, Z.ai, DeepSeek, xAI | Prototype: each provider's one documented OpenAI-compatible endpoint with a stored API key (ADR-0091); not tested with a real key |
-| OpenAI compatible | Prototype: an operator-typed HTTPS base URL with a stored API key (ADR-0091) |
+| OpenRouter | Prototype: `https://openrouter.ai/api/v1` with a stored API key (ADR-0092); upstream routing controls are planned; not tested with a real key |
+| Google, Meta, Moonshot, Tencent, Thinking Machines Lab, MiniMax, Z.ai, DeepSeek, xAI | Prototype: each provider's one documented OpenAI-compatible endpoint with a stored API key (ADR-0092); not tested with a real key |
+| OpenAI compatible | Prototype: an operator-typed HTTPS base URL with a stored API key (ADR-0092) |
 | LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; a selected profile supplies the endpoint and the optional server token from its stored credential, otherwise `--endpoint` and `OMGCODE_LM_TOKEN` apply; model discovery and release authentication remain unqualified, and streamed replies have met local fixtures only |
 
 API-key and subscription connections are distinct authentication and billing

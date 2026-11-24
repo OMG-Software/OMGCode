@@ -1,4 +1,4 @@
-# 0091: Add hosted providers and an OpenAI-compatible connection
+# 0092: Add hosted providers and an OpenAI-compatible connection
 
 - Status: Accepted
 - Date: 2026-11-24
@@ -35,7 +35,7 @@ unauthenticated requests. No API key was used for any provider.
 | Meta | `https://api.llama.com/compat/v1` | `max_tokens` | The Llama API is a preview with a waitlist. |
 | Moonshot | `https://api.moonshot.ai/v1` | `max_completion_tokens` | Replies may carry `reasoning_content`, which is ignored. |
 | Tencent | `https://api.hunyuan.cloud.tencent.com/v1` | `max_tokens` | No international endpoint is documented. |
-| Thinking Machines Lab | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_tokens` | Beta and documented for testing. No model list, tool calls, or streaming are documented. Model ids are checkpoint paths. |
+| Thinking Machines Lab | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_completion_tokens` | Beta and documented for testing. The only documented output field; unlisted fields are ignored, so `max_tokens` would leave output unbounded. No model list, tool calls, or streaming are documented. Model ids are checkpoint paths. |
 | MiniMax | `https://api.minimax.io/v1` | `max_completion_tokens` | The recommended field. |
 | OpenRouter | `https://openrouter.ai/api/v1` | `max_tokens` | Its unauthenticated model list returned 473 models in a 918 KB body. |
 | Z.ai | `https://api.z.ai/api/paas/v4` | `max_tokens` | Some finish reasons are outside the OpenAI set. |
@@ -48,7 +48,9 @@ unauthenticated requests. No API key was used for any provider.
    `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
    `openai_compatible`. The existing `openai`, `anthropic`, and `open_router`
    kinds now accept an endpoint. There are 16 kinds in total.
-   `ProviderKind::ALL` lists them in the order the desktop dropdown shows.
+   `ProviderKind::ALL` lists them for the CLI: local kinds, named hosted
+   providers, then `openai_compatible`. The desktop dropdown keeps its own
+   order, with Ollama before LM Studio.
 2. **One fixed endpoint per named provider.** Each named hosted kind accepts
    exactly the base URL in the table, or that text with one trailing `/`.
    Core holds one table (`provider/hosted.rs`), which the profile record,
@@ -66,7 +68,8 @@ unauthenticated requests. No API key was used for any provider.
 
    An upper-case host, a default port, a `.` or `..` segment, or a non-ASCII
    host is refused rather than rewritten. The text the operator confirms is
-   therefore the URL every request uses. A typed endpoint that equals a named
+   therefore the URL every request uses. Port 0, which no request can reach,
+   is refused, as the loopback rule refuses it. A typed endpoint that equals a named
    provider's endpoint is treated as that provider's endpoint, including its
    output field.
 4. **Every hosted kind needs an API key.** Hosted kinds take authentication
@@ -76,10 +79,17 @@ unauthenticated requests. No API key was used for any provider.
    profile can be chosen only with a bound credential
    (`a hosted provider profile needs a bound credential before it can be
    chosen`). `--endpoint` with a hosted URL and no profile is refused
-   (`cloud_needs_profile`).
+   (`cloud_needs_profile`). A named hosted kind's API-key profile added
+   without an endpoint records the provider's documented endpoint, as the
+   desktop does, because a hosted profile without one could never be used and
+   its endpoint cannot be added later. An `openai_compatible` API-key profile
+   without one is refused. A subscription profile still records none, so its
+   record stays readable by older versions.
 5. **The output field is chosen per endpoint.** Requests send either
-   `max_tokens` or `max_completion_tokens`, as the table says. A typed
-   endpoint and a loopback endpoint send `max_tokens`.
+   `max_tokens` or `max_completion_tokens`, as the table says. A loopback
+   endpoint, and a typed endpoint that is not a named provider's endpoint,
+   send `max_tokens`; a typed endpoint equal to a named provider's endpoint
+   sends that provider's field (decision 3).
 6. **Paths are appended to the base.** `/chat/completions` and `/models` are
    appended to the base path, so DeepSeek's base without `/v1` and Google's
    `/v1beta/openai` base both work.
@@ -90,12 +100,19 @@ unauthenticated requests. No API key was used for any provider.
    takes a key. `openai_compatible` takes an endpoint and a key. The window
    sends the key once and clears the field, as for Ollama Cloud (ADR-0071).
    The native confirmation before a hosted connection is chosen names the
-   host that will receive prompts, workspace text read by tools, and command
-   output. For `openai_compatible` it also says that the address was typed
+   host, with any non-default port, that will receive prompts, workspace
+   text read by tools, and command output. For `openai_compatible` it also says that the address was typed
    by the operator.
 9. **CLI.** `capabilities` lists every kind except `ollama_local` in
    `stored_credential_adapters`, and every kind in `streaming_adapters` and
    `cancellable_adapters`. `provider_adapters` stays `false`.
+10. **DeepSeek runs without thinking.** DeepSeek's documentation says
+    thinking is enabled by default and that a request with `tools` must send
+    the `reasoning_content` of all previous turns back, or the API answers
+    400. The client discards reasoning text and the journals do not keep it,
+    so every request to the DeepSeek endpoint, or to a typed endpoint equal
+    to it, sends DeepSeek's documented `"thinking": {"type": "disabled"}`. No
+    other endpoint is sent the field.
 
 ## Alternatives considered
 
@@ -116,6 +133,13 @@ unauthenticated requests. No API key was used for any provider.
   confirmation says that the address was typed.
 - **Normalise a typed endpoint.** Rejected. The URL a request uses would then
   differ from the text the operator confirmed.
+- **Keep DeepSeek's reasoning and send it back.** Deferred. It would put model
+  reasoning text into the session journals and every later request, which
+  changes the session schema, the context budget, and what replay and
+  compaction must treat as untrusted model output. That needs its own
+  decision. Disabling thinking only for tool requests was also rejected: with
+  tools, DeepSeek wants the reasoning of every earlier turn, including turns
+  that had no tools.
 
 ## Consequences
 
@@ -124,7 +148,7 @@ unauthenticated requests. No API key was used for any provider.
 - A turn on a hosted connection sends prompts, workspace text that tools read,
   and command output to that provider's host.
 - A control journal that records a new kind, or an endpoint on an `openai`,
-  `anthropic`, or `open_router` profile, cannot be read by 0.57.0 or earlier.
+  `anthropic`, or `open_router` profile, cannot be read by 0.58.0 or earlier.
 - Not verified:
   - No chat, stream, tool-call, or model-list request was made to any of these
     providers with a key. The reply shapes are assumed to match the
@@ -132,6 +156,10 @@ unauthenticated requests. No API key was used for any provider.
     network call to a hosted provider.
   - Meta's Llama API is a waitlisted preview.
   - xAI's output field was not confirmed.
+  - Moonshot documents passing `reasoning_content` back unchanged in tool
+    loops for its thinking models, without documenting an error when it is
+    missing. This client never sends it; a Moonshot tool turn may reason
+    less well or fail, and only a request with a real key would show which.
   - Google model ids may carry a `models/` prefix; the list reports them as
     the server sends them.
   - A finish reason outside the OpenAI set is refused as a malformed reply,
@@ -143,7 +171,7 @@ unauthenticated requests. No API key was used for any provider.
 
 ## References
 
-- [Provider authentication](../provider-authentication.md#hosted-providers-adr-0091)
+- [Provider authentication](../provider-authentication.md#hosted-providers-adr-0092)
 - [Desktop interface](../desktop-interface.md#choosing-the-model-connection)
 - [ADR-0038](0038-record-provider-profiles-without-credentials.md),
   [ADR-0048](0048-bind-a-stored-credential-to-its-profile-endpoint.md),

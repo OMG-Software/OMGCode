@@ -119,6 +119,52 @@ fn provider_authentication_pairs_are_supported() {
     }
 }
 
+/// A hosted API-key profile added without an endpoint could never be used,
+/// and its endpoint cannot be added later. A named kind records its one
+/// documented endpoint instead, `openai_compatible` is refused, and a
+/// subscription or local profile keeps recording none (ADR-0092).
+#[test]
+fn a_hosted_api_key_profile_added_without_an_endpoint_records_its_fixed_one() {
+    let (_directory, _data, mut store) = store();
+    for kind in ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| kind.is_hosted())
+    {
+        let revision = store.revision();
+        let added = store.add_provider_profile(
+            &declaration(kind.as_str(), kind.as_str(), "api_key"),
+            revision,
+        );
+        match kind.fixed_endpoint() {
+            Some(fixed) => {
+                let profile = added.unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+                assert_eq!(
+                    profile.endpoint().map(ProviderEndpoint::as_str),
+                    Some(fixed)
+                );
+            }
+            None => {
+                assert_eq!(kind, ProviderKind::OpenAiCompatible);
+                assert_eq!(
+                    refusal(added),
+                    "an openai_compatible profile needs an endpoint"
+                );
+                assert_eq!(store.revision(), revision);
+            }
+        }
+    }
+    let revision = store.revision();
+    let plan = store
+        .add_provider_profile(&declaration("plan", "openai", "subscription"), revision)
+        .expect("subscription");
+    assert_eq!(plan.endpoint(), None);
+    let revision = store.revision();
+    let local = store
+        .add_provider_profile(&declaration("local", "lm_studio", "api_key"), revision)
+        .expect("local");
+    assert_eq!(local.endpoint(), None);
+}
+
 const ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 
 fn with_endpoint(
@@ -225,7 +271,7 @@ fn a_refused_endpoint_writes_no_event() {
 }
 
 /// A named hosted kind refuses a loopback endpoint, and `openai_compatible`
-/// refuses one too: it is HTTPS only (ADR-0090).
+/// refuses one too: it is HTTPS only (ADR-0092).
 #[test]
 fn hosted_kinds_refuse_a_loopback_endpoint() {
     let (_directory, _data, mut store) = store();
@@ -329,7 +375,7 @@ fn replay_rejects_invalid_endpoints_and_unknown_fields() {
         )
         .expect("profile");
     store
-        .add_provider_profile(&declaration("plain", "openai", "api_key"), 1)
+        .add_provider_profile(&declaration("plain", "openai", "subscription"), 1)
         .expect("profile");
     drop(store);
     let original = fs::read_to_string(data.join(FILE_NAME)).expect("journal");
@@ -339,8 +385,8 @@ fn replay_rejects_invalid_endpoints_and_unknown_fields() {
         (ENDPOINT, "https://127.0.0.1:1234/v1"),
         (ENDPOINT, "http://192.0.2.1:1234/v1"),
         (
-            r#""kind":"openai","auth":"api_key""#,
-            r#""kind":"openai","auth":"api_key","endpoint":"http://127.0.0.1:1234/v1""#,
+            r#""kind":"openai","auth":"subscription""#,
+            r#""kind":"openai","auth":"subscription","endpoint":"http://127.0.0.1:1234/v1""#,
         ),
         (r#""kind":"lm_studio""#, r#""kind":"lm_studio","extra":1"#),
     ];
@@ -484,7 +530,7 @@ fn the_active_connection_is_selected_replayed_and_cleared() {
 fn an_unselectable_or_unchanged_connection_is_refused_without_a_record() {
     let (_directory, data, mut store) = store();
     store
-        .add_provider_profile(&declaration("cloud", "openai", "api_key"), 0)
+        .add_provider_profile(&declaration("cloud", "openai", "subscription"), 0)
         .expect("cloud");
     store
         .add_provider_profile(&declaration("bare", "lm_studio", "none"), 1)
@@ -539,7 +585,7 @@ fn an_unselectable_or_unchanged_connection_is_refused_without_a_record() {
 fn replay_rejects_an_invalid_active_connection() {
     let (_directory, data, mut store) = store();
     let cloud = store
-        .add_provider_profile(&declaration("cloud", "openai", "api_key"), 0)
+        .add_provider_profile(&declaration("cloud", "openai", "subscription"), 0)
         .expect("cloud");
     let ollama = store
         .add_provider_profile(
@@ -778,10 +824,34 @@ fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check(
 }
 
 /// Every kind except the two local ones is hosted, and every hosted kind but
-/// `openai_compatible` has one fixed HTTPS endpoint (ADR-0090). Each spelling
+/// `openai_compatible` has one fixed HTTPS endpoint (ADR-0092). Each spelling
 /// round-trips through `parse`.
 #[test]
 fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
+    use crate::provider::OutputLimitField;
+
+    // Listed in full, so a new kind fails to compile until its field is chosen.
+    const fn documented_output_field(kind: ProviderKind) -> OutputLimitField {
+        match kind {
+            ProviderKind::OpenAi
+            | ProviderKind::Moonshot
+            | ProviderKind::MiniMax
+            | ProviderKind::ThinkingMachines
+            | ProviderKind::XAi => OutputLimitField::MaxCompletionTokens,
+            ProviderKind::LmStudio
+            | ProviderKind::OllamaLocal
+            | ProviderKind::OllamaCloud
+            | ProviderKind::Anthropic
+            | ProviderKind::Google
+            | ProviderKind::Meta
+            | ProviderKind::Tencent
+            | ProviderKind::OpenRouter
+            | ProviderKind::ZAi
+            | ProviderKind::DeepSeek
+            | ProviderKind::OpenAiCompatible => OutputLimitField::MaxTokens,
+        }
+    }
+
     assert_eq!(ProviderKind::ALL.len(), 16);
     for kind in ProviderKind::ALL {
         assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
@@ -794,9 +864,15 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
             Some(endpoint) => {
                 assert!(kind.is_hosted(), "{kind:?}");
                 assert!(endpoint.starts_with("https://"), "{kind:?}");
+                // The kind's endpoint must be a row of the client's fixed table,
+                // not a URL that only passes the typed-endpoint rule, and carry
+                // the output field ADR-0092 records for that provider.
+                let (_, field) = crate::provider::fixed_endpoint(endpoint)
+                    .unwrap_or_else(|| panic!("{kind:?}: endpoint missing from the fixed table"));
+                assert_eq!(field, documented_output_field(kind), "{kind:?}");
                 assert!(
                     crate::provider::ModelEndpoint::parse(endpoint)
-                        .is_ok_and(|parsed| parsed.is_hosted()),
+                        .is_ok_and(|parsed| parsed.is_hosted() && parsed.output_field() == field),
                     "{kind:?}"
                 );
             }
@@ -887,7 +963,7 @@ fn each_named_hosted_kind_records_only_its_own_endpoint() {
 
 /// An `openai_compatible` profile records the HTTPS base URL the operator
 /// typed, exactly, and refuses plain HTTP, user information, queries, and text
-/// the URL parser would rewrite (ADR-0090). Replay applies the same rule.
+/// the URL parser would rewrite (ADR-0092). Replay applies the same rule.
 #[test]
 fn an_openai_compatible_profile_records_an_https_base_url_under_the_custom_rule() {
     let (_directory, data, mut store) = store();

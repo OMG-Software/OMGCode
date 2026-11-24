@@ -258,6 +258,16 @@ fn an_ollama_cloud_profile_binds_and_loads_like_lm_studio() {
             .add_provider_profile(&declaration, revision)
             .expect("cloud profile");
     }
+    // Core now records the cloud endpoint for a profile added without one
+    // (ADR-0092); a journal from 0.58.0 or earlier can still hold none.
+    store
+        .snapshot
+        .provider_profiles
+        .iter_mut()
+        .find(|status| status.profile().name() == "cloud-bare")
+        .expect("profile")
+        .profile
+        .endpoint = None;
     add_lm_studio(&mut store, "lms", "api_key");
     let ask = |store: &ControlStore, name: &str, adapter: ProviderKind| {
         store

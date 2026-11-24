@@ -280,6 +280,8 @@ export interface ChatDefaults {
   /** The range the composer's compaction slider offers (ADR-0080). */
   compact_threshold_min: number;
   compact_threshold_max: number;
+  /** The slider's step from `compact_threshold_min` (ADR-0091). */
+  compact_threshold_step: number;
 }
 
 /** One model the next turn's connection reports (ADR-0066). */
@@ -529,11 +531,11 @@ export interface ProviderProfileView {
   selectable: boolean;
   /** Whether it is the active connection. */
   active: boolean;
-  /** For a signed-in ChatGPT connection, the account's email, for display only (ADR-0092). */
+  /** For a signed-in ChatGPT connection, the account's email, for display only (ADR-0093). */
   account_label: string | null;
 }
 
-/** The answer to `settings_sign_out_chatgpt` (ADR-0092). */
+/** The answer to `settings_sign_out_chatgpt` (ADR-0093). */
 export interface ChatGptSignOutResult {
   overview: SettingsOverview;
   /** Whether OpenAI confirmed the revocation; the local sign-out is recorded either way. */
@@ -543,7 +545,7 @@ export interface ChatGptSignOutResult {
 /** A local provider the settings window may record (ADR-0064). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
 
-/** A hosted provider with one fixed endpoint that Rust supplies (ADR-0071, ADR-0090). */
+/** A hosted provider with one fixed endpoint that Rust supplies (ADR-0071, ADR-0092). */
 export type FixedHostedKind =
   | "ollama_cloud"
   | "anthropic"
@@ -561,7 +563,7 @@ export type FixedHostedKind =
 
 /**
  * A provider the settings window may add: a local one, a named hosted one, or any
- * OpenAI-compatible service at an HTTPS address the operator types (ADR-0090).
+ * OpenAI-compatible service at an HTTPS address the operator types (ADR-0092).
  */
 export type NewConnectionKind = LocalProviderKind | FixedHostedKind | "openai_compatible";
 

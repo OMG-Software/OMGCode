@@ -1,5 +1,5 @@
 //! ChatGPT sign-in, sign-out, and plan-backed connections for the trusted
-//! front ends (ADR-0092).
+//! front ends (ADR-0093).
 //!
 //! Only the CLI and the desktop `settings` window call these. The settings
 //! store is never held during the browser step or a network request: a

@@ -8,7 +8,7 @@ export const CLOUD_SUFFIX = " (Ollama cloud)";
 /** Shown while a cloud-tagged model is chosen. */
 export const CLOUD_WARNING =
   "This Ollama model runs on Ollama's hosted service: prompts and workspace text sent to it leave this computer.";
-/** Added to every model of a hosted connection (ADR-0071, ADR-0090). */
+/** Added to every model of a hosted connection (ADR-0071, ADR-0092). */
 export const HOSTED_SUFFIX = " (hosted)";
 /** Shown while the session's connection is a hosted service. */
 export const HOSTED_WARNING =

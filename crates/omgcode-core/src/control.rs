@@ -277,7 +277,7 @@ pub struct ControlSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     active_provider: Option<Uuid>,
     /// The host identifier every ChatGPT sign-in from this data root sends
-    /// (ADR-0092), recorded by the first sign-in.
+    /// (ADR-0093), recorded by the first sign-in.
     #[serde(skip_serializing_if = "Option::is_none")]
     subscription_host: Option<String>,
     /// Imported skills. A record is configuration, never authority.
@@ -505,7 +505,7 @@ enum Action {
         #[serde(with = "credential::id_text")]
         credential_id: CredentialId,
     },
-    /// A ChatGPT sign-in completed (ADR-0092). Sign-out is
+    /// A ChatGPT sign-in completed (ADR-0093). Sign-out is
     /// `ProviderCredentialRemoved`.
     ProviderSubscriptionBound {
         profile_id: Uuid,

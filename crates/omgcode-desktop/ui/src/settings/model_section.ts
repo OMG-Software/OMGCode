@@ -105,7 +105,7 @@ function activeConnection(ctx: SectionContext): HTMLElement {
   );
 }
 
-/** The address field's hint for an OpenAI-compatible service (ADR-0090). */
+/** The address field's hint for an OpenAI-compatible service (ADR-0092). */
 export const CUSTOM_ENDPOINT_HINT = "https://llm.example.org/v1";
 
 /**
@@ -158,7 +158,7 @@ function setKeyDisclosure(
   );
 }
 
-/** Whether a profile is a ChatGPT plan connection: `openai` with `subscription` (ADR-0092). */
+/** Whether a profile is a ChatGPT plan connection: `openai` with `subscription` (ADR-0093). */
 export function isChatGpt(profile: ProviderProfileView): boolean {
   return profile.kind === "openai" && profile.auth === "subscription";
 }
@@ -183,6 +183,14 @@ function chatGptButton(profile: ProviderProfileView, { submit, actions }: Sectio
   return profile.credential_bound
     ? button("Sign out", () => submit(actions.signOutChatGpt(profile.name)))
     : button("Sign in with ChatGPT", () => submit(actions.signInChatGpt(profile.name)));
+}
+
+/** The line under a hosted profile: where prompts go, or why it cannot be used at all. */
+export const NO_ENDPOINT_NOTE =
+  "No endpoint is recorded, so this connection cannot be used. An endpoint cannot be added later: remove it and add it again.";
+
+function hostedRowNote(endpoint: string | null): string {
+  return endpoint === null ? NO_ENDPOINT_NOTE : hostedNotice(endpoint);
 }
 
 function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElement {
@@ -210,11 +218,21 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         text: `${providerName(profile.kind)} \u00b7 ${profile.endpoint ?? "no endpoint recorded"} \u00b7 ${profile.auth}`,
       }),
       el("div", { class: "row-meta", text: credentialLine(profile) }),
-      hosted ? el("div", { class: "row-meta", text: hostedNotice(profile.endpoint) }) : null,
-      hosted ? setKeyDisclosure(profile, ctx) : null,
-      plan ? el("div", { class: "row-meta", text: CHATGPT_NOTICE }) : null,
+      hosted ? el("div", { class: "row-meta", text: hostedRowNote(profile.endpoint) }) : null,
+      // A subscription profile never holds a key, and a profile without an endpoint can never
+      // be used, so neither has a key field.
+      hosted && profile.auth === "api_key" && profile.endpoint !== null
+        ? setKeyDisclosure(profile, ctx)
+        : null,
+      plan
+        ? el("div", {
+            class: "row-meta",
+            text: profile.endpoint === null ? NO_ENDPOINT_NOTE : CHATGPT_NOTICE,
+          })
+        : null,
     ),
-    plan ? chatGptButton(profile, ctx) : null,
+    // A ChatGPT profile recorded without OpenAI's endpoint can never sign in (ADR-0093).
+    plan && profile.endpoint !== null ? chatGptButton(profile, ctx) : null,
     remove,
   );
 }
@@ -224,7 +242,7 @@ export const CHATGPT_NOTICE =
   "Chat turns go to OpenAI under your ChatGPT plan. A sign-in does not show that the plan will accept OMGCode's requests.";
 
 /**
- * Signs a new ChatGPT connection in (ADR-0092). Rust records an `openai` subscription profile
+ * Signs a new ChatGPT connection in (ADR-0093). Rust records an `openai` subscription profile
  * with the name, asks a system confirmation, and opens OpenAI's sign-in page in the browser; this
  * window never sees the address or a token.
  */
@@ -307,7 +325,7 @@ function kindOption(kind: NewConnectionKind): string {
 /**
  * A form that records a local LM Studio or Ollama connection without a credential, a named
  * hosted provider with its API key, or an OpenAI-compatible service with its HTTPS address and
- * API key (ADR-0090). The endpoint field starts at the chosen local provider's usual address; it
+ * API key (ADR-0092). The endpoint field starts at the chosen local provider's usual address; it
  * is hidden for a named hosted provider, whose fixed endpoint Rust supplies and the form only
  * shows; the core validates every value. The typed values (never the key) live in the view
  * state, so a redraw keeps them; they reset only after the core records the connection. The key
@@ -352,8 +370,9 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     fixedText,
   );
   const hostedText = el("p", { class: "muted" });
-  // Shows the fields the chosen provider takes. The endpoint and key fields are hidden, not
-  // rebuilt, so what was typed in a visible one stays.
+  // Shows the fields the chosen provider takes. The endpoint field is hidden, not rebuilt, so
+  // what was typed in it stays. The key field is cleared on a provider change instead: a key
+  // belongs to one provider and must not be sent to another.
   const arrange = (): void => {
     const chosen = kind.value as NewConnectionKind;
     const fixed = isFixedHostedKind(chosen) ? FIXED_ENDPOINTS[chosen] : null;
@@ -377,6 +396,7 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   endpoint.addEventListener("input", remember);
   kind.addEventListener("change", () => {
     const chosen = kind.value as NewConnectionKind;
+    key.input.value = "";
     // Only replace values the operator has not edited.
     const untouched =
       endpoint.value === "" || Object.values(DEFAULT_ENDPOINTS).includes(endpoint.value);

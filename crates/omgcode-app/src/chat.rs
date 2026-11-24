@@ -221,7 +221,7 @@ impl ChatClients {
     }
 
     /// Build the clients for a resolved connection: plan-backed clients that
-    /// share one token source for a signed-in ChatGPT profile (ADR-0092), and
+    /// share one token source for a signed-in ChatGPT profile (ADR-0093), and
     /// [`Self::new`] with the connection's token otherwise.
     ///
     /// # Errors

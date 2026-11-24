@@ -41,7 +41,7 @@ export interface Actions {
   removeConnection(name: string): Change;
   /**
    * Signs a connection in with ChatGPT, recording an `openai` subscription profile with this name
-   * when none exists (ADR-0092). Rust confirms natively and opens the browser.
+   * when none exists (ADR-0093). Rust confirms natively and opens the browser.
    */
   signInChatGpt(name: string): Change;
   /** Revokes and forgets a ChatGPT sign-in after a native confirmation. */

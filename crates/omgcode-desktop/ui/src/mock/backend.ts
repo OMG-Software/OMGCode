@@ -179,7 +179,7 @@ const BUILT_IN_PREFERENCES: MockPreferences = {
   max_tool_calls: 128,
   turn_timeout_seconds: 120,
   instructions: "",
-  compact_threshold: 200_000,
+  compact_threshold: 400_000,
   auto_compact: true,
   enter_to_send: true,
 };
@@ -1018,7 +1018,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
           }
-          // The same three shapes Rust accepts (ADR-0090).
+          // The same three shapes Rust accepts (ADR-0092).
           let recorded: string;
           if (isLocalKind(kind)) {
             if (typeof endpoint !== "string" || apiKey !== null) {
@@ -1042,7 +1042,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               );
             }
             checkApiKey(apiKey);
-            if (!/^https:\/\/[a-z0-9.-]+(:[0-9]+)?(\/[A-Za-z0-9._~-]+)*\/?$/.test(endpoint)) {
+            if (!isCustomEndpoint(endpoint)) {
               fail("control", "an openai_compatible endpoint must be an https:// base URL");
             }
             recorded = endpoint;
@@ -1068,8 +1068,17 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (profile === undefined) {
             fail("control", "unknown provider profile");
           }
-          if (!isHostedKind(profile.kind)) {
-            fail("invalid_request", "Only a hosted connection has an API key set here.");
+          if (!isHostedKind(profile.kind) || profile.auth !== "api_key") {
+            fail(
+              "invalid_request",
+              "Only a hosted connection that uses an API key has a key set here.",
+            );
+          }
+          if (profile.endpoint === null) {
+            fail(
+              "invalid_request",
+              "This connection has no endpoint, so it cannot be used. Remove it and add it again.",
+            );
           }
           checkApiKey(args.api_key);
           profile.credential_bound = true;
@@ -1236,7 +1245,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           settings.container_grants.splice(index, 1);
         });
-      // The mock stands in for the browser step: a sign-in succeeds at once (ADR-0092).
+      // The mock stands in for the browser step: a sign-in succeeds at once (ADR-0093).
       case "settings_sign_in_chatgpt":
         return changeSettings(args, () => {
           const name = str(args, "name");
@@ -1356,6 +1365,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       enter_to_send,
       compact_threshold_min: COMPACT_MIN,
       compact_threshold_max: COMPACT_MAX,
+      compact_threshold_step: 8_000,
     };
   }
 
@@ -1627,6 +1637,41 @@ const MAX_ENDPOINT_BYTES = 256;
  * from accepting or refusing what the application would not.
  */
 export function isLocalEndpoint(endpoint: string): boolean {
+  return isLocalEndpointText(endpoint);
+}
+
+/**
+ * The mock's copy of core's typed-endpoint rule for `openai_compatible` (`validate_custom_url`,
+ * ADR-0092), step by step. The browser's `URL` follows the same WHATWG standard as the `url` crate,
+ * so "written exactly as the parser writes it" carries over: a `.` or `..` segment, an upper-case
+ * host, a default port, or a non-ASCII host is rewritten by the parser and therefore refused.
+ */
+export function isCustomEndpoint(endpoint: string): boolean {
+  if (
+    new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES ||
+    !endpoint.startsWith("https://") ||
+    Array.from(endpoint).some((c) => /[\p{Cc}\s%@?#\\]/u.test(c))
+  ) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const written = url.href;
+  return (
+    url.protocol === "https:" &&
+    url.hostname !== "" &&
+    // Port 0 reaches nothing; core refuses it as the loopback rule does.
+    url.port !== "0" &&
+    (written === endpoint || written === `${endpoint}/`) &&
+    !url.pathname.includes("//")
+  );
+}
+
+function isLocalEndpointText(endpoint: string): boolean {
   if (new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES) {
     return false;
   }

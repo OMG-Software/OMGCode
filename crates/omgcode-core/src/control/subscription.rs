@@ -1,4 +1,4 @@
-//! ChatGPT subscription sign-ins in the control journal (ADR-0092).
+//! ChatGPT subscription sign-ins in the control journal (ADR-0093).
 //!
 //! A sign-in records `provider_subscription_bound`: the profile, the issued
 //! client, the account subject, an optional display label, the host

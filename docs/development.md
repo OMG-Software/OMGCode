@@ -426,7 +426,7 @@ launch and then uses the profile's endpoint
 
 ### Sign in with ChatGPT
 
-ADR-0092 adds a ChatGPT connection: an `openai` profile with `--auth
+ADR-0093 adds a ChatGPT connection: an `openai` profile with `--auth
 subscription` and `--endpoint https://api.openai.com/v1`. The profile name
 below is a placeholder:
 
@@ -450,7 +450,7 @@ revokes the refresh token once, records the sign-out, deletes the tokens, and
 adds a `warning` when OpenAI did not confirm the revocation.
 `provider-credential-remove` refuses a subscription profile, and
 `provider-profile-remove` refuses one that is signed in. See
-[provider authentication](provider-authentication.md#chatgpt-sign-in-adr-0092).
+[provider authentication](provider-authentication.md#chatgpt-sign-in-adr-0093).
 No real sign-in was made with these commands.
 
 ## Trusted runs

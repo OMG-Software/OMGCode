@@ -1,4 +1,4 @@
-//! The two-slot token store and the session lock (ADR-0092).
+//! The two-slot token store and the session lock (ADR-0093).
 //!
 //! Protected-store items are never overwritten (ADR-0042), and a refresh
 //! records nothing in the control journal. A sign-in's binding therefore

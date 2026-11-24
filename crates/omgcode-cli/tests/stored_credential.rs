@@ -199,6 +199,7 @@ impl Scene {
     fn add_profile(&self, name: &str, kind: &str, auth: &str) {
         let output = self.try_add_profile(name, kind, auth, None);
         assert_success(&output);
+        forget_recorded_endpoint(self.data(), name);
     }
 
     /// Record a profile that names its endpoint.
@@ -426,7 +427,7 @@ fn an_unusable_profile_fails_with_a_credential_error_before_any_request_or_sessi
 
     for (name, cause) in [
         ("missing", "unknown_profile"),
-        // A hosted profile recorded without an endpoint cannot be used (ADR-0091).
+        // A hosted profile recorded without an endpoint cannot be used (ADR-0092).
         ("openai-key", "endpoint_not_recorded"),
         ("unbound", "not_bound"),
     ] {
@@ -734,4 +735,29 @@ fn capabilities_report_that_provider_profiles_can_record_an_endpoint() {
     let capabilities = json_output(&output);
     assert_eq!(capabilities["provider_profile_endpoints"], true);
     assert_eq!(capabilities["provider_profiles"], true);
+}
+
+/// Remove the endpoint core now records for a hosted `api_key` profile added
+/// without one, so the settings journal holds the bytes 0.58.0 or earlier
+/// wrote for it (ADR-0092). Replay still accepts such a profile, and the
+/// refusals for one are what these tests check.
+fn forget_recorded_endpoint(data: &Path, name: &str) {
+    use std::fmt::Write as _;
+
+    const FIELD: &str = ",\"endpoint\":\"";
+    let path = data.join("control-v1.jsonl");
+    let text = fs::read_to_string(&path).expect("settings journal");
+    let marker = format!("\"name\":\"{name}\"");
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        match line.find(FIELD).filter(|_| line.contains(&marker)) {
+            Some(start) => {
+                let value = start + FIELD.len();
+                let end = value + line[value..].find('"').expect("endpoint end") + 1;
+                writeln!(out, "{}{}", &line[..start], &line[end..]).expect("line");
+            }
+            None => writeln!(out, "{line}").expect("line"),
+        }
+    }
+    fs::write(&path, out).expect("settings journal");
 }

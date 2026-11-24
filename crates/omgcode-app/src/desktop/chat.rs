@@ -11,7 +11,9 @@ use omgcode_core::turn::ApprovalWaitSlot;
 use super::ChatEventSink;
 use super::error::DesktopError;
 use super::instructions;
-use super::preferences::{self, COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN};
+use super::preferences::{
+    self, COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN, COMPACT_THRESHOLD_STEP,
+};
 use super::session_connections::SessionConnection;
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
@@ -71,6 +73,7 @@ impl DesktopService {
             enter_to_send: preferences.enter_to_send,
             compact_threshold_min: COMPACT_THRESHOLD_MIN,
             compact_threshold_max: COMPACT_THRESHOLD_MAX,
+            compact_threshold_step: COMPACT_THRESHOLD_STEP,
         }
     }
 

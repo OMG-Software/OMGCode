@@ -69,7 +69,7 @@ const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
   SETTINGS_CHANGE_RUNNING_CODE,
 ]);
 
-/** Shown while Rust waits for the browser step of a ChatGPT sign-in (ADR-0092). */
+/** Shown while Rust waits for the browser step of a ChatGPT sign-in (ADR-0093). */
 export const SIGN_IN_WAITING =
   "Waiting for the ChatGPT sign-in in your browser. It ends after five minutes.";
 
@@ -144,7 +144,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
   readProblem.hidden = true;
   const notice = el("p", { class: "notice", attrs: { role: "status" } });
   notice.hidden = true;
-  // Shown while Rust waits for the ChatGPT sign-in in the browser (ADR-0092). It sits outside
+  // Shown while Rust waits for the ChatGPT sign-in in the browser (ADR-0093). It sits outside
   // the disabled body, so its Cancel button stays usable while the change runs.
   const cancelSignIn = button("Cancel sign-in", () => {
     void settingsApi.cancelChatGptSignIn().catch(() => undefined);

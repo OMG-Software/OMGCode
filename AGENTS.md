@@ -87,7 +87,7 @@ The `anthropic`, `openai`, `google`, `meta`, `moonshot`, `tencent`,
 kinds each accept only their provider's one documented OpenAI-compatible
 endpoint, and an `openai_compatible` profile records an operator-typed
 `https://` base URL that core refuses rather than rewrites
-([ADR-0091](docs/adr/0091-add-hosted-providers-and-an-openai-compatible-connection.md)).
+([ADR-0092](docs/adr/0092-add-hosted-providers-and-an-openai-compatible-connection.md)).
 Every hosted API-key profile needs a stored API key. No hosted provider's
 chat, stream, or tool-call shapes were verified with a real key. An `openai`
 profile with authentication `subscription` signs in with ChatGPT through
@@ -96,7 +96,7 @@ checks) from the trusted CLI or the `settings` window, keeps rotating tokens
 in protected OS storage under a per-session lock, and chats through the
 Responses API; no real sign-in or plan-backed request was made, so plan usage
 is unverified
-([ADR-0092](docs/adr/0092-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+([ADR-0093](docs/adr/0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
 No native provider API, Claude subscription sign-in, or other login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes

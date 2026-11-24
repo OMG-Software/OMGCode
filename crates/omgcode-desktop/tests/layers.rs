@@ -861,7 +861,7 @@ fn internal_error_is_fixed_and_carries_no_detail() {
 
 /// The settings window names every provider kind core records and shows each
 /// named hosted provider's fixed endpoint exactly as core enforces it
-/// (ADR-0090). Rust supplies the endpoint; a drift would only mislead the
+/// (ADR-0092). Rust supplies the endpoint; a drift would only mislead the
 /// operator, so this keeps the display honest.
 #[test]
 fn the_frontend_names_every_provider_and_shows_core_endpoints() {

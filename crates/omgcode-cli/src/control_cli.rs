@@ -176,7 +176,7 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
-    /// Sign an `openai` subscription profile in with ChatGPT (ADR-0092).
+    /// Sign an `openai` subscription profile in with ChatGPT (ADR-0093).
     ///
     /// Opens OpenAI's sign-in page in the system browser and prints its
     /// address on standard error. It waits up to five minutes for the
@@ -266,6 +266,9 @@ pub(crate) struct ProviderProfileAddArgs {
     /// exactly its documented endpoint (for example https://ollama.com/v1 or
     /// https://api.deepseek.com); openai_compatible accepts an https:// base
     /// URL. It cannot be changed later; remove the profile and add it again.
+    /// A named hosted kind with --auth api_key may omit it, and its documented
+    /// endpoint is then recorded, so check --kind; openai_compatible always
+    /// needs one.
     #[arg(long)]
     endpoint: Option<String>,
     #[arg(long)]

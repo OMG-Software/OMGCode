@@ -780,7 +780,7 @@ pub fn delete_unbound_credential(
             )),
         });
     }
-    // A ChatGPT session also has a companion slot (ADR-0092); an API key
+    // A ChatGPT session also has a companion slot (ADR-0093); an API key
     // never does, so its companion is simply absent.
     let companion = crate::provider::chatgpt::companion_credential_id(&binding.id);
     let companion_orphan = match credentials.delete(&companion) {

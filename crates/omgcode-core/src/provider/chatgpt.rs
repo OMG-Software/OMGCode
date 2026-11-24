@@ -1,4 +1,4 @@
-//! Sign in with ChatGPT and keep the plan's rotating tokens (ADR-0092).
+//! Sign in with ChatGPT and keep the plan's rotating tokens (ADR-0093).
 //!
 //! Only trusted code starts a sign-in: the CLI and the desktop `settings`
 //! window. The flow is OpenAI's documented browser flow for agents: a dynamic

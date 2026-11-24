@@ -40,7 +40,7 @@
 //! 5. close both stores before returning, so none is held while a model request
 //!    is in flight. Nothing is cached: each turn resolves again.
 //!
-//! A signed-in ChatGPT profile (`openai` with `subscription`, ADR-0092) skips
+//! A signed-in ChatGPT profile (`openai` with `subscription`, ADR-0093) skips
 //! steps 2 to 4: it resolves to its fixed endpoint and a [`PlanSession`] that
 //! reads and refreshes its tokens for each request, and never to a token.
 
@@ -174,13 +174,13 @@ pub struct LocalConnection {
     pub endpoint: String,
     /// The optional server token, zeroed on drop.
     pub token: Option<LmToken>,
-    /// The token source of a signed-in ChatGPT profile (ADR-0092). It is
+    /// The token source of a signed-in ChatGPT profile (ADR-0093). It is
     /// set only with no `token`.
     pub plan: Option<PlanSession>,
 }
 
 /// The profile kind the model adapter reads `name` as. Every kind is served
-/// by the one OpenAI-compatible adapter (ADR-0090), so this is the profile's
+/// by the one OpenAI-compatible adapter (ADR-0092), so this is the profile's
 /// own kind; an unknown name is read as `lm_studio`, and core then refuses it
 /// as an unknown profile.
 fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
@@ -308,7 +308,7 @@ pub(crate) fn resolve_connection_and_kind(
 fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
     // The environment token is a local server's token. It is never sent to a
     // hosted endpoint, whose key comes from a bound credential only (ADR-0071,
-    // ADR-0090).
+    // ADR-0092).
     if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_hosted()) {
         return Err(credential_error(
             "cloud_needs_profile: a hosted endpoint is used only through a provider profile with a stored key".to_owned(),
@@ -333,9 +333,12 @@ pub struct ProfileConnection {
     /// The recorded endpoint, validated again by the shared rule.
     pub endpoint: ModelEndpoint,
     /// The bound credential, or `None` for a `none` profile. It is present
-    /// for every `api_key` hosted profile.
+    /// for a hosted `api_key` profile with a bound credential. A signed-in
+    /// `openai` `subscription` profile carries no token here and uses `plan`
+    /// instead; an `anthropic` `subscription` profile is refused before a
+    /// credential is read.
     pub token: Option<LmToken>,
-    /// The token source of a signed-in ChatGPT profile (ADR-0092).
+    /// The token source of a signed-in ChatGPT profile (ADR-0093).
     pub plan: Option<PlanSession>,
 }
 
@@ -454,7 +457,7 @@ fn profile_connection(
 }
 
 /// Whether the named profile is an `openai` subscription profile, which signs
-/// in with ChatGPT rather than holding a stored key (ADR-0092).
+/// in with ChatGPT rather than holding a stored key (ADR-0093).
 fn is_plan_profile(control: &ControlStore, name: &str) -> bool {
     control.provider_profile(name).is_some_and(|status| {
         status.profile().kind() == ProviderKind::OpenAi

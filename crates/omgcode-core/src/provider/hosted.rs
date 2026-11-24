@@ -1,4 +1,4 @@
-//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0090).
+//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0092).
 //!
 //! Every hosted provider is reached through its OpenAI-compatible Chat
 //! Completions API with a bearer key. Each named provider has one fixed base
@@ -45,7 +45,8 @@ pub const XAI_ENDPOINT: &str = "https://api.x.ai/v1";
 ///
 /// OpenAI rejects `max_tokens` for its reasoning models and documents
 /// `max_completion_tokens`; Moonshot and MiniMax document `max_tokens` as
-/// deprecated. DeepSeek and Z.ai document only `max_tokens`, so the field is
+/// deprecated; Tinker documents only `max_completion_tokens` and ignores
+/// fields it does not list, so `max_tokens` would leave its output unbounded. DeepSeek and Z.ai document only `max_tokens`, so the field is
 /// chosen per endpoint rather than sending both.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputLimitField {
@@ -64,13 +65,30 @@ const FIXED_ENDPOINTS: &[(&str, OutputLimitField)] = &[
     (META_ENDPOINT, OutputLimitField::MaxTokens),
     (MOONSHOT_ENDPOINT, OutputLimitField::MaxCompletionTokens),
     (TENCENT_ENDPOINT, OutputLimitField::MaxTokens),
-    (THINKING_MACHINES_ENDPOINT, OutputLimitField::MaxTokens),
+    (
+        THINKING_MACHINES_ENDPOINT,
+        OutputLimitField::MaxCompletionTokens,
+    ),
     (MINIMAX_ENDPOINT, OutputLimitField::MaxCompletionTokens),
     (OPENROUTER_ENDPOINT, OutputLimitField::MaxTokens),
     (Z_AI_ENDPOINT, OutputLimitField::MaxTokens),
     (DEEPSEEK_ENDPOINT, OutputLimitField::MaxTokens),
     (XAI_ENDPOINT, OutputLimitField::MaxCompletionTokens),
 ];
+
+/// Fixed endpoints whose provider reasons ("thinks") by default and then
+/// answers HTTP 400 to a tool request that does not send every earlier
+/// turn's `reasoning_content` back. This client keeps no reasoning text, so
+/// requests to these endpoints send `"thinking": {"type": "disabled"}`
+/// (ADR-0092). DeepSeek documents both the default and the 400.
+const THINKING_OFF_ENDPOINTS: &[&str] = &[DEEPSEEK_ENDPOINT];
+
+/// Whether requests to `text` must switch the provider's thinking mode off.
+pub(crate) fn disables_thinking(text: &str) -> bool {
+    THINKING_OFF_ENDPOINTS
+        .iter()
+        .any(|fixed| matches_fixed(text, fixed))
+}
 
 /// Longest endpoint text either hosted rule reads, checked before parsing.
 const MAX_ENDPOINT_BYTES: usize = 256;
@@ -100,6 +118,7 @@ pub(crate) fn fixed_endpoint(text: &str) -> Option<(Url, OutputLimitField)> {
 /// parser would write (one trailing `/` aside), so the text the operator
 /// confirms is the URL each request uses: an upper-case host, a default port,
 /// a `.` or `..` segment, or a non-ASCII host is refused rather than rewritten.
+/// Port 0, which no request can reach, is refused as the loopback rule does.
 /// Plain HTTP is refused: the key and every prompt would cross the network
 /// in clear text. A loopback HTTP server uses a local kind instead.
 ///
@@ -121,6 +140,7 @@ pub(crate) fn validate_custom_url(text: &str) -> Result<Url, ProviderError> {
     if url.scheme() != "https"
         || url.host_str().is_none_or(str::is_empty)
         || url.cannot_be_a_base()
+        || url.port() == Some(0)
         || !(written == text || written.strip_suffix('/') == Some(text))
         || url.path().contains("//")
     {
@@ -188,6 +208,7 @@ mod tests {
             "HTTPS://provider-api.example.org/v1",
             "https://Provider-API.example.org/v1",
             "https://provider-api.example.org:443/v1",
+            "https://provider-api.example.org:0/v1",
             "https://user@provider-api.example.org/v1",
             "https://user:pass@provider-api.example.org/v1",
             "https://provider-api.example.org/v1?key=1",

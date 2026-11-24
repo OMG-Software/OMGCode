@@ -1,4 +1,4 @@
-//! Model discovery on an OpenAI-compatible server (ADR-0066, ADR-0090).
+//! Model discovery on an OpenAI-compatible server (ADR-0066, ADR-0092).
 //!
 //! LM Studio, Ollama, and the hosted providers answer `GET {base}/models` with
 //! `{"object":"list","data":[{"id":...}, ...]}`. The list lets an operator pick
@@ -42,10 +42,12 @@ pub struct ListedModel {
     pub cloud_tag: bool,
 }
 
-/// List the models the local server at `base_url` reports, sorted by id.
+/// List the models the OpenAI-compatible server at `base_url` reports, sorted
+/// by id: a loopback server, a fixed hosted endpoint, or a typed HTTPS base
+/// URL (ADR-0092).
 ///
 /// `base_url` must pass the same endpoint rule as a chat connection: the
-/// loopback rule (ADR-0048) or a hosted rule (ADR-0071, ADR-0090), which also
+/// loopback rule (ADR-0048) or a hosted rule (ADR-0071, ADR-0092), which also
 /// requires a token. `token`, when present, is sent exactly as a chat request
 /// sends it. The request is one `GET {base}/models` with no proxy, no
 /// redirect, no retry, a five-second connect timeout, a ten-second total
@@ -68,7 +70,7 @@ pub fn list_local_models(
     list_with_timeout(base_url, token, LIST_TIMEOUT, ListShape::Data)
 }
 
-/// List the models a ChatGPT account may use through its plan (ADR-0092).
+/// List the models a ChatGPT account may use through its plan (ADR-0093).
 ///
 /// `base_url` is the subscription profile's recorded endpoint and `token` the
 /// account's current access token. The request is the one
@@ -255,7 +257,7 @@ mod tests {
     use std::time::Instant;
 
     /// The plan route's list keeps only `visibility: "list"` entries, by
-    /// slug, in the server's order (ADR-0092).
+    /// slug, in the server's order (ADR-0093).
     #[test]
     fn a_subscription_list_keeps_listed_slugs_in_server_order() {
         let body = br#"{"models":[{"slug":"gpt-z","display_name":"Z","visibility":"list"},{"slug":"hidden","visibility":"hide"},{"slug":"gpt-a","display_name":"A","visibility":"list"},{"slug":"no-visibility"}]}"#;

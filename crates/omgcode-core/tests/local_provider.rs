@@ -488,7 +488,7 @@ fn rejects_destinations_outside_literal_loopback_http_before_connecting() {
         );
     }
     // HTTPS to a loopback address is a well-formed typed hosted endpoint
-    // (ADR-0091), so without a token it is refused for that, still before any
+    // (ADR-0092), so without a token it is refused for that, still before any
     // connection.
     let result = LocalModelClient::new(
         LocalModelConfig {

@@ -85,7 +85,7 @@ export const settingsApi = {
   removeConnection: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_connection", { revision, name }),
   /**
-   * Signs a connection in with ChatGPT (ADR-0092). Rust confirms natively, opens the system
+   * Signs a connection in with ChatGPT (ADR-0093). Rust confirms natively, opens the system
    * browser, and waits for OpenAI's answer; this window never sees the address or a token.
    */
   signInChatGpt: (revision: number, name: string) =>

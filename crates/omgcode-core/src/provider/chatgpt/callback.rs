@@ -1,4 +1,4 @@
-//! The loopback listener that receives the sign-in callback (ADR-0092).
+//! The loopback listener that receives the sign-in callback (ADR-0093).
 //!
 //! It binds only `127.0.0.1` on a port the system chooses and serves one
 //! fixed page. A request to another path is answered 404 and the wait goes

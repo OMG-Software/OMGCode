@@ -148,7 +148,7 @@ fn an_unknown_wrong_provider_or_unbound_profile_is_refused_before_a_turn() {
     vault.bind("openai-key", STORED.as_bytes());
     for (name, expected) in [
         ("missing", "unknown_profile:"),
-        // A hosted profile recorded without an endpoint cannot be used (ADR-0091).
+        // A hosted profile recorded without an endpoint cannot be used (ADR-0092).
         ("openai-key", "endpoint_not_recorded:"),
         ("unbound", "not_bound:"),
     ] {

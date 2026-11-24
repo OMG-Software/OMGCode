@@ -225,7 +225,7 @@ fn adding_ollama_cloud_records_the_profile_and_binds_the_key() {
 
 /// Each named hosted provider is added with only a name and a key: Rust
 /// supplies its one documented endpoint, stores and binds the key, and the
-/// key can be replaced later (ADR-0090).
+/// key can be replaced later (ADR-0092).
 #[test]
 fn adding_a_named_hosted_provider_records_its_fixed_endpoint() {
     let fixture = Fixture::new();
@@ -270,7 +270,7 @@ fn adding_a_named_hosted_provider_records_its_fixed_endpoint() {
 
 /// An OpenAI-compatible connection records the HTTPS base URL the operator
 /// typed, exactly, with its key. Plain HTTP and other text its rule refuses
-/// leave no profile and no stored key (ADR-0090).
+/// leave no profile and no stored key (ADR-0092).
 #[test]
 fn adding_an_openai_compatible_connection_records_the_typed_endpoint() {
     let fixture = Fixture::new();
@@ -481,6 +481,48 @@ fn setting_a_key_replaces_the_stored_item() {
     assert_eq!(revision(&fixture), before);
     assert_eq!(bound(&fixture, "cloud"), Some(new));
     assert_eq!(bound(&fixture, "lms"), None);
+}
+
+/// A hosted `subscription` profile (kept for replay, ADR-0092) never takes a
+/// key: the request is refused before the core is asked, records nothing, and
+/// leaves the profile unbound, so it can never be chosen.
+#[test]
+fn a_subscription_profile_is_refused_a_key() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let vault = Vault::new(&fixture.data);
+    vault.add_profile_at(
+        "plan",
+        "anthropic",
+        "subscription",
+        "https://api.anthropic.com/v1",
+    );
+    let before = revision(&fixture);
+    let refused = set_key(&service, &fixture, "plan", KEY).expect_err("refused");
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(refused.message().contains("uses an API key"), "{refused:?}");
+    assert!(!text_of(&refused).contains(KEY));
+    assert_eq!(revision(&fixture), before);
+    assert_eq!(bound(&fixture, "plan"), None);
+    assert_no_file_holds(&fixture.data, KEY);
+}
+
+/// A hosted `api_key` profile recorded without an endpoint (the CLI allows
+/// it) can never be used and its endpoint cannot be added, so it takes no key.
+#[test]
+fn a_hosted_profile_without_an_endpoint_is_refused_a_key() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let vault = Vault::new(&fixture.data);
+    vault.add_profile("bare", "openai", "api_key");
+    let before = revision(&fixture);
+    let refused = set_key(&service, &fixture, "bare", KEY).expect_err("refused");
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(refused.message().contains("no endpoint"), "{refused:?}");
+    assert!(!text_of(&refused).contains(KEY));
+    assert_eq!(revision(&fixture), before);
+    assert_eq!(bound(&fixture, "bare"), None);
+    assert_no_file_holds(&fixture.data, KEY);
 }
 
 /// Removing a profile with a stored key asks first, says the key is deleted,

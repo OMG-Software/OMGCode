@@ -6,7 +6,7 @@
 //! through `credential`, never the secret.
 //!
 //! Every kind is served by one adapter that speaks the OpenAI-compatible Chat
-//! Completions API (ADR-0064, ADR-0071, ADR-0090). An `lm_studio` or
+//! Completions API (ADR-0064, ADR-0071, ADR-0092). An `lm_studio` or
 //! `ollama_local` profile may record a loopback endpoint that passes
 //! `provider::validate_base_url`. A named hosted kind accepts exactly its one
 //! fixed HTTPS endpoint ([`ProviderKind::fixed_endpoint`]), and an
@@ -61,8 +61,8 @@ impl ProviderEndpoint {
 
 /// A provider that a profile may name.
 ///
-/// A journal that records a kind added in 0.57.0 cannot be read by an older
-/// binary, which refuses the unknown spelling.
+/// A journal that records a kind added in 0.59.0 cannot be read by 0.58.0 or
+/// earlier, which refuse the unknown spelling.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ProviderKind {
     #[serde(rename = "openai")]
@@ -102,7 +102,10 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Every kind, in the order a front end lists them.
+    /// Every kind: the local kinds, then the named hosted providers, then
+    /// `openai_compatible`. The CLI reports kinds in this order; the desktop
+    /// dropdown keeps its own order (`NEW_CONNECTION_KINDS` in the UI's
+    /// `providers.ts`), which lists Ollama before LM Studio.
     pub const ALL: [Self; 16] = [
         Self::LmStudio,
         Self::OllamaLocal,
@@ -151,7 +154,7 @@ impl ProviderKind {
     }
 
     /// Whether this kind is a hosted service: every request leaves this
-    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0090).
+    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0092).
     pub const fn is_hosted(self) -> bool {
         !self.is_local()
     }
@@ -267,7 +270,7 @@ pub struct ProviderProfileStatus {
     revision: u64,
     #[serde(serialize_with = "credential::serialize_state")]
     pub(super) credential: Option<CredentialBinding>,
-    /// The ChatGPT registration, kept after sign-out (ADR-0092).
+    /// The ChatGPT registration, kept after sign-out (ADR-0093).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) subscription: Option<super::SubscriptionRegistration>,
 }
@@ -346,12 +349,26 @@ impl ControlStore {
         let auth = ProviderAuth::parse(&declaration.auth).ok_or(ControlError::ProviderRefused(
             "authentication must be subscription, api_key, or none",
         ))?;
+        let endpoint = match (&declaration.endpoint, auth, kind.is_local()) {
+            (Some(text), _, _) => Some(text.clone()),
+            // A hosted API-key profile with no endpoint could never be used,
+            // and its endpoint cannot be added later. A named kind takes its
+            // one documented endpoint, as the desktop records it (ADR-0092).
+            (None, ProviderAuth::ApiKey, false) => Some(
+                kind.fixed_endpoint()
+                    .ok_or(ControlError::ProviderRefused(
+                        "an openai_compatible profile needs an endpoint",
+                    ))?
+                    .to_owned(),
+            ),
+            (None, _, _) => None,
+        };
         let profile = ProviderProfile {
             id: Uuid::new_v4(),
             name: declaration.name.clone(),
             kind,
             auth,
-            endpoint: declaration.endpoint.clone().map(ProviderEndpoint),
+            endpoint: endpoint.map(ProviderEndpoint),
         };
         validate_profile(&profile)?;
         self.append(
@@ -363,8 +380,8 @@ impl ControlStore {
         Ok(profile)
     }
 
-    /// The active local connection, if one is selected (ADR-0064). It always
-    /// names a recorded local profile with an endpoint.
+    /// The active connection, if one is selected (ADR-0064). It always names a
+    /// recorded profile with an endpoint, local or hosted (ADR-0092).
     pub fn active_provider_profile(&self) -> Option<&ProviderProfileStatus> {
         let id = self.snapshot.active_provider?;
         self.snapshot
@@ -374,7 +391,7 @@ impl ControlStore {
     }
 
     /// Check that the named profile can be chosen as a connection now
-    /// (ADR-0071, ADR-0090): a profile that records an endpoint and, for a
+    /// (ADR-0071, ADR-0092): a profile that records an endpoint and, for a
     /// hosted kind, has a bound credential. It reads no
     /// native storage and so cannot show that the stored secret still exists;
     /// a turn without a usable credential fails with the `credential` errors.
@@ -404,12 +421,13 @@ impl ControlStore {
         Ok(status)
     }
 
-    /// Select the active local connection by profile name, or return to the
+    /// Select the active connection by profile name, or return to the
     /// default endpoint with `None`. This advances the settings revision.
     ///
-    /// The profile must pass [`Self::check_provider_selectable`]. Selecting grants nothing by itself: each turn
-    /// still resolves the endpoint and any credential from that one profile
-    /// (ADR-0048). Selecting the current choice again is refused, so every
+    /// The profile must pass [`Self::check_provider_selectable`]: it records an
+    /// endpoint and, if hosted, has a bound credential (ADR-0092). Selecting
+    /// grants nothing by itself: each turn still resolves the endpoint and any
+    /// credential from that one profile (ADR-0048). Selecting the current choice again is refused, so every
     /// recorded event is a change.
     ///
     /// # Errors
@@ -556,7 +574,7 @@ pub(super) fn apply(
 
 /// Whether a profile can be the active connection: it records the endpoint
 /// its turns use, which replay has already checked against its kind's rule
-/// (ADR-0071, ADR-0090). Replay applies exactly this; the credential is not
+/// (ADR-0071, ADR-0092). Replay applies exactly this; the credential is not
 /// read there.
 const fn selectable(profile: &ProviderProfile) -> bool {
     profile.endpoint.is_some()
@@ -609,9 +627,9 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
 }
 
 /// The authentication modes a kind may record. An OpenAI `subscription`
-/// profile signs in with ChatGPT (ADR-0092). An Anthropic `subscription`
-/// profile stays recordable so journals written before 0.57.0 replay, but no
-/// adapter uses it; every other hosted kind is `api_key` only.
+/// profile signs in with ChatGPT (ADR-0093). An Anthropic `subscription`
+/// profile stays recordable so journals written by 0.58.0 and earlier
+/// replay, but no adapter uses it; every other hosted kind is `api_key` only.
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {
         ProviderKind::OpenAi | ProviderKind::Anthropic => {

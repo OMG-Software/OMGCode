@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.59.0 adds Sign in with ChatGPT (ADR-0092). An `openai` profile
+- Version 0.60.0 adds Sign in with ChatGPT (ADR-0093). An `openai` profile
   with authentication `subscription` and OpenAI's fixed endpoint signs in
   through `omgcode workspace provider-signin <name> --revision <n>` or **Sign
   in with ChatGPT** in the desktop `settings` window, which records the
@@ -21,7 +21,7 @@ Changes are recorded here before a release version is assigned.
   per-session OS file lock; a refused refresh asks for a new sign-in. A new
   control-journal event, `provider_subscription_bound`, records the client,
   subject, account label, host identifier, and binding; a journal that holds
-  it cannot be read by 0.58.0 or earlier. `provider-signout` and **Sign out**
+  it cannot be read by 0.59.0 or earlier. `provider-signout` and **Sign out**
   revoke the refresh token once and delete the tokens; a signed-in profile
   cannot be removed, and `provider-credential-remove` refuses subscription
   profiles. Chat, compaction, and tool turns of a ChatGPT connection use the
@@ -33,8 +33,8 @@ Changes are recorded here before a release version is assigned.
   dependencies: `rsa` (with `pkcs1v15`), `base64`, and `getrandom`. Every test
   uses loopback mock servers; no real sign-in, refresh, revocation, or
   plan-backed request was made, and plan usage is not verified.
-- Version 0.58.0 adds hosted model providers and an OpenAI-compatible
-  connection (ADR-0091). New provider kinds `google`, `meta`, `moonshot`,
+- Version 0.59.0 adds hosted model providers and an OpenAI-compatible
+  connection (ADR-0092). New provider kinds `google`, `meta`, `moonshot`,
   `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
   `openai_compatible` join `anthropic`, `openai`, and `open_router`, which can
   now be used. Each named kind accepts only its provider's one documented
@@ -43,15 +43,20 @@ Changes are recorded here before a release version is assigned.
   than rewritten when it is not in the form the URL parser writes. Every
   hosted kind needs a stored API key and is used through the existing Chat
   Completions client, which sends `max_completion_tokens` to OpenAI, Moonshot,
-  MiniMax, and xAI and `max_tokens` elsewhere, and appends request paths to
-  the endpoint's base path. The desktop **Add connection** form lists every
+  Thinking Machines Lab, MiniMax, and xAI and `max_tokens` elsewhere, appends request paths to the
+  endpoint's base path, and switches DeepSeek's default thinking mode off,
+  because DeepSeek refuses a tool request without earlier reasoning text,
+  which the client does not keep. The desktop **Add connection** form lists every
   kind, and the native confirmation before choosing a hosted connection names
-  the host that receives prompts, and for a typed address says it was typed.
-  A model list may now hold 2048 models in 4 MiB. `capabilities` lists every
+  the host and any non-default port that receives prompts, and for a typed
+  address says it was typed. A typed endpoint with port 0 is refused. A named
+  hosted kind's API-key profile added on the CLI without `--endpoint` records
+  its documented endpoint, and an `openai_compatible` one is refused, instead
+  of recording a profile that could never be used. A model list may now hold 2048 models in 4 MiB. `capabilities` lists every
   kind but `ollama_local` as a stored-credential adapter. No request was made
   to any of these providers with a real key. Subscription sign-in is not
   added. A control journal that records a new kind, or an endpoint on an
-  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.57.0 or
+  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.58.0 or
   earlier.
 - Version 0.57.0 adds **Set all** beside **File-write tool limits** in the
   desktop `settings` window (ADR-0090). One Deny, Prompt, or Allow choice sets
@@ -192,6 +197,15 @@ Changes are recorded here before a release version is assigned.
   it as stale.
 
 ### Changed
+
+- Version 0.58.0 turns desktop auto-compaction on by default and sets the
+  default compaction threshold to 400K tokens (ADR-0091). The new values
+  apply only when no chat preferences are saved; a saved preferences file
+  keeps its own values. Compaction still triggers earlier when the model's
+  safe input is smaller. The CLI keeps a 200,000-token default and an opt-in
+  `--auto-compact`. `chat_defaults` now also reports the slider's step as
+  `compact_threshold_step`, and the composer uses it, so Rust owns the range
+  and the step its default is checked against.
 
 - The provider and model choice moves from under the message box to a box in
   the right-hand panel's fixed footer, with a **Model** rail icon when the

@@ -665,7 +665,7 @@ fn provider_profiles_are_configuration_only_and_revisioned() {
         .as_u64()
         .expect("revision after add");
 
-    // ADR-0092: a subscription profile without OpenAI's endpoint is not a
+    // ADR-0093: a subscription profile without OpenAI's endpoint is not a
     // ChatGPT connection. Sign-in is refused before the browser step (standard
     // error holds only the JSON error, never an address) and before any
     // network use; sign-out of a profile that never signed in is refused too.

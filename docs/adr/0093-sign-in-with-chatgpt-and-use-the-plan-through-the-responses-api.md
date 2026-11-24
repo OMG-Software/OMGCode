@@ -1,4 +1,4 @@
-# 0092: Sign in with ChatGPT and use the plan through the Responses API
+# 0093: Sign in with ChatGPT and use the plan through the Responses API
 
 - Status: Accepted
 - Date: 2026-11-24
@@ -21,7 +21,7 @@ Before this change:
 - A stored credential is immutable (ADR-0042): rotation stores a new item,
   records a new binding in the control journal, and deletes the old item.
 - A credential is sent only to the endpoint recorded with its profile
-  (ADR-0048). Hosted profiles record one fixed endpoint (ADR-0071, ADR-0091).
+  (ADR-0048). Hosted profiles record one fixed endpoint (ADR-0071, ADR-0092).
 - The one model adapter, `LocalModelClient`, speaks Chat Completions. The turn
   runtime sends tool results back as user-role text and never echoes the
   model's tool-call items, so the adapter needs only role-tagged text and the
@@ -313,7 +313,7 @@ model or the journal sees.
 - An operator can sign in with a ChatGPT account and use the plan for chat,
   compaction, and tool turns from the CLI and the desktop shell.
 - The control journal gains one event kind. A journal that records it cannot
-  be read by 0.58.0 or earlier.
+  be read by 0.59.0 or earlier.
 - New dependencies: `rsa` 0.10 (RustCrypto, pure Rust) for RS256
   verification, `base64` 0.23 (already in the tree through reqwest) for
   base64url, and `getrandom` for the random values. Verification uses only the
@@ -347,4 +347,4 @@ model or the journal sees.
   [ADR-0049](0049-stream-local-model-replies-and-push-chat-events.md),
   [ADR-0051](0051-cancel-every-model-request-and-interrupt-cli-turns.md),
   [ADR-0071](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md),
-  [ADR-0091](0091-add-hosted-providers-and-an-openai-compatible-connection.md)
+  [ADR-0092](0092-add-hosted-providers-and-an-openai-compatible-connection.md)

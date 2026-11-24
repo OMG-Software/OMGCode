@@ -243,10 +243,11 @@ fn the_totals_are_those_of_the_composer_meter() {
     drop(journal);
     let service = fixture.service(NO_ENDPOINT);
 
-    // No saved budgets: the capacity is unknown, the threshold alone triggers.
+    // No saved budgets: the capacity is unknown, the threshold alone triggers,
+    // and auto-compaction is on by default (ADR-0091).
     let unknown = breakdown(&service, id);
     assert_eq!(unknown.context_tokens, None);
-    assert!(!unknown.auto_compaction);
+    assert!(unknown.auto_compaction);
     assert_eq!(
         unknown.effective_trigger,
         service.chat_defaults().settings.compact_threshold
@@ -264,14 +265,15 @@ fn the_totals_are_those_of_the_composer_meter() {
     service
         .chat_preferences_save(wire(json!({"preferences": {
             "compact_threshold": 300_000,
-            "auto_compact": true,
+            "auto_compact": false,
             "enter_to_send": true
         }})))
         .expect("composer");
     let known = breakdown(&service, id);
     assert_eq!(known.context_tokens, Some(4096));
     assert_eq!(known.max_output_tokens, 1024);
-    assert!(known.auto_compaction);
+    // A saved choice replaces the default.
+    assert!(!known.auto_compaction);
     // The safe input budget: capacity less the reserve less template headroom.
     assert_eq!(known.effective_trigger, 4096 - 1024 - 512);
     let json = json_of(&known);

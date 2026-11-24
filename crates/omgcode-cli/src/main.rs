@@ -148,7 +148,8 @@ enum SessionCommand {
         summary_tokens: u32,
         /// Use this recorded provider profile's endpoint, and its stored
         /// credential, if any, instead of OMGCODE_LM_TOKEN. A hosted profile
-        /// always has a credential.
+        /// needs a stored credential (`provider-credential-set NAME`) before a
+        /// request can use it.
         #[arg(long, value_parser = non_empty_name)]
         provider_profile: Option<String>,
     },
@@ -207,7 +208,8 @@ struct ChatArgs {
     auto_compact: bool,
     /// Use this recorded provider profile's endpoint, and its stored
     /// credential, if any, instead of OMGCODE_LM_TOKEN. The variable is then
-    /// not read.
+    /// not read. A hosted profile needs a stored credential
+    /// (`provider-credential-set NAME`) before a request can use it.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
     /// Stream the model's text to standard error as it arrives. The text is
@@ -236,7 +238,8 @@ struct ModelsArgs {
     endpoint: String,
     /// Use this recorded provider profile's endpoint, and its stored
     /// credential, if any, instead of OMGCODE_LM_TOKEN, exactly as `chat`
-    /// does.
+    /// does. A hosted profile needs a stored credential
+    /// (`provider-credential-set NAME`) before a request can use it.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
 }
@@ -332,11 +335,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Dispatch trusted operator commands without providing any model execution route.
-/// `run` is an operator command; no model tool reaches it.
 /// The stored spellings of the provider kinds `filter` keeps, in the order
 /// `ProviderKind::ALL` lists them. Every kind is served by the one
-/// OpenAI-compatible adapter (ADR-0090).
+/// OpenAI-compatible adapter (ADR-0092).
 fn adapter_kinds(filter: impl Fn(ProviderKind) -> bool) -> Vec<&'static str> {
     ProviderKind::ALL
         .into_iter()
@@ -345,6 +346,8 @@ fn adapter_kinds(filter: impl Fn(ProviderKind) -> bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// Dispatch trusted operator commands without providing any model execution route.
+/// `run` is an operator command; no model tool reaches it.
 fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Prompt => print_json(&json!({

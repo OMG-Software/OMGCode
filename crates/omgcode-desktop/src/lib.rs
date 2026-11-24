@@ -129,7 +129,7 @@ fn check_endpoint(endpoint: &str, token: Option<&str>) -> Result<(), String> {
 }
 
 /// Validate a resolved profile connection the way a chat turn would, with a
-/// plan session's clients for a ChatGPT profile (ADR-0092). No request is
+/// plan session's clients for a ChatGPT profile (ADR-0093). No request is
 /// made and no token is read.
 fn check_connection(connection: &LocalConnection) -> Result<(), String> {
     let probe = ChatSettings::new(&connection.endpoint, "endpoint-check", PROBE_CONTEXT_TOKENS);

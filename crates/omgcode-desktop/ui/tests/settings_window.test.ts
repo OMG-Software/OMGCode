@@ -26,6 +26,7 @@ import {
   WORKSPACES_HELP,
   WRITE_TOOL_LABELS,
 } from "../src/settings/app";
+import { CHATGPT_NOTICE, NO_ENDPOINT_NOTE } from "../src/settings/model_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -955,6 +956,25 @@ describe("settings window", () => {
       expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
     });
 
+    it("clears a typed key when the provider changes, so it never reaches another provider", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () => choosable({ revision: 8, provider_profiles: [] }),
+      });
+      go("Model");
+      const kind = picker("New connection provider");
+      kind.value = "openai";
+      kind.dispatchEvent(new Event("change"));
+      field("API key").value = KEY;
+      kind.value = "deepseek";
+      kind.dispatchEvent(new Event("change"));
+      expect(field("API key").value).toBe("");
+      buttonByText(root, "Add connection").click();
+      await settle();
+      const carrying = ipc.calls.filter((call) => JSON.stringify(call.args).includes(KEY));
+      expect(carrying).toHaveLength(0);
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
     it("sends the key once, with no endpoint, and clears the field after a success", async () => {
       await start(() => choosable({ provider_profiles: [] }), {
         settings_add_connection: () => choosable({ revision: 8, provider_profiles: [cloud()] }),
@@ -1461,7 +1481,7 @@ describe("settings window", () => {
   });
 });
 
-describe("ChatGPT sign-in (ADR-0092)", () => {
+describe("ChatGPT sign-in (ADR-0093)", () => {
   function chatgpt(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
     return {
       name: "chatgpt",
@@ -1540,6 +1560,28 @@ describe("ChatGPT sign-in (ADR-0092)", () => {
     await settle();
     expect(signInBar().hidden).toBe(true);
     expect(root.querySelector(".change-error")?.textContent).toContain("plan_usage_not_granted");
+  });
+
+  it("offers no sign-in for a ChatGPT profile recorded without OpenAI's endpoint", async () => {
+    await start(() =>
+      choosable({
+        provider_profiles: [
+          chatgpt({
+            name: "bare",
+            endpoint: null,
+            credential_bound: false,
+            selectable: false,
+            account_label: null,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const row = rowOf("bare");
+    expect(row.textContent).toContain(NO_ENDPOINT_NOTE);
+    expect(row.textContent).not.toContain(CHATGPT_NOTICE);
+    const buttons = Array.from(row.querySelectorAll("button"), (b) => b.textContent);
+    expect(buttons).toEqual(["Remove"]);
   });
 
   it("offers sign-in on a signed-out row and sign-out on a signed-in one", async () => {

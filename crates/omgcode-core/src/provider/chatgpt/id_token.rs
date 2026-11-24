@@ -1,4 +1,4 @@
-//! ID-token validation for the ChatGPT sign-in (ADR-0092).
+//! ID-token validation for the ChatGPT sign-in (ADR-0093).
 //!
 //! The token must be a compact JWS signed with RS256 by a key in OpenAI's
 //! published key set, for this client, from this attempt (the nonce), and not

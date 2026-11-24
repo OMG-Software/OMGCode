@@ -9,7 +9,7 @@ pub use hosted::{
     MOONSHOT_ENDPOINT, OLLAMA_CLOUD_ENDPOINT, OPENAI_ENDPOINT, OPENROUTER_ENDPOINT,
     OutputLimitField, TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT,
 };
-pub(crate) use hosted::{matches_fixed, validate_custom_url};
+pub(crate) use hosted::{disables_thinking, fixed_endpoint, matches_fixed, validate_custom_url};
 pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models, list_subscription_models};
 pub use responses::ResponseFailure;
 
@@ -33,7 +33,7 @@ use thiserror::Error;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// The deadline of one plan-route Responses request (ADR-0092). The route
+/// The deadline of one plan-route Responses request (ADR-0093). The route
 /// always streams, and reasoning models routinely take longer than the
 /// thirty seconds a Chat Completions request has.
 const RESPONSES_TIMEOUT: Duration = Duration::from_secs(120);
@@ -53,8 +53,8 @@ const MAX_RESPONSE_TOOL_CALLS: usize = 64;
 
 /// A validated model endpoint: a literal loopback HTTP endpoint
 /// ([`validate_base_url`], ADR-0048), one of the fixed hosted endpoints
-/// (ADR-0071, ADR-0090), or an operator-typed HTTPS base URL that passes the
-/// `openai_compatible` rule (ADR-0090). There is no other destination.
+/// (ADR-0071, ADR-0092), or an operator-typed HTTPS base URL that passes the
+/// `openai_compatible` rule (ADR-0092). There is no other destination.
 ///
 /// A hosted endpoint sends prompts, tool results, and command output off this
 /// computer, so a client built on it requires a token. A token comes only from
@@ -74,8 +74,13 @@ enum EndpointRule {
     /// A literal loopback IP, an explicit port, and the `/v1` path.
     Loopback(Url),
     /// An HTTPS base URL: a fixed provider endpoint, or one that passed the
-    /// operator-typed rule. `field` names the output budget field it takes.
-    Hosted { url: Url, field: OutputLimitField },
+    /// operator-typed rule. `field` names the output budget field it takes,
+    /// and `thinking_off` whether requests switch the provider's thinking off.
+    Hosted {
+        url: Url,
+        field: OutputLimitField,
+        thinking_off: bool,
+    },
 }
 
 impl ModelEndpoint {
@@ -87,14 +92,19 @@ impl ModelEndpoint {
     ///
     /// `InvalidConfiguration` for any other text.
     pub fn parse(text: &str) -> Result<Self, ProviderError> {
-        if let Some((url, field)) = hosted::fixed_endpoint(text) {
-            return Ok(Self(EndpointRule::Hosted { url, field }));
+        if let Some((url, field)) = fixed_endpoint(text) {
+            return Ok(Self(EndpointRule::Hosted {
+                url,
+                field,
+                thinking_off: disables_thinking(text),
+            }));
         }
         if text.starts_with("https://") {
             return validate_custom_url(text).map(|url| {
                 Self(EndpointRule::Hosted {
                     url,
                     field: OutputLimitField::MaxTokens,
+                    thinking_off: false,
                 })
             });
         }
@@ -107,10 +117,17 @@ impl ModelEndpoint {
         matches!(self.0, EndpointRule::Hosted { .. })
     }
 
-    /// The host name or address, for a confirmation that says where requests
-    /// go. It is not a secret.
-    pub fn host(&self) -> Option<&str> {
-        self.url().host_str()
+    /// The host name or address with any non-default port, for a confirmation
+    /// that says where requests go: `llm.example.org:8443` names a different
+    /// service from `llm.example.org`. It matches the browser's `URL.host`,
+    /// which the settings window shows. It is not a secret.
+    pub fn host(&self) -> Option<String> {
+        let url = self.url();
+        let host = url.host_str()?;
+        Some(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_owned(),
+        })
     }
 
     /// The endpoint text as validated. It is not a secret.
@@ -125,10 +142,20 @@ impl ModelEndpoint {
     }
 
     /// The request field that carries the output budget.
-    const fn output_field(&self) -> OutputLimitField {
+    pub(crate) const fn output_field(&self) -> OutputLimitField {
         match self.0 {
             EndpointRule::Loopback(_) => OutputLimitField::MaxTokens,
             EndpointRule::Hosted { field, .. } => field,
+        }
+    }
+
+    /// Whether requests send `"thinking": {"type": "disabled"}`, because the
+    /// provider would otherwise require reasoning text this client does not
+    /// keep (ADR-0092).
+    pub(crate) const fn disables_thinking(&self) -> bool {
+        match self.0 {
+            EndpointRule::Loopback(_) => false,
+            EndpointRule::Hosted { thinking_off, .. } => thinking_off,
         }
     }
 
@@ -183,6 +210,7 @@ pub struct LocalModelClient {
     endpoint: Url,
     https_only: bool,
     output_field: OutputLimitField,
+    thinking: Option<Thinking>,
     model: String,
     context_tokens: u64,
     max_output_tokens: u32,
@@ -195,7 +223,7 @@ pub struct LocalModelClient {
 enum Protocol {
     /// OpenAI Chat Completions with a fixed token or none.
     ChatCompletions,
-    /// The ChatGPT plan route's Responses API (ADR-0092). The source is asked
+    /// The ChatGPT plan route's Responses API (ADR-0093). The source is asked
     /// for a current access token before every request. It is shared by the
     /// chat and summary clients of one turn and dropped with the last of them;
     /// it holds no reference back to either client.
@@ -222,7 +250,7 @@ impl fmt::Debug for LocalModelClient {
 }
 
 /// Supplies the current access token of a signed-in ChatGPT account
-/// (ADR-0092).
+/// (ADR-0093).
 ///
 /// The implementation may wait for a lock and refresh the token over the
 /// network, so it blocks. It must watch `cancel` and return `Cancelled` once
@@ -296,7 +324,7 @@ pub enum ProviderError {
     #[error("local model stream ended before completion")]
     IncompleteStream,
     /// The ChatGPT plan route refused or ended the request with a documented
-    /// code (ADR-0092). No provider text is kept.
+    /// code (ADR-0093). No provider text is kept.
     #[error("ChatGPT plan request failed: {0}")]
     ResponseFailed(ResponseFailure),
     /// The ChatGPT account must sign in again: it is signed out, or its
@@ -319,6 +347,8 @@ struct ChatRequest<'a> {
     stream: bool,
     #[serde(flatten)]
     limit: OutputLimit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
 }
 
 /// The text request plus the advertised function tools.
@@ -329,6 +359,8 @@ struct ToolChatRequest<'a> {
     stream: bool,
     #[serde(flatten)]
     limit: OutputLimit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
     tools: &'a [WireTool<'a>],
     tool_choice: &'static str,
 }
@@ -341,6 +373,14 @@ struct OutputLimit {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_completion_tokens: Option<u32>,
+}
+
+/// The provider's thinking-mode switch, sent only where the endpoint needs it
+/// off (ADR-0092). It serializes as `{"type": "disabled"}`.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct Thinking {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 /// One OpenAI-compatible function tool definition.
@@ -386,6 +426,9 @@ impl LocalModelClient {
             endpoint,
             https_only: model_endpoint.https_only(),
             output_field: model_endpoint.output_field(),
+            thinking: model_endpoint
+                .disables_thinking()
+                .then_some(Thinking { kind: "disabled" }),
             model: config.model,
             context_tokens: config.context_tokens,
             max_output_tokens: config.max_output_tokens,
@@ -395,7 +438,7 @@ impl LocalModelClient {
         })
     }
 
-    /// Create a client for a signed-in ChatGPT account's plan (ADR-0092).
+    /// Create a client for a signed-in ChatGPT account's plan (ADR-0093).
     ///
     /// `config.base_url` must be OpenAI's fixed endpoint, the one a
     /// subscription profile records. Every request goes to `{base}/responses`
@@ -441,6 +484,8 @@ impl LocalModelClient {
             context_tokens: config.context_tokens,
             max_output_tokens: config.max_output_tokens,
             authorization: None,
+            // A Chat Completions switch (ADR-0092); the Responses body has no such field.
+            thinking: None,
             request_timeout,
             protocol: Protocol::Responses(tokens),
         })
@@ -569,6 +614,7 @@ impl LocalModelClient {
             messages,
             stream: streaming,
             limit: self.output_limit(),
+            thinking: self.thinking,
         })
         .map_err(|_| ProviderError::MalformedResponse)
     }
@@ -666,6 +712,7 @@ impl LocalModelClient {
             messages,
             stream: streaming,
             limit: self.output_limit(),
+            thinking: self.thinking,
             tools: &tools,
             tool_choice: "auto",
         })
@@ -841,7 +888,7 @@ impl LocalModelClient {
 }
 
 impl LocalModelClient {
-    /// Send one plan-route request and read its stream (ADR-0092).
+    /// Send one plan-route request and read its stream (ADR-0093).
     ///
     /// The tool count and the context and size bounds are checked first, then
     /// the cancel token, and only then is `tokens` asked for an access token,
@@ -1516,7 +1563,7 @@ mod tests {
 
     /// The endpoint type accepts a loopback endpoint, a fixed hosted endpoint
     /// with its output field, or a well-formed HTTPS base URL, and refuses
-    /// every malformed variant (ADR-0071, ADR-0090). Which hosted URL a
+    /// every malformed variant (ADR-0071, ADR-0092). Which hosted URL a
     /// profile may record is decided by its kind, in the control store.
     #[test]
     fn the_endpoint_type_accepts_loopback_fixed_or_well_formed_https_endpoints() {
@@ -1531,7 +1578,7 @@ mod tests {
         for text in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
             let endpoint = ModelEndpoint::parse(text).expect(text);
             assert!(endpoint.is_hosted(), "{text}");
-            assert_eq!(endpoint.host(), Some("ollama.com"));
+            assert_eq!(endpoint.host().as_deref(), Some("ollama.com"));
             assert_eq!(
                 endpoint.as_str(),
                 "https://ollama.com/v1".to_owned() + &text[21..]
@@ -1551,6 +1598,21 @@ mod tests {
             let endpoint = ModelEndpoint::parse(text).expect(text);
             assert!(endpoint.is_hosted(), "{text}");
             assert_eq!(endpoint.output_field(), field, "{text}");
+        }
+        // The host a confirmation names keeps a non-default port, as the
+        // browser's `URL.host` does, so it names the service that receives
+        // the key.
+        for (text, host) in [
+            (
+                "https://provider-api.example.org:8443/v1",
+                "provider-api.example.org:8443",
+            ),
+            ("https://[2001:db8::1]:8443/v1", "[2001:db8::1]:8443"),
+            ("https://192.0.2.10/v1", "192.0.2.10"),
+            ("http://127.0.0.1:1234/v1", "127.0.0.1:1234"),
+        ] {
+            let endpoint = ModelEndpoint::parse(text).expect(text);
+            assert_eq!(endpoint.host().as_deref(), Some(host), "{text}");
         }
         for text in [
             "http://ollama.com/v1",
@@ -1631,7 +1693,7 @@ mod tests {
 
     /// Each hosted endpoint's chat path is its base path plus
     /// `/chat/completions`, every hosted client needs a token, and the output
-    /// budget goes in the one field the endpoint takes (ADR-0090).
+    /// budget goes in the one field the endpoint takes (ADR-0092).
     #[test]
     fn hosted_clients_append_the_chat_path_and_name_the_output_field() {
         for (base, path, field) in [
@@ -1658,6 +1720,11 @@ mod tests {
             (
                 MOONSHOT_ENDPOINT,
                 "https://api.moonshot.ai/v1/chat/completions",
+                "max_completion_tokens",
+            ),
+            (
+                THINKING_MACHINES_ENDPOINT,
+                "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1/chat/completions",
                 "max_completion_tokens",
             ),
             (
@@ -1706,6 +1773,64 @@ mod tests {
             };
             assert_eq!(body.get(field), Some(&Value::from(64)), "{base}");
             assert!(body.get(other).is_none(), "{base}");
+        }
+    }
+
+    /// DeepSeek thinks by default and answers 400 to a tool request that does
+    /// not send earlier reasoning back, which this client never keeps, so every
+    /// DeepSeek request (text or tools, first or later in a turn) switches
+    /// thinking off. No other endpoint gets the field (ADR-0092).
+    #[test]
+    fn only_deepseek_requests_switch_thinking_off() {
+        // A later request in a tool turn: earlier assistant text and a tool result.
+        let history = [
+            ModelMessage {
+                role: ModelRole::System,
+                content: BASE_PROMPT.to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "read the notes".to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: "Reading notes.md.".to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "tool result: notes".to_owned(),
+            },
+        ];
+        let tools = crate::turn::tool_definitions();
+        for (base, off) in [
+            (DEEPSEEK_ENDPOINT, true),
+            ("https://api.deepseek.com/", true),
+            (OPENAI_ENDPOINT, false),
+            (MOONSHOT_ENDPOINT, false),
+            ("https://provider-api.example.org/v1", false),
+            ("http://127.0.0.1:1234/v1", false),
+        ] {
+            let client = LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: base.to_owned(),
+                    ..cloud_config()
+                },
+                Some("not-a-real-key".to_owned()),
+            )
+            .unwrap_or_else(|error| panic!("{base}: {error}"));
+            for streaming in [false, true] {
+                let bodies = [
+                    client.text_body(&history, streaming).expect("text body"),
+                    client
+                        .tool_body(&history, &tools, streaming)
+                        .expect("tool body"),
+                ];
+                for bytes in bodies {
+                    let body: Value = serde_json::from_slice(&bytes).expect("json");
+                    let expected = off.then(|| serde_json::json!({"type": "disabled"}));
+                    assert_eq!(body.get("thinking").cloned(), expected, "{base}");
+                }
+            }
         }
     }
 

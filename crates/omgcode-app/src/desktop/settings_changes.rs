@@ -318,12 +318,12 @@ const fn provider_label(kind: ProviderKind) -> &'static str {
 /// What the confirmation adds for a hosted service. Prompts, tool results,
 /// and command output are the model's whole view of the workspace, so the
 /// operator is told before a turn can send them off this computer, and to
-/// which host (ADR-0071, ADR-0090). An operator-typed address is called out as
+/// which host (ADR-0071, ADR-0092). An operator-typed address is called out as
 /// such, because no rule in OMGCode vouches for it.
 fn hosted_notice(kind: ProviderKind, endpoint: &str) -> String {
     let host = ModelEndpoint::parse(endpoint)
         .ok()
-        .and_then(|parsed| parsed.host().map(display_safe_line))
+        .and_then(|parsed| parsed.host().map(|host| display_safe_line(&host)))
         .unwrap_or_else(|| display_safe_line(endpoint));
     let typed = if kind == ProviderKind::OpenAiCompatible {
         " This address was typed when the connection was added; check that it is the service you mean."
@@ -841,7 +841,7 @@ impl DesktopService {
     /// `settings` only. Choose the global default model connection: a
     /// selectable recorded profile by name (local, or hosted with a bound
     /// credential), or `None` for the default endpoint (ADR-0064, ADR-0071,
-    /// ADR-0090). It applies to sessions that have no connection of their own. A
+    /// ADR-0092). It applies to sessions that have no connection of their own. A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///
@@ -980,7 +980,7 @@ impl DesktopService {
     /// CLI's `provider-profile-add`: a local LM Studio or Ollama connection
     /// with no credential and a typed loopback endpoint, a named hosted
     /// provider with its fixed endpoint and an API key (ADR-0071 decision 5,
-    /// ADR-0090), or an OpenAI-compatible service with a typed HTTPS base URL
+    /// ADR-0092), or an OpenAI-compatible service with a typed HTTPS base URL
     /// and an API key. Recording it grants nothing and sends nothing; only
     /// selecting it does, after a confirmation that names the host. No dialog
     /// is shown.
@@ -1127,8 +1127,8 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `invalid_request` for a profile that is not a hosted profile
-    /// or a key that is empty, too long, or has a control character; `control`
+    /// `invalid_request` for a profile that is not a hosted `api_key` profile
+    /// with a recorded endpoint, or a key that is empty, too long, or has a control character; `control`
     /// for an unknown profile; `credential_unavailable`, `credential_locked`,
     /// `credential_io`, `credential_orphaned` (the new key is bound but the
     /// replaced item could not be deleted); `stale_revision`;
@@ -1155,9 +1155,20 @@ impl DesktopService {
             let status = store
                 .provider_profile(&name)
                 .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
-            if !status.profile().kind().is_hosted() {
+            // A subscription profile can never hold a key (core's
+            // `require_api_key`), so refuse it here with the same message.
+            if !status.profile().kind().is_hosted()
+                || status.profile().auth() != ProviderAuth::ApiKey
+            {
                 return Err(DesktopError::invalid_request(
-                    "Only a hosted connection has an API key set here.",
+                    "Only a hosted connection that uses an API key has a key set here.",
+                ));
+            }
+            // A profile recorded without an endpoint (possible from the CLI) can never be
+            // used, and its endpoint cannot be added, so a key bound to it would serve nothing.
+            if status.profile().endpoint().is_none() {
+                return Err(DesktopError::invalid_request(
+                    "This connection has no endpoint, so it cannot be used. Remove it and add it again.",
                 ));
             }
             match store.set_provider_credential(&credentials, &name, &secret, revision) {

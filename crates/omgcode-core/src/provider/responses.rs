@@ -1,4 +1,4 @@
-//! The ChatGPT plan route's Responses API (ADR-0092): the request body and a
+//! The ChatGPT plan route's Responses API (ADR-0093): the request body and a
 //! strict reader for its event stream.
 //!
 //! The reader is fed bytes and does no I/O, so its rules apply to any
@@ -321,7 +321,7 @@ impl ResponsesParser {
                     }
                     tool_calls.push(function_call(item)?);
                 }
-                // Reasoning is not carried between requests (ADR-0092).
+                // Reasoning is not carried between requests (ADR-0093).
                 "reasoning" => {}
                 kind if kind.ends_with("_call") => return Err(ProviderError::UnsupportedToolCall),
                 _ => return Err(ProviderError::MalformedResponse),

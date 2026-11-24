@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatDefaults, ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
-import { createMockBackend, isLocalEndpoint } from "../src/mock/backend";
+import { createMockBackend, isCustomEndpoint, isLocalEndpoint } from "../src/mock/backend";
 import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 
 interface Detail {
@@ -230,6 +230,41 @@ describe("mock backend", () => {
     [`http://127.0.0.1:1234/v1/${"a".repeat(240)}`, false],
   ])("decides the local endpoint %s as core does", (endpoint, accepted) => {
     expect(isLocalEndpoint(endpoint)).toBe(accepted);
+  });
+
+  // The same texts as core's `the_custom_rule_accepts_plain_https_base_urls` and
+  // `the_custom_rule_refuses_anything_that_could_mislead_or_leak` (provider/hosted.rs).
+  it.each([
+    ["https://provider-api.example.org/v1", true],
+    ["https://provider-api.example.org/v1/", true],
+    ["https://provider-api.example.org", true],
+    ["https://provider-api.example.org:8443/openai/v1", true],
+    ["https://192.0.2.10/v1", true],
+    ["https://[2001:db8::1]:8443/v1", true],
+    ["http://provider-api.example.org/v1", false],
+    ["HTTPS://provider-api.example.org/v1", false],
+    ["https://Provider-API.example.org/v1", false],
+    ["https://provider-api.example.org:443/v1", false],
+    ["https://provider-api.example.org:0/v1", false],
+    ["https://user@provider-api.example.org/v1", false],
+    ["https://user:pass@provider-api.example.org/v1", false],
+    ["https://provider-api.example.org/v1?key=1", false],
+    ["https://provider-api.example.org/v1#f", false],
+    ["https://provider-api.example.org/v1/../v2", false],
+    ["https://provider-api.example.org/./v1", false],
+    ["https://provider-api.example.org//v1", false],
+    ["https://provider-api.example.org/v%31", false],
+    ["https://exämple.org/v1", false],
+    [" https://provider-api.example.org/v1", false],
+    [`https://provider-api.example.org/v1${String.fromCharCode(10)}`, false],
+    ["https://provider-api.example.org/v 1", false],
+    ["https:///v1", false],
+    ["https://", false],
+    ["ftp://provider-api.example.org/v1", false],
+    ["", false],
+    [`https://example.org/${"a".repeat(250)}`, false],
+  ])("decides the typed endpoint %s as core does", (endpoint, accepted) => {
+    expect(isCustomEndpoint(endpoint)).toBe(accepted);
   });
 
   it("records an IPv6 loopback connection and refuses port 0", async () => {
@@ -648,7 +683,7 @@ describe("mock backend", () => {
           ...fields,
         });
       await expect(add({ kind: "bogus" })).rejects.toMatchObject({ code: "invalid_argument" });
-      // A named hosted provider takes a key and no endpoint (ADR-0090).
+      // A named hosted provider takes a key and no endpoint (ADR-0092).
       await expect(add({ kind: "openai" })).rejects.toMatchObject({ code: "invalid_request" });
       await expect(add({ endpoint: "http://example.com:11434/v1" })).rejects.toMatchObject({
         code: "control",
@@ -863,7 +898,7 @@ describe("mock workspace_entries", () => {
   });
 });
 
-describe("mock ChatGPT sign-in (ADR-0092)", () => {
+describe("mock ChatGPT sign-in (ADR-0093)", () => {
   it("signs a ChatGPT connection in and out, and refuses to remove it while signed in", async () => {
     const { invoke } = createMockBackend();
     const start = (await invoke("settings_overview", {})) as SettingsOverview;

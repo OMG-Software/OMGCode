@@ -318,7 +318,7 @@ struct Inner {
     /// and the workspace instruction files, which the `main` and `settings`
     /// windows both write (ADR-0080). Held for file input and output only.
     preferences: Mutex<()>,
-    /// The cancel token of the running ChatGPT sign-in, if any (ADR-0092).
+    /// The cancel token of the running ChatGPT sign-in, if any (ADR-0093).
     chatgpt_sign_in: Mutex<Option<omgcode_core::turn::CancelToken>>,
     /// Opens the ChatGPT sign-in address. Tests replace it.
     open_browser: settings_chatgpt::BrowserOpener,
