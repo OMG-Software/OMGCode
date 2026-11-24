@@ -136,6 +136,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   /** The saved chat defaults, as Rust keeps them in one file; `null` until something is saved. */
   let savedPreferences: MockPreferences | null = null;
   let nextSkillFolder = 0;
+  let mockFolders = 0;
+  /** The next sample folder a mock dialog "chooses". */
+  const nextMockFolder = (kind: string): string => {
+    mockFolders += 1;
+    return `/opt/mock/${kind}-${mockFolders}`;
+  };
   /**
    * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
    * for it, as Rust records it, and its model.
@@ -925,6 +931,110 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           settings.skills.splice(index, 1);
         });
+      // The mock stands in for the native folder dialogs and confirmations (ADR-0088): each
+      // root, PATH entry, or granted folder "chosen" is the next sample folder, and every
+      // confirmation is accepted. Core's rules are only sampled; the real core is the authority.
+      case "settings_add_toolchain_profile":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const rootCount = Number(args.root_count);
+          const pathCount = Number(args.path_entry_count);
+          const environment = Array.isArray(args.environment) ? args.environment : [];
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+            fail(
+              "control",
+              "profile names are 1 to 64 ASCII letters, digits, '.', '-', or '_', starting with a letter or digit",
+            );
+          }
+          if (
+            settings.toolchain_profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())
+          ) {
+            fail("control", "a profile with this name already exists; remove it first");
+          }
+          if (!Number.isInteger(rootCount) || rootCount < 1 || rootCount > 16) {
+            fail("invalid_request", "A profile needs 1 to 16 read-only roots.");
+          }
+          if (!Number.isInteger(pathCount) || pathCount < 0 || pathCount > 16) {
+            fail("invalid_request", "A profile has at most 16 PATH entries.");
+          }
+          const roots = Array.from({ length: rootCount }, () => nextMockFolder("root"));
+          settings.toolchain_profiles.push({
+            name,
+            platform: "linux",
+            read_only_roots: roots,
+            path_entries: Array.from(
+              { length: pathCount },
+              (_, index) => `${roots[0] ?? "/opt/mock"}/bin${index + 1}`,
+            ),
+            environment_names: environment.map((entry) =>
+              typeof entry === "object" && entry !== null && "name" in entry
+                ? String(entry.name)
+                : "",
+            ),
+          });
+        });
+      case "settings_remove_toolchain_profile":
+        return changeSettings(args, () => {
+          const index = settings.toolchain_profiles.findIndex((p) => p.name === str(args, "name"));
+          if (index < 0) {
+            fail("control", "unknown profile");
+          }
+          settings.toolchain_profiles.splice(index, 1);
+        });
+      case "settings_add_package_profile":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const origins = Array.isArray(args.origins) ? args.origins.map(String) : [];
+          if (origins.length < 1 || origins.length > 8) {
+            fail("invalid_request", "A profile needs 1 to 8 origins.");
+          }
+          if (settings.package_profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+            fail(
+              "control",
+              "a package-network profile with this name already exists; remove it first",
+            );
+          }
+          for (const origin of origins) {
+            if (!/^https?:\/\/[^/\s]+(\/\S*)?$/.test(origin)) {
+              fail("control", "an origin must be an http or https URL without credentials");
+            }
+          }
+          settings.package_profiles.push({ name, origins, credentials_bound: 0 });
+        });
+      case "settings_remove_package_profile":
+        return changeSettings(args, () => {
+          const index = settings.package_profiles.findIndex((p) => p.name === str(args, "name"));
+          if (index < 0) {
+            fail("control", "unknown package-network profile");
+          }
+          settings.package_profiles.splice(index, 1);
+        });
+      case "settings_grant_container_folder":
+        return changeSettings(args, () => {
+          const workspaceId = str(args, "workspace_id");
+          mockWorkspace({ workspace_id: workspaceId });
+          const access = str(args, "access");
+          if (access !== "read_execute" && access !== "read_write") {
+            fail("invalid_argument", "Bad access.");
+          }
+          settings.container_grants.push({
+            grant_id: `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`,
+            workspace_id: workspaceId,
+            directory: nextMockFolder("grant"),
+            access,
+            state: "active",
+          });
+        });
+      case "settings_revoke_container_grant":
+        return changeSettings(args, () => {
+          const index = settings.container_grants.findIndex(
+            (grant) => grant.grant_id === str(args, "grant_id"),
+          );
+          if (index < 0) {
+            fail("control", "unknown container grant");
+          }
+          settings.container_grants.splice(index, 1);
+        });
       case "settings_remove_connection":
         return changeSettings(args, () => {
           const name = str(args, "name");
@@ -1230,6 +1340,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       ],
       package_profiles: [],
       container_grants: [],
+      container_grants_supported: true,
       skills: [
         {
           name: "review-checklist",

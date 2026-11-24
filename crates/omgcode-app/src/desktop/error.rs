@@ -45,6 +45,12 @@ impl DesktopError {
         Self::new(code, message)
     }
 
+    /// A toolchain, package-network, or container-grant failure with a fixed
+    /// message (ADR-0088).
+    pub(crate) fn execution(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
     /// The stable machine-readable code.
     pub const fn code(&self) -> &'static str {
         self.code

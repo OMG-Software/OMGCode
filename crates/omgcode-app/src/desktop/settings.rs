@@ -191,6 +191,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         toolchain_profiles,
         package_profiles,
         container_grants,
+        container_grants_supported: omgcode_core::control::CONTAINER_GRANTS_SUPPORTED,
         skills,
         chat,
         scope: inner.settings_scope(),

@@ -77,6 +77,12 @@ pub enum FolderPurpose {
     PackageCache,
     /// A skill folder to import.
     Skill,
+    /// A read-only root of a toolchain profile.
+    ToolchainRoot,
+    /// A `PATH` entry of a toolchain profile, inside one of its roots.
+    ToolchainPathEntry,
+    /// A folder to grant to a workspace's container.
+    ContainerGrant,
 }
 
 impl FolderPurpose {
@@ -88,6 +94,9 @@ impl FolderPurpose {
             Self::Workspace => "Choose a workspace folder",
             Self::PackageCache => "Choose a package cache folder",
             Self::Skill => "Choose a skill folder",
+            Self::ToolchainRoot => "Choose a read-only root for the toolchain profile",
+            Self::ToolchainPathEntry => "Choose a PATH entry inside a root of the profile",
+            Self::ContainerGrant => "Choose a folder to grant to the workspace's container",
         }
     }
 }
@@ -514,7 +523,7 @@ pub(super) fn confirm(
 }
 
 /// The display-safe text of a folder the operator chose.
-fn shown(folder: &Path) -> String {
+pub(super) fn shown(folder: &Path) -> String {
     folder_of_directory(Some(folder.to_path_buf()))
 }
 
@@ -1144,30 +1153,50 @@ impl DesktopService {
     /// them from the wait. Their watchers stop them even then, because a
     /// watcher checks every settings state recorded since it last read them
     /// (ADR-0061).
-    fn apply_checked(
+    pub(super) fn apply_checked(
         &self,
         change: impl FnOnce(&mut ControlStore) -> Result<(), DesktopError>,
     ) -> Result<SettingsOverview, DesktopError> {
-        let listed = {
+        self.apply_checked_also(|store| change(store).map(|()| AlsoWithdrawn::default()))
+    }
+
+    /// As [`apply_checked`](Self::apply_checked), for a change that also names
+    /// runs to stop that the settings alone do not show as withdrawn, such as
+    /// the runs of a workspace whose container grant was revoked.
+    pub(super) fn apply_checked_also(
+        &self,
+        change: impl FnOnce(&mut ControlStore) -> Result<AlsoWithdrawn, DesktopError>,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let (listed, also) = {
             let mut store = self.inner.open_or_create_control()?;
-            change(&mut store)?;
-            run::withdrawn_runs(&store)
+            let also = change(&mut store)?;
+            (run::withdrawn_runs(&store), also)
         };
         // An unreadable run journal never undoes the recorded change, and the
         // watchers still stop the runs: wait for what the settings now
         // withdraw, then report that the runs were not all checked.
-        let named = listed.as_deref().unwrap_or(&[]);
-        let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, named)
+        let mut named = listed.as_deref().unwrap_or(&[]).to_vec();
+        named.extend(also.runs);
+        let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, &named)
             .map_err(|_| DesktopError::runs_unchecked())?;
         if !withdrawn.unconfirmed.is_empty() {
             return Err(DesktopError::runs_not_stopped(withdrawn.unconfirmed.len()));
         }
-        if listed.is_err() {
+        if listed.is_err() || also.unchecked {
             return Err(DesktopError::runs_unchecked());
         }
         let store = self.inner.open_or_create_control()?;
         Ok(overview_of(&self.inner, store))
     }
+}
+
+/// Runs a change stops in addition to those the settings withdraw.
+#[derive(Debug, Default)]
+pub(super) struct AlsoWithdrawn {
+    /// Pending runs to wait for.
+    pub runs: Vec<uuid::Uuid>,
+    /// The run journal could not be read, so the list may be incomplete.
+    pub unchecked: bool,
 }
 
 #[cfg(test)]

@@ -49,4 +49,10 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_import_skill",
     "settings_set_skill_state",
     "settings_remove_skill",
+    "settings_add_toolchain_profile",
+    "settings_remove_toolchain_profile",
+    "settings_add_package_profile",
+    "settings_remove_package_profile",
+    "settings_grant_container_folder",
+    "settings_revoke_container_grant",
 ];
