@@ -1038,9 +1038,9 @@ pub struct ProviderProfileView {
     /// Whether a stored credential is bound. The credential itself is never
     /// read for this view.
     pub credential_bound: bool,
-    /// Whether the profile can be chosen as a connection (ADR-0071): a local
-    /// kind with a recorded endpoint, or an `ollama_cloud` profile with the
-    /// cloud endpoint and a bound credential.
+    /// Whether the profile can be chosen as a connection (ADR-0071,
+    /// ADR-0092): a profile with a recorded endpoint and, for a hosted kind,
+    /// a bound credential.
     pub selectable: bool,
     /// Whether it is the recorded active connection.
     pub active: bool,
@@ -1094,7 +1094,7 @@ pub struct ConnectionStatus {
     /// as empty and replaced by the next recorded choice.
     pub session_choices_unreadable: bool,
     /// The profiles that can be chosen, in recorded order: local profiles with
-    /// an endpoint, and `ollama_cloud` profiles with a bound credential. Empty
+    /// an endpoint, and hosted profiles with a bound credential. Empty
     /// when a launch argument fixed the connection.
     pub choices: Vec<ConnectionChoice>,
 }
@@ -1135,7 +1135,7 @@ pub struct ModelChoice {
 pub struct ConnectionChoice {
     /// The profile name.
     pub name: String,
-    /// `lm_studio`, `ollama_local`, or `ollama_cloud`.
+    /// The provider kind's stored spelling, such as `lm_studio` or `deepseek`.
     pub kind: &'static str,
     /// The recorded endpoint.
     pub endpoint: String,
@@ -1338,17 +1338,10 @@ pub enum GitWorktreeState {
     Conflicted,
 }
 
-/// A provider the `settings` window may add (ADR-0064, ADR-0071).
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum NewConnectionKind {
-    /// LM Studio's local server.
-    LmStudio,
-    /// Ollama on this computer.
-    OllamaLocal,
-    /// Ollama's hosted service at its one fixed endpoint, with an API key.
-    OllamaCloud,
-}
+/// A provider the `settings` window may add (ADR-0064, ADR-0071, ADR-0092):
+/// any provider kind, by its stored spelling. An unknown spelling fails to
+/// deserialize, so it never reaches the service.
+pub type NewConnectionKind = omgcode_core::control::ProviderKind;
 
 /// A secret typed into a write-only field of the `settings` window (ADR-0059
 /// decision 6).
@@ -1405,10 +1398,10 @@ pub struct ConnectionSelectRequest {
 /// Arguments of `settings_add_connection`. Core validates every value with
 /// the rule the CLI's `provider-profile-add` uses.
 ///
-/// A local kind needs `endpoint` and takes no `api_key`. `ollama_cloud` takes
-/// an `api_key` and no `endpoint`: Rust supplies the one fixed endpoint. A
-/// request that breaks either rule is refused as `invalid_request` before
-/// anything is recorded. `Debug` never shows the key.
+/// A local kind needs `endpoint` and takes no `api_key`. A named hosted kind
+/// takes an `api_key` and no `endpoint`: Rust supplies its one fixed endpoint.
+/// `openai_compatible` takes both. A request that breaks the rule for its
+/// kind is refused as `invalid_request` before anything is recorded. `Debug` never shows the key.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionAddRequest {
@@ -1418,10 +1411,11 @@ pub struct ConnectionAddRequest {
     pub name: String,
     /// The provider.
     pub kind: NewConnectionKind,
-    /// A loopback `http://<IP>:<port>/v1` endpoint, for a local kind only.
+    /// A loopback `http://<IP>:<port>/v1` endpoint for a local kind, or an
+    /// HTTPS base URL for `openai_compatible`.
     #[serde(default)]
     pub endpoint: Option<String>,
-    /// The API key, for `ollama_cloud` only.
+    /// The API key, for a hosted kind only.
     #[serde(default)]
     pub api_key: Option<ApiKeyText>,
 }
@@ -1432,7 +1426,7 @@ pub struct ConnectionAddRequest {
 pub struct ApiKeySetRequest {
     /// The settings revision the window last read.
     pub revision: u64,
-    /// A recorded `ollama_cloud` profile.
+    /// A recorded hosted profile.
     pub name: String,
     /// The new API key.
     pub api_key: ApiKeyText,

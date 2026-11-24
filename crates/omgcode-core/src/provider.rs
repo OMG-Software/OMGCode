@@ -1,6 +1,13 @@
+mod hosted;
 mod models;
 mod stream;
 
+pub use hosted::{
+    ANTHROPIC_ENDPOINT, DEEPSEEK_ENDPOINT, GOOGLE_ENDPOINT, META_ENDPOINT, MINIMAX_ENDPOINT,
+    MOONSHOT_ENDPOINT, OLLAMA_CLOUD_ENDPOINT, OPENAI_ENDPOINT, OPENROUTER_ENDPOINT,
+    OutputLimitField, TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT,
+};
+pub(crate) use hosted::{disables_thinking, fixed_endpoint, matches_fixed, validate_custom_url};
 pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models};
 
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
@@ -18,10 +25,6 @@ use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
 
-/// The one hosted endpoint a provider may use (ADR-0071): Ollama Cloud's
-/// OpenAI-compatible base URL. No other non-loopback destination is accepted.
-pub const OLLAMA_CLOUD_ENDPOINT: &str = "https://ollama.com/v1";
-
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -38,14 +41,18 @@ const MAX_TOOL_DEFINITIONS: usize = 9;
 const MAX_RESPONSE_TOOL_CALLS: usize = 64;
 
 /// A validated model endpoint: a literal loopback HTTP endpoint
-/// ([`validate_base_url`], ADR-0048) or the fixed Ollama Cloud endpoint
-/// ([`OLLAMA_CLOUD_ENDPOINT`], ADR-0071). There is no other destination.
+/// ([`validate_base_url`], ADR-0048), one of the fixed hosted endpoints
+/// (ADR-0071, ADR-0092), or an operator-typed HTTPS base URL that passes the
+/// `openai_compatible` rule (ADR-0092). There is no other destination.
 ///
-/// The cloud variant sends prompts, tool results, and command output off this
-/// computer, so a client built on it requires a token.
+/// A hosted endpoint sends prompts, tool results, and command output off this
+/// computer, so a client built on it requires a token. A token comes only from
+/// a provider profile, whose kind decides which hosted rule its recorded
+/// endpoint had to pass; the launch and environment paths refuse a hosted
+/// endpoint (`cloud_needs_profile`).
 ///
 /// The representation is private, so [`ModelEndpoint::parse`] is the only
-/// constructor and every value has passed one of the two rules.
+/// constructor and every value has passed one of the rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelEndpoint(EndpointRule);
 
@@ -55,28 +62,61 @@ pub struct ModelEndpoint(EndpointRule);
 enum EndpointRule {
     /// A literal loopback IP, an explicit port, and the `/v1` path.
     Loopback(Url),
-    /// Exactly `https://ollama.com/v1`, with or without one trailing `/`.
-    OllamaCloud(Url),
+    /// An HTTPS base URL: a fixed provider endpoint, or one that passed the
+    /// operator-typed rule. `field` names the output budget field it takes,
+    /// and `thinking_off` whether requests switch the provider's thinking off.
+    Hosted {
+        url: Url,
+        field: OutputLimitField,
+        thinking_off: bool,
+    },
 }
 
 impl ModelEndpoint {
-    /// Validate endpoint text. The cloud rule is an exact match, so no host,
-    /// port, path, user information, query, fragment, scheme, or letter case
-    /// variant of it is accepted. Anything else must pass the loopback rule.
+    /// Validate endpoint text. A fixed hosted endpoint is an exact match
+    /// (one trailing `/` allowed); any other `https://` text must pass the
+    /// operator-typed rule, and anything else the loopback rule.
     ///
     /// # Errors
     ///
     /// `InvalidConfiguration` for any other text.
     pub fn parse(text: &str) -> Result<Self, ProviderError> {
-        if let Ok(url) = validate_cloud_url(text) {
-            return Ok(Self(EndpointRule::OllamaCloud(url)));
+        if let Some((url, field)) = fixed_endpoint(text) {
+            return Ok(Self(EndpointRule::Hosted {
+                url,
+                field,
+                thinking_off: disables_thinking(text),
+            }));
+        }
+        if text.starts_with("https://") {
+            return validate_custom_url(text).map(|url| {
+                Self(EndpointRule::Hosted {
+                    url,
+                    field: OutputLimitField::MaxTokens,
+                    thinking_off: false,
+                })
+            });
         }
         validate_base_url(text).map(|url| Self(EndpointRule::Loopback(url)))
     }
 
-    /// Whether this is the hosted Ollama Cloud endpoint.
-    pub const fn is_cloud(&self) -> bool {
-        matches!(self.0, EndpointRule::OllamaCloud(_))
+    /// Whether this is a hosted endpoint, which needs a token and sends every
+    /// request off this computer.
+    pub const fn is_hosted(&self) -> bool {
+        matches!(self.0, EndpointRule::Hosted { .. })
+    }
+
+    /// The host name or address with any non-default port, for a confirmation
+    /// that says where requests go: `llm.example.org:8443` names a different
+    /// service from `llm.example.org`. It matches the browser's `URL.host`,
+    /// which the settings window shows. It is not a secret.
+    pub fn host(&self) -> Option<String> {
+        let url = self.url();
+        let host = url.host_str()?;
+        Some(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_owned(),
+        })
     }
 
     /// The endpoint text as validated. It is not a secret.
@@ -86,20 +126,42 @@ impl ModelEndpoint {
 
     const fn url(&self) -> &Url {
         match &self.0 {
-            EndpointRule::Loopback(url) | EndpointRule::OllamaCloud(url) => url,
+            EndpointRule::Loopback(url) | EndpointRule::Hosted { url, .. } => url,
         }
     }
 
-    /// The URL of one resource on the endpoint's host, such as `/v1/models`.
-    fn with_path(&self, path: &str) -> Url {
+    /// The request field that carries the output budget.
+    pub(crate) const fn output_field(&self) -> OutputLimitField {
+        match self.0 {
+            EndpointRule::Loopback(_) => OutputLimitField::MaxTokens,
+            EndpointRule::Hosted { field, .. } => field,
+        }
+    }
+
+    /// Whether requests send `"thinking": {"type": "disabled"}`, because the
+    /// provider would otherwise require reasoning text this client does not
+    /// keep (ADR-0092).
+    pub(crate) const fn disables_thinking(&self) -> bool {
+        match self.0 {
+            EndpointRule::Loopback(_) => false,
+            EndpointRule::Hosted { thinking_off, .. } => thinking_off,
+        }
+    }
+
+    /// The URL of one resource below the base URL, such as `/models`. The
+    /// suffix is appended to the base path, so `https://api.z.ai/api/paas/v4`
+    /// gives `/api/paas/v4/models` and `http://127.0.0.1:1234/v1` gives
+    /// `/v1/models`.
+    fn with_suffix(&self, suffix: &str) -> Url {
         let mut url = self.url().clone();
-        url.set_path(path);
+        let path = format!("{}{suffix}", url.path().trim_end_matches('/'));
+        url.set_path(&path);
         url
     }
 
-    /// Refuse a cloud endpoint that has no token, before any connection.
+    /// Refuse a hosted endpoint that has no token, before any connection.
     fn check_token(&self, token: Option<&str>) -> Result<(), ProviderError> {
-        if self.is_cloud() && token.is_none() {
+        if self.is_hosted() && token.is_none() {
             return Err(ProviderError::InvalidToken);
         }
         Ok(())
@@ -107,7 +169,7 @@ impl ModelEndpoint {
 
     /// Whether requests must use HTTPS. The loopback rule admits only HTTP.
     const fn https_only(&self) -> bool {
-        self.is_cloud()
+        self.is_hosted()
     }
 }
 
@@ -118,7 +180,7 @@ impl ModelEndpoint {
 /// does not claim to reproduce the selected model's tokenizer.
 pub struct LocalModelConfig {
     /// A literal loopback HTTP URL with an explicit port and `/v1` path, or
-    /// the Ollama Cloud endpoint (see [`ModelEndpoint`]), which needs a token.
+    /// a hosted endpoint (see [`ModelEndpoint`]), which needs a token.
     pub base_url: String,
     /// The model identifier already available to the selected LM Studio server.
     pub model: String,
@@ -136,6 +198,8 @@ pub struct LocalModelConfig {
 pub struct LocalModelClient {
     endpoint: Url,
     https_only: bool,
+    output_field: OutputLimitField,
+    thinking: Option<Thinking>,
     model: String,
     context_tokens: u64,
     max_output_tokens: u32,
@@ -221,7 +285,10 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [ModelMessage],
     stream: bool,
-    max_tokens: u32,
+    #[serde(flatten)]
+    limit: OutputLimit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
 }
 
 /// The text request plus the advertised function tools.
@@ -230,9 +297,30 @@ struct ToolChatRequest<'a> {
     model: &'a str,
     messages: &'a [ModelMessage],
     stream: bool,
-    max_tokens: u32,
+    #[serde(flatten)]
+    limit: OutputLimit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
     tools: &'a [WireTool<'a>],
     tool_choice: &'static str,
+}
+
+/// The output budget under the field name the endpoint takes. Exactly one of
+/// the two is written.
+#[derive(Serialize)]
+struct OutputLimit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+}
+
+/// The provider's thinking-mode switch, sent only where the endpoint needs it
+/// off (ADR-0092). It serializes as `{"type": "disabled"}`.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct Thinking {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 /// One OpenAI-compatible function tool definition.
@@ -270,13 +358,17 @@ impl LocalModelClient {
         {
             return Err(ProviderError::InvalidConfiguration);
         }
-        let endpoint = model_endpoint.with_path("/v1/chat/completions");
+        let endpoint = model_endpoint.with_suffix("/chat/completions");
 
         let authorization = token.as_deref().map(bearer_header).transpose()?;
 
         Ok(Self {
             endpoint,
             https_only: model_endpoint.https_only(),
+            output_field: model_endpoint.output_field(),
+            thinking: model_endpoint
+                .disables_thinking()
+                .then_some(Thinking { kind: "disabled" }),
             model: config.model,
             context_tokens: config.context_tokens,
             max_output_tokens: config.max_output_tokens,
@@ -367,6 +459,20 @@ impl LocalModelClient {
         })
     }
 
+    /// The output budget under the endpoint's field name.
+    const fn output_limit(&self) -> OutputLimit {
+        match self.output_field {
+            OutputLimitField::MaxTokens => OutputLimit {
+                max_tokens: Some(self.max_output_tokens),
+                max_completion_tokens: None,
+            },
+            OutputLimitField::MaxCompletionTokens => OutputLimit {
+                max_tokens: None,
+                max_completion_tokens: Some(self.max_output_tokens),
+            },
+        }
+    }
+
     /// Encode the text request with the chosen `stream` setting.
     fn text_body(
         &self,
@@ -378,7 +484,8 @@ impl LocalModelClient {
             model: &self.model,
             messages,
             stream: streaming,
-            max_tokens: self.max_output_tokens,
+            limit: self.output_limit(),
+            thinking: self.thinking,
         })
         .map_err(|_| ProviderError::MalformedResponse)
     }
@@ -460,7 +567,8 @@ impl LocalModelClient {
             model: &self.model,
             messages,
             stream: streaming,
-            max_tokens: self.max_output_tokens,
+            limit: self.output_limit(),
+            thinking: self.thinking,
             tools: &tools,
             tool_choice: "auto",
         })
@@ -588,7 +696,7 @@ impl LocalModelClient {
     ) -> Result<Vec<u8>, ProviderError> {
         let client = self.http_client()?;
         let response = self.send(&client, body, false, cancel).await?;
-        read_whole_body(response, cancel).await
+        read_whole_body(response, MAX_RESPONSE_BYTES, cancel).await
     }
 
     /// Send a streaming request and feed the response body to the stream
@@ -630,7 +738,8 @@ impl LocalModelClient {
     }
 }
 
-/// Read the whole body of a non-streaming response within 1 MiB.
+/// Read the whole body of a non-streaming response within `limit` bytes:
+/// [`MAX_RESPONSE_BYTES`] for a chat reply, more for a model list.
 ///
 /// A non-success status is refused before the body is read. The token is
 /// checked before each piece of the body as well as while each is awaited; a
@@ -638,6 +747,7 @@ impl LocalModelClient {
 /// closes the connection.
 async fn read_whole_body(
     mut response: Response,
+    limit: u64,
     cancel: &CancelToken,
 ) -> Result<Vec<u8>, ProviderError> {
     let status = response.status();
@@ -660,7 +770,7 @@ async fn read_whole_body(
             .checked_add(chunk.len())
             .and_then(|total| u64::try_from(total).ok())
             .ok_or(ProviderError::ResponseTooLarge)?;
-        if total > MAX_RESPONSE_BYTES {
+        if total > limit {
             return Err(ProviderError::ResponseTooLarge);
         }
         bytes.extend_from_slice(&chunk);
@@ -862,17 +972,6 @@ pub(crate) fn validate_base_url(base_url: &str) -> Result<Url, ProviderError> {
         return Err(ProviderError::InvalidConfiguration);
     }
     Ok(parsed)
-}
-
-/// The one implementation of the Ollama Cloud endpoint rule (ADR-0071): the
-/// exact text of [`OLLAMA_CLOUD_ENDPOINT`], with or without one trailing `/`.
-/// A provider profile applies it before it records an endpoint, and the
-/// client applies it to every request configuration.
-pub(crate) fn validate_cloud_url(text: &str) -> Result<Url, ProviderError> {
-    if text != OLLAMA_CLOUD_ENDPOINT && text.strip_suffix('/') != Some(OLLAMA_CLOUD_ENDPOINT) {
-        return Err(ProviderError::InvalidConfiguration);
-    }
-    Url::parse(text).map_err(|_| ProviderError::InvalidConfiguration)
 }
 
 /// Bound input with a byte-based estimate and reserve output plus template headroom.
@@ -1121,13 +1220,14 @@ fn parse_usage(value: &Value) -> Result<Usage, ProviderError> {
     })
 }
 
-/// Destinations the endpoint rule refuses. The provider profile tests use the
-/// same list, so the rule is proved to be shared.
+/// Destinations every endpoint rule refuses. The provider profile tests use
+/// the same list, so the rule is proved to be shared. An `https://` text is
+/// not listed: the hosted rule admits a well-formed one, and the profile's
+/// kind decides whether it may be recorded.
 #[cfg(test)]
 pub(crate) const REFUSED_ENDPOINTS: &[&str] = &[
     "http://localhost:1234/v1",
     "http://192.0.2.1:1234/v1",
-    "https://127.0.0.1:1234/v1",
     "http://127.0.0.1/v1",
     "http://127.0.0.1:0/v1",
     "http://127.0.0.1:1234/v1/other",
@@ -1168,10 +1268,12 @@ mod tests {
         assert!(validate_base_url("http://[::1]:1234/v1/").is_ok());
     }
 
-    /// The endpoint type accepts a loopback endpoint or exactly the cloud
-    /// endpoint, and refuses every variant of the cloud text (ADR-0071).
+    /// The endpoint type accepts a loopback endpoint, a fixed hosted endpoint
+    /// with its output field, or a well-formed HTTPS base URL, and refuses
+    /// every malformed variant (ADR-0071, ADR-0092). Which hosted URL a
+    /// profile may record is decided by its kind, in the control store.
     #[test]
-    fn the_endpoint_type_accepts_loopback_or_exactly_the_cloud_endpoint() {
+    fn the_endpoint_type_accepts_loopback_fixed_or_well_formed_https_endpoints() {
         assert!(matches!(
             ModelEndpoint::parse("http://127.0.0.1:1234/v1"),
             Ok(ModelEndpoint(EndpointRule::Loopback(_)))
@@ -1182,30 +1284,55 @@ mod tests {
         ));
         for text in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
             let endpoint = ModelEndpoint::parse(text).expect(text);
-            assert!(endpoint.is_cloud(), "{text}");
+            assert!(endpoint.is_hosted(), "{text}");
+            assert_eq!(endpoint.host().as_deref(), Some("ollama.com"));
             assert_eq!(
                 endpoint.as_str(),
                 "https://ollama.com/v1".to_owned() + &text[21..]
             );
         }
+        for (text, field) in [
+            (OPENAI_ENDPOINT, OutputLimitField::MaxCompletionTokens),
+            (XAI_ENDPOINT, OutputLimitField::MaxCompletionTokens),
+            (DEEPSEEK_ENDPOINT, OutputLimitField::MaxTokens),
+            (Z_AI_ENDPOINT, OutputLimitField::MaxTokens),
+            (
+                "https://provider-api.example.org/v1",
+                OutputLimitField::MaxTokens,
+            ),
+            ("https://ollama.com:8443/v1", OutputLimitField::MaxTokens),
+        ] {
+            let endpoint = ModelEndpoint::parse(text).expect(text);
+            assert!(endpoint.is_hosted(), "{text}");
+            assert_eq!(endpoint.output_field(), field, "{text}");
+        }
+        // The host a confirmation names keeps a non-default port, as the
+        // browser's `URL.host` does, so it names the service that receives
+        // the key.
+        for (text, host) in [
+            (
+                "https://provider-api.example.org:8443/v1",
+                "provider-api.example.org:8443",
+            ),
+            ("https://[2001:db8::1]:8443/v1", "[2001:db8::1]:8443"),
+            ("https://192.0.2.10/v1", "192.0.2.10"),
+            ("http://127.0.0.1:1234/v1", "127.0.0.1:1234"),
+        ] {
+            let endpoint = ModelEndpoint::parse(text).expect(text);
+            assert_eq!(endpoint.host().as_deref(), Some(host), "{text}");
+        }
         for text in [
             "http://ollama.com/v1",
-            "https://ollama.com",
-            "https://ollama.com/",
             "https://ollama.com/v1//",
-            "https://ollama.com/v1/chat",
             "https://ollama.com:443/v1",
-            "https://ollama.com:8443/v1",
-            "https://www.ollama.com/v1",
             "https://user@ollama.com/v1",
             "https://ollama.com/v1?q=1",
             "https://ollama.com/v1#f",
             "https://OLLAMA.com/v1",
-            "https://ollama.com/V1",
             "HTTPS://ollama.com/v1",
             " https://ollama.com/v1",
             "https://ollama.com/v1\n",
-            "https://evil.example/v1",
+            "http://evil.example/v1",
         ] {
             assert_eq!(
                 ModelEndpoint::parse(text),
@@ -1223,7 +1350,7 @@ mod tests {
         LocalModelConfig {
             base_url: OLLAMA_CLOUD_ENDPOINT.to_owned(),
             model: "minimax-m3".to_owned(),
-            context_tokens: 4096,
+            context_tokens: 131_072,
             max_output_tokens: 64,
         }
     }
@@ -1269,6 +1396,149 @@ mod tests {
         )
         .expect("slash client");
         assert_eq!(slash.endpoint, client.endpoint);
+    }
+
+    /// Each hosted endpoint's chat path is its base path plus
+    /// `/chat/completions`, every hosted client needs a token, and the output
+    /// budget goes in the one field the endpoint takes (ADR-0092).
+    #[test]
+    fn hosted_clients_append_the_chat_path_and_name_the_output_field() {
+        for (base, path, field) in [
+            (
+                OPENAI_ENDPOINT,
+                "https://api.openai.com/v1/chat/completions",
+                "max_completion_tokens",
+            ),
+            (
+                DEEPSEEK_ENDPOINT,
+                "https://api.deepseek.com/chat/completions",
+                "max_tokens",
+            ),
+            (
+                Z_AI_ENDPOINT,
+                "https://api.z.ai/api/paas/v4/chat/completions",
+                "max_tokens",
+            ),
+            (
+                GOOGLE_ENDPOINT,
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                "max_tokens",
+            ),
+            (
+                MOONSHOT_ENDPOINT,
+                "https://api.moonshot.ai/v1/chat/completions",
+                "max_completion_tokens",
+            ),
+            (
+                THINKING_MACHINES_ENDPOINT,
+                "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1/chat/completions",
+                "max_completion_tokens",
+            ),
+            (
+                "https://provider-api.example.org/v1/",
+                "https://provider-api.example.org/v1/chat/completions",
+                "max_tokens",
+            ),
+            (
+                "http://127.0.0.1:1234/v1",
+                "http://127.0.0.1:1234/v1/chat/completions",
+                "max_tokens",
+            ),
+        ] {
+            let config = || LocalModelConfig {
+                base_url: base.to_owned(),
+                ..cloud_config()
+            };
+            let hosted = base.starts_with("https://");
+            if hosted {
+                assert_eq!(
+                    LocalModelClient::new(config(), None).err(),
+                    Some(ProviderError::InvalidToken),
+                    "{base}"
+                );
+            }
+            let client = LocalModelClient::new(config(), Some("not-a-real-key".to_owned()))
+                .unwrap_or_else(|error| panic!("{base}: {error}"));
+            assert_eq!(client.endpoint.as_str(), path);
+            assert_eq!(client.https_only, hosted, "{base}");
+            let body: Value = serde_json::from_slice(
+                &client
+                    .text_body(
+                        &[ModelMessage {
+                            role: ModelRole::System,
+                            content: BASE_PROMPT.to_owned(),
+                        }],
+                        false,
+                    )
+                    .expect("body"),
+            )
+            .expect("json");
+            let other = if field == "max_tokens" {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            assert_eq!(body.get(field), Some(&Value::from(64)), "{base}");
+            assert!(body.get(other).is_none(), "{base}");
+        }
+    }
+
+    /// DeepSeek thinks by default and answers 400 to a tool request that does
+    /// not send earlier reasoning back, which this client never keeps, so every
+    /// DeepSeek request (text or tools, first or later in a turn) switches
+    /// thinking off. No other endpoint gets the field (ADR-0092).
+    #[test]
+    fn only_deepseek_requests_switch_thinking_off() {
+        // A later request in a tool turn: earlier assistant text and a tool result.
+        let history = [
+            ModelMessage {
+                role: ModelRole::System,
+                content: BASE_PROMPT.to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "read the notes".to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: "Reading notes.md.".to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "tool result: notes".to_owned(),
+            },
+        ];
+        let tools = crate::turn::tool_definitions();
+        for (base, off) in [
+            (DEEPSEEK_ENDPOINT, true),
+            ("https://api.deepseek.com/", true),
+            (OPENAI_ENDPOINT, false),
+            (MOONSHOT_ENDPOINT, false),
+            ("https://provider-api.example.org/v1", false),
+            ("http://127.0.0.1:1234/v1", false),
+        ] {
+            let client = LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: base.to_owned(),
+                    ..cloud_config()
+                },
+                Some("not-a-real-key".to_owned()),
+            )
+            .unwrap_or_else(|error| panic!("{base}: {error}"));
+            for streaming in [false, true] {
+                let bodies = [
+                    client.text_body(&history, streaming).expect("text body"),
+                    client
+                        .tool_body(&history, &tools, streaming)
+                        .expect("tool body"),
+                ];
+                for bytes in bodies {
+                    let body: Value = serde_json::from_slice(&bytes).expect("json");
+                    let expected = off.then(|| serde_json::json!({"type": "disabled"}));
+                    assert_eq!(body.get("thinking").cloned(), expected, "{base}");
+                }
+            }
+        }
     }
 
     use std::net::TcpListener;
@@ -1600,7 +1870,7 @@ Connection: close
             partial_sent
                 .recv_timeout(Duration::from_secs(2))
                 .expect("the server wrote the first part of the body");
-            let mut read = std::pin::pin!(read_whole_body(response, &cancel));
+            let mut read = std::pin::pin!(read_whole_body(response, MAX_RESPONSE_BYTES, &cancel));
             assert!(
                 tokio::time::timeout(Duration::from_millis(100), read.as_mut())
                     .await

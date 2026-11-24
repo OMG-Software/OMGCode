@@ -114,10 +114,11 @@ Not implemented:
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
 - Binding a credential to a local
-  LM Studio profile, and adding any cloud provider other than Ollama Cloud.
-  They change only through the trusted CLI. The `settings` window adds an
-  Ollama Cloud connection with its API key, replaces the key, and removes the
-  connection, through the write-only key field (ADR-0071). The rest of phase
+  LM Studio profile, which changes only through the trusted CLI. The
+  `settings` window adds a hosted connection (Ollama Cloud since ADR-0071, the
+  other hosted providers and an OpenAI-compatible service since ADR-0092) with
+  its API key, replaces the key, and removes the connection, through the
+  write-only key field. The rest of phase
   S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
   are not implemented: credentials and the trusted package fetch and run. Skills
@@ -134,10 +135,12 @@ Not implemented:
   window manages skills (ADR-0082). Skill updates, Git sources, and the
   per-skill description and body view are not implemented.
 - A recovery interface for damaged journals or an incomplete tail.
-- A provider other than a local LM Studio or Ollama server and Ollama Cloud.
-  Stored API keys are used only for an LM Studio server's token and an Ollama
-  Cloud key. The `main` window shows nothing about the credential source
-  beyond the endpoint text and the hosted label.
+- A provider API other than OpenAI-compatible Chat Completions, such as
+  Anthropic's native Messages API, and subscription sign-in. Stored API keys
+  are used only for an LM Studio server's token and a hosted connection's key.
+  The `main` window shows nothing about the credential source beyond the
+  endpoint text and the hosted label. A model the server does not list, such
+  as a Thinking Machines Lab checkpoint, cannot be chosen in the model box.
 - A native operating-system confirmation dialog for approvals.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
@@ -306,9 +309,9 @@ their registered identifier, and approvals by identifier.
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 | `settings_unregister_workspace` | settings | Remove one workspace's registration after a native confirmation that names its folder; its settings and instructions file go, its files and sessions stay (ADR-0081) |
-| `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
-| `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, or an `ollama_cloud` profile with its fixed endpoint and a write-only API key |
-| `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
+| `settings_select_connection` | settings | Choose the default or a recorded profile with an endpoint (a hosted one also needs a bound credential) as the model connection, after a native confirmation |
+| `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0092) |
+| `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
@@ -733,9 +736,10 @@ untouched controls take the returned values.
   (the composer toolbar from ADR-0071 until then). `chat_models`
   takes the session id, resolves that session's connection exactly as
   `chat_send` does, stored credential included, and sends one
-  `GET /v1/models` to its endpoint, which is a loopback endpoint or the fixed
-  Ollama Cloud endpoint. Core refuses the whole list when it is not a `data`
-  array of at most 512 entries with string ids, or when an id is empty, over
+  `GET /models` under its endpoint's base path, which is a loopback endpoint,
+  a hosted provider's fixed endpoint, or a typed `openai_compatible` endpoint
+  (ADR-0092). Core refuses the whole list when it is not a `data` array of at
+  most 2048 entries (512 before ADR-0092) with string ids, or when an id is empty, over
   256 bytes, repeated, or holds a control or bidirectional formatting
   character. The deadline is ten seconds. The answer carries the session id,
   the endpoint it asked (display only), and the provider kind. **The list is
@@ -752,8 +756,9 @@ untouched controls take the returned values.
   server did not report stays chosen and is marked "(not reported by the
   server)". An id whose last tag is `cloud` or ends in `-cloud` is marked
   "(Ollama cloud)", and while it is chosen a warning says that prompts and
-  workspace text sent to it leave this computer. On an Ollama Cloud
-  connection every model is marked "(hosted)" and a warning says that
+  workspace text sent to it leave this computer. On a hosted connection
+  (any kind but LM Studio and Ollama) every model is marked "(hosted)" and a
+  warning says that
   prompts, workspace text read by tools, and command output leave this
   computer. The warning is read from the chosen id itself and from the
   connection, so it also shows while the list loads or after listing fails. A
@@ -1093,16 +1098,23 @@ waits. The window shows:
   argument fixed the connection, it is disabled and says so. Then one row per
   provider profile, with its name, an **Active** chip, its provider,
   endpoint, and authentication, whether a credential is bound, and
-  **Remove**. An `ollama_cloud` profile also has a **Hosted** chip, a line
-  saying that prompts, workspace text read by tools, and command output leave
-  this computer for ollama.com, and a **Set key…** disclosure with a
-  password field and **Save key**. Then **Add connection**, a disclosure with
-  labelled provider (`Ollama`, `LM Studio`, or `Ollama Cloud (hosted)`),
-  name, and loopback endpoint fields, the endpoint prefilled with the
-  provider's usual address (`http://127.0.0.1:11434/v1` or
-  `http://127.0.0.1:1234/v1`). For Ollama Cloud the endpoint field is hidden
-  and the fixed endpoint `https://ollama.com/v1` is shown as read-only text,
-  and a labelled **API key** password field (`autocomplete="off"`) appears.
+  **Remove**. A hosted profile also has a **Hosted** chip and a line saying
+  that prompts, workspace text read by tools, and command output leave this
+  computer for its endpoint's host. A hosted `api_key` profile with a
+  recorded endpoint also has a **Set key…** disclosure with a password field
+  and **Save key**. A `subscription` profile has no key field, and a profile
+  recorded without an endpoint has none either; its line says instead that it
+  cannot be used and must be removed and added again. Then **Add connection**, a disclosure with
+  labelled provider, name, and endpoint fields. The provider dropdown lists
+  `Ollama`, `LM Studio`, and every hosted kind with "(hosted)" after its name,
+  ending with `OpenAI compatible (hosted)` (ADR-0092). For a local provider
+  the endpoint is prefilled with its usual address
+  (`http://127.0.0.1:11434/v1` or `http://127.0.0.1:1234/v1`). For a named
+  hosted provider the endpoint field is hidden and its fixed endpoint is
+  shown as read-only text. For `OpenAI compatible` the endpoint field is
+  empty with the hint `https://llm.example.org/v1`. Every hosted kind shows a
+  labelled **API key** password field (`autocomplete="off"`) and a line that
+  names the host prompts go to, or "the address you enter".
   Between the active connection and the connection list, **Chat defaults**
   (ADR-0080) holds number fields for **Context tokens**, **Max output
   tokens**, **Tool calls per turn**, and **Tool-enabled turn timeout
@@ -1398,9 +1410,10 @@ argument that fixed the connection (`connection_fixed`), an unknown session
 (`not_found`), a profile core would not accept (`control`), and a choice the
 session already has (`control`). It then shows the native Yes/No dialog:
 "Send this session's chat turns to `<provider>` through the connection
-`<name>`?" with the endpoint, and, for Ollama Cloud, a paragraph saying that
-prompts, workspace text read by tools, and command output leave this computer
-for ollama.com. The command takes the one settings change at a time, so a
+`<name>`?" with the endpoint, and, for a hosted provider, a paragraph saying
+that prompts, workspace text read by tools, and command output leave this
+computer for the endpoint's host. For an `openai_compatible` profile it adds
+that the address was typed when the connection was added (ADR-0092). The command takes the one settings change at a time, so a
 second change is refused with `settings_change_running`. After Yes the
 settings are read again, and a profile removed or given another endpoint while
 the dialog was open records nothing (`stale_revision`). Only then is the
@@ -1422,11 +1435,11 @@ revision check and validation (ADR-0064, ADR-0071).
 - **Selecting needs a native confirmation.** `settings_select_connection`
   takes the revision and a profile name, or none for the default. The
   service refuses an unknown profile, a profile that cannot be chosen (core's
-  selectable rule: a local kind with a recorded endpoint, or an `ollama_cloud`
-  profile with a bound credential), and an unchanged choice
+  selectable rule: a local kind with a recorded endpoint, or a hosted
+  profile with its endpoint and a bound credential), and an unchanged choice
   before any dialog. It then asks "Send chat turns of sessions that have no
   connection of their own to Ollama through the connection `<name>`?" (or
-  LM Studio, Ollama Cloud, or the default), with the endpoint,
+  LM Studio, a hosted provider, or the default), with the endpoint,
   and records the choice only on Yes. It applies to turns of sessions
   without their own choice that start afterwards. When a launch argument fixed the connection, the command is
   refused with `connection_fixed`.
@@ -1434,9 +1447,14 @@ revision check and validation (ADR-0064, ADR-0071).
   most 256 bytes and a kind. For `lm_studio` or `ollama_local` it takes an
   endpoint and no key, and records a profile with authentication `none`;
   core refuses an endpoint that is not `http://<loopback IP>:<port>/v1`. For
-  `ollama_cloud` it takes an `api_key` and no endpoint: Rust supplies the one
-  fixed endpoint `https://ollama.com/v1` and records authentication
-  `api_key`. A request that gives a local kind a key, gives the cloud an
+  a named hosted kind (`ollama_cloud` and, since ADR-0092, `anthropic`,
+  `openai`, `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`,
+  `minimax`, `open_router`, `z_ai`, `deepseek`, and `xai`) it takes an
+  `api_key` and no endpoint: Rust supplies the kind's one fixed endpoint and
+  records authentication `api_key`. For `openai_compatible` it takes both an
+  endpoint and an `api_key`; core applies the typed-endpoint rule of
+  [provider authentication](provider-authentication.md#hosted-providers-adr-0092).
+  A request that gives a local kind a key, gives a named hosted kind an
   endpoint, or omits the field its kind needs is refused as
   `invalid_request` before anything is recorded. A new profile is not used
   until it is selected.
@@ -1464,10 +1482,12 @@ revision check and validation (ADR-0064, ADR-0071).
   identifier (and any item it replaced), as the CLI does, for the operator to
   check with `provider-profile-show`. No error shows the key or native error
   text. `settings_set_api_key` replaces the key
-  of an `ollama_cloud` profile (and refuses any other kind or an unknown
-  name) the way the CLI's `provider-credential-set` does: the new item is
+  of a hosted `api_key` profile (and refuses a local kind, a `subscription`
+  profile, which never holds a key and shows no **Set key…**, a profile
+  recorded without an endpoint, which can never be used and whose row says
+  so, or an unknown name) the way the CLI's `provider-credential-set` does: the new item is
   stored, then bound, then the old item is deleted. It shows no dialog,
-  because the key goes only to the same fixed host the profile already names
+  because the key goes only to the same host the profile already names
   and choosing the connection stays confirmed separately; a failure to delete
   the old item is reported as `credential_orphaned`, which says the new key is
   set and names the old item's identifier, since no profile names it any more.
@@ -1749,8 +1769,8 @@ What the design does:
   through the same check and dialog. No webview reads a token. A stored credential goes only to the endpoint
   recorded with its profile (ADR-0048).
 - **An API key crosses the `settings` webview once.** The operator types an
-  Ollama Cloud key into a password field of the `settings` window (ADR-0059
-  decision 6, ADR-0071 decision 5). The key is in that webview's memory
+  hosted connection's key into a password field of the `settings` window
+  (ADR-0059 decision 6, ADR-0071 decision 5, ADR-0092). The key is in that webview's memory
   while it is typed and in one IPC message (`settings_add_connection` or
   `settings_set_api_key`); the field is emptied as the button is pressed,
   whether the command succeeds or fails, and the window holds the key in no
@@ -1763,7 +1783,8 @@ What the design does:
   native credential store, and returns nothing derived from it: no key, length,
   or digest, and no error text that repeats it. The `main` window has no
   command that carries or reads a key. A key replaced by a compromised
-  `settings` webview still reaches only the fixed host `ollama.com`; choosing
+  `settings` webview still reaches only the host that profile already
+  records, which a replaced key cannot change; choosing
   that connection for a session or as the default stays behind a native
   confirmation, which is why replacing a key shows none.
 - **Per-session choices are re-checked and not tamper-evident.**
@@ -2019,7 +2040,9 @@ ACLs the private store refuses, see the notes in
   also cover the Ollama Cloud form (the endpoint hidden and the fixed one
   shown, a password field, the key sent once and the field cleared after a
   success and after a refusal, and absent from the page and from every other
-  call), **Set key…**, **Remove** for a profile with a stored key, and the
+  call), a named hosted provider's fixed endpoint and an `openai_compatible`
+  endpoint and key (ADR-0092), **Set key…**, **Remove** for a profile with a
+  stored key, and the
   hosted label.
   Since ADR-0072: `ui/tests/layout.test.ts` covers the column order, the
   separators' splitter attributes, collapsing each panel to its rail and
@@ -2054,14 +2077,19 @@ ACLs the private store refuses, see the notes in
   the per-session choice: the confirmation, the recorded choice and model, the
   model list and turn for that session, the launch argument winning, a removed
   or re-added profile making the choice stale, refusals before any dialog, the
-  Ollama Cloud dialog text, model validation, and a damaged file.
+  Ollama Cloud dialog text, a hosted provider's dialog naming its host and
+  flagging a typed address, model validation, and a damaged file.
   `crates/omgcode-app/tests/desktop_cloud_connection.rs` covers adding Ollama
   Cloud with a key against the real settings and native credential stores
   (the profile, the fixed endpoint, the bound item, selectability), refusals
   that record nothing and never repeat the key, that a request never prints
   its key, replacing a key, removing a bound profile with a declined and an
   accepted dialog (the native item is deleted), the active-profile dialog
-  text, and a session that chose a removed profile becoming stale. Unit tests in
+  text, and a session that chose a removed profile becoming stale, and since
+  ADR-0092 adding a named hosted provider with its fixed endpoint and an
+  `openai_compatible` connection with its typed endpoint, with their
+  refusals. `crates/omgcode-desktop/tests/layers.rs` checks that the frontend
+  names every provider kind and shows core's fixed endpoints. Unit tests in
   `session_connections.rs` cover the file's round trip, bounds, and damage. The desktop chat and event tests also cover cancelling
   a streamed turn and shutting down while one runs, and cancelling a turn
   whose request is not streamed.

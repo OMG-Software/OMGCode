@@ -14,13 +14,15 @@ billing or defer it.
 
 | Connection profile | Required authentication and usage path | Current design readiness |
 | --- | --- | --- |
-| OpenAI API | User API key; API-account billing | Planned; not implemented |
+| OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0092); API key only; no request was verified with a real key |
 | ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Official local/open-source integration documented; implementation and entitlement tests pending |
-| Anthropic API | User API key; API-account billing | Planned; not implemented |
+| Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0092), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
 | Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0071); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
-| OpenRouter | User API key and explicit upstream routing | Planned; not implemented |
+| OpenRouter | User API key and explicit upstream routing | Prototype at `https://openrouter.ai/api/v1` (ADR-0092); the model list shape was observed without a key; upstream routing preferences are not sent; API key only; no request was verified with a real key |
+| Google, Meta, Moonshot, Tencent, Thinking Machines Lab, MiniMax, Z.ai, DeepSeek, xAI | User API key; API-account billing | Prototype at each provider's one documented OpenAI-compatible endpoint ([hosted providers](#hosted-providers-adr-0092)); API key only; no request was verified with a real key |
+| OpenAI compatible | User API key for an operator-typed HTTPS base URL | Prototype ([hosted providers](#hosted-providers-adr-0092)); the service must speak the Chat Completions shapes the adapter parses |
 | LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
 
 The provider, authentication method, account/workspace, billing mode, and model
@@ -138,11 +140,16 @@ a separately billed Anthropic API connection remains a different profile.
 ## Recorded provider profiles (0.24.0)
 
 `workspace provider-profile-add/show/remove` record a name, a provider kind,
-and an authentication mode. Kinds are `openai`, `anthropic`, `ollama_local`,
-`ollama_cloud`, `open_router`, and `lm_studio`; modes are `subscription`,
-`api_key`, and `none`. Subscription is accepted only for OpenAI and Anthropic.
-API keys are accepted for those, Ollama Cloud, OpenRouter, and LM Studio. Since ADR-0071 an `ollama_cloud` profile also accepts its one fixed endpoint.
-Ollama Local accepts only `none`.
+and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
+`ollama_cloud`, `anthropic`, `openai`, `open_router`, and, since ADR-0092,
+`google`, `meta`, `moonshot`, `tencent`, `thinking_machines`, `minimax`,
+`z_ai`, `deepseek`, `xai`, and `openai_compatible`. Modes are
+`subscription`, `api_key`, and `none`. Subscription is accepted only for
+OpenAI and Anthropic, and no adapter reads one. API keys are accepted for LM
+Studio and every hosted kind. Since ADR-0071 an `ollama_cloud` profile also
+accepts its one fixed endpoint, and since ADR-0092 every hosted kind accepts
+one ([hosted providers](#hosted-providers-adr-0092)). Ollama Local accepts
+only `none`.
 
 A profile stores no account, token, password, certificate, or other
 credential. Since 0.31.0 it can record one endpoint (below). An endpoint is not
@@ -152,9 +159,9 @@ entitlement check, billing mode, or model context uses it. Since 0.30.0 the
 local LM Studio adapter can read a bound credential of an `lm_studio` profile
 that the operator selects (below). `capabilities` reports
 `provider_profiles: true`, `provider_adapters: false`, and
-`stored_credential_adapters: ["lm_studio", "ollama_cloud"]`, and, since 0.31.0,
-`provider_profile_endpoints: true`. Hosted adapters other than Ollama Cloud and the
-provider-specific login approvals remain prerequisites for any real
+`stored_credential_adapters` (every kind except `ollama_local` since
+ADR-0092), and, since 0.31.0, `provider_profile_endpoints: true`. The
+provider-specific login approvals remain prerequisites for any subscription
 connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
 
 Since 0.31.0 `provider-profile-add` accepts `--endpoint <url>` (ADR-0048). An
@@ -164,13 +171,14 @@ applies to every request: plain `http`, a literal loopback IP, an explicit
 non-zero port, the path `/v1` or `/v1/`, no user information, query, or
 fragment, and at most 256 bytes. Core has one implementation of that rule, and
 both the provider client and the profile record use it. Replay of the control
-journal applies it again. An `ollama_cloud` profile accepts only the fixed cloud endpoint (Ollama Cloud, below). Every other provider kind refuses an endpoint for
-now, because no adapter defines its rule. The text is stored exactly as given,
-without normalisation. The refusals are `provider profile refused: a
-local provider endpoint must be http://<loopback IP>:<port>/v1 with no user
-information, query, or fragment`, `provider profile refused: the provider
-endpoint is longer than 256 bytes`, and `provider profile refused: this
-provider kind does not accept an endpoint yet`.
+journal applies it again. An `ollama_cloud` profile accepts only the fixed cloud endpoint (Ollama Cloud, below). Since ADR-0092 every other hosted kind
+accepts its own rule ([hosted providers](#hosted-providers-adr-0092)). The
+text is stored exactly as given, without normalisation. The refusals are
+`provider profile refused: a local provider endpoint must be http://<loopback
+IP>:<port>/v1 with no user information, query, or fragment`, `provider
+profile refused: the provider endpoint is longer than 256 bytes`, `provider
+profile refused: this provider accepts only its one documented endpoint`, and
+the `openai_compatible` refusal described there.
 
 `provider-profile-show` and `status` print an `endpoint` field only when the
 profile records one. A profile without one prints as before. The endpoint is
@@ -254,11 +262,17 @@ OpenAI-compatible APIs, and both returned
 
 - **Request.** `omgcode models [--endpoint URL | --provider-profile NAME]`
   and the desktop `chat_models` command resolve the connection as `chat`
-  does and send one `GET /v1/models`. The endpoint passes the same loopback
-  rule, and a stored `lm_studio` credential is sent as the same bearer
+  does and send one `GET` for `/models` appended to the endpoint's base path.
+  For a local server that is `GET /v1/models`, and the endpoint passes the
+  same loopback rule. For a hosted profile (since ADR-0092) the endpoint
+  passes its hosted rule instead, so DeepSeek is asked at
+  `https://api.deepseek.com/models` and Z.ai at
+  `https://api.z.ai/api/paas/v4/models`; a hosted request needs the
+  profile's stored key. A stored credential is sent as the same bearer
   header. No proxy, redirect, or retry; a five-second connect timeout, a
-  ten-second deadline, and a 1 MiB body.
-- **Response.** Parsed strictly: a `data` array of at most 512 objects with
+  ten-second deadline, and a 4 MiB body (1 MiB before ADR-0092).
+- **Response.** Parsed strictly: a `data` array of at most 2048 objects (512
+  before ADR-0092) with
   string ids, no duplicate key, and no repeated id. An id that is empty, over
   256 bytes, or holds a control or bidirectional formatting character
   refuses the whole list. Other members are ignored. Failures are the
@@ -272,8 +286,9 @@ OpenAI-compatible APIs, and both returned
   `/v1/models` does not report. Embedding models are listed.
 
 `capabilities` reports `streaming_adapters` and `cancellable_adapters` as
-`["lm_studio", "ollama_local", "ollama_cloud"]` since ADR-0071, and
-`stored_credential_adapters` is `["lm_studio", "ollama_cloud"]`.
+every provider kind since ADR-0092 (`["lm_studio", "ollama_local",
+"ollama_cloud"]` since ADR-0071), and `stored_credential_adapters` as every
+kind except `ollama_local`.
 
 ## Ollama Cloud (ADR-0071)
 
@@ -287,8 +302,9 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
   or letter case. It still takes authentication `api_key` only, and a profile
   without an endpoint cannot be used (`endpoint_not_recorded`). Core has one
   implementation of the rule (`OLLAMA_CLOUD_ENDPOINT`, `ModelEndpoint`), which
-  the profile record, replay, the client, and the model list share. No rule
-  admits any other non-loopback endpoint. `omgcode workspace
+  the profile record, replay, the client, and the model list share. Since
+  ADR-0092 the other hosted kinds have their own rules
+  ([hosted providers](#hosted-providers-adr-0092)). `omgcode workspace
   provider-profile-add NAME --kind ollama_cloud --auth api_key --endpoint
   https://ollama.com/v1 --revision N` records one.
 - **Credential.** `provider-credential-set` stores the key and binds it as for
@@ -323,8 +339,9 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
   limits as a local request. A request to the cloud endpoint without a token
   is refused before any connection (`invalid local model token`).
 - **Selectable.** A profile can be the active connection when it is a local
-  kind with an endpoint, or an `ollama_cloud` profile with the cloud endpoint
-  and a bound credential (`ControlStore::check_provider_selectable`). Replay
+  kind with an endpoint, or a hosted profile (since ADR-0092, any hosted kind)
+  with its endpoint and a bound credential
+  (`ControlStore::check_provider_selectable`). Replay
   checks the endpoint rule only, because it cannot read the credential store.
 - **Off-machine data.** A turn on this connection sends prompts, workspace
   text that tools read, and command output to ollama.com.
@@ -333,13 +350,106 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
   no key was available; those shapes are assumed to match the local Ollama
   server's. No test makes a network call to ollama.com.
 - **Not covered.** Ollama's native `/api` endpoints, account sign-in, usage
-  limits and billing, and any other hosted provider.
+  limits and billing.
+
+## Hosted providers (ADR-0092)
+
+[ADR-0092](adr/0092-add-hosted-providers-and-an-openai-compatible-connection.md)
+connects the same Chat Completions client to twelve more hosted services and to
+any HTTPS service that speaks the same API. Each works as Ollama Cloud does
+(above): an `api_key` profile, a stored credential bound to it, the key sent
+only to the recorded endpoint, HTTPS with the platform's certificate
+validation, no proxy, redirect, or retry, and the same timeouts and limits.
+
+| Kind | Fixed endpoint | Output limit field |
+| --- | --- | --- |
+| `anthropic` | `https://api.anthropic.com/v1` | `max_tokens` |
+| `openai` | `https://api.openai.com/v1` | `max_completion_tokens` |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `max_tokens` |
+| `meta` | `https://api.llama.com/compat/v1` | `max_tokens` |
+| `moonshot` | `https://api.moonshot.ai/v1` | `max_completion_tokens` |
+| `tencent` | `https://api.hunyuan.cloud.tencent.com/v1` | `max_tokens` |
+| `thinking_machines` | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `max_completion_tokens` |
+| `minimax` | `https://api.minimax.io/v1` | `max_completion_tokens` |
+| `open_router` | `https://openrouter.ai/api/v1` | `max_tokens` |
+| `z_ai` | `https://api.z.ai/api/paas/v4` | `max_tokens` |
+| `deepseek` | `https://api.deepseek.com` | `max_tokens` |
+| `xai` | `https://api.x.ai/v1` | `max_completion_tokens` |
+| `openai_compatible` | typed by the operator | `max_tokens`, unless the typed address is a named provider's endpoint, which sends that provider's field (below) |
+
+- **Fixed endpoints.** A named kind accepts exactly its endpoint, or that text
+  with one trailing `/`. Core has one table (`provider/hosted.rs`) that the
+  profile record, replay, the client, and the model list share. Requests
+  append `/chat/completions` or `/models` to the base path. A regional or
+  proxied endpoint for a named provider must be added as `openai_compatible`.
+- **Typed endpoint.** An `openai_compatible` endpoint must be at most 256
+  bytes and start with `https://`; contain no whitespace, control character,
+  `%`, `@`, `?`, `#`, or `\`; parse with a host; be written exactly as the URL
+  parser writes it, apart from one trailing `/`; and have no `//` in its path.
+  An upper-case host, a default port, a `.` or `..` segment, or a non-ASCII
+  host is refused, not rewritten, so the confirmed text is the URL every
+  request uses. Port 0, which no request can reach, is refused too, as the
+  loopback rule refuses it. A host on this computer is refused: a loopback
+  or unspecified address (IPv4, IPv6, or IPv4-mapped IPv6), `localhost`, or a
+  `.localhost` name, with or without a trailing root dot. A local server uses a local kind, and the hosted
+  confirmation would otherwise say that prompts leave this computer. The
+  refusal is `provider profile refused: an openai_compatible endpoint must be
+  an https:// base URL with a lower-case host that is not this computer and
+  no user information, query, fragment, percent-encoding, default
+  port, or empty or dot path segment`. Plain HTTP is refused; a loopback HTTP
+  server uses a local kind. A typed endpoint equal to a named provider's
+  endpoint uses that provider's output field.
+- **CLI.** `omgcode workspace provider-profile-add NAME --kind deepseek --auth
+  api_key --endpoint https://api.deepseek.com --revision N`, then
+  `provider-credential-set NAME`. `--provider-profile NAME` selects it for
+  `chat`, `session compact`, `models`, and the desktop launch. `--endpoint`
+  with a hosted URL and no profile is refused (`cloud_needs_profile`).
+  `--endpoint` may be left out for a named hosted kind with `--auth api_key`:
+  core records that provider's documented endpoint, as the desktop does, so
+  no unusable profile is recorded. An `openai_compatible` API-key profile
+  without one is refused (`an openai_compatible profile needs an endpoint`).
+  A subscription or local profile added without one still records none.
+- **Desktop.** **Add connection** in the `settings` window lists every kind.
+  A named hosted provider shows its fixed endpoint, which Rust supplies, and
+  takes an API key; `openai_compatible` takes an endpoint and an API key.
+  The key is sent once and the field cleared, as for Ollama Cloud. The native
+  confirmation before choosing a hosted connection names the host, with any
+  non-default port, that receives prompts, workspace text read by tools, and
+  command output; for `openai_compatible` it adds that the address was typed when the connection
+  was added. See the [desktop interface](desktop-interface.md#choosing-the-model-connection).
+- **Selectable.** A hosted profile can be chosen only with a bound credential.
+- **Compatibility.** A control journal that records a new kind, or an endpoint
+  on an `openai`, `anthropic`, or `open_router` profile, cannot be read by
+  0.58.0 or earlier.
+- **Not verified.** Endpoints and output fields come from each provider's
+  documentation, read on 2026-11-24. No request was made to any of these
+  providers with a key, and no test makes a network call to one. The reply,
+  stream, and tool-call shapes are assumed to match the OpenAI-compatible
+  shapes the client parses. A finish reason outside the OpenAI set is refused
+  as a malformed reply. Moonshot documents passing `reasoning_content` back
+  unchanged in tool loops for its thinking models, without documenting an
+  error when it is missing; this client never sends it. Meta's Llama API is a waitlisted preview. xAI's output
+  field was not confirmed. Anthropic and Google document their compatibility
+  layers as for testing and beta respectively.
+- **DeepSeek thinking.** DeepSeek enables thinking by default and documents
+  a 400 for a tool request that does not send every earlier turn's
+  `reasoning_content` back. This client keeps no reasoning text, so every
+  request to the DeepSeek endpoint sends `"thinking": {"type": "disabled"}`.
+  DeepSeek turns therefore run without thinking.
+- **Not covered.** Native provider APIs (for example Anthropic Messages),
+  subscription sign-in, provider-specific parameters such as OpenRouter
+  routing or reasoning settings, and reasoning text, which is ignored.
+  Thinking Machines Lab documents no model list, and the desktop model box
+  chooses only a listed model, so a Tinker model can be named only with CLI
+  `chat --model`.
 
 ## Stored credential use (0.30.0)
 
 [ADR-0047](adr/0047-read-the-local-provider-token-from-the-credential-store.md)
 lets the local LM Studio adapter take its optional server token from a stored
-credential. It is the only adapter that reads one.
+credential. In 0.30.0 it was the only adapter that read one; an
+`ollama_cloud` profile (ADR-0071) and every hosted profile (ADR-0092) now
+read one too, through the same profile selection.
 
 - **Selection.** The operator names a profile with `omgcode chat
   --provider-profile <name>` or `omgcode session compact --provider-profile

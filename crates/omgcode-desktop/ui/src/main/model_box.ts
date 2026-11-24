@@ -1,4 +1,5 @@
 import { el, replaceChildren } from "../dom";
+import { isHostedKind } from "../providers";
 import type { ConnectionChange, ConnectionModel } from "./connection_state";
 import { createModelPicker } from "./model_picker";
 import { createProviderSelect } from "./provider_select";
@@ -77,7 +78,7 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
       picker.reset();
       picker.setHosted(false);
     } else if (status !== null && id !== null && change !== "busy" && change !== "message") {
-      picker.setHosted(status.connection.kind === "ollama_cloud");
+      picker.setHosted(isHostedKind(status.connection.kind));
       const key = [
         id,
         status.connection.profile ?? "",

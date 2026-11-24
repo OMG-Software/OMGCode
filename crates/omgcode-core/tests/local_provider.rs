@@ -465,13 +465,16 @@ fn rejects_destinations_outside_literal_loopback_http_before_connecting() {
     for base_url in [
         "http://localhost:1234/v1",
         "http://192.0.2.1:1234/v1",
-        "https://127.0.0.1:1234/v1",
         "http://127.0.0.1/v1",
         "http://127.0.0.1:0/v1",
         "http://127.0.0.1:1234/v1/other",
         "http://user@127.0.0.1:1234/v1",
         "http://127.0.0.1:1234/v1?query=1",
         "http://127.0.0.1:1234/v1#fragment",
+        // HTTPS to this computer is neither a local endpoint nor a typed
+        // hosted one: a local server uses a local kind (ADR-0092).
+        "https://127.0.0.1:1234/v1",
+        "https://localhost:1234/v1",
     ] {
         let result = LocalModelClient::new(
             LocalModelConfig {

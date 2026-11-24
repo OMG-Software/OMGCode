@@ -17,6 +17,27 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
+
+/// Every provider kind's stored spelling, in the order `capabilities` lists
+/// them (ADR-0092).
+const ALL_KINDS: [&str; 16] = [
+    "lm_studio",
+    "ollama_local",
+    "ollama_cloud",
+    "anthropic",
+    "openai",
+    "google",
+    "meta",
+    "moonshot",
+    "tencent",
+    "thinking_machines",
+    "minimax",
+    "open_router",
+    "z_ai",
+    "deepseek",
+    "xai",
+    "openai_compatible",
+];
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -1122,10 +1143,7 @@ fn chat_without_stream_sends_stream_false_and_leaves_stderr_empty() {
 fn capabilities_report_the_streaming_adapters() {
     let output = run_cli(&["capabilities"]);
     assert_success(&output);
-    assert_eq!(
-        output_json(&output)["streaming_adapters"],
-        json!(["lm_studio", "ollama_local", "ollama_cloud"])
-    );
+    assert_eq!(output_json(&output)["streaming_adapters"], json!(ALL_KINDS));
 }
 
 #[test]
@@ -1134,7 +1152,7 @@ fn capabilities_report_the_cancellable_adapters() {
     assert_success(&output);
     assert_eq!(
         output_json(&output)["cancellable_adapters"],
-        json!(["lm_studio", "ollama_local", "ollama_cloud"])
+        json!(ALL_KINDS)
     );
 }
 

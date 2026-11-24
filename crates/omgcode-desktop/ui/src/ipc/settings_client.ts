@@ -42,9 +42,10 @@ export const settingsApi = {
   selectConnection: (revision: number, profile: string | null) =>
     invokeCommand<SettingsOverview>("settings_select_connection", { revision, profile }),
   /**
-   * Records a connection. A local kind sends `endpoint` and a `null` key; Ollama Cloud sends a
-   * `null` endpoint (Rust uses the fixed one) and the API key. The key is write-only: this is
-   * the one place it is sent, and nothing here keeps it.
+   * Records a connection. A local kind sends `endpoint` and a `null` key; a named hosted
+   * provider sends a `null` endpoint (Rust uses its fixed one) and the API key; an
+   * OpenAI-compatible service sends both. The key is write-only: this is the one place it is
+   * sent, and nothing here keeps it.
    */
   addConnection: (
     revision: number,
@@ -60,7 +61,7 @@ export const settingsApi = {
       endpoint,
       api_key: apiKey,
     }),
-  /** Replaces an Ollama Cloud profile's stored API key. Write-only, like the add command. */
+  /** Replaces a hosted profile's stored API key. Write-only, like the add command. */
   setApiKey: (revision: number, name: string, apiKey: string) =>
     invokeCommand<SettingsOverview>("settings_set_api_key", {
       revision,

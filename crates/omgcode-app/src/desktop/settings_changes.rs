@@ -49,7 +49,7 @@ use omgcode_core::control::{
     delete_unbound_credential,
 };
 use omgcode_core::policy::{Access, PermissionSet, WriteTool};
-use omgcode_core::provider::OLLAMA_CLOUD_ENDPOINT;
+use omgcode_core::provider::ModelEndpoint;
 use omgcode_core::run::{self, REVOCATION_WAIT};
 use omgcode_core::turn::display_safe_line;
 
@@ -61,9 +61,9 @@ use super::settings::overview_of;
 use super::state::folder_of_directory;
 use super::wire::{
     ApiKeySetRequest, ConnectionAddRequest, ConnectionChooseRequest, ConnectionRemoveRequest,
-    ConnectionSelectRequest, ConnectionStatus, ConnectionStatusRequest, NewConnectionKind,
-    PermissionFlags, PermissionsChangeRequest, SessionModelSelectRequest, SettingsOverview,
-    SettingsRevisionRequest, WorkspaceRevisionRequest,
+    ConnectionSelectRequest, ConnectionStatus, ConnectionStatusRequest, PermissionFlags,
+    PermissionsChangeRequest, SessionModelSelectRequest, SettingsOverview, SettingsRevisionRequest,
+    WorkspaceRevisionRequest,
 };
 
 /// What the operator is asked to choose a folder for. The shell uses it for
@@ -296,16 +296,44 @@ const MAX_NAME_INPUT_BYTES: usize = 256;
 /// How the confirmation names a provider.
 const fn provider_label(kind: ProviderKind) -> &'static str {
     match kind {
+        ProviderKind::LmStudio => "LM Studio",
         ProviderKind::OllamaLocal => "Ollama",
         ProviderKind::OllamaCloud => "Ollama Cloud",
-        _ => "LM Studio",
+        ProviderKind::Anthropic => "Anthropic (Claude)",
+        ProviderKind::OpenAi => "OpenAI",
+        ProviderKind::Google => "Google (Gemini)",
+        ProviderKind::Meta => "Meta (Llama API)",
+        ProviderKind::Moonshot => "Moonshot AI (Kimi)",
+        ProviderKind::Tencent => "Tencent (Hunyuan)",
+        ProviderKind::ThinkingMachines => "Thinking Machines Lab (Tinker)",
+        ProviderKind::MiniMax => "MiniMax",
+        ProviderKind::OpenRouter => "OpenRouter",
+        ProviderKind::ZAi => "Z.ai (GLM)",
+        ProviderKind::DeepSeek => "DeepSeek",
+        ProviderKind::XAi => "xAI (Grok)",
+        ProviderKind::OpenAiCompatible => "an OpenAI-compatible service",
     }
 }
 
-/// What the confirmation adds for the hosted service. Prompts, tool results,
+/// What the confirmation adds for a hosted service. Prompts, tool results,
 /// and command output are the model's whole view of the workspace, so the
-/// operator is told before a turn can send them off this computer (ADR-0071).
-const CLOUD_NOTICE: &str = "This is Ollama's hosted service. Prompts, workspace text read by tools, and command output leave this computer for ollama.com.";
+/// operator is told before a turn can send them off this computer, and to
+/// which host (ADR-0071, ADR-0092). An operator-typed address is called out as
+/// such, because no rule in OMGCode vouches for it.
+fn hosted_notice(kind: ProviderKind, endpoint: &str) -> String {
+    let host = ModelEndpoint::parse(endpoint)
+        .ok()
+        .and_then(|parsed| parsed.host().map(|host| display_safe_line(&host)))
+        .unwrap_or_else(|| display_safe_line(endpoint));
+    let typed = if kind == ProviderKind::OpenAiCompatible {
+        " This address was typed when the connection was added; check that it is the service you mean."
+    } else {
+        ""
+    };
+    format!(
+        "This is a hosted service. Prompts, workspace text read by tools, and command output leave this computer for {host}.{typed}"
+    )
+}
 
 /// The confirmation for choosing a recorded profile. `subject` says whose chat
 /// turns are sent there. Every word is fixed text or a display-safe value.
@@ -316,8 +344,8 @@ fn profile_confirmation(
     endpoint: &str,
     credential_bound: bool,
 ) -> Confirmation {
-    let hosted = if kind == ProviderKind::OllamaCloud {
-        format!("\n\n{CLOUD_NOTICE}")
+    let hosted = if kind.is_hosted() {
+        format!("\n\n{}", hosted_notice(kind, endpoint))
     } else {
         String::new()
     };
@@ -811,9 +839,9 @@ impl DesktopService {
     }
 
     /// `settings` only. Choose the global default model connection: a
-    /// selectable recorded profile by name (local, or `ollama_cloud` with a
-    /// bound credential), or `None` for the default endpoint (ADR-0064,
-    /// ADR-0071). It applies to sessions that have no connection of their own. A
+    /// selectable recorded profile by name (local, or hosted with a bound
+    /// credential), or `None` for the default endpoint (ADR-0064, ADR-0071,
+    /// ADR-0092). It applies to sessions that have no connection of their own. A
     /// native confirmation names the provider and endpoint first, because the
     /// choice decides where chat turns send their messages.
     ///
@@ -856,7 +884,8 @@ impl DesktopService {
     /// that fixed the connection, an unknown session, a profile core would
     /// not accept, and a choice the session already has. Rust then shows the
     /// native Yes/No confirmation naming the provider and endpoint (and, for
-    /// Ollama Cloud, that prompts and tool output leave this computer), which
+    /// a hosted service, that prompts and tool output leave this computer for
+    /// its host), which
     /// no webview can answer. Only on Yes is the choice recorded for the
     /// session, and its model is cleared because model ids belong to one
     /// server. The settings store is read again after Yes, so a profile
@@ -949,16 +978,19 @@ impl DesktopService {
 
     /// `settings` only. Record a connection through the same core call as the
     /// CLI's `provider-profile-add`: a local LM Studio or Ollama connection
-    /// with no credential and a typed loopback endpoint, or Ollama Cloud with
-    /// its fixed endpoint and an API key (ADR-0071 decision 5). Recording it
-    /// grants nothing and sends nothing; only selecting it does, after a
-    /// confirmation. No dialog is shown.
+    /// with no credential and a typed loopback endpoint, a named hosted
+    /// provider with its fixed endpoint and an API key (ADR-0071 decision 5,
+    /// ADR-0092), or an OpenAI-compatible service with a typed HTTPS base URL
+    /// and an API key. Recording it grants nothing and sends nothing; only
+    /// selecting it does, after a confirmation that names the host. No dialog
+    /// is shown.
     ///
-    /// A local kind needs `endpoint` and no `api_key`; `ollama_cloud` needs an
-    /// `api_key` and no `endpoint`. Either mismatch is refused as
-    /// `invalid_request` before anything is read or recorded.
+    /// A local kind needs `endpoint` and no `api_key`; a named hosted kind
+    /// needs an `api_key` and no `endpoint`; `openai_compatible` needs both.
+    /// Any mismatch is refused as `invalid_request` before anything is read or
+    /// recorded.
     ///
-    /// For Ollama Cloud the key is moved into core's zeroing `Secret`
+    /// For a hosted kind the key is moved into core's zeroing `Secret`
     /// immediately and checked as the CLI checks it (non-empty, at most 16
     /// KiB). The native credential store is opened first, so an unavailable
     /// or locked store refuses the request before any profile exists. A
@@ -978,8 +1010,8 @@ impl DesktopService {
     ///
     /// `invalid_request` for an oversized value, a mismatched field, or a key
     /// that is empty, too long, or has a control character; `control` with
-    /// core's reason (a bad name, a duplicate, or an endpoint that is not
-    /// `http://<loopback IP>:<port>/v1`); `credential_unavailable`,
+    /// core's reason (a bad name, a duplicate, or an endpoint its kind's rule
+    /// refuses); `credential_unavailable`,
     /// `credential_locked`, `credential_io`, `credential_orphaned`,
     /// `credential_binding_uncertain`; `stale_revision`;
     /// `settings_change_running`; `busy`.
@@ -1001,33 +1033,39 @@ impl DesktopService {
         {
             return Err(DesktopError::invalid_request("A value is too long."));
         }
-        let (kind, endpoint, auth, secret) = match (kind, endpoint, api_key) {
-            (NewConnectionKind::OllamaCloud, None, Some(key)) => {
-                let secret = key
-                    .into_secret()
-                    .ok_or_else(DesktopError::malformed_key_input)?;
-                (
-                    ProviderKind::OllamaCloud,
-                    OLLAMA_CLOUD_ENDPOINT.to_owned(),
-                    ProviderAuth::ApiKey,
-                    Some(secret),
-                )
-            }
-            (NewConnectionKind::OllamaCloud, _, _) => {
-                return Err(DesktopError::invalid_request(
-                    "Ollama Cloud takes an API key and no endpoint.",
-                ));
-            }
-            (local, Some(endpoint), None) => {
-                let kind = match local {
-                    NewConnectionKind::LmStudio => ProviderKind::LmStudio,
-                    _ => ProviderKind::OllamaLocal,
-                };
-                (kind, endpoint, ProviderAuth::None, None)
-            }
-            (_, _, _) => {
+        let fixed = kind.fixed_endpoint();
+        let (endpoint, auth, secret) = match (kind.is_local(), fixed, endpoint, api_key) {
+            (true, _, Some(endpoint), None) => (endpoint, ProviderAuth::None, None),
+            (true, _, _, _) => {
                 return Err(DesktopError::invalid_request(
                     "A local connection takes an endpoint and no API key.",
+                ));
+            }
+            // Rust supplies a named provider's one endpoint; it is never typed.
+            (false, Some(fixed), None, Some(key)) => (
+                fixed.to_owned(),
+                ProviderAuth::ApiKey,
+                Some(
+                    key.into_secret()
+                        .ok_or_else(DesktopError::malformed_key_input)?,
+                ),
+            ),
+            (false, Some(_), _, _) => {
+                return Err(DesktopError::invalid_request(
+                    "This provider takes an API key and no endpoint.",
+                ));
+            }
+            (false, None, Some(endpoint), Some(key)) => (
+                endpoint,
+                ProviderAuth::ApiKey,
+                Some(
+                    key.into_secret()
+                        .ok_or_else(DesktopError::malformed_key_input)?,
+                ),
+            ),
+            (false, None, _, _) => {
+                return Err(DesktopError::invalid_request(
+                    "An OpenAI-compatible connection takes an endpoint and an API key.",
                 ));
             }
         };
@@ -1076,21 +1114,21 @@ impl DesktopService {
         })
     }
 
-    /// `settings` only. Replace the stored API key of a recorded
-    /// `ollama_cloud` profile through `ControlStore::set_provider_credential`,
+    /// `settings` only. Replace the stored API key of a recorded hosted
+    /// profile through `ControlStore::set_provider_credential`,
     /// as the CLI's `provider-credential-set` does: the new item is stored,
     /// then bound, then the replaced item is deleted. The key is handled as in
     /// [`settings_add_connection`](Self::settings_add_connection).
     ///
     /// No dialog is shown (ADR-0059 decision 6 asks for none). The key goes
-    /// only to the same fixed host the connection already names, so the
+    /// only to the same recorded endpoint the connection already names, so the
     /// audience of a turn is unchanged; the profile's endpoint is not
     /// editable, and choosing the connection stays confirmed separately.
     ///
     /// # Errors
     ///
-    /// `invalid_request` for a profile that is not an `ollama_cloud` profile
-    /// or a key that is empty, too long, or has a control character; `control`
+    /// `invalid_request` for a profile that is not a hosted `api_key` profile
+    /// with a recorded endpoint, or a key that is empty, too long, or has a control character; `control`
     /// for an unknown profile; `credential_unavailable`, `credential_locked`,
     /// `credential_io`, `credential_orphaned` (the new key is bound but the
     /// replaced item could not be deleted); `stale_revision`;
@@ -1117,9 +1155,21 @@ impl DesktopService {
             let status = store
                 .provider_profile(&name)
                 .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
-            if status.profile().kind() != ProviderKind::OllamaCloud {
+            // A subscription profile can never hold a key (core's
+            // `require_api_key`), so refuse it here with the same message.
+            if !status.profile().kind().is_hosted()
+                || status.profile().auth() != ProviderAuth::ApiKey
+            {
                 return Err(DesktopError::invalid_request(
-                    "Only an Ollama Cloud connection has an API key set here.",
+                    "Only a hosted connection that uses an API key has a key set here.",
+                ));
+            }
+            // A profile recorded without an endpoint can never be used, and its endpoint cannot
+            // be added, so a key bound to it would serve nothing. Core now records a named kind's
+            // endpoint at add time (ADR-0092), so only a journal from 0.58.0 or earlier holds one.
+            if status.profile().endpoint().is_none() {
+                return Err(DesktopError::invalid_request(
+                    "This connection has no endpoint, so it cannot be used. Remove it and add it again.",
                 ));
             }
             match store.set_provider_credential(&credentials, &name, &secret, revision) {

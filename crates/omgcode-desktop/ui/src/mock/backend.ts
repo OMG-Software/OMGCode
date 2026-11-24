@@ -30,6 +30,13 @@ import type {
   WorkspaceSettingsView,
 } from "../ipc/types";
 import {
+  FIXED_ENDPOINTS,
+  isFixedHostedKind,
+  isHostedKind,
+  isLocalKind,
+  NEW_CONNECTION_KINDS,
+} from "../providers";
+import {
   buildFixtures,
   type FixtureSession,
   HOSTILE,
@@ -672,22 +679,21 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           session_id: id,
           endpoint: view.endpoint,
           kind: view.kind,
-          models:
-            view.kind === "ollama_cloud"
+          models: isHostedKind(view.kind)
+            ? [
+                { id: "gpt-oss:120b", cloud_tag: false },
+                { id: "qwen3-coder:480b", cloud_tag: false },
+              ]
+            : view.kind === "ollama_local"
               ? [
-                  { id: "gpt-oss:120b", cloud_tag: false },
-                  { id: "qwen3-coder:480b", cloud_tag: false },
+                  { id: "gpt-oss:120b-cloud", cloud_tag: true },
+                  { id: "lfm2.5:latest", cloud_tag: false },
+                  { id: "qwen2.5-coder:7b", cloud_tag: false },
                 ]
-              : view.kind === "ollama_local"
-                ? [
-                    { id: "gpt-oss:120b-cloud", cloud_tag: true },
-                    { id: "lfm2.5:latest", cloud_tag: false },
-                    { id: "qwen2.5-coder:7b", cloud_tag: false },
-                  ]
-                : [
-                    { id: "google/gemma-4-e4b", cloud_tag: false },
-                    { id: "qwen2.5-coder", cloud_tag: false },
-                  ],
+              : [
+                  { id: "google/gemma-4-e4b", cloud_tag: false },
+                  { id: "qwen2.5-coder", cloud_tag: false },
+                ],
         } satisfies ChatModels;
       }
       // A fixed fake estimate, so the Context tab has something to show (ADR-0087). The
@@ -1008,18 +1014,37 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           const kind = str(args, "kind");
           const endpoint = args.endpoint ?? null;
           const apiKey = args.api_key ?? null;
-          if (kind !== "lm_studio" && kind !== "ollama_local" && kind !== "ollama_cloud") {
+          if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
           }
-          if (kind === "ollama_cloud") {
+          // The same three shapes Rust accepts (ADR-0092).
+          let recorded: string;
+          if (isLocalKind(kind)) {
+            if (typeof endpoint !== "string" || apiKey !== null) {
+              fail("invalid_request", "A local connection takes an endpoint and no API key.");
+            }
+            if (!isLocalEndpoint(endpoint)) {
+              fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
+            }
+            recorded = endpoint;
+          } else if (isFixedHostedKind(kind)) {
             if (endpoint !== null || typeof apiKey !== "string") {
-              fail("invalid_request", "Ollama Cloud takes an API key and no endpoint.");
+              fail("invalid_request", "This provider takes an API key and no endpoint.");
             }
             checkApiKey(apiKey);
-          } else if (typeof endpoint !== "string" || apiKey !== null) {
-            fail("invalid_request", "A local connection takes an endpoint and no API key.");
-          } else if (!isLocalEndpoint(endpoint)) {
-            fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
+            recorded = FIXED_ENDPOINTS[kind];
+          } else {
+            if (typeof endpoint !== "string" || typeof apiKey !== "string") {
+              fail(
+                "invalid_request",
+                "An OpenAI-compatible connection takes an endpoint and an API key.",
+              );
+            }
+            checkApiKey(apiKey);
+            if (!isCustomEndpoint(endpoint)) {
+              fail("control", "an openai_compatible endpoint must be an https:// base URL");
+            }
+            recorded = endpoint;
           }
           if (settings.provider_profiles.some((p) => p.name === name)) {
             fail("control", "a provider profile with this name already exists; remove it first");
@@ -1027,9 +1052,9 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           settings.provider_profiles.push({
             name,
             kind,
-            auth: kind === "ollama_cloud" ? "api_key" : "none",
-            endpoint: kind === "ollama_cloud" ? "https://ollama.com/v1" : (endpoint as string),
-            credential_bound: kind === "ollama_cloud",
+            auth: isHostedKind(kind) ? "api_key" : "none",
+            endpoint: recorded,
+            credential_bound: isHostedKind(kind),
             selectable: true,
             active: false,
           });
@@ -1041,8 +1066,17 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (profile === undefined) {
             fail("control", "unknown provider profile");
           }
-          if (profile.kind !== "ollama_cloud") {
-            fail("invalid_request", "Only an Ollama Cloud connection has an API key set here.");
+          if (!isHostedKind(profile.kind) || profile.auth !== "api_key") {
+            fail(
+              "invalid_request",
+              "Only a hosted connection that uses an API key has a key set here.",
+            );
+          }
+          if (profile.endpoint === null) {
+            fail(
+              "invalid_request",
+              "This connection has no endpoint, so it cannot be used. Remove it and add it again.",
+            );
           }
           checkApiKey(args.api_key);
           profile.credential_bound = true;
@@ -1549,6 +1583,69 @@ const MAX_ENDPOINT_BYTES = 256;
  * from accepting or refusing what the application would not.
  */
 export function isLocalEndpoint(endpoint: string): boolean {
+  return isLocalEndpointText(endpoint);
+}
+
+/**
+ * The mock's copy of core's typed-endpoint rule for `openai_compatible` (`validate_custom_url`,
+ * ADR-0092), step by step. The browser's `URL` follows the same WHATWG standard as the `url` crate,
+ * so "written exactly as the parser writes it" carries over: a `.` or `..` segment, an upper-case
+ * host, a default port, or a non-ASCII host is rewritten by the parser and therefore refused.
+ */
+export function isCustomEndpoint(endpoint: string): boolean {
+  if (
+    new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES ||
+    !endpoint.startsWith("https://") ||
+    Array.from(endpoint).some((c) => /[\p{Cc}\s%@?#\\]/u.test(c))
+  ) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const written = url.href;
+  return (
+    url.protocol === "https:" &&
+    url.hostname !== "" &&
+    // Port 0 reaches nothing; core refuses it as the loopback rule does.
+    url.port !== "0" &&
+    // A server on this computer uses a local kind, as core requires.
+    !namesThisComputer(url.hostname) &&
+    (written === endpoint || written === `${endpoint}/`) &&
+    !url.pathname.includes("//")
+  );
+}
+
+// Mirrors core's `is_this_computer`: `localhost` names, and loopback or unspecified addresses,
+// including IPv4-mapped IPv6. `URL` writes IPv4 in dotted decimal and IPv6 compressed.
+function namesThisComputer(hostname: string): boolean {
+  // A name with trailing root dots (`localhost.`) resolves the same, so they are dropped first.
+  let name = hostname;
+  while (name.endsWith(".")) {
+    name = name.slice(0, -1);
+  }
+  if (name === "localhost" || name.endsWith(".localhost")) {
+    return true;
+  }
+  const octets = hostname.split(".");
+  if (
+    octets.length === 4 &&
+    octets.every((octet) => octet !== "" && !Number.isNaN(Number(octet)))
+  ) {
+    return octets[0] === "127" || hostname === "0.0.0.0";
+  }
+  if (hostname === "[::1]" || hostname === "[::]" || hostname === "[::ffff:0:0]") {
+    return true;
+  }
+  const mapped = "[::ffff:";
+  const group = hostname.startsWith(mapped) ? hostname.slice(mapped.length).split(":")[0] : "";
+  return group !== undefined && group.length === 4 && group.startsWith("7f");
+}
+
+function isLocalEndpointText(endpoint: string): boolean {
   if (new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES) {
     return false;
   }

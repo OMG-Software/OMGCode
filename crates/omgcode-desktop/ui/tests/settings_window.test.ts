@@ -949,6 +949,25 @@ describe("settings window", () => {
       expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
     });
 
+    it("clears a typed key when the provider changes, so it never reaches another provider", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () => choosable({ revision: 8, provider_profiles: [] }),
+      });
+      go("Model");
+      const kind = picker("New connection provider");
+      kind.value = "openai";
+      kind.dispatchEvent(new Event("change"));
+      field("API key").value = KEY;
+      kind.value = "deepseek";
+      kind.dispatchEvent(new Event("change"));
+      expect(field("API key").value).toBe("");
+      buttonByText(root, "Add connection").click();
+      await settle();
+      const carrying = ipc.calls.filter((call) => JSON.stringify(call.args).includes(KEY));
+      expect(carrying).toHaveLength(0);
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
     it("sends the key once, with no endpoint, and clears the field after a success", async () => {
       await start(() => choosable({ provider_profiles: [] }), {
         settings_add_connection: () => choosable({ revision: 8, provider_profiles: [cloud()] }),
@@ -977,6 +996,91 @@ describe("settings window", () => {
       expect(rowOf("hosted").textContent).toContain("API key stored");
       expect(rowOf("hosted").textContent).toContain("leave this computer for ollama.com");
       expect(root.textContent).toContain("Revision 8");
+    });
+
+    it("lists every provider and sends a named hosted one with its key and no endpoint", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () =>
+          choosable({
+            revision: 8,
+            provider_profiles: [
+              cloud({ name: "deep", kind: "deepseek", endpoint: "https://api.deepseek.com" }),
+            ],
+          }),
+      });
+      go("Model");
+      const kind = picker("New connection provider");
+      expect(Array.from(kind.options).map((option) => option.value)).toEqual([
+        "ollama_local",
+        "lm_studio",
+        "ollama_cloud",
+        "anthropic",
+        "openai",
+        "google",
+        "meta",
+        "moonshot",
+        "tencent",
+        "thinking_machines",
+        "minimax",
+        "open_router",
+        "z_ai",
+        "deepseek",
+        "xai",
+        "openai_compatible",
+      ]);
+      kind.value = "deepseek";
+      kind.dispatchEvent(new Event("change"));
+      expect(field("New connection endpoint").closest(".field")?.hasAttribute("hidden")).toBe(true);
+      expect(root.querySelector("#new-connection-fixed-endpoint")?.textContent).toContain(
+        "https://api.deepseek.com",
+      );
+      expect(root.textContent).toContain("leave this computer for api.deepseek.com");
+      expect(field("New connection name").value).toBe("deepseek");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      expect(field("API key").value).toBe("");
+      await settle();
+      expect(ipc.callsTo("settings_add_connection")[0]?.args).toEqual({
+        revision: 7,
+        name: "deepseek",
+        kind: "deepseek",
+        endpoint: null,
+        api_key: KEY,
+      });
+      expect(rowOf("deep").textContent).toContain("DeepSeek");
+      expect(rowOf("deep").textContent).toContain("leave this computer for api.deepseek.com");
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
+    it("sends an OpenAI-compatible service with its typed address and key", async () => {
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_connection: () => choosable({ revision: 8, provider_profiles: [] }),
+      });
+      go("Model");
+      const kind = picker("New connection provider");
+      kind.value = "openai_compatible";
+      kind.dispatchEvent(new Event("change"));
+      const endpoint = field("New connection endpoint");
+      // The local default address is cleared, never sent to a hosted service.
+      expect(endpoint.value).toBe("");
+      expect(endpoint.closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(root.querySelector("#new-connection-fixed-endpoint")?.hasAttribute("hidden")).toBe(
+        true,
+      );
+      expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(false);
+      expect(root.textContent).toContain("leave this computer for the address you enter");
+      type("New connection endpoint", " https://provider-api.example.org/v1 ");
+      field("API key").value = KEY;
+      buttonByText(root, "Add connection").click();
+      await settle();
+      expect(ipc.callsTo("settings_add_connection")[0]?.args).toEqual({
+        revision: 7,
+        name: "custom",
+        kind: "openai_compatible",
+        endpoint: "https://provider-api.example.org/v1",
+        api_key: KEY,
+      });
+      expect(pageHolds(KEY)).toBe(false);
     });
 
     it("clears the key after a refusal and never shows it in the error", async () => {

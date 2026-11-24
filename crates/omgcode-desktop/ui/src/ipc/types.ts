@@ -357,7 +357,7 @@ export interface ConnectionView {
 /** One connection the main window's composer may offer (ADR-0071). Never a credential. */
 export interface ConnectionChoice {
   name: string;
-  /** `lm_studio`, `ollama_local`, or `ollama_cloud`. */
+  /** The provider kind's stored spelling, such as `lm_studio` or `deepseek`. */
   kind: string;
   endpoint: string;
   active: boolean;
@@ -536,8 +536,27 @@ export interface ProviderProfileView {
 /** A local provider the settings window may record (ADR-0064). */
 export type LocalProviderKind = "lm_studio" | "ollama_local";
 
-/** A provider the settings window may add: a local one, or hosted Ollama Cloud (ADR-0071). */
-export type NewConnectionKind = LocalProviderKind | "ollama_cloud";
+/** A hosted provider with one fixed endpoint that Rust supplies (ADR-0071, ADR-0092). */
+export type FixedHostedKind =
+  | "ollama_cloud"
+  | "anthropic"
+  | "openai"
+  | "google"
+  | "meta"
+  | "moonshot"
+  | "tencent"
+  | "thinking_machines"
+  | "minimax"
+  | "open_router"
+  | "z_ai"
+  | "deepseek"
+  | "xai";
+
+/**
+ * A provider the settings window may add: a local one, a named hosted one, or any
+ * OpenAI-compatible service at an HTTPS address the operator types (ADR-0092).
+ */
+export type NewConnectionKind = LocalProviderKind | FixedHostedKind | "openai_compatible";
 
 export interface ToolchainProfileView {
   name: string;

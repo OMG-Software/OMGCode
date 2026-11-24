@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::legacy_journal::forget_recorded_endpoint;
 use omgcode_core::control::{
     ControlStore, CredentialId, CredentialStore, ProviderProfileDeclaration, Secret,
 };
@@ -32,6 +33,7 @@ impl Vault {
     /// use [`Vault::add_profile_at`].
     pub fn add_profile(&self, name: &str, kind: &str, auth: &str) {
         self.add(name, kind, auth, None);
+        forget_recorded_endpoint(&self.data, name);
     }
 
     /// Record a provider profile that names its endpoint.

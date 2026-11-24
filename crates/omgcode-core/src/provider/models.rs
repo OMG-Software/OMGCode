@@ -1,6 +1,6 @@
-//! Model discovery on the local OpenAI-compatible server (ADR-0066).
+//! Model discovery on an OpenAI-compatible server (ADR-0066, ADR-0092).
 //!
-//! LM Studio and Ollama both answer `GET /v1/models` with
+//! LM Studio, Ollama, and the hosted providers answer `GET {base}/models` with
 //! `{"object":"list","data":[{"id":...}, ...]}`. The list lets an operator pick
 //! a model instead of typing its name. It grants nothing: the chosen id is
 //! still validated by [`super::LocalModelClient::new`] when a turn uses it, and
@@ -19,7 +19,11 @@ use serde_json::Value;
 use std::time::Duration;
 
 /// The most models one list may report. A longer list is refused, not cut.
-pub const MAX_LISTED_MODELS: usize = 512;
+/// OpenRouter reported 473 on 2026-11-24.
+pub const MAX_LISTED_MODELS: usize = 2048;
+/// The largest list body read. OpenRouter's list, which describes every
+/// model, was 918 KB on 2026-11-24; a chat reply keeps the 1 MiB limit.
+const MAX_LIST_BYTES: u64 = 4 * 1024 * 1024;
 /// The longest model id accepted, the same bound the chat client applies.
 const MAX_MODEL_ID_BYTES: usize = 256;
 /// Total deadline for one list request. Listing reads no model, so it is
@@ -38,14 +42,16 @@ pub struct ListedModel {
     pub cloud_tag: bool,
 }
 
-/// List the models the local server at `base_url` reports, sorted by id.
+/// List the models the OpenAI-compatible server at `base_url` reports, sorted
+/// by id: a loopback server, a fixed hosted endpoint, or a typed HTTPS base
+/// URL (ADR-0092).
 ///
 /// `base_url` must pass the same endpoint rule as a chat connection: the
-/// loopback rule (ADR-0048) or the fixed Ollama Cloud endpoint (ADR-0071),
-/// which also requires a token. `token`, when present, is sent exactly as a chat request
-/// sends it. The request is one `GET /v1/models` with no proxy, no redirect,
-/// no retry, a five-second connect timeout, a ten-second total deadline, and
-/// a 1 MiB body limit. It runs on a single-thread runtime made for this call,
+/// loopback rule (ADR-0048) or a hosted rule (ADR-0071, ADR-0092), which also
+/// requires a token. `token`, when present, is sent exactly as a chat request
+/// sends it. The request is one `GET {base}/models` with no proxy, no
+/// redirect, no retry, a five-second connect timeout, a ten-second total
+/// deadline, and a 4 MiB body limit. It runs on a single-thread runtime made for this call,
 /// so the function must not be called from inside another async runtime.
 ///
 /// # Errors
@@ -53,7 +59,7 @@ pub struct ListedModel {
 /// `InvalidConfiguration` for a refused endpoint and `InvalidToken` for an
 /// unusable token, both before anything is sent; `Transport` for a connection,
 /// read, or deadline failure; `HttpStatus` for a non-success status;
-/// `ResponseTooLarge` for a body over 1 MiB; and `MalformedResponse` for a
+/// `ResponseTooLarge` for a body over 4 MiB; and `MalformedResponse` for a
 /// body outside the list schema, more than [`MAX_LISTED_MODELS`] entries, a
 /// repeated id, or an id that is empty, over 256 bytes, or holds a control or
 /// bidirectional formatting character.
@@ -74,7 +80,7 @@ fn list_with_timeout(
     let model_endpoint = ModelEndpoint::parse(base_url)?;
     model_endpoint.check_token(token)?;
     let https_only = model_endpoint.https_only();
-    let endpoint = model_endpoint.with_path("/v1/models");
+    let endpoint = model_endpoint.with_suffix("/models");
     let authorization = token.map(bearer_header).transpose()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -101,7 +107,7 @@ fn list_with_timeout(
         // skip handles the TIME_WAIT it holds. A server-held TIME_WAIT delays
         // a reconnect only after a large request, not a list (ADR-0078).
         // Only a plain-HTTP loopback request sends it: HTTP/2 forbids the
-        // header, and the cloud endpoint is HTTPS. This build negotiates
+        // header, and a hosted endpoint is HTTPS. This build negotiates
         // HTTP/1.1 only, so the cloud request would accept it today.
         let close_after_reply = !https_only;
         let build = |remaining: Duration| {
@@ -118,7 +124,7 @@ fn list_with_timeout(
             request
         };
         let response = send_request(timeout, build, &never).await?;
-        read_whole_body(response, &never).await
+        read_whole_body(response, MAX_LIST_BYTES, &never).await
     })?;
     parse_model_list(&bytes)
 }
@@ -206,8 +212,8 @@ mod tests {
         assert!(models.iter().all(|model| !model.cloud_tag));
     }
 
-    /// The cloud endpoint needs a token, so a list request without one is
-    /// refused before any connection, and any other endpoint is refused too.
+    /// A hosted endpoint needs a token, so a list request without one is
+    /// refused before any connection, and a malformed endpoint is refused.
     #[test]
     fn a_cloud_list_without_a_token_is_refused_before_any_connection() {
         for endpoint in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
@@ -222,9 +228,16 @@ mod tests {
                 "{endpoint}"
             );
         }
+        for endpoint in ["http://ollama.com/v1", "https://ollama.com:443/v1"] {
+            assert_eq!(
+                list_local_models(endpoint, Some("not-a-real-key")),
+                Err(ProviderError::InvalidConfiguration),
+                "{endpoint}"
+            );
+        }
         assert_eq!(
-            list_local_models("https://ollama.com:8443/v1", Some("not-a-real-key")),
-            Err(ProviderError::InvalidConfiguration)
+            list_local_models("https://provider-api.example.org/v1", None),
+            Err(ProviderError::InvalidToken)
         );
     }
 

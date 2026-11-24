@@ -138,7 +138,7 @@ fn an_unreadable_credential_is_a_synchronous_credential_error_and_no_turn_starts
 }
 
 #[test]
-fn an_unknown_wrong_provider_or_unbound_profile_is_refused_before_a_turn() {
+fn an_unknown_endpoint_less_or_unbound_profile_is_refused_before_a_turn() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let mut vault = Vault::new(&fixture.data);
@@ -148,7 +148,8 @@ fn an_unknown_wrong_provider_or_unbound_profile_is_refused_before_a_turn() {
     vault.bind("openai-key", STORED.as_bytes());
     for (name, expected) in [
         ("missing", "unknown_profile:"),
-        ("openai-key", "wrong_provider:"),
+        // A hosted profile recorded without an endpoint cannot be used (ADR-0092).
+        ("openai-key", "endpoint_not_recorded:"),
         ("unbound", "not_bound:"),
     ] {
         let service = service(&fixture, &endpoint, name);

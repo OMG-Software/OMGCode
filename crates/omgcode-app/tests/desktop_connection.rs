@@ -289,11 +289,11 @@ fn an_invalid_connection_is_refused_by_core_or_the_wire() {
     }
     assert_eq!(revision(&fixture), before);
     let unknown_kind = serde_json::from_value::<omgcode_app::desktop::ConnectionAddRequest>(
-        json!({"revision": before, "name": "x", "kind": "openai", "endpoint": "http://127.0.0.1:1/v1"}),
+        json!({"revision": before, "name": "x", "kind": "azure", "endpoint": "http://127.0.0.1:1/v1"}),
     );
     assert!(
         unknown_kind.is_err(),
-        "only the two local kinds can be added"
+        "only a known provider kind can be added"
     );
 }
 

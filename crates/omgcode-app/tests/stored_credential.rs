@@ -110,17 +110,27 @@ fn every_refusal_is_a_credential_error_with_its_cause_code() {
     vault.add_profile_at("lms", "lm_studio", "api_key", RECORDED);
     vault.add_profile_at("unbound", "lm_studio", "api_key", RECORDED);
     vault.add_profile("openai-key", "openai", "api_key");
-    vault.add_profile("plan", "anthropic", "subscription");
+    vault.add_profile_at(
+        "plan",
+        "anthropic",
+        "subscription",
+        "https://api.anthropic.com/v1",
+    );
     vault.bind("openai-key", STORED.as_bytes());
     let lost = vault.bind("lms", STORED.as_bytes());
 
     let (_, message) = refusal(&fixture, &profile("missing"));
     assert!(message.starts_with("unknown_profile:"), "{message}");
-    // An OpenAI key is never read for the local adapter.
+    // Every kind is served by the one adapter (ADR-0092), so an OpenAI key
+    // recorded before endpoints existed is refused for its missing endpoint,
+    // before the key is read, and a subscription is never used.
     let (_, message) = refusal(&fixture, &profile("openai-key"));
-    assert!(message.starts_with("wrong_provider:"), "{message}");
+    assert!(message.starts_with("endpoint_not_recorded:"), "{message}");
     let (_, message) = refusal(&fixture, &profile("plan"));
-    assert!(message.starts_with("wrong_provider:"), "{message}");
+    assert!(
+        message.starts_with("subscription_unsupported:"),
+        "{message}"
+    );
     let (_, message) = refusal(&fixture, &profile("unbound"));
     assert!(message.starts_with("not_bound:"), "{message}");
 
@@ -347,7 +357,7 @@ fn early_outcomes_need_no_native_store() {
     assert!(open.token.is_none());
     for (name, expected) in [
         ("missing", "unknown_profile:"),
-        ("openai-key", "wrong_provider:"),
+        ("openai-key", "endpoint_not_recorded:"),
         ("old-key", "endpoint_not_recorded:"),
         ("unbound", "not_bound:"),
     ] {
@@ -451,11 +461,11 @@ fn an_ollama_cloud_profile_resolves_its_endpoint_and_stored_key() {
 
     let resolved = resolve_profile_connection(&fixture.data, "cloud").expect("profile");
     assert_eq!(resolved.kind, ProviderKind::OllamaCloud);
-    assert!(resolved.endpoint.is_cloud());
+    assert!(resolved.endpoint.is_hosted());
     assert_eq!(resolved.token.expect("a key").expose(), STORED);
     let local = resolve_profile_connection(&fixture.data, "lms").expect("local");
     assert_eq!(local.kind, ProviderKind::LmStudio);
-    assert!(!local.endpoint.is_cloud());
+    assert!(!local.endpoint.is_hosted());
 
     let (_, message) = refusal(&fixture, &profile("unbound"));
     assert!(message.starts_with("not_bound:"), "{message}");

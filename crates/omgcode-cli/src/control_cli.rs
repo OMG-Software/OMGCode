@@ -182,17 +182,22 @@ pub(crate) enum WorkspaceCommand {
 pub(crate) struct ProviderProfileAddArgs {
     /// The profile name: ASCII letters, digits, '.', '-', or '_'.
     name: String,
-    /// One of: openai, anthropic, ollama_local, ollama_cloud, open_router,
-    /// lm_studio.
+    /// One of: lm_studio, ollama_local, ollama_cloud, anthropic, openai,
+    /// google, meta, moonshot, tencent, thinking_machines, minimax,
+    /// open_router, z_ai, deepseek, xai, openai_compatible.
     #[arg(long)]
     kind: String,
     /// One of: subscription, api_key, none.
     #[arg(long)]
     auth: String,
     /// The endpoint the profile's adapter uses. lm_studio and ollama_local
-    /// accept http://<loopback IP>:<port>/v1; ollama_cloud accepts exactly
-    /// https://ollama.com/v1. No other kind accepts one. It cannot be
-    /// changed later; remove the profile and add it again.
+    /// accept http://<loopback IP>:<port>/v1; each named hosted kind accepts
+    /// exactly its documented endpoint (for example https://ollama.com/v1 or
+    /// https://api.deepseek.com); openai_compatible accepts an https:// base
+    /// URL. It cannot be changed later; remove the profile and add it again.
+    /// A named hosted kind with --auth api_key may omit it, and its documented
+    /// endpoint is then recorded, so check --kind; openai_compatible always
+    /// needs one.
     #[arg(long)]
     endpoint: Option<String>,
     #[arg(long)]
