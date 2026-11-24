@@ -1279,6 +1279,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       enter_to_send,
       compact_threshold_min: COMPACT_MIN,
       compact_threshold_max: COMPACT_MAX,
+      compact_threshold_step: 8_000,
     };
   }
 

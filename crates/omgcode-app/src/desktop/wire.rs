@@ -885,6 +885,9 @@ pub struct ChatDefaults {
     pub compact_threshold_min: u64,
     /// Largest compaction threshold the composer's slider offers.
     pub compact_threshold_max: u64,
+    /// The slider's step from `compact_threshold_min`; the built-in threshold
+    /// sits on it (ADR-0091).
+    pub compact_threshold_step: u64,
 }
 
 /// The `session_skills` response: skills the operator may select for one turn

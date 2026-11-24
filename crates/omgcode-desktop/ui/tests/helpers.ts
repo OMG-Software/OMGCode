@@ -41,6 +41,7 @@ export const CHAT_BUDGET_BOUNDS = {
   turn_timeout_seconds_max: 3600,
   compact_threshold_min: 128_000,
   compact_threshold_max: 1_000_000,
+  compact_threshold_step: 8_000,
 };
 
 /** The settings window's chat defaults (ADR-0080): the shared fixture's saved values. */

@@ -280,6 +280,8 @@ export interface ChatDefaults {
   /** The range the composer's compaction slider offers (ADR-0080). */
   compact_threshold_min: number;
   compact_threshold_max: number;
+  /** The slider's step from `compact_threshold_min` (ADR-0091). */
+  compact_threshold_step: number;
 }
 
 /** One model the next turn's connection reports (ADR-0066). */

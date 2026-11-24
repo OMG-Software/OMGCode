@@ -601,4 +601,15 @@ fn chat_defaults_are_the_cli_budgets_with_desktop_compaction_and_the_fixed_endpo
     // opt-in --auto-compact (ADR-0091).
     assert_eq!(defaults.compact_threshold, 400_000);
     assert!(defaults.auto_compact, "auto-compaction is on by default");
+    // The slider takes its range and step from this reply, so the default must
+    // be one of its stops to be shown and saved unchanged.
+    assert!(
+        (reply.compact_threshold_min..=reply.compact_threshold_max)
+            .contains(&defaults.compact_threshold)
+    );
+    assert!(
+        (defaults.compact_threshold - reply.compact_threshold_min)
+            .is_multiple_of(reply.compact_threshold_step),
+        "the default sits on the reported step"
+    );
 }

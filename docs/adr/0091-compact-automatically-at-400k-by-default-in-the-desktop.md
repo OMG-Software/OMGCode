@@ -27,8 +27,12 @@ operator found the checkbox. The operator asked for auto-compaction on and a
    `DEFAULT_COMPACT_THRESHOLD`. A compile-time assertion keeps it inside the
    slider's range and on its 8,000-token step from 128,000, so the composer
    can show and save it unchanged: the composer rounds a value between steps.
-   The step is a Rust constant used only by that assertion; it must stay equal
-   to `COMPACT_THRESHOLD_STEP` in the composer, which the slider uses.
+   Rust owns the step, as it owns the range: `chat_defaults` reports it as
+   `compact_threshold_step` beside `compact_threshold_min` and
+   `compact_threshold_max`, and the slider takes it from there. The
+   composer's own `COMPACT_THRESHOLD_STEP` is only the value used before that
+   reply arrives. A test checks that the reported default sits on the
+   reported step.
 4. The CLI is unchanged: `chat` keeps `--compact-threshold` at 200,000 and
    `--auto-compact` opt-in.
 5. Compaction still triggers at `min(threshold, safe input)`, so a model with

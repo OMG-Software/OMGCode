@@ -151,7 +151,9 @@ Changes are recorded here before a release version is assigned.
   apply only when no chat preferences are saved; a saved preferences file
   keeps its own values. Compaction still triggers earlier when the model's
   safe input is smaller. The CLI keeps a 200,000-token default and an opt-in
-  `--auto-compact`.
+  `--auto-compact`. `chat_defaults` now also reports the slider's step as
+  `compact_threshold_step`, and the composer uses it, so Rust owns the range
+  and the step its default is checked against.
 
 - The provider and model choice moves from under the message box to a box in
   the right-hand panel's fixed footer, with a **Model** rail icon when the

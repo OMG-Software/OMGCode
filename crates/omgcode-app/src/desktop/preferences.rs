@@ -51,15 +51,10 @@ const DEFAULT_DESKTOP_COMPACT_THRESHOLD: u64 = 400_000;
 /// Whether the built-in preferences compact automatically (ADR-0091). The
 /// CLI keeps `--auto-compact` opt-in.
 const DEFAULT_DESKTOP_AUTO_COMPACT: bool = true;
-/// The composer slider's step from [`COMPACT_THRESHOLD_MIN`]. The slider
-/// itself takes `COMPACT_THRESHOLD_STEP` in `ui/src/main/composer.ts`, which
-/// must stay equal to this, and rounds any other value onto the step. Rust
-/// uses it only to check the default below.
-const COMPACT_THRESHOLD_STEP: u64 = 8_000;
-
 // The default must be a value the composer's slider can show and save
 // unchanged: inside its range and on its step, since the composer rounds a
-// value between steps.
+// value between steps. `chat_defaults` reports all three bounds, so the
+// slider uses the same values this checks (ADR-0091).
 const _: () = assert!(
     DEFAULT_DESKTOP_COMPACT_THRESHOLD >= COMPACT_THRESHOLD_MIN
         && DEFAULT_DESKTOP_COMPACT_THRESHOLD <= COMPACT_THRESHOLD_MAX
@@ -86,6 +81,9 @@ pub(super) const MAX_SAVED_INSTRUCTIONS_BYTES: usize = 16 * 1024;
 pub(super) const COMPACT_THRESHOLD_MIN: u64 = 128_000;
 /// Largest compaction threshold the composer's slider offers.
 pub(super) const COMPACT_THRESHOLD_MAX: u64 = 1_000_000;
+/// The composer slider's step from [`COMPACT_THRESHOLD_MIN`], reported in
+/// `chat_defaults` (ADR-0091). The composer rounds a value onto it.
+pub(super) const COMPACT_THRESHOLD_STEP: u64 = 8_000;
 /// Largest file read or written. JSON escaping can grow the instructions up to
 /// six times (`\u0000` for one byte), so this leaves room for that.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
