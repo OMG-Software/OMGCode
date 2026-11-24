@@ -249,7 +249,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 49 commands (18 in the `settings` window). No other command exists.
+The shell has three webview windows and 50 commands (18 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -272,6 +272,7 @@ their registered identifier, and approvals by identifier.
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
 | `workspace_entries` | main | List the names and kinds in one directory of a session's registered workspace, for the Files tab; takes the session id and relative name components (ADR-0083) |
 | `session_processes` | main | List a session's model command-tool calls, newest first, at most 100, read-only (ADR-0086) |
+| `workspace_git_status` | main | Report the Git branch and a bounded list of changed paths for a session's registered workspace, read in process by `gix` with no program run (ADR-0085); takes the session id |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
@@ -1551,6 +1552,49 @@ escaped too. The character list is `is_hidden_format` in
 (homoglyphs), mixed scripts, or ordinary spaces. An operator can still be
 misled by a request that uses such text.
 
+## Git status tab
+
+`workspace_git_status` and the view in `ui/src/main/git_tab.ts` show the open
+session's Git branch and changed files, read-only
+([ADR-0085](adr/0085-read-git-status-with-gix-without-running-programs.md)).
+The view (`createGitTab()`, a `PanelView` with `element`, `showSession`,
+`refresh`, and `dispose`) and the `gitStatus` icon exist, but the right-hand
+panel does not mount them yet, so no window shows the tab. Its stylesheet,
+`ui/src/styles/git_tab.css`, is not linked yet either.
+
+- **Scope.** The command takes only a session id. Rust resolves the session's
+  recorded workspace, opens it by its recorded identities as the branch reader
+  does, and refuses an unregistered workspace with `unknown_workspace`. A
+  folder with no `.git` is the `not_repository` state, shown as "Not a Git
+  repository.", not an error. A `.git` file (a linked worktree or submodule
+  pointer) is not followed and shows "Git status unavailable".
+- **No program runs.** The repository is read in process with the `gix` crate,
+  opened with isolated permissions (no system, global, user, or environment
+  configuration, no includes). Every section of the repository's own
+  `.git/config` is rejected, so a `filter.<name>.*` or `diff.<name>.*` command
+  is never known, and `core.fsmonitor` is read by nothing. No hook runs.
+  Submodules are ignored. The status run writes nothing, not even the index.
+  A test sets each of those keys to a command that would create a marker file
+  and asserts that none appears.
+- **Result.** The branch is the same view as the status bar's. Up to 1,000
+  changed paths are sorted by path, each with a `HEAD`-to-index state (added,
+  modified, deleted, renamed, type change) and an index-to-worktree state
+  (modified, deleted, untracked, conflicted). An untracked folder is one entry
+  with a trailing `/`. `truncated` is true when more paths changed. A run that
+  takes over 10 seconds is interrupted and reported as unavailable. A path is
+  display-safe text, lossy for non-Unicode names, and never used as a path.
+  The command runs on the blocking pool.
+- **View.** A branch line and a **Refresh** button, then the paths grouped as
+  **Staged**, **Changed**, **Untracked**, and **Conflicted**, each row a
+  state letter (`A`, `M`, `D`, `R`, `T`, `?`, `U`) and the path. A path both
+  staged and changed appears in both groups. The letter's tooltip is fixed
+  text such as "Staged: added"; a path is never placed in a tooltip. "No
+  changes." shows for a clean repository, a note shows when the list is
+  truncated, and an error shows as text. `showSession(null)` clears the view
+  and a new session reads again; an older answer is dropped.
+- **Mock.** `npm run dev` answers `workspace_git_status` with a small fixed
+  status that includes a markup-like name.
+
 ## Security properties and limits
 
 What the design does:
@@ -1731,7 +1775,8 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 49 |
+| Commands | 50 |
+| Git status changed paths | 1,000, and a 10-second deadline |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |

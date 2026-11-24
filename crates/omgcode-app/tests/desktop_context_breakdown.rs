@@ -314,7 +314,13 @@ fn an_unregistered_workspace_sends_no_instructions_even_when_its_file_remains() 
             "instructions": "Use tabs."
         })))
         .expect("workspace instructions");
-    assert!(part(&breakdown(&service, id), ContextPartId::WorkspaceInstructions).included);
+    assert!(
+        part(
+            &breakdown(&service, id),
+            ContextPartId::WorkspaceInstructions
+        )
+        .included
+    );
 
     // Unregister through core alone, as a CLI whose file deletion failed
     // would: the saved instructions file remains (ADR-0081).

@@ -491,6 +491,31 @@ export interface SessionProcesses {
   run_details: "available" | "unavailable" | "busy";
 }
 
+/** `HEAD`-to-index state of a changed path (ADR-0085). */
+export type GitIndexState = "added" | "modified" | "deleted" | "renamed" | "type_change";
+
+/** Index-to-worktree state of a changed path (ADR-0085). */
+export type GitWorktreeState = "modified" | "deleted" | "untracked" | "conflicted";
+
+/** One changed path. `path` is display text, never a path to open. */
+export interface GitPathView {
+  /** Relative to the workspace; a trailing `/` marks an untracked folder. */
+  path: string;
+  index: GitIndexState | null;
+  worktree: GitWorktreeState | null;
+}
+
+/** What the Git status tab shows about a session's workspace (ADR-0085). */
+export interface GitStatusView {
+  branch: BranchView;
+  state: "ready" | "not_repository" | "unavailable";
+  /** A fixed reason when `state` is `unavailable`. */
+  note: string | null;
+  /** Sorted by path, at most 1,000. */
+  paths: GitPathView[];
+  truncated: boolean;
+}
+
 export interface ProviderProfileView {
   name: string;
   kind: string;

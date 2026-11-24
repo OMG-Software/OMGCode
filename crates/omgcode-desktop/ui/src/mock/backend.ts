@@ -921,6 +921,23 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         };
         return clone(processes);
       }
+      // The Git status tab (ADR-0085). A small fixed status; nothing is read from disk.
+      case "workspace_git_status":
+        session(str(args, "session_id"));
+        return {
+          branch: { state: "branch", name: "main", note: null },
+          state: "ready",
+          note: null,
+          paths: [
+            { path: "src/lib.rs", index: "modified", worktree: null },
+            { path: "src/main.rs", index: "modified", worktree: "modified" },
+            { path: "docs/old.md", index: null, worktree: "deleted" },
+            { path: "src/merge.rs", index: null, worktree: "conflicted" },
+            { path: "notes/<b>x</b>.txt", index: null, worktree: "untracked" },
+            { path: "target/", index: null, worktree: "untracked" },
+          ],
+          truncated: false,
+        };
       case "connection_status": {
         const id = args.session_id;
         if (id !== null && typeof id !== "string") {

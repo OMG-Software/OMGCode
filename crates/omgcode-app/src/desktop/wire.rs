@@ -1266,6 +1266,75 @@ pub enum BranchState {
     Unavailable,
 }
 
+/// What the Git status tab shows about a session's workspace (ADR-0085).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitStatusView {
+    /// The Git branch that workspace has checked out.
+    pub branch: BranchView,
+    /// Whether the workspace is a repository and its status could be read.
+    pub state: GitStatusState,
+    /// A fixed reason when `state` is `unavailable`. Never file content.
+    pub note: Option<String>,
+    /// The changed paths, sorted by path, at most 1,000.
+    pub paths: Vec<GitPathView>,
+    /// Whether more paths changed than are listed.
+    pub truncated: bool,
+}
+
+/// The kinds of [`GitStatusView`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStatusState {
+    /// The status was read. `paths` may be empty.
+    Ready,
+    /// The workspace folder is not a Git repository.
+    NotRepository,
+    /// A repository exists but its status cannot be shown.
+    Unavailable,
+}
+
+/// One changed path of a [`GitStatusView`], for display only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitPathView {
+    /// The path relative to the workspace, display-safe. A trailing `/` marks
+    /// an untracked folder. It is text to show, never a path to open.
+    pub path: String,
+    /// The `HEAD`-to-index state, if any.
+    pub index: Option<GitIndexState>,
+    /// The index-to-worktree state, if any.
+    pub worktree: Option<GitWorktreeState>,
+}
+
+/// How a path differs between `HEAD` and the index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitIndexState {
+    /// Added.
+    Added,
+    /// Modified.
+    Modified,
+    /// Deleted.
+    Deleted,
+    /// Renamed.
+    Renamed,
+    /// A file became a link or the reverse.
+    TypeChange,
+}
+
+/// How a path differs between the index and the worktree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitWorktreeState {
+    /// Modified.
+    Modified,
+    /// Deleted.
+    Deleted,
+    /// Not tracked.
+    Untracked,
+    /// An unresolved merge conflict.
+    Conflicted,
+}
+
 /// A provider the `settings` window may add (ADR-0064, ADR-0071).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]

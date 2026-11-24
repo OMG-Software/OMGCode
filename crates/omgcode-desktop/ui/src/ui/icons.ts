@@ -92,6 +92,13 @@ const ICONS = {
   chevronDown: [["path", { d: "M6 9l6 6 6-6" }]],
   /** A circular arrow: reload the file tree. */
   refresh: [["path", { d: "M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" }]],
+  /** A branch fork with a dot: the Git status tab. */
+  gitStatus: [
+    ["circle", { cx: "6", cy: "5.5", r: "2" }],
+    ["circle", { cx: "6", cy: "18.5", r: "2" }],
+    ["circle", { cx: "18", cy: "8.5", r: "2" }],
+    ["path", { d: "M6 7.5v9M18 10.5c0 4-12 2.5-12 6" }],
+  ],
   /** A tick: an action that succeeded. */
   check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
   /** A cross: an action that failed. */

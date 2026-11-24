@@ -9,6 +9,7 @@ pub mod edit;
 mod file_audit;
 pub mod files;
 pub mod git_head;
+pub mod git_status;
 pub mod packages;
 pub mod policy;
 pub mod prompt;

@@ -29,6 +29,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "session_skills",
     "session_context",
     "workspace_entries",
+    "workspace_git_status",
     "connection_status",
     "connection_select",
     "session_model_select",

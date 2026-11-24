@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf};
 
 use omgcode_platform::broker::{RelativePath, Workspace, is_missing_entry};
 
-use crate::control::{ControlError, ControlStore};
+use crate::control::{ControlError, ControlStore, FileScope};
 use crate::policy::WorkspaceId;
 
 /// The most bytes read from `HEAD` or from a `.git` pointer file.
@@ -63,33 +63,15 @@ pub fn workspace_head(
     workspace_id: WorkspaceId,
 ) -> Result<WorkspaceHead, ControlError> {
     let scope = control.file_scope(workspace_id)?;
-    let (Ok(root_path), Ok(workspace_path)) = (scope.root.live_path(), scope.workspace.live_path())
-    else {
-        return Ok(WorkspaceHead::Unreadable("the workspace path is invalid"));
+    let opened = match open_scope(&scope) {
+        Ok(opened) => opened,
+        Err(reason) => return Ok(WorkspaceHead::Unreadable(reason)),
     };
-    let Some(relative) = workspace_path
-        .strip_prefix(&root_path)
-        .ok()
-        .and_then(|path| RelativePath::new(path).ok())
-    else {
-        return Ok(WorkspaceHead::Unreadable(
-            "the workspace is not beneath the development root",
-        ));
-    };
-    let Ok(workspace) = Workspace::open(
-        &root_path,
-        scope.root.native_identity(),
-        &relative,
-        scope.workspace.native_identity(),
-    ) else {
-        return Ok(WorkspaceHead::Unreadable("the workspace cannot be opened"));
-    };
-    match workspace.creation_times() {
-        Ok((root_created, workspace_created))
-            if scope.root.matches_created(root_created)
-                && scope.workspace.matches_created(workspace_created) => {}
-        _ => return Ok(WorkspaceHead::Unreadable("the workspace folder changed")),
-    }
+    let OpenedScope {
+        root_path,
+        workspace_path,
+        workspace,
+    } = opened;
 
     if let Ok(bytes) = read_small(&workspace, Path::new(".git/HEAD")) {
         return Ok(parse_head(&bytes));
@@ -139,6 +121,49 @@ pub fn workspace_head(
             "the linked Git directory cannot be read",
         )),
     }
+}
+
+/// A registered workspace opened by its recorded identity, with the paths it
+/// was opened from.
+pub(crate) struct OpenedScope {
+    pub(crate) root_path: PathBuf,
+    pub(crate) workspace_path: PathBuf,
+    pub(crate) workspace: Workspace,
+}
+
+/// Open the workspace of `scope` by its recorded identities and check that
+/// neither folder was replaced. The reason is a fixed text for display.
+pub(crate) fn open_scope(scope: &FileScope) -> Result<OpenedScope, &'static str> {
+    let (Ok(root_path), Ok(workspace_path)) = (scope.root.live_path(), scope.workspace.live_path())
+    else {
+        return Err("the workspace path is invalid");
+    };
+    let Some(relative) = workspace_path
+        .strip_prefix(&root_path)
+        .ok()
+        .and_then(|path| RelativePath::new(path).ok())
+    else {
+        return Err("the workspace is not beneath the development root");
+    };
+    let Ok(workspace) = Workspace::open(
+        &root_path,
+        scope.root.native_identity(),
+        &relative,
+        scope.workspace.native_identity(),
+    ) else {
+        return Err("the workspace cannot be opened");
+    };
+    match workspace.creation_times() {
+        Ok((root_created, workspace_created))
+            if scope.root.matches_created(root_created)
+                && scope.workspace.matches_created(workspace_created) => {}
+        _ => return Err("the workspace folder changed"),
+    }
+    Ok(OpenedScope {
+        root_path,
+        workspace_path,
+        workspace,
+    })
 }
 
 fn read_small(workspace: &Workspace, path: &Path) -> io::Result<Vec<u8>> {

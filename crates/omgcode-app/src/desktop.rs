@@ -138,14 +138,15 @@ pub use self::wire::{
     ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView,
     ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView,
     ContextBreakdown, ContextMeterDto, ContextPartDto, ContextPartId, Decision, EntryKind,
-    MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView, PermissionFlags,
-    PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit, SearchRequest,
-    SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest, SessionModelSelectRequest,
-    SessionRequest, SessionSkills, SessionStatus, SessionSummary, SessionTree, SettingsOverview,
-    SettingsRevisionRequest, SettingsScope, SkillOverrideView, SkillSettingView, SnippetPart,
-    ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
-    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
-    WorkspaceInstructionsRequest, WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
+    GitIndexState, GitPathView, GitStatusState, GitStatusView, GitWorktreeState, MessageRoleDto,
+    ModelChoice, NewConnectionKind, PackageProfileView, PermissionFlags, PermissionsChangeRequest,
+    PreferencesSource, ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
+    SessionContext, SessionCreateRequest, SessionModelSelectRequest, SessionRequest, SessionSkills,
+    SessionStatus, SessionSummary, SessionTree, SettingsOverview, SettingsRevisionRequest,
+    SettingsScope, SkillOverrideView, SkillSettingView, SnippetPart, ToolOutcomeDto,
+    ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest,
+    TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest,
+    WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
 pub use self::workspace_entries::WorkspaceEntriesRequest;
 use crate::credential_source::resolve_connection_and_kind;

@@ -21,6 +21,7 @@ use omgcode_core::control::{
     ContainerGrantAccess, ContainerGrantState, ControlStore, ProfilePlatform,
 };
 use omgcode_core::git_head::{WorkspaceHead, workspace_head};
+use omgcode_core::git_status::{IndexChange, WorkspaceStatus, WorktreeChange, workspace_status};
 use omgcode_core::policy::WorkspaceId;
 use omgcode_core::turn::display_safe_line;
 
@@ -34,10 +35,10 @@ use super::settings_chat::{
 use super::state::folder_of_directory;
 use super::wire::{
     BranchState, BranchView, ConnectionChoice, ConnectionOrigin, ConnectionSourceView,
-    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView,
-    PackageProfileView, ProviderProfileView, SessionContext, SessionRequest, SessionSkills,
-    SettingsOverview, SkillOverrideView, SkillSettingView, ToolchainProfileView,
-    WorkspaceSettingsView,
+    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView, GitIndexState,
+    GitPathView, GitStatusState, GitStatusView, GitWorktreeState, PackageProfileView,
+    ProviderProfileView, SessionContext, SessionRequest, SessionSkills, SettingsOverview,
+    SkillOverrideView, SkillSettingView, ToolchainProfileView, WorkspaceSettingsView,
 };
 use super::{DesktopService, Inner, TokenResolver};
 use crate::TokenSource;
@@ -283,6 +284,36 @@ impl DesktopService {
         })
     }
 
+    /// The Git status of a session's workspace for the `main` window's Git
+    /// status tab (ADR-0085): the branch and a bounded list of changed paths.
+    ///
+    /// The repository is read in process by `gix` with no program run and no
+    /// configuration outside the repository itself. The workspace comes from
+    /// the session's recorded, registered workspace, never from the webview.
+    /// A folder that is not a repository is a normal state.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` for an unknown session, `unknown_workspace` when the
+    /// session's workspace is not registered here, `busy`, `control`, or
+    /// `internal`.
+    pub fn workspace_git_status(
+        &self,
+        request: SessionRequest,
+    ) -> Result<GitStatusView, DesktopError> {
+        let Some((store, workspace_id)) = self.session_workspace(request)? else {
+            return Err(DesktopError::unknown_workspace());
+        };
+        let head = workspace_head(&store, workspace_id);
+        let status = workspace_status(&store, workspace_id)
+            .map_err(|error| DesktopError::from_control(&error))?;
+        drop(store);
+        let branch = branch_view(Some(head.unwrap_or(WorkspaceHead::Unreadable(
+            "the workspace record cannot be used",
+        ))));
+        Ok(git_status_view(branch, status))
+    }
+
     /// The connection a session's next turn uses, where that choice comes from,
     /// the session's model, and the connections that may be chosen, for the
     /// `main` window's composer and status bar (ADR-0064, ADR-0071). With no
@@ -452,6 +483,50 @@ fn branch_view(head: Option<WorkspaceHead>) -> BranchView {
         state,
         name: name.map(|name| display_safe_line(&name)),
         note,
+    }
+}
+
+/// Shape a workspace status for the wire. Paths are made display-safe here.
+fn git_status_view(branch: BranchView, status: WorkspaceStatus) -> GitStatusView {
+    let (state, note, paths, truncated) = match status {
+        WorkspaceStatus::NotRepository => (GitStatusState::NotRepository, None, Vec::new(), false),
+        WorkspaceStatus::Unavailable(reason) => (
+            GitStatusState::Unavailable,
+            Some(reason.to_owned()),
+            Vec::new(),
+            false,
+        ),
+        WorkspaceStatus::Changes { paths, truncated } => (
+            GitStatusState::Ready,
+            None,
+            paths
+                .into_iter()
+                .map(|changed| GitPathView {
+                    path: display_safe_line(&changed.path),
+                    index: changed.index.map(|state| match state {
+                        IndexChange::Added => GitIndexState::Added,
+                        IndexChange::Modified => GitIndexState::Modified,
+                        IndexChange::Deleted => GitIndexState::Deleted,
+                        IndexChange::Renamed => GitIndexState::Renamed,
+                        IndexChange::TypeChange => GitIndexState::TypeChange,
+                    }),
+                    worktree: changed.worktree.map(|state| match state {
+                        WorktreeChange::Modified => GitWorktreeState::Modified,
+                        WorktreeChange::Deleted => GitWorktreeState::Deleted,
+                        WorktreeChange::Untracked => GitWorktreeState::Untracked,
+                        WorktreeChange::Conflicted => GitWorktreeState::Conflicted,
+                    }),
+                })
+                .collect(),
+            truncated,
+        ),
+    };
+    GitStatusView {
+        branch,
+        state,
+        note,
+        paths,
+        truncated,
     }
 }
 

@@ -29,6 +29,7 @@
     "allow-session-skills",
     "allow-session-context",
     "allow-workspace-entries",
+    "allow-workspace-git-status",
     "allow-connection-status",
     "allow-connection-select",
     "allow-session-model-select",
