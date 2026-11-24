@@ -205,7 +205,7 @@ fn provider_signin(data_root: &Path, name: &str, revision: u64) -> Result<(), Cl
     let interrupts = crate::cancel_on_interrupt(&cancel)?;
     let mut open = |address: &str| {
         eprintln!("Sign in with ChatGPT in your browser. If it does not open, visit:\n{address}");
-        if omgcode_app::open_system_browser(address).is_err() {
+        if omgcode_app::open_system_browser(address, &cancel).is_err() {
             eprintln!("The system browser could not be opened; open the address yourself.");
         }
         Ok(())

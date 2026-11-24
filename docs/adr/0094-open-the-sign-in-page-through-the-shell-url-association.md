@@ -35,13 +35,18 @@ extensions through COM, so the calling thread should initialize COM first. With
   DDE disabled and uninitializes it afterwards, so the caller's apartment is
   never changed. No shell, `cmd.exe`, or `explorer.exe` command line is used.
 - The caller waits at most five seconds (`HAND_OFF_WAIT`) for that thread's
-  result. `NOASYNC` makes the shell call wait for the URL handler, and the
-  sign-in calls the opener before its callback wait, which is what observes
-  cancellation and the five-minute deadline. An unbounded wait would let a hung
-  handler hold the sign-in, its slot, and the settings change guard. After the
-  bound the function returns `Handoff::Pending` and leaves the thread to
-  finish alone; it holds only its copy of the address. `omgcode-app` treats
-  `Pending` as "the browser may still open" and goes on to the callback wait.
+  result, and checks a caller-supplied stop condition every 50 ms.
+  `NOASYNC` makes the shell call wait for the URL handler, and an unbounded
+  wait would let a hung handler hold the sign-in, its slot, and the settings
+  change guard. After the bound, or once the stop condition holds, the
+  function returns `Handoff::Pending` and leaves the thread to finish alone;
+  it holds only its copy of the address. `omgcode-app` passes the sign-in's
+  cancel token as the stop condition, treats `Pending` as "the browser may
+  still open", and goes on to the callback wait, which reports a cancel at
+  once.
+- The sign-in's five-minute deadline starts before the browser step, and the
+  callback wait gets only what is left, so a slow hand-off cannot stretch
+  the sign-in past five minutes.
 - On Linux and other Unix systems it runs `/usr/bin/xdg-open` with the address
   as one argument, as before.
 - `omgcode-app` keeps its check that the address is OpenAI's authorization
@@ -69,11 +74,13 @@ extensions through COM, so the calling thread should initialize COM first. With
 - `omgcode-platform` enables the `windows-sys` features `Win32_UI_Shell`,
   `Win32_UI_WindowsAndMessaging`, and `Win32_System_Registry`, which
   `SHELLEXECUTEINFOW` requires.
-- A URL handler that hangs for longer than five seconds leaves one detached
-  thread until the shell call returns. A cancel or the deadline still ends the
-  sign-in, at most five seconds later than the hand-off began.
-- Tests cover address validation and the bounded wait (done, failed, panicked,
-  and still running). A test that opens a browser on the developer's desktop
+- A URL handler that hangs leaves one detached thread until the shell call
+  returns. A cancel ends the sign-in within about 50 ms, and the deadline
+  holds at five minutes from the start of the sign-in.
+- Tests cover address validation; the bounded wait (done, failed, panicked,
+  still running, and stopped); a sign-in whose browser step outlasts the
+  wait; a cancel during the browser step; and a desktop sign-in cancelled
+  during a stalled browser step, which ends `cancelled` and releases its slot. A test that opens a browser on the developer's desktop
   is not practical, so the launch itself was not exercised by an automated
   test, and the original failure was not reproduced.
 

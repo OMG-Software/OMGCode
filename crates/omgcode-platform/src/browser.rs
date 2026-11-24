@@ -17,15 +17,20 @@ pub const MAX_ADDRESS_LEN: usize = 8 * 1024;
 /// own a sign-in slot and must still observe its own cancellation and deadline.
 pub const HAND_OFF_WAIT: Duration = Duration::from_secs(5);
 
+/// How often the hand-off wait checks the caller's stop condition.
+#[cfg(any(windows, test))]
+const STOP_POLL: Duration = Duration::from_millis(50);
+
 /// How far the hand-off got before [`open_https_address`] returned.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handoff {
     /// The Windows shell accepted the address, or `xdg-open` was started.
     Done,
-    /// The Windows shell had not finished within [`HAND_OFF_WAIT`]. The call
-    /// continues on its own thread and its outcome is not reported, so the
-    /// browser may or may not open.
+    /// The Windows shell had not finished within [`HAND_OFF_WAIT`], or the
+    /// caller's stop condition held first. The call continues on its own
+    /// thread and its outcome is not reported, so the browser may or may not
+    /// open.
     Pending,
 }
 
@@ -47,21 +52,24 @@ pub enum BrowserError {
 /// for checking that the address points where it should.
 ///
 /// On Windows the shell call runs on a dedicated thread that initializes COM
-/// for it, and this function waits at most [`HAND_OFF_WAIT`] for its result.
-/// After that it returns [`Handoff::Pending`] and leaves the thread to finish
-/// on its own: the thread holds only its copy of the address, and no OMGCode
-/// lock, so a hung URL handler keeps that one thread alive and nothing else.
+/// for it, and this function waits at most [`HAND_OFF_WAIT`] for its result,
+/// checking `stop` every 50 ms so a caller's cancellation ends the wait
+/// promptly. After either it returns [`Handoff::Pending`] and leaves the
+/// thread to finish on its own: the thread holds only its copy of the address,
+/// and no OMGCode lock, so a hung URL handler keeps that one thread alive and
+/// nothing else. `stop` is not consulted on Unix, where `xdg-open` is started
+/// without waiting.
 ///
 /// # Errors
 ///
 /// [`BrowserError::InvalidAddress`] for a refused address and
 /// [`BrowserError::LaunchFailed`] when the shell or `xdg-open` could not be
 /// started or reported failure.
-pub fn open_https_address(address: &str) -> Result<Handoff, BrowserError> {
+pub fn open_https_address(address: &str, stop: &dyn Fn() -> bool) -> Result<Handoff, BrowserError> {
     if !is_plain_https(address) {
         return Err(BrowserError::InvalidAddress);
     }
-    launch(address)
+    launch(address, stop)
 }
 
 fn is_plain_https(address: &str) -> bool {
@@ -79,7 +87,7 @@ fn is_uri_byte(byte: u8) -> bool {
 }
 
 #[cfg(windows)]
-fn launch(address: &str) -> Result<Handoff, BrowserError> {
+fn launch(address: &str, stop: &dyn Fn() -> bool) -> Result<Handoff, BrowserError> {
     let file: Vec<u16> = address.encode_utf16().chain(std::iter::once(0)).collect();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     // A new thread owns its COM apartment, so the caller's apartment (the
@@ -95,21 +103,29 @@ fn launch(address: &str) -> Result<Handoff, BrowserError> {
             let _ = sender.send(shell_open(&file));
         })
         .map_err(|_| BrowserError::LaunchFailed)?;
-    await_handoff(&receiver, HAND_OFF_WAIT)
+    await_handoff(&receiver, HAND_OFF_WAIT, stop)
 }
 
-/// Wait at most `wait` for a hand-off result. A sender dropped without a
-/// result means the shell thread panicked.
+/// Wait at most `wait` for a hand-off result, ending early once `stop`
+/// holds. A sender dropped without a result means the shell thread panicked.
 #[cfg(any(windows, test))]
 fn await_handoff(
     receiver: &std::sync::mpsc::Receiver<Result<(), BrowserError>>,
     wait: Duration,
+    stop: &dyn Fn() -> bool,
 ) -> Result<Handoff, BrowserError> {
     use std::sync::mpsc::RecvTimeoutError;
-    match receiver.recv_timeout(wait) {
-        Ok(result) => result.map(|()| Handoff::Done),
-        Err(RecvTimeoutError::Timeout) => Ok(Handoff::Pending),
-        Err(RecvTimeoutError::Disconnected) => Err(BrowserError::LaunchFailed),
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || stop() {
+            return Ok(Handoff::Pending);
+        }
+        match receiver.recv_timeout(left.min(STOP_POLL)) {
+            Ok(result) => return result.map(|()| Handoff::Done),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(BrowserError::LaunchFailed),
+        }
     }
 }
 
@@ -171,7 +187,7 @@ fn shell_open(file: &[u16]) -> Result<(), BrowserError> {
 }
 
 #[cfg(not(windows))]
-fn launch(address: &str) -> Result<Handoff, BrowserError> {
+fn launch(address: &str, _stop: &dyn Fn() -> bool) -> Result<Handoff, BrowserError> {
     let mut child = std::process::Command::new("/usr/bin/xdg-open")
         .arg(address)
         .stdin(std::process::Stdio::null())
@@ -212,7 +228,7 @@ mod tests {
             long.as_str(),
         ] {
             assert_eq!(
-                open_https_address(address),
+                open_https_address(address, &|| false),
                 Err(BrowserError::InvalidAddress),
                 "{address:?} must be refused before any launch"
             );
@@ -237,7 +253,7 @@ mod tests {
         let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
         let started = std::time::Instant::now();
         assert_eq!(
-            await_handoff(&receiver, Duration::from_millis(50)),
+            await_handoff(&receiver, Duration::from_millis(50), &|| false),
             Ok(Handoff::Pending)
         );
         assert!(
@@ -251,7 +267,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         sender.send(Ok(())).expect("the receiver is alive");
         assert_eq!(
-            await_handoff(&receiver, Duration::from_secs(5)),
+            await_handoff(&receiver, Duration::from_secs(5), &|| false),
             Ok(Handoff::Done)
         );
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -259,7 +275,7 @@ mod tests {
             .send(Err(BrowserError::LaunchFailed))
             .expect("the receiver is alive");
         assert_eq!(
-            await_handoff(&receiver, Duration::from_secs(5)),
+            await_handoff(&receiver, Duration::from_secs(5), &|| false),
             Err(BrowserError::LaunchFailed)
         );
     }
@@ -269,8 +285,25 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<Result<(), BrowserError>>(1);
         drop(sender);
         assert_eq!(
-            await_handoff(&receiver, Duration::from_secs(5)),
+            await_handoff(&receiver, Duration::from_secs(5), &|| false),
             Err(BrowserError::LaunchFailed)
+        );
+    }
+
+    #[test]
+    fn a_stop_request_ends_a_stalled_hand_off_before_its_bound() {
+        let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let started = std::time::Instant::now();
+        let stop_after = started + Duration::from_millis(100);
+        assert_eq!(
+            await_handoff(&receiver, Duration::from_secs(30), &|| {
+                std::time::Instant::now() >= stop_after
+            }),
+            Ok(Handoff::Pending)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a stop must end the wait well before its 30-second bound"
         );
     }
 }

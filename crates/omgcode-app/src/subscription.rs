@@ -475,22 +475,25 @@ pub fn list_connection_models(connection: &LocalConnection) -> Result<Vec<Listed
 /// (`ShellExecuteExW`), not `explorer.exe`, which opened a File Explorer
 /// window for the long authorize address (ADR-0094).
 ///
-/// A Windows hand-off still running after
-/// [`omgcode_platform::browser::HAND_OFF_WAIT`] is not a failure here: the
-/// browser may yet open, so the sign-in goes on to wait for the callback,
-/// which observes cancellation and the sign-in deadline. The CLI prints the
-/// address before this call either way.
+/// The Windows hand-off wait ends early once `cancel` is set. A hand-off
+/// still running after [`omgcode_platform::browser::HAND_OFF_WAIT`], or
+/// abandoned on cancel, is not a failure here: the browser may yet open, so
+/// the sign-in goes on to its callback wait, which reports the cancel at once
+/// and otherwise keeps the sign-in deadline. The CLI prints the address before
+/// this call either way.
 ///
 /// # Errors
 ///
 /// [`SignInError::Browser`] when the address is not OpenAI's or no browser
 /// could be started.
-pub fn open_system_browser(address: &str) -> Result<(), SignInError> {
+pub fn open_system_browser(address: &str, cancel: &CancelToken) -> Result<(), SignInError> {
     use omgcode_platform::browser::{Handoff, open_https_address};
     if !address.starts_with("https://auth.openai.com/api/accounts/authorize?") {
         return Err(SignInError::Browser);
     }
-    match open_https_address(address).map_err(|_| SignInError::Browser)? {
+    match open_https_address(address, &|| cancel.is_cancelled())
+        .map_err(|_| SignInError::Browser)?
+    {
         Handoff::Done | Handoff::Pending => Ok(()),
     }
 }
@@ -507,7 +510,10 @@ mod tests {
             "https://evil.test/?https://auth.openai.com/api/accounts/authorize?",
             "file:///etc/passwd",
         ] {
-            assert_eq!(open_system_browser(address), Err(SignInError::Browser));
+            assert_eq!(
+                open_system_browser(address, &CancelToken::new()),
+                Err(SignInError::Browser)
+            );
         }
     }
 
