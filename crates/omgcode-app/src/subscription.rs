@@ -383,14 +383,44 @@ pub fn sign_out_of_chatgpt(
     let removal = store
         .sign_out_provider_subscription(&credentials, name, current_revision)
         .map_err(|error| revocation(credential_error(format!("signout_not_recorded: {error}"))))?;
+    let orphans: Vec<_> = removal
+        .orphans
+        .into_iter()
+        .map(|orphan| orphan.id)
+        .collect();
+    if let Some(error) = removal.uncertain {
+        return Err(sign_out_uncertain(&error.to_string(), &orphans, revoked));
+    }
     Ok(SignOutOutcome {
         revoked,
-        orphans: removal
-            .orphans
-            .into_iter()
-            .map(|orphan| orphan.id)
-            .collect(),
+        orphans,
         revision: store.revision(),
+    })
+}
+
+/// A sign-out whose unbinding may or may not be recorded. Its slots were
+/// deleted anyway, so it never says the sign-out was or was not recorded:
+/// it names each slot that remains and asks the operator to look.
+fn sign_out_uncertain(error: &str, orphans: &[CredentialId], revoked: bool) -> AppError {
+    let tokens = if orphans.is_empty() {
+        "its tokens were deleted".to_owned()
+    } else {
+        format!(
+            "these token items could not be deleted and must be deleted by hand: {}",
+            orphans
+                .iter()
+                .map(CredentialId::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    credential_error(format!(
+        "signout_uncertain: the sign-out may or may not have been recorded ({error}); {tokens}; OMGCode no longer uses this session's tokens. Read the settings again: if the profile still shows signed in, sign out again"
+    ))
+    .with_note(if revoked {
+        "OpenAI revoked the refresh token"
+    } else {
+        "OpenAI did not confirm the revocation; disconnect OMGCode in your ChatGPT settings"
     })
 }
 
@@ -565,6 +595,36 @@ mod tests {
         for error in [cancelled, busy] {
             assert!(!error.message().contains("sign-in"));
             assert!(!error.message().contains("token_store_unavailable"));
+        }
+    }
+
+    #[test]
+    fn an_uncertain_sign_out_claims_neither_outcome_and_names_each_remaining_item() {
+        let id = CredentialId::parse("0123456789ab4def8123456789abcdef").expect("id");
+        let clean = sign_out_uncertain("sync failed", &[], true);
+        assert_eq!(clean.kind(), ErrorKind::Credential);
+        assert!(
+            clean
+                .message()
+                .starts_with("signout_uncertain: the sign-out may or may not have been recorded (sync failed); its tokens were deleted;")
+        );
+        assert!(
+            clean
+                .message()
+                .ends_with("(OpenAI revoked the refresh token)")
+        );
+        let orphaned = sign_out_uncertain("sync failed", &[id], false);
+        assert!(orphaned.message().contains(
+            "could not be deleted and must be deleted by hand: 0123456789ab4def8123456789abcdef;"
+        ));
+        assert!(
+            orphaned
+                .message()
+                .contains("disconnect OMGCode in your ChatGPT settings")
+        );
+        for error in [clean, orphaned] {
+            assert!(!error.message().contains("was not recorded"));
+            assert!(!error.message().contains("sign-out is recorded"));
         }
     }
 

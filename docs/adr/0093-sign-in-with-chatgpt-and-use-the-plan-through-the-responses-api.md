@@ -246,7 +246,11 @@ lock. Every token request checks for it under the same lock before reading
 a slot and returns `signin_required` if it exists, so a session already
 running gives no token and writes no record after a sign-out, even when a
 slot could not be deleted. A marker that cannot be written stops the
-sign-out before the revocation. A sign-out that fails after the marker
+sign-out before the revocation. An unbinding whose journal write or sync
+fails after it began may still be recorded, so its slots are deleted anyway
+and it is reported as `signout_uncertain`, never as unrecorded: otherwise a
+recorded removal would leave the slots bound to nothing and a second
+sign-out would find the profile signed out. A sign-out that fails after the marker
 leaves the session unusable until it is signed out again. A new sign-in
 gets a new binding identifier, so no marker is ever cleared. A failed revocation is not retried and does not stop the local
 sign-out; the report says remote revocation was not confirmed and that the

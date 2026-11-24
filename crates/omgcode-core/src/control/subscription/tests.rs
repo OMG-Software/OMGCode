@@ -237,6 +237,34 @@ fn a_connection_reports_the_endpoint_text_the_profile_recorded() {
 }
 
 #[test]
+fn an_uncertain_sign_out_still_deletes_both_slots() {
+    let fixture = fixture();
+    let set = sign_in(&fixture, "chatgpt", "oaiapp_one", "subject-1");
+    let id = set.binding.id().clone();
+    let mut store = fixture.store();
+    let revision = store.revision();
+    // The removal is written and its sync fails, so replay may accept it.
+    store.fail_next_sync = true;
+    let removal = store
+        .sign_out_provider_subscription(&fixture.credentials, "chatgpt", revision)
+        .expect("an uncertain write is reported, not refused");
+    assert!(matches!(removal.uncertain, Some(ControlError::Io(_))));
+    assert!(removal.orphans.is_empty());
+    assert_eq!(removal.removed, id);
+    drop(store);
+    // The slots are gone either way, so no item is left bound to nothing.
+    assert_eq!(
+        load_current_record(&fixture.credentials, &id, "oaiapp_one", "subject-1")
+            .expect_err("deleted"),
+        crate::provider::chatgpt::SignInError::SignInRequired
+    );
+    assert!(matches!(
+        fixture.store().provider_subscription("chatgpt"),
+        Err(ProviderCredentialUseError::NotSignedIn { .. })
+    ));
+}
+
+#[test]
 fn sign_out_deletes_both_slots_and_keeps_the_registration() {
     let fixture = fixture();
     let set = sign_in(&fixture, "chatgpt", "oaiapp_one", "subject-1");

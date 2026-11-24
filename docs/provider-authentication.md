@@ -498,12 +498,19 @@ documented route for local and open-source apps
   sign-out. A profile found signed in to a new session after the revocation
   is a `control` conflict, because that session was not revoked; one found
   signed out is a success; any other failure to read the profile then is
-  `signout_not_recorded`. Every failure after the revocation, including one
-  to open the settings, says whether OpenAI revoked the refresh token, that
-  the sign-out was not recorded, and that OMGCode no longer uses the
-  session's tokens because of the marker below; it asks for the sign-out to
-  be run again, and after an unconfirmed revocation also for OMGCode to be
-  disconnected in ChatGPT settings. An
+  `signout_not_recorded`. Every other failure after the revocation that
+  records nothing, including one to open the settings, says whether OpenAI
+  revoked the refresh token, that the sign-out was not recorded, and that
+  OMGCode no longer uses the session's tokens because of the marker below;
+  it asks for the sign-out to be run again, and after an unconfirmed
+  revocation also for OMGCode to be disconnected in ChatGPT settings. The
+  new-session conflict says only what OpenAI did with the old session,
+  because the new one is live. A journal write or sync that fails after it
+  began may still have recorded the sign-out, which replay would accept, so
+  the slots are deleted anyway and the sign-out is `signout_uncertain`: it
+  claims neither outcome, names each slot that could not be deleted, and
+  asks the operator to read the settings and sign out again if the profile
+  still shows signed in. An
   unconfirmed revocation is reported and not retried. Before the
   revocation, the sign-out writes a marker for the session under the
   session lock; every token request checks it under that lock and returns
@@ -515,8 +522,8 @@ documented route for local and open-source apps
   held it for 40 seconds or the lock cannot be opened, is
   `session_lock_unavailable`, and a cancelled wait is `cancelled`; neither
   changes anything. A
-  sign-out that fails after it leaves the session unusable until it is
-  signed out again.
+  sign-out that fails after writing the marker leaves the session unusable
+  until it is signed out again.
   Every slot that could not be deleted is named by its opaque identifier:
   the CLI's `orphaned_credential_ids` lists each one, and the desktop's
   `credential_orphaned` error names each one, so neither slot is lost from

@@ -31,6 +31,11 @@ pub struct SubscriptionSignOut {
     pub removed: CredentialId,
     /// Every token slot that could not be deleted: none, one, or both.
     pub orphans: Vec<OrphanedCredential>,
+    /// Set when the unbinding's journal write or sync failed after it
+    /// began, so the sign-out may or may not be recorded. The slots were
+    /// deleted anyway: a binding left recorded then names no token, so a
+    /// second sign-out completes it, and one that was recorded leaves none.
+    pub uncertain: Option<ControlError>,
 }
 
 /// The longest kept account label.
@@ -296,12 +301,26 @@ impl ControlStore {
             )
             .into());
         }
-        let (profile_id, binding) = self.unbind_credential(name, expected_revision)?;
+        let profile_id = status.profile().id();
+        let bound = status.credential.clone();
+        let (binding, uncertain) = match self.unbind_credential(name, expected_revision) {
+            Ok((_, binding)) => (binding, None),
+            // A failed write or sync can leave the removal on disk, where
+            // replay accepts it. Keeping the slots would then leave them
+            // bound to nothing, and a second sign-out would find the profile
+            // signed out and never delete them.
+            Err(error) if binding_write_uncertain(&error) => match bound {
+                Some(binding) => (binding, Some(error)),
+                None => return Err(error.into()),
+            },
+            Err(error) => return Err(error.into()),
+        };
         let orphans = delete_unbound_slots(credentials, &binding);
         Ok(SubscriptionSignOut {
             profile_id,
             removed: binding.id().clone(),
             orphans,
+            uncertain,
         })
     }
 
