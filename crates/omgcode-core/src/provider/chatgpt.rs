@@ -631,28 +631,75 @@ const fn provider_to_sign_in(error: ProviderError) -> SignInError {
 }
 
 /// The documented token response. Unknown fields such as
-/// `earliest_refresh_at` are ignored. The three tokens are zeroed when the
-/// response is dropped, so no early return leaves a copy behind.
-#[derive(Deserialize)]
+/// `earliest_refresh_at` are ignored, after the same duplicate-key check
+/// [`parse_strict_json`] applies.
+///
+/// It is read straight from the zeroing response body, never through a
+/// [`serde_json::Value`] tree: each token string moves into [`Zeroizing`] as
+/// it is read, so a duplicate key, a wrong type, or trailing data drops a
+/// partly read response whose tokens are zeroed. `serde_json` may unescape a
+/// string through its own scratch buffer, which is not zeroed; the tokens
+/// this accepts never contain an escape.
+#[derive(Default)]
 struct TokenResponse {
-    #[serde(default, deserialize_with = "secret")]
     access_token: Option<Zeroizing<String>>,
-    #[serde(default, deserialize_with = "secret")]
     refresh_token: Option<Zeroizing<String>>,
-    #[serde(default, deserialize_with = "secret")]
     id_token: Option<Zeroizing<String>>,
     token_type: Option<String>,
     expires_in: Option<u64>,
     scope: Option<String>,
 }
 
-/// Move a token string straight into [`Zeroizing`]. The parsed JSON value
-/// owns the string, so it is moved, not copied.
-fn secret<'de, D>(deserializer: D) -> Result<Option<Zeroizing<String>>, D::Error>
+impl<'de> Deserialize<'de> for TokenResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct TokenVisitor;
+        impl<'de> serde::de::Visitor<'de> for TokenVisitor {
+            type Value = TokenResponse;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a token response object without duplicate keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                // Every early return drops `response`, which zeroes its tokens.
+                let mut response = TokenResponse::default();
+                let mut seen = std::collections::BTreeSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom("duplicate JSON object key"));
+                    }
+                    match key.as_str() {
+                        "access_token" => response.access_token = secret(&mut map)?,
+                        "refresh_token" => response.refresh_token = secret(&mut map)?,
+                        "id_token" => response.id_token = secret(&mut map)?,
+                        "token_type" => response.token_type = map.next_value()?,
+                        "expires_in" => response.expires_in = map.next_value()?,
+                        "scope" => response.scope = map.next_value()?,
+                        _ => {
+                            map.next_value::<crate::storage::StrictValue>()?;
+                        }
+                    }
+                }
+                Ok(response)
+            }
+        }
+        deserializer.deserialize_map(TokenVisitor)
+    }
+}
+
+/// Move a token string straight into [`Zeroizing`] as it is read.
+fn secret<'de, A>(map: &mut A) -> Result<Option<Zeroizing<String>>, A::Error>
 where
-    D: serde::Deserializer<'de>,
+    A: serde::de::MapAccess<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(|token| token.map(Zeroizing::new))
+    map.next_value::<Option<String>>()
+        .map(|token| token.map(Zeroizing::new))
 }
 
 /// An OAuth error answer.
@@ -662,9 +709,8 @@ struct OAuthError {
 }
 
 fn parse_token_response(body: Option<&[u8]>) -> Result<TokenResponse, SignInError> {
-    let value = parse_strict_json(body.ok_or(SignInError::Malformed)?)
-        .map_err(|_| SignInError::Malformed)?;
-    serde_json::from_value(value).map_err(|_| SignInError::Malformed)
+    // `from_slice` also refuses trailing data, as `parse_strict_json` does.
+    serde_json::from_slice(body.ok_or(SignInError::Malformed)?).map_err(|_| SignInError::Malformed)
 }
 
 /// The parts every token answer shares, after their checks.

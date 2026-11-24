@@ -1558,7 +1558,9 @@ revision check and validation (ADR-0064, ADR-0071).
   as `plan_usage_not_granted`, and stores no token, except in two cases. When
   the write that binds the new tokens has an uncertain result, the tokens are
   kept and not revoked, and the error (`signin_binding_uncertain`) names their
-  identifier and says to check it with `provider-profile-show`. When the
+  identifier and says to check it with `provider-profile-show`; if the
+  profile does not name it, the operator deletes the item and disconnects
+  OMGCode in ChatGPT's settings. When the
   binding certainly failed but the new token item could not be deleted, the
   session is revoked (best effort) and the error (`signin_not_recorded`) names
   the item's identifier; the item may remain in the operating system's

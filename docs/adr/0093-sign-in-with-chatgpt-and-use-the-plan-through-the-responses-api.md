@@ -222,10 +222,14 @@ A refused refresh (`invalid_grant`, `invalid_refresh_token`, `token_expired`,
 `refresh_token_expired`, `refresh_token_invalidated`, `refresh_token_reused`)
 is `signin_required`. So is a refresh answer whose stated scopes lack
 `chatgpt.tokens.use.direct`: the plan no longer permits use, only a new
-sign-in can tell, and it reports `plan_usage_not_granted` if the plan still
-refuses. Other failures keep the record and fail the request. The token
-answer's access, refresh, and ID tokens are moved into zeroing buffers as
-they are parsed, so an answer refused by a later check leaves no copy.
+sign-in can tell, after a sign-out, and it reports `plan_usage_not_granted`
+if the plan still refuses. Other failures keep the record and fail the
+request. The token answer is read straight from the zeroing body, not
+through a `serde_json::Value` tree: its access, refresh, and ID tokens move
+into zeroing buffers as they are read, so an answer refused for a duplicate
+key, a wrong type, trailing data, or a later check leaves no unzeroed copy.
+`serde_json`'s scratch buffer for unescaping is not zeroed; an accepted
+token never contains an escape.
 
 ### Sign-out and removal
 

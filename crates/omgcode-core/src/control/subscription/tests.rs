@@ -214,6 +214,19 @@ fn sign_out_deletes_both_slots_and_keeps_the_registration() {
 
     let mut store = fixture.store();
     let revision = store.revision();
+    // A stale revision is the conflict before the signed-in refusal.
+    for stale in [revision - 1, revision + 1] {
+        assert!(matches!(
+            store.remove_provider_profile("chatgpt", stale),
+            Err(ControlError::Conflict { .. })
+        ));
+        assert!(matches!(
+            store.remove_provider_credential(&fixture.credentials, "chatgpt", stale),
+            Err(ProviderCredentialError::Control(
+                ControlError::Conflict { .. }
+            ))
+        ));
+    }
     assert!(matches!(
         store.remove_provider_profile("chatgpt", revision),
         Err(ControlError::ProviderRefused(_))

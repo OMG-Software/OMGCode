@@ -1203,3 +1203,52 @@ fn errors_carry_fixed_text_and_stable_codes() {
     assert_eq!(SignInError::Random.code(), "random_unavailable");
     assert!(!SignInError::Random.to_string().contains("reached"));
 }
+
+#[test]
+fn a_token_response_is_read_strictly_without_a_value_tree() {
+    let Ok(parsed) = parse_token_response(Some(
+        br#"{"access_token":"a","refresh_token":"r","id_token":"i","token_type":"Bearer","expires_in":60,"scope":"s","earliest_refresh_at":{"x":[1,{"y":null}]}}"#,
+    ))
+    else {
+        panic!("a valid response");
+    };
+    assert_eq!(
+        parsed.access_token.as_deref().map(String::as_str),
+        Some("a")
+    );
+    assert_eq!(
+        parsed.refresh_token.as_deref().map(String::as_str),
+        Some("r")
+    );
+    assert_eq!(parsed.id_token.as_deref().map(String::as_str), Some("i"));
+    assert_eq!(parsed.token_type.as_deref(), Some("Bearer"));
+    assert_eq!(parsed.expires_in, Some(60));
+    assert_eq!(parsed.scope.as_deref(), Some("s"));
+    let Ok(empty) = parse_token_response(Some(br#"{"access_token":null}"#)) else {
+        panic!("null is absent");
+    };
+    assert!(empty.access_token.is_none());
+    for body in [
+        &br#"{"access_token":"a","access_token":"b"}"#[..],
+        br#"{"refresh_token":"r","x":1,"refresh_token":"s"}"#,
+        br#"{"extra":{"k":1,"k":2}}"#,
+        br#"{"access_token":"a"} {}"#,
+        br#"{"access_token":"a","expires_in":"soon"}"#,
+        br#"{"access_token":7}"#,
+        br#"["access_token"]"#,
+        br#"{"access_token":"a""#,
+    ] {
+        assert!(
+            matches!(
+                parse_token_response(Some(body)),
+                Err(SignInError::Malformed)
+            ),
+            "{}",
+            String::from_utf8_lossy(body)
+        );
+    }
+    assert!(matches!(
+        parse_token_response(None),
+        Err(SignInError::Malformed)
+    ));
+}

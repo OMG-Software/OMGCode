@@ -112,7 +112,8 @@ pub(crate) fn parse_strict_json(bytes: &[u8]) -> Result<Value, serde_json::Error
     Ok(value.0)
 }
 
-struct StrictValue(Value);
+/// One JSON value whose objects have no duplicate keys at any depth.
+pub(crate) struct StrictValue(pub(crate) Value);
 
 impl<'de> Deserialize<'de> for StrictValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

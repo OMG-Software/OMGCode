@@ -204,7 +204,7 @@ pub fn sign_in_with_chatgpt(
                 ProviderCredentialError::BindingUncertain { credential_id, .. } => {
                     uncertain.set(true);
                     credential_error(format!(
-                        "signin_binding_uncertain: the sign-in's tokens were kept as {credential_id}, but whether the profile names them is uncertain. Run provider-profile-show: if it shows this identifier, the profile is signed in; to end the session, run provider-signout. Otherwise delete the item by hand"
+                        "signin_binding_uncertain: the sign-in's tokens were kept as {credential_id}, but whether the profile names them is uncertain. Run provider-profile-show: if it shows this identifier, the profile is signed in; to end the session, run provider-signout. Otherwise delete the item by hand and disconnect OMGCode in your ChatGPT settings, because that session cannot be revoked from here"
                     ))
                 }
                 // Only these two can leave a new token item behind.

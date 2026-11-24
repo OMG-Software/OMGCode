@@ -265,8 +265,12 @@ for the workspace's AppContainer and record each change; see
 
 Version 0.27.0 stores provider API keys in protected OS storage and binds each
 one to an `api_key` provider profile ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)).
-Subscription and `none` profiles refuse a credential. Only the local LM Studio
-adapter reads a stored credential, and only through `--provider-profile` (see
+Subscription and `none` profiles refuse a stored API key; a signed-in ChatGPT
+`subscription` profile holds the tokens its sign-in stored instead
+([ADR-0093](adr/0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+On the CLI a stored credential is read only through `--provider-profile`: an
+`lm_studio` profile's server token, a hosted `api_key` profile's key
+(ADR-0092), or a signed-in ChatGPT profile's tokens (see
 [Use a stored credential for chat](#use-a-stored-credential-for-chat)). Without
 that flag `chat` uses the prototype `OMGCODE_LM_TOKEN` input.
 

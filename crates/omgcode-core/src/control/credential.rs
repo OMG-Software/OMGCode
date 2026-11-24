@@ -559,6 +559,9 @@ impl ControlStore {
         name: &str,
         expected_revision: u64,
     ) -> Result<ProviderCredentialRemoval, ProviderCredentialError> {
+        // A stale caller gets the conflict it re-reads on, never a refusal
+        // that describes state its revision may no longer show.
+        self.check_revision(expected_revision)?;
         // Only a ChatGPT sign-in binds a subscription profile (ADR-0093), so
         // a bound one is a session. An unbound one, or another provider's
         // subscription profile, gets the refusal below that names its cause.

@@ -66,7 +66,11 @@ Changes are recorded here before a release version is assigned.
   during the browser step is the `control` conflict or refusal. The desktop
   checks a new connection name before its sign-in confirmation, and a
   sign-out shows the wait bar with **Cancel sign-out**, which ends the wait
-  for the session lock or for OpenAI.
+  for the session lock or for OpenAI. A token answer is read straight into
+  zeroing storage, so a refused answer leaves no unzeroed token copy;
+  `signin_binding_uncertain` also says to disconnect OMGCode in ChatGPT
+  settings when the item is deleted by hand; and removing a signed-in
+  ChatGPT profile's credential with a stale revision is the conflict.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

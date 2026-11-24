@@ -487,8 +487,9 @@ documented route for local and open-source apps
   remain, under a per-session OS file lock, and stores the rotated record
   before the lock is released. A refused refresh is `signin_required`, and
   so is a refresh whose stated scopes no longer include
-  `chatgpt.tokens.use.direct`: the old record is kept, and a new sign-in
-  reports `plan_usage_not_granted` if the plan still refuses. A crash
+  `chatgpt.tokens.use.direct`: the old record is kept, so the profile stays
+  signed in. Sign out before signing in again; the new sign-in then reports
+  `plan_usage_not_granted` if the plan still refuses. A crash
   between OpenAI rotating the token and the store write loses the session.
 - **Sign-out.** `omgcode workspace provider-signout <name> --revision <n>` or
   **Sign out** revokes the refresh token once, records the sign-out, and
