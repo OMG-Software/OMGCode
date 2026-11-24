@@ -172,7 +172,7 @@ const BUILT_IN_PREFERENCES: MockPreferences = {
   max_tool_calls: 128,
   turn_timeout_seconds: 120,
   instructions: "",
-  compact_threshold: 200_000,
+  compact_threshold: 400_000,
   auto_compact: true,
   enter_to_send: true,
 };
@@ -1279,6 +1279,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       enter_to_send,
       compact_threshold_min: COMPACT_MIN,
       compact_threshold_max: COMPACT_MAX,
+      compact_threshold_step: 8_000,
     };
   }
 

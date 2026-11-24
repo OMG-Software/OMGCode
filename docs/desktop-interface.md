@@ -708,8 +708,12 @@ turn were awaited are kept.
 
 **Auto-compact** and the compaction slider stay in **Chat settings**. The
 slider runs from 128K to 1M tokens (128,000 to 1,000,000) in steps of 8,000
-and shows its value, such as "200K tokens"; `chat_defaults` reports the
-range. Compaction still triggers earlier when the model's safe input is
+and shows its value, such as "400K tokens"; `chat_defaults` reports the
+range and, since 0.58.0, the step (`compact_threshold_step`), and the slider
+uses them once they arrive. When no chat preferences are saved, **Auto-compact** is on and the
+threshold is 400K tokens (since 0.58.0, ADR-0091). A saved preferences file
+keeps its own values. The CLI keeps a 200,000-token default and an opt-in
+`--auto-compact`. Compaction still triggers earlier when the model's safe input is
 smaller (`min(threshold, safe input)`). A saved threshold outside the range,
 such as one saved before 0.54.0, is shown and sent at the nearest end of
 the range. When defaults arrive after the operator has begun editing, only

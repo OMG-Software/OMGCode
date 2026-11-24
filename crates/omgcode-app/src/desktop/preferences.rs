@@ -36,7 +36,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
 use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
 
 use super::error::DesktopError;
@@ -45,6 +44,23 @@ use crate::chat::{DEFAULT_TURN_TIMEOUT_SECONDS, validate_turn_budgets};
 
 /// Output reserve of the built-in preferences.
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
+/// Compaction threshold of the built-in preferences: inside the slider's
+/// range and on its step, and larger than the CLI's
+/// `DEFAULT_COMPACT_THRESHOLD` (ADR-0091).
+const DEFAULT_DESKTOP_COMPACT_THRESHOLD: u64 = 400_000;
+/// Whether the built-in preferences compact automatically (ADR-0091). The
+/// CLI keeps `--auto-compact` opt-in.
+const DEFAULT_DESKTOP_AUTO_COMPACT: bool = true;
+// The default must be a value the composer's slider can show and save
+// unchanged: inside its range and on its step, since the composer rounds a
+// value between steps. `chat_defaults` reports all three bounds, so the
+// slider uses the same values this checks (ADR-0091).
+const _: () = assert!(
+    DEFAULT_DESKTOP_COMPACT_THRESHOLD >= COMPACT_THRESHOLD_MIN
+        && DEFAULT_DESKTOP_COMPACT_THRESHOLD <= COMPACT_THRESHOLD_MAX
+        && (DEFAULT_DESKTOP_COMPACT_THRESHOLD - COMPACT_THRESHOLD_MIN)
+            .is_multiple_of(COMPACT_THRESHOLD_STEP)
+);
 
 /// The directory under the data root that holds desktop-only files.
 pub(super) const DIRECTORY: &str = "desktop-v1";
@@ -65,6 +81,9 @@ pub(super) const MAX_SAVED_INSTRUCTIONS_BYTES: usize = 16 * 1024;
 pub(super) const COMPACT_THRESHOLD_MIN: u64 = 128_000;
 /// Largest compaction threshold the composer's slider offers.
 pub(super) const COMPACT_THRESHOLD_MAX: u64 = 1_000_000;
+/// The composer slider's step from [`COMPACT_THRESHOLD_MIN`], reported in
+/// `chat_defaults` (ADR-0091). The composer rounds a value onto it.
+pub(super) const COMPACT_THRESHOLD_STEP: u64 = 8_000;
 /// Largest file read or written. JSON escaping can grow the instructions up to
 /// six times (`\u0000` for one byte), so this leaves room for that.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
@@ -159,8 +178,9 @@ pub(super) fn read_bounded(path: &Path, max: u64) -> Result<Option<Vec<u8>>, Loa
     Ok(Some(bytes))
 }
 
-/// The preferences that apply when none are saved: an empty model and the
-/// CLI's budgets.
+/// The preferences that apply when none are saved: an empty model, the CLI's
+/// budgets, and the desktop's own compaction defaults (ADR-0091). A saved
+/// file keeps its own values.
 pub(super) fn built_in() -> ChatPreferencesDto {
     ChatPreferencesDto {
         model: String::new(),
@@ -169,8 +189,8 @@ pub(super) fn built_in() -> ChatPreferencesDto {
         max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
         turn_timeout_seconds: DEFAULT_TURN_TIMEOUT_SECONDS,
         instructions: String::new(),
-        compact_threshold: DEFAULT_COMPACT_THRESHOLD,
-        auto_compact: false,
+        compact_threshold: DEFAULT_DESKTOP_COMPACT_THRESHOLD,
+        auto_compact: DEFAULT_DESKTOP_AUTO_COMPACT,
         enter_to_send: enter_to_send_default(),
     }
 }
