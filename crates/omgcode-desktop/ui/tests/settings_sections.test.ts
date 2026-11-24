@@ -8,7 +8,7 @@ import type {
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
-import { NO_ENDPOINT_NOTE } from "../src/settings/model_section";
+import { NO_ENDPOINT_NOTE, UNSUPPORTED_AUTH_NOTE } from "../src/settings/model_section";
 import { ALL_TOOLS_LABEL, PACKAGE_CACHE_HELP } from "../src/settings/workspaces_section";
 import {
   buttonByText,
@@ -705,6 +705,9 @@ describe("advanced section", () => {
     expect(row?.textContent).toContain("Hosted");
     expect(row?.textContent).not.toContain("Set key");
     expect(row?.querySelector("input[type=password]")).toBeNull();
+    // It can never be chosen, so it must not claim that prompts leave for its host.
+    expect(row?.textContent).toContain(UNSUPPORTED_AUTH_NOTE);
+    expect(row?.textContent).not.toContain("leave this computer");
   });
 
   it("says a hosted profile without an endpoint cannot be used, and offers no Set key", async () => {

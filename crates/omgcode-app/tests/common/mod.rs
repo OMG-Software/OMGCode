@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 pub mod credential;
+pub mod legacy_journal;
 
 use std::fs;
 use std::io::{Read, Write};
