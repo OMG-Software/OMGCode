@@ -1222,3 +1222,131 @@ fn provider_profile_select_records_and_clears_the_active_connection() {
             .is_none()
     );
 }
+
+/// Unregistering removes the registration and its settings, deletes the saved
+/// desktop instructions file, leaves the folder alone, refuses stale or
+/// unknown requests, and lets the same folder register again as a new
+/// workspace (ADR-0081).
+#[test]
+fn unregister_removes_a_workspace_and_its_instructions_and_leaves_the_folder() {
+    // Given two registered workspaces, one with saved desktop instructions.
+    let temporary = TempDir::new().expect("private temporary directory");
+    let data_root = temporary.path().join("application-data");
+    let development_root = temporary.path().join("development");
+    let first = development_root.join("first");
+    let second = development_root.join("second");
+    fs::create_dir_all(&first).expect("create first workspace");
+    fs::create_dir_all(&second).expect("create second workspace");
+    fs::write(first.join("keep.txt"), b"kept").expect("workspace file");
+    set_root(&data_root, &development_root);
+    let first_id = register(&data_root, &first, 1);
+    let second_id = register(&data_root, &second, 2);
+    let instructions = data_root.join("desktop-v1").join("workspace-instructions");
+    fs::create_dir_all(&instructions).expect("instructions folder");
+    let file = |id: &str| instructions.join(format!("{id}.json"));
+    for id in [&first_id, &second_id] {
+        fs::write(file(id), br#"{"version":1,"instructions":"Use tabs."}"#)
+            .expect("saved instructions");
+    }
+
+    // When the operator unregisters with a stale revision, an unknown id, then correctly.
+    let stale = run_cli(
+        &data_root,
+        &["workspace", "unregister", &first_id, "--revision", "2"],
+    );
+    assert_control_error(&stale);
+    let unknown = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "unregister",
+            &Uuid::new_v4().to_string(),
+            "--revision",
+            "3",
+        ],
+    );
+    assert_control_error(&unknown);
+    assert!(file(&first_id).exists(), "a refusal keeps the file");
+    let removed = run_cli(
+        &data_root,
+        &["workspace", "unregister", &first_id, "--revision", "3"],
+    );
+    assert_success(&removed);
+    let removed = json_output(&removed);
+
+    // Then only that workspace and its file are gone, and the folder is untouched.
+    assert_eq!(removed["unregistered_workspace_id"], first_id.as_str());
+    assert_eq!(removed["snapshot"]["revision"], 4);
+    let listed = removed["snapshot"]["workspaces"]
+        .as_array()
+        .expect("workspaces");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], second_id.as_str());
+    assert!(!file(&first_id).exists());
+    assert!(file(&second_id).exists());
+    assert_eq!(fs::read(first.join("keep.txt")).expect("kept"), b"kept");
+
+    // And the same folder registers again under a new identifier.
+    let again = register(&data_root, &first, 4);
+    assert_ne!(again, first_id);
+    let unknown_now = run_cli(
+        &data_root,
+        &["workspace", "unregister", &first_id, "--revision", "5"],
+    );
+    assert_control_error(&unknown_now);
+}
+
+/// A recorded container grant refuses the removal until it is revoked.
+#[cfg(windows)]
+#[test]
+fn unregister_is_refused_while_a_container_grant_names_the_workspace() {
+    // Given a workspace with a read-write container grant.
+    let temporary = TempDir::new().expect("private temporary directory");
+    let data_root = temporary.path().join("application-data");
+    let development_root = temporary.path().join("development");
+    let workspace = development_root.join("app");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    set_root(&data_root, &development_root);
+    let id = register(&data_root, &workspace, 1);
+    let grant = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "container-grant",
+            &id,
+            path_arg(&workspace),
+            "--access",
+            "read-write",
+            "--revision",
+            "2",
+        ],
+    );
+    assert_success(&grant);
+    let grant_id = json_output(&grant)["grant_id"]
+        .as_str()
+        .expect("grant ID")
+        .to_owned();
+
+    // When unregistering, it is refused and nothing changes.
+    let refused = run_cli(
+        &data_root,
+        &["workspace", "unregister", &id, "--revision", "3"],
+    );
+    assert_control_error(&refused);
+    let status = json_output(&run_cli(&data_root, &["workspace", "status"]));
+    assert_eq!(status["revision"], 3);
+    assert_eq!(
+        status["workspaces"].as_array().expect("workspaces").len(),
+        1
+    );
+
+    // Then it succeeds once the grant is revoked.
+    assert_success(&run_cli(
+        &data_root,
+        &["workspace", "container-revoke", &grant_id],
+    ));
+    assert_success(&run_cli(
+        &data_root,
+        &["workspace", "unregister", &id, "--revision", "3"],
+    ));
+}

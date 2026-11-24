@@ -115,6 +115,7 @@ use uuid::Uuid;
 pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
 use self::events::EventHub;
+pub use self::instructions::remove as remove_workspace_instructions;
 use self::review_tokens::ReviewTokens;
 pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
 pub use self::settings_skills::{SkillChoice, SkillRemoveRequest, SkillStateRequest};

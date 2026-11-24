@@ -23,6 +23,7 @@
     "allow-settings-set-api-key",
     "allow-settings-set-permissions",
     "allow-settings-set-skill-state",
-    "allow-settings-set-workspace-instructions"
+    "allow-settings-set-workspace-instructions",
+    "allow-settings-unregister-workspace"
   ]
 }

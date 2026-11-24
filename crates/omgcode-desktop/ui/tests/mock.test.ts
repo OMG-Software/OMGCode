@@ -581,6 +581,47 @@ describe("mock backend", () => {
       expect(cleared.revision).toBe(start.revision + 4);
     });
 
+    it("unregisters a workspace like core: revisioned, and the sessions stay", async () => {
+      const { invoke } = createMockBackend();
+      const start = (await invoke("settings_overview", {})) as SettingsOverview;
+      const sessions = (await invoke("session_tree", {
+        view: "active",
+        sort: "updated",
+        descending: true,
+      })) as { indexed_sessions: number };
+      await expect(
+        invoke("settings_unregister_workspace", {
+          workspace_id: WORKSPACE,
+          revision: start.revision - 1,
+        }),
+      ).rejects.toMatchObject({ code: "stale_revision" });
+      await expect(
+        invoke("settings_unregister_workspace", {
+          workspace_id: "missing",
+          revision: start.revision,
+        }),
+      ).rejects.toMatchObject({ code: "unknown_workspace" });
+
+      const removed = (await invoke("settings_unregister_workspace", {
+        workspace_id: WORKSPACE,
+        revision: start.revision,
+      })) as SettingsOverview;
+      expect(removed.revision).toBe(start.revision + 1);
+      expect(removed.workspaces.some((w) => w.workspace_id === WORKSPACE)).toBe(false);
+      const after = (await invoke("session_tree", {
+        view: "active",
+        sort: "updated",
+        descending: true,
+      })) as { indexed_sessions: number };
+      expect(after.indexed_sessions).toBe(sessions.indexed_sessions);
+      await expect(
+        invoke("settings_unregister_workspace", {
+          workspace_id: WORKSPACE,
+          revision: removed.revision,
+        }),
+      ).rejects.toMatchObject({ code: "unknown_workspace" });
+    });
+
     it("refuses a stale revision and an unknown workspace", async () => {
       const { invoke } = createMockBackend();
       const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;

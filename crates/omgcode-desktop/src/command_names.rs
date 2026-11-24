@@ -50,4 +50,5 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_import_skill",
     "settings_set_skill_state",
     "settings_remove_skill",
+    "settings_unregister_workspace",
 ];

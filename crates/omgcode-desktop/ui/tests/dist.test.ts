@@ -20,6 +20,7 @@ const SETTINGS_WINDOW_COMMANDS = [
   "settings_set_permissions",
   "settings_choose_package_cache",
   "settings_clear_package_cache",
+  "settings_unregister_workspace",
 ];
 
 /** JS files reachable from an HTML entry, following static and dynamic relative imports. */

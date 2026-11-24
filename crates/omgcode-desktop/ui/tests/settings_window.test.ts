@@ -621,6 +621,47 @@ describe("settings window", () => {
     expect(() => buttonByText(workspaceCard(), "Clear")).toThrow();
   });
 
+  it("removes a workspace by identifier and revision, and shows none afterwards", async () => {
+    await start(() => overview(), {
+      settings_unregister_workspace: () => overview({ revision: 8, workspaces: [] }),
+    });
+    expect(workspaceCard().textContent).toContain("The folder and its files are not touched.");
+
+    buttonByText(workspaceCard(), "Remove workspace…").click();
+    await settle();
+
+    // The call carries the identifier and the revision the window read, never a path.
+    expect(ipc.callsTo("settings_unregister_workspace")[0]?.args).toEqual({
+      workspace_id: WORKSPACE,
+      revision: 7,
+    });
+    expect(root.querySelector(".workspace-block")).toBeNull();
+    expect(root.textContent).toContain("No workspace is registered.");
+  });
+
+  it("keeps the workspace when the operator declines or a turn is running", async () => {
+    await start(() => overview(), {
+      settings_unregister_workspace: () => rejection("cancelled", "No change was made."),
+    });
+    buttonByText(workspaceCard(), "Remove workspace…").click();
+    await settle();
+    expect(workspaceCard().textContent).toContain("/home/dev/project");
+
+    ipc.on("settings_unregister_workspace", () =>
+      rejection("turn_running", "A chat turn is running in a session of this workspace."),
+    );
+    buttonByText(workspaceCard(), "Remove workspace…").click();
+    await settle();
+    expect(root.textContent).toContain("A chat turn is running in a session of this workspace.");
+    expect(workspaceCard().textContent).toContain("/home/dev/project");
+  });
+
+  it("offers no removal in the view scoped to one session's workspace", async () => {
+    await start(() => overview({ scope: { workspace_id: WORKSPACE } }));
+    expect(workspaceCard().textContent).toContain("/home/dev/project");
+    expect(() => buttonByText(root, "Remove workspace…")).toThrow();
+  });
+
   it("renders hostile recorded text as text", async () => {
     await startOverview(() =>
       overview({

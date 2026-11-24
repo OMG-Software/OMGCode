@@ -55,6 +55,7 @@ use omgcode_core::turn::display_safe_line;
 
 use super::DesktopService;
 use super::error::DesktopError;
+use super::instructions;
 use super::session_connections::{ChosenConnection, SessionRecord, check_model, recorded_endpoint};
 use super::settings::overview_of;
 use super::state::folder_of_directory;
@@ -700,6 +701,97 @@ impl DesktopService {
         })
     }
 
+    /// `settings` only. Remove one workspace's registration after a native
+    /// confirmation that names its folder and lists what is removed
+    /// (ADR-0081).
+    ///
+    /// One settings event drops the registration, its preferences, its
+    /// package cache root selection, its skill overrides, and its checkpoint
+    /// folder record. The workspace's instructions file is then deleted under
+    /// the preferences lock, so no later turn sends its text. The folder, its
+    /// `.OMGCode` folder, cached packages, and the sessions recorded in the
+    /// workspace are not touched. Registering the folder again assigns a new
+    /// identifier, so those sessions stay in the journals and chat without
+    /// tools.
+    ///
+    /// # Errors
+    ///
+    /// `unknown_workspace`; `turn_running` while a chat turn runs in a session
+    /// of the workspace (checked before the dialog and again before the
+    /// change); `control` with core's refusal while a container grant names
+    /// the workspace; `instructions_orphaned` when the workspace was removed
+    /// but its instructions file could not be deleted; otherwise as
+    /// [`settings_choose_root`](Self::settings_choose_root).
+    pub fn settings_unregister_workspace(
+        &self,
+        request: WorkspaceRevisionRequest,
+        prompt: &dyn SettingsPrompt,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        let (workspace_id, workspace_folder) = {
+            let store = self.inner.open_or_create_control()?;
+            check_revision(&store, request.revision)?;
+            let workspace = store
+                .registered_workspace(request.workspace_id)
+                .ok_or_else(DesktopError::unknown_workspace)?;
+            store
+                .check_removable(workspace.id())
+                .map_err(|error| DesktopError::from_control(&error))?;
+            (
+                workspace.id(),
+                folder_of_directory(workspace.directory_path()),
+            )
+        };
+        self.refuse_running_turns(request.workspace_id)?;
+        confirm(
+            prompt,
+            &Confirmation {
+                title: "Remove a workspace",
+                message: format!(
+                    "Remove this workspace?\n\n{workspace_folder}\n\nIts preferences, instructions, package cache selection, skill overrides, and checkpoint record are removed from OMGCode. The folder and its files are not touched, and its checkpoints stay in its .OMGCode folder. Its sessions stay, and can chat without tools only. Registering the folder again makes a new workspace with the default preferences."
+                ),
+            },
+        )?;
+        // The dialog can stay open for a long time, so a turn started meanwhile
+        // is found here. A turn that starts after this check stops using tools,
+        // because every tool call checks the live settings.
+        self.refuse_running_turns(request.workspace_id)?;
+        // The preferences lock comes first, as in every other save that also
+        // reads settings, so the removal of the instructions file never
+        // overlaps a save or a turn's read of it.
+        let listed = {
+            let _lock = self
+                .inner
+                .preferences
+                .lock()
+                .map_err(|_| DesktopError::poisoned())?;
+            let mut store = self.inner.open_or_create_control()?;
+            store
+                .unregister_workspace(workspace_id, request.revision)
+                .map_err(|error| DesktopError::from_control(&error))?;
+            instructions::save(&self.inner.data_root, *workspace_id.as_uuid(), "")
+                .map_err(|_| DesktopError::removed_instructions_orphaned())?;
+            run::withdrawn_runs(&store)
+        };
+        self.finish_change(listed)
+    }
+
+    /// Refuse while a chat turn runs in any session recorded in this workspace.
+    fn refuse_running_turns(&self, workspace: uuid::Uuid) -> Result<(), DesktopError> {
+        for session_id in self.inner.running_sessions()? {
+            let recorded = self.inner.with_index(|state| {
+                state
+                    .index
+                    .session(session_id)
+                    .map_err(|error| DesktopError::from_index(&error))
+            })?;
+            if recorded.and_then(|session| session.workspace_id) == Some(workspace) {
+                return Err(DesktopError::workspace_turn_running());
+            }
+        }
+        Ok(())
+    }
+
     /// `settings` only. Choose the global default model connection: a
     /// selectable recorded profile by name (local, or `ollama_cloud` with a
     /// bound credential), or `None` for the default endpoint (ADR-0064,
@@ -1153,6 +1245,15 @@ impl DesktopService {
             change(&mut store)?;
             run::withdrawn_runs(&store)
         };
+        self.finish_change(listed)
+    }
+
+    /// After a recorded change: wait for the runs it withdrew and any others
+    /// the settings withdraw to stop, then return the new overview.
+    fn finish_change(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+    ) -> Result<SettingsOverview, DesktopError> {
         // An unreadable run journal never undoes the recorded change, and the
         // watchers still stop the runs: wait for what the settings now
         // withdraw, then report that the runs were not all checked.

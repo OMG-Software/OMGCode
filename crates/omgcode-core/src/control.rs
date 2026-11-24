@@ -375,6 +375,12 @@ enum Action {
     WorkspaceRegistered {
         registration: WorkspaceRegistration,
     },
+    /// One registration was removed together with the settings that name it
+    /// (ADR-0081). Nothing on disk is changed.
+    WorkspaceUnregistered {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
+    },
     PermissionsChanged {
         #[serde(deserialize_with = "deserialize_workspace_id")]
         workspace_id: WorkspaceId,
@@ -1119,6 +1125,54 @@ impl ControlStore {
         Ok(registration)
     }
 
+    /// Remove one registration and every setting that names it (ADR-0081).
+    ///
+    /// The event drops the workspace's preferences, its package cache root
+    /// selection, its skill workspace overrides, and its bound checkpoint
+    /// folder record. The workspace directory and its `.OMGCode` folder are
+    /// never touched, and sessions recorded in the workspace stay in the
+    /// journals. Approval, package-fetch, and policy records stay as history;
+    /// the revision change makes every outstanding approval unusable.
+    /// Registering the same folder again assigns a new identifier.
+    ///
+    /// Refuses while any container grant, in any state, names the workspace:
+    /// the operator must revoke it first so no ACL is stranded. The caller
+    /// holds the settings lock, and removes the workspace's instructions file
+    /// itself under the preferences lock.
+    pub fn unregister_workspace(
+        &mut self,
+        id: WorkspaceId,
+        expected_revision: u64,
+    ) -> Result<(), ControlError> {
+        self.check_revision(expected_revision)?;
+        self.check_removable(id)?;
+        self.append(
+            Action::WorkspaceUnregistered { workspace_id: id },
+            self.next_revision()?,
+        )
+    }
+
+    /// Whether [`Self::unregister_workspace`] would accept this workspace,
+    /// apart from the revision: it must be registered and no container grant,
+    /// in any state, may name it. A caller checks this before it asks the
+    /// operator to confirm.
+    pub fn check_removable(&self, id: WorkspaceId) -> Result<(), ControlError> {
+        if self.workspace(id).is_none() {
+            return Err(ControlError::UnknownWorkspace);
+        }
+        if self
+            .snapshot
+            .container_grants
+            .iter()
+            .any(|status| status.grant().workspace_id() == id)
+        {
+            return Err(ControlError::GrantRefused(
+                "the workspace has a container grant; revoke it before unregistering",
+            ));
+        }
+        Ok(())
+    }
+
     /// Change preferences with an explicit compare-and-set revision.
     pub fn set_permissions(
         &mut self,
@@ -1499,6 +1553,32 @@ impl ControlStore {
                 }
                 state.workspaces.push(registration.clone());
             }
+            Action::WorkspaceUnregistered { workspace_id } => {
+                let index = state
+                    .workspaces
+                    .iter()
+                    .position(|workspace| workspace.id == *workspace_id)
+                    .ok_or(ControlError::Invalid("unregistering an unknown workspace"))?;
+                if state
+                    .container_grants
+                    .iter()
+                    .any(|status| status.grant().workspace_id() == *workspace_id)
+                {
+                    return Err(ControlError::Invalid(
+                        "unregistering a workspace that has a container grant",
+                    ));
+                }
+                state.workspaces.remove(index);
+                state
+                    .package_cache_roots
+                    .retain(|status| status.workspace_id != *workspace_id);
+                state
+                    .workspace_stores
+                    .retain(|status| status.workspace_id != *workspace_id);
+                state.grant_revocations.remove(workspace_id);
+                state.model_tool_revocations.remove(workspace_id);
+                skill::drop_workspace_overrides(state, *workspace_id);
+            }
             Action::PermissionsChanged {
                 workspace_id,
                 permissions,
@@ -1664,6 +1744,9 @@ fn valid_uuid(value: Uuid) -> bool {
 
 #[cfg(test)]
 mod skill_reserve_tests;
+
+#[cfg(test)]
+mod unregister_tests;
 
 #[cfg(test)]
 mod tests {

@@ -229,7 +229,28 @@ function packageCache(workspace: WorkspaceSettingsView, { submit, actions }: Sec
   );
 }
 
-function workspaceBlock(workspace: WorkspaceSettingsView, ctx: SectionContext): HTMLElement {
+/**
+ * The button that unregisters the workspace (ADR-0081). Rust names the folder and what is
+ * removed in a native confirmation; the window sends the identifier and revision only.
+ */
+function removeWorkspace(workspace: WorkspaceSettingsView, { submit, actions }: SectionContext) {
+  return el(
+    "div",
+    { class: "row-actions" },
+    button("Remove workspace…", () => submit(actions.unregisterWorkspace(workspace.workspace_id))),
+    el("span", {
+      class: "muted",
+      text: "Removes this registration and its settings. The folder and its files are not touched.",
+    }),
+  );
+}
+
+/** `removable` adds the removal control, which only the full Workspaces view offers. */
+function workspaceBlock(
+  workspace: WorkspaceSettingsView,
+  ctx: SectionContext,
+  removable: boolean,
+): HTMLElement {
   return el(
     "section",
     { class: "block workspace-block" },
@@ -246,6 +267,7 @@ function workspaceBlock(workspace: WorkspaceSettingsView, ctx: SectionContext): 
       packageCache(workspace, ctx),
     ),
     workspaceInstructionsBlock(workspace, ctx),
+    removable ? removeWorkspace(workspace, ctx) : null,
   );
 }
 
@@ -298,7 +320,7 @@ export function renderWorkspaces(ctx: SectionContext): HTMLElement[] {
     return [
       ...sectionHead("Workspace settings", SCOPED_HELP),
       el("p", { class: "access-help", text: ACCESS_HELP }),
-      workspaceBlock(scoped, ctx),
+      workspaceBlock(scoped, ctx, false),
     ];
   }
   const gone = ctx.overview.scope === null ? null : el("p", { class: "notice", text: SCOPE_GONE });
@@ -309,7 +331,7 @@ export function renderWorkspaces(ctx: SectionContext): HTMLElement[] {
       ...sectionHead("Workspaces", WORKSPACES_HELP),
       gone,
       el("p", { class: "access-help", text: ACCESS_HELP }),
-      workspaceBlock(shown, ctx),
+      workspaceBlock(shown, ctx, true),
     ].filter((node): node is HTMLElement => node !== null);
   }
   const empty =

@@ -137,6 +137,21 @@ pub(super) fn save(
         .map_err(|_| DesktopError::workspace_instructions())
 }
 
+/// Delete one workspace's saved instructions file, if there is one (ADR-0081).
+///
+/// The `settings` window calls it under the preferences lock when it
+/// unregisters a workspace. The trusted CLI calls it without that lock, which
+/// lives in one process, so a concurrent save in a running desktop could
+/// recreate the file. `chat_send` sends the text only for a registered
+/// workspace, so a file that remains is never sent.
+///
+/// # Errors
+///
+/// `preferences` when the file cannot be removed.
+pub fn remove(data_root: &Path, workspace: Uuid) -> Result<(), DesktopError> {
+    save(data_root, workspace, "")
+}
+
 /// The custom instructions one turn sends: the global text alone when the
 /// workspace has none, so earlier turns' manifests keep their shape, and
 /// otherwise both under headings, global first.
