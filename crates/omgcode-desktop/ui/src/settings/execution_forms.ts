@@ -47,7 +47,10 @@ function show(problem: HTMLElement, text: string): void {
 
 type Variables = Array<{ name: string; value: string }>;
 
-/** Parses `NAME=VALUE` lines. Blank lines are skipped; the first `=` splits. */
+/**
+ * Parses `NAME=VALUE` lines. Blank lines are skipped; the first `=` splits. A line with no name
+ * is refused here, before Rust opens any folder dialog.
+ */
 export function parseEnvironment(
   text: string,
 ): { ok: true; entries: Variables } | { ok: false; line: number } {
@@ -57,10 +60,11 @@ export function parseEnvironment(
       continue;
     }
     const at = line.indexOf("=");
-    if (at <= 0) {
+    const name = at <= 0 ? "" : line.slice(0, at).trim();
+    if (name === "") {
       return { ok: false, line: index + 1 };
     }
-    entries.push({ name: line.slice(0, at).trim(), value: line.slice(at + 1) });
+    entries.push({ name, value: line.slice(at + 1) });
   }
   return { ok: true, entries };
 }

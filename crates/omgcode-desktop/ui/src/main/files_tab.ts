@@ -156,18 +156,22 @@ export function createFilesTab(): FilesTab {
       return;
     }
     const entries = el("ul", { class: "files-list" });
+    let drawn = 0;
     for (const entry of listing.entries) {
       if (rowCount() + entries.childElementCount >= FILES_MAX_ROWS) {
         break;
       }
       entries.append(entryRow(entry, path));
+      drawn += 1;
     }
     replaceChildren(target, entries);
-    if (listing.truncated || rowCount() >= FILES_MAX_ROWS) {
+    // Only when something was left out: by the broker's bound or the row cap.
+    // The count is what this folder drew, not what the broker returned.
+    if (listing.truncated || drawn < listing.entries.length) {
       target.append(
         el("p", {
           class: "files-note",
-          text: `Only the first ${listing.entries.length} entries are shown.`,
+          text: `Only the first ${drawn} entries are shown.`,
         }),
       );
     }

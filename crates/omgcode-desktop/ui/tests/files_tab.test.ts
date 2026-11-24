@@ -226,6 +226,20 @@ describe("the Files tab", () => {
     tab.refresh();
     await settle();
     expect(document.querySelectorAll("li")).toHaveLength(FILES_MAX_ROWS);
+    // The note counts the rows drawn, not the entries the broker returned.
+    expect(document.querySelector(".files-note")?.textContent).toBe(
+      `Only the first ${FILES_MAX_ROWS} entries are shown.`,
+    );
+  });
+
+  it("adds no note when a listing that fills the row cap was drawn in full", async () => {
+    const exact = Array.from({ length: FILES_MAX_ROWS }, (_, i) => file(`f${i}`));
+    const tab = mount(() => listing(exact));
+    tab.setSession("s-1");
+    tab.onVisible?.(true);
+    await settle();
+    expect(document.querySelectorAll("li")).toHaveLength(FILES_MAX_ROWS);
+    expect(document.querySelector(".files-note")).toBeNull();
   });
 });
 

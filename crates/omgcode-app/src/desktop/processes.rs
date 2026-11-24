@@ -235,7 +235,18 @@ impl DesktopService {
         let session_running = inner.is_running(request.session_id)?;
         let records = recent_actions(&inner.data_root)?;
         let window_full = records.len() >= MAX_RECENT_RECORDS;
-        let requests = command_requests(&path);
+        // The session journal is read only to name a listed call's command, so
+        // a session with no command record in the window skips that read. A
+        // read when there is one covers the whole journal, which is verified
+        // as one chain; the tab polls only while a listed call runs.
+        let has_calls = records.iter().any(|record| {
+            record.session_id == request.session_id && record.tool == ActionTool::RunCommand
+        });
+        let requests = if has_calls {
+            command_requests(&path)
+        } else {
+            Some(Vec::new())
+        };
         // One attempt, no waiting, nothing created: a poll must not queue
         // behind a lock, and a read-only view must not make files.
         let runs = match run::audit_existing(&inner.data_root, RUN_EVENTS) {

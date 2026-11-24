@@ -147,6 +147,8 @@ describe("parsing variables", () => {
   it("names the first line without an equals sign or a name", () => {
     expect(parseEnvironment("A=1\nB")).toEqual({ ok: false, line: 2 });
     expect(parseEnvironment("=1")).toEqual({ ok: false, line: 1 });
+    // A name of only spaces is no name, so it is refused before any dialog.
+    expect(parseEnvironment("A=1\n  =x")).toEqual({ ok: false, line: 2 });
   });
 });
 

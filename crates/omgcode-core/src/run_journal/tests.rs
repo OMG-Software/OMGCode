@@ -234,6 +234,42 @@ fn runs_are_recorded_and_replayed_with_several_in_flight() {
     ));
 }
 
+/// The described shape is read by the desktop Processes tab (`omgcode-app`,
+/// `desktop::processes::run_index`, ADR-0086): a start at
+/// `action.payload.start`, a finish at `action.payload.run_id` and
+/// `action.payload.finish`. A real pair, read back at those paths, is the
+/// recorded value, so the tab's join cannot silently find nothing.
+#[test]
+fn described_runs_keep_the_shape_the_desktop_processes_tab_reads() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let run = Uuid::new_v4();
+    let recorded_start = start(run);
+    let recorded_finish = finished(RunResult::Exited { code: 3 });
+    let mut journal = RunJournal::open(directory.path(), store_id()).expect("journal");
+    journal.start(recorded_start.clone()).expect("start");
+    journal.finish(run, recorded_finish).expect("finish");
+    let entries = describe(journal.entries(100).expect("entries")).expect("JSON");
+
+    let started = entries
+        .iter()
+        .find(|entry| entry["action"]["type"] == "run_started")
+        .expect("start event");
+    let read_start: RunStart =
+        serde_json::from_value(started["action"]["payload"]["start"].clone()).expect("start");
+    assert_eq!(read_start, recorded_start);
+
+    let ended = entries
+        .iter()
+        .find(|entry| entry["action"]["type"] == "run_finished")
+        .expect("finish event");
+    let run_id: Uuid =
+        serde_json::from_value(ended["action"]["payload"]["run_id"].clone()).expect("run id");
+    assert_eq!(run_id, run);
+    let read_finish: RunFinish =
+        serde_json::from_value(ended["action"]["payload"]["finish"].clone()).expect("finish");
+    assert_eq!(read_finish, recorded_finish);
+}
+
 /// Unconfirmed cleanup stays pending until acknowledged; an acknowledged run
 /// cannot be finished later; outcomes must name confinement consistently.
 #[test]
