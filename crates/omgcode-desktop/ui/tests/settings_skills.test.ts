@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { neutralise } from "../src/dom";
 import { setInvoker } from "../src/ipc/client";
 import type { SettingsOverview, SkillSettingView } from "../src/ipc/types";
 import { createMockBackend } from "../src/mock/backend";
@@ -140,6 +141,17 @@ describe("skills in the Advanced section", () => {
     expect(application.map((option) => option.value)).toEqual(["enabled", "disabled"]);
     const inWorkspace = Array.from(select("Setting of review in /home/dev/b").options);
     expect(inWorkspace.map((option) => option.value)).toEqual(["inherit", "enabled", "disabled"]);
+  });
+
+  it("neutralises the workspace folder in each control's accessible name", async () => {
+    await start(() =>
+      overview([REVIEW], { workspaces: [workspace(A, HOSTILE.rtl), workspace(B, "/home/dev/b")] }),
+    );
+    const labels = Array.from(root.querySelectorAll("select")).map(
+      (control) => control.getAttribute("aria-label") ?? "",
+    );
+    expect(labels).toContain(`Setting of review in ${neutralise(HOSTILE.rtl)}`);
+    expect(labels.some((label) => label.includes(String.fromCharCode(0x202e)))).toBe(false);
   });
 
   it("shows an unset application setting as disabled", async () => {

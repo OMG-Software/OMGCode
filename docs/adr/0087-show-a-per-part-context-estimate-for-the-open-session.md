@@ -71,7 +71,9 @@ cannot assemble the parts itself.
    lists every part with tokens, share, and a note, shows the totals, and
    states "Conservative estimate before the next turn". Colours come from the
    shared tokens and every part is also labelled in text. All text goes through
-   text nodes.
+   text nodes. A failed reload, such as `busy` just after a turn, keeps the
+   session's last estimate below the error until a reload succeeds; a session
+   change clears it first.
 
 ## Alternatives considered
 

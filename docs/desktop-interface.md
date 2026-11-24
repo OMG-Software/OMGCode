@@ -977,8 +977,10 @@ changes while it is shown, and again when a turn settles; see
   an SVG drawn through the DOM with sizes in attributes, so the view sets no
   inline style. Each part has a colour from the shared tokens and a text label,
   so colour is never the only cue. With no session open the view shows an empty
-  state; a failure shows as text; **Refresh** reloads. A slow answer for a
-  session that is no longer open is ignored.
+  state; a failure shows as text, and a failed reload keeps the session's last
+  estimate below the error until a reload succeeds; **Refresh** reloads. A slow
+  answer for a session that is no longer open is ignored, and opening another
+  session clears the previous one's estimate.
 - **Limits.** The estimate counts one byte as one token, so it overstates a
   real tokenizer's count. It is not provider-reported usage and is not
   recomputed while a turn runs.
@@ -1288,8 +1290,7 @@ waits. The window shows:
   regains focus, when a session opens, and after a turn settles. The footer
   uses no `title` tooltips; the reason a branch is unavailable is shown as
   text. Elsewhere in `main` a tooltip holds fixed text, or untrusted text
-  passed through `neutralise`, because an attribute does not get the text
-  node's neutralising: the session row, the conversation header, a
+  that is neutralised: the session row, the conversation header, a
   transcript label, and the Processes command line.
 - **Git branch display.** `session_context` opens the session's registered
   workspace by its recorded root and workspace identities and reads
@@ -1841,7 +1842,11 @@ What it does not do:
   by the model: a reply can make text look like a heading, a quote, or a code
   block that the operator did not write. A code block's **Copy** button writes
   what the block shows, including any command the model chose; it is
-  user-initiated and write-only. Visible markers replace bidirectional
+  user-initiated and write-only. The DOM builder neutralises the
+  attributes a person reads or hears (`title`, `aria-label`, and the like) as
+  it does text, and so do the icon-button and popover helpers, so recorded
+  text such as a workspace folder in a tooltip or an accessible name cannot
+  reorder what is shown or announced. Visible markers replace bidirectional
   overrides, but zero-width and other invisible characters are neither marked
   nor removed, so they are copied too. A reply's **Copy Markdown**, **Copy
   text**, and **Copy image** buttons follow the same rule (ADR-0068). A

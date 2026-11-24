@@ -8,6 +8,8 @@ import type { PanelView } from "./panel_tab";
 export const CONTEXT_EMPTY = "Open a session to see how its context is made up.";
 /** What the tab says while the first estimate loads. */
 export const CONTEXT_LOADING = "Estimating the context...";
+/** Added to a failed reload's error while the previous estimate stays on screen. */
+export const CONTEXT_LAST_SHOWN = "The last estimate is shown below.";
 /** What the tab states about the estimate. */
 export const CONTEXT_SCOPE =
   "Conservative estimate before the next turn: one byte counts as one token, and your next message is not included.";
@@ -286,13 +288,18 @@ export function createContextTab(): PanelView {
           return;
         }
         body.removeAttribute("aria-busy");
+        // A reload after a turn can fail briefly, such as `busy`; the last estimate for this
+        // session stays below the error instead of being erased. A session change cleared it.
+        const report = body.querySelector(".ctx-report");
+        const message = `The context could not be estimated: ${toIpcError(reason).message}`;
         replaceChildren(
           body,
           el("p", {
             class: "ctx-error",
             attrs: { role: "alert" },
-            text: `The context could not be estimated: ${toIpcError(reason).message}`,
+            text: report === null ? message : `${message} ${CONTEXT_LAST_SHOWN}`,
           }),
+          report,
         );
       },
     );

@@ -3,6 +3,7 @@ import { setInvoker } from "../src/ipc/client";
 import type { ContextBreakdown, ContextPart } from "../src/ipc/types";
 import {
   CONTEXT_EMPTY,
+  CONTEXT_LAST_SHOWN,
   CONTEXT_LOADING,
   CONTEXT_SCOPE,
   createContextTab,
@@ -248,6 +249,38 @@ describe("context tab", () => {
     expect(alert?.textContent).toContain("[U+202E]");
     expect(tab.element.querySelector("img")).toBeNull();
     expect(tab.element.querySelector(".ctx-report")).toBeNull();
+  });
+
+  it("keeps the last report under the error when a reload fails, until one succeeds", async () => {
+    let fail = false;
+    installFakeIpc({
+      session_context_breakdown: () =>
+        fail
+          ? rejection("busy", "The session journal is in use.")
+          : breakdown({ parts: [part("system", 100)], effective_trigger: 6000 }),
+    });
+    const tab = createContextTab();
+    tab.showSession(SESSION);
+    await settle();
+    expect(tab.element.querySelector(".ctx-report")).not.toBeNull();
+
+    fail = true;
+    tab.refresh();
+    await settle();
+    const alert = tab.element.querySelector("[role=alert]");
+    expect(alert?.textContent).toContain("The session journal is in use.");
+    expect(alert?.textContent).toContain(CONTEXT_LAST_SHOWN);
+    expect(textOf(rowOf(tab.element, "system"))).toContain("100");
+    // A second failure keeps one error, not a stack of them.
+    tab.refresh();
+    await settle();
+    expect(tab.element.querySelectorAll("[role=alert]")).toHaveLength(1);
+
+    fail = false;
+    tab.refresh();
+    await settle();
+    expect(tab.element.querySelector("[role=alert]")).toBeNull();
+    expect(tab.element.querySelector(".ctx-report")).not.toBeNull();
   });
 
   it("reloads on refresh and on the Refresh button", async () => {

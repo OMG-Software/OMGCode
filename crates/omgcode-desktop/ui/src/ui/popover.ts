@@ -1,4 +1,4 @@
-import { type Child, el } from "../dom";
+import { type Child, el, neutralise } from "../dom";
 import { type IconName, icon } from "./icons";
 
 let nextPanelId = 0;
@@ -39,7 +39,7 @@ export function createPopover(
     options.icon === undefined ? el("summary", { text: summaryText }) : el("summary", {});
   const panel = el("div", { class: "popover-panel" }, ...content);
   if (options.label !== undefined) {
-    panel.setAttribute("aria-label", options.label);
+    panel.setAttribute("aria-label", neutralise(options.label));
   }
   const element = el(
     "details",
@@ -52,8 +52,8 @@ export function createPopover(
     nextPanelId += 1;
     panel.id = `popover-panel-${nextPanelId}`;
     summary.classList.add("icon-summary");
-    summary.setAttribute("aria-label", summaryText);
-    summary.title = summaryText;
+    summary.setAttribute("aria-label", neutralise(summaryText));
+    summary.title = neutralise(summaryText);
     summary.setAttribute("aria-controls", panel.id);
     summary.setAttribute("aria-expanded", "false");
     summary.appendChild(icon(options.icon));

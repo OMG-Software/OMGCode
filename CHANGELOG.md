@@ -56,6 +56,11 @@ Changes are recorded here before a release version is assigned.
     arithmetic and no model request (ADR-0087).
 - The desktop shell has 56 commands: 29 in `main`, 3 in `approvals`, and 24
   in `settings`.
+- The frontend's DOM builder neutralises the attributes a person reads or
+  hears (`title`, `aria-label`, `placeholder`, and the like) as it does text,
+  and so do the icon-button and popover helpers. Recorded text such as a
+  workspace folder can no longer put a raw bidirectional override into a
+  tooltip or an accessible name.
 
 - Version 0.55.0 adds the model tool `workspace_create_directory`, which
   creates one directory beneath the workspace (ADR-0079). A model could create

@@ -1,4 +1,4 @@
-import { button, el } from "../dom";
+import { button, el, neutralise } from "../dom";
 import type { SkillSettingView } from "../ipc/types";
 import type { SectionContext, SkillState } from "./context";
 import { grantsGroup, packageGroup, toolchainGroup } from "./execution_forms";
@@ -90,7 +90,7 @@ function skillRow(skill: SkillSettingView, ctx: SectionContext): HTMLElement {
   }
   // Rust names the skill and says its stored copy is deleted in a system Yes/No first.
   const remove = button("Remove", () => submit(actions.removeSkill(skill.name)));
-  remove.setAttribute("aria-label", `Remove ${skill.name}`);
+  remove.setAttribute("aria-label", neutralise(`Remove ${skill.name}`));
   const item = row(skill.name, settings);
   item.append(remove);
   return item;

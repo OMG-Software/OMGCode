@@ -1,4 +1,4 @@
-import { button, el } from "../dom";
+import { button, el, neutralise } from "../dom";
 import type { ContainerAccess, SectionContext } from "./context";
 import { emptyLine, facts, row } from "./parts";
 
@@ -206,7 +206,7 @@ function toolchainRows(ctx: SectionContext): HTMLElement[] {
     );
     // Rust names the profile in a system Yes/No first.
     const remove = button("Remove", () => submit(actions.removeToolchainProfile(profile.name)));
-    remove.setAttribute("aria-label", `Remove toolchain profile ${profile.name}`);
+    remove.setAttribute("aria-label", neutralise(`Remove toolchain profile ${profile.name}`));
     item.append(remove);
     return item;
   });
@@ -223,7 +223,7 @@ function packageRows(ctx: SectionContext): HTMLElement[] {
       ]),
     );
     const remove = button("Remove", () => submit(actions.removePackageProfile(profile.name)));
-    remove.setAttribute("aria-label", `Remove package-network profile ${profile.name}`);
+    remove.setAttribute("aria-label", neutralise(`Remove package-network profile ${profile.name}`));
     item.append(remove);
     return item;
   });
@@ -244,7 +244,7 @@ function grantRows(ctx: SectionContext): HTMLElement[] {
     );
     if (overview.container_grants_supported) {
       const revoke = button("Revoke", () => submit(actions.revokeContainerGrant(grant.grant_id)));
-      revoke.setAttribute("aria-label", `Revoke the grant on ${grant.directory}`);
+      revoke.setAttribute("aria-label", neutralise(`Revoke the grant on ${grant.directory}`));
       item.append(revoke);
     }
     return item;

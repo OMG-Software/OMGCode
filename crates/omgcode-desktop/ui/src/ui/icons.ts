@@ -4,6 +4,8 @@
  * decorative (`aria-hidden`): the button that holds one carries the accessible name.
  */
 
+import { neutralise } from "../dom";
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 type Shape = readonly [tag: "path" | "circle" | "rect", attrs: Readonly<Record<string, string>>];
@@ -153,8 +155,10 @@ export function iconButton(
   const node = document.createElement("button");
   node.type = "button";
   node.className = className;
-  node.setAttribute("aria-label", label);
-  node.title = label;
+  // An attribute is not a text node, so the label is neutralised here as `el` would.
+  const shown = neutralise(label);
+  node.setAttribute("aria-label", shown);
+  node.title = shown;
   node.appendChild(icon(name));
   node.addEventListener("click", onClick);
   return node;
@@ -162,7 +166,8 @@ export function iconButton(
 
 /** Shows `name` and `label` on an icon button made by `iconButton`, replacing its icon. */
 export function setIconButton(node: HTMLButtonElement, name: IconName, label: string): void {
-  node.setAttribute("aria-label", label);
-  node.title = label;
+  const shown = neutralise(label);
+  node.setAttribute("aria-label", shown);
+  node.title = shown;
   node.replaceChildren(icon(name));
 }
