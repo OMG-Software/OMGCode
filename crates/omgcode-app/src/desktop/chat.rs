@@ -84,8 +84,11 @@ impl DesktopService {
     /// The connection is resolved for the session exactly as
     /// [`chat_send`](Self::chat_send) resolves it, its credential included, and the one request goes only to
     /// its validated endpoint, loopback or hosted. The list is untrusted provider text and
-    /// grants nothing; `chat_send` still validates the chosen model. The call
-    /// blocks for at most the core's ten-second deadline, so run it on a
+    /// grants nothing; `chat_send` still validates the chosen model. The list
+    /// request has the core's ten-second deadline. A signed-in ChatGPT
+    /// connection first gets its access token, which can wait up to 40
+    /// seconds for the session lock and then run a refresh of up to 30
+    /// seconds, so the call can block for about 80 seconds. Run it on a
     /// blocking task.
     ///
     /// # Errors

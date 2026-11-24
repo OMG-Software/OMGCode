@@ -744,7 +744,10 @@ untouched controls take the returned values.
   (ADR-0092). Core refuses the whole list when it is not a `data` array of at
   most 2048 entries (512 before ADR-0092) with string ids, or when an id is empty, over
   256 bytes, repeated, or holds a control or bidirectional formatting
-  character. The deadline is ten seconds. The answer carries the session id,
+  character. The deadline is ten seconds. A signed-in ChatGPT connection
+  first gets its access token, which can wait up to 40 seconds for the
+  session lock and run a refresh of up to 30 seconds, so its list can take
+  about 80 seconds. The answer carries the session id,
   the endpoint it asked (display only), and the provider kind. **The list is
   keyed on the session and the request, never on endpoint text.** The
   composer keeps an answer only when it is for the session still shown and no

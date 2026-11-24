@@ -1062,7 +1062,7 @@ pub struct ChatGptRequest {
 }
 
 /// The result of `settings_sign_out_chatgpt`.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ChatGptSignOutResult {
     /// The settings after the sign-out.
     pub overview: SettingsOverview,

@@ -355,6 +355,11 @@ pub(crate) fn plan_session(
 /// List the models of a resolved connection: the subscription list for a
 /// plan session, the `/v1/models` list otherwise.
 ///
+/// The list request has a ten-second deadline. A plan session first gets its
+/// access token, which can wait up to 40 seconds for the session lock and
+/// then run a refresh of up to 30 seconds, so the call can block for about
+/// 80 seconds.
+///
 /// # Errors
 ///
 /// `provider` for a refused list. A plan session whose access token cannot be
