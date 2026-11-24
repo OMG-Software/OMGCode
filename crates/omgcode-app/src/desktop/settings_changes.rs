@@ -1128,7 +1128,7 @@ impl DesktopService {
     /// # Errors
     ///
     /// `invalid_request` for a profile that is not a hosted `api_key` profile
-    /// or a key that is empty, too long, or has a control character; `control`
+    /// with a recorded endpoint, or a key that is empty, too long, or has a control character; `control`
     /// for an unknown profile; `credential_unavailable`, `credential_locked`,
     /// `credential_io`, `credential_orphaned` (the new key is bound but the
     /// replaced item could not be deleted); `stale_revision`;
@@ -1162,6 +1162,13 @@ impl DesktopService {
             {
                 return Err(DesktopError::invalid_request(
                     "Only a hosted connection that uses an API key has a key set here.",
+                ));
+            }
+            // A profile recorded without an endpoint (possible from the CLI) can never be
+            // used, and its endpoint cannot be added, so a key bound to it would serve nothing.
+            if status.profile().endpoint().is_none() {
+                return Err(DesktopError::invalid_request(
+                    "This connection has no endpoint, so it cannot be used. Remove it and add it again.",
                 ));
             }
             match store.set_provider_credential(&credentials, &name, &secret, revision) {

@@ -507,6 +507,24 @@ fn a_subscription_profile_is_refused_a_key() {
     assert_no_file_holds(&fixture.data, KEY);
 }
 
+/// A hosted `api_key` profile recorded without an endpoint (the CLI allows
+/// it) can never be used and its endpoint cannot be added, so it takes no key.
+#[test]
+fn a_hosted_profile_without_an_endpoint_is_refused_a_key() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let vault = Vault::new(&fixture.data);
+    vault.add_profile("bare", "openai", "api_key");
+    let before = revision(&fixture);
+    let refused = set_key(&service, &fixture, "bare", KEY).expect_err("refused");
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(refused.message().contains("no endpoint"), "{refused:?}");
+    assert!(!text_of(&refused).contains(KEY));
+    assert_eq!(revision(&fixture), before);
+    assert_eq!(bound(&fixture, "bare"), None);
+    assert_no_file_holds(&fixture.data, KEY);
+}
+
 /// Removing a profile with a stored key asks first, says the key is deleted,
 /// and on Yes removes the profile and the native item. No keeps both.
 #[test]

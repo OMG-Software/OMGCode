@@ -80,8 +80,10 @@ unauthenticated requests. No API key was used for any provider.
    chosen`). `--endpoint` with a hosted URL and no profile is refused
    (`cloud_needs_profile`).
 5. **The output field is chosen per endpoint.** Requests send either
-   `max_tokens` or `max_completion_tokens`, as the table says. A typed
-   endpoint and a loopback endpoint send `max_tokens`.
+   `max_tokens` or `max_completion_tokens`, as the table says. A loopback
+   endpoint, and a typed endpoint that is not a named provider's endpoint,
+   send `max_tokens`; a typed endpoint equal to a named provider's endpoint
+   sends that provider's field (decision 3).
 6. **Paths are appended to the base.** `/chat/completions` and `/models` are
    appended to the base path, so DeepSeek's base without `/v1` and Google's
    `/v1beta/openai` base both work.

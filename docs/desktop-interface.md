@@ -1476,8 +1476,9 @@ revision check and validation (ADR-0064, ADR-0071).
   check with `provider-profile-show`. No error shows the key or native error
   text. `settings_set_api_key` replaces the key
   of a hosted `api_key` profile (and refuses a local kind, a `subscription`
-  profile, which never holds a key and shows no **Set key…**, or an unknown
-  name) the way the CLI's `provider-credential-set` does: the new item is
+  profile, which never holds a key and shows no **Set key…**, a profile
+  recorded without an endpoint, which can never be used and whose row says
+  so, or an unknown name) the way the CLI's `provider-credential-set` does: the new item is
   stored, then bound, then the old item is deleted. It shows no dialog,
   because the key goes only to the same host the profile already names
   and choosing the connection stays confirmed separately; a failure to delete

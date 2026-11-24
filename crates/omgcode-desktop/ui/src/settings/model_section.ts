@@ -165,6 +165,14 @@ function credentialLine(profile: ProviderProfileView): string {
   return isHostedKind(profile.kind) ? "API key stored" : "Credential stored";
 }
 
+/** The line under a hosted profile: where prompts go, or why it cannot be used at all. */
+export const NO_ENDPOINT_NOTE =
+  "No endpoint is recorded, so this connection cannot be used. An endpoint cannot be added later: remove it and add it again.";
+
+function hostedRowNote(endpoint: string | null): string {
+  return endpoint === null ? NO_ENDPOINT_NOTE : hostedNotice(endpoint);
+}
+
 function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElement {
   const { submit, actions } = ctx;
   const hosted = isHostedKind(profile.kind);
@@ -188,9 +196,12 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         text: `${providerName(profile.kind)} \u00b7 ${profile.endpoint ?? "no endpoint recorded"} \u00b7 ${profile.auth}`,
       }),
       el("div", { class: "row-meta", text: credentialLine(profile) }),
-      hosted ? el("div", { class: "row-meta", text: hostedNotice(profile.endpoint) }) : null,
-      // A subscription profile never holds a key, so it has no key field.
-      hosted && profile.auth === "api_key" ? setKeyDisclosure(profile, ctx) : null,
+      hosted ? el("div", { class: "row-meta", text: hostedRowNote(profile.endpoint) }) : null,
+      // A subscription profile never holds a key, and a profile without an endpoint can never
+      // be used, so neither has a key field.
+      hosted && profile.auth === "api_key" && profile.endpoint !== null
+        ? setKeyDisclosure(profile, ctx)
+        : null,
     ),
     remove,
   );

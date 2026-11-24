@@ -8,6 +8,7 @@ import type {
 } from "../src/ipc/types";
 import { type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
+import { NO_ENDPOINT_NOTE } from "../src/settings/model_section";
 import { ALL_TOOLS_LABEL, PACKAGE_CACHE_HELP } from "../src/settings/workspaces_section";
 import {
   buttonByText,
@@ -702,6 +703,30 @@ describe("advanced section", () => {
       (candidate) => candidate.querySelector(".row-title")?.textContent === "plan",
     );
     expect(row?.textContent).toContain("Hosted");
+    expect(row?.textContent).not.toContain("Set key");
+    expect(row?.querySelector("input[type=password]")).toBeNull();
+  });
+
+  it("says a hosted profile without an endpoint cannot be used, and offers no Set key", async () => {
+    await start(() =>
+      overview({
+        provider_profiles: [
+          profile({
+            name: "bare",
+            kind: "openai",
+            auth: "api_key",
+            endpoint: null,
+            credential_bound: false,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const row = Array.from(root.querySelectorAll<HTMLElement>(".row")).find(
+      (candidate) => candidate.querySelector(".row-title")?.textContent === "bare",
+    );
+    expect(row?.textContent).toContain(NO_ENDPOINT_NOTE);
+    expect(row?.textContent).not.toContain("the address you enter");
     expect(row?.textContent).not.toContain("Set key");
     expect(row?.querySelector("input[type=password]")).toBeNull();
   });

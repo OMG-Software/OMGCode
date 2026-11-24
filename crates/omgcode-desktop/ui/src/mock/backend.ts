@@ -1073,6 +1073,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               "Only a hosted connection that uses an API key has a key set here.",
             );
           }
+          if (profile.endpoint === null) {
+            fail(
+              "invalid_request",
+              "This connection has no endpoint, so it cannot be used. Remove it and add it again.",
+            );
+          }
           checkApiKey(args.api_key);
           profile.credential_bound = true;
         });
