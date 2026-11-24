@@ -230,9 +230,22 @@ fn browse(redirect: &str, path_and_query: &str) -> String {
         "GET {path_and_query} HTTP/1.1\r\nHost: {address}\r\n\r\n"
     )
     .expect("send");
+    // The listener reads the whole request and closes after its answer, so
+    // a read error or a missing or malformed status line fails the test.
     let mut answer = String::new();
-    let _ = stream.read_to_string(&mut answer);
-    answer.lines().next().unwrap_or_default().to_owned()
+    stream
+        .read_to_string(&mut answer)
+        .expect("the callback answer");
+    let status = answer.lines().next().unwrap_or_default();
+    let code = status
+        .strip_prefix("HTTP/1.1 ")
+        .and_then(|rest| rest.split_once(' '))
+        .map(|(code, _reason)| code);
+    assert!(
+        code.is_some_and(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit())),
+        "not an HTTP status line: {status:?}"
+    );
+    status.to_owned()
 }
 
 /// What the simulated browser saw in the authorization address.
@@ -1005,58 +1018,74 @@ fn a_refused_refresh_or_a_missing_record_requires_a_new_sign_in() {
     );
 }
 
+/// A callback wait running on its own thread, with an idle connection that
+/// the listener has accepted. The connection never sends a byte.
+struct IdleWait {
+    result: std::sync::mpsc::Receiver<Result<callback::Callback, SignInError>>,
+    _idle: TcpStream,
+}
+
+impl IdleWait {
+    /// Start a wait of `wait`, open an idle connection, and return once the
+    /// listener reports that it accepted it. The wait checks the cancel
+    /// token and the deadline before each accept, so the accept happened
+    /// before either could end the wait.
+    fn start(wait: Duration, cancel: &CancelToken) -> Self {
+        let mut listener = callback::CallbackListener::bind().expect("listener");
+        let (accepted_sender, accepted) = std::sync::mpsc::channel();
+        listener.notify_accepted(accepted_sender);
+        let address = listener
+            .redirect_uri()
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split('/').next())
+            .expect("address")
+            .to_owned();
+        let (result_sender, result) = std::sync::mpsc::channel();
+        let cancel = cancel.clone();
+        std::thread::spawn(move || {
+            let _ = result_sender.send(listener.wait("state", None, wait, &cancel));
+        });
+        let idle = TcpStream::connect(&address).expect("idle connection");
+        accepted
+            .recv_timeout(BROWSER_WAIT)
+            .expect("the listener did not accept the idle connection");
+        Self {
+            result,
+            _idle: idle,
+        }
+    }
+
+    /// The wait's result, which must arrive within `within`, independently
+    /// of the wait's own timing.
+    fn finish(&self, within: Duration) -> Result<callback::Callback, SignInError> {
+        self.result
+            .recv_timeout(within)
+            .expect("the wait did not end in time")
+    }
+}
+
 #[test]
 fn an_idle_callback_connection_does_not_delay_a_cancel_or_the_deadline() {
-    // Cancel: a connection that sends nothing must not hold the wait.
-    let listener = callback::CallbackListener::bind().expect("listener");
-    let address = listener
-        .redirect_uri()
-        .strip_prefix("http://")
-        .and_then(|rest| rest.split('/').next())
-        .expect("address")
-        .to_owned();
-    let idle = TcpStream::connect(&address).expect("idle connection");
-    let cancel = CancelToken::new();
-    let canceller = cancel.clone();
-    let worker = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(200));
-        canceller.cancel();
-    });
-    let started = std::time::Instant::now();
-    let result = listener.wait("state", None, Duration::from_secs(30), &cancel);
-    assert!(matches!(result, Err(SignInError::Cancelled)));
-    // Well under the five seconds an idle connection may take.
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
-    worker.join().expect("canceller");
-    drop(idle);
+    // An unfixed reader blocks on the idle connection for the full five-
+    // second connection limit, so each bound below is well under it.
 
-    // Deadline: the overall wait ends even while a connection is idle.
-    let listener = callback::CallbackListener::bind().expect("listener");
-    let address = listener
-        .redirect_uri()
-        .strip_prefix("http://")
-        .and_then(|rest| rest.split('/').next())
-        .expect("address")
-        .to_owned();
-    let idle = TcpStream::connect(&address).expect("idle connection");
+    // Cancel: set only after the listener accepted the idle connection.
+    let cancel = CancelToken::new();
+    let wait = IdleWait::start(Duration::from_secs(30), &cancel);
+    cancel.cancel();
+    assert!(matches!(
+        wait.finish(Duration::from_secs(2)),
+        Err(SignInError::Cancelled)
+    ));
+
+    // Deadline: the connection was accepted before the one-second deadline,
+    // and the wait still ends near it.
     let started = std::time::Instant::now();
-    let result = listener.wait(
-        "state",
-        None,
-        Duration::from_millis(300),
-        &CancelToken::new(),
-    );
-    assert!(matches!(result, Err(SignInError::TimedOut)));
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
-    drop(idle);
+    let wait = IdleWait::start(Duration::from_secs(1), &CancelToken::new());
+    assert!(matches!(
+        wait.finish(Duration::from_secs(3).saturating_sub(started.elapsed())),
+        Err(SignInError::TimedOut)
+    ));
 }
 
 #[test]

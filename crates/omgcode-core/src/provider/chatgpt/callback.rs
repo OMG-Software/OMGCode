@@ -38,6 +38,10 @@ pub(super) struct Callback {
 pub(super) struct CallbackListener {
     listener: TcpListener,
     port: u16,
+    /// Told of each accepted connection, so a test can order its steps
+    /// after the accept instead of sleeping.
+    #[cfg(test)]
+    accepted: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl CallbackListener {
@@ -52,7 +56,18 @@ impl CallbackListener {
             .local_addr()
             .map_err(|_| SignInError::Listener)?
             .port();
-        Ok(Self { listener, port })
+        Ok(Self {
+            listener,
+            port,
+            #[cfg(test)]
+            accepted: None,
+        })
+    }
+
+    /// Signal `accepted` each time the wait accepts a connection.
+    #[cfg(test)]
+    pub(super) fn notify_accepted(&mut self, accepted: std::sync::mpsc::Sender<()>) {
+        self.accepted = Some(accepted);
     }
 
     /// The redirect address OpenAI must send the browser to.
@@ -78,6 +93,10 @@ impl CallbackListener {
             }
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    #[cfg(test)]
+                    if let Some(accepted) = &self.accepted {
+                        let _ = accepted.send(());
+                    }
                     // A connection that sends nothing still lets a cancel or
                     // the overall deadline end the wait within 50 ms.
                     let limit = deadline.min(Instant::now() + CONNECTION_TIMEOUT);
