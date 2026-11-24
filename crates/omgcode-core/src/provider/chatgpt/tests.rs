@@ -210,6 +210,10 @@ fn form(body: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// The longest a simulated browser waits for one answer, and for all of its
+/// requests to finish after the sign-in returned.
+const BROWSER_WAIT: Duration = Duration::from_secs(10);
+
 /// Send one browser request to the callback listener and return the status.
 fn browse(redirect: &str, path_and_query: &str) -> String {
     let address = redirect
@@ -217,6 +221,10 @@ fn browse(redirect: &str, path_and_query: &str) -> String {
         .and_then(|rest| rest.split('/').next())
         .expect("redirect address");
     let mut stream = TcpStream::connect(address).expect("callback connect");
+    // A listener that never answers fails the test instead of hanging it.
+    stream
+        .set_read_timeout(Some(BROWSER_WAIT))
+        .expect("read timeout");
     write!(
         stream,
         "GET {path_and_query} HTTP/1.1\r\nHost: {address}\r\n\r\n"
@@ -256,6 +264,7 @@ fn run_sign_in(
     let seen: Arc<Mutex<Option<Url>>> = Arc::default();
     let statuses: Arc<Mutex<Vec<String>>> = Arc::default();
     let browser: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    let sent: Arc<Mutex<usize>> = Arc::default();
     let visit = Arc::new(visit);
     let mut opener = |address: &str| {
         let url = Url::parse(address).expect("authorization address");
@@ -264,6 +273,7 @@ fn run_sign_in(
         *seen.lock().expect("seen") = Some(url);
         let redirect = authorization.get("redirect_uri").expect("redirect");
         let requests = visit(&authorization);
+        *sent.lock().expect("sent") = requests.len();
         let statuses = Arc::clone(&statuses);
         *browser.lock().expect("browser") = Some(std::thread::spawn(move || {
             for request in requests {
@@ -282,14 +292,24 @@ fn run_sign_in(
     );
     let url = seen.lock().expect("seen").take();
     // Every request was answered before the sign-in returned, so the browser
-    // thread ends; its failure fails the test.
+    // thread ends within a bounded wait; its failure fails the test.
     let worker = browser.lock().expect("browser").take();
-    if let Some(worker) = worker
-        && let Err(panic) = worker.join()
-    {
-        std::panic::resume_unwind(panic);
+    if let Some(worker) = worker {
+        let deadline = std::time::Instant::now() + BROWSER_WAIT;
+        while !worker.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the browser thread did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Err(panic) = worker.join() {
+            std::panic::resume_unwind(panic);
+        }
     }
     let statuses = statuses.lock().expect("statuses").clone();
+    // Each request the browser sent got exactly one answer.
+    assert_eq!(statuses.len(), *sent.lock().expect("sent"), "{statuses:?}");
     (result, url.map(|url| Authorization { url }), statuses)
 }
 
@@ -983,6 +1003,60 @@ fn a_refused_refresh_or_a_missing_record_requires_a_new_sign_in() {
         source.access_token(&cancel).expect_err("cancelled"),
         ProviderError::Cancelled
     );
+}
+
+#[test]
+fn an_idle_callback_connection_does_not_delay_a_cancel_or_the_deadline() {
+    // Cancel: a connection that sends nothing must not hold the wait.
+    let listener = callback::CallbackListener::bind().expect("listener");
+    let address = listener
+        .redirect_uri()
+        .strip_prefix("http://")
+        .and_then(|rest| rest.split('/').next())
+        .expect("address")
+        .to_owned();
+    let idle = TcpStream::connect(&address).expect("idle connection");
+    let cancel = CancelToken::new();
+    let canceller = cancel.clone();
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        canceller.cancel();
+    });
+    let started = std::time::Instant::now();
+    let result = listener.wait("state", None, Duration::from_secs(30), &cancel);
+    assert!(matches!(result, Err(SignInError::Cancelled)));
+    // Well under the five seconds an idle connection may take.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    worker.join().expect("canceller");
+    drop(idle);
+
+    // Deadline: the overall wait ends even while a connection is idle.
+    let listener = callback::CallbackListener::bind().expect("listener");
+    let address = listener
+        .redirect_uri()
+        .strip_prefix("http://")
+        .and_then(|rest| rest.split('/').next())
+        .expect("address")
+        .to_owned();
+    let idle = TcpStream::connect(&address).expect("idle connection");
+    let started = std::time::Instant::now();
+    let result = listener.wait(
+        "state",
+        None,
+        Duration::from_millis(300),
+        &CancelToken::new(),
+    );
+    assert!(matches!(result, Err(SignInError::TimedOut)));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(idle);
 }
 
 #[test]
