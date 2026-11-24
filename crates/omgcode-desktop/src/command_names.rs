@@ -28,6 +28,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "chat_preferences_save",
     "session_skills",
     "session_context",
+    "workspace_git_status",
     "connection_status",
     "connection_select",
     "session_model_select",

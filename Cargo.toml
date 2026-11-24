@@ -34,6 +34,10 @@ secret-service = { version = "5.2", default-features = false, features = ["rt-to
 # for raw Secret Service calls that refuse prompts (ADR-0042).
 zbus = { version = "=5.19.0", default-features = false, features = ["blocking-api", "tokio"] }
 
+# Pure-Rust Git reader for the Git status tab (ADR-0085). No network, credential,
+# transport, or fsmonitor feature, no C compression backend, and Git is never run.
+gix = { version = "=0.91.0", default-features = false, features = ["status", "sha1"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unused_must_use = "deny"

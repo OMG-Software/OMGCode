@@ -51,6 +51,13 @@ const ICONS = {
   folder: [
     ["path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }],
   ],
+  /** A branch fork with a dot: the Git status tab. */
+  gitStatus: [
+    ["circle", { cx: "6", cy: "5.5", r: "2" }],
+    ["circle", { cx: "6", cy: "18.5", r: "2" }],
+    ["circle", { cx: "18", cy: "8.5", r: "2" }],
+    ["path", { d: "M6 7.5v9M18 10.5c0 4-12 2.5-12 6" }],
+  ],
   /** A tick: an action that succeeded. */
   check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
   /** A cross: an action that failed. */
