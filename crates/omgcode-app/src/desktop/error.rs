@@ -340,8 +340,6 @@ impl DesktopError {
         )
     }
 
-    /// The repair removed the grants, but reading the settings afterwards
-    /// failed. The folder is fixed; only the window's view is stale.
     /// A ChatGPT sign-in was recorded, but the settings could not be read
     /// again for the window.
     pub(crate) fn signed_in_unread() -> Self {
@@ -367,6 +365,8 @@ impl DesktopError {
         )
     }
 
+    /// The repair removed the grants, but reading the settings afterwards
+    /// failed. The folder is fixed; only the window's view is stale.
     pub(crate) fn data_folder_repaired_unread() -> Self {
         Self::new(
             "data_folder_repaired",
@@ -742,9 +742,6 @@ mod tests {
         }
     }
 
-    /// When the profile's rollback fails as well, an orphaned item is still
-    /// named by its identifier; a failure that left no item keeps the generic
-    /// message. No native text either way.
     /// A recorded sign-in or sign-out whose settings could not be read again
     /// says that the change took effect.
     #[test]
@@ -760,6 +757,9 @@ mod tests {
         }
     }
 
+    /// When the profile's rollback fails as well, an orphaned item is still
+    /// named by its identifier; a failure that left no item keeps the generic
+    /// message. No native text either way.
     #[test]
     fn a_failed_rollback_still_names_the_orphaned_item() {
         for error in [

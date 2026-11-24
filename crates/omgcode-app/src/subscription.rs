@@ -306,9 +306,11 @@ pub fn sign_out_of_chatgpt(
     // leave the dead tokens bound, so the sign-out is recorded against the
     // current revision. Deleting the tokens widens no access. It is recorded
     // only while the profile still names the session this call revoked. A
-    // profile that is no longer signed in was signed out meanwhile, which is
-    // what the operator asked for. One that names another session was signed
-    // in again: that session is live and was not revoked, so it is a conflict.
+    // profile that core reports as not signed in was signed out meanwhile,
+    // which is what the operator asked for. One that names another session
+    // was signed in again: that session is live and was not revoked, so it is
+    // a conflict. Any other failure records nothing and is reported, never
+    // taken for a sign-out.
     let mut store = open_settings(data_root)?;
     match store.provider_subscription(name) {
         Ok(current) if current.binding == connection.binding => {}
@@ -325,12 +327,18 @@ pub fn sign_out_of_chatgpt(
                 ),
             ));
         }
-        Err(_) => {
+        Err(ProviderCredentialUseError::NotSignedIn { .. }) => {
             return Ok(SignOutOutcome {
                 revoked,
                 orphans: Vec::new(),
                 revision: store.revision(),
             });
+        }
+        Err(error) => {
+            return Err(credential_error(format!(
+                "signout_not_recorded: {}: {error}",
+                error.code()
+            )));
         }
     }
     let current_revision = store.revision();

@@ -496,7 +496,9 @@ documented route for local and open-source apps
   deletes both slots. The revision is checked before the revocation; a
   settings change made while OpenAI answers does not stop the local
   sign-out. A profile found signed in to a new session after the revocation
-  is a `control` conflict, because that session was not revoked. An unconfirmed revocation is reported and not retried.
+  is a `control` conflict, because that session was not revoked; one found
+  signed out is a success; any other failure to read the profile then is
+  `signout_not_recorded`. An unconfirmed revocation is reported and not retried.
   Every slot that could not be deleted is named by its opaque identifier:
   the CLI's `orphaned_credential_ids` lists each one, and the desktop's
   `credential_orphaned` error names each one, so neither slot is lost from
