@@ -679,22 +679,21 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           session_id: id,
           endpoint: view.endpoint,
           kind: view.kind,
-          models:
-            view.kind !== null && view.kind !== "ollama_local" && view.kind !== "lm_studio"
+          models: isHostedKind(view.kind)
+            ? [
+                { id: "gpt-oss:120b", cloud_tag: false },
+                { id: "qwen3-coder:480b", cloud_tag: false },
+              ]
+            : view.kind === "ollama_local"
               ? [
-                  { id: "gpt-oss:120b", cloud_tag: false },
-                  { id: "qwen3-coder:480b", cloud_tag: false },
+                  { id: "gpt-oss:120b-cloud", cloud_tag: true },
+                  { id: "lfm2.5:latest", cloud_tag: false },
+                  { id: "qwen2.5-coder:7b", cloud_tag: false },
                 ]
-              : view.kind === "ollama_local"
-                ? [
-                    { id: "gpt-oss:120b-cloud", cloud_tag: true },
-                    { id: "lfm2.5:latest", cloud_tag: false },
-                    { id: "qwen2.5-coder:7b", cloud_tag: false },
-                  ]
-                : [
-                    { id: "google/gemma-4-e4b", cloud_tag: false },
-                    { id: "qwen2.5-coder", cloud_tag: false },
-                  ],
+              : [
+                  { id: "google/gemma-4-e4b", cloud_tag: false },
+                  { id: "qwen2.5-coder", cloud_tag: false },
+                ],
         } satisfies ChatModels;
       }
       // A fixed fake estimate, so the Context tab has something to show (ADR-0087). The
@@ -1666,9 +1665,32 @@ export function isCustomEndpoint(endpoint: string): boolean {
     url.hostname !== "" &&
     // Port 0 reaches nothing; core refuses it as the loopback rule does.
     url.port !== "0" &&
+    // A server on this computer uses a local kind, as core requires.
+    !namesThisComputer(url.hostname) &&
     (written === endpoint || written === `${endpoint}/`) &&
     !url.pathname.includes("//")
   );
+}
+
+// Mirrors core's `is_this_computer`: `localhost` names, and loopback or unspecified addresses,
+// including IPv4-mapped IPv6. `URL` writes IPv4 in dotted decimal and IPv6 compressed.
+function namesThisComputer(hostname: string): boolean {
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return true;
+  }
+  const octets = hostname.split(".");
+  if (
+    octets.length === 4 &&
+    octets.every((octet) => octet !== "" && !Number.isNaN(Number(octet)))
+  ) {
+    return octets[0] === "127" || hostname === "0.0.0.0";
+  }
+  if (hostname === "[::1]" || hostname === "[::]" || hostname === "[::ffff:0:0]") {
+    return true;
+  }
+  const mapped = "[::ffff:";
+  const group = hostname.startsWith(mapped) ? hostname.slice(mapped.length).split(":")[0] : "";
+  return group !== undefined && group.length === 4 && group.startsWith("7f");
 }
 
 function isLocalEndpointText(endpoint: string): boolean {

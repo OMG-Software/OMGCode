@@ -507,8 +507,9 @@ fn a_subscription_profile_is_refused_a_key() {
     assert_no_file_holds(&fixture.data, KEY);
 }
 
-/// A hosted `api_key` profile recorded without an endpoint (the CLI allows
-/// it) can never be used and its endpoint cannot be added, so it takes no key.
+/// A hosted `api_key` profile recorded without an endpoint, which only a
+/// journal from 0.58.0 or earlier holds (ADR-0092), can never be used and its
+/// endpoint cannot be added, so it takes no key.
 #[test]
 fn a_hosted_profile_without_an_endpoint_is_refused_a_key() {
     let fixture = Fixture::new();

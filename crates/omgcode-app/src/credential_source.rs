@@ -182,7 +182,9 @@ pub struct LocalConnection {
 /// The profile kind the model adapter reads `name` as. Every kind is served
 /// by the one OpenAI-compatible adapter (ADR-0092), so this is the profile's
 /// own kind; an unknown name is read as `lm_studio`, and core then refuses it
-/// as an unknown profile.
+/// as an unknown profile. Core's `wrong_provider` refusal is therefore never
+/// reached through this path. It stays as a defence for a caller that names a
+/// fixed adapter, and core's credential loading tests cover it.
 fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
     control
         .provider_profile(name)

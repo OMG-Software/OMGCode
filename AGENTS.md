@@ -88,8 +88,10 @@ kinds each accept only their provider's one documented OpenAI-compatible
 endpoint, and an `openai_compatible` profile records an operator-typed
 `https://` base URL that core refuses rather than rewrites
 ([ADR-0092](docs/adr/0092-add-hosted-providers-and-an-openai-compatible-connection.md)).
-Every hosted API-key profile needs a stored API key. No hosted provider's
-chat, stream, or tool-call shapes were verified with a real key. An `openai`
+A hosted API-key connection runs only with a stored API key; `anthropic`
+still records `subscription` so older journals replay, and no adapter reads
+one. No hosted provider's chat, stream, or tool-call shapes were verified with
+a real key. An `openai`
 profile with authentication `subscription` signs in with ChatGPT through
 OpenAI's documented browser flow (PKCE, state, nonce, ID-token and plan-scope
 checks) from the trusted CLI or the `settings` window, keeps rotating tokens

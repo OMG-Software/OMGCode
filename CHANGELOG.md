@@ -42,8 +42,11 @@ Changes are recorded here before a release version is assigned.
   now be used. Each named kind accepts only its provider's one documented
   OpenAI-compatible endpoint, which Rust supplies; an `openai_compatible`
   profile records an `https://` base URL the operator types, refused rather
-  than rewritten when it is not in the form the URL parser writes. Every
-  hosted kind needs a stored API key and is used through the existing Chat
+  than rewritten when it is not in the form the URL parser writes. A hosted
+  connection runs only with a stored API key (`openai` and `anthropic` still
+  record `subscription` so older journals replay, and no adapter read one
+  until 0.60.0 added ChatGPT sign-in for `openai`)
+  and is used through the existing Chat
   Completions client, which sends `max_completion_tokens` to OpenAI, Moonshot,
   Thinking Machines Lab, MiniMax, and xAI and `max_tokens` elsewhere, appends request paths to the
   endpoint's base path, and switches DeepSeek's default thinking mode off,
@@ -51,7 +54,8 @@ Changes are recorded here before a release version is assigned.
   which the client does not keep. The desktop **Add connection** form lists every
   kind, and the native confirmation before choosing a hosted connection names
   the host and any non-default port that receives prompts, and for a typed
-  address says it was typed. A typed endpoint with port 0 is refused. A named
+  address says it was typed. A typed endpoint with port 0, or with a host on
+  this computer (loopback, unspecified, or `localhost`), is refused. A named
   hosted kind's API-key profile added on the CLI without `--endpoint` records
   its documented endpoint, and an `openai_compatible` one is refused, instead
   of recording a profile that could never be used. A model list may now hold 2048 models in 4 MiB. `capabilities` lists every

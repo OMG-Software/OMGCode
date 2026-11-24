@@ -189,8 +189,15 @@ function chatGptButton(profile: ProviderProfileView, { submit, actions }: Sectio
 export const NO_ENDPOINT_NOTE =
   "No endpoint is recorded, so this connection cannot be used. An endpoint cannot be added later: remove it and add it again.";
 
-function hostedRowNote(endpoint: string | null): string {
-  return endpoint === null ? NO_ENDPOINT_NOTE : hostedNotice(endpoint);
+export const UNSUPPORTED_AUTH_NOTE =
+  "No adapter reads this connection's authentication, so it cannot be used and sends nothing. Remove it and add an API-key connection instead.";
+
+// A hosted profile that cannot be used must not claim that prompts leave for its host.
+function hostedRowNote(profile: ProviderProfileView): string {
+  if (profile.auth !== "api_key") {
+    return UNSUPPORTED_AUTH_NOTE;
+  }
+  return profile.endpoint === null ? NO_ENDPOINT_NOTE : hostedNotice(profile.endpoint);
 }
 
 function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElement {
@@ -218,7 +225,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         text: `${providerName(profile.kind)} \u00b7 ${profile.endpoint ?? "no endpoint recorded"} \u00b7 ${profile.auth}`,
       }),
       el("div", { class: "row-meta", text: credentialLine(profile) }),
-      hosted ? el("div", { class: "row-meta", text: hostedRowNote(profile.endpoint) }) : null,
+      hosted ? el("div", { class: "row-meta", text: hostedRowNote(profile) }) : null,
       // A subscription profile never holds a key, and a profile without an endpoint can never
       // be used, so neither has a key field.
       hosted && profile.auth === "api_key" && profile.endpoint !== null
