@@ -163,22 +163,25 @@ fn list_with_timeout(
     }
 }
 
-/// Parse the plan route's list strictly: a `models` array of at most
-/// [`MAX_LISTED_MODELS`] objects. An entry whose `visibility` is not the
-/// string `list` is skipped; a kept entry needs a listable `slug`, and a
-/// repeated slug refuses the list. Other members are ignored.
+/// Parse the plan route's list: a `models` array, bounded by the 4 MiB body
+/// limit. An entry that is not an object, or whose `visibility` is not the
+/// string `list`, is skipped, because hidden and legacy entries are never
+/// offered and the route's shape was not observed. At most
+/// [`MAX_LISTED_MODELS`] entries may be kept; a kept entry needs a listable
+/// `slug`, and a repeated slug refuses the list. Other members are ignored.
 fn parse_subscription_list(bytes: &[u8]) -> Result<Vec<ListedModel>, ProviderError> {
     let value = parse_strict_json(bytes).map_err(|_| ProviderError::MalformedResponse)?;
     let entries = value
         .get("models")
         .and_then(Value::as_array)
-        .filter(|entries| entries.len() <= MAX_LISTED_MODELS)
         .ok_or(ProviderError::MalformedResponse)?;
     let mut models: Vec<ListedModel> = Vec::new();
     for entry in entries {
-        let entry = entry.as_object().ok_or(ProviderError::MalformedResponse)?;
         if entry.get("visibility").and_then(Value::as_str) != Some("list") {
             continue;
+        }
+        if models.len() >= MAX_LISTED_MODELS {
+            return Err(ProviderError::MalformedResponse);
         }
         let slug = entry
             .get("slug")
@@ -268,6 +271,40 @@ mod tests {
         let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
         assert_eq!(ids, ["gpt-z", "gpt-a"]);
         assert!(models.iter().all(|model| !model.cloud_tag));
+        // An entry that is not an object is skipped like a hidden one.
+        let models =
+            parse_subscription_list(br#"{"models":[1,{"slug":"gpt-a","visibility":"list"}]}"#)
+                .expect("list");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-a");
+    }
+
+    /// Only kept entries count against the cap: hidden entries beyond it do
+    /// not fail the list, but more listed entries than the cap do.
+    #[test]
+    fn the_subscription_list_cap_counts_only_listed_entries() {
+        let body = |listed: usize, hidden: usize| {
+            let entries: Vec<String> = (0..listed)
+                .map(|n| format!(r#"{{"slug":"listed-{n}","visibility":"list"}}"#))
+                .chain(
+                    (0..hidden).map(|n| format!(r#"{{"slug":"hidden-{n}","visibility":"hide"}}"#)),
+                )
+                .collect();
+            format!(r#"{{"models":[{}]}}"#, entries.join(","))
+        };
+        let models = parse_subscription_list(body(2, MAX_LISTED_MODELS + 1).as_bytes())
+            .expect("hidden entries do not count");
+        assert_eq!(ids(&models), ["listed-0", "listed-1"]);
+        assert_eq!(
+            parse_subscription_list(body(MAX_LISTED_MODELS, 0).as_bytes())
+                .expect("at the cap")
+                .len(),
+            MAX_LISTED_MODELS
+        );
+        assert_eq!(
+            parse_subscription_list(body(MAX_LISTED_MODELS + 1, 0).as_bytes()),
+            Err(ProviderError::MalformedResponse)
+        );
     }
 
     #[test]
@@ -275,7 +312,6 @@ mod tests {
         for body in [
             &br#"{"data":[{"id":"gpt"}]}"#[..],
             br#"{"models":{}}"#,
-            br#"{"models":[1]}"#,
             br#"{"models":[{"visibility":"list"}]}"#,
             br#"{"models":[{"slug":"","visibility":"list"}]}"#,
             br#"{"models":[{"slug":"a","visibility":"list"},{"slug":"a","visibility":"list"}]}"#,

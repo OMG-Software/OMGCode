@@ -154,6 +154,19 @@ pub fn sign_in_with_chatgpt(
     let endpoints = AuthEndpoints::openai();
     let signed_in = chatgpt::sign_in(&endpoints, &request, open_browser, cancel)
         .map_err(|error| sign_in_error(&error))?;
+    // A cancel that arrived after the browser step but before the tokens are
+    // recorded is honoured: the unused session is ended, best effort, and
+    // nothing is recorded. Recording is one local write, after which the
+    // sign-in completes.
+    if cancel.is_cancelled() {
+        let _ = chatgpt::revoke(
+            &endpoints,
+            &signed_in.client_id,
+            &signed_in.tokens.refresh_token,
+            &CancelToken::new(),
+        );
+        return Err(sign_in_error(&SignInError::Cancelled));
+    }
     // Set when the binding write's outcome is unknown: the profile may then be
     // signed in with these tokens, so they are kept and not revoked.
     let uncertain = std::cell::Cell::new(false);

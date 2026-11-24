@@ -1549,7 +1549,10 @@ revision check and validation (ADR-0064, ADR-0071).
   reading "Confirm the sign-in, then finish it in your browser." with
   **Cancel sign-in** outside the disabled body; it calls
   `settings_cancel_chatgpt_sign_in`, which only sets the sign-in's cancel
-  token, so a cancel sent while the confirmation is open is kept. A failed
+  token, so a cancel sent while the confirmation is open is kept. A cancel
+  that arrives after the browser step but before the tokens are recorded
+  revokes them (best effort) and returns `cancelled`; once the one local
+  recording write starts, the sign-in completes. A failed
   sign-in shows its stable code, such
   as `plan_usage_not_granted`, and stores no token, except in two cases. When
   the write that binds the new tokens has an uncertain result, the tokens are

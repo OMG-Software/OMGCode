@@ -56,7 +56,10 @@ Changes are recorded here before a release version is assigned.
   is refused as `not_signed_in`, whose message names `provider-signin`,
   instead of the API-key `not_bound`. A failed random source is
   `random_unavailable` rather than `transport`, and the settings window hides
-  **Remove** on a signed-in ChatGPT row, which core refuses to remove.
+  **Remove** on a signed-in ChatGPT row, which core refuses to remove. A
+  cancel that arrives after the token exchange but before recording revokes
+  the new tokens and records nothing, and the plan model list skips hidden
+  and non-object entries and caps only the listed ones.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

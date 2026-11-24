@@ -294,6 +294,9 @@ compaction requests, and the front ends use stays the same type.
 - **Model list.** `omgcode models --provider-profile <name>` and the desktop
   model box read the subscription list: the `models` array, keeping entries
   whose `visibility` is `list`, by `slug`, with the existing id checks.
+  Hidden, legacy, and non-object entries are skipped, and only kept entries
+  count against the 2048-entry cap; the 4 MiB body limit bounds the whole
+  array. A kept entry with a bad or repeated slug still refuses the list.
 
 ### Journals and context
 
