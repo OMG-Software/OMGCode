@@ -75,7 +75,8 @@ Changes are recorded here before a release version is assigned.
   ChatGPT profile's credential with a stale revision is the conflict. A
   sign-out that finds the profile signed in to a new session is a conflict
   rather than a success, and every other sign-out failure after the
-  revocation says whether OpenAI revoked the session. A sign-out first
+  revocation says whether OpenAI revoked the refresh token, that the
+  sign-out was not recorded, and to sign out again. A sign-out first
   writes a marker under the session lock, which every token request checks
   under that lock, so a running session gives no token and writes no
   record after a sign-out even when a slot could not be deleted; a

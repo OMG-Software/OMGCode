@@ -499,7 +499,11 @@ documented route for local and open-source apps
   is a `control` conflict, because that session was not revoked; one found
   signed out is a success; any other failure to read the profile then is
   `signout_not_recorded`. Every failure after the revocation, including one
-  to open the settings, says whether OpenAI revoked the session. An
+  to open the settings, says whether OpenAI revoked the refresh token, that
+  the sign-out was not recorded, and that OMGCode no longer uses the
+  session's tokens because of the marker below; it asks for the sign-out to
+  be run again, and after an unconfirmed revocation also for OMGCode to be
+  disconnected in ChatGPT settings. An
   unconfirmed revocation is reported and not retried. Before the
   revocation, the sign-out writes a marker for the session under the
   session lock; every token request checks it under that lock and returns

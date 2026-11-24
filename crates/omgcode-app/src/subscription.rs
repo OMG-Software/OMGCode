@@ -245,12 +245,16 @@ pub fn sign_in_with_chatgpt(
     recorded
 }
 
-/// Add what OpenAI did with the revocation to a failure that follows it.
+/// Add to a failure after the revocation what happened and what to do. The
+/// sign-out was not recorded, so the profile still names its tokens, but
+/// the sign-out marker already stops OMGCode from using them. Only the
+/// refresh token is revoked: an access token OpenAI already issued may work
+/// elsewhere until it expires, so the note never says the tokens are dead.
 fn after_revocation(error: AppError, revoked: bool) -> AppError {
     error.with_note(if revoked {
-        "OpenAI revoked the session, so the tokens the profile still names no longer work; sign out again"
+        "OpenAI revoked the refresh token; the sign-out was not recorded, but OMGCode no longer uses this session's tokens; sign out again to record it and delete them"
     } else {
-        "OpenAI did not confirm the revocation; you can also disconnect OMGCode in your ChatGPT settings"
+        "OpenAI did not confirm the revocation; the sign-out was not recorded, but OMGCode no longer uses this session's tokens; sign out again to record it and delete them, and disconnect OMGCode in your ChatGPT settings"
     })
 }
 
@@ -538,16 +542,25 @@ mod tests {
         let revoked = after_revocation(failure(), true);
         assert_eq!(revoked.kind(), failure().kind());
         assert_eq!(revoked.code(), failure().code());
-        assert!(
-            revoked.message().starts_with(
-                "signout_not_recorded: the store is locked (OpenAI revoked the session"
-            )
-        );
+        assert!(revoked.message().starts_with(
+            "signout_not_recorded: the store is locked (OpenAI revoked the refresh token;"
+        ));
+        for error in [&revoked, &after_revocation(failure(), false)] {
+            assert!(error.message().contains(
+                "the sign-out was not recorded, but OMGCode no longer uses this session's tokens; sign out again"
+            ));
+            assert!(!error.message().contains("no longer work"));
+        }
         let unconfirmed = after_revocation(failure(), false);
         assert!(
             unconfirmed
                 .message()
                 .contains("(OpenAI did not confirm the revocation;")
+        );
+        assert!(
+            unconfirmed
+                .message()
+                .ends_with("and disconnect OMGCode in your ChatGPT settings)")
         );
         let coded = AppError::skill("skill_unavailable", "gone");
         assert_eq!(after_revocation(coded, true).code(), "skill_unavailable");
