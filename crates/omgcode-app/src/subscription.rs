@@ -105,13 +105,24 @@ fn check_revision(store: &ControlStore, expected: u64) -> Result<(), AppError> {
     if store.revision() == expected {
         Ok(())
     } else {
-        Err(AppError::new(
-            ErrorKind::Control,
-            format!(
-                "conflict: the settings changed (revision {} is current, not {expected}); read them again",
-                store.revision()
-            ),
-        ))
+        Err(conflict_error(expected, store.revision()))
+    }
+}
+
+fn conflict_error(expected: u64, actual: u64) -> AppError {
+    AppError::new(
+        ErrorKind::Control,
+        format!(
+            "conflict: the settings changed (revision {actual} is current, not {expected}); read them again"
+        ),
+    )
+}
+
+/// A settings refusal from the sign-in's checks, as before the browser step.
+fn settings_refusal(error: &ControlError) -> AppError {
+    match error {
+        ControlError::Conflict { expected, actual } => conflict_error(*expected, *actual),
+        other => AppError::new(ErrorKind::Control, format!("settings: {other}")),
     }
 }
 
@@ -132,14 +143,15 @@ pub fn sign_in_with_chatgpt(
     open_browser: &mut dyn FnMut(&str) -> Result<(), SignInError>,
     cancel: &CancelToken,
 ) -> Result<SignInOutcome, AppError> {
+    let new_host = chatgpt::new_host_id().map_err(|error| sign_in_error(&error))?;
     let request: SignInRequest = {
         let store = open_settings(data_root)?;
         check_revision(&store, expected_revision)?;
         // A profile that cannot sign in is a settings refusal, as in the
         // desktop service and the other profile commands.
         store
-            .subscription_sign_in_request(name)
-            .map_err(|error| AppError::new(ErrorKind::Control, format!("settings: {error}")))?
+            .subscription_sign_in_request(name, &new_host)
+            .map_err(|error| settings_refusal(&error))?
     };
     // Fail before the browser step when no protected store can hold tokens.
     // The opened store is released at once.
@@ -195,7 +207,18 @@ pub fn sign_in_with_chatgpt(
                         "signin_binding_uncertain: the sign-in's tokens were kept as {credential_id}, but whether the profile names them is uncertain. Run provider-profile-show: if it shows this identifier, the profile is signed in; to end the session, run provider-signout. Otherwise delete the item by hand"
                     ))
                 }
-                other => credential_error(format!("signin_not_recorded: {other}")),
+                // Only these two can leave a new token item behind.
+                orphan @ (ProviderCredentialError::Unrecorded { .. }
+                | ProviderCredentialError::Unstored { .. }) => {
+                    credential_error(format!("signin_not_recorded: {orphan}"))
+                }
+                // A stale revision, a refusal from the re-run checks, or a
+                // refused binding whose new item was deleted: no item remains.
+                ProviderCredentialError::Control(error) => settings_refusal(&error),
+                ProviderCredentialError::Credential(error) => credential_error(format!(
+                    "{}: {error}",
+                    ProviderCredentialUseError::native_code(&error)
+                )),
             })?;
         let profile = store.provider_profile(name).map_or_else(
             || name.to_owned(),
@@ -438,5 +461,27 @@ mod tests {
         let error = sign_in_error(&SignInError::PlanUsageNotGranted);
         assert_eq!(error.kind(), ErrorKind::Credential);
         assert!(error.to_string().contains("plan_usage_not_granted"));
+        let error = sign_in_error(&SignInError::Random);
+        assert_eq!(error.kind(), ErrorKind::Credential);
+        assert!(error.to_string().contains("random_unavailable"));
+    }
+
+    #[test]
+    fn a_settings_refusal_after_the_browser_step_is_not_an_orphan() {
+        let conflict = settings_refusal(&ControlError::Conflict {
+            expected: 4,
+            actual: 5,
+        });
+        assert_eq!(conflict.kind(), ErrorKind::Control);
+        assert!(
+            conflict
+                .message()
+                .starts_with("conflict: the settings changed")
+        );
+        let refused = settings_refusal(&ControlError::ProviderRefused("already signed in"));
+        assert_eq!(refused.kind(), ErrorKind::Control);
+        for error in [conflict, refused] {
+            assert!(!error.to_string().contains("signin_not_recorded"));
+        }
     }
 }

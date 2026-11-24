@@ -344,7 +344,8 @@ model or the journal sees.
   send the token form from a zeroing buffer. Verification uses only the
   public key, so the timing issue reported for RSA decryption does not apply.
   A failed random source is `random_unavailable`, a local error, not a
-  transport failure.
+  transport failure. The host identifier is made from the same source by
+  the caller and handed to the settings store, so it fails the same way.
 - Opening the browser runs `explorer.exe` from the Windows directory or
   `xdg-open` from `/usr/bin` with the address as one argument, never a shell.
 - A sign-in that lacks plan permission records nothing; the issued client then

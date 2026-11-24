@@ -348,7 +348,7 @@ fn new_request() -> SignInRequest {
     SignInRequest {
         client_id: None,
         subject: None,
-        host_id: new_host_id(),
+        host_id: new_host_id().expect("host"),
     }
 }
 
@@ -356,7 +356,7 @@ fn returning_request(client: &str, subject: &str) -> SignInRequest {
     SignInRequest {
         client_id: Some(client.to_owned()),
         subject: Some(subject.to_owned()),
-        host_id: new_host_id(),
+        host_id: new_host_id().expect("host"),
     }
 }
 
@@ -1164,10 +1164,10 @@ fn a_held_session_lock_makes_a_cancelled_waiter_stop() {
 
 #[test]
 fn host_and_identifier_checks_accept_only_the_documented_shapes() {
-    assert!(valid_host_id(&new_host_id()));
+    assert!(valid_host_id(&new_host_id().expect("host")));
     assert!(!valid_host_id("urn:uuid:not-a-uuid"));
     assert!(!valid_host_id(&format!("urn:uuid:{}", uuid::Uuid::nil())));
-    assert!(!valid_host_id(&new_host_id().to_uppercase()));
+    assert!(!valid_host_id(&new_host_id().expect("host").to_uppercase()));
     assert!(valid_identifier(ISSUED_CLIENT));
     assert!(!valid_identifier(""));
     assert!(!valid_identifier("has space"));

@@ -18,7 +18,7 @@ use super::{
 };
 use crate::provider::OPENAI_ENDPOINT;
 use crate::provider::chatgpt::{
-    SignInRequest, SignedIn, initial_token_record, new_host_id, valid_host_id, valid_identifier,
+    SignInRequest, SignedIn, initial_token_record, valid_host_id, valid_identifier,
 };
 
 /// The outcome of a recorded ChatGPT sign-out.
@@ -105,16 +105,44 @@ fn is_chatgpt_profile(status: &super::ProviderProfileStatus) -> bool {
 }
 
 impl ControlStore {
-    /// Check that the named profile may start a sign-in now and return what
-    /// the sign-in sends. A new host identifier is made when none is
-    /// recorded; it is recorded only by a successful sign-in.
+    /// Check that the named profile may start a sign-in now.
     ///
     /// # Errors
     ///
     /// `UnknownProvider`, or `ProviderRefused` for a profile that is not an
     /// `openai` subscription profile with the OpenAI endpoint, or that is
     /// already signed in.
-    pub fn subscription_sign_in_request(&self, name: &str) -> Result<SignInRequest, ControlError> {
+    pub fn check_subscription_sign_in(&self, name: &str) -> Result<(), ControlError> {
+        self.sign_in_status(name).map(|_| ())
+    }
+
+    /// Check the named profile as [`Self::check_subscription_sign_in`] does
+    /// and return what the sign-in sends. `new_host` is the host identifier
+    /// used when none is recorded; it is recorded only by a successful
+    /// sign-in. The caller makes it with [`crate::provider::chatgpt::new_host_id`],
+    /// so a failed random source is reported as a sign-in error.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::check_subscription_sign_in`].
+    pub fn subscription_sign_in_request(
+        &self,
+        name: &str,
+        new_host: &str,
+    ) -> Result<SignInRequest, ControlError> {
+        let registration = self.sign_in_status(name)?.subscription.as_ref();
+        Ok(SignInRequest {
+            client_id: registration.map(|known| known.client_id.clone()),
+            subject: registration.map(|known| known.subject.clone()),
+            host_id: self
+                .snapshot
+                .subscription_host
+                .clone()
+                .unwrap_or_else(|| new_host.to_owned()),
+        })
+    }
+
+    fn sign_in_status(&self, name: &str) -> Result<&super::ProviderProfileStatus, ControlError> {
         self.ensure_healthy()?;
         let status = self
             .provider_profile(name)
@@ -129,16 +157,7 @@ impl ControlStore {
                 "this profile is already signed in; sign out first",
             ));
         }
-        let registration = status.subscription.as_ref();
-        Ok(SignInRequest {
-            client_id: registration.map(|known| known.client_id.clone()),
-            subject: registration.map(|known| known.subject.clone()),
-            host_id: self
-                .snapshot
-                .subscription_host
-                .clone()
-                .unwrap_or_else(new_host_id),
-        })
+        Ok(status)
     }
 
     /// Store a completed sign-in's tokens and record it, with the ordering
@@ -161,7 +180,7 @@ impl ControlStore {
         expected_revision: u64,
     ) -> Result<ProviderCredentialSet, ProviderCredentialError> {
         self.check_revision(expected_revision)?;
-        let current = self.subscription_sign_in_request(name)?;
+        let current = self.subscription_sign_in_request(name, &request.host_id)?;
         if current.client_id != request.client_id
             || current.subject != request.subject
             || self

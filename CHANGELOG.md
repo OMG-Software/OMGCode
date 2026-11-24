@@ -59,7 +59,11 @@ Changes are recorded here before a release version is assigned.
   **Remove** on a signed-in ChatGPT row, which core refuses to remove. A
   cancel that arrives after the token exchange but before recording revokes
   the new tokens and records nothing, and the plan model list skips hidden
-  and non-object entries and caps only the listed ones.
+  and non-object entries and caps only the listed ones. The host identifier
+  is made from the same random source, so its failure is also
+  `random_unavailable` rather than a panic, and `signin_not_recorded` is
+  reserved for a token item that could not be deleted; a settings change
+  during the browser step is the `control` conflict or refusal.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

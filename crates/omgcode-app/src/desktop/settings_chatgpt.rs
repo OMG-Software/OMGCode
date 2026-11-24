@@ -65,7 +65,7 @@ impl DesktopService {
             let exists = store.provider_profile(&request.name).is_some();
             if exists {
                 store
-                    .subscription_sign_in_request(&request.name)
+                    .check_subscription_sign_in(&request.name)
                     .map_err(|error| DesktopError::from_control(&error))?;
             }
             exists

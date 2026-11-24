@@ -426,9 +426,19 @@ pub fn revoke(
 }
 
 /// A new host identifier: `urn:uuid:` and a random UUIDv4.
-#[must_use]
-pub fn new_host_id() -> String {
-    format!("urn:uuid:{}", uuid::Uuid::new_v4().hyphenated())
+///
+/// # Errors
+///
+/// [`SignInError::Random`] when the operating system's random source fails.
+pub fn new_host_id() -> Result<String, SignInError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| SignInError::Random)?;
+    Ok(format!(
+        "urn:uuid:{}",
+        uuid::Builder::from_random_bytes(bytes)
+            .into_uuid()
+            .hyphenated()
+    ))
 }
 
 /// Whether `text` is a host identifier this build creates.

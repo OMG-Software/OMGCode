@@ -25,6 +25,10 @@ impl Fixture {
     }
 }
 
+fn host() -> String {
+    crate::provider::chatgpt::new_host_id().expect("host")
+}
+
 fn fixture() -> Fixture {
     let directory = tempfile::tempdir().expect("temporary directory");
     let data = directory.path().join("data");
@@ -76,7 +80,9 @@ fn signed_in(client: &str, subject: &str) -> SignedIn {
 
 fn sign_in(fixture: &Fixture, name: &str, client: &str, subject: &str) -> ProviderCredentialSet {
     let mut store = fixture.store();
-    let request = store.subscription_sign_in_request(name).expect("request");
+    let request = store
+        .subscription_sign_in_request(name, &host())
+        .expect("request");
     let revision = store.revision();
     store
         .record_provider_subscription(
@@ -102,19 +108,27 @@ fn sign_out(fixture: &Fixture, name: &str) {
 fn only_a_signed_out_chatgpt_profile_can_start_a_sign_in() {
     let fixture = fixture();
     let store = fixture.store();
+    store.check_subscription_sign_in("ChatGPT").expect("check");
+    let new_host = host();
     let request = store
-        .subscription_sign_in_request("ChatGPT")
+        .subscription_sign_in_request("ChatGPT", &new_host)
         .expect("request");
     assert!(request.client_id.is_none() && request.subject.is_none());
+    // With no host recorded, the request sends the one the caller made.
+    assert_eq!(request.host_id, new_host);
     assert!(crate::provider::chatgpt::valid_host_id(&request.host_id));
     for name in ["no-endpoint", "keys", "claude"] {
         assert!(matches!(
-            store.subscription_sign_in_request(name),
+            store.subscription_sign_in_request(name, &host()),
+            Err(ControlError::ProviderRefused(_))
+        ));
+        assert!(matches!(
+            store.check_subscription_sign_in(name),
             Err(ControlError::ProviderRefused(_))
         ));
     }
     assert!(matches!(
-        store.subscription_sign_in_request("missing"),
+        store.subscription_sign_in_request("missing", &host()),
         Err(ControlError::UnknownProvider)
     ));
 }
@@ -146,7 +160,7 @@ fn a_recorded_sign_in_stores_generation_one_and_survives_replay() {
     assert!(!text.contains("access-token") && !text.contains("refresh-token"));
     // A signed-in profile cannot sign in again or be given an API key.
     assert!(matches!(
-        store.subscription_sign_in_request("chatgpt"),
+        store.subscription_sign_in_request("chatgpt", &host()),
         Err(ControlError::ProviderRefused(_))
     ));
     drop(store);
@@ -262,7 +276,7 @@ fn sign_out_deletes_both_slots_and_keeps_the_registration() {
     assert_eq!(refused("claude"), "wrong_provider");
     assert_eq!(refused("missing"), "unknown_profile");
     let request = store
-        .subscription_sign_in_request("chatgpt")
+        .subscription_sign_in_request("chatgpt", &host())
         .expect("again");
     assert_eq!(request.client_id.as_deref(), Some("oaiapp_one"));
     assert_eq!(request.subject.as_deref(), Some("subject-1"));
@@ -283,7 +297,7 @@ fn every_sign_in_shares_one_host_and_a_registration_cannot_change() {
         .expect("host");
     let request = fixture
         .store()
-        .subscription_sign_in_request("second")
+        .subscription_sign_in_request("second", &host())
         .expect("second request");
     assert_eq!(request.host_id, first_host);
     sign_out(&fixture, "chatgpt");
@@ -292,7 +306,7 @@ fn every_sign_in_shares_one_host_and_a_registration_cannot_change() {
     // native write.
     let mut store = fixture.store();
     let request = store
-        .subscription_sign_in_request("chatgpt")
+        .subscription_sign_in_request("chatgpt", &host())
         .expect("request");
     let revision = store.revision();
     let changed = store.record_provider_subscription(
