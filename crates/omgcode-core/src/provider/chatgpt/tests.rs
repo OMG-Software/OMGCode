@@ -1198,4 +1198,8 @@ fn errors_carry_fixed_text_and_stable_codes() {
         ProviderError::from(SignInError::Transport),
         ProviderError::AccessTokenUnavailable
     );
+    // A local random-source failure is not reported as the service being
+    // unreachable.
+    assert_eq!(SignInError::Random.code(), "random_unavailable");
+    assert!(!SignInError::Random.to_string().contains("reached"));
 }

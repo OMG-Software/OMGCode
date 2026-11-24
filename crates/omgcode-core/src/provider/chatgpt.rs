@@ -134,6 +134,10 @@ pub enum SignInError {
     /// The loopback listener could not be started.
     #[error("the ChatGPT sign-in could not listen on 127.0.0.1")]
     Listener,
+    /// The operating system's random source failed, so no `state`, nonce,
+    /// or PKCE verifier could be made. A local failure; nothing was sent.
+    #[error("the ChatGPT sign-in could not obtain random values from the operating system")]
+    Random,
     /// The account owner refused the sign-in.
     #[error("the ChatGPT sign-in was refused in the browser")]
     AccessDenied,
@@ -181,6 +185,7 @@ impl SignInError {
             Self::TimedOut => "timed_out",
             Self::Browser => "browser_unavailable",
             Self::Listener => "listener_unavailable",
+            Self::Random => "random_unavailable",
             Self::AccessDenied => "access_denied",
             Self::StateMismatch => "state_mismatch",
             Self::Callback(_) => "invalid_callback",
@@ -484,7 +489,7 @@ fn authorize_address(
 /// 32 random bytes as base64url without padding.
 fn random_text() -> Result<Zeroizing<String>, SignInError> {
     let mut bytes = Zeroizing::new([0_u8; 32]);
-    getrandom::fill(bytes.as_mut()).map_err(|_| SignInError::Transport)?;
+    getrandom::fill(bytes.as_mut()).map_err(|_| SignInError::Random)?;
     Ok(Zeroizing::new(base64_url(bytes.as_ref())))
 }
 

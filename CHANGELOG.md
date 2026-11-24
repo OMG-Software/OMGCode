@@ -34,7 +34,9 @@ Changes are recorded here before a release version is assigned.
   API-key profiles keep the Chat Completions path. The desktop shell gains
   `settings_sign_in_chatgpt`, `settings_cancel_chatgpt_sign_in`, and
   `settings_sign_out_chatgpt` (59 commands, 27 in `settings`). New
-  dependencies: `rsa` (with `pkcs1v15`), `base64`, and `getrandom`. Every test
+  dependencies: `rsa` (with `pkcs1v15`), `base64`, `getrandom`, and `bytes`
+  (the last three already in the tree through reqwest, `uuid`, and `hyper`).
+  Every test
   uses loopback mock servers; no real sign-in, refresh, revocation, or
   plan-backed request was made, and plan usage is not verified. A token slot
   that exists but cannot be read or decoded fails with
@@ -52,7 +54,9 @@ Changes are recorded here before a release version is assigned.
   `access_token_unavailable`, and a token answer's tokens are zeroed even
   when a later check refuses it. A ChatGPT connection that is not signed in
   is refused as `not_signed_in`, whose message names `provider-signin`,
-  instead of the API-key `not_bound`.
+  instead of the API-key `not_bound`. A failed random source is
+  `random_unavailable` rather than `transport`, and the settings window hides
+  **Remove** on a signed-in ChatGPT row, which core refuses to remove.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

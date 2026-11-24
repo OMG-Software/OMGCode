@@ -1606,6 +1606,11 @@ describe("ChatGPT sign-in (ADR-0093)", () => {
     });
     go("Model");
     expect(rowOf("out").textContent).toContain("Not signed in");
+    // Rust refuses to remove a signed-in connection, so only a signed-out one offers Remove.
+    const labels = (name: string) =>
+      Array.from(rowOf(name).querySelectorAll("button"), (b) => b.textContent);
+    expect(labels("out")).toEqual(["Sign in with ChatGPT", "Remove"]);
+    expect(labels("chatgpt")).toEqual(["Sign out"]);
     buttonByText(rowOf("out"), "Sign in with ChatGPT").click();
     await settle();
     expect(ipc.callsTo("settings_sign_in_chatgpt")[0]?.args).toEqual({

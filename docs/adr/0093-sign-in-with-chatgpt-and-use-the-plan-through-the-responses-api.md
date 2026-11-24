@@ -336,8 +336,12 @@ model or the journal sees.
   be read by 0.59.0 or earlier.
 - New dependencies: `rsa` 0.10 (RustCrypto, pure Rust) for RS256
   verification, `base64` 0.23 (already in the tree through reqwest) for
-  base64url, and `getrandom` for the random values. Verification uses only the
+  base64url, `getrandom` 0.4 (already in the tree through `uuid`) for the
+  random values, and `bytes` 1.12 (already in the tree through `hyper`) to
+  send the token form from a zeroing buffer. Verification uses only the
   public key, so the timing issue reported for RSA decryption does not apply.
+  A failed random source is `random_unavailable`, a local error, not a
+  transport failure.
 - Opening the browser runs `explorer.exe` from the Windows directory or
   `xdg-open` from `/usr/bin` with the address as one argument, never a shell.
 - A sign-in that lacks plan permission records nothing; the issued client then

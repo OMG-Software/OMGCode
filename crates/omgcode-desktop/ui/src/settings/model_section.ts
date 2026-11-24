@@ -240,7 +240,8 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
     ),
     // A ChatGPT profile recorded without OpenAI's endpoint can never sign in (ADR-0093).
     plan && profile.endpoint !== null ? chatGptButton(profile, ctx) : null,
-    remove,
+    // Rust refuses to remove a signed-in ChatGPT connection, so it offers Sign out first.
+    plan && profile.credential_bound ? null : remove,
   );
 }
 
