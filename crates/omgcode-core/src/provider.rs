@@ -106,10 +106,17 @@ impl ModelEndpoint {
         matches!(self.0, EndpointRule::Hosted { .. })
     }
 
-    /// The host name or address, for a confirmation that says where requests
-    /// go. It is not a secret.
-    pub fn host(&self) -> Option<&str> {
-        self.url().host_str()
+    /// The host name or address with any non-default port, for a confirmation
+    /// that says where requests go: `llm.example.org:8443` names a different
+    /// service from `llm.example.org`. It matches the browser's `URL.host`,
+    /// which the settings window shows. It is not a secret.
+    pub fn host(&self) -> Option<String> {
+        let url = self.url();
+        let host = url.host_str()?;
+        Some(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_owned(),
+        })
     }
 
     /// The endpoint text as validated. It is not a secret.
@@ -1278,7 +1285,7 @@ mod tests {
         for text in ["https://ollama.com/v1", "https://ollama.com/v1/"] {
             let endpoint = ModelEndpoint::parse(text).expect(text);
             assert!(endpoint.is_hosted(), "{text}");
-            assert_eq!(endpoint.host(), Some("ollama.com"));
+            assert_eq!(endpoint.host().as_deref(), Some("ollama.com"));
             assert_eq!(
                 endpoint.as_str(),
                 "https://ollama.com/v1".to_owned() + &text[21..]
@@ -1298,6 +1305,21 @@ mod tests {
             let endpoint = ModelEndpoint::parse(text).expect(text);
             assert!(endpoint.is_hosted(), "{text}");
             assert_eq!(endpoint.output_field(), field, "{text}");
+        }
+        // The host a confirmation names keeps a non-default port, as the
+        // browser's `URL.host` does, so it names the service that receives
+        // the key.
+        for (text, host) in [
+            (
+                "https://provider-api.example.org:8443/v1",
+                "provider-api.example.org:8443",
+            ),
+            ("https://[2001:db8::1]:8443/v1", "[2001:db8::1]:8443"),
+            ("https://192.0.2.10/v1", "192.0.2.10"),
+            ("http://127.0.0.1:1234/v1", "127.0.0.1:1234"),
+        ] {
+            let endpoint = ModelEndpoint::parse(text).expect(text);
+            assert_eq!(endpoint.host().as_deref(), Some(host), "{text}");
         }
         for text in [
             "http://ollama.com/v1",

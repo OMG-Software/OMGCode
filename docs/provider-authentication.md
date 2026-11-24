@@ -403,8 +403,8 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   A named hosted provider shows its fixed endpoint, which Rust supplies, and
   takes an API key; `openai_compatible` takes an endpoint and an API key.
   The key is sent once and the field cleared, as for Ollama Cloud. The native
-  confirmation before choosing a hosted connection names the host that
-  receives prompts, workspace text read by tools, and command output; for
+  confirmation before choosing a hosted connection names the host, with any
+  non-default port, that receives prompts, workspace text read by tools, and command output; for
   `openai_compatible` it adds that the address was typed when the connection
   was added. See the [desktop interface](desktop-interface.md#choosing-the-model-connection).
 - **Selectable.** A hosted profile can be chosen only with a bound credential.

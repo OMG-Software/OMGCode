@@ -21,7 +21,8 @@ Changes are recorded here before a release version is assigned.
   because DeepSeek refuses a tool request without earlier reasoning text,
   which the client does not keep. The desktop **Add connection** form lists every
   kind, and the native confirmation before choosing a hosted connection names
-  the host that receives prompts, and for a typed address says it was typed.
+  the host and any non-default port that receives prompts, and for a typed
+  address says it was typed.
   A model list may now hold 2048 models in 4 MiB. `capabilities` lists every
   kind but `ollama_local` as a stored-credential adapter. No request was made
   to any of these providers with a real key. Subscription sign-in is not

@@ -323,7 +323,7 @@ const fn provider_label(kind: ProviderKind) -> &'static str {
 fn hosted_notice(kind: ProviderKind, endpoint: &str) -> String {
     let host = ModelEndpoint::parse(endpoint)
         .ok()
-        .and_then(|parsed| parsed.host().map(display_safe_line))
+        .and_then(|parsed| parsed.host().map(|host| display_safe_line(&host)))
         .unwrap_or_else(|| display_safe_line(endpoint));
     let typed = if kind == ProviderKind::OpenAiCompatible {
         " This address was typed when the connection was added; check that it is the service you mean."

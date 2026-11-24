@@ -574,6 +574,34 @@ fn choosing_a_hosted_provider_names_its_host_and_flags_a_typed_address() {
     );
 }
 
+/// A typed address with a non-default port is named with that port, as the
+/// settings window shows it: `host:8443` can be a different service from
+/// `host`, and the dialog must name the one that receives the key (ADR-0091).
+#[test]
+fn choosing_a_typed_address_with_a_port_names_the_port() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = active(&fixture, &unused_endpoint());
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile_at(
+        "custom",
+        "openai_compatible",
+        "api_key",
+        "https://llm.internal.example:8443/v1",
+    );
+    vault.bind("custom", b"fake-custom-key-for-the-test");
+    let id = session(&service, workspace.id);
+
+    let prompt = Answers::with(&[true]);
+    choose(&service, id, Some("custom"), &prompt).expect("choose custom");
+    let message = &prompt.shown()[0].message;
+    assert!(
+        message.contains("leave this computer for llm.internal.example:8443."),
+        "{message}"
+    );
+    assert!(!message.contains("fake-custom-key"));
+}
+
 /// A model name passes the rule `chat_send` applies, and a model alone keeps
 /// the session following the default connection.
 #[test]

@@ -94,7 +94,7 @@ unauthenticated requests. No API key was used for any provider.
    takes a key. `openai_compatible` takes an endpoint and a key. The window
    sends the key once and clears the field, as for Ollama Cloud (ADR-0071).
    The native confirmation before a hosted connection is chosen names the
-   host that will receive prompts, workspace text read by tools, and command
+   host, with any non-default port, that will receive prompts, workspace text read by tools, and command
    output. For `openai_compatible` it also says that the address was typed
    by the operator.
 9. **CLI.** `capabilities` lists every kind except `ollama_local` in
