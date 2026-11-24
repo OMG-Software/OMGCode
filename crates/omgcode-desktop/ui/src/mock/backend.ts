@@ -1611,6 +1611,8 @@ export function isCustomEndpoint(endpoint: string): boolean {
   return (
     url.protocol === "https:" &&
     url.hostname !== "" &&
+    // Port 0 reaches nothing; core refuses it as the loopback rule does.
+    url.port !== "0" &&
     (written === endpoint || written === `${endpoint}/`) &&
     !url.pathname.includes("//")
   );

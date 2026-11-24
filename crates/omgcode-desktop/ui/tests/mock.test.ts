@@ -245,6 +245,7 @@ describe("mock backend", () => {
     ["HTTPS://provider-api.example.org/v1", false],
     ["https://Provider-API.example.org/v1", false],
     ["https://provider-api.example.org:443/v1", false],
+    ["https://provider-api.example.org:0/v1", false],
     ["https://user@provider-api.example.org/v1", false],
     ["https://user:pass@provider-api.example.org/v1", false],
     ["https://provider-api.example.org/v1?key=1", false],
