@@ -389,9 +389,13 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   An upper-case host, a default port, a `.` or `..` segment, or a non-ASCII
   host is refused, not rewritten, so the confirmed text is the URL every
   request uses. Port 0, which no request can reach, is refused too, as the
-  loopback rule refuses it. The refusal is `provider profile refused: an
-  openai_compatible endpoint must be an https:// base URL with a lower-case
-  host and no user information, query, fragment, percent-encoding, default
+  loopback rule refuses it. A host on this computer is refused: a loopback
+  or unspecified address (IPv4, IPv6, or IPv4-mapped IPv6), `localhost`, or a
+  `.localhost` name. A local server uses a local kind, and the hosted
+  confirmation would otherwise say that prompts leave this computer. The
+  refusal is `provider profile refused: an openai_compatible endpoint must be
+  an https:// base URL with a lower-case host that is not this computer and
+  no user information, query, fragment, percent-encoding, default
   port, or empty or dot path segment`. Plain HTTP is refused; a loopback HTTP
   server uses a local kind. A typed endpoint equal to a named provider's
   endpoint uses that provider's output field.

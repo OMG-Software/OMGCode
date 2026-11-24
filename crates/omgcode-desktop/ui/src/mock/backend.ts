@@ -1612,9 +1612,32 @@ export function isCustomEndpoint(endpoint: string): boolean {
     url.hostname !== "" &&
     // Port 0 reaches nothing; core refuses it as the loopback rule does.
     url.port !== "0" &&
+    // A server on this computer uses a local kind, as core requires.
+    !namesThisComputer(url.hostname) &&
     (written === endpoint || written === `${endpoint}/`) &&
     !url.pathname.includes("//")
   );
+}
+
+// Mirrors core's `is_this_computer`: `localhost` names, and loopback or unspecified addresses,
+// including IPv4-mapped IPv6. `URL` writes IPv4 in dotted decimal and IPv6 compressed.
+function namesThisComputer(hostname: string): boolean {
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return true;
+  }
+  const octets = hostname.split(".");
+  if (
+    octets.length === 4 &&
+    octets.every((octet) => octet !== "" && !Number.isNaN(Number(octet)))
+  ) {
+    return octets[0] === "127" || hostname === "0.0.0.0";
+  }
+  if (hostname === "[::1]" || hostname === "[::]" || hostname === "[::ffff:0:0]") {
+    return true;
+  }
+  const mapped = "[::ffff:";
+  const group = hostname.startsWith(mapped) ? hostname.slice(mapped.length).split(":")[0] : "";
+  return group !== undefined && group.length === 4 && group.startsWith("7f");
 }
 
 function isLocalEndpointText(endpoint: string): boolean {

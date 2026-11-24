@@ -69,7 +69,11 @@ unauthenticated requests. No API key was used for any provider.
    An upper-case host, a default port, a `.` or `..` segment, or a non-ASCII
    host is refused rather than rewritten. The text the operator confirms is
    therefore the URL every request uses. Port 0, which no request can reach,
-   is refused, as the loopback rule refuses it. A typed endpoint that equals a named
+   is refused, as the loopback rule refuses it. A host on this computer (a
+   loopback or unspecified address, including IPv4-mapped IPv6, `localhost`,
+   or a `.localhost` name) is refused: a local server uses a local kind, and
+   the hosted confirmation would otherwise claim that prompts leave this
+   computer. An HTTPS-only local server therefore has no connection yet. A typed endpoint that equals a named
    provider's endpoint is treated as that provider's endpoint, including its
    output field.
 4. **Every hosted kind needs an API key.** Hosted kinds take authentication

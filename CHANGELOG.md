@@ -22,7 +22,8 @@ Changes are recorded here before a release version is assigned.
   which the client does not keep. The desktop **Add connection** form lists every
   kind, and the native confirmation before choosing a hosted connection names
   the host and any non-default port that receives prompts, and for a typed
-  address says it was typed. A typed endpoint with port 0 is refused. A named
+  address says it was typed. A typed endpoint with port 0, or with a host on
+  this computer (loopback, unspecified, or `localhost`), is refused. A named
   hosted kind's API-key profile added on the CLI without `--endpoint` records
   its documented endpoint, and an `openai_compatible` one is refused, instead
   of recording a profile that could never be used. A model list may now hold 2048 models in 4 MiB. `capabilities` lists every

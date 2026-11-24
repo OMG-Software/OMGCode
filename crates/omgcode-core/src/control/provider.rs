@@ -606,7 +606,7 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
         )),
         None => validate_custom_url(text).map(|_| ()).map_err(|_| {
             ControlError::ProviderRefused(
-                "an openai_compatible endpoint must be an https:// base URL with a lower-case host and no user information, query, fragment, percent-encoding, default port, or empty or dot path segment",
+                "an openai_compatible endpoint must be an https:// base URL with a lower-case host that is not this computer and no user information, query, fragment, percent-encoding, default port, or empty or dot path segment",
             )
         }),
     }

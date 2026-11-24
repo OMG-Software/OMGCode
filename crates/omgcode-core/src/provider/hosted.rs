@@ -9,6 +9,8 @@
 //!
 //! The base URL is the part before `/chat/completions` and `/models`.
 
+use std::net::IpAddr;
+
 use super::ProviderError;
 use reqwest::Url;
 
@@ -119,6 +121,9 @@ pub(crate) fn fixed_endpoint(text: &str) -> Option<(Url, OutputLimitField)> {
 /// confirms is the URL each request uses: an upper-case host, a default port,
 /// a `.` or `..` segment, or a non-ASCII host is refused rather than rewritten.
 /// Port 0, which no request can reach, is refused as the loopback rule does.
+/// A loopback or unspecified address, or a `localhost` name, is refused too:
+/// a server on this computer uses a local kind, and a hosted connection's
+/// confirmation says that prompts leave this computer.
 /// Plain HTTP is refused: the key and every prompt would cross the network
 /// in clear text. A loopback HTTP server uses a local kind instead.
 ///
@@ -141,12 +146,37 @@ pub(crate) fn validate_custom_url(text: &str) -> Result<Url, ProviderError> {
         || url.host_str().is_none_or(str::is_empty)
         || url.cannot_be_a_base()
         || url.port() == Some(0)
+        || url.host_str().is_some_and(is_this_computer)
         || !(written == text || written.strip_suffix('/') == Some(text))
         || url.path().contains("//")
     {
         return Err(ProviderError::InvalidConfiguration);
     }
     Ok(url)
+}
+
+/// Whether `host`, as the URL parser writes it, names this computer: a
+/// loopback or unspecified address, including an IPv4-mapped one, or
+/// `localhost` and its subdomains. An IPv6 host keeps its brackets.
+fn is_this_computer(host: &str) -> bool {
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    match bare.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => address.is_loopback() || address.is_unspecified(),
+        Ok(IpAddr::V6(address)) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback() || mapped.is_unspecified())
+        }
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +239,14 @@ mod tests {
             "https://Provider-API.example.org/v1",
             "https://provider-api.example.org:443/v1",
             "https://provider-api.example.org:0/v1",
+            "https://127.0.0.1:8443/v1",
+            "https://127.1.2.3/v1",
+            "https://0.0.0.0:8443/v1",
+            "https://[::1]:9443/v1",
+            "https://[::]/v1",
+            "https://[::ffff:7f00:1]/v1",
+            "https://localhost:8443/v1",
+            "https://llm.localhost/v1",
             "https://user@provider-api.example.org/v1",
             "https://user:pass@provider-api.example.org/v1",
             "https://provider-api.example.org/v1?key=1",
