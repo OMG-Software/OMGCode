@@ -372,11 +372,15 @@ impl ResponsesParser {
         let value = value.strip_prefix(' ').unwrap_or(value);
         match field {
             "data" => {
-                let data = self.data.get_or_insert_with(Vec::new);
-                if !data.is_empty() {
-                    data.push(b'\n');
+                // Every line after the first is preceded by LF, even when
+                // an earlier line was empty.
+                match &mut self.data {
+                    Some(data) => {
+                        data.push(b'\n');
+                        data.extend_from_slice(value.as_bytes());
+                    }
+                    None => self.data = Some(value.as_bytes().to_vec()),
                 }
-                data.extend_from_slice(value.as_bytes());
                 Ok(ResponsesFlow::Continue)
             }
             "event" | "id" | "retry" => Ok(ResponsesFlow::Continue),
@@ -466,26 +470,53 @@ impl ResponsesParser {
 
 impl ResponsesParser {
     /// Refuse a completed response whose finished items do not account for
-    /// its whole output: when the completed response lists its output, the
-    /// finished items must be exactly as many, of the same types in the same
-    /// order. An empty or absent list is not compared, because the route may
-    /// leave the output to the item events; no real stream was observed.
+    /// its whole output. When the completed response lists its output, the
+    /// finished items must sit at exactly its indices, and each must match
+    /// the listed item at its index in type, identifier, and the content the
+    /// reply is built from: a message's text and refusal parts, or a call's
+    /// identifier, namespace, name, and arguments. An empty or absent list is
+    /// not compared, because the route may leave the output to the item
+    /// events; no real stream was observed.
     fn check_terminal_output(&self, output: Option<&Value>) -> Result<(), ProviderError> {
         let listed = match output {
             Some(Value::Array(listed)) if !listed.is_empty() => listed,
             None | Some(Value::Null | Value::Array(_)) => return Ok(()),
             Some(_) => return Err(ProviderError::MalformedResponse),
         };
-        if listed.len() != self.items.len() {
+        let count = u64::try_from(listed.len()).map_err(|_| ProviderError::MalformedResponse)?;
+        if !self.items.keys().copied().eq(0..count) {
             return Err(ProviderError::MalformedResponse);
         }
         for (finished, terminal) in self.items.values().zip(listed) {
-            if item_kind(finished)? != item_kind(terminal)? {
+            if !same_item(finished, terminal)? {
                 return Err(ProviderError::MalformedResponse);
             }
         }
         Ok(())
     }
+}
+
+/// Whether a finished item and the completed response's item at its index
+/// are the same item with the same reply content.
+fn same_item(finished: &Value, terminal: &Value) -> Result<bool, ProviderError> {
+    let kind = item_kind(finished)?;
+    if kind != item_kind(terminal)? || finished.get("id") != terminal.get("id") {
+        return Ok(false);
+    }
+    Ok(match kind {
+        "message" => {
+            let (mut shown, mut listed) = (String::new(), String::new());
+            message_text(finished, &mut shown)?;
+            message_text(terminal, &mut listed)?;
+            shown == listed
+        }
+        "function_call" => ["call_id", "namespace", "name", "arguments"]
+            .into_iter()
+            .all(|field| finished.get(field) == terminal.get(field)),
+        // Reasoning is not used, and any other kind is refused when the
+        // reply is built.
+        _ => true,
+    })
 }
 
 /// A failure event's documented code, or the generic failure.

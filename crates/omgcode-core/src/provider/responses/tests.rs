@@ -223,6 +223,13 @@ fn an_event_is_dispatched_at_its_blank_line_with_its_data_lines_joined() {
     let stream = event(CREATED) + &event(MESSAGE_DONE) + split;
     let outcome = read(&stream, ResponsesMode::Text).0.expect("completed");
     assert_eq!(outcome.content, "Hello, world!");
+    // An empty first `data:` line still adds its LF, so the payload is
+    // "\n[DONE]": not the done marker, and not valid JSON either.
+    let stream = event(CREATED) + "data:\ndata: [DONE]\n\n";
+    assert_eq!(
+        read(&stream, ResponsesMode::Text).0,
+        Err(ProviderError::MalformedResponse)
+    );
     // Without the blank line the event is never dispatched.
     let unfinished = event(CREATED) + &event(MESSAGE_DONE) + "data: " + COMPLETED + "\n";
     assert_eq!(
@@ -238,25 +245,64 @@ fn a_completed_output_must_match_the_finished_items() {
             r#"{{"type":"response.completed","response":{{"status":"completed","output":{output}}}}}"#
         )
     };
+    let reasoning = r#"{"type":"reasoning","id":"rs_1","summary":[]}"#;
+    let message = |id: &str, text: &str| {
+        format!(
+            r#"{{"type":"message","id":"{id}","status":"completed","role":"assistant","content":[{{"type":"output_text","text":"{text}","annotations":[]}}]}}"#
+        )
+    };
+    let same = message("msg_1", "Hello, world!");
     let finished = event(CREATED) + &event(REASONING_DONE) + &event(MESSAGE_DONE);
     // The same items, an empty list, or none at all are accepted.
-    for output in [r#"[{"type":"reasoning"},{"type":"message"}]"#, "[]", "null"] {
-        let stream = finished.clone() + &event(&listing(output));
-        assert!(read(&stream, ResponsesMode::Text).0.is_ok(), "{output}");
+    for output in [format!("[{reasoning},{same}]"), "[]".into(), "null".into()] {
+        let stream = finished.clone() + &event(&listing(&output));
+        let outcome = read(&stream, ResponsesMode::Text).0;
+        assert_eq!(outcome.expect(&output).content, "Hello, world!");
     }
-    // A listed item that never finished, or another type, is refused.
+    // A listed item that never finished, another type, another identifier,
+    // other text, or an item listed without its identifier is refused.
     for output in [
-        r#"[{"type":"reasoning"},{"type":"message"},{"type":"message"}]"#,
-        r#"[{"type":"reasoning"},{"type":"function_call"}]"#,
-        r#"{"type":"message"}"#,
+        format!("[{reasoning},{same},{same}]"),
+        format!(r#"[{reasoning},{{"type":"function_call","id":"msg_1"}}]"#),
+        format!("[{reasoning},{}]", message("msg_2", "Hello, world!")),
+        format!("[{reasoning},{}]", message("msg_1", "Goodbye.")),
+        r#"[{"type":"reasoning"},{"type":"message"}]"#.into(),
+        same.clone(),
     ] {
-        let stream = finished.clone() + &event(&listing(output));
+        let stream = finished.clone() + &event(&listing(&output));
         assert_eq!(
             read(&stream, ResponsesMode::Text).0,
             Err(ProviderError::MalformedResponse),
             "{output}"
         );
     }
+    // A finished item at another index than its listed one is refused.
+    let stream = event(CREATED) + &event(MESSAGE_DONE) + &event(&listing(&format!("[{same}]")));
+    assert_eq!(
+        read(&stream, ResponsesMode::Text).0,
+        Err(ProviderError::MalformedResponse)
+    );
+    // A call listed with other arguments is refused; the same call passes.
+    let call = |arguments: &str| {
+        format!(
+            r#"[{reasoning},{{"type":"function_call","id":"fc_1","call_id":"call_1","namespace":"omgcode","name":"workspace_list_directory","arguments":"{arguments}","status":"completed"}}]"#
+        )
+    };
+    let calls = event(CREATED) + &event(REASONING_DONE) + &event(CALL_DONE);
+    let stream = calls.clone() + &event(&listing(&call(r#"{\"path\":\"src\"}"#)));
+    assert_eq!(
+        read(&stream, ResponsesMode::Tools)
+            .0
+            .expect("the same call")
+            .tool_calls
+            .len(),
+        1
+    );
+    let stream = calls + &event(&listing(&call(r#"{\"path\":\"..\"}"#)));
+    assert_eq!(
+        read(&stream, ResponsesMode::Tools).0,
+        Err(ProviderError::MalformedResponse)
+    );
 }
 
 #[test]

@@ -550,6 +550,16 @@ fn another_backends_credential_is_an_orphan() {
     let orphan = delete_unbound_credential(credentials, &binding).expect("orphan");
     assert_eq!(&orphan.id, binding.id());
     assert!(matches!(orphan.error, CredentialError::Unavailable(_)));
+    // A ChatGPT session's two slots are both reported, the companion first.
+    let orphans = super::delete_unbound_slots(credentials, &binding);
+    let ids: Vec<&CredentialId> = orphans.iter().map(|orphan| &orphan.id).collect();
+    let companion = crate::provider::chatgpt::companion_credential_id(binding.id());
+    assert_eq!(ids, [&companion, binding.id()]);
+    assert!(
+        orphans
+            .iter()
+            .all(|orphan| matches!(orphan.error, CredentialError::Unavailable(_)))
+    );
 }
 
 /// Replay refuses credential events that break the binding rules.

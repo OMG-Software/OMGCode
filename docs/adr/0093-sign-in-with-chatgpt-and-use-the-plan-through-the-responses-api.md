@@ -177,14 +177,20 @@ A sign-in's binding names a pair of slots: the bound identifier and a
 companion identifier derived from it with SHA-256 (shaped as a UUIDv4, so the
 store accepts it). Each slot item holds one JSON token record: a version, a
 generation counter, the client id, the subject, the access token, the refresh
-token, the granted scopes, and the expiry time. A reader loads both slots and
-uses the readable record with the higher generation whose client and subject
-match the registration. A writer deletes the slot that does not hold that
+token, the granted scopes, and the expiry time. A reader loads both slots,
+checks that each record's client and subject match the registration, and uses
+the record with the higher generation. A slot that exists but cannot be read or decoded, or
+that holds another registration's record, fails the read with
+`token_store_unavailable` rather than falling back to the other slot; only an
+absent slot is unused. A writer deletes the slot that does not hold that
 record, which holds an older and already rotated token, and stores the next
 generation there. An interrupted write leaves the current record in place.
 
-`delete_unbound_credential` now also deletes the companion identifier, which
-for an API key never exists. Sign-out unbinds and then deletes both slots.
+`delete_unbound_credential` is unchanged: it deletes and reports only the
+bound identifier, which is all an API key has. A new `delete_unbound_slots`
+deletes both the companion and the bound identifier and reports each one it
+could not delete, both when the binding names another backend. Only sign-out
+uses it: sign-out unbinds and then deletes both slots.
 
 ### Refresh and concurrency
 
@@ -248,7 +254,13 @@ compaction requests, and the front ends use stays the same type.
   `message` items contribute their `output_text` and `refusal` parts,
   `function_call` items become calls, `reasoning` items are ignored, and any
   other item type refuses the reply. `response.completed` ends the stream
-  successfully. `response.failed`, `response.incomplete`, `error`, a body
+  successfully. When it lists a non-empty `output`, the finished items must
+  sit at exactly its indices and match each listed item in type, `id`, and
+  reply content (a message's text and refusal parts, or a call's `call_id`,
+  `namespace`, `name`, and `arguments`), or the reply is refused. An empty or
+  absent `output` is not compared, because no real stream was observed. An
+  event's `data` lines are joined by LF, one before every line after the
+  first, and dispatched at its blank line. `response.failed`, `response.incomplete`, `error`, a body
   that ends first, or a `[DONE]` before completion fail it.
 - **Tool calls.** A call must have a non-empty `call_id`, a `name`, string
   `arguments`, and a `namespace` that is absent or `omgcode`. It is handed to

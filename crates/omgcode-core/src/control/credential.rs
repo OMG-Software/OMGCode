@@ -787,35 +787,39 @@ pub fn delete_unbound_credential(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Option<OrphanedCredential> {
-    unreachable_backend(credentials, binding)
+    unreachable_backend(credentials, binding, binding.id.clone())
         .or_else(|| delete_item(credentials, binding.id.clone()))
 }
 
 /// Delete an unbound ChatGPT session's native items: its bound slot and its
 /// companion slot (ADR-0093). Every item that could not be deleted is
 /// returned, the companion first and the bound slot last, so none is lost
-/// from the operator's report. An absent item is not an orphan.
+/// from the operator's report. An absent item is not an orphan. When the
+/// binding names another backend, neither slot can be reached and both are
+/// returned.
 pub fn delete_unbound_slots(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Vec<OrphanedCredential> {
-    if let Some(orphan) = unreachable_backend(credentials, binding) {
-        return vec![orphan];
-    }
     let companion = crate::provider::chatgpt::companion_credential_id(&binding.id);
     [companion, binding.id.clone()]
         .into_iter()
-        .filter_map(|id| delete_item(credentials, id))
+        .filter_map(|id| {
+            unreachable_backend(credentials, binding, id.clone())
+                .or_else(|| delete_item(credentials, id))
+        })
         .collect()
 }
 
-/// An item recorded by another backend, which this store cannot reach.
+/// `id`, recorded with `binding` by another backend, which this store
+/// cannot reach.
 fn unreachable_backend(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
+    id: CredentialId,
 ) -> Option<OrphanedCredential> {
     (binding.backend != credentials.backend()).then(|| OrphanedCredential {
-        id: binding.id.clone(),
+        id,
         error: CredentialError::Unavailable(format!(
             "the credential was stored by {}, not {}",
             binding.backend.as_str(),

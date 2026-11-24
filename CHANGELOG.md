@@ -41,8 +41,10 @@ Changes are recorded here before a release version is assigned.
   `token_store_unavailable` instead
   of falling back to an older, possibly rotated record. The model list always
   goes to OpenAI's fixed endpoint. The stream reader joins an event's `data`
-  lines at its blank line and refuses a completed response whose listed
-  output does not match the finished items. A cancel sent during the desktop
+  lines at its blank line, keeping the LF after an empty first line, and
+  refuses a completed response whose listed output does not match the
+  finished items in index, type, identifier, and reply content. Sign-out
+  reports both token slots when the binding names another backend. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after
   taking the session lock; a sign-in whose binding write is uncertain keeps its tokens unrevoked
   and reports `signin_binding_uncertain` with advice that names
