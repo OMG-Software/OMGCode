@@ -79,7 +79,9 @@ Changes are recorded here before a release version is assigned.
   revocation that records nothing says whether OpenAI revoked the refresh
   token, that the sign-out was not recorded, and to sign out again. A
   sign-out whose journal write may have been recorded still deletes the
-  token slots and is `signout_uncertain`, which claims neither outcome. A
+  token slots and is `signout_uncertain`, which claims neither outcome and
+  names any slot that remains in its message rather than in
+  `orphaned_credential_ids` or `credential_orphaned`. A
   sign-out first
   writes a marker under the session lock, which every token request checks
   under that lock, so a running session gives no token and writes no

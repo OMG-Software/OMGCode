@@ -524,10 +524,12 @@ documented route for local and open-source apps
   changes anything. A
   sign-out that fails after writing the marker leaves the session unusable
   until it is signed out again.
-  Every slot that could not be deleted is named by its opaque identifier:
-  the CLI's `orphaned_credential_ids` lists each one, and the desktop's
-  `credential_orphaned` error names each one, so neither slot is lost from
-  the report.
+  Every slot that could not be deleted is named by its opaque identifier,
+  so neither slot is lost from the report. For a recorded sign-out the
+  CLI's `orphaned_credential_ids` lists each one and the desktop's
+  `credential_orphaned` error names each one. A `signout_uncertain`
+  sign-out has neither: it names them in its message, under the
+  `credential` code.
   A signed-in profile cannot be removed, and `provider-credential-remove`
   refuses every subscription profile.
 - **Requests.** Chat, compaction, and tool turns use the Responses API at

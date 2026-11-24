@@ -1585,9 +1585,11 @@ revision check and validation (ADR-0064, ADR-0071).
   nothing; a later cancel stops the wait for OpenAI, and the sign-out is
   still recorded here as unconfirmed. When OpenAI did not
   confirm the revocation the window says so and points to ChatGPT's
-  settings. A token slot that could not be deleted makes the sign-out
-  `credential_orphaned`, naming each slot's identifier and saying whether
-  OpenAI confirmed the revocation. A signed-in connection cannot be removed. A ChatGPT profile
+  settings. A token slot that could not be deleted makes a recorded
+  sign-out `credential_orphaned`, naming each slot's identifier and saying
+  whether OpenAI confirmed the revocation; a sign-out whose record is
+  uncertain is a `credential` error whose `signout_uncertain` message names
+  them instead. A signed-in connection cannot be removed. A ChatGPT profile
   recorded without OpenAI's endpoint shows the no-endpoint note and offers no
   sign-in, because core would refuse it. No real sign-in was
   made from the shell, and the browser launch is not driven by a test.
