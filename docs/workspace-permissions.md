@@ -21,7 +21,9 @@ diagnostic result; see [trusted runs](execution.md#trusted-runs).
 ## Trusted settings and identity
 
 Only the trusted local CLI and, since 0.41.0, the desktop `settings` window
-can change these settings (ADR-0060). Neither is a model tool. The window gets
+can change these settings (ADR-0060). Neither is a model tool. The window
+also adds and removes toolchain profiles, package-network profiles, and
+container grants (ADR-0088), and manages skills (ADR-0082). The window gets
 every folder from a native dialog and asks for a native confirmation before
 any change that widens access. Prompts, conversation history, imported IDs, skills, and repository files
 cannot set a development root, change permissions, or recreate a binding.
@@ -177,7 +179,11 @@ revision and increments it; revocation needs none and keeps it. `workspace
 status` lists outstanding grants under `container_grants` and omits the field
 when there are none, so settings without grants keep their exact output.
 Version 0.14.0 refuses a settings log that records a grant. The
-[execution guide](execution.md#container-grants) owns the rules.
+[execution guide](execution.md#container-grants) owns the rules. Since
+[ADR-0088](adr/0088-change-execution-settings-in-the-settings-window.md) the
+desktop `settings` window grants a folder and revokes a grant through the same
+core calls, with native dialogs and confirmations; on other platforms it
+returns `unsupported_platform`. It adds no new event.
 
 ## Unregistering a workspace
 
@@ -222,6 +228,9 @@ same as version 0.15.0's. Version 0.15.0 refuses a settings log
 that records a profile. The
 [execution guide](execution.md#toolchain-profiles) owns the rules. Profile
 variables are stored here in plain text; never put secrets in them.
+The desktop `settings` window adds and removes profiles through the same core
+calls, with a native folder dialog for each root and `PATH` entry and a native
+confirmation (ADR-0088); it records the same events and offers no edit.
 
 ## Package-network profiles
 
@@ -236,7 +245,10 @@ text is at most 2,048 bytes. No run accepts a profile, and a profile never
 authorizes network access. Version 0.19.0 refuses a settings log that records
 one; a 0.20.0 control journal cannot be read by 0.19.0. The
 [execution guide](execution.md#package-network-profile-contract-only) owns the
-contract and the remaining enforcement gate.
+contract and the remaining enforcement gate. The desktop `settings` window adds
+and removes profiles through the same core calls after a native confirmation
+(ADR-0088); removal also unbinds the credentials bound to the profile's
+origins. Binding a credential stays a trusted CLI action.
 
 A trusted `packages fetch` appends `package_fetch_started` and
 `package_fetch_finished` events. They preserve the settings revision. They

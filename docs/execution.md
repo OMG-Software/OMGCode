@@ -228,7 +228,9 @@ recorded, each with 1 to 8 origins.
 `workspace package-profile-add <name> --registry <origin>... --revision <n>`,
 `package-profile-show <name>`, and
 `package-profile-remove <name> --revision <n>` manage the records. Each
-mutation needs the expected settings revision and increments it.
+mutation needs the expected settings revision and increments it. The desktop
+`settings` window adds and removes profiles the same way, after a native
+confirmation (ADR-0088); binding a credential stays CLI-only.
 
 Any implementation must pass these gates before it can be described as
 implemented:
@@ -408,7 +410,10 @@ Rules:
   workspaces that must stay isolated. The container must be able to traverse
   the root's ancestors; a dedicated top-level directory is recommended.
 - Grants work only on Windows. Elsewhere `container-grant` fails and records
-  nothing.
+  nothing. The desktop `settings` window grants and revokes through the same
+  core calls after a native folder dialog and confirmation, and returns
+  `unsupported_platform` elsewhere (ADR-0088). A revocation there stops the
+  workspace's earlier runs, as `container-revoke` does.
 
 ## Trusted runs
 
@@ -803,7 +808,11 @@ Rules:
     Never put secrets in them.
 - **Limit:** at most 32 profiles.
 - **Changes:** there is no edit. Remove a profile and add it again. The
-  journal events are `profile_added` and `profile_removed`.
+  journal events are `profile_added` and `profile_removed`. The desktop
+  `settings` window adds and removes profiles through the same core calls: it
+  opens a native folder dialog for each root and `PATH` entry, shows a native
+  confirmation that lists them and the variable names, and applies the change
+  with the confirmed revision ([ADR-0088](adr/0088-change-execution-settings-in-the-settings-window.md)).
 
 A profile lists what a toolchain needs, not just its executable. Tools that
 read configuration outside their installation need that directory as a root.

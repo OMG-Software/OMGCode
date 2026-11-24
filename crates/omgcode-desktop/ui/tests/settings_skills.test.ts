@@ -61,6 +61,7 @@ function overview(
     toolchain_profiles: [],
     package_profiles: [],
     container_grants: [],
+    container_grants_supported: true,
     skills,
     chat: chatDefaultsView(),
     scope: null,

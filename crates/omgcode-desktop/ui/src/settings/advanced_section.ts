@@ -1,10 +1,11 @@
 import { button, el } from "../dom";
 import type { SkillSettingView } from "../ipc/types";
 import type { SectionContext, SkillState } from "./context";
-import { emptyLine, facts, sectionHead } from "./parts";
+import { grantsGroup, packageGroup, toolchainGroup } from "./execution_forms";
+import { emptyLine, row, sectionHead } from "./parts";
 
 export const ADVANCED_HELP =
-  "Skills are imported, enabled, and removed here. Toolchain profiles, package-network profiles, and container grants change only through the trusted CLI (omgcode workspace); this window shows them and changes none of them.";
+  "Toolchain profiles, package-network profiles, container grants (Windows only), and skills are changed here. Rust opens every folder dialog and asks you to confirm in a system dialog before a change that widens access, adds a record, or removes one. Credentials, package fetches, and runs stay with the trusted CLI.";
 
 /** The button that asks Rust to open its system folder dialog for a skill (ADR-0082). */
 export const IMPORT_SKILL_LABEL = "Import skill…";
@@ -20,28 +21,6 @@ const WORKSPACE_OPTIONS: ReadonlyArray<[SkillState, string]> = [
   ["enabled", "Enabled"],
   ["disabled", "Disabled"],
 ];
-
-function row(title: string, ...children: HTMLElement[]): HTMLElement {
-  return el(
-    "li",
-    { class: "row" },
-    el(
-      "div",
-      { class: "row-body" },
-      el("div", { class: "row-head" }, el("span", { class: "row-title", text: title })),
-      ...children,
-    ),
-  );
-}
-
-function group(title: string, rows: HTMLElement[], emptyText: string): HTMLElement {
-  return el(
-    "section",
-    { class: "block" },
-    el("h3", { text: title }),
-    rows.length === 0 ? emptyLine(emptyText) : el("ul", { class: "row-list" }, ...rows),
-  );
-}
 
 /**
  * A choice among states. `value` is the recorded state; choosing another asks Rust to change it,
@@ -134,57 +113,15 @@ function skillsGroup(ctx: SectionContext): HTMLElement {
 }
 
 /**
- * The Advanced section. Toolchain profiles, package-network profiles, and container grants are
- * read-only here; skills have controls (ADR-0082).
+ * The Advanced section: toolchain profiles, package-network profiles, container grants, and
+ * skills, each with its own controls (ADR-0082, ADR-0088).
  */
 export function renderAdvanced(ctx: SectionContext): HTMLElement[] {
-  const { overview } = ctx;
-  const folders = new Map(overview.workspaces.map((w) => [w.workspace_id, w.folder_display]));
   return [
     ...sectionHead("Advanced", ADVANCED_HELP),
-    group(
-      "Toolchain profiles",
-      overview.toolchain_profiles.map((profile) =>
-        row(
-          profile.name,
-          facts([
-            ["Platform", profile.platform],
-            ["Read-only roots", profile.read_only_roots.join("\n") || "none"],
-            ["PATH entries", profile.path_entries.join("\n") || "none"],
-            ["Variables", profile.environment_names.join(", ") || "none"],
-          ]),
-        ),
-      ),
-      "No toolchain profile is recorded.",
-    ),
-    group(
-      "Package-network profiles",
-      overview.package_profiles.map((profile) =>
-        row(
-          profile.name,
-          facts([
-            ["Origins", profile.origins.join("\n")],
-            ["Credentials", String(profile.credentials_bound)],
-          ]),
-        ),
-      ),
-      "No package-network profile is recorded.",
-    ),
-    group(
-      "Container grants",
-      overview.container_grants.map((grant) =>
-        row(
-          grant.directory,
-          facts([
-            ["Workspace", folders.get(grant.workspace_id) ?? grant.workspace_id],
-            ["Access", grant.access === "read_write" ? "read and write" : "read and execute"],
-            ["State", grant.state],
-            ["Grant", grant.grant_id],
-          ]),
-        ),
-      ),
-      "No container grant is recorded.",
-    ),
+    toolchainGroup(ctx),
+    packageGroup(ctx),
+    grantsGroup(ctx),
     skillsGroup(ctx),
   ];
 }

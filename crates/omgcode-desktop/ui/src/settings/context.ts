@@ -46,6 +46,23 @@ export interface Actions {
   setSkillState(name: string, workspaceId: string | null, state: SkillState): Change;
   /** Removes a skill and its stored copy after a system confirmation. */
   removeSkill(name: string): Change;
+  /**
+   * Records a toolchain profile (ADR-0088). Rust opens `rootCount` folder dialogs, then
+   * `pathEntryCount` more, and confirms natively; the window sends no path.
+   */
+  addToolchainProfile(
+    name: string,
+    environment: Array<{ name: string; value: string }>,
+    rootCount: number,
+    pathEntryCount: number,
+  ): Change;
+  removeToolchainProfile(name: string): Change;
+  /** Records a package-network profile, which is configuration only. */
+  addPackageProfile(name: string, origins: string[]): Change;
+  removePackageProfile(name: string): Change;
+  /** Windows only. Rust opens the folder dialog. */
+  grantContainerFolder(workspaceId: string, access: ContainerAccess): Change;
+  revokeContainerGrant(grantId: string): Change;
 }
 
 /**
@@ -82,6 +99,8 @@ export interface ViewState {
   chatDraft: ChatDraft | null;
   /** Typed but unsaved workspace instructions, by workspace identifier. */
   instructionDrafts: Map<string, string>;
+  /** The Advanced section's three add forms, kept until an add succeeds (ADR-0088). */
+  executionForms: ExecutionForms;
 }
 
 /** The chat defaults form's values as typed; numbers stay text until a save checks them. */
@@ -107,4 +126,33 @@ export interface SectionContext {
   actions: Actions;
   /** Draws the current overview again, for a choice that sends nothing to the core. */
   rerender(): void;
+}
+
+/** What a container grant gives. */
+export type ContainerAccess = "read_execute" | "read_write";
+
+/**
+ * The add-profile and grant forms' typed values and whether each is open. Counts and the
+ * environment stay text until the operator clicks. Variable values are typed here and nowhere
+ * else; they are plain configuration, never secrets.
+ */
+export interface ExecutionForms {
+  toolchainOpen: boolean;
+  toolchain: { name: string; roots: string; pathEntries: string; environment: string };
+  packageOpen: boolean;
+  package: { name: string; origins: string };
+  grantOpen: boolean;
+  grant: { workspaceId: string; access: ContainerAccess };
+}
+
+/** The forms' starting values. */
+export function newExecutionForms(): ExecutionForms {
+  return {
+    toolchainOpen: false,
+    toolchain: { name: "", roots: "1", pathEntries: "0", environment: "" },
+    packageOpen: false,
+    package: { name: "", origins: "" },
+    grantOpen: false,
+    grant: { workspaceId: "", access: "read_execute" },
+  };
 }

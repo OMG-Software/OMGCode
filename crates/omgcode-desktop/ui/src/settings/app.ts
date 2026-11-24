@@ -14,6 +14,7 @@ import { renderAdvanced } from "./advanced_section";
 import {
   type Actions,
   type Change,
+  newExecutionForms,
   type SectionContext,
   type SectionId,
   scopedWorkspace,
@@ -93,6 +94,17 @@ const ACTIONS: Actions = {
   setSkillState: (name, workspaceId, state) => (revision) =>
     settingsApi.setSkillState(revision, name, workspaceId, state),
   removeSkill: (name) => (revision) => settingsApi.removeSkill(revision, name),
+  addToolchainProfile: (name, environment, rootCount, pathEntryCount) => (revision) =>
+    settingsApi.addToolchainProfile(revision, name, environment, rootCount, pathEntryCount),
+  removeToolchainProfile: (name) => (revision) =>
+    settingsApi.removeToolchainProfile(revision, name),
+  addPackageProfile: (name, origins) => (revision) =>
+    settingsApi.addPackageProfile(revision, name, origins),
+  removePackageProfile: (name) => (revision) => settingsApi.removePackageProfile(revision, name),
+  grantContainerFolder: (workspaceId, access) => (revision) =>
+    settingsApi.grantContainerFolder(revision, workspaceId, access),
+  revokeContainerGrant: (grantId) => (revision) =>
+    settingsApi.revokeContainerGrant(revision, grantId),
 };
 
 /**
@@ -111,6 +123,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     connectionDraft: newConnectionDraft(),
     chatDraft: null,
     instructionDrafts: new Map(),
+    executionForms: newExecutionForms(),
   };
   // A change's error stays until the next change starts; a read's failure until a read succeeds.
   // Two elements, so neither outcome can overwrite or clear the other.

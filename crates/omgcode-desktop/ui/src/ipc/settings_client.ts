@@ -111,4 +111,53 @@ export const settingsApi = {
   /** Removes a skill and its stored copy after a system confirmation that names it. */
   removeSkill: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_skill", { revision, name }),
+  /**
+   * Asks Rust to open a system folder dialog for each read-only root and each `PATH` entry
+   * (`rootCount`, `pathEntryCount`), then confirm natively, and record a toolchain profile
+   * (ADR-0088). No path is sent. Variable values are plain text by design and never shown in a
+   * dialog.
+   */
+  addToolchainProfile: (
+    revision: number,
+    name: string,
+    environment: Array<{ name: string; value: string }>,
+    rootCount: number,
+    pathEntryCount: number,
+  ) =>
+    invokeCommand<SettingsOverview>("settings_add_toolchain_profile", {
+      revision,
+      name,
+      environment,
+      root_count: rootCount,
+      path_entry_count: pathEntryCount,
+    }),
+  /** Removes a toolchain profile after a system confirmation. */
+  removeToolchainProfile: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_toolchain_profile", { revision, name }),
+  /** Records a package-network profile (configuration only) after a system confirmation. */
+  addPackageProfile: (revision: number, name: string, origins: string[]) =>
+    invokeCommand<SettingsOverview>("settings_add_package_profile", { revision, name, origins }),
+  /** Removes a package-network profile, and unbinds its credentials, after a confirmation. */
+  removePackageProfile: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_package_profile", { revision, name }),
+  /**
+   * Windows only. Asks Rust for a folder in a system dialog, confirms natively, and grants it to
+   * the workspace's container. No path is sent.
+   */
+  grantContainerFolder: (
+    revision: number,
+    workspaceId: string,
+    access: "read_execute" | "read_write",
+  ) =>
+    invokeCommand<SettingsOverview>("settings_grant_container_folder", {
+      revision,
+      workspace_id: workspaceId,
+      access,
+    }),
+  /** Windows only. Revokes one container grant after a system confirmation. */
+  revokeContainerGrant: (revision: number, grantId: string) =>
+    invokeCommand<SettingsOverview>("settings_revoke_container_grant", {
+      revision,
+      grant_id: grantId,
+    }),
 };

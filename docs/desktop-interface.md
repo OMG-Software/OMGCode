@@ -105,16 +105,17 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing toolchain profiles, container grants, and package-network profiles
-  in the desktop application, binding a credential to a local
+- Binding a credential to a local
   LM Studio profile, and adding any cloud provider other than Ollama Cloud.
   They change only through the trusted CLI. The `settings` window adds an
   Ollama Cloud connection with its API key, replaces the key, and removes the
   connection, through the write-only key field (ADR-0071). The rest of phase
   S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: execution setup. Skills are imported, enabled, and
-  removed in the `settings` window since ADR-0082.
+  are not implemented: credentials and the trusted package fetch and run. Skills
+  are imported, enabled, and removed in the `settings` window since ADR-0082,
+  and toolchain profiles, package-network profiles, and container grants are
+  added and removed there since ADR-0088 (none can be edited).
 - Development panels: a working terminal, task logs, and diffs. The Terminal
   tab (ADR-0072) only says that no terminal is available; it starts no shell
   and runs no command. The Files tab (ADR-0083) shows file and folder names
@@ -249,7 +250,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 50 commands (18 in the `settings` window). No other command exists.
+The shell has three webview windows and 56 commands (24 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -305,6 +306,12 @@ their registered identifier, and approvals by identifier.
 | `settings_import_skill` | settings | Import a skill folder, chosen in a native dialog, through core as `omgcode skills add` does; the skill arrives disabled and no confirmation follows (ADR-0082) |
 | `settings_set_skill_state` | settings | Set a skill's application setting or one workspace's override (`enabled`, `disabled`, `inherit`); a change that leaves it enabled needs a native confirmation that names it (ADR-0082) |
 | `settings_remove_skill` | settings | Remove a skill and delete its stored copy after a native confirmation that names it; the source folder is kept (ADR-0082) |
+| `settings_add_toolchain_profile` | settings | Open a native folder dialog for each read-only root and `PATH` entry, then, after a native confirmation that lists them and the variable names, record a toolchain profile as `workspace profile-add` does (ADR-0088) |
+| `settings_remove_toolchain_profile` | settings | Remove a toolchain profile after a native confirmation; the runs the settings then withdraw are stopped (ADR-0088) |
+| `settings_add_package_profile` | settings | Record a package-network profile (configuration only) after a native confirmation that lists the origins core parsed (ADR-0088) |
+| `settings_remove_package_profile` | settings | Remove a package-network profile, which also unbinds and deletes the credentials bound to its origins, after a native confirmation (ADR-0088) |
+| `settings_grant_container_folder` | settings | Windows only. Open a native folder dialog and, after a native confirmation that names the workspace, folder, and access and says the folder's access-control list changes, grant it to the workspace's container (ADR-0088) |
+| `settings_revoke_container_grant` | settings | Windows only. Revoke one recorded grant after a native confirmation and stop the workspace's earlier runs (ADR-0088) |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -1117,8 +1124,8 @@ waits. The window shows:
   **Workspaces**; the scoped view has none. It calls
   `settings_unregister_workspace` with the workspace identifier and the
   revision the window read, never a path. Rust refuses an unknown workspace, a
-  stale revision, a workspace that a container grant names (revoke it with the
-  trusted CLI first), and a workspace in which a chat turn is running, all
+  stale revision, a workspace that a container grant names (revoke it under
+  **Advanced** or with the trusted CLI first), and a workspace in which a chat turn is running, all
   before any dialog. A native Yes/No confirmation then names the folder and
   states that its preferences, instructions, package cache selection, skill
   overrides, and checkpoint record are removed, that its files are not
@@ -1132,14 +1139,58 @@ waits. The window shows:
   starts in the instant after that loses its tools, because every tool call
   reads the live settings. A `settings` window opened for the removed
   workspace shows the full view with the existing notice.
-- **Advanced.** Read-only groups, with no control that changes anything:
-  toolchain profiles with their platform, read-only roots, path entries, and
-  environment variable names, without values; package-network profiles with
-  their origins and how many credentials are bound; and container grants
-  with their folder, access, and state. A line says these three change only
-  through the trusted CLI.
+- **Advanced.** Four groups, each with controls (ADR-0082, ADR-0088). The
+  window sends identifiers, counts, typed names, origins, and variables, and
+  never a path; Rust opens every folder dialog and composes every
+  confirmation. Core has no edit operation for a toolchain profile, a
+  package-network profile, or a grant, so there is none here: remove and add
+  again. Adding is not atomic with removing, which is why no edit is offered.
 
-  The **Skills** group is the exception (ADR-0082). **Import skill…** calls
+  **Toolchain profiles** list each profile's platform, read-only roots, path
+  entries, and environment variable names, without values, and a **Remove**
+  button. **Add toolchain profile** takes a name, how many read-only roots
+  (1 to 16) and `PATH` entries (0 to 16) to choose, and the variables as
+  `NAME=VALUE` lines, typed in the webview because they are stored in plain
+  text by design; a line says never to put a secret in one. **Add profile…**
+  calls `settings_add_toolchain_profile`, and Rust then opens one native folder
+  dialog per root and per entry (the entry dialogs start at the first chosen
+  root), shows one native confirmation with the name, platform, every root and
+  `PATH` entry, and the variable names (never the values), and applies the
+  change with the revision the window read. A closed dialog or a declined
+  confirmation changes nothing; core's refusals (name, variables, overlap
+  with the development root or application storage, a `PATH` entry outside a
+  root, a name in use) come back as controlled errors after the dialogs.
+  Removing is confirmed natively and stops the runs the settings then
+  withdraw, as `workspace profile-remove` does; a run already started keeps
+  its recorded profile.
+
+  **Package-network profiles** list each profile's origins and how many
+  credentials are bound, and a **Remove** button. A line says a profile is
+  configuration only: no run uses it and it grants no network access.
+  **Add package profile…** sends a name and 1 to 8 origins typed one per line;
+  Rust has core parse them first (a bad origin is refused before any dialog)
+  and the native confirmation lists the canonical origins. Removing is
+  confirmed natively; when credentials are bound to the profile's origins the
+  confirmation says they are unbound and their stored keys deleted, as
+  `workspace package-profile-remove` does, and `credential_orphaned` reports a
+  key that could not be deleted. Binding a credential stays CLI-only.
+
+  **Container grants** are Windows only. Elsewhere the group says so and offers
+  no control, the overview's `container_grants_supported` is false, and the two
+  commands return `unsupported_platform`. On Windows each grant lists its
+  folder, workspace, access, and state (`pending`, `active`, `revoking`) with a
+  **Revoke** button, and **Grant a folder** has a workspace select and an
+  access select (read and execute, or read and write for the workspace
+  folder only). **Grant folder…** calls `settings_grant_container_folder`;
+  Rust opens the folder dialog and shows a confirmation naming the workspace,
+  the folder, and the access, and saying that the folder's access-control
+  list changes on disk for that workspace's AppContainer. A failed list
+  change leaves the grant `pending` (the command fails with
+  `container_access_failed`); **Revoke** tries again, and a revocation that
+  fails stays `revoking`. Revoking checks the revision under the lock, stops
+  the workspace's earlier runs, and needs no revision from core.
+
+  The **Skills** group (ADR-0082): **Import skill…** calls
   `settings_import_skill` with only the revision; Rust opens a native folder
   dialog and imports the folder through the call `omgcode skills add` uses,
   so the skill arrives disabled, nothing in it runs, and core's checks apply
@@ -1601,8 +1652,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the eighteen settings-window
-  commands. The `settings` file grants only those eighteen. Every handler also calls the Rust
+  not grant the three approval commands or any of the twenty-four settings-window
+  commands. The `settings` file grants only those twenty-four. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -1706,7 +1757,7 @@ What the design does:
   `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
   test checks that no approvals asset contains it.
 - **The configuration view and changes only in `settings`.** The settings
-  window loads its own bundle. The eighteen settings-window command names appear
+  window loads its own bundle. The twenty-four settings-window command names appear
   only in `src/ipc/settings_client.ts`. Bundle tests check that no main or
   approvals asset contains any of them, and that no settings asset contains
   `approval_decide`, `approval_detail`, or `chat_subscribe`.
@@ -1775,7 +1826,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 50 |
+| Commands | 56 |
 | Git status changed paths | 1,000, and a 10-second deadline |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
@@ -1877,8 +1928,10 @@ ACLs the private store refuses, see the notes in
   key, and that a late detail answer is dropped;
   `ui/tests/settings_sections.test.ts` the sections, the workspace field, the
   workspace scope (one workspace, no sidebar, **All settings**, a focus read),
-  permission rows, and the read-only Advanced groups; `ui/tests/settings_skills.test.ts`
-  the Skills controls and the mock skill commands (ADR-0082); and
+  permission rows, and the Advanced groups; `ui/tests/settings_skills.test.ts`
+  the Skills controls and the mock skill commands (ADR-0082);
+  `ui/tests/settings_execution.test.ts` the profile and grant controls and
+  their mock commands (ADR-0088); and
   `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
   segment, the composer menus and counter, and the compact transcript rows.
   Since ADR-0071: `ui/tests/model_picker.test.ts` covers the model
@@ -1979,6 +2032,15 @@ ACLs the private store refuses, see the notes in
   layer, and bundle tests, and against the mock backend. The native dialogs
   and the real shell's settings window were not driven by automation, and
   nothing ran on Linux.
+- ADR-0088: the profile and grant commands were checked by service tests with
+  a scripted prompt (`crates/omgcode-app/tests/desktop_settings_execution.rs`),
+  by unit, layer, and bundle tests, and against the mock backend. No test
+  applies a container grant, because that changes a folder's access-control
+  list and creates an AppContainer profile on the host; the confirmation text
+  and the paths before the change are tested instead, and the platform refusal
+  is tested only for non-Windows builds, which did not run here. A package
+  profile with a bound credential was not exercised. The native dialogs and
+  the real shell's settings window were not driven by automation.
 - Phase S2 (0.41.0): the change commands were checked by service tests with a
   scripted prompt, by unit, layer, and bundle tests, and in the Vite
   development server against the mock backend. The native dialogs and the

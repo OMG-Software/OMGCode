@@ -1527,6 +1527,8 @@ pub struct SettingsOverview {
     pub package_profiles: Vec<PackageProfileView>,
     /// Recorded container grants.
     pub container_grants: Vec<ContainerGrantView>,
+    /// Whether this platform can record and apply container grants (Windows).
+    pub container_grants_supported: bool,
     /// Registered skills and their settings.
     pub skills: Vec<SkillSettingView>,
     /// The chat defaults shown beside the model connection (ADR-0080).

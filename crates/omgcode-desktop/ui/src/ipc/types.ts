@@ -587,6 +587,8 @@ export interface SettingsOverview {
   toolchain_profiles: ToolchainProfileView[];
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
+  /** Whether this computer can record container grants (Windows only). */
+  container_grants_supported: boolean;
   skills: SkillSettingView[];
   /** The chat defaults shown beside the model connection (ADR-0080). */
   chat: ChatDefaultsView;

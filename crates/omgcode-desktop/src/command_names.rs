@@ -54,4 +54,10 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_remove_skill",
     "settings_unregister_workspace",
     "session_processes",
+    "settings_add_toolchain_profile",
+    "settings_remove_toolchain_profile",
+    "settings_add_package_profile",
+    "settings_remove_package_profile",
+    "settings_grant_container_folder",
+    "settings_revoke_container_grant",
 ];

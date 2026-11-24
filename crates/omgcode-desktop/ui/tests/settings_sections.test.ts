@@ -76,6 +76,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     toolchain_profiles: [],
     package_profiles: [],
     container_grants: [],
+    container_grants_supported: true,
     skills: [],
     chat: chatDefaultsView(),
     scope: null,
@@ -529,7 +530,7 @@ describe("permission controls", () => {
 });
 
 describe("advanced section", () => {
-  it("keeps the toolchain, package-network, and container-grant groups read-only (ADR-0082)", async () => {
+  it("lists the toolchain, package-network, and container-grant records with their controls (ADR-0088)", async () => {
     await start(() =>
       overview({
         toolchain_profiles: [
@@ -557,15 +558,20 @@ describe("advanced section", () => {
       }),
     );
     go("Advanced");
-    // Only the Skills group has controls (ADR-0082); the other three groups have none.
-    const readOnly = Array.from(root.querySelectorAll<HTMLElement>(".block")).filter(
-      (block) => block.querySelector("h3")?.textContent !== "Skills",
-    );
-    expect(readOnly).toHaveLength(3);
-    for (const block of readOnly) {
-      expect(block.querySelector("button, input, select, textarea")).toBeNull();
-    }
-    expect(root.querySelector(".settings-body textarea")).toBeNull();
+    // Every group has controls now; each recorded row has one button and none types a path.
+    const blocks = Array.from(root.querySelectorAll<HTMLElement>(".block"));
+    expect(blocks).toHaveLength(4);
+    const rowButtons = (title: string): string[] =>
+      Array.from(
+        blocks
+          .find((block) => block.querySelector("h3")?.textContent === title)
+          ?.querySelectorAll<HTMLButtonElement>(".row > button") ?? [],
+      ).map((entry) => entry.getAttribute("aria-label") ?? "");
+    expect(rowButtons("Toolchain profiles")).toEqual(["Remove toolchain profile rust"]);
+    expect(rowButtons("Package-network profiles")).toEqual([
+      "Remove package-network profile crates",
+    ]);
+    expect(rowButtons("Container grants")).toEqual(["Revoke the grant on C:\\code\\a"]);
     const headings = Array.from(root.querySelectorAll("h3")).map((h) => h.textContent);
     expect(headings).toEqual([
       "Toolchain profiles",

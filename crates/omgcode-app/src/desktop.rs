@@ -99,6 +99,7 @@ mod sessions;
 mod settings;
 mod settings_changes;
 mod settings_chat;
+mod settings_execution;
 mod settings_skills;
 mod state;
 mod turns;
@@ -124,6 +125,10 @@ pub use self::processes::{
 };
 use self::review_tokens::ReviewTokens;
 pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
+pub use self::settings_execution::{
+    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
+    PackageProfileAddRequest, ProfileRemoveRequest, ToolchainProfileAddRequest,
+};
 pub use self::settings_skills::{SkillChoice, SkillRemoveRequest, SkillStateRequest};
 use self::state::IndexState;
 pub use self::turns::ShutdownReport;

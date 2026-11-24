@@ -114,6 +114,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     ],
     package_profiles: [],
     container_grants: [],
+    container_grants_supported: true,
     skills: [
       {
         name: "review",
@@ -276,10 +277,10 @@ describe("settings window", () => {
     expect(root.textContent).toContain(MODEL_HELP);
     go("Advanced");
     expect(root.textContent).toContain(ADVANCED_HELP);
-    expect(ADVANCED_HELP).toContain("omgcode workspace");
-    // Skills change in this window; the other three groups still change only through the CLI.
-    expect(ADVANCED_HELP).toContain("Skills are imported, enabled, and removed here");
-    expect(ADVANCED_HELP).not.toContain("omgcode skills");
+    // Every group changes in this window; credentials, fetches, and runs stay with the CLI.
+    expect(ADVANCED_HELP).toContain("are changed here");
+    expect(ADVANCED_HELP).toContain("trusted CLI");
+    expect(ADVANCED_HELP).not.toContain("only through the trusted CLI");
   });
 
   it("types no path and offers exactly three access states everywhere", async () => {
@@ -287,7 +288,8 @@ describe("settings window", () => {
     // No control takes a typed path: folders come only from the system dialog. The only typed
     // values are a new connection name, a loopback URL (ADR-0064), the write-only API key of an
     // Ollama Cloud connection (ADR-0071), the chat budgets as numbers, and the global and
-    // workspace custom instructions (ADR-0080).
+    // workspace custom instructions (ADR-0080), and in Advanced a profile name, root and PATH counts,
+    // variables and origins (ADR-0088).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);
@@ -314,6 +316,12 @@ describe("settings window", () => {
       "New connection name",
       "New connection endpoint",
       "API key",
+      "new-toolchain-name",
+      "new-toolchain-roots",
+      "new-toolchain-paths",
+      "new-toolchain-environment",
+      "new-package-name",
+      "new-package-origins",
     ]);
     // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
     // group, and the three labels are the same everywhere.

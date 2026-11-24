@@ -188,7 +188,13 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_import_skill,
             commands::settings::settings_set_skill_state,
             commands::settings::settings_remove_skill,
-            commands::sessions::session_processes
+            commands::sessions::session_processes,
+            commands::settings::settings_add_toolchain_profile,
+            commands::settings::settings_remove_toolchain_profile,
+            commands::settings::settings_add_package_profile,
+            commands::settings::settings_remove_package_profile,
+            commands::settings::settings_grant_container_folder,
+            commands::settings::settings_revoke_container_grant
         ])
         .build(tauri::generate_context!());
     match built {
