@@ -61,8 +61,8 @@ impl ProviderEndpoint {
 
 /// A provider that a profile may name.
 ///
-/// A journal that records a kind added in 0.57.0 cannot be read by an older
-/// binary, which refuses the unknown spelling.
+/// A journal that records a kind added in 0.58.0 cannot be read by 0.57.0 or
+/// earlier, which refuse the unknown spelling.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ProviderKind {
     #[serde(rename = "openai")]
@@ -102,7 +102,10 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Every kind, in the order a front end lists them.
+    /// Every kind: the local kinds, then the named hosted providers, then
+    /// `openai_compatible`. The CLI reports kinds in this order; the desktop
+    /// dropdown keeps its own order (`NEW_CONNECTION_KINDS` in the UI's
+    /// `providers.ts`), which lists Ollama before LM Studio.
     pub const ALL: [Self; 16] = [
         Self::LmStudio,
         Self::OllamaLocal,
@@ -595,8 +598,8 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
 }
 
 /// The authentication modes a kind may record. `subscription` stays
-/// recordable for OpenAI and Anthropic so journals written before 0.57.0
-/// replay, but no adapter uses it; every other hosted kind is `api_key` only.
+/// recordable for OpenAI and Anthropic so journals written by 0.57.0 and
+/// earlier replay, but no adapter uses it; every other hosted kind is `api_key` only.
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {
         ProviderKind::OpenAi | ProviderKind::Anthropic => {

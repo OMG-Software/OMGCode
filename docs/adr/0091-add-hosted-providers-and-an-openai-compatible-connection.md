@@ -48,7 +48,9 @@ unauthenticated requests. No API key was used for any provider.
    `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
    `openai_compatible`. The existing `openai`, `anthropic`, and `open_router`
    kinds now accept an endpoint. There are 16 kinds in total.
-   `ProviderKind::ALL` lists them in the order the desktop dropdown shows.
+   `ProviderKind::ALL` lists them for the CLI: local kinds, named hosted
+   providers, then `openai_compatible`. The desktop dropdown keeps its own
+   order, with Ollama before LM Studio.
 2. **One fixed endpoint per named provider.** Each named hosted kind accepts
    exactly the base URL in the table, or that text with one trailing `/`.
    Core holds one table (`provider/hosted.rs`), which the profile record,
