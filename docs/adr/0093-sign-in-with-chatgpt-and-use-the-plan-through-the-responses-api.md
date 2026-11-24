@@ -217,7 +217,12 @@ operator signs in again. OpenAI documents no way to close that window.
 
 A refused refresh (`invalid_grant`, `invalid_refresh_token`, `token_expired`,
 `refresh_token_expired`, `refresh_token_invalidated`, `refresh_token_reused`)
-is `signin_required`. Other failures keep the record and fail the request.
+is `signin_required`. So is a refresh answer whose stated scopes lack
+`chatgpt.tokens.use.direct`: the plan no longer permits use, only a new
+sign-in can tell, and it reports `plan_usage_not_granted` if the plan still
+refuses. Other failures keep the record and fail the request. The token
+answer's access, refresh, and ID tokens are moved into zeroing buffers as
+they are parsed, so an answer refused by a later check leaves no copy.
 
 ### Sign-out and removal
 

@@ -48,6 +48,9 @@ Changes are recorded here before a release version is assigned.
   desktop's `credential_orphaned` sign-out error says whether OpenAI
   confirmed the revocation. A sign-in refused after the exchange (key fetch,
   ID-token, or account check) revokes the issued refresh token, best effort.
+  A refresh that lost the plan scope is `signin_required` rather than
+  `access_token_unavailable`, and a token answer's tokens are zeroed even
+  when a later check refuses it.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

@@ -214,13 +214,31 @@ fn form(body: &str) -> HashMap<String, String> {
 /// requests to finish after the sign-in returned.
 const BROWSER_WAIT: Duration = Duration::from_secs(10);
 
+/// Connect to a loopback listener as a browser would. On Windows a connect
+/// can be handed a local port whose earlier connection to this listener is
+/// still in TIME_WAIT, and is then refused with `AddrInUse` before any byte
+/// is sent (ADR-0078). As the model client does, hold that port and retry,
+/// skipping at most 64 ports; any other failure fails the test.
+fn connect_to_listener(address: &str) -> TcpStream {
+    let mut held = Vec::new();
+    loop {
+        match TcpStream::connect(address) {
+            Ok(stream) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && held.len() < 64 => {
+                held.push(crate::connect::reserve_next_port().expect("a port to hold"));
+            }
+            Err(error) => panic!("callback connect: {error}"),
+        }
+    }
+}
+
 /// Send one browser request to the callback listener and return the status.
 fn browse(redirect: &str, path_and_query: &str) -> String {
     let address = redirect
         .strip_prefix("http://")
         .and_then(|rest| rest.split('/').next())
         .expect("redirect address");
-    let mut stream = TcpStream::connect(address).expect("callback connect");
+    let mut stream = connect_to_listener(address);
     // A listener that never answers fails the test instead of hanging it.
     stream
         .set_read_timeout(Some(BROWSER_WAIT))
@@ -1073,7 +1091,7 @@ impl IdleWait {
         std::thread::spawn(move || {
             let _ = result_sender.send(listener.wait("state", None, wait, &cancel));
         });
-        let idle = TcpStream::connect(&address).expect("idle connection");
+        let idle = connect_to_listener(&address);
         accepted
             .recv_timeout(BROWSER_WAIT)
             .expect("the listener did not accept the idle connection");
@@ -1169,6 +1187,11 @@ fn errors_carry_fixed_text_and_stable_codes() {
     }
     assert_eq!(
         ProviderError::from(SignInError::SignInRequired),
+        ProviderError::SignInRequired
+    );
+    // A refresh that lost the plan scope needs a new sign-in, not a retry.
+    assert_eq!(
+        ProviderError::from(SignInError::PlanUsageNotGranted),
         ProviderError::SignInRequired
     );
     assert_eq!(

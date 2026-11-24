@@ -201,7 +201,10 @@ impl From<SignInError> for ProviderError {
     fn from(error: SignInError) -> Self {
         match error {
             SignInError::Cancelled => Self::Cancelled,
-            SignInError::SignInRequired => Self::SignInRequired,
+            // A refresh whose grant lost the plan scope cannot be used until
+            // a new sign-in, which reports `plan_usage_not_granted` if the
+            // plan still does not permit it.
+            SignInError::SignInRequired | SignInError::PlanUsageNotGranted => Self::SignInRequired,
             _ => Self::AccessTokenUnavailable,
         }
     }
@@ -613,15 +616,28 @@ const fn provider_to_sign_in(error: ProviderError) -> SignInError {
 }
 
 /// The documented token response. Unknown fields such as
-/// `earliest_refresh_at` are ignored.
+/// `earliest_refresh_at` are ignored. The three tokens are zeroed when the
+/// response is dropped, so no early return leaves a copy behind.
 #[derive(Deserialize)]
 struct TokenResponse {
-    access_token: Option<String>,
-    refresh_token: Option<String>,
-    id_token: Option<String>,
+    #[serde(default, deserialize_with = "secret")]
+    access_token: Option<Zeroizing<String>>,
+    #[serde(default, deserialize_with = "secret")]
+    refresh_token: Option<Zeroizing<String>>,
+    #[serde(default, deserialize_with = "secret")]
+    id_token: Option<Zeroizing<String>>,
     token_type: Option<String>,
     expires_in: Option<u64>,
     scope: Option<String>,
+}
+
+/// Move a token string straight into [`Zeroizing`]. The parsed JSON value
+/// owns the string, so it is moved, not copied.
+fn secret<'de, D>(deserializer: D) -> Result<Option<Zeroizing<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|token| token.map(Zeroizing::new))
 }
 
 /// An OAuth error answer.
@@ -657,7 +673,7 @@ fn checked_access(response: &mut TokenResponse, now: u64) -> Result<CheckedAcces
         .expires_in
         .filter(|seconds| (1..=MAX_EXPIRES_IN).contains(seconds))
         .ok_or(SignInError::Malformed)?;
-    let access = Zeroizing::new(response.access_token.take().ok_or(SignInError::Malformed)?);
+    let access = response.access_token.take().ok_or(SignInError::Malformed)?;
     if !valid_token(&access) {
         return Err(SignInError::Malformed);
     }
@@ -703,13 +719,11 @@ fn parse_code_exchange(
     } = checked_access(&mut response, now)?;
     // The exchange must state the grant, so the plan scope is never assumed.
     let scopes = scopes.ok_or(SignInError::PlanUsageNotGranted)?;
-    let refresh_token = Zeroizing::new(
-        response
-            .refresh_token
-            .take()
-            .ok_or(SignInError::Malformed)?,
-    );
-    let id_token = Zeroizing::new(response.id_token.take().ok_or(SignInError::Malformed)?);
+    let refresh_token = response
+        .refresh_token
+        .take()
+        .ok_or(SignInError::Malformed)?;
+    let id_token = response.id_token.take().ok_or(SignInError::Malformed)?;
     if !valid_token(&refresh_token) {
         return Err(SignInError::Malformed);
     }
@@ -752,7 +766,7 @@ fn parse_refresh(
         expires_at,
     } = checked_access(&mut response, now)?;
     let refresh_token = match response.refresh_token.take() {
-        Some(token) if valid_token(&token) => Zeroizing::new(token),
+        Some(token) if valid_token(&token) => token,
         Some(_) => return Err(SignInError::Malformed),
         None => Zeroizing::new(old_refresh_token.to_owned()),
     };
