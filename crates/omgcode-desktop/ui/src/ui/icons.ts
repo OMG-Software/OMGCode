@@ -55,6 +55,11 @@ const ICONS = {
   check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
   /** A cross: an action that failed. */
   cross: [["path", { d: "M6 6l12 12M18 6L6 18" }]],
+  /** A bar split into segments with a marker above it: the context breakdown tab. */
+  context: [
+    ["rect", { x: "3", y: "9", width: "18", height: "8", rx: "2" }],
+    ["path", { d: "M9 9v8M14 9v8M18 4v5" }],
+  ],
 } satisfies Record<string, readonly Shape[]>;
 
 export type IconName = keyof typeof ICONS;

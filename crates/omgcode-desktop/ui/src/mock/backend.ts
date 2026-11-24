@@ -14,6 +14,9 @@ import type {
   ComposerPreferences,
   ConnectionStatus,
   ConnectionView,
+  ContextBreakdown,
+  ContextPart,
+  ContextPartId,
   PermissionFlags,
   SearchHit,
   SessionSummary,
@@ -631,6 +634,39 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
                     { id: "qwen2.5-coder", cloud_tag: false },
                   ],
         } satisfies ChatModels;
+      }
+      // A fixed fake estimate, so the Context tab has something to show (ADR-0087). The
+      // parts add up to the estimate, as in Rust; the history grows with the transcript.
+      case "session_context_breakdown": {
+        const id = str(args, "session_id");
+        const open = session(id);
+        const messages = open.entries.filter((entry) => entry.kind === "message").length;
+        const part = (partId: ContextPartId, tokens: number, reason?: string): ContextPart => ({
+          id: partId,
+          tokens,
+          included: reason === undefined,
+          ...(reason === undefined ? {} : { reason }),
+        });
+        const parts: ContextPart[] = [
+          part("system", 5_700),
+          part("global_instructions", 120),
+          part("workspace_instructions", 0, "none_saved"),
+          part("tools", 8_192),
+          part("summary", 0, "no_compaction"),
+          { ...part("history", 600 + messages * 400), messages },
+          part("skills", 0, "selected_per_turn"),
+          part("framing", 320),
+        ];
+        return {
+          session_id: id,
+          parts,
+          estimated_input_tokens: parts.reduce((total, one) => total + one.tokens, 0),
+          max_output_tokens: 1024,
+          effective_trigger: 60_000,
+          context_tokens: 128_000,
+          auto_compaction: true,
+          estimate_scope: "pre_turn_conservative",
+        } satisfies ContextBreakdown;
       }
       // Each window saves only its own fields; the rest keep their values (ADR-0080).
       case "chat_preferences_save": {

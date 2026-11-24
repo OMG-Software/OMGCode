@@ -94,6 +94,84 @@ pub struct CompactionOutcome {
     pub calls: usize,
 }
 
+/// Bytes the estimate adds for the label that introduces custom instructions.
+pub const INSTRUCTIONS_LABEL_ESTIMATE: u64 = 64;
+
+/// The terms of a conservative input estimate, before they are added.
+///
+/// Every term is in estimated tokens (one UTF-8 byte counts as one token).
+/// [`Self::total`] is the one sum; [`estimate_history_input_tokens`] returns it,
+/// so a caller that shows the terms and a caller that compares the total with
+/// the trigger use the same arithmetic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputEstimateParts {
+    /// The compiled base prompt.
+    pub base_prompt: u64,
+    /// The custom instructions text.
+    pub custom_instructions: u64,
+    /// The fixed label that introduces the custom instructions.
+    pub instructions_label: u64,
+    /// Caller-supplied fixed bytes, such as advertised tool definitions.
+    pub fixed_extra: u64,
+    /// The content of every history message.
+    pub history_content: u64,
+    /// Per-message overhead for the history plus the system and instruction
+    /// messages, which are counted even when the instructions are empty.
+    pub message_overhead: u64,
+}
+
+impl InputEstimateParts {
+    /// The estimate: the sum of every term.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::ContextLimit`] when the sum overflows.
+    pub fn total(self) -> Result<u64, ProviderError> {
+        self.base_prompt
+            .saturating_add(self.custom_instructions)
+            .saturating_add(self.instructions_label)
+            .saturating_add(self.fixed_extra)
+            .checked_add(self.history_content)
+            .and_then(|total| total.checked_add(self.message_overhead))
+            .ok_or(ProviderError::ContextLimit)
+    }
+}
+
+/// The terms of the conservative input estimate for an assembled request.
+///
+/// See [`estimate_history_input_tokens`] for what each term counts.
+///
+/// # Errors
+///
+/// [`ProviderError::ContextLimit`] when a count overflows.
+pub fn estimate_history_parts(
+    base_prompt_bytes: usize,
+    custom_instructions: &str,
+    history: &[ConversationMessage],
+    fixed_extra_bytes: usize,
+) -> Result<InputEstimateParts, ProviderError> {
+    let count = u64::try_from(history.len())
+        .map_err(|_| ProviderError::ContextLimit)?
+        .checked_add(2)
+        .ok_or(ProviderError::ContextLimit)?;
+    let overhead = u64::try_from(MESSAGE_OVERHEAD).map_err(|_| ProviderError::ContextLimit)?;
+    let history_content = history.iter().try_fold(0_u64, |total, message| {
+        total
+            .checked_add(u64::try_from(message.content.len()).unwrap_or(u64::MAX))
+            .ok_or(ProviderError::ContextLimit)
+    })?;
+    Ok(InputEstimateParts {
+        base_prompt: u64::try_from(base_prompt_bytes).map_err(|_| ProviderError::ContextLimit)?,
+        custom_instructions: u64::try_from(custom_instructions.len()).unwrap_or(u64::MAX),
+        instructions_label: INSTRUCTIONS_LABEL_ESTIMATE,
+        fixed_extra: u64::try_from(fixed_extra_bytes).unwrap_or(u64::MAX),
+        history_content,
+        message_overhead: count
+            .checked_mul(overhead)
+            .ok_or(ProviderError::ContextLimit)?,
+    })
+}
+
 /// Conservative input estimate for an assembled request, in tokens.
 ///
 /// It counts the compiled base prompt, custom instructions and their label,
@@ -102,37 +180,21 @@ pub struct CompactionOutcome {
 /// instruction messages. It excludes the output reserve and template headroom,
 /// which [`ContextBudget::safe_input_budget`] already subtracts, so the two are
 /// directly comparable. It treats one UTF-8 byte as one token, which is
-/// deliberately conservative; it is not a model tokenizer.
+/// deliberately conservative; it is not a model tokenizer. The terms are
+/// [`estimate_history_parts`].
 pub fn estimate_history_input_tokens(
     base_prompt_bytes: usize,
     custom_instructions: &str,
     history: &[ConversationMessage],
     fixed_extra_bytes: usize,
 ) -> Result<u64, ProviderError> {
-    let count = u64::try_from(history.len())
-        .map_err(|_| ProviderError::ContextLimit)?
-        .checked_add(2)
-        .ok_or(ProviderError::ContextLimit)?;
-    let overhead = u64::try_from(MESSAGE_OVERHEAD).map_err(|_| ProviderError::ContextLimit)?;
-    let content = history.iter().try_fold(
-        u64::try_from(base_prompt_bytes)
-            .map_err(|_| ProviderError::ContextLimit)?
-            .saturating_add(u64::try_from(custom_instructions.len()).unwrap_or(u64::MAX))
-            .saturating_add(64)
-            .saturating_add(u64::try_from(fixed_extra_bytes).unwrap_or(u64::MAX)),
-        |total, message| {
-            total
-                .checked_add(u64::try_from(message.content.len()).unwrap_or(u64::MAX))
-                .ok_or(ProviderError::ContextLimit)
-        },
-    )?;
-    content
-        .checked_add(
-            count
-                .checked_mul(overhead)
-                .ok_or(ProviderError::ContextLimit)?,
-        )
-        .ok_or(ProviderError::ContextLimit)
+    estimate_history_parts(
+        base_prompt_bytes,
+        custom_instructions,
+        history,
+        fixed_extra_bytes,
+    )?
+    .total()
 }
 
 /// The configured trigger and the safe input budget for one model route.
@@ -735,6 +797,37 @@ mod tests {
             max_output_tokens: 1_000,
         };
         assert_eq!(small.trigger(), 109_488);
+    }
+
+    #[test]
+    fn the_estimate_terms_add_up_to_the_estimate() {
+        let history = [
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: "x".repeat(10),
+            },
+            ConversationMessage {
+                role: ConversationRole::Assistant,
+                content: "y".repeat(7),
+            },
+        ];
+        let parts = estimate_history_parts(100, "abc", &history, 40).expect("parts");
+        assert_eq!(
+            parts,
+            InputEstimateParts {
+                base_prompt: 100,
+                custom_instructions: 3,
+                instructions_label: INSTRUCTIONS_LABEL_ESTIMATE,
+                fixed_extra: 40,
+                history_content: 17,
+                message_overhead: 4 * 256,
+            }
+        );
+        assert_eq!(
+            parts.total().expect("total"),
+            estimate_history_input_tokens(100, "abc", &history, 40).expect("estimate")
+        );
+        assert_eq!(parts.total().expect("total"), 100 + 3 + 64 + 40 + 17 + 1024);
     }
 
     #[test]

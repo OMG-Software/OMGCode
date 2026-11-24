@@ -1170,6 +1170,76 @@ pub struct SessionContext {
     pub branch: BranchView,
 }
 
+/// The parts of a context estimate, in display order (ADR-0087).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextPartId {
+    /// The compiled base prompt and its message overhead.
+    System,
+    /// The saved global custom instructions.
+    GlobalInstructions,
+    /// The session's workspace custom instructions and the headings that join
+    /// the two texts.
+    WorkspaceInstructions,
+    /// The advertised workspace tool definitions.
+    Tools,
+    /// The active compaction summary.
+    Summary,
+    /// The retained conversation after the compaction boundary.
+    History,
+    /// Skills selected for one turn. Always `included: false`.
+    Skills,
+    /// The fixed overhead no part owns: the instructions label and the
+    /// instruction message's overhead.
+    Framing,
+}
+
+/// One part of the context estimate. It carries no instruction or message
+/// text, only numbers and fixed codes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ContextPartDto {
+    /// Which part this is.
+    pub id: ContextPartId,
+    /// Its conservative token estimate; zero when not included.
+    pub tokens: u64,
+    /// Whether the next turn would send this part.
+    pub included: bool,
+    /// For `history`, the retained messages after the compaction boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages: Option<u64>,
+    /// A fixed code that says why the part is not included, such as
+    /// `preference_disabled`, `workspace_unregistered`, `no_compaction`,
+    /// `none_saved`, or `selected_per_turn`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+}
+
+/// What the next turn of a session would send, by part (ADR-0087).
+///
+/// The estimate is the one the pre-turn trigger uses, without the new user
+/// message, and the parts add up to `estimated_input_tokens`. Nothing was sent
+/// to a model and nothing was recorded to produce it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ContextBreakdown {
+    /// The session the estimate is for.
+    pub session_id: Uuid,
+    /// Every part, in display order, including those not included.
+    pub parts: Vec<ContextPartDto>,
+    /// The sum of the parts, in estimated tokens.
+    pub estimated_input_tokens: u64,
+    /// The output reserve of the saved chat budgets.
+    pub max_output_tokens: u32,
+    /// The estimate at which compaction triggers. Without a known capacity it
+    /// is the saved threshold alone.
+    pub effective_trigger: u64,
+    /// The saved context capacity; `null` when none is saved.
+    pub context_tokens: Option<u64>,
+    /// Whether compaction before a turn is on.
+    pub auto_compaction: bool,
+    /// A fixed label of what the estimate covers.
+    pub estimate_scope: &'static str,
+}
+
 /// A workspace's Git branch, read from `HEAD` for display only.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct BranchView {

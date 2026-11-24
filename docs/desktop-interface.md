@@ -234,7 +234,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 39 commands. No other command exists.
+The shell has three webview windows and 43 commands. No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -253,6 +253,7 @@ their registered identifier, and approvals by identifier.
 | `chat_models` | main | List the model ids a session's connection reports, for the composer's model choice; takes the session id |
 | `chat_preferences_save` | main | Save the composer's own chat defaults: compaction threshold, auto-compact, and the send key (ADR-0080) |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
+| `session_context_breakdown` | main | Estimate, by part, what a session's next turn would send; takes the session id, sends nothing to a model, records nothing, and returns names and numbers only (ADR-0087) |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
@@ -784,6 +785,68 @@ untouched controls take the returned values.
   it as `turn_open`, and the operator can interrupt it.
 
 A panicked turn thread is recorded as a failed turn with the code `internal`.
+
+## Context tab
+
+**Status: built, not yet wired.** `ui/src/main/context_tab.ts` exports
+`createContextTab()`, which returns a `PanelView` (`element`,
+`showSession(sessionId | null)`, `refresh()`, `dispose()`), and the
+`session_context_breakdown` command serves it (ADR-0087). Nothing in the
+`main` window mounts the view yet, so no operator sees it. The right-hand panel
+tab framework is a separate change; once it mounts the view, it is to call
+`showSession` when the open session changes and `refresh` after each turn
+ends, and this section must say where it appears.
+
+- **Command.** `session_context_breakdown { session_id }` is `main`-only. Rust
+  resolves everything from trusted state by session id: the journal through the
+  index, the saved chat budgets and global instructions, the session
+  workspace's saved instructions (read under the preferences lock, as
+  `chat_send` reads them), and live settings for the tool decision. It
+  sends nothing to a model, appends nothing to any journal, and returns no
+  instruction or message text, only numbers and fixed codes. It runs on a
+  blocking task.
+- **Parts.** In display order: the system prompt (compiled base prompt and its
+  message overhead), global instructions, workspace instructions (including the
+  headings that join the two texts), tool definitions, the compaction summary,
+  the conversation history after the compaction boundary (with its message
+  count), selected skills, and message framing. Framing is the fixed overhead
+  no part owns (the instructions label and the instruction message's
+  overhead), reported as its own part so the parts add up to the estimate.
+  Tool definitions count only when live settings would offer tools (the same
+  rule a turn applies); otherwise the part is not included and carries a fixed
+  reason such as `preference_disabled`. Skills are loaded only when selected
+  for one turn, so the part is always not included (`selected_per_turn`).
+- **One estimator.** The parts come from the arithmetic the pre-turn trigger
+  uses (`estimate_history_parts` in core, whose total is
+  `estimate_history_input_tokens`), applied to the same history the next
+  request would send. The estimate leaves out the operator's next message,
+  which is not known; the trigger counts it. Tests show that the parts sum to
+  the preflight total for the same session state, less that message.
+- **Totals.** The estimate, the output reserve, the effective compaction
+  trigger, the saved context capacity (`null` when none is saved; the
+  trigger is then the saved threshold alone), and whether auto-compaction is
+  on. They come from the saved chat budgets and composer preferences, the
+  values the composer sends with a turn.
+- **Errors.** `not_found` for an unknown session; `busy` while a turn runs
+  for the session or another process holds its journal; `invalid_journal`;
+  `instructions_unreadable` when a turn would also refuse. A session whose
+  workspace is no longer registered is not an error: its saved workspace
+  instructions still go with a turn, so they are counted, and the tool
+  definitions part is not included (`workspace_unregistered`).
+- **View.** A horizontal stacked bar of the included parts scaled to the
+  context capacity (or to the larger of the estimate and the trigger when the
+  capacity is unknown) with the compaction trigger marked, then a table of
+  every part with its tokens, its share of the estimate, and a note (the reason
+  a part is not included, or the history's message count), then the totals and
+  the plain statement "Conservative estimate before the next turn". The bar is
+  an SVG drawn through the DOM with sizes in attributes, so the view sets no
+  inline style. Each part has a colour from the shared tokens and a text label,
+  so colour is never the only cue. With no session open the view shows an empty
+  state; a failure shows as text; **Refresh** reloads. A slow answer for a
+  session that is no longer open is ignored.
+- **Limits.** The estimate counts one byte as one token, so it overstates a
+  real tokenizer's count. It is not provider-reported usage and is not
+  recomputed while a turn runs.
 
 ## Settings window
 
@@ -1438,7 +1501,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 39 |
+| Commands | 43 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |

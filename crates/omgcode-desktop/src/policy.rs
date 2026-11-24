@@ -67,6 +67,7 @@ pub enum Command {
     ConnectionSelect,
     SessionModelSelect,
     ChatModels,
+    SessionContextBreakdown,
     SettingsOverview,
     SettingsChooseRoot,
     SettingsRegisterWorkspace,
@@ -85,7 +86,7 @@ pub enum Command {
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -114,6 +115,7 @@ impl Command {
         Self::ConnectionSelect,
         Self::SessionModelSelect,
         Self::ChatModels,
+        Self::SessionContextBreakdown,
         Self::SettingsOverview,
         Self::SettingsChooseRoot,
         Self::SettingsRegisterWorkspace,
@@ -162,6 +164,7 @@ impl Command {
             Self::ConnectionSelect => "connection_select",
             Self::SessionModelSelect => "session_model_select",
             Self::ChatModels => "chat_models",
+            Self::SessionContextBreakdown => "session_context_breakdown",
             Self::SettingsOverview => "settings_overview",
             Self::SettingsChooseRoot => "settings_choose_root",
             Self::SettingsRegisterWorkspace => "settings_register_workspace",
@@ -224,7 +227,8 @@ impl Command {
             | Self::ConnectionStatus
             | Self::ConnectionSelect
             | Self::SessionModelSelect
-            | Self::ChatModels => WindowLabel::Main,
+            | Self::ChatModels
+            | Self::SessionContextBreakdown => WindowLabel::Main,
         }
     }
 }
@@ -262,8 +266,8 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 42);
-        assert_eq!(with_window(WindowLabel::Main).len(), 25);
+        assert_eq!(Command::ALL.len(), 43);
+        assert_eq!(with_window(WindowLabel::Main).len(), 26);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
         assert_eq!(with_window(WindowLabel::Settings).len(), 14);
     }
@@ -350,8 +354,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 42);
-        assert_eq!(shared.len(), 42);
+        assert_eq!(COMMAND_NAMES.len(), 43);
+        assert_eq!(shared.len(), 43);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

@@ -8,6 +8,7 @@ import type {
   ChatStatus,
   ComposerPreferences,
   ConnectionStatus,
+  ContextBreakdown,
   SearchResult,
   SessionContext,
   SessionSkills,
@@ -114,6 +115,9 @@ export const api = {
     invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings, skills }),
   sessionSkills: (sessionId: string) =>
     invokeCommand<SessionSkills>("session_skills", { session_id: sessionId }),
+  /** What the session's next turn would send, by part (ADR-0087). Sends nothing to a model. */
+  sessionContextBreakdown: (sessionId: string) =>
+    invokeCommand<ContextBreakdown>("session_context_breakdown", { session_id: sessionId }),
   sessionContext: (sessionId: string) =>
     invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
   /** The session's connection and model; `null` describes the default when no session is open. */
