@@ -247,6 +247,51 @@ describe("the Files tab", () => {
     );
   });
 
+  it("keeps no rows in a closed folder, so another folder draws its full share", async () => {
+    const big = Array.from({ length: FILES_MAX_ROWS }, (_, i) => file(`b${i}`));
+    const tab = mount(
+      fakeTree({
+        "": listing([dir("big"), dir("small")]),
+        big: listing(big),
+        small: listing([file("one"), file("two"), file("three")]),
+      }),
+    );
+    tab.setSession("s-1");
+    tab.onVisible?.(true);
+    await settle();
+    dirButton("big").click();
+    await settle();
+    expect(document.querySelectorAll("li")).toHaveLength(FILES_MAX_ROWS);
+    dirButton("big").click();
+    expect(document.querySelectorAll("li")).toHaveLength(2);
+    dirButton("small").click();
+    await settle();
+    const small = dirButton("small").parentElement as HTMLElement;
+    expect(names(small)).toEqual(["small", "one", "two", "three"]);
+    expect(small.querySelector(".files-note")).toBeNull();
+  });
+
+  it("draws nothing from a listing that lands after its folder was closed", async () => {
+    let release: (value: WorkspaceListing) => void = () => undefined;
+    const tab = mount((args) =>
+      (args.path as string[]).length === 0
+        ? listing([dir("slow")])
+        : new Promise<WorkspaceListing>((resolve) => {
+            release = resolve;
+          }),
+    );
+    tab.setSession("s-1");
+    tab.onVisible?.(true);
+    await settle();
+    dirButton("slow").click();
+    await settle();
+    dirButton("slow").click();
+    release(listing([file("late.txt")]));
+    await settle();
+    expect(names()).toEqual(["slow"]);
+    expect(document.querySelectorAll("li")).toHaveLength(1);
+  });
+
   it("adds no note when a listing that fills the row cap was drawn in full", async () => {
     const exact = Array.from({ length: FILES_MAX_ROWS }, (_, i) => file(`f${i}`));
     const tab = mount(() => listing(exact));

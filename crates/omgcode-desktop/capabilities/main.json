@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Application commands for the main window only. No core permissions, no approval-decision commands, and no settings-window commands. The composer may choose a session's model connection only through a native confirmation (ADR-0071, ADR-0084).",
+  "description": "Application commands for the main window only. No core permissions, no approval-decision commands, and no settings-window commands. The model box may choose a session's model connection only through a native confirmation (ADR-0071, ADR-0084, ADR-0089).",
   "local": true,
   "windows": [
     "main"

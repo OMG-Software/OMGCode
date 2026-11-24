@@ -76,8 +76,9 @@ Constraints:
      operator can read the folder in any file manager. A compromised `main`
      webview could still not read, change, or run anything in it.
 5. **The frontend** lists lazily, only while the tab is visible, clears on a
-   session change, ignores a reply for a session that is no longer open, draws
-   at most 5,000 rows, and shows empty and error states as text.
+   session change, ignores a reply for a session that is no longer open or a
+   folder that was closed, draws at most 5,000 rows across the open folders
+   (a closed folder keeps none), and shows empty and error states as text.
 
 ## Alternatives considered
 

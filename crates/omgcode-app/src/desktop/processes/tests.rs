@@ -425,13 +425,36 @@ fn the_total_text_of_one_entry_is_bounded() {
 
     let entry = &listed.entries[0];
     let program: usize = entry.program.iter().map(|text| text.chars().count()).sum();
+    let profile: usize = entry.profile.iter().map(|text| text.chars().count()).sum();
     let rest: usize = entry
         .arguments
         .iter()
         .flatten()
         .map(|text| text.chars().count())
         .sum();
-    assert!(program + rest <= MAX_TOTAL_CHARS, "{}", program + rest);
+    let total = program + profile + rest;
+    assert!(total <= MAX_TOTAL_CHARS, "{total}");
+    // The profile is charged before the arguments, so it is shown in full.
+    assert_eq!(entry.profile.as_deref(), Some("rust"));
+    assert!(entry.text_truncated);
+}
+
+#[test]
+fn a_cut_profile_name_is_bounded_and_flagged() {
+    let session = Uuid::new_v4();
+    let records = vec![executed(session, "a", 1, None)];
+    let long = "p".repeat(1000);
+    let requests = vec![CommandRequest {
+        call_id: "a".to_owned(),
+        arguments: json!({"profile": long, "program": "echo", "arguments": []}).to_string(),
+    }];
+
+    let listed = list(session, records, Some(requests), None, false);
+
+    let entry = &listed.entries[0];
+    let profile = entry.profile.as_deref().expect("profile");
+    assert_eq!(profile.chars().count(), MAX_ITEM_CHARS);
+    assert!(profile.ends_with(ELLIPSIS));
     assert!(entry.text_truncated);
 }
 

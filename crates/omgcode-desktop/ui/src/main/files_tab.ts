@@ -97,16 +97,24 @@ export function createFilesTab(): FilesTab {
       const children = el("div", { class: "files-children" });
       children.hidden = true;
       let open = false;
+      // Bumped on every open and close, so a listing that lands after the
+      // folder closed, or after a newer open, draws nothing.
+      let opening = 0;
       const setOpen = async (next: boolean): Promise<void> => {
         open = next;
+        opening += 1;
+        const mine = opening;
         toggle.setAttribute("aria-expanded", String(next));
         chevron.replaceChildren(icon(next ? "chevronDown" : "chevronRight"));
         children.hidden = !next;
         if (next) {
           expanded.add(pathKey(path));
-          await fill(children, path);
+          await fill(children, path, () => mine === opening);
         } else {
           expanded.delete(pathKey(path));
+          // Opening lists the folder again, so a closed folder keeps no rows:
+          // hidden rows would spend the row budget that open folders draw from.
+          replaceChildren(children);
         }
       };
       toggle.addEventListener("click", () => void setOpen(!open));
@@ -136,14 +144,21 @@ export function createFilesTab(): FilesTab {
     return item;
   }
 
-  /** Lists `path` into `target`, with loading, empty, truncated, and error text. */
-  async function fill(target: HTMLElement, path: string[]): Promise<void> {
+  /**
+   * Lists `path` into `target`, with loading, empty, truncated, and error text. `current` says
+   * whether the answer is still wanted when it lands; the session check is in `list`.
+   */
+  async function fill(
+    target: HTMLElement,
+    path: string[],
+    current: () => boolean = () => true,
+  ): Promise<void> {
     replaceChildren(target, el("p", { class: "files-note", text: FILES_LOADING }));
     let listing: WorkspaceListing | null;
     try {
       listing = await list(path);
     } catch (reason) {
-      if (target.isConnected) {
+      if (target.isConnected && current()) {
         replaceChildren(
           target,
           el("p", { class: "files-note files-error", text: failureText(reason) }),
@@ -151,7 +166,7 @@ export function createFilesTab(): FilesTab {
       }
       return;
     }
-    if (listing === null) {
+    if (listing === null || !current()) {
       return;
     }
     if (listing.entries.length === 0) {

@@ -513,7 +513,9 @@ the tree and loads the workspace's top level once the tab is visible; opening
 a folder lists just that folder, and opening it again lists it again. A
 chevron shows each folder's state, **Refresh** lists the top level again and
 keeps open folders open, and loading, empty, truncated, and error states are
-text. At most 5,000 rows are drawn. A name that is not valid Unicode is shown
+text. At most 5,000 rows are drawn across the open folders; closing a folder
+drops its rows, and a listing that arrives after its folder closed is
+discarded. A name that is not valid Unicode is shown
 but its folder is not opened, and a link or special entry is shown but not
 opened. Names are text nodes, never markup. The tab shows names and kinds
 only: no content, no size, no date.
@@ -1032,7 +1034,8 @@ captured output, environment values, credentials, working directories, or
 digests. Program, arguments, and the profile name are untrusted model-chosen
 text. Rust escapes each to one line with `display_safe_line`, renders a
 non-Unicode program path lossily, and bounds them: 256 characters per item, 32
-arguments, 2,048 characters per call. The view builds text nodes only and shows
+arguments, 2,048 characters per call, charged to the program, then the profile
+name, then the arguments. The view builds text nodes only and shows
 the full command line in a tooltip.
 
 `createProcessesTab()` in `ui/src/main/processes_tab.ts` returns a

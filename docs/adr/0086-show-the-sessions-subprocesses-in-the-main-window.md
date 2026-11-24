@@ -84,7 +84,9 @@ the program text.
 Program, arguments, and profile name are untrusted. Rust escapes each to one
 line with `display_safe_line`, renders a non-Unicode program path lossily, and
 bounds them: 256 characters per item, 32 arguments, and 2,048 characters per
-call. The view builds text nodes only. The reason and failure codes are
+call. The program is charged first, then the profile name, so both are shown
+whatever the arguments hold, and then the arguments; any cut sets the
+shortened flag. The view builds text nodes only. The reason and failure codes are
 validated `[a-z0-9_]` values from the action journal.
 
 This exposure is acceptable because the transcript already delivers the same

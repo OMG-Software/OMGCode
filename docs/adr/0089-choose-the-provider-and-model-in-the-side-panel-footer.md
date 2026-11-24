@@ -24,8 +24,9 @@ under every tab, empty until a feature used it.
    native Yes/No confirmation, `session_model_select`, `chat_models`), the same
    per-session semantics and persistence, the same messages, and the same
    disabled states: both dropdowns are disabled while no session accepts a
-   message and while a turn runs. No command, IPC shape, capability, or Rust
-   code changed.
+   message and while a turn runs. No command, IPC shape, permission, or Rust
+   code changed; only the `main` capability's description and a comment in
+   `tests/layers.rs` now name the model box.
 3. The composer no longer holds these controls. It receives the box as an
    explicit dependency and reads the chosen model from it for each send; it
    still reads the endpoint from the shared connection. The composer tells the

@@ -484,6 +484,17 @@ fn fill_command(
         entry.text_truncated |= cut;
         entry.program = Some(text);
     }
+    // The profile name names the call, so it is charged before the arguments:
+    // it is always shown, and the per-call bound covers it too (ADR-0086).
+    let profile = run_start
+        .map(|start| start.profile_name.clone())
+        .or_else(|| recorded.and_then(|command| command.profile.clone()));
+    if let Some(name) = profile {
+        let (text, cut) = bounded(&name, MAX_ITEM_CHARS.min(budget));
+        budget = budget.saturating_sub(text.chars().count());
+        entry.text_truncated |= cut;
+        entry.profile = Some(text);
+    }
     if let Some(arguments) = recorded.and_then(|command| command.arguments.as_ref()) {
         entry.argument_count = Some(arguments.len());
         let mut shown = Vec::new();
@@ -501,10 +512,6 @@ fn fill_command(
     } else {
         entry.argument_count = run_start.map(|start| start.argument_count);
     }
-    entry.profile = run_start
-        .map(|start| start.profile_name.clone())
-        .or_else(|| recorded.and_then(|command| command.profile.clone()))
-        .map(|name| bounded(&name, MAX_ITEM_CHARS).0);
 }
 
 /// A recorded native path as lossy display text.
