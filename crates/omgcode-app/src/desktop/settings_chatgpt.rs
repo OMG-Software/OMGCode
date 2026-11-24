@@ -18,7 +18,7 @@ use super::wire::{ChatGptRequest, ChatGptSignOutResult, SettingsOverview};
 
 /// The function that opens the sign-in address. Tests replace it so no test
 /// can reach OpenAI.
-pub(crate) type BrowserOpener = fn(&str) -> Result<(), SignInError>;
+pub(crate) type BrowserOpener = fn(&str, &CancelToken) -> Result<(), SignInError>;
 
 /// Removes the registered cancel token when the sign-in ends.
 struct SignInSlot<'a>(&'a std::sync::Mutex<Option<CancelToken>>);
@@ -98,7 +98,7 @@ impl DesktopService {
             revision = store.revision();
         }
         let opener = self.inner.open_browser;
-        let mut open = |address: &str| opener(address);
+        let mut open = |address: &str| opener(address, &cancel);
         let signed_in = crate::sign_in_with_chatgpt(
             &self.inner.data_root,
             &request.name,

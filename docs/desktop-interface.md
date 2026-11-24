@@ -341,10 +341,20 @@ bounded shutdown, and exits.
 
 Since 0.45.0 ([ADR-0065](adr/0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md))
 every window uses one dark theme defined in `ui/src/styles/tokens.css`:
-near-black greys with an orange accent, and `color-scheme: dark`. There is no
-light theme. Rust opens each window with the same background colour, so a
-window does not flash white before its page paints. Native folder and
-confirmation dialogs follow the operating system's theme.
+near-black greys with an orange accent, and `color-scheme: dark`. Since 0.61.0
+([ADR-0095](adr/0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md))
+those are the OMG Software brand colours: neutral greys around charcoal
+`#151515` and switch orange `#ff761f`, with charcoal text on orange. There is
+no light theme. Rust opens each window with the same background colour, and a
+unit test keeps it equal to `--bg`, so a window does not flash white before
+its page paints. Native folder and confirmation dialogs follow the operating
+system's theme.
+
+- **Brand.** The sessions panel, the `settings` navigation, and the
+  `approvals` header lead their heading with the OMGCode knob, an 18-pixel
+  SVG built through the DOM from one fixed path and hidden from assistive
+  technology. The app icons in `crates/omgcode-desktop/icons/` are the
+  OMGCode project icons.
 
 - **Orange marks action.** It is used for primary buttons, focus, selection,
   and "waiting for you", never for a permission at Allow. A permission control

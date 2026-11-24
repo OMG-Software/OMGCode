@@ -57,7 +57,7 @@ fn allowed_for(url: &Url, windows: bool, debug: bool) -> bool {
 
 /// The window and webview background before the page paints. It matches `--bg` in
 /// `ui/src/styles/tokens.css`, so a window never flashes white on open (ADR-0065).
-const WINDOW_BACKGROUND: Color = Color(0x0e, 0x0f, 0x11, 0xff);
+const WINDOW_BACKGROUND: Color = Color(0x11, 0x11, 0x11, 0xff);
 
 /// Creates the `main`, `approvals`, and `settings` windows.
 ///
@@ -154,6 +154,18 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).expect("test URL parses")
+    }
+
+    #[test]
+    fn window_background_matches_the_theme_background() {
+        let tokens = include_str!("../ui/src/styles/tokens.css");
+        let Color(red, green, blue, alpha) = WINDOW_BACKGROUND;
+        let expected = format!("--bg: #{red:02x}{green:02x}{blue:02x};");
+        assert_eq!(alpha, 0xff, "the window background is opaque");
+        assert!(
+            tokens.lines().any(|line| line.trim() == expected),
+            "tokens.css must declare `{expected}` so a window opens in its page colour"
+        );
     }
 
     #[test]

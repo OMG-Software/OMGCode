@@ -79,7 +79,7 @@ meaningful alternative does not need an ADR.
 | [0062: Send the desktop message on Enter as a saved chat preference](0062-send-the-desktop-message-on-enter-as-a-saved-chat-preference.md) | Accepted | 2026-11-19 |
 | [0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions](0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md) | Accepted | 2026-11-19 |
 | [0064: Choose the model connection in settings and add Ollama Local](0064-choose-the-model-connection-in-settings-and-add-ollama-local.md) | Accepted, amended by ADR-0084 | 2026-11-19 |
-| [0065: Redesign the desktop windows with one dark theme and split layouts](0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md) | Accepted | 2026-11-19 |
+| [0065: Redesign the desktop windows with one dark theme and split layouts](0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md) | Accepted; amended by ADR-0095 | 2026-11-19 |
 | [0066: Choose the chat model from the local server's model list](0066-choose-the-chat-model-from-the-local-servers-model-list.md) | Accepted | 2026-11-19 |
 | [0067: Render recorded replies as inert Markdown](0067-render-recorded-replies-as-inert-markdown.md) | Accepted | 2026-11-20 |
 | [0068: Name replies by model and copy them as Markdown, text, or an image](0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md) | Accepted, amended by ADR-0080 | 2026-11-20 |
@@ -107,4 +107,6 @@ meaningful alternative does not need an ADR.
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Compact automatically at 400K by default in the desktop](0091-compact-automatically-at-400k-by-default-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0092: Add hosted providers and an OpenAI-compatible connection](0092-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |
-| [0093: Sign in with ChatGPT and use the plan through the Responses API](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md) | Accepted | 2026-11-24 |
+| [0093: Sign in with ChatGPT and use the plan through the Responses API](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md) | Accepted; amended by ADR-0094 | 2026-11-24 |
+| [0094: Open the sign-in page through the shell URL association](0094-open-the-sign-in-page-through-the-shell-url-association.md) | Accepted | 2026-11-24 |
+| [0095: Use the OMG Software palette and OMGCode icons in the desktop](0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md) | Accepted | 2026-11-24 |

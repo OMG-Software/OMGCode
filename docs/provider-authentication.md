@@ -461,7 +461,9 @@ documented route for local and open-source apps
 - **Sign-in.** `omgcode workspace provider-signin <name> --revision <n>` or
   **Sign in with ChatGPT** in the desktop `settings` window. Rust binds a
   listener on `127.0.0.1`, opens OpenAI's authorization page in the system
-  browser with PKCE S256, a random `state` and `nonce`, and a per-host
+  browser (on Windows through `ShellExecuteExW` and the `https` URL
+  association since 0.61.0, [ADR-0094](adr/0094-open-the-sign-in-page-through-the-shell-url-association.md);
+  on Linux through `/usr/bin/xdg-open`) with PKCE S256, a random `state` and `nonce`, and a per-host
   `urn:uuid:` identifier, and waits at most five minutes for
   `/auth/callback`. The first sign-in uses OpenAI's dynamic client and records
   the issued `client_id`; a later one reuses it and must return the same

@@ -471,46 +471,31 @@ pub fn list_connection_models(connection: &LocalConnection) -> Result<Vec<Listed
 }
 
 /// Open the sign-in address in the system browser without a shell. Only an
-/// OpenAI sign-in address is opened.
+/// OpenAI sign-in address is opened. Windows uses the shell's URL association
+/// (`ShellExecuteExW`), not `explorer.exe`, which opened a File Explorer
+/// window for the long authorize address (ADR-0094).
+///
+/// The Windows hand-off wait ends early once `cancel` is set. A hand-off
+/// still running after [`omgcode_platform::browser::HAND_OFF_WAIT`], or
+/// abandoned on cancel, is not a failure here: the browser may yet open, so
+/// the sign-in goes on to its callback wait, which reports the cancel at once
+/// and otherwise keeps the sign-in deadline. The CLI prints the address before
+/// this call either way.
 ///
 /// # Errors
 ///
 /// [`SignInError::Browser`] when the address is not OpenAI's or no browser
 /// could be started.
-pub fn open_system_browser(address: &str) -> Result<(), SignInError> {
+pub fn open_system_browser(address: &str, cancel: &CancelToken) -> Result<(), SignInError> {
+    use omgcode_platform::browser::{Handoff, open_https_address};
     if !address.starts_with("https://auth.openai.com/api/accounts/authorize?") {
         return Err(SignInError::Browser);
     }
-    launch_browser(address)
-}
-
-#[cfg(windows)]
-fn launch_browser(address: &str) -> Result<(), SignInError> {
-    let root = std::env::var_os("SystemRoot").ok_or(SignInError::Browser)?;
-    std::process::Command::new(std::path::PathBuf::from(root).join("explorer.exe"))
-        .arg(address)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(drop)
-        .map_err(|_| SignInError::Browser)
-}
-
-#[cfg(not(windows))]
-fn launch_browser(address: &str) -> Result<(), SignInError> {
-    let mut child = std::process::Command::new("/usr/bin/xdg-open")
-        .arg(address)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| SignInError::Browser)?;
-    // Reap the launcher so it does not linger as a zombie.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    match open_https_address(address, &|| cancel.is_cancelled())
+        .map_err(|_| SignInError::Browser)?
+    {
+        Handoff::Done | Handoff::Pending => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -525,7 +510,10 @@ mod tests {
             "https://evil.test/?https://auth.openai.com/api/accounts/authorize?",
             "file:///etc/passwd",
         ] {
-            assert_eq!(open_system_browser(address), Err(SignInError::Browser));
+            assert_eq!(
+                open_system_browser(address, &CancelToken::new()),
+                Err(SignInError::Browser)
+            );
         }
     }
 

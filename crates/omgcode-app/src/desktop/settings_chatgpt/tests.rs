@@ -14,6 +14,7 @@ use std::sync::Arc;
 use omgcode_core::control::{ControlStore, CredentialStore, ProviderProfileDeclaration};
 use omgcode_core::provider::OPENAI_ENDPOINT;
 use omgcode_core::provider::chatgpt::{PLAN_SCOPE, SignInError, SignedIn, TokenSet, new_host_id};
+use omgcode_core::turn::CancelToken;
 use zeroize::Zeroizing;
 
 use super::super::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
@@ -56,7 +57,7 @@ impl SettingsPrompt for Answers {
 
 /// Refuses to open anything, after checking that the address is OpenAI's
 /// sign-in page and names the loopback callback.
-fn refusing_opener(address: &str) -> Result<(), SignInError> {
+fn refusing_opener(address: &str, _cancel: &CancelToken) -> Result<(), SignInError> {
     assert!(
         address.starts_with("https://auth.openai.com/api/accounts/authorize?"),
         "{address}"
@@ -69,7 +70,7 @@ fn refusing_opener(address: &str) -> Result<(), SignInError> {
 }
 
 /// A browser opener that must not be reached.
-fn unreachable_opener(_address: &str) -> Result<(), SignInError> {
+fn unreachable_opener(_address: &str, _cancel: &CancelToken) -> Result<(), SignInError> {
     panic!("the browser must not be opened");
 }
 
@@ -328,6 +329,60 @@ fn a_cancel_during_the_confirmation_is_kept_and_nothing_is_recorded() {
             .expect("slot")
             .is_none()
     );
+}
+
+/// Set once [`stalled_opener`] has started stalling.
+static OPENER_STALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stalls like a hung URL handler until the sign-in's cancel token is set,
+/// for at most ten seconds, then reports the hand-off as made.
+fn stalled_opener(_address: &str, cancel: &CancelToken) -> Result<(), SignInError> {
+    OPENER_STALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !cancel.is_cancelled() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_cancel_during_a_stalled_browser_step_ends_the_sign_in_and_frees_the_slot() {
+    let fixture = Fixture::new();
+    let service = fixture.service(stalled_opener);
+    let started = std::time::Instant::now();
+    let error = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !OPENER_STALLED.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the browser step did not start"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            service.settings_cancel_chatgpt_sign_in();
+        });
+        service
+            .settings_sign_in_chatgpt(fixture.request("fresh"), &Answers::with(&[true]))
+            .expect_err("cancelled")
+    });
+    assert_eq!(error.code(), "cancelled", "{}", error.message());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the cancel must end the stalled browser step"
+    );
+    assert!(
+        service
+            .inner
+            .chatgpt_sign_in
+            .lock()
+            .expect("slot")
+            .is_none(),
+        "the sign-in slot is released"
+    );
+    let store = fixture.store();
+    let profile = store.provider_profile("fresh").expect("recorded profile");
+    assert!(profile.credential().is_none(), "no token is recorded");
 }
 
 #[test]

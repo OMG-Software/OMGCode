@@ -1,6 +1,6 @@
 # 0093: Sign in with ChatGPT and use the plan through the Responses API
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0094](0094-open-the-sign-in-page-through-the-shell-url-association.md)
 - Date: 2026-11-24
 
 ## Context

@@ -977,7 +977,7 @@ not stored.
 | omgcode-cli | Trusted operator input as a thin adapter over `omgcode-app`, bounded file and preview commands, trusted `run`, approvals, JSON output |
 | omgcode-app | Front-end-neutral chat turn with optional read/list and approval-gated edit and command tools, session creation, compaction, the data-root resolver, token redaction, and `DesktopService`. It grants no authority |
 | omgcode-desktop | The Tauri shell: windows, per-window capability files, the Rust window policy, command handlers, and the navigation guard. The TypeScript frontend is in `ui/` |
-| omgcode-platform | Native journal validation, directory identity, handle-relative workspace file operations, Windows AppContainer grants, interrupt-to-cancel handling, and a process-tree runner with Linux Landlock/seccomp and Windows AppContainer confinement |
+| omgcode-platform | Native journal validation, directory identity, opening an `https` sign-in address in the default browser (ADR-0094), handle-relative workspace file operations, Windows AppContainer grants, interrupt-to-cancel handling, and a process-tree runner with Linux Landlock/seccomp and Windows AppContainer confinement |
 
 Core, CLI, application, and desktop crates forbid unsafe code through the
 workspace lint. Their dependencies, such as Tauri and SQLite, use it. The platform crate denies unsafe code except

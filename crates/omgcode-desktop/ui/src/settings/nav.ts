@@ -1,5 +1,5 @@
 import { button, el, neutralise, replaceChildren } from "../dom";
-import { icon } from "../ui/icons";
+import { brandMark, icon } from "../ui/icons";
 import type { SectionId } from "./context";
 
 /** The sections in the order the navigation lists them. */
@@ -67,7 +67,7 @@ export function createNav(handlers: NavHandlers): Nav {
   const element = el(
     "nav",
     { class: "settings-nav", attrs: { "aria-label": "Settings sections" } },
-    el("h1", { text: "Settings" }),
+    el("h1", { class: "brand-title" }, brandMark(), "Settings"),
     list,
     el("div", { class: "nav-foot" }, refresh, revision),
   );

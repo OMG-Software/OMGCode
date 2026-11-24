@@ -9,6 +9,7 @@ description = "Front-end-neutral application services shared by the OMGCode CLI 
 
 [dependencies]
 omgcode-core = { path = "../omgcode-core" }
+omgcode-platform = { path = "../omgcode-platform" }
 directories.workspace = true
 zeroize.workspace = true
 serde.workspace = true

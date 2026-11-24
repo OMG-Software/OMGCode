@@ -269,7 +269,10 @@ pub struct SignedIn {
 ///
 /// `open_browser` receives the authorization address and starts the system
 /// browser; the CLI also prints it. The address carries no secret beyond
-/// this attempt's `state`, `nonce`, and PKCE challenge.
+/// this attempt's `state`, `nonce`, and PKCE challenge. The five-minute wait
+/// starts before `open_browser` is called, so time spent handing the address
+/// to the browser counts against it; an opener that blocks should watch
+/// `cancel` itself, because nothing here can interrupt it.
 ///
 /// # Errors
 ///
@@ -294,6 +297,9 @@ pub(crate) fn sign_in_within(
     if cancel.is_cancelled() {
         return Err(SignInError::Cancelled);
     }
+    // The deadline covers the browser step too, so a slow hand-off cannot
+    // stretch the sign-in past `wait`.
+    let deadline = std::time::Instant::now() + wait;
     let listener = callback::CallbackListener::bind()?;
     let redirect_uri = listener.redirect_uri();
     let state = random_text()?;
@@ -301,7 +307,8 @@ pub(crate) fn sign_in_within(
     let verifier = random_text()?;
     let address = authorize_address(endpoints, request, &redirect_uri, &state, &nonce, &verifier);
     open_browser(address.as_str())?;
-    let callback = listener.wait(&state, request.client_id.as_deref(), wait, cancel)?;
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let callback = listener.wait(&state, request.client_id.as_deref(), remaining, cancel)?;
     let client_id = callback.client_id;
     let form = form_body(&[
         ("grant_type", "authorization_code"),

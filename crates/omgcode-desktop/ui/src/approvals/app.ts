@@ -4,6 +4,7 @@ import { approvalsApi } from "../ipc/approvals_client";
 import { toIpcError } from "../ipc/errors";
 import type { ApprovalList, ApprovalView } from "../ipc/types";
 import { createPoller } from "../poll";
+import { brandMark } from "../ui/icons";
 import { createTabs, tabIdFor } from "../ui/tabs";
 import { operationLabel, orderApprovals, remainingSeconds } from "./model";
 import { createReviewPanel, type ShowOptions } from "./review";
@@ -139,7 +140,7 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
       el(
         "header",
         { class: "approvals-header" },
-        el("h1", { text: "Approvals" }),
+        el("h1", { class: "brand-title" }, brandMark(), "Approvals"),
         badge,
         el("p", {
           class: "intro",

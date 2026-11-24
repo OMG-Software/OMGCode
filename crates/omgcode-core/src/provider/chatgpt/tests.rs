@@ -547,6 +547,58 @@ fn another_path_is_not_found_and_the_wait_continues() {
 }
 
 #[test]
+fn a_slow_browser_step_counts_against_the_sign_in_wait() {
+    let service = MockService::start();
+    let started = std::time::Instant::now();
+    // The browser step alone outlasts the wait, so the callback wait must
+    // not start a fresh one.
+    let mut slow = |_: &str| {
+        std::thread::sleep(Duration::from_secs(2));
+        Ok(())
+    };
+    let result = sign_in_within(
+        &service.endpoints(),
+        &new_request(),
+        &mut slow,
+        Duration::from_millis(1500),
+        &CancelToken::new(),
+    );
+    assert_eq!(result.expect_err("timed out"), SignInError::TimedOut);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the deadline includes the browser step: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A regression guard, not coverage of the browser-step fix: the callback
+/// wait already checked the cancel token before its deadline, so this passes
+/// on the code before that fix too. The fix is covered by
+/// `a_slow_browser_step_counts_against_the_sign_in_wait` and by the platform
+/// crate's stop test.
+#[test]
+fn a_cancel_during_the_browser_step_ends_the_sign_in() {
+    let service = MockService::start();
+    let cancel = CancelToken::new();
+    let canceller = cancel.clone();
+    let started = std::time::Instant::now();
+    let mut stalled = |_: &str| {
+        canceller.cancel();
+        std::thread::sleep(Duration::from_millis(200));
+        Ok(())
+    };
+    let result = sign_in_within(
+        &service.endpoints(),
+        &new_request(),
+        &mut stalled,
+        Duration::from_secs(30),
+        &cancel,
+    );
+    assert_eq!(result.expect_err("cancelled"), SignInError::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
 fn the_wait_stops_when_cancelled_or_timed_out() {
     let service = MockService::start();
     let cancel = CancelToken::new();
