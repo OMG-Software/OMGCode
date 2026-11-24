@@ -1675,7 +1675,12 @@ export function isCustomEndpoint(endpoint: string): boolean {
 // Mirrors core's `is_this_computer`: `localhost` names, and loopback or unspecified addresses,
 // including IPv4-mapped IPv6. `URL` writes IPv4 in dotted decimal and IPv6 compressed.
 function namesThisComputer(hostname: string): boolean {
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+  // A name with trailing root dots (`localhost.`) resolves the same, so they are dropped first.
+  let name = hostname;
+  while (name.endsWith(".")) {
+    name = name.slice(0, -1);
+  }
+  if (name === "localhost" || name.endsWith(".localhost")) {
     return true;
   }
   const octets = hostname.split(".");
