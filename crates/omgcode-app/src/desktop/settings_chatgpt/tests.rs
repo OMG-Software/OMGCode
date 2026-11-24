@@ -1,0 +1,297 @@
+//! Tests for the ChatGPT settings commands.
+//!
+//! No test reaches OpenAI: every service here replaces the browser opener
+//! with one that refuses, so a sign-in ends before any network request, and
+//! no test stores a token.
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use omgcode_core::control::{ControlStore, ProviderProfileDeclaration};
+use omgcode_core::provider::OPENAI_ENDPOINT;
+use omgcode_core::provider::chatgpt::SignInError;
+
+use super::super::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
+use super::super::{DesktopConfig, DesktopService};
+use super::{ChatGptRequest, ChatGptSignOutResult};
+use crate::TokenSource;
+
+/// Answers confirmations in order and records each title.
+struct Answers {
+    answers: RefCell<VecDeque<bool>>,
+    titles: RefCell<Vec<&'static str>>,
+}
+
+impl Answers {
+    fn with(answers: &[bool]) -> Self {
+        Self {
+            answers: RefCell::new(answers.iter().copied().collect()),
+            titles: RefCell::default(),
+        }
+    }
+
+    fn titles(&self) -> Vec<&'static str> {
+        self.titles.take()
+    }
+}
+
+impl SettingsPrompt for Answers {
+    fn pick_folder(&self, _purpose: FolderPurpose, _start: Option<&Path>) -> Option<PathBuf> {
+        panic!("no folder dialog is expected");
+    }
+
+    fn confirm(&self, confirmation: &Confirmation) -> bool {
+        self.titles.borrow_mut().push(confirmation.title);
+        self.answers
+            .borrow_mut()
+            .pop_front()
+            .expect("an unexpected confirmation")
+    }
+}
+
+/// Refuses to open anything, after checking that the address is OpenAI's
+/// sign-in page and names the loopback callback.
+fn refusing_opener(address: &str) -> Result<(), SignInError> {
+    assert!(
+        address.starts_with("https://auth.openai.com/api/accounts/authorize?"),
+        "{address}"
+    );
+    assert!(
+        address.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A"),
+        "{address}"
+    );
+    Err(SignInError::Browser)
+}
+
+/// A browser opener that must not be reached.
+fn unreachable_opener(_address: &str) -> Result<(), SignInError> {
+    panic!("the browser must not be opened");
+}
+
+struct Fixture {
+    _directory: tempfile::TempDir,
+    data: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("data");
+        private_data_root(&data);
+        let mut store = ControlStore::open(&data).expect("control store");
+        for (name, kind, auth) in [
+            ("plan", "openai", "subscription"),
+            ("keys", "openai", "api_key"),
+        ] {
+            let revision = store.revision();
+            store
+                .add_provider_profile(
+                    &ProviderProfileDeclaration {
+                        name: name.into(),
+                        kind: kind.into(),
+                        auth: auth.into(),
+                        endpoint: Some(OPENAI_ENDPOINT.into()),
+                    },
+                    revision,
+                )
+                .expect("profile");
+        }
+        Self {
+            _directory: directory,
+            data,
+        }
+    }
+
+    fn service(&self, opener: super::BrowserOpener) -> DesktopService {
+        let mut service = DesktopService::open(DesktopConfig {
+            data_root: self.data.clone(),
+            // Never contacted: no turn is sent.
+            endpoint: "http://127.0.0.1:9/v1".into(),
+            token_source: TokenSource::Active,
+            stream: false,
+        })
+        .expect("desktop service");
+        Arc::get_mut(&mut service.inner)
+            .expect("a service no one else holds")
+            .open_browser = opener;
+        service
+    }
+
+    fn store(&self) -> ControlStore {
+        ControlStore::open(&self.data).expect("control store")
+    }
+
+    fn request(&self, name: &str) -> ChatGptRequest {
+        ChatGptRequest {
+            revision: self.store().revision(),
+            name: name.into(),
+        }
+    }
+}
+
+/// Create `data` with an owner-only ACL, as the private store requires.
+fn private_data_root(data: &Path) {
+    std::fs::create_dir(data).expect("data root");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o700))
+            .expect("private mode");
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let output = Command::new("whoami")
+            .args(["/user", "/fo", "csv", "/nh"])
+            .output()
+            .expect("whoami");
+        assert!(output.status.success(), "whoami failed");
+        let text = String::from_utf8(output.stdout).expect("UTF-8");
+        let sid = text
+            .trim()
+            .rsplit(',')
+            .next()
+            .expect("SID column")
+            .trim_matches('"')
+            .to_owned();
+        let status = Command::new("icacls")
+            .arg(data)
+            .args(["/inheritance:r", "/grant:r", &format!("*{sid}:(OI)(CI)F")])
+            .output()
+            .expect("icacls");
+        assert!(status.status.success(), "icacls failed");
+    }
+}
+
+#[test]
+fn declining_the_confirmation_records_nothing_and_opens_nothing() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    let before = fixture.store().revision();
+    let answers = Answers::with(&[false]);
+    let error = service
+        .settings_sign_in_chatgpt(fixture.request("fresh"), &answers)
+        .expect_err("declined");
+    assert_eq!(error.code(), "cancelled");
+    assert_eq!(answers.titles(), ["Sign in with ChatGPT"]);
+    let store = fixture.store();
+    assert_eq!(store.revision(), before);
+    assert!(store.provider_profile("fresh").is_none());
+}
+
+#[test]
+fn only_a_chatgpt_profile_can_sign_in() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    // Refused before the confirmation, so no answer is queued.
+    let answers = Answers::with(&[]);
+    let error = service
+        .settings_sign_in_chatgpt(fixture.request("keys"), &answers)
+        .expect_err("an API key profile");
+    assert_eq!(error.code(), "control", "{}", error.message());
+    assert!(answers.titles().is_empty());
+}
+
+#[test]
+fn a_stale_revision_is_refused_first() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    let mut request = fixture.request("plan");
+    request.revision -= 1;
+    let error = service
+        .settings_sign_in_chatgpt(request, &Answers::with(&[]))
+        .expect_err("stale");
+    assert_eq!(error.code(), "stale_revision");
+}
+
+#[test]
+fn a_new_name_records_the_profile_and_a_failed_browser_step_stores_no_token() {
+    let fixture = Fixture::new();
+    let service = fixture.service(refusing_opener);
+    let answers = Answers::with(&[true]);
+    let error = service
+        .settings_sign_in_chatgpt(fixture.request("fresh"), &answers)
+        .expect_err("the browser cannot open");
+    assert!(
+        error.message().contains("browser_unavailable"),
+        "{}: {}",
+        error.code(),
+        error.message()
+    );
+    assert_eq!(answers.titles(), ["Sign in with ChatGPT"]);
+    let store = fixture.store();
+    let profile = store.provider_profile("fresh").expect("recorded profile");
+    assert_eq!(profile.profile().kind().as_str(), "openai");
+    assert_eq!(profile.profile().auth().as_str(), "subscription");
+    assert_eq!(
+        profile
+            .profile()
+            .endpoint()
+            .map(|endpoint| endpoint.as_str()),
+        Some(OPENAI_ENDPOINT)
+    );
+    assert!(profile.credential().is_none());
+    assert!(profile.subscription().is_none());
+    // The wait's cancel token is gone, so a later cancel is a no-op.
+    assert!(
+        service
+            .inner
+            .chatgpt_sign_in
+            .lock()
+            .expect("slot")
+            .is_none()
+    );
+}
+
+#[test]
+fn an_existing_profile_with_a_failed_browser_step_is_left_signed_out() {
+    let fixture = Fixture::new();
+    let service = fixture.service(refusing_opener);
+    service
+        .settings_sign_in_chatgpt(fixture.request("plan"), &Answers::with(&[true]))
+        .expect_err("the browser cannot open");
+    let store = fixture.store();
+    let profile = store.provider_profile("plan").expect("profile");
+    assert!(profile.credential().is_none());
+}
+
+#[test]
+fn cancel_without_a_sign_in_does_nothing() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    service.settings_cancel_chatgpt_sign_in();
+    assert!(
+        service
+            .inner
+            .chatgpt_sign_in
+            .lock()
+            .expect("slot")
+            .is_none()
+    );
+}
+
+#[test]
+fn cancel_sets_the_running_sign_ins_token() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    let cancel = omgcode_core::turn::CancelToken::new();
+    *service.inner.chatgpt_sign_in.lock().expect("slot") = Some(cancel.clone());
+    service.settings_cancel_chatgpt_sign_in();
+    assert!(cancel.is_cancelled());
+}
+
+#[test]
+fn signing_out_a_profile_that_is_not_signed_in_is_refused_before_asking() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    for name in ["plan", "keys", "missing"] {
+        let answers = Answers::with(&[]);
+        let error: Result<ChatGptSignOutResult, _> =
+            service.settings_sign_out_chatgpt(fixture.request(name), &answers);
+        let error = error.expect_err("not signed in");
+        assert_eq!(error.code(), "credential", "{name}: {}", error.message());
+        assert!(answers.titles().is_empty());
+    }
+}

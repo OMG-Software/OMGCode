@@ -120,6 +120,11 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                 credential_bound: status.credential().is_some(),
                 selectable: store.check_provider_selectable(profile.name()).is_ok(),
                 active: active == Some(profile.id()),
+                account_label: status
+                    .credential()
+                    .and(status.subscription())
+                    .and_then(|registration| registration.account_label())
+                    .map(display_safe_line),
             }
         })
         .collect();

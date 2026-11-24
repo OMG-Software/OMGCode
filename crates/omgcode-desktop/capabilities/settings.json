@@ -10,6 +10,7 @@
     "allow-settings-add-connection",
     "allow-settings-add-package-profile",
     "allow-settings-add-toolchain-profile",
+    "allow-settings-cancel-chatgpt-sign-in",
     "allow-settings-choose-package-cache",
     "allow-settings-choose-root",
     "allow-settings-clear-package-cache",
@@ -30,6 +31,8 @@
     "allow-settings-set-permissions",
     "allow-settings-set-skill-state",
     "allow-settings-set-workspace-instructions",
+    "allow-settings-sign-in-chatgpt",
+    "allow-settings-sign-out-chatgpt",
     "allow-settings-unregister-workspace"
   ]
 }

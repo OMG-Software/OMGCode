@@ -6,6 +6,33 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.59.0 adds Sign in with ChatGPT (ADR-0092). An `openai` profile
+  with authentication `subscription` and OpenAI's fixed endpoint signs in
+  through `omgcode workspace provider-signin <name> --revision <n>` or **Sign
+  in with ChatGPT** in the desktop `settings` window, which records the
+  profile first when the name has none. Rust opens the system browser on
+  OpenAI's authorization page with PKCE S256, a random `state` and `nonce`,
+  and a per-host `urn:uuid:` identifier, waits at most five minutes for a
+  `127.0.0.1` loopback callback, checks the state and issued client, and
+  validates the ID token's RS256 signature, issuer, audience, expiry, nonce,
+  and subject. The granted scopes must include `chatgpt.tokens.use.direct`.
+  The access and refresh tokens are kept in protected OS storage as one
+  record in two immutable slots and are refreshed, with rotation, under a
+  per-session OS file lock; a refused refresh asks for a new sign-in. A new
+  control-journal event, `provider_subscription_bound`, records the client,
+  subject, account label, host identifier, and binding; a journal that holds
+  it cannot be read by 0.58.0 or earlier. `provider-signout` and **Sign out**
+  revoke the refresh token once and delete the tokens; a signed-in profile
+  cannot be removed, and `provider-credential-remove` refuses subscription
+  profiles. Chat, compaction, and tool turns of a ChatGPT connection use the
+  Responses API with `store:false` and streaming, the model list reads the
+  plan route's `models` array, and plan failures are reported by code with no fallback to API billing.
+  API-key profiles keep the Chat Completions path. The desktop shell gains
+  `settings_sign_in_chatgpt`, `settings_cancel_chatgpt_sign_in`, and
+  `settings_sign_out_chatgpt` (59 commands, 27 in `settings`). New
+  dependencies: `rsa` (with `pkcs1v15`), `base64`, and `getrandom`. Every test
+  uses loopback mock servers; no real sign-in, refresh, revocation, or
+  plan-backed request was made, and plan usage is not verified.
 - Version 0.58.0 adds hosted model providers and an OpenAI-compatible
   connection (ADR-0091). New provider kinds `google`, `meta`, `moonshot`,
   `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and

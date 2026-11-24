@@ -30,6 +30,7 @@ mod profile;
 mod provider;
 mod skill;
 mod skill_package;
+mod subscription;
 
 pub use approval::{
     ApprovalBinding, ApprovalDecision, ApprovalDeclaration, ApprovalOperation, ApprovalRequest,
@@ -72,6 +73,8 @@ pub use provider::{
     MAX_PROVIDER_ENDPOINT_BYTES, MAX_PROVIDER_PROFILES, ProviderAuth, ProviderEndpoint,
     ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
 };
+
+pub use subscription::{SubscriptionConnection, SubscriptionRegistration};
 
 pub use skill::{
     MAX_SKILL_ALLOWED_TOOLS, MAX_SKILL_ALLOWED_TOOLS_BYTES, MAX_SKILL_COMPATIBILITY_CHARS,
@@ -273,6 +276,10 @@ pub struct ControlSnapshot {
     /// endpoint. It always names a profile in `provider_profiles`.
     #[serde(skip_serializing_if = "Option::is_none")]
     active_provider: Option<Uuid>,
+    /// The host identifier every ChatGPT sign-in from this data root sends
+    /// (ADR-0092), recorded by the first sign-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subscription_host: Option<String>,
     /// Imported skills. A record is configuration, never authority.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skills: Vec<SkillRecord>,
@@ -497,6 +504,13 @@ enum Action {
         profile_id: Uuid,
         #[serde(with = "credential::id_text")]
         credential_id: CredentialId,
+    },
+    /// A ChatGPT sign-in completed (ADR-0092). Sign-out is
+    /// `ProviderCredentialRemoved`.
+    ProviderSubscriptionBound {
+        profile_id: Uuid,
+        binding: CredentialBinding,
+        registration: SubscriptionRegistration,
     },
     SkillAdded(SkillRecord),
     SkillRemoved {
@@ -806,6 +820,7 @@ impl ControlStore {
                 workspace_stores: Vec::new(),
                 provider_profiles: Vec::new(),
                 active_provider: None,
+                subscription_host: None,
                 skills: Vec::new(),
                 skill_enablement: Vec::new(),
                 approvals: Vec::new(),
@@ -1717,6 +1732,9 @@ impl ControlStore {
             }
             Action::ProviderCredentialBound { .. } | Action::ProviderCredentialRemoved { .. } => {
                 credential::apply(state, &entry.action)?;
+            }
+            Action::ProviderSubscriptionBound { .. } => {
+                subscription::apply(state, &entry.action)?;
             }
             Action::SkillAdded(_) | Action::SkillRemoved { .. } => {
                 skill::apply(state, &entry.action)?;

@@ -88,9 +88,16 @@ kinds each accept only their provider's one documented OpenAI-compatible
 endpoint, and an `openai_compatible` profile records an operator-typed
 `https://` base URL that core refuses rather than rewrites
 ([ADR-0091](docs/adr/0091-add-hosted-providers-and-an-openai-compatible-connection.md)).
-Every hosted profile needs a stored API key. No hosted provider's chat,
-stream, or tool-call shapes were verified with a real key. No native provider
-API, subscription sign-in, or login exists. Trusted
+Every hosted API-key profile needs a stored API key. No hosted provider's
+chat, stream, or tool-call shapes were verified with a real key. An `openai`
+profile with authentication `subscription` signs in with ChatGPT through
+OpenAI's documented browser flow (PKCE, state, nonce, ID-token and plan-scope
+checks) from the trusted CLI or the `settings` window, keeps rotating tokens
+in protected OS storage under a per-session lock, and chats through the
+Responses API; no real sign-in or plan-backed request was made, so plan usage
+is unverified
+([ADR-0092](docs/adr/0092-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+No native provider API, Claude subscription sign-in, or other login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
 in the same turn; on the CLI only a later identical call may consume an
@@ -169,7 +176,7 @@ The `settings` window imports, enables, and removes skills
 and removes toolchain profiles, package-network profiles, and, on Windows,
 container grants, after native confirmations; none can be edited
 ([ADR-0088](docs/adr/0088-change-execution-settings-in-the-settings-window.md)).
-Other credentials still change, and packages are fetched and programs run,
+Other credentials, apart from ChatGPT sign-in and sign-out, still change, and packages are fetched and programs run,
 only through the trusted CLI. The desktop shell has no working terminal, diff
 view, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not

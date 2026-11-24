@@ -262,7 +262,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 56 commands (24 in the `settings` window). No other command exists.
+The shell has three webview windows and 59 commands (27 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -313,6 +313,9 @@ their registered identifier, and approvals by identifier.
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0091) |
 | `settings_set_api_key` | settings | Replace the stored API key of a hosted profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
+| `settings_sign_in_chatgpt` | settings | After a native confirmation, sign a connection in with ChatGPT, recording an `openai` subscription profile first when the name has none; Rust opens the browser and waits at most five minutes (ADR-0092) |
+| `settings_cancel_chatgpt_sign_in` | settings | End the running ChatGPT sign-in's wait; takes nothing and grants nothing |
+| `settings_sign_out_chatgpt` | settings | After a native confirmation, revoke a ChatGPT session once, record the sign-out, and delete its tokens; reports whether OpenAI confirmed the revocation |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
 | `settings_import_skill` | settings | Import a skill folder, chosen in a native dialog, through core as `omgcode skills add` does; the skill arrives disabled and no confirmation follows (ADR-0082) |
@@ -1522,6 +1525,27 @@ revision check and validation (ADR-0064, ADR-0071).
   reported as `credential_orphaned` with that item's identifier. A session that chose the removed profile
   refuses its next turn with `session_connection_stale` until the provider is
   chosen again.
+- **Signing in with ChatGPT** (ADR-0092). The **Model** section's **Sign in
+  with ChatGPT** disclosure takes a connection name (default `chatgpt`), and a
+  signed-out ChatGPT row offers the same button. `settings_sign_in_chatgpt`
+  takes the revision and the name. Rust refuses a stale revision, a profile
+  that is not an `openai` subscription profile, and one already signed in,
+  then asks "Open OpenAI's sign-in page in your browser to connect `<name>`
+  to your ChatGPT plan?", which names what goes to OpenAI and says that a
+  completed sign-in does not show the plan will accept OMGCode's requests.
+  After Yes a new name is recorded as an `openai` subscription profile with
+  OpenAI's endpoint, and Rust opens the system browser itself: the webview
+  never receives the authorization address, the callback, or a token. While
+  Rust waits, the window shows a bar with **Cancel sign-in** outside the
+  disabled body; it calls `settings_cancel_chatgpt_sign_in`, which only sets
+  the sign-in's cancel token. A failed sign-in shows its stable code, such
+  as `plan_usage_not_granted`, and stores no token. A signed-in row reads
+  "Signed in with ChatGPT as `<email>`", carries a **ChatGPT plan** chip and
+  no API key field, and offers **Sign out**, which asks "Sign `<name>` out of
+  ChatGPT?" and calls `settings_sign_out_chatgpt`. When OpenAI did not
+  confirm the revocation the window says so and points to ChatGPT's
+  settings. A signed-in connection cannot be removed. No real sign-in was
+  made from the shell, and the browser launch is not driven by a test.
 - **Ollama context length.** OMGCode cannot set Ollama's context length over
   this API. Set it in Ollama, for example with `OLLAMA_CONTEXT_LENGTH`, and
   give the composer the same context size.

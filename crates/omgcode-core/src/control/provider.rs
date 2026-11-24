@@ -267,6 +267,9 @@ pub struct ProviderProfileStatus {
     revision: u64,
     #[serde(serialize_with = "credential::serialize_state")]
     pub(super) credential: Option<CredentialBinding>,
+    /// The ChatGPT registration, kept after sign-out (ADR-0092).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) subscription: Option<super::SubscriptionRegistration>,
 }
 
 impl ProviderProfileStatus {
@@ -283,6 +286,11 @@ impl ProviderProfileStatus {
     /// The bound credential, if any.
     pub const fn credential(&self) -> Option<&CredentialBinding> {
         self.credential.as_ref()
+    }
+
+    /// The ChatGPT registration, if the profile has ever signed in.
+    pub const fn subscription(&self) -> Option<&super::SubscriptionRegistration> {
+        self.subscription.as_ref()
     }
 }
 
@@ -447,6 +455,11 @@ impl ControlStore {
             .ok_or(ControlError::UnknownProvider)?;
         let profile_id = status.profile.id;
         let credential = status.credential.clone();
+        if status.profile.auth == ProviderAuth::Subscription && credential.is_some() {
+            return Err(ControlError::ProviderRefused(
+                "this profile is signed in with ChatGPT; sign out first",
+            ));
+        }
         self.append(
             Action::ProviderProfileRemoved {
                 profile_id,
@@ -485,6 +498,7 @@ pub(super) fn apply(
                 profile: profile.clone(),
                 revision,
                 credential: None,
+                subscription: None,
             });
         }
         Action::ProviderProfileRemoved {
@@ -594,9 +608,10 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
     }
 }
 
-/// The authentication modes a kind may record. `subscription` stays
-/// recordable for OpenAI and Anthropic so journals written before 0.57.0
-/// replay, but no adapter uses it; every other hosted kind is `api_key` only.
+/// The authentication modes a kind may record. An OpenAI `subscription`
+/// profile signs in with ChatGPT (ADR-0092). An Anthropic `subscription`
+/// profile stays recordable so journals written before 0.57.0 replay, but no
+/// adapter uses it; every other hosted kind is `api_key` only.
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {
         ProviderKind::OpenAi | ProviderKind::Anthropic => {

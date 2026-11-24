@@ -539,6 +539,15 @@ impl ControlStore {
         name: &str,
         expected_revision: u64,
     ) -> Result<ProviderCredentialRemoval, ProviderCredentialError> {
+        if self
+            .provider_profile(name)
+            .is_some_and(|status| status.profile().auth() == ProviderAuth::Subscription)
+        {
+            return Err(ControlError::ProviderRefused(
+                "a ChatGPT session ends with provider-signout, which also revokes it",
+            )
+            .into());
+        }
         let (profile_id, binding) = self.unbind_credential(name, expected_revision)?;
         let orphan = delete_unbound_credential(credentials, &binding);
         Ok(ProviderCredentialRemoval {
@@ -727,7 +736,7 @@ impl ControlStore {
     }
 
     /// Record that the named profile's binding is removed.
-    fn unbind_credential(
+    pub(super) fn unbind_credential(
         &mut self,
         name: &str,
         expected_revision: u64,
@@ -771,8 +780,18 @@ pub fn delete_unbound_credential(
             )),
         });
     }
-    match credentials.delete(&binding.id) {
+    // A ChatGPT session also has a companion slot (ADR-0092); an API key
+    // never does, so its companion is simply absent.
+    let companion = crate::provider::chatgpt::companion_credential_id(&binding.id);
+    let companion_orphan = match credentials.delete(&companion) {
         Ok(()) | Err(CredentialError::NotFound) => None,
+        Err(error) => Some(OrphanedCredential {
+            id: companion,
+            error,
+        }),
+    };
+    match credentials.delete(&binding.id) {
+        Ok(()) | Err(CredentialError::NotFound) => companion_orphan,
         Err(error) => Some(OrphanedCredential {
             id: binding.id.clone(),
             error,
@@ -879,7 +898,7 @@ fn require_api_key(auth: ProviderAuth) -> Result<(), ControlError> {
     match auth {
         ProviderAuth::ApiKey => Ok(()),
         ProviderAuth::Subscription => Err(ControlError::ProviderRefused(
-            "subscription credentials are not supported yet; only api_key profiles accept a stored credential",
+            "a subscription profile is not given a stored credential; an openai subscription profile signs in with ChatGPT",
         )),
         ProviderAuth::None => Err(ControlError::ProviderRefused(
             "this provider profile uses no credential; only api_key profiles accept a stored credential",

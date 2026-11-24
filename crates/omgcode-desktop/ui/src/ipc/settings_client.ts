@@ -1,5 +1,11 @@
 import { invokeCommand } from "./client";
-import type { ChatBudgets, NewConnectionKind, PermissionFlags, SettingsOverview } from "./types";
+import type {
+  ChatBudgets,
+  ChatGptSignOutResult,
+  NewConnectionKind,
+  PermissionFlags,
+  SettingsOverview,
+} from "./types";
 
 /**
  * Commands that only the settings window may call (ADR-0059, ADR-0060, ADR-0064). Imported by
@@ -78,6 +84,17 @@ export const settingsApi = {
   clearScope: () => invokeCommand<SettingsOverview>("settings_clear_scope", {}),
   removeConnection: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_connection", { revision, name }),
+  /**
+   * Signs a connection in with ChatGPT (ADR-0092). Rust confirms natively, opens the system
+   * browser, and waits for OpenAI's answer; this window never sees the address or a token.
+   */
+  signInChatGpt: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_sign_in_chatgpt", { revision, name }),
+  /** Ends the running ChatGPT sign-in's wait, if any. */
+  cancelChatGptSignIn: () => invokeCommand<null>("settings_cancel_chatgpt_sign_in", {}),
+  /** Revokes and forgets a ChatGPT sign-in after a native confirmation. */
+  signOutChatGpt: (revision: number, name: string) =>
+    invokeCommand<ChatGptSignOutResult>("settings_sign_out_chatgpt", { revision, name }),
   /** Saves the chat budgets and the global custom instructions (ADR-0080). Grants nothing. */
   saveChatDefaults: (defaults: ChatBudgets) =>
     invokeCommand<SettingsOverview>("settings_save_chat_defaults", { defaults }),

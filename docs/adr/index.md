@@ -106,3 +106,4 @@ meaningful alternative does not need an ADR.
 | [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted | 2026-11-24 |
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Add hosted providers and an OpenAI-compatible connection](0091-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |
+| [0092: Sign in with ChatGPT and use the plan through the Responses API](0092-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md) | Accepted | 2026-11-24 |

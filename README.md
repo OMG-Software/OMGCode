@@ -253,8 +253,9 @@ data upstream; check the server's configuration before sending sensitive text.
   hosted connections was tested with a real key, and the path's compatibility
   and security are not release-qualified.
 - **Subscription authentication:** Required ChatGPT and Claude subscription
-  connections, alongside separate API-key connections. Provider eligibility
-  and approval remain implementation gates.
+  connections, alongside separate API-key connections. A ChatGPT sign-in
+  prototype exists (ADR-0092) but plan usage has not been verified with a real
+  account; Claude subscription sign-in still needs provider approval.
 - **Development tools:** Compilers, linkers, SDKs, formatters, linters, script
   interpreters, build systems, package managers, and test tools.
 - **Permission settings:** Toggle switches for file access, command execution,
@@ -304,7 +305,7 @@ data upstream; check the server's configuration before sending sensitive text.
 | Connection profile | Current state |
 | --- | --- |
 | OpenAI API | Prototype: Chat Completions at `https://api.openai.com/v1` with a stored API key (ADR-0091); not tested with a real key |
-| ChatGPT subscription | Planned: provider-supported sign-in and ChatGPT plan usage |
+| ChatGPT subscription | Prototype: Sign in with ChatGPT through OpenAI's documented browser flow and plan usage through the Responses API (ADR-0092); tested only against mock servers, no real sign-in or plan-backed request was made |
 | Anthropic API | Prototype: Anthropic's OpenAI SDK compatibility layer with a stored API key (ADR-0091), documented by Anthropic for testing; the native Messages API is planned; not tested with a real key |
 | Claude subscription | Required; provider approval and route remain unresolved |
 | Ollama Local | Prototype: Ollama's OpenAI-compatible `/v1` API over literal loopback HTTP (ADR-0064) |

@@ -39,6 +39,13 @@ export interface Actions {
   /** Replaces a hosted profile's stored API key. */
   setApiKey(name: string, apiKey: string): Change;
   removeConnection(name: string): Change;
+  /**
+   * Signs a connection in with ChatGPT, recording an `openai` subscription profile with this name
+   * when none exists (ADR-0092). Rust confirms natively and opens the browser.
+   */
+  signInChatGpt(name: string): Change;
+  /** Revokes and forgets a ChatGPT sign-in after a native confirmation. */
+  signOutChatGpt(name: string): Change;
   /** Saves the chat budgets and the global custom instructions (ADR-0080). */
   saveChatDefaults(defaults: ChatBudgets): Change;
   /** Replaces one workspace's custom instructions; empty text removes them. */

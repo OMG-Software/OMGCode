@@ -22,7 +22,7 @@ use omgcode_app::{
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::control::ProviderKind;
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
-use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig, list_local_models};
+use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig};
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -250,11 +250,12 @@ struct ModelsOutput {
 
 /// List the models of the connection `chat` would use with the same options.
 fn list_models(data_dir: Option<&Path>, args: ModelsArgs) -> Result<(), CliError> {
-    let LocalConnection { endpoint, token } =
-        local_connection(data_dir, args.endpoint, args.provider_profile.as_deref())?;
-    let models = list_local_models(&endpoint, token.as_ref().map(LmToken::expose))
-        .map_err(AppError::provider)?;
-    print_json(&ModelsOutput { endpoint, models })
+    let connection = local_connection(data_dir, args.endpoint, args.provider_profile.as_deref())?;
+    let models = omgcode_app::list_connection_models(&connection)?;
+    print_json(&ModelsOutput {
+        endpoint: connection.endpoint,
+        models,
+    })
 }
 
 /// Parse a skill name, so an invalid one is a usage error before anything runs.
@@ -493,14 +494,15 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
     // profile with no endpoint stops the command before the endpoint is
     // checked and before any journal exists. With a profile, its recorded
     // endpoint is the only endpoint used.
-    let LocalConnection { endpoint, token } = local_connection(
+    let connection = local_connection(
         data_dir.as_deref(),
         args.endpoint,
         args.provider_profile.as_deref(),
     )?;
-    let token_text = token.as_ref().map(LmToken::expose);
+    let token = connection.token.as_ref();
+    let token_text = token.map(LmToken::expose);
     let settings = ChatSettings {
-        endpoint,
+        endpoint: connection.endpoint.clone(),
         model: args.model,
         context_tokens: args.context_tokens,
         max_output_tokens: args.max_output_tokens,
@@ -510,7 +512,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         compact_threshold: args.compact_threshold,
         auto_compact: args.auto_compact,
     };
-    let clients = ChatClients::new(&settings, token_text)?;
+    let clients = ChatClients::for_connection(&settings, &connection)?;
     let title = redact_known_secret(&args.title, token_text);
     let path = if args.journal.is_some() || args.journal_native.is_some() {
         Some(resolve_journal(
@@ -585,18 +587,22 @@ fn compact_session(
             "summary-tokens must be positive and below context-tokens",
         ));
     }
-    let LocalConnection { endpoint, token } =
-        local_connection(data_dir.as_deref(), endpoint, provider_profile.as_deref())?;
+    let LocalConnection {
+        endpoint,
+        token,
+        plan,
+    } = local_connection(data_dir.as_deref(), endpoint, provider_profile.as_deref())?;
     let token_text = token.as_ref().map(LmToken::expose);
-    let client = LocalModelClient::new(
-        LocalModelConfig {
-            base_url: endpoint,
-            model,
-            context_tokens,
-            max_output_tokens: summary_tokens,
-        },
-        token_text.map(str::to_owned),
-    )
+    let config = LocalModelConfig {
+        base_url: endpoint,
+        model,
+        context_tokens,
+        max_output_tokens: summary_tokens,
+    };
+    let client = match &plan {
+        Some(plan) => LocalModelClient::chatgpt(config, plan.tokens()),
+        None => LocalModelClient::new(config, token_text.map(str::to_owned)),
+    }
     .map_err(provider_error)?;
     let data_root = data_root(data_dir)?;
     let path = resolve_journal(locator.journal, locator.journal_native)?;

@@ -665,6 +665,34 @@ fn provider_profiles_are_configuration_only_and_revisioned() {
         .as_u64()
         .expect("revision after add");
 
+    // ADR-0092: a subscription profile without OpenAI's endpoint is not a
+    // ChatGPT connection. Sign-in is refused before the browser step (standard
+    // error holds only the JSON error, never an address) and before any
+    // network use; sign-out of a profile that never signed in is refused too.
+    let output = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "provider-signin",
+            "work",
+            "--revision",
+            &revision.to_string(),
+        ],
+    );
+    assert_control_error(&output);
+    let output = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "provider-signout",
+            "work",
+            "--revision",
+            &revision.to_string(),
+        ],
+    );
+    assert!(!output.status.success(), "sign-out unexpectedly succeeded");
+    serde_json::from_slice::<Value>(&output.stderr).expect("CLI error is JSON");
+
     let output = run_cli(&data_root, &["workspace", "provider-profile-show", "WORK"]);
     assert_success(&output);
     let shown = json_output(&output);

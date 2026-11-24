@@ -1,5 +1,7 @@
+pub mod chatgpt;
 mod hosted;
 mod models;
+mod responses;
 mod stream;
 
 pub use hosted::{
@@ -8,13 +10,15 @@ pub use hosted::{
     OutputLimitField, TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT,
 };
 pub(crate) use hosted::{matches_fixed, validate_custom_url};
-pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models};
+pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models, list_subscription_models};
+pub use responses::ResponseFailure;
 
 use crate::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
 use crate::turn::{
     CancelToken, ModelError, ToolDefinition, ToolModel, ToolModelReply, ToolModelRequest,
 };
+use omgcode_platform::credentials::Zeroizing;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy;
 use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
@@ -22,12 +26,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The deadline of one plan-route Responses request (ADR-0092). The route
+/// always streams, and reasoning models routinely take longer than the
+/// thirty seconds a Chat Completions request has.
+const RESPONSES_TIMEOUT: Duration = Duration::from_secs(120);
+/// The most of a failed plan-route response body read to find its code.
+const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often a request looks at its cancel token while it waits. It is also
 /// the longest a cancellation waits for the next wake-up.
@@ -177,6 +188,18 @@ pub struct LocalModelClient {
     max_output_tokens: u32,
     authorization: Option<HeaderValue>,
     request_timeout: Duration,
+    protocol: Protocol,
+}
+
+/// The wire protocol a client speaks.
+enum Protocol {
+    /// OpenAI Chat Completions with a fixed token or none.
+    ChatCompletions,
+    /// The ChatGPT plan route's Responses API (ADR-0092). The source is asked
+    /// for a current access token before every request. It is shared by the
+    /// chat and summary clients of one turn and dropped with the last of them;
+    /// it holds no reference back to either client.
+    Responses(Arc<dyn AccessTokenSource>),
 }
 
 impl fmt::Debug for LocalModelClient {
@@ -187,8 +210,33 @@ impl fmt::Debug for LocalModelClient {
             .field("context_tokens", &self.context_tokens)
             .field("max_output_tokens", &self.max_output_tokens)
             .field("has_token", &self.authorization.is_some())
+            .field(
+                "protocol",
+                &match self.protocol {
+                    Protocol::ChatCompletions => "chat_completions",
+                    Protocol::Responses(_) => "chatgpt_responses",
+                },
+            )
             .finish()
     }
+}
+
+/// Supplies the current access token of a signed-in ChatGPT account
+/// (ADR-0092).
+///
+/// The implementation may wait for a lock and refresh the token over the
+/// network, so it blocks. It must watch `cancel` and return `Cancelled` once
+/// it is set. It is called outside any async runtime. The token zeroes
+/// itself on drop and must never be logged or placed in an error.
+pub trait AccessTokenSource: Send + Sync {
+    /// Return an access token valid for at least the next few minutes.
+    ///
+    /// # Errors
+    ///
+    /// `SignInRequired` when the account must sign in again,
+    /// `AccessTokenUnavailable` when the token cannot be read or refreshed
+    /// now, and `Cancelled` for a set token.
+    fn access_token(&self, cancel: &CancelToken) -> Result<Zeroizing<String>, ProviderError>;
 }
 
 /// A successful assistant reply and provider-reported usage, when available.
@@ -243,9 +291,21 @@ pub enum ProviderError {
     /// The server requested a tool or function call, which this adapter does not support.
     #[error("local model tool calls are not supported")]
     UnsupportedToolCall,
-    /// A streamed response ended before its `[DONE]` marker.
+    /// A streamed response ended before its `[DONE]` marker, or a Responses
+    /// stream before `response.completed`.
     #[error("local model stream ended before completion")]
     IncompleteStream,
+    /// The ChatGPT plan route refused or ended the request with a documented
+    /// code (ADR-0092). No provider text is kept.
+    #[error("ChatGPT plan request failed: {0}")]
+    ResponseFailed(ResponseFailure),
+    /// The ChatGPT account must sign in again: it is signed out, or its
+    /// refresh token was refused.
+    #[error("ChatGPT sign-in is required: sign out and sign in again")]
+    SignInRequired,
+    /// The ChatGPT access token could not be read or refreshed now.
+    #[error("the ChatGPT access token is unavailable")]
+    AccessTokenUnavailable,
     /// The caller's cancel token stopped a request. Text a streamed request
     /// already delivered stays delivered, and no reply exists.
     #[error("local model request was cancelled")]
@@ -331,7 +391,64 @@ impl LocalModelClient {
             max_output_tokens: config.max_output_tokens,
             authorization,
             request_timeout,
+            protocol: Protocol::ChatCompletions,
         })
+    }
+
+    /// Create a client for a signed-in ChatGPT account's plan (ADR-0092).
+    ///
+    /// `config.base_url` must be OpenAI's fixed endpoint, the one a
+    /// subscription profile records. Every request goes to `{base}/responses`
+    /// with an access token from `tokens`, which is asked again before each
+    /// request. `max_output_tokens` is used only for the context estimate:
+    /// the plan route refuses an output limit.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidConfiguration` for any other endpoint or an invalid model or
+    /// budget. Nothing is sent.
+    pub fn chatgpt(
+        config: LocalModelConfig,
+        tokens: Arc<dyn AccessTokenSource>,
+    ) -> Result<Self, ProviderError> {
+        if !matches_fixed(&config.base_url, OPENAI_ENDPOINT) {
+            return Err(ProviderError::InvalidConfiguration);
+        }
+        Self::responses_with_timeout(config, tokens, RESPONSES_TIMEOUT)
+    }
+
+    /// [`Self::chatgpt`] without the endpoint check, so unit tests can point
+    /// the same client at a loopback fixture with a short deadline.
+    fn responses_with_timeout(
+        config: LocalModelConfig,
+        tokens: Arc<dyn AccessTokenSource>,
+        request_timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        let model_endpoint = ModelEndpoint::parse(&config.base_url)?;
+        if config.model.is_empty()
+            || config.model.len() > 256
+            || config.model.chars().any(char::is_control)
+            || config.context_tokens == 0
+            || config.max_output_tokens == 0
+        {
+            return Err(ProviderError::InvalidConfiguration);
+        }
+        Ok(Self {
+            endpoint: model_endpoint.with_suffix("/responses"),
+            https_only: model_endpoint.https_only(),
+            output_field: model_endpoint.output_field(),
+            model: config.model,
+            context_tokens: config.context_tokens,
+            max_output_tokens: config.max_output_tokens,
+            authorization: None,
+            request_timeout,
+            protocol: Protocol::Responses(tokens),
+        })
+    }
+
+    /// Whether this client speaks the ChatGPT plan route's Responses API.
+    pub const fn is_chatgpt(&self) -> bool {
+        matches!(self.protocol, Protocol::Responses(_))
     }
 
     /// The selected model identifier. This is descriptive, not an entitlement.
@@ -367,6 +484,11 @@ impl LocalModelClient {
         messages: &[ModelMessage],
         cancel: &CancelToken,
     ) -> Result<ModelReply, ProviderError> {
+        if let Protocol::Responses(tokens) = &self.protocol {
+            let outcome =
+                self.responses_request(tokens.as_ref(), messages, None, &mut |_| {}, cancel)?;
+            return Ok(text_reply(outcome));
+        }
         let body = self.text_body(messages, false)?;
         let bytes =
             self.on_request_runtime(body.len(), cancel, self.whole_exchange(body, cancel))?;
@@ -403,6 +525,11 @@ impl LocalModelClient {
         on_text: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<ModelReply, ProviderError> {
+        if let Protocol::Responses(tokens) = &self.protocol {
+            let outcome =
+                self.responses_request(tokens.as_ref(), messages, None, on_text, cancel)?;
+            return Ok(text_reply(outcome));
+        }
         let body = self.text_body(messages, true)?;
         let outcome = self.on_request_runtime(
             body.len(),
@@ -461,6 +588,16 @@ impl LocalModelClient {
         tools: &[ToolDefinition],
         cancel: &CancelToken,
     ) -> Result<ToolModelReply, ProviderError> {
+        if let Protocol::Responses(tokens) = &self.protocol {
+            let outcome = self.responses_request(
+                tokens.as_ref(),
+                messages,
+                Some(tools),
+                &mut |_| {},
+                cancel,
+            )?;
+            return Ok(tool_reply(outcome));
+        }
         let body = self.tool_body(messages, tools, false)?;
         let bytes =
             self.on_request_runtime(body.len(), cancel, self.whole_exchange(body, cancel))?;
@@ -484,6 +621,11 @@ impl LocalModelClient {
         on_text: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<ToolModelReply, ProviderError> {
+        if let Protocol::Responses(tokens) = &self.protocol {
+            let outcome =
+                self.responses_request(tokens.as_ref(), messages, Some(tools), on_text, cancel)?;
+            return Ok(tool_reply(outcome));
+        }
         let body = self.tool_body(messages, tools, true)?;
         let outcome = self.on_request_runtime(
             body.len(),
@@ -619,6 +761,7 @@ impl LocalModelClient {
         client: &Client,
         body: Vec<u8>,
         streaming: bool,
+        authorization: Option<&HeaderValue>,
         cancel: &CancelToken,
     ) -> Result<Response, ProviderError> {
         // Each attempt sends a copy: a refused connect consumed nothing, but
@@ -632,7 +775,7 @@ impl LocalModelClient {
             if streaming {
                 request = request.header(reqwest::header::ACCEPT, "text/event-stream");
             }
-            if let Some(authorization) = &self.authorization {
+            if let Some(authorization) = authorization {
                 request = request.header(AUTHORIZATION, authorization.clone());
             }
             request.body(body.clone())
@@ -650,7 +793,9 @@ impl LocalModelClient {
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, ProviderError> {
         let client = self.http_client()?;
-        let response = self.send(&client, body, false, cancel).await?;
+        let response = self
+            .send(&client, body, false, self.authorization.as_ref(), cancel)
+            .await?;
         read_whole_body(response, MAX_RESPONSE_BYTES, cancel).await
     }
 
@@ -669,7 +814,9 @@ impl LocalModelClient {
         cancel: &CancelToken,
     ) -> Result<stream::StreamOutcome, ProviderError> {
         let client = self.http_client()?;
-        let mut response = self.send(&client, body, true, cancel).await?;
+        let mut response = self
+            .send(&client, body, true, self.authorization.as_ref(), cancel)
+            .await?;
         check_streaming_head(response.status(), response.headers())?;
 
         let mut parser = stream::StreamParser::new(mode);
@@ -690,6 +837,147 @@ impl LocalModelClient {
                 return parser.finish();
             }
         }
+    }
+}
+
+impl LocalModelClient {
+    /// Send one plan-route request and read its stream (ADR-0092).
+    ///
+    /// The tool count and the context and size bounds are checked first, then
+    /// the cancel token, and only then is `tokens` asked for an access token,
+    /// so a refused request never reads or refreshes a token. The token is
+    /// asked outside the request's runtime because a refresh drives its own.
+    fn responses_request(
+        &self,
+        tokens: &dyn AccessTokenSource,
+        messages: &[ModelMessage],
+        tools: Option<&[ToolDefinition]>,
+        on_text: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+    ) -> Result<responses::ResponsesOutcome, ProviderError> {
+        let extra_bytes = match tools {
+            None => 0,
+            Some(tools) => {
+                if tools.is_empty() || tools.len() > MAX_TOOL_DEFINITIONS {
+                    return Err(ProviderError::InvalidConfiguration);
+                }
+                let tool_bytes =
+                    serde_json::to_vec(tools).map_err(|_| ProviderError::RequestTooLarge)?;
+                u64::try_from(tool_bytes.len()).map_err(|_| ProviderError::RequestTooLarge)?
+            }
+        };
+        self.check_messages(messages, extra_bytes)?;
+        let body = responses::request_body(&self.model, messages, tools)?;
+        if body.len() > MAX_REQUEST_BYTES {
+            return Err(ProviderError::RequestTooLarge);
+        }
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let authorization = {
+            let token = tokens.access_token(cancel)?;
+            bearer_header(&token)?
+        };
+        let mode = if tools.is_some() {
+            responses::ResponsesMode::Tools
+        } else {
+            responses::ResponsesMode::Text
+        };
+        self.on_request_runtime(
+            body.len(),
+            cancel,
+            self.responses_exchange(body, &authorization, mode, on_text, cancel),
+        )
+    }
+
+    /// Post one plan-route request and feed its body to the stream reader.
+    ///
+    /// A non-success status reads at most 64 KiB of the body for a documented
+    /// error code and reports nothing else from it. Cancellation and the
+    /// deadline work as for [`Self::stream_exchange`].
+    async fn responses_exchange(
+        &self,
+        body: Vec<u8>,
+        authorization: &HeaderValue,
+        mode: responses::ResponsesMode,
+        on_text: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+    ) -> Result<responses::ResponsesOutcome, ProviderError> {
+        let client = self.http_client()?;
+        let mut response = self
+            .send(&client, body, true, Some(authorization), cancel)
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let failure = read_error_body(&mut response, cancel)
+                .await?
+                .as_deref()
+                .and_then(responses::failure_in_error_body);
+            return Err(failure.map_or(
+                ProviderError::HttpStatus(status.as_u16()),
+                ProviderError::ResponseFailed,
+            ));
+        }
+        check_streaming_head(status, response.headers())?;
+        let mut parser = responses::ResponsesParser::new(mode);
+        loop {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let chunk = until_cancelled(response.chunk(), cancel)
+                .await?
+                .map_err(|_| ProviderError::Transport)?;
+            let Some(chunk) = chunk else {
+                return parser.finish();
+            };
+            if parser.push(&chunk, on_text)? == responses::ResponsesFlow::Completed {
+                return parser.finish();
+            }
+        }
+    }
+}
+
+/// Read at most [`MAX_ERROR_BODY_BYTES`] of a failed response. A read error
+/// or a longer body gives `None`, so the caller reports the status alone.
+async fn read_error_body(
+    response: &mut Response,
+    cancel: &CancelToken,
+) -> Result<Option<Vec<u8>>, ProviderError> {
+    let mut bytes = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let Ok(chunk) = until_cancelled(response.chunk(), cancel).await? else {
+            return Ok(None);
+        };
+        let Some(chunk) = chunk else {
+            return Ok(Some(bytes));
+        };
+        let total = u64::try_from(bytes.len().saturating_add(chunk.len())).unwrap_or(u64::MAX);
+        if total > MAX_ERROR_BODY_BYTES {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+}
+
+/// A plan-route outcome as a text reply. A tool call never reaches here: the
+/// text mode refuses it.
+fn text_reply(outcome: responses::ResponsesOutcome) -> ModelReply {
+    ModelReply {
+        content: outcome.content,
+        finish_reason: outcome.finish_reason,
+        usage: outcome.usage,
+    }
+}
+
+/// A plan-route outcome as a tool-capable reply.
+fn tool_reply(outcome: responses::ResponsesOutcome) -> ToolModelReply {
+    ToolModelReply {
+        content: outcome.content,
+        tool_calls: outcome.tool_calls,
+        finish_reason: outcome.finish_reason,
     }
 }
 
@@ -843,7 +1131,10 @@ const fn model_error(error: ProviderError) -> ModelError {
         ProviderError::RequestTooLarge | ProviderError::ContextLimit => ModelError::RequestTooLarge,
         ProviderError::Transport
         | ProviderError::HttpStatus(_)
-        | ProviderError::IncompleteStream => ModelError::Transport,
+        | ProviderError::IncompleteStream
+        | ProviderError::ResponseFailed(_)
+        | ProviderError::SignInRequired
+        | ProviderError::AccessTokenUnavailable => ModelError::Transport,
         ProviderError::Cancelled => ModelError::Cancelled,
         ProviderError::InvalidConfiguration
         | ProviderError::InvalidToken
@@ -1741,7 +2032,13 @@ Connection: close
         let (result, elapsed) = runtime.block_on(async {
             let http = client.http_client().expect("request client");
             let response = client
-                .send(&http, b"{}".to_vec(), false, &cancel)
+                .send(
+                    &http,
+                    b"{}".to_vec(),
+                    false,
+                    client.authorization.as_ref(),
+                    &cancel,
+                )
                 .await
                 .expect("the head arrives");
             partial_sent

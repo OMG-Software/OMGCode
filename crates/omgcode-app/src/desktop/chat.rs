@@ -19,11 +19,8 @@ use super::wire::{
     ChatState, ChatStatus, ModelChoice, PreferencesSource, SessionRequest,
 };
 use super::{DesktopService, Inner};
-use crate::{
-    AppError, ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection,
-};
+use crate::{ChatClients, ChatSettings, list_connection_models, validate_skill_selection};
 use omgcode_core::control::ProviderKind;
-use omgcode_core::provider::list_local_models;
 use omgcode_core::turn::{MAX_TOOL_CALLS, MAX_TURN_DEADLINE};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
@@ -99,15 +96,13 @@ impl DesktopService {
         let inner = &self.inner;
         inner.resolve_path(request.session_id)?;
         let SessionConnection {
-            connection: LocalConnection { endpoint, token },
-            kind,
-            ..
+            connection, kind, ..
         } = inner.resolve_session(request.session_id)?;
-        let models = list_local_models(&endpoint, token.as_ref().map(LmToken::expose))
-            .map_err(|error| DesktopError::from_app(&AppError::provider(error)))?;
+        let models =
+            list_connection_models(&connection).map_err(|error| DesktopError::from_app(&error))?;
         Ok(ChatModels {
             session_id: request.session_id,
-            endpoint,
+            endpoint: connection.endpoint,
             kind: kind.map(ProviderKind::as_str),
             models: models
                 .into_iter()
@@ -259,16 +254,14 @@ impl DesktopService {
         // endpoint, which was compared with the request above. The active
         // connection must equal what the window sent, so a change made in
         // `settings` after the window read it is never used unseen.
-        let SessionConnection {
-            connection: LocalConnection { endpoint, token },
-            ..
-        } = inner.resolve_session(session_id)?;
-        if endpoint != turn_settings.endpoint {
+        let SessionConnection { connection, .. } = inner.resolve_session(session_id)?;
+        if connection.endpoint != turn_settings.endpoint {
             return Err(DesktopError::connection_changed());
         }
-        let settings = chat_settings(turn_settings, endpoint);
-        let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
+        let settings = chat_settings(turn_settings, connection.endpoint.clone());
+        let clients = ChatClients::for_connection(&settings, &connection)
             .map_err(|error| DesktopError::from_app(&error))?;
+        let token = connection.token;
         let approval_wait = ApprovalWaitSlot::new();
         let job = TurnJob {
             session_id,

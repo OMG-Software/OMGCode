@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/omgcode-core", "crates/omgcode-cli", "crates/omgcode-platform", "crates/omgcode-app", "crates/omgcode-desktop"]
 
 [workspace.package]
-version = "0.58.0"
+version = "0.59.0"
 edition = "2024"
 rust-version = "1.99.1"
 license = "Apache-2.0"
@@ -25,6 +25,11 @@ tempfile = "3"
 libc = "0.2.191"
 rustix = { version = "1.1.6", features = ["fs", "process"] }
 zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
+# ChatGPT sign-in (ADR-0092): RS256 ID-token verification with a public key
+# only, base64url decoding, and the random state, nonce, and PKCE verifier.
+rsa = { version = "0.10.0", default-features = false, features = ["std", "pkcs1v15"] }
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
+getrandom = { version = "0.4.3", default-features = false }
 # Event-level YAML parser for skill frontmatter (ADR-0057). No value tree is built.
 saphyr-parser = "0.3.4"
 # Derived session index cache (ADR pending). Bundled SQLite; no extension loading.

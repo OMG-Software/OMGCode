@@ -15,7 +15,7 @@ billing or defer it.
 | Connection profile | Required authentication and usage path | Current design readiness |
 | --- | --- | --- |
 | OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0091); API key only; no request was verified with a real key |
-| ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Official local/open-source integration documented; implementation and entitlement tests pending |
+| ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Prototype ([ChatGPT sign-in](#chatgpt-sign-in-adr-0092)): browser sign-in with PKCE, state, nonce, and ID-token checks, tokens in protected OS storage, and chat through the Responses API, tested only against loopback mock servers; no real sign-in or plan-backed request was made, so plan usage is not verified and the requirement stays open |
 | Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0091), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
@@ -145,7 +145,9 @@ and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
 `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`, `minimax`,
 `z_ai`, `deepseek`, `xai`, and `openai_compatible`. Modes are
 `subscription`, `api_key`, and `none`. Subscription is accepted only for
-OpenAI and Anthropic, and no adapter reads one. API keys are accepted for LM
+OpenAI and Anthropic. Since ADR-0092 an `openai` subscription profile with
+OpenAI's fixed endpoint can sign in with ChatGPT
+([below](#chatgpt-sign-in-adr-0092)); no adapter reads an `anthropic` one. API keys are accepted for LM
 Studio and every hosted kind. Since ADR-0071 an `ollama_cloud` profile also
 accepts its one fixed endpoint, and since ADR-0091 every hosted kind accepts
 one ([hosted providers](#hosted-providers-adr-0091)). Ollama Local accepts
@@ -214,9 +216,10 @@ only identifiers, backends, and store state. See
 [ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md) and
 [development commands](development.md#provider-credentials).
 
-Only `api_key` profiles accept a credential. Subscription tokens, login codes,
-and refresh tokens are not stored, and subscription sign-in remains blocked as
-described above. Until 0.30.0 no adapter read a stored credential. Now only
+Only `api_key` profiles accept a credential through these commands. Since
+ADR-0092 a ChatGPT sign-in stores its own token record
+([below](#chatgpt-sign-in-adr-0092)); login codes and ID tokens are never
+stored, and Claude subscription sign-in remains blocked as described above. Until 0.30.0 no adapter read a stored credential. Now only
 the local LM Studio adapter does (next section). A memory-only session
 credential is not implemented. Any process running as the same user can read
 these credentials.
@@ -415,11 +418,58 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   field was not confirmed. Anthropic and Google document their compatibility
   layers as for testing and beta respectively.
 - **Not covered.** Native provider APIs (for example Anthropic Messages),
-  subscription sign-in, provider-specific parameters such as OpenRouter
+  subscription sign-in (ChatGPT sign-in came later, with ADR-0092),
+  provider-specific parameters such as OpenRouter
   routing or reasoning settings, and reasoning text, which is ignored.
   Thinking Machines Lab documents no model list, and the desktop model box
   chooses only a listed model, so a Tinker model can be named only with CLI
   `chat --model`.
+
+## ChatGPT sign-in (ADR-0092)
+
+An `openai` profile with authentication `subscription` and the fixed endpoint
+`https://api.openai.com/v1` is a ChatGPT connection. It follows OpenAI's
+documented route for local and open-source apps
+([ADR-0092](adr/0092-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+
+- **Sign-in.** `omgcode workspace provider-signin <name> --revision <n>` or
+  **Sign in with ChatGPT** in the desktop `settings` window. Rust binds a
+  listener on `127.0.0.1`, opens OpenAI's authorization page in the system
+  browser with PKCE S256, a random `state` and `nonce`, and a per-host
+  `urn:uuid:` identifier, and waits at most five minutes for
+  `/auth/callback`. The first sign-in uses OpenAI's dynamic client and records
+  the issued `client_id`; a later one reuses it and must return the same
+  account. The callback's `state`, client, and parameters are checked; the ID
+  token's RS256 signature, issuer, audience, expiry, nonce, and subject are
+  validated against OpenAI's published keys; and the granted scopes must
+  include `chatgpt.tokens.use.direct`. Without that scope nothing is stored
+  (`plan_usage_not_granted`). Ctrl-C on the CLI and **Cancel sign-in** in the
+  window end the wait. No other application's client or login cache is used.
+- **Storage.** The access and refresh tokens are kept in protected OS storage
+  (DPAPI on Windows, the Secret Service on Linux) as a record in one of two
+  immutable slots, never in a file, journal, log, error, or the webview. The
+  control journal records `provider_subscription_bound` with the client, the
+  subject, the account email as a display label, the host identifier, and the
+  binding.
+- **Refresh.** A request refreshes the token when fewer than five minutes
+  remain, under a per-session OS file lock, and stores the rotated record
+  before the lock is released. A refused refresh is `signin_required`. A crash
+  between OpenAI rotating the token and the store write loses the session.
+- **Sign-out.** `omgcode workspace provider-signout <name> --revision <n>` or
+  **Sign out** revokes the refresh token once, records the sign-out, and
+  deletes both slots. An unconfirmed revocation is reported and not retried.
+  A signed-in profile cannot be removed, and `provider-credential-remove`
+  refuses every subscription profile.
+- **Requests.** Chat, compaction, and tool turns use the Responses API at
+  `https://api.openai.com/v1/responses` with `store:false` and `stream:true`.
+  The model list reads the plan route's `models` array. Plan failures are
+  reported by code, such as `usage_limit_exceeded`, and never fall back to
+  API-key billing. API-key `openai` profiles keep the Chat Completions path.
+- **Not verified.** No test contacts OpenAI. No real sign-in, refresh,
+  revocation, model list, or Responses request was made, and a completed
+  sign-in is not evidence that a plan, model, or account may be used. The
+  [acceptance evidence](#acceptance-evidence) below has not been gathered, so
+  the ChatGPT subscription requirement remains open.
 
 ## Stored credential use (0.30.0)
 

@@ -387,6 +387,7 @@ describe("mock backend", () => {
     const added = (await cloud({})) as SettingsOverview;
     expect(added.provider_profiles.at(-1)).toEqual({
       name: "cloud",
+      account_label: null,
       kind: "ollama_cloud",
       auth: "api_key",
       endpoint: "https://ollama.com/v1",
@@ -658,6 +659,7 @@ describe("mock backend", () => {
       expect(added.revision).toBe(revision + 1);
       expect(added.provider_profiles.at(-1)).toEqual({
         name: "box",
+        account_label: null,
         kind: "ollama_local",
         auth: "none",
         endpoint: "http://127.0.0.1:11500/v1",
@@ -858,5 +860,57 @@ describe("mock workspace_entries", () => {
       code: "invalid_request",
       message: "The folder could not be listed.",
     });
+  });
+});
+
+describe("mock ChatGPT sign-in (ADR-0092)", () => {
+  it("signs a ChatGPT connection in and out, and refuses to remove it while signed in", async () => {
+    const { invoke } = createMockBackend();
+    const start = (await invoke("settings_overview", {})) as SettingsOverview;
+    const signed = (await invoke("settings_sign_in_chatgpt", {
+      revision: start.revision,
+      name: "chatgpt",
+    })) as SettingsOverview;
+    expect(signed.provider_profiles.find((p) => p.name === "chatgpt")).toMatchObject({
+      kind: "openai",
+      auth: "subscription",
+      endpoint: "https://api.openai.com/v1",
+      credential_bound: true,
+      account_label: "person@example.test",
+    });
+    await expect(
+      invoke("settings_sign_in_chatgpt", {
+        revision: signed.revision,
+        name: "chatgpt",
+      }),
+    ).rejects.toMatchObject({ code: "control" });
+    await expect(
+      invoke("settings_sign_in_chatgpt", {
+        revision: signed.revision,
+        name: "ollama",
+      }),
+    ).rejects.toMatchObject({ code: "control" });
+    await expect(
+      invoke("settings_remove_connection", {
+        revision: signed.revision,
+        name: "chatgpt",
+      }),
+    ).rejects.toMatchObject({ code: "control" });
+    await expect(invoke("settings_cancel_chatgpt_sign_in", {})).resolves.toBeNull();
+    const out = (await invoke("settings_sign_out_chatgpt", {
+      revision: signed.revision,
+      name: "chatgpt",
+    })) as { overview: SettingsOverview; revoked: boolean };
+    expect(out.revoked).toBe(true);
+    expect(out.overview.provider_profiles.find((p) => p.name === "chatgpt")).toMatchObject({
+      credential_bound: false,
+      account_label: null,
+    });
+    await expect(
+      invoke("settings_sign_out_chatgpt", {
+        revision: out.overview.revision,
+        name: "chatgpt",
+      }),
+    ).rejects.toMatchObject({ code: "credential" });
   });
 });

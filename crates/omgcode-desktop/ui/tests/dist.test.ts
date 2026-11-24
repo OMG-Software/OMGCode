@@ -85,10 +85,13 @@ suite(
     });
 
     it("reads every settings-window command from the settings client", () => {
-      // 24 in `settings`, as `policy.rs` and the guide count them.
-      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(24);
+      // 27 in `settings`, as `policy.rs` and the guide count them.
+      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(27);
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_overview");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_revoke_container_grant");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_sign_in_chatgpt");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_cancel_chatgpt_sign_in");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_sign_out_chatgpt");
     });
 
     it("settings window bundle reads the overview and never decides or subscribes", () => {

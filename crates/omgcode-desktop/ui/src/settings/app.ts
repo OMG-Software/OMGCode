@@ -69,6 +69,14 @@ const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
   SETTINGS_CHANGE_RUNNING_CODE,
 ]);
 
+/** Shown while Rust waits for the browser step of a ChatGPT sign-in (ADR-0092). */
+export const SIGN_IN_WAITING =
+  "Waiting for the ChatGPT sign-in in your browser. It ends after five minutes.";
+
+/** Shown when OpenAI did not confirm a sign-out's revocation. */
+export const SIGN_OUT_UNCONFIRMED =
+  "Signed out here, but OpenAI did not confirm the revocation. You can also disconnect OMGCode in your ChatGPT settings.";
+
 /** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
 const ACTIONS: Actions = {
   chooseRoot: () => (revision) => settingsApi.chooseRoot(revision),
@@ -86,6 +94,9 @@ const ACTIONS: Actions = {
     settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
   setApiKey: (name, apiKey) => (revision) => settingsApi.setApiKey(revision, name, apiKey),
   removeConnection: (name) => (revision) => settingsApi.removeConnection(revision, name),
+  signInChatGpt: (name) => (revision) => settingsApi.signInChatGpt(revision, name),
+  signOutChatGpt: (name) => async (revision) =>
+    (await settingsApi.signOutChatGpt(revision, name)).overview,
   // Neither is a permission, so neither names the settings revision.
   saveChatDefaults: (defaults) => () => settingsApi.saveChatDefaults(defaults),
   setWorkspaceInstructions: (workspaceId, instructions) => () =>
@@ -133,6 +144,37 @@ export function startSettings(root: HTMLElement): SettingsApp {
   readProblem.hidden = true;
   const notice = el("p", { class: "notice", attrs: { role: "status" } });
   notice.hidden = true;
+  // Shown while Rust waits for the ChatGPT sign-in in the browser (ADR-0092). It sits outside
+  // the disabled body, so its Cancel button stays usable while the change runs.
+  const cancelSignIn = button("Cancel sign-in", () => {
+    void settingsApi.cancelChatGptSignIn().catch(() => undefined);
+  });
+  const signInBar = el(
+    "div",
+    { class: "notice sign-in-wait", attrs: { role: "status" } },
+    el("span", { text: SIGN_IN_WAITING }),
+    cancelSignIn,
+  );
+  signInBar.hidden = true;
+  const actions: Actions = {
+    ...ACTIONS,
+    signInChatGpt: (name) => async (revision) => {
+      signInBar.hidden = false;
+      try {
+        return await settingsApi.signInChatGpt(revision, name);
+      } finally {
+        signInBar.hidden = true;
+      }
+    },
+    signOutChatGpt: (name) => async (revision) => {
+      const result = await settingsApi.signOutChatGpt(revision, name);
+      if (!result.revoked) {
+        replaceChildren(notice, SIGN_OUT_UNCONFIRMED);
+        notice.hidden = false;
+      }
+      return result.overview;
+    },
+  };
   // A disabled fieldset disables every control inside it without touching their own state.
   const body = el("fieldset", { class: "settings-body" });
   // The one scroll container for every section.
@@ -147,6 +189,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     problem,
     readProblem,
     notice,
+    signInBar,
     body,
   );
   const nav = createNav({
@@ -207,7 +250,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
       overview: current,
       view,
       submit,
-      actions: ACTIONS,
+      actions,
       rerender: draw,
     };
     const scoped = scopedWorkspace(current) !== null;

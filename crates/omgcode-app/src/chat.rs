@@ -28,6 +28,7 @@ pub use self::output::ChatTurnOutput;
 pub(crate) use self::preflight::{NextTurnParts, estimate_next_turn_parts};
 pub use self::skills::{LoadedSkillSummary, validate_selection as validate_skill_selection};
 use crate::context::summary_output_tokens;
+use crate::credential_source::{LmToken, LocalConnection};
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::redact_known_secret;
 use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, ToolMode, select};
@@ -217,6 +218,41 @@ impl ChatClients {
         )
         .map_err(AppError::provider)?;
         Ok(Self { chat, summary })
+    }
+
+    /// Build the clients for a resolved connection: plan-backed clients that
+    /// share one token source for a signed-in ChatGPT profile (ADR-0092), and
+    /// [`Self::new`] with the connection's token otherwise.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`]; a plan connection also refuses any endpoint other
+    /// than OpenAI's.
+    pub fn for_connection(
+        settings: &ChatSettings,
+        connection: &LocalConnection,
+    ) -> Result<Self, AppError> {
+        let Some(plan) = &connection.plan else {
+            return Self::new(settings, connection.token.as_ref().map(LmToken::expose));
+        };
+        validate_turn_budgets(settings.max_tool_calls, settings.turn_timeout_seconds)
+            .map_err(|message| AppError::new(ErrorKind::Configuration, message))?;
+        let build = |max_output_tokens| {
+            LocalModelClient::chatgpt(
+                LocalModelConfig {
+                    base_url: settings.endpoint.clone(),
+                    model: settings.model.clone(),
+                    context_tokens: settings.context_tokens,
+                    max_output_tokens,
+                },
+                plan.tokens(),
+            )
+            .map_err(AppError::provider)
+        };
+        Ok(Self {
+            chat: build(settings.max_output_tokens)?,
+            summary: build(summary_output_tokens(settings.context_tokens))?,
+        })
     }
 }
 

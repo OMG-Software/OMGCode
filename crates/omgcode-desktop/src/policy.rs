@@ -79,6 +79,9 @@ pub enum Command {
     SettingsSelectConnection,
     SettingsAddConnection,
     SettingsRemoveConnection,
+    SettingsSignInChatGpt,
+    SettingsCancelChatGptSignIn,
+    SettingsSignOutChatGpt,
     SettingsSetApiKey,
     SettingsClearScope,
     SettingsRepairDataFolder,
@@ -99,7 +102,7 @@ pub enum Command {
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 56] = [
+    pub const ALL: [Self; 59] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -140,6 +143,9 @@ impl Command {
         Self::SettingsSelectConnection,
         Self::SettingsAddConnection,
         Self::SettingsRemoveConnection,
+        Self::SettingsSignInChatGpt,
+        Self::SettingsCancelChatGptSignIn,
+        Self::SettingsSignOutChatGpt,
         Self::SettingsSetApiKey,
         Self::SettingsClearScope,
         Self::SettingsRepairDataFolder,
@@ -202,6 +208,9 @@ impl Command {
             Self::SettingsSelectConnection => "settings_select_connection",
             Self::SettingsAddConnection => "settings_add_connection",
             Self::SettingsRemoveConnection => "settings_remove_connection",
+            Self::SettingsSignInChatGpt => "settings_sign_in_chatgpt",
+            Self::SettingsCancelChatGptSignIn => "settings_cancel_chatgpt_sign_in",
+            Self::SettingsSignOutChatGpt => "settings_sign_out_chatgpt",
             Self::SettingsSetApiKey => "settings_set_api_key",
             Self::SettingsClearScope => "settings_clear_scope",
             Self::SettingsRepairDataFolder => "settings_repair_data_folder",
@@ -237,6 +246,9 @@ impl Command {
             | Self::SettingsSelectConnection
             | Self::SettingsAddConnection
             | Self::SettingsRemoveConnection
+            | Self::SettingsSignInChatGpt
+            | Self::SettingsCancelChatGptSignIn
+            | Self::SettingsSignOutChatGpt
             | Self::SettingsSetApiKey
             | Self::SettingsClearScope
             | Self::SettingsRepairDataFolder
@@ -318,10 +330,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 56);
+        assert_eq!(Command::ALL.len(), 59);
         assert_eq!(with_window(WindowLabel::Main).len(), 29);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 24);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 27);
     }
 
     #[test]
@@ -406,8 +418,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 56);
-        assert_eq!(shared.len(), 56);
+        assert_eq!(COMMAND_NAMES.len(), 59);
+        assert_eq!(shared.len(), 59);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }
