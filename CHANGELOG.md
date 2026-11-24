@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.57.0 adds hosted model providers and an OpenAI-compatible
+- Version 0.58.0 adds hosted model providers and an OpenAI-compatible
   connection (ADR-0091). New provider kinds `google`, `meta`, `moonshot`,
   `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
   `openai_compatible` join `anthropic`, `openai`, and `open_router`, which can
@@ -24,8 +24,16 @@ Changes are recorded here before a release version is assigned.
   kind but `ollama_local` as a stored-credential adapter. No request was made
   to any of these providers with a real key. Subscription sign-in is not
   added. A control journal that records a new kind, or an endpoint on an
-  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.56.0 or
+  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.57.0 or
   earlier.
+- Version 0.57.0 adds **Set all** beside **File-write tool limits** in the
+  desktop `settings` window (ADR-0090). One Deny, Prompt, or Allow choice sets
+  all six file-write tool limits in one `settings_set_permissions` request and
+  leaves Write unchanged, so a widening change shows one native confirmation
+  that names each widened limit. The control works while the disclosure is
+  closed, and it marks a state only while all six limits share it. Core, the
+  stored settings, and the CLI are unchanged.
+
 - Version 0.56.0 lets the operator remove a workspace (ADR-0081).
   `omgcode workspace unregister <workspace-id> --revision <n>` and
   **Remove workspace…** in the desktop settings window record one

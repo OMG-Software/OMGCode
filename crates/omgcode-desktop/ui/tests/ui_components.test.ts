@@ -29,6 +29,16 @@ describe("segmented", () => {
     expect(radios.map((r) => r.textContent)).toEqual(["Deny", "Prompt", "Allow"]);
   });
 
+  it("marks nothing for a null value, keeps one tab stop, and reports any choice", () => {
+    const onChoose = vi.fn();
+    const group = segmented({ label: "mixed", choices, value: null, onChoose });
+    const radios = Array.from(group.querySelectorAll("button"));
+    expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual(["false", "false", "false"]);
+    expect(radios.map((r) => r.tabIndex)).toEqual([0, -1, -1]);
+    radios[0]?.click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("deny");
+  });
+
   it("reports a new choice and ignores the current one", () => {
     const onChoose = vi.fn();
     const group = segmented({ label: "read", choices, value: "deny", onChoose });

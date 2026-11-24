@@ -104,4 +104,5 @@ meaningful alternative does not need an ADR.
 | [0087: Show a per-part context estimate for the open session](0087-show-a-per-part-context-estimate-for-the-open-session.md) | Accepted | 2026-11-24 |
 | [0088: Change execution settings in the settings window](0088-change-execution-settings-in-the-settings-window.md) | Accepted | 2026-11-24 |
 | [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted | 2026-11-24 |
+| [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Add hosted providers and an OpenAI-compatible connection](0091-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |

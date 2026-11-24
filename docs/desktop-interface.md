@@ -1129,9 +1129,16 @@ waits. The window shows:
   `task_network`, and `host_services`, each with a short description and a
   Deny, Prompt, or Allow segmented control. Under Write, the disclosure
   **File-write tool limits** holds a row for each model file-write tool's limit
-  (edit, multi-edit, create, rename, and delete; since 0.43.0, ADR-0063). A
-  tool whose limit is wider than `write` says "Limited by Write:" and the
-  `write` state. Then the workspace identifier and its package cache root with
+  (edit, multi-edit, create, rename, and delete since 0.43.0, ADR-0063; create
+  directory since 0.55.0, ADR-0079). A tool whose limit is wider than `write`
+  says "Limited by Write:" and the `write` state. On the disclosure's summary
+  line, outside the summary so it works while the disclosure is closed,
+  **Set all** is one more Deny, Prompt, or Allow control named "All file-write
+  tools" (since 0.57.0, ADR-0090). Choosing a state sends the whole
+  preference set once with all six limits at that state and `write`
+  unchanged, so a widening change shows one native confirmation that names
+  each widened limit. It marks a state only while all six limits share it,
+  and none while they differ. Then the workspace identifier and its package cache root with
   **Choose…** and, when one is set, **Clear**, and one line of help: the root
   is where the trusted CLI command `omgcode packages fetch` stores downloads
   for that workspace, a trusted run exposes it read-only, and the app never
@@ -1277,7 +1284,8 @@ waits. The window shows:
   the scope names a registered workspace, the window hides the section
   sidebar and shows only **Workspace settings** for that workspace: the
   Deny, Prompt, and Allow help, its folder, **Model tools**, the permission
-  rows, **File-write tool limits**, its identifier, its package cache, and
+  rows, **File-write tool limits** with **Set all**, its identifier, its
+  package cache, and
   its **Custom instructions**.
   It shows no development root or **Register workspace…**, and the hidden
   sidebar lists only that workspace. **All settings** calls `settings_clear_scope`, a `settings`

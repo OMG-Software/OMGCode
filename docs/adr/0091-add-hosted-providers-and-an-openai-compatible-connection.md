@@ -124,7 +124,7 @@ unauthenticated requests. No API key was used for any provider.
 - A turn on a hosted connection sends prompts, workspace text that tools read,
   and command output to that provider's host.
 - A control journal that records a new kind, or an endpoint on an `openai`,
-  `anthropic`, or `open_router` profile, cannot be read by 0.56.0 or earlier.
+  `anthropic`, or `open_router` profile, cannot be read by 0.57.0 or earlier.
 - Not verified:
   - No chat, stream, tool-call, or model-list request was made to any of these
     providers with a key. The reply shapes are assumed to match the

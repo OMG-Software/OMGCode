@@ -327,6 +327,25 @@
   padding-left: 12px;
 }
 
+/* Set all sits on the summary line of the tool-limits disclosure, outside the summary itself,
+   so it works while the disclosure is closed. The summary keeps room for it. */
+.tool-limits-group {
+  position: relative;
+}
+
+.tool-limits-all {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tool-limits-group > .tool-limits > summary {
+  padding-right: 260px;
+}
+
 .tool-limits > .perm-row:last-child {
   border-bottom: 0;
 }

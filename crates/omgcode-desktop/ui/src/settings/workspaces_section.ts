@@ -66,6 +66,9 @@ export const ACCESS_HELP =
   "your decision. Allow lets model calls run without asking. A tool limit can only narrow " +
   "write. Every model action is recorded in the action journal.";
 
+/** The accessible name of the control that sets every file-write tool limit at once. */
+export const ALL_TOOLS_LABEL = "All file-write tools";
+
 const WIDTH: Readonly<Record<Access, number>> = { deny: 0, prompt: 1, allow: 2 };
 
 function accessLabel(state: Access): string {
@@ -165,6 +168,49 @@ function toolRow(
   );
 }
 
+/** The state every file-write tool limit shares, or `null` when they differ. */
+function sharedToolState(tools: WriteToolAccess): Access | null {
+  const [first, ...rest] = Object.values(tools);
+  return first !== undefined && rest.every((state) => state === first) ? first : null;
+}
+
+/**
+ * One control that sets every file-write tool limit to the same state. It sends the whole
+ * preference set once, so Rust shows one confirmation naming each limit the change widens. It
+ * shows no state as chosen while the limits differ. Like each tool's own limit, it only narrows
+ * Write and never changes Write itself.
+ */
+function allToolLimits(workspace: WorkspaceSettingsView, ctx: SectionContext): HTMLElement {
+  return el(
+    "div",
+    { class: "tool-limits-all" },
+    el("span", { class: "perm-help", text: "Set all" }),
+    segmented<Access>({
+      label: ALL_TOOLS_LABEL,
+      choices: ACCESS_LABELS,
+      value: sharedToolState(workspace.write_tools),
+      class: "access",
+      onChoose: (state) =>
+        submitWith(workspace, ctx, (flags) => {
+          // Every key is named, so a new tool cannot be left out without a type error.
+          flags.write_tools = {
+            edit: state,
+            multi_edit: state,
+            create: state,
+            rename: state,
+            delete: state,
+            create_directory: state,
+          };
+        }),
+    }),
+  );
+}
+
+/**
+ * The disclosure of per-tool limits, with the Set all control on its summary line. The control
+ * sits outside the summary so it works while the disclosure is closed and is not nested inside
+ * the summary's own button role.
+ */
 function toolLimits(workspace: WorkspaceSettingsView, ctx: SectionContext): HTMLElement {
   const details = el(
     "details",
@@ -176,7 +222,7 @@ function toolLimits(workspace: WorkspaceSettingsView, ctx: SectionContext): HTML
   details.addEventListener("toggle", () => {
     ctx.view.toolLimitsOpen = details.open;
   });
-  return details;
+  return el("div", { class: "tool-limits-group" }, allToolLimits(workspace, ctx), details);
 }
 
 /** The model-tools preference as a checkbox. */

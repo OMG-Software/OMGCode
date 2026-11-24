@@ -405,7 +405,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
 - **Selectable.** A hosted profile can be chosen only with a bound credential.
 - **Compatibility.** A control journal that records a new kind, or an endpoint
   on an `openai`, `anthropic`, or `open_router` profile, cannot be read by
-  0.56.0 or earlier.
+  0.57.0 or earlier.
 - **Not verified.** Endpoints and output fields come from each provider's
   documentation, read on 2026-11-24. No request was made to any of these
   providers with a key, and no test makes a network call to one. The reply,
