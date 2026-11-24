@@ -342,6 +342,31 @@ impl DesktopError {
 
     /// The repair removed the grants, but reading the settings afterwards
     /// failed. The folder is fixed; only the window's view is stale.
+    /// A ChatGPT sign-in was recorded, but the settings could not be read
+    /// again for the window.
+    pub(crate) fn signed_in_unread() -> Self {
+        Self::new(
+            "signed_in_unread",
+            "The connection is signed in with ChatGPT, but OMGCode could not read its settings again. Close and reopen this window.",
+        )
+    }
+
+    /// A ChatGPT sign-out was recorded, but the settings could not be read
+    /// again for the window. `revoked` says whether OpenAI confirmed it.
+    pub(crate) fn signed_out_unread(revoked: bool) -> Self {
+        let remote = if revoked {
+            "OpenAI confirmed the revocation."
+        } else {
+            "OpenAI did not confirm the revocation; you can also disconnect OMGCode in your ChatGPT settings."
+        };
+        Self::new(
+            "signed_out_unread",
+            format!(
+                "The connection is signed out of ChatGPT here, but OMGCode could not read its settings again. Close and reopen this window. {remote}"
+            ),
+        )
+    }
+
     pub(crate) fn data_folder_repaired_unread() -> Self {
         Self::new(
             "data_folder_repaired",
@@ -720,6 +745,21 @@ mod tests {
     /// When the profile's rollback fails as well, an orphaned item is still
     /// named by its identifier; a failure that left no item keeps the generic
     /// message. No native text either way.
+    /// A recorded sign-in or sign-out whose settings could not be read again
+    /// says that the change took effect.
+    #[test]
+    fn a_recorded_chatgpt_change_is_not_reported_as_failed() {
+        let signed_in = DesktopError::signed_in_unread();
+        assert_eq!(signed_in.code(), "signed_in_unread");
+        assert!(signed_in.message().contains("is signed in"));
+        for (revoked, advice) in [(true, "confirmed"), (false, "ChatGPT settings")] {
+            let signed_out = DesktopError::signed_out_unread(revoked);
+            assert_eq!(signed_out.code(), "signed_out_unread");
+            assert!(signed_out.message().contains("is signed out"));
+            assert!(signed_out.message().contains(advice), "{revoked}");
+        }
+    }
+
     #[test]
     fn a_failed_rollback_still_names_the_orphaned_item() {
         for error in [

@@ -263,7 +263,12 @@ compaction requests, and the front ends use stays the same type.
   stream without passing text on. The same server-sent-event line rules
   apply, with a 120-second deadline and an 8 MiB bound for the whole stream,
   because one event per token repeats its envelope and reasoning models take
-  longer than thirty seconds. Each `data` payload is strict JSON with a
+  longer than thirty seconds. That deadline equals the default turn timeout
+  (ADR-0077), which is checked between operations, so one slow request can
+  end a default multi-step plan turn. The turn timeout stays the operator's
+  limit and is not raised for a plan connection; the documentation tells
+  plan users to raise it. Deriving one from the other was rejected because a
+  connection choice would then widen a limit the operator set. Each `data` payload is strict JSON with a
   string `type`. `response.output_text.delta` and `response.refusal.delta`
   pass text to the caller. `response.output_item.done` items are the reply:
   `message` items contribute their `output_text` and `refusal` parts,

@@ -1252,3 +1252,39 @@ fn a_token_response_is_read_strictly_without_a_value_tree() {
         Err(SignInError::Malformed)
     ));
 }
+
+/// A key set with a certificate chain of `chain_bytes` beside the key.
+fn key_set_with_chain(chain_bytes: usize) -> String {
+    let mut set: Value = serde_json::from_str(&key_set(KID)).expect("key set");
+    set["keys"][0]["x5c"] = json!(["A".repeat(chain_bytes)]);
+    set.to_string()
+}
+
+#[test]
+fn a_key_set_above_the_error_body_bound_is_read_and_one_above_a_mebibyte_is_refused() {
+    // Larger than the 64 KiB bound for failure bodies, as a key set with
+    // certificate chains can be.
+    let large = |a: &Authorization, service: &MockService| {
+        let nonce = a.get("nonce").expect("nonce");
+        service.answer(TOKEN_PATH, 200, token_answer(&id_token(&nonce), SCOPE));
+        service.answer(KEYS_PATH, 200, key_set_with_chain(200 * 1024));
+    };
+    let service = MockService::start();
+    let (result, _, _) = run_sign_in(&service, &new_request(), large, |a| {
+        vec![callback_with(a, &format!("&client_id={ISSUED_CLIENT}"))]
+    });
+    assert_eq!(result.expect("a large key set").subject, SUBJECT);
+
+    let too_large = |a: &Authorization, service: &MockService| {
+        let nonce = a.get("nonce").expect("nonce");
+        service.answer(TOKEN_PATH, 200, token_answer(&id_token(&nonce), SCOPE));
+        service.answer(KEYS_PATH, 200, key_set_with_chain(1024 * 1024 + 1));
+    };
+    let service = MockService::start();
+    let (result, _, _) = run_sign_in(&service, &new_request(), too_large, |a| {
+        vec![callback_with(a, &format!("&client_id={ISSUED_CLIENT}"))]
+    });
+    let error = result.expect_err("an oversized key set");
+    assert_eq!(error, SignInError::Malformed);
+    assert_revoked_once(&service, true, &error);
+}

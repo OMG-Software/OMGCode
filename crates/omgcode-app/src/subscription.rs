@@ -305,13 +305,27 @@ pub fn sign_out_of_chatgpt(
     // may have revoked the session, a settings change made meanwhile must not
     // leave the dead tokens bound, so the sign-out is recorded against the
     // current revision. Deleting the tokens widens no access. It is recorded
-    // only while the profile still names the session this call revoked; the
-    // lock keeps any other sign-out of that session out, so a different
-    // binding means it was already signed out.
+    // only while the profile still names the session this call revoked. A
+    // profile that is no longer signed in was signed out meanwhile, which is
+    // what the operator asked for. One that names another session was signed
+    // in again: that session is live and was not revoked, so it is a conflict.
     let mut store = open_settings(data_root)?;
     match store.provider_subscription(name) {
         Ok(current) if current.binding == connection.binding => {}
-        _ => {
+        Ok(_) => {
+            return Err(AppError::new(
+                ErrorKind::Control,
+                format!(
+                    "conflict: the profile was signed in to a new session during the sign-out, which was not revoked (OpenAI {} the old one); read the settings again and sign out again",
+                    if revoked {
+                        "revoked"
+                    } else {
+                        "did not confirm revoking"
+                    }
+                ),
+            ));
+        }
+        Err(_) => {
             return Ok(SignOutOutcome {
                 revoked,
                 orphans: Vec::new(),

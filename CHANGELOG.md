@@ -70,7 +70,13 @@ Changes are recorded here before a release version is assigned.
   zeroing storage, so a refused answer leaves no unzeroed token copy;
   `signin_binding_uncertain` also says to disconnect OMGCode in ChatGPT
   settings when the item is deleted by hand; and removing a signed-in
-  ChatGPT profile's credential with a stale revision is the conflict.
+  ChatGPT profile's credential with a stale revision is the conflict. A
+  sign-out that finds the profile signed in to a new session is a conflict
+  rather than a success; the key set is read within 1 MiB instead of the
+  64 KiB error-body bound; a poisoned sign-in lock is `internal`; and a
+  recorded desktop sign-in or sign-out whose settings cannot be read again
+  is `signed_in_unread` or `signed_out_unread`, not a failed change. The
+  docs state that a plan request can take the whole default turn timeout.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

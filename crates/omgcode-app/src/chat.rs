@@ -35,9 +35,12 @@ use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, ToolMode, select};
 
 /// Default cooperative deadline for a tool-enabled chat turn, in seconds.
 ///
-/// Each model request may take up to 30 seconds, and a turn that reads,
-/// writes, and checks several files makes several requests in sequence, so
-/// two minutes lets an ordinary multi-step turn finish (ADR-0077).
+/// Each Chat Completions request may take up to 30 seconds, and a turn that
+/// reads, writes, and checks several files makes several requests in
+/// sequence, so two minutes lets an ordinary multi-step turn finish
+/// (ADR-0077). A ChatGPT plan request may take up to 120 seconds (ADR-0093),
+/// as long as this whole default, so a multi-step plan turn needs a larger
+/// turn timeout. The operator's setting is never raised for them.
 pub const DEFAULT_TURN_TIMEOUT_SECONDS: u64 = 120;
 
 /// Selected model, budgets, and user-level preferences for chat turns.

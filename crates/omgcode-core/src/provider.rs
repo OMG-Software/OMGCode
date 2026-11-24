@@ -35,7 +35,10 @@ const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The deadline of one plan-route Responses request (ADR-0093). The route
 /// always streams, and reasoning models routinely take longer than the
-/// thirty seconds a Chat Completions request has.
+/// thirty seconds a Chat Completions request has. It equals the default turn
+/// timeout, which the turn checks between operations, so one slow request
+/// can use a default turn's whole budget; the docs tell plan users to raise
+/// the turn timeout for multi-step turns.
 const RESPONSES_TIMEOUT: Duration = Duration::from_secs(120);
 /// The most of a failed plan-route response body read to find its code.
 const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024;

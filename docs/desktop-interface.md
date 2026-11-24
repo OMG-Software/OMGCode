@@ -1570,7 +1570,10 @@ revision check and validation (ADR-0064, ADR-0071).
   credential store, and the operator deletes that named item there. A
   settings change during the browser step that makes the recording stale or
   refused stores nothing and returns the `control` conflict or refusal; the
-  operator reads the settings again and signs in again. A signed-in
+  operator reads the settings again and signs in again. A sign-in or
+  sign-out that was recorded but whose settings could not be read again
+  for the window is `signed_in_unread` or `signed_out_unread`, which says
+  the change took effect and to reopen the window. A signed-in
   row reads
   "Signed in with ChatGPT as `<email>`", carries a **ChatGPT plan** chip and
   no API key field, and offers **Sign out**, which asks "Sign `<name>` out of

@@ -495,7 +495,8 @@ documented route for local and open-source apps
   **Sign out** revokes the refresh token once, records the sign-out, and
   deletes both slots. The revision is checked before the revocation; a
   settings change made while OpenAI answers does not stop the local
-  sign-out. An unconfirmed revocation is reported and not retried.
+  sign-out. A profile found signed in to a new session after the revocation
+  is a `control` conflict, because that session was not revoked. An unconfirmed revocation is reported and not retried.
   Every slot that could not be deleted is named by its opaque identifier:
   the CLI's `orphaned_credential_ids` lists each one, and the desktop's
   `credential_orphaned` error names each one, so neither slot is lost from
@@ -510,6 +511,11 @@ documented route for local and open-source apps
   `plan_request_failed`, `plan_response_incomplete`, or the route's own code,
   such as `usage_limit_exceeded`. A model list whose access token cannot be
   had reports the same `provider` code. Nothing falls back to API-key billing. API-key `openai` profiles keep the Chat Completions path.
+  One plan request may take up to 120 seconds, the same as the default
+  turn timeout, so raise the turn timeout (`chat --turn-timeout-seconds`, or
+  **Tool-enabled turn timeout (seconds)** in the `settings` window) for multi-step tool turns on a
+  plan; OMGCode does not raise it for you. The ID-token key set is read
+  within 1 MiB.
 - **Not verified.** No test contacts OpenAI. No real sign-in, refresh,
   revocation, model list, or Responses request was made, and a completed
   sign-in is not evidence that a plan, model, or account may be used. The

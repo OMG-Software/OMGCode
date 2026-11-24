@@ -30,7 +30,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::{CONNECT_TIMEOUT, ProviderError, read_error_body, send_request};
+use super::{CONNECT_TIMEOUT, ProviderError, read_error_body, read_whole_body, send_request};
 use crate::storage::parse_strict_json;
 use crate::turn::CancelToken;
 
@@ -57,6 +57,9 @@ const CALLBACK_PATH: &str = "/auth/callback";
 const SIGN_IN_WAIT: Duration = Duration::from_secs(5 * 60);
 /// The deadline for one token, key, or revocation request.
 const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The most of the ID-token key set read. Certificate chains can make even a
+/// set within the key count bound larger than the 64 KiB error-body bound.
+const MAX_KEY_SET_BYTES: u64 = 1024 * 1024;
 /// The longest lifetime accepted for an access token.
 const MAX_EXPIRES_IN: u64 = 24 * 60 * 60;
 /// The longest accepted token, client id, or subject.
@@ -610,17 +613,21 @@ async fn get_json(
             .timeout(remaining)
             .header(reqwest::header::ACCEPT, "application/json")
     };
-    let mut response = send_request(AUTH_REQUEST_TIMEOUT, build, cancel)
+    let response = send_request(AUTH_REQUEST_TIMEOUT, build, cancel)
         .await
         .map_err(provider_to_sign_in)?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         return Err(SignInError::HttpStatus(status));
     }
-    read_error_body(&mut response, cancel)
+    // A key set is not a failure body: its own bound, not the 64 KiB one.
+    // Its structure is checked afterwards (at most 32 keys).
+    read_whole_body(response, MAX_KEY_SET_BYTES, cancel)
         .await
-        .map_err(provider_to_sign_in)?
-        .ok_or(SignInError::Malformed)
+        .map_err(|error| match error {
+            ProviderError::ResponseTooLarge => SignInError::Malformed,
+            other => provider_to_sign_in(other),
+        })
 }
 
 const fn provider_to_sign_in(error: ProviderError) -> SignInError {

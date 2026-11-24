@@ -434,3 +434,24 @@ fn a_cancel_during_the_sign_out_confirmation_keeps_the_session() {
         .expect("local sign-out");
     assert!(removal.orphans.is_empty());
 }
+
+#[test]
+fn a_poisoned_sign_in_slot_is_internal_not_busy() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    let inner = Arc::clone(&service.inner);
+    let _ = std::thread::spawn(move || {
+        let _held = inner.chatgpt_sign_in.lock().expect("slot");
+        panic!("poison the slot");
+    })
+    .join();
+    assert!(service.inner.chatgpt_sign_in.is_poisoned());
+    let sign_in = service
+        .settings_sign_in_chatgpt(fixture.request("fresh"), &Answers::with(&[]))
+        .expect_err("poisoned");
+    assert_eq!(sign_in.code(), "internal", "{}", sign_in.message());
+    let sign_out: Result<ChatGptSignOutResult, _> =
+        service.settings_sign_out_chatgpt(fixture.request("plan"), &Answers::with(&[]));
+    let sign_out = sign_out.expect_err("poisoned");
+    assert_eq!(sign_out.code(), "internal", "{}", sign_out.message());
+}

@@ -5,7 +5,7 @@
 //! settings overview: never the sign-in address, the callback, or a token.
 //! The wait can be cancelled from the window, which only sets a cancel token.
 
-use omgcode_core::control::{ControlError, ProviderProfileDeclaration};
+use omgcode_core::control::ProviderProfileDeclaration;
 use omgcode_core::provider::OPENAI_ENDPOINT;
 use omgcode_core::provider::chatgpt::SignInError;
 use omgcode_core::turn::{CancelToken, display_safe_line};
@@ -55,10 +55,7 @@ impl DesktopService {
         // before anything is recorded or the browser opens.
         let cancel = CancelToken::new();
         let slot = SignInSlot(&self.inner.chatgpt_sign_in);
-        *slot
-            .0
-            .lock()
-            .map_err(|_| DesktopError::from_control(&ControlError::Busy))? = Some(cancel.clone());
+        *slot.0.lock().map_err(|_| DesktopError::poisoned())? = Some(cancel.clone());
         let declaration = ProviderProfileDeclaration {
             name: request.name.clone(),
             kind: "openai".to_owned(),
@@ -111,7 +108,11 @@ impl DesktopService {
         );
         drop(slot);
         signed_in.map_err(|error| DesktopError::from_app(&error))?;
-        let store = self.inner.open_or_create_control()?;
+        // The sign-in is recorded; a failed read must not report it as failed.
+        let store = self
+            .inner
+            .open_or_create_control()
+            .map_err(|_| DesktopError::signed_in_unread())?;
         Ok(overview_of(&self.inner, store))
     }
 
@@ -152,10 +153,7 @@ impl DesktopService {
         // wait for the session lock or for OpenAI.
         let cancel = CancelToken::new();
         let slot = SignInSlot(&self.inner.chatgpt_sign_in);
-        *slot
-            .0
-            .lock()
-            .map_err(|_| DesktopError::from_control(&ControlError::Busy))? = Some(cancel.clone());
+        *slot.0.lock().map_err(|_| DesktopError::poisoned())? = Some(cancel.clone());
         {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
@@ -195,7 +193,11 @@ impl DesktopService {
                 outcome.revoked,
             ));
         }
-        let store = self.inner.open_or_create_control()?;
+        // The sign-out is recorded; a failed read must not report it as failed.
+        let store = self
+            .inner
+            .open_or_create_control()
+            .map_err(|_| DesktopError::signed_out_unread(outcome.revoked))?;
         Ok(ChatGptSignOutResult {
             overview: overview_of(&self.inner, store),
             revoked: outcome.revoked,
