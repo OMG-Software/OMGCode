@@ -585,7 +585,7 @@ fn shutdown_with_no_turns_returns_at_once() {
 }
 
 #[test]
-fn chat_defaults_are_the_cli_defaults_with_the_fixed_endpoint() {
+fn chat_defaults_are_the_cli_budgets_with_desktop_compaction_and_the_fixed_endpoint() {
     let fixture = Fixture::bare();
     let endpoint = "http://127.0.0.1:1234/v1";
     let reply = fixture.service(endpoint).chat_defaults();
@@ -597,6 +597,8 @@ fn chat_defaults_are_the_cli_defaults_with_the_fixed_endpoint() {
     assert_eq!(defaults.context_tokens, 0);
     assert_eq!(defaults.max_output_tokens, 1024);
     assert_eq!(defaults.instructions, "");
-    assert_eq!(defaults.compact_threshold, 200_000);
-    assert!(!defaults.auto_compact);
+    // The desktop compacts by default at 400K; the CLI keeps 200K and an
+    // opt-in --auto-compact (ADR-0091).
+    assert_eq!(defaults.compact_threshold, 400_000);
+    assert!(defaults.auto_compact, "auto-compaction is on by default");
 }

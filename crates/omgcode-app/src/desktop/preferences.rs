@@ -36,7 +36,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
 use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
 
 use super::error::DesktopError;
@@ -45,6 +44,18 @@ use crate::chat::{DEFAULT_TURN_TIMEOUT_SECONDS, validate_turn_budgets};
 
 /// Output reserve of the built-in preferences.
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
+/// Compaction threshold of the built-in preferences: inside the slider's
+/// range, and larger than the CLI's `DEFAULT_COMPACT_THRESHOLD` (ADR-0091).
+const DEFAULT_DESKTOP_COMPACT_THRESHOLD: u64 = 400_000;
+/// Whether the built-in preferences compact automatically (ADR-0091). The
+/// CLI keeps `--auto-compact` opt-in.
+const DEFAULT_DESKTOP_AUTO_COMPACT: bool = true;
+
+// The default must be a value the composer's slider can show and save.
+const _: () = assert!(
+    DEFAULT_DESKTOP_COMPACT_THRESHOLD >= COMPACT_THRESHOLD_MIN
+        && DEFAULT_DESKTOP_COMPACT_THRESHOLD <= COMPACT_THRESHOLD_MAX
+);
 
 /// The directory under the data root that holds desktop-only files.
 pub(super) const DIRECTORY: &str = "desktop-v1";
@@ -159,8 +170,9 @@ pub(super) fn read_bounded(path: &Path, max: u64) -> Result<Option<Vec<u8>>, Loa
     Ok(Some(bytes))
 }
 
-/// The preferences that apply when none are saved: an empty model and the
-/// CLI's budgets.
+/// The preferences that apply when none are saved: an empty model, the CLI's
+/// budgets, and the desktop's own compaction defaults (ADR-0091). A saved
+/// file keeps its own values.
 pub(super) fn built_in() -> ChatPreferencesDto {
     ChatPreferencesDto {
         model: String::new(),
@@ -169,8 +181,8 @@ pub(super) fn built_in() -> ChatPreferencesDto {
         max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
         turn_timeout_seconds: DEFAULT_TURN_TIMEOUT_SECONDS,
         instructions: String::new(),
-        compact_threshold: DEFAULT_COMPACT_THRESHOLD,
-        auto_compact: false,
+        compact_threshold: DEFAULT_DESKTOP_COMPACT_THRESHOLD,
+        auto_compact: DEFAULT_DESKTOP_AUTO_COMPACT,
         enter_to_send: enter_to_send_default(),
     }
 }

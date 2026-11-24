@@ -172,7 +172,7 @@ const BUILT_IN_PREFERENCES: MockPreferences = {
   max_tool_calls: 128,
   turn_timeout_seconds: 120,
   instructions: "",
-  compact_threshold: 200_000,
+  compact_threshold: 400_000,
   auto_compact: true,
   enter_to_send: true,
 };
