@@ -141,12 +141,15 @@ pub fn sign_in_with_chatgpt(
             .map_err(|error| AppError::new(ErrorKind::Control, format!("settings: {error}")))?
     };
     // Fail before the browser step when no protected store can hold tokens.
-    drop(CredentialStore::open(data_root).map_err(|error| {
-        credential_error(format!(
-            "{}: {error}",
-            ProviderCredentialUseError::native_code(&error)
-        ))
-    })?);
+    // The opened store is released at once.
+    CredentialStore::open(data_root)
+        .map(|_store| ())
+        .map_err(|error| {
+            credential_error(format!(
+                "{}: {error}",
+                ProviderCredentialUseError::native_code(&error)
+            ))
+        })?;
     let endpoints = AuthEndpoints::openai();
     let signed_in = chatgpt::sign_in(&endpoints, &request, open_browser, cancel)
         .map_err(|error| sign_in_error(&error))?;
