@@ -30,6 +30,13 @@ import type {
   WorkspaceSettingsView,
 } from "../ipc/types";
 import {
+  FIXED_ENDPOINTS,
+  isFixedHostedKind,
+  isHostedKind,
+  isLocalKind,
+  NEW_CONNECTION_KINDS,
+} from "../providers";
+import {
   buildFixtures,
   type FixtureSession,
   HOSTILE,
@@ -673,7 +680,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           endpoint: view.endpoint,
           kind: view.kind,
           models:
-            view.kind === "ollama_cloud"
+            view.kind !== null && view.kind !== "ollama_local" && view.kind !== "lm_studio"
               ? [
                   { id: "gpt-oss:120b", cloud_tag: false },
                   { id: "qwen3-coder:480b", cloud_tag: false },
@@ -1008,18 +1015,37 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           const kind = str(args, "kind");
           const endpoint = args.endpoint ?? null;
           const apiKey = args.api_key ?? null;
-          if (kind !== "lm_studio" && kind !== "ollama_local" && kind !== "ollama_cloud") {
+          if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
           }
-          if (kind === "ollama_cloud") {
+          // The same three shapes Rust accepts (ADR-0090).
+          let recorded: string;
+          if (isLocalKind(kind)) {
+            if (typeof endpoint !== "string" || apiKey !== null) {
+              fail("invalid_request", "A local connection takes an endpoint and no API key.");
+            }
+            if (!isLocalEndpoint(endpoint)) {
+              fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
+            }
+            recorded = endpoint;
+          } else if (isFixedHostedKind(kind)) {
             if (endpoint !== null || typeof apiKey !== "string") {
-              fail("invalid_request", "Ollama Cloud takes an API key and no endpoint.");
+              fail("invalid_request", "This provider takes an API key and no endpoint.");
             }
             checkApiKey(apiKey);
-          } else if (typeof endpoint !== "string" || apiKey !== null) {
-            fail("invalid_request", "A local connection takes an endpoint and no API key.");
-          } else if (!isLocalEndpoint(endpoint)) {
-            fail("control", "a local provider endpoint must be http://<loopback IP>:<port>/v1");
+            recorded = FIXED_ENDPOINTS[kind];
+          } else {
+            if (typeof endpoint !== "string" || typeof apiKey !== "string") {
+              fail(
+                "invalid_request",
+                "An OpenAI-compatible connection takes an endpoint and an API key.",
+              );
+            }
+            checkApiKey(apiKey);
+            if (!/^https:\/\/[a-z0-9.-]+(:[0-9]+)?(\/[A-Za-z0-9._~-]+)*\/?$/.test(endpoint)) {
+              fail("control", "an openai_compatible endpoint must be an https:// base URL");
+            }
+            recorded = endpoint;
           }
           if (settings.provider_profiles.some((p) => p.name === name)) {
             fail("control", "a provider profile with this name already exists; remove it first");
@@ -1027,9 +1053,9 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           settings.provider_profiles.push({
             name,
             kind,
-            auth: kind === "ollama_cloud" ? "api_key" : "none",
-            endpoint: kind === "ollama_cloud" ? "https://ollama.com/v1" : (endpoint as string),
-            credential_bound: kind === "ollama_cloud",
+            auth: isHostedKind(kind) ? "api_key" : "none",
+            endpoint: recorded,
+            credential_bound: isHostedKind(kind),
             selectable: true,
             active: false,
           });
@@ -1041,8 +1067,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (profile === undefined) {
             fail("control", "unknown provider profile");
           }
-          if (profile.kind !== "ollama_cloud") {
-            fail("invalid_request", "Only an Ollama Cloud connection has an API key set here.");
+          if (!isHostedKind(profile.kind)) {
+            fail("invalid_request", "Only a hosted connection has an API key set here.");
           }
           checkApiKey(args.api_key);
           profile.credential_bound = true;

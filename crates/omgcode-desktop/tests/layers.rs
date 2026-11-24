@@ -855,3 +855,27 @@ fn internal_error_is_fixed_and_carries_no_detail() {
     assert_eq!(value["code"], "internal");
     assert_eq!(value["message"], "The command could not be completed.");
 }
+
+/// The settings window names every provider kind core records and shows each
+/// named hosted provider's fixed endpoint exactly as core enforces it
+/// (ADR-0090). Rust supplies the endpoint; a drift would only mislead the
+/// operator, so this keeps the display honest.
+#[test]
+fn the_frontend_names_every_provider_and_shows_core_endpoints() {
+    let source = read(&crate_dir().join("ui/src/providers.ts"));
+    let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    for kind in omgcode_app::desktop::NewConnectionKind::ALL {
+        let name = kind.as_str();
+        assert!(flat.contains(&format!("{name}: \"")), "{name} is not named");
+        assert!(
+            flat.contains(&format!("\"{name}\",")),
+            "{name} is not listed"
+        );
+        if let Some(endpoint) = kind.fixed_endpoint() {
+            assert!(
+                flat.contains(&format!("{name}: \"{endpoint}\"")),
+                "{name} shows another endpoint than {endpoint}"
+            );
+        }
+    }
+}

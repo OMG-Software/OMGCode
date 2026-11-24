@@ -426,7 +426,8 @@ fn an_unusable_profile_fails_with_a_credential_error_before_any_request_or_sessi
 
     for (name, cause) in [
         ("missing", "unknown_profile"),
-        ("openai-key", "wrong_provider"),
+        // A hosted profile recorded without an endpoint cannot be used (ADR-0091).
+        ("openai-key", "endpoint_not_recorded"),
         ("unbound", "not_bound"),
     ] {
         let args = scene.chat_args(None, Some(name), "hello");
@@ -521,7 +522,23 @@ fn capabilities_report_the_stored_credential_adapters_and_no_provider_adapters()
     let capabilities = json_output(&output);
     assert_eq!(
         capabilities["stored_credential_adapters"],
-        json!(["lm_studio", "ollama_cloud"])
+        json!([
+            "lm_studio",
+            "ollama_cloud",
+            "anthropic",
+            "openai",
+            "google",
+            "meta",
+            "moonshot",
+            "tencent",
+            "thinking_machines",
+            "minimax",
+            "open_router",
+            "z_ai",
+            "deepseek",
+            "xai",
+            "openai_compatible"
+        ])
     );
     assert_eq!(capabilities["provider_adapters"], false);
 }
@@ -605,7 +622,7 @@ fn an_endpoint_the_adapter_would_refuse_is_refused_when_the_profile_is_added() {
     }
     let output = scene.try_add_profile("bad", "openai", "api_key", Some("http://127.0.0.1:1/v1"));
     assert_error_code(&output, "control");
-    assert!(error_message(&output).contains("does not accept an endpoint"));
+    assert!(error_message(&output).contains("only its one documented endpoint"));
     let status = json_output(&run_cli(scene.data(), &["workspace", "status"]));
     assert!(status.get("provider_profiles").is_none(), "{status}");
 }

@@ -1,12 +1,21 @@
 import { button, el } from "../dom";
 import type {
   ConnectionView,
-  LocalProviderKind,
   NewConnectionKind,
   ProviderProfileView,
   SettingsOverview,
 } from "../ipc/types";
-import { DEFAULT_ENDPOINTS, providerName } from "../providers";
+import {
+  DEFAULT_ENDPOINTS,
+  FIXED_ENDPOINTS,
+  hostedNotice,
+  isFixedHostedKind,
+  isHostedKind,
+  isLocalKind,
+  NEW_CONNECTION_KINDS,
+  PROVIDER_NAMES,
+  providerName,
+} from "../providers";
 import { chatDefaultsBlock } from "./chat_section";
 import type { ConnectionDraft, SectionContext } from "./context";
 import { facts, sectionHead } from "./parts";
@@ -96,12 +105,8 @@ function activeConnection(ctx: SectionContext): HTMLElement {
   );
 }
 
-/** What every hosted-profile row and the add form say about where prompts go (ADR-0071). */
-export const HOSTED_NOTICE =
-  "Hosted by Ollama: prompts, workspace text read by tools, and command output leave this computer for ollama.com.";
-
-/** The one fixed endpoint Ollama Cloud uses. Rust supplies it; the window only shows it. */
-export const CLOUD_ENDPOINT = "https://ollama.com/v1";
+/** The address field's hint for an OpenAI-compatible service (ADR-0090). */
+export const CUSTOM_ENDPOINT_HINT = "https://llm.example.org/v1";
 
 /**
  * A write-only API key control: a password field and a button that sends its value once and
@@ -130,7 +135,7 @@ function keyEntry(
   return { field: labelled(label, id, input), input, save };
 }
 
-/** The "Set key..." disclosure of one Ollama Cloud profile. */
+/** The "Set key..." disclosure of one hosted profile. */
 function setKeyDisclosure(
   profile: ProviderProfileView,
   { submit, actions }: SectionContext,
@@ -157,12 +162,12 @@ function credentialLine(profile: ProviderProfileView): string {
   if (!profile.credential_bound) {
     return "No credential";
   }
-  return profile.kind === "ollama_cloud" ? "API key stored" : "Credential stored";
+  return isHostedKind(profile.kind) ? "API key stored" : "Credential stored";
 }
 
 function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElement {
   const { submit, actions } = ctx;
-  const hosted = profile.kind === "ollama_cloud";
+  const hosted = isHostedKind(profile.kind);
   // Removing a profile with a stored key deletes the key too; Rust asks a system Yes/No first.
   const remove = button("Remove", () => submit(actions.removeConnection(profile.name)));
   return el(
@@ -183,7 +188,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         text: `${providerName(profile.kind)} \u00b7 ${profile.endpoint ?? "no endpoint recorded"} \u00b7 ${profile.auth}`,
       }),
       el("div", { class: "row-meta", text: credentialLine(profile) }),
-      hosted ? el("div", { class: "row-meta", text: HOSTED_NOTICE }) : null,
+      hosted ? el("div", { class: "row-meta", text: hostedNotice(profile.endpoint) }) : null,
       hosted ? setKeyDisclosure(profile, ctx) : null,
     ),
     remove,
@@ -206,10 +211,24 @@ function labelled(label: string, id: string, control: HTMLElement): HTMLElement 
   return el("div", { class: "field" }, el("label", { text: label, attrs: { for: id } }), control);
 }
 
+/** The name the form suggests for each provider, replaced only while the operator kept it. */
 const DEFAULT_NAMES: Readonly<Record<NewConnectionKind, string>> = {
   ollama_local: "ollama",
   lm_studio: "lmstudio",
   ollama_cloud: "ollama-cloud",
+  anthropic: "claude",
+  openai: "openai",
+  google: "gemini",
+  meta: "llama",
+  moonshot: "kimi",
+  tencent: "hunyuan",
+  thinking_machines: "tinker",
+  minimax: "minimax",
+  open_router: "openrouter",
+  z_ai: "glm",
+  deepseek: "deepseek",
+  xai: "grok",
+  openai_compatible: "custom",
 };
 
 /** The add-connection form's starting values: Ollama at its usual address. */
@@ -217,18 +236,20 @@ export function newConnectionDraft(): ConnectionDraft {
   return { kind: "ollama_local", name: "ollama", endpoint: DEFAULT_ENDPOINTS.ollama_local };
 }
 
-function isLocal(kind: NewConnectionKind): kind is LocalProviderKind {
-  return kind !== "ollama_cloud";
+/** How the provider dropdown names one kind; hosted ones say so. */
+function kindOption(kind: NewConnectionKind): string {
+  return isHostedKind(kind) ? `${PROVIDER_NAMES[kind]} (hosted)` : PROVIDER_NAMES[kind];
 }
 
 /**
- * A form that records a local LM Studio or Ollama connection without a credential, or Ollama
- * Cloud with its API key. The endpoint field starts at the chosen local provider's usual
- * address and is hidden for Ollama Cloud, whose fixed endpoint Rust supplies; the core
- * validates every value. The typed values (never the key) live in the view state, so a redraw
- * keeps them; they reset only after the core records the connection. The key lives only in its
- * password field: the click sends it once and empties the field at once, whether or not the
- * core accepts it.
+ * A form that records a local LM Studio or Ollama connection without a credential, a named
+ * hosted provider with its API key, or an OpenAI-compatible service with its HTTPS address and
+ * API key (ADR-0090). The endpoint field starts at the chosen local provider's usual address; it
+ * is hidden for a named hosted provider, whose fixed endpoint Rust supplies and the form only
+ * shows; the core validates every value. The typed values (never the key) live in the view
+ * state, so a redraw keeps them; they reset only after the core records the connection. The key
+ * lives only in its password field: the click sends it once and empties the field at once,
+ * whether or not the core accepts it.
  */
 function addConnectionForm({ submit, actions, view }: SectionContext): HTMLElement {
   const draft = view.connectionDraft;
@@ -236,9 +257,9 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     attrs: { id: "new-connection-provider", "aria-label": "New connection provider" },
   });
   kind.append(
-    el("option", { text: "Ollama", attrs: { value: "ollama_local" } }),
-    el("option", { text: "LM Studio", attrs: { value: "lm_studio" } }),
-    el("option", { text: "Ollama Cloud (hosted)", attrs: { value: "ollama_cloud" } }),
+    ...NEW_CONNECTION_KINDS.map((value) =>
+      el("option", { text: kindOption(value), attrs: { value } }),
+    ),
   );
   const name = el("input", {
     attrs: {
@@ -261,20 +282,26 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   name.value = draft.name;
   endpoint.value = draft.endpoint;
   const endpointField = labelled("Endpoint", "new-connection-endpoint", endpoint);
+  const fixedText = el("span");
   const fixedEndpoint = el(
     "div",
     { class: "field", attrs: { id: "new-connection-fixed-endpoint" } },
-    el("span", { text: `Endpoint: ${CLOUD_ENDPOINT} (fixed)` }),
+    fixedText,
   );
-  const hostedNotice = el("p", { class: "muted", text: HOSTED_NOTICE });
+  const hostedText = el("p", { class: "muted" });
   // Shows the fields the chosen provider takes. The endpoint and key fields are hidden, not
   // rebuilt, so what was typed in a visible one stays.
   const arrange = (): void => {
-    const hosted = !isLocal(kind.value as NewConnectionKind);
-    endpointField.hidden = hosted;
-    fixedEndpoint.hidden = !hosted;
+    const chosen = kind.value as NewConnectionKind;
+    const fixed = isFixedHostedKind(chosen) ? FIXED_ENDPOINTS[chosen] : null;
+    const hosted = isHostedKind(chosen);
+    endpointField.hidden = fixed !== null;
+    endpoint.placeholder = chosen === "openai_compatible" ? CUSTOM_ENDPOINT_HINT : "";
+    fixedEndpoint.hidden = fixed === null;
+    fixedText.textContent = fixed === null ? "" : `Endpoint: ${fixed} (fixed)`;
     key.field.hidden = !hosted;
-    hostedNotice.hidden = !hosted;
+    hostedText.hidden = !hosted;
+    hostedText.textContent = hosted ? hostedNotice(fixed) : "";
   };
   const remember = (): void => {
     view.connectionDraft = {
@@ -288,8 +315,10 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   kind.addEventListener("change", () => {
     const chosen = kind.value as NewConnectionKind;
     // Only replace values the operator has not edited.
-    if (isLocal(chosen) && Object.values(DEFAULT_ENDPOINTS).includes(endpoint.value)) {
-      endpoint.value = DEFAULT_ENDPOINTS[chosen];
+    const untouched =
+      endpoint.value === "" || Object.values(DEFAULT_ENDPOINTS).includes(endpoint.value);
+    if (untouched) {
+      endpoint.value = isLocalKind(chosen) ? DEFAULT_ENDPOINTS[chosen] : "";
     }
     if (Object.values(DEFAULT_NAMES).includes(name.value)) {
       name.value = DEFAULT_NAMES[chosen];
@@ -303,9 +332,14 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     // Take the key out of the field before anything else can fail, then send it once.
     const typed = key.input.value;
     key.input.value = "";
-    const change = isLocal(chosen)
-      ? actions.addConnection(name.value.trim(), chosen, endpoint.value.trim(), null)
-      : actions.addConnection(name.value.trim(), chosen, null, typed);
+    let change: ReturnType<typeof actions.addConnection>;
+    if (isLocalKind(chosen)) {
+      change = actions.addConnection(name.value.trim(), chosen, endpoint.value.trim(), null);
+    } else if (isFixedHostedKind(chosen)) {
+      change = actions.addConnection(name.value.trim(), chosen, null, typed);
+    } else {
+      change = actions.addConnection(name.value.trim(), chosen, endpoint.value.trim(), typed);
+    }
     submit(async (revision) => {
       const recorded = await change(revision);
       // Reached only when the core recorded the connection; a refusal keeps the draft.
@@ -321,7 +355,7 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     endpointField,
     fixedEndpoint,
     key.field,
-    hostedNotice,
+    hostedText,
     el("div", { class: "row-actions" }, add),
   );
 }
@@ -333,7 +367,7 @@ function addConnection(ctx: SectionContext): HTMLElement {
     el("summary", { text: "Add connection" }),
     el("p", {
       class: "muted",
-      text: "Records a local server without a credential, or Ollama Cloud with its API key. A new connection is not used until you choose it above.",
+      text: "Records a local server without a credential, or a hosted provider with its API key. A new connection is not used until you choose it above.",
     }),
     addConnectionForm(ctx),
   );

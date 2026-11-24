@@ -223,6 +223,94 @@ fn adding_ollama_cloud_records_the_profile_and_binds_the_key() {
     assert_no_file_holds(&fixture.data, KEY);
 }
 
+/// Each named hosted provider is added with only a name and a key: Rust
+/// supplies its one documented endpoint, stores and binds the key, and the
+/// key can be replaced later (ADR-0090).
+#[test]
+fn adding_a_named_hosted_provider_records_its_fixed_endpoint() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let mut vault = Vault::new(&fixture.data);
+    for (name, kind, endpoint) in [
+        ("claude", "anthropic", "https://api.anthropic.com/v1"),
+        ("gpt", "openai", "https://api.openai.com/v1"),
+        ("deep", "deepseek", "https://api.deepseek.com"),
+        ("glm", "z_ai", "https://api.z.ai/api/paas/v4"),
+        ("grok", "xai", "https://api.x.ai/v1"),
+    ] {
+        let overview = add(
+            &service,
+            &fixture,
+            json!({"name": name, "kind": kind, "api_key": KEY}),
+        )
+        .unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let id = bound(&fixture, name).expect("a bound credential");
+        vault.track(id.clone());
+        let profile = overview
+            .provider_profiles
+            .iter()
+            .find(|profile| profile.name == name)
+            .expect("listed");
+        assert_eq!(profile.kind, kind);
+        assert_eq!(profile.auth, "api_key");
+        assert_eq!(profile.endpoint.as_deref(), Some(endpoint));
+        assert!(profile.credential_bound && profile.selectable, "{kind}");
+        assert!(!text_of(&overview).contains(KEY), "{kind}");
+    }
+    set_key(&service, &fixture, "deep", NEXT_KEY).expect("replace the DeepSeek key");
+    let replaced = bound(&fixture, "deep").expect("bound");
+    vault.track(replaced.clone());
+    assert_eq!(
+        native(&fixture, &replaced).as_deref(),
+        Some(NEXT_KEY.as_bytes())
+    );
+    assert_no_file_holds(&fixture.data, KEY);
+    assert_no_file_holds(&fixture.data, NEXT_KEY);
+}
+
+/// An OpenAI-compatible connection records the HTTPS base URL the operator
+/// typed, exactly, with its key. Plain HTTP and other text its rule refuses
+/// leave no profile and no stored key (ADR-0090).
+#[test]
+fn adding_an_openai_compatible_connection_records_the_typed_endpoint() {
+    let fixture = Fixture::new();
+    let service = service(&fixture);
+    let mut vault = Vault::new(&fixture.data);
+    let typed = "https://provider-api.example.org/v1";
+    for refused in [
+        "http://provider-api.example.org/v1",
+        "https://user@provider-api.example.org/v1",
+        "https://provider-api.example.org/v1?key=1",
+    ] {
+        let error = add(
+            &service,
+            &fixture,
+            json!({"name": "custom", "kind": "openai_compatible", "endpoint": refused, "api_key": KEY}),
+        )
+        .expect_err(refused);
+        assert_eq!(error.code(), "control", "{refused}");
+        assert!(!format!("{error} {error:?}").contains(KEY));
+    }
+    assert_eq!(profile_count(&fixture), 0);
+
+    let overview = add(
+        &service,
+        &fixture,
+        json!({"name": "custom", "kind": "openai_compatible", "endpoint": typed, "api_key": KEY}),
+    )
+    .expect("add");
+    vault.track(bound(&fixture, "custom").expect("a bound credential"));
+    let profile = overview
+        .provider_profiles
+        .iter()
+        .find(|profile| profile.name == "custom")
+        .expect("listed");
+    assert_eq!(profile.kind, "openai_compatible");
+    assert_eq!(profile.endpoint.as_deref(), Some(typed));
+    assert!(profile.credential_bound && profile.selectable);
+    assert_no_file_holds(&fixture.data, KEY);
+}
+
 /// Every refused request leaves no profile, no stored secret, and no change of
 /// revision, and no error repeats the key.
 #[test]
@@ -265,6 +353,26 @@ fn a_refused_add_records_nothing_and_never_repeats_the_key() {
         (
             "local kind without an endpoint",
             json!({"name": "l", "kind": "lm_studio"}),
+            KEY,
+        ),
+        (
+            "endpoint for a named hosted provider",
+            json!({"name": "d", "kind": "deepseek", "endpoint": "https://example.com/v1", "api_key": KEY}),
+            KEY,
+        ),
+        (
+            "missing key for a named hosted provider",
+            json!({"name": "d", "kind": "anthropic"}),
+            KEY,
+        ),
+        (
+            "missing endpoint for an OpenAI-compatible service",
+            json!({"name": "o", "kind": "openai_compatible", "api_key": KEY}),
+            KEY,
+        ),
+        (
+            "missing key for an OpenAI-compatible service",
+            json!({"name": "o", "kind": "openai_compatible", "endpoint": "https://provider-api.example.org/v1"}),
             KEY,
         ),
     ];

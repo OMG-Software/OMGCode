@@ -85,7 +85,7 @@ meaningful alternative does not need an ADR.
 | [0068: Name replies by model and copy them as Markdown, text, or an image](0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md) | Accepted, amended by ADR-0080 | 2026-11-20 |
 | [0069: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) | Accepted | 2026-11-20 |
 | [0070: Keep checkpoints in a protected per-workspace `.OMGCode` folder](0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md) | Accepted | 2026-11-20 |
-| [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted, amended by ADR-0080, ADR-0084, and ADR-0089 | 2026-11-20 |
+| [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted, amended by ADR-0080, ADR-0084, ADR-0089, and ADR-0091 | 2026-11-20 |
 | [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted, amended by ADR-0083 | 2026-11-20 |
 | [0073: Remove extra data folder grants after operator confirmation](0073-remove-extra-data-folder-grants-after-operator-confirmation.md) | Accepted | 2026-11-20 |
 | [0074: Give chat bubbles a shared width](0074-give-chat-bubbles-a-shared-width.md) | Accepted | 2026-11-23 |
@@ -104,3 +104,4 @@ meaningful alternative does not need an ADR.
 | [0087: Show a per-part context estimate for the open session](0087-show-a-per-part-context-estimate-for-the-open-session.md) | Accepted | 2026-11-24 |
 | [0088: Change execution settings in the settings window](0088-change-execution-settings-in-the-settings-window.md) | Accepted | 2026-11-24 |
 | [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted | 2026-11-24 |
+| [0091: Add hosted providers and an OpenAI-compatible connection](0091-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |

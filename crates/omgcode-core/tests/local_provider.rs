@@ -465,7 +465,6 @@ fn rejects_destinations_outside_literal_loopback_http_before_connecting() {
     for base_url in [
         "http://localhost:1234/v1",
         "http://192.0.2.1:1234/v1",
-        "https://127.0.0.1:1234/v1",
         "http://127.0.0.1/v1",
         "http://127.0.0.1:0/v1",
         "http://127.0.0.1:1234/v1/other",
@@ -488,6 +487,19 @@ fn rejects_destinations_outside_literal_loopback_http_before_connecting() {
             "{base_url}"
         );
     }
+    // HTTPS to a loopback address is a well-formed typed hosted endpoint
+    // (ADR-0091), so without a token it is refused for that, still before any
+    // connection.
+    let result = LocalModelClient::new(
+        LocalModelConfig {
+            base_url: "https://127.0.0.1:1234/v1".to_owned(),
+            model: "model".to_owned(),
+            context_tokens: 4096,
+            max_output_tokens: 128,
+        },
+        None,
+    );
+    assert_eq!(result.err(), Some(ProviderError::InvalidToken));
 }
 
 #[test]

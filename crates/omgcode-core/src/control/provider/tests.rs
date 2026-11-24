@@ -224,20 +224,27 @@ fn a_refused_endpoint_writes_no_event() {
     assert_eq!(text.matches("provider_profile_added").count(), 0, "{text}");
 }
 
-/// Kinds without an adapter refuse an endpoint, whatever its text.
+/// A named hosted kind refuses a loopback endpoint, and `openai_compatible`
+/// refuses one too: it is HTTPS only (ADR-0090).
 #[test]
-fn other_provider_kinds_refuse_an_endpoint() {
+fn hosted_kinds_refuse_a_loopback_endpoint() {
     let (_directory, _data, mut store) = store();
     for (kind, auth) in [
         ("openai", "api_key"),
         ("anthropic", "subscription"),
         ("open_router", "api_key"),
+        ("deepseek", "api_key"),
     ] {
         let message = refusal(
             store.add_provider_profile(&with_endpoint("other", kind, auth, Some(ENDPOINT)), 0),
         );
-        assert!(message.contains("does not accept an endpoint"), "{kind}");
+        assert!(message.contains("one documented endpoint"), "{kind}");
     }
+    let message = refusal(store.add_provider_profile(
+        &with_endpoint("other", "openai_compatible", "api_key", Some(ENDPOINT)),
+        0,
+    ));
+    assert!(message.contains("openai_compatible endpoint"), "{message}");
     assert_eq!(store.revision(), 0);
 }
 
@@ -398,16 +405,13 @@ fn an_ollama_local_profile_records_a_loopback_endpoint_under_the_shared_rule() {
     );
 }
 
-/// Only the two local kinds are served by the local adapter.
+/// Only LM Studio and Ollama on this computer are local kinds.
 #[test]
 fn only_lm_studio_and_ollama_local_are_local_kinds() {
-    for kind in [
-        ProviderKind::OpenAi,
-        ProviderKind::Anthropic,
-        ProviderKind::OllamaCloud,
-        ProviderKind::OpenRouter,
-    ] {
-        assert!(!kind.is_local(), "{kind:?}");
+    for kind in ProviderKind::ALL {
+        if !matches!(kind, ProviderKind::LmStudio | ProviderKind::OllamaLocal) {
+            assert!(!kind.is_local(), "{kind:?}");
+        }
     }
     assert!(ProviderKind::LmStudio.is_local());
     assert!(ProviderKind::OllamaLocal.is_local());
@@ -645,7 +649,7 @@ fn an_ollama_cloud_profile_refuses_every_other_endpoint() {
             0,
         ));
         assert!(
-            message.contains("ollama_cloud endpoint") || message.contains("longer than 256"),
+            message.contains("one documented endpoint") || message.contains("longer than 256"),
             "{endpoint:?}: {message}"
         );
     }
@@ -773,16 +777,184 @@ fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check(
     );
 }
 
-/// Ollama Cloud is served by the model adapter but is not a local kind.
+/// Every kind except the two local ones is hosted, and every hosted kind but
+/// `openai_compatible` has one fixed HTTPS endpoint (ADR-0090). Each spelling
+/// round-trips through `parse`.
 #[test]
-fn ollama_cloud_uses_the_model_adapter_without_being_local() {
-    assert!(ProviderKind::OllamaCloud.uses_model_adapter());
-    assert!(!ProviderKind::OllamaCloud.is_local());
-    for kind in [
-        ProviderKind::OpenAi,
-        ProviderKind::Anthropic,
-        ProviderKind::OpenRouter,
+fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
+    assert_eq!(ProviderKind::ALL.len(), 16);
+    for kind in ProviderKind::ALL {
+        assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        assert_eq!(
+            ProviderKind::parse(&kind.as_str().to_ascii_uppercase()),
+            Some(kind)
+        );
+        assert_eq!(kind.is_hosted(), !kind.is_local(), "{kind:?}");
+        match kind.fixed_endpoint() {
+            Some(endpoint) => {
+                assert!(kind.is_hosted(), "{kind:?}");
+                assert!(endpoint.starts_with("https://"), "{kind:?}");
+                assert!(
+                    crate::provider::ModelEndpoint::parse(endpoint)
+                        .is_ok_and(|parsed| parsed.is_hosted()),
+                    "{kind:?}"
+                );
+            }
+            None => assert!(
+                kind.is_local() || kind == ProviderKind::OpenAiCompatible,
+                "{kind:?}"
+            ),
+        }
+    }
+    assert_eq!(ProviderKind::parse("grok"), None);
+    // No two kinds share an endpoint, so a key's audience names one provider.
+    let mut endpoints: Vec<&str> = ProviderKind::ALL
+        .iter()
+        .filter_map(|kind| kind.fixed_endpoint())
+        .collect();
+    let count = endpoints.len();
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    assert_eq!(endpoints.len(), count);
+}
+
+/// Each named hosted kind records exactly its fixed endpoint with `api_key`,
+/// replays it, and refuses another provider's endpoint, a loopback endpoint,
+/// and an operator-typed one.
+#[test]
+fn each_named_hosted_kind_records_only_its_own_endpoint() {
+    let (_directory, data, mut store) = store();
+    let mut revision = 0;
+    for kind in ProviderKind::ALL {
+        let Some(endpoint) = kind.fixed_endpoint() else {
+            continue;
+        };
+        for wrong in [
+            "https://provider-api.example.org/v1",
+            ENDPOINT,
+            if kind == ProviderKind::OpenAi {
+                CLOUD_ENDPOINT
+            } else {
+                crate::provider::OPENAI_ENDPOINT
+            },
+        ] {
+            let message = refusal(store.add_provider_profile(
+                &with_endpoint("wrong", kind.as_str(), "api_key", Some(wrong)),
+                revision,
+            ));
+            assert!(
+                message.contains("one documented endpoint"),
+                "{kind:?} {wrong}: {message}"
+            );
+        }
+        let name = kind.as_str().replace('_', "-");
+        store
+            .add_provider_profile(
+                &with_endpoint(&name, kind.as_str(), "api_key", Some(endpoint)),
+                revision,
+            )
+            .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+        revision += 1;
+        if !matches!(kind, ProviderKind::OpenAi | ProviderKind::Anthropic) {
+            assert!(
+                matches!(
+                    store.add_provider_profile(
+                        &with_endpoint("sub", kind.as_str(), "subscription", Some(endpoint)),
+                        revision,
+                    ),
+                    Err(ControlError::ProviderRefused(_))
+                ),
+                "{kind:?}"
+            );
+        }
+    }
+    assert_eq!(store.revision(), revision);
+    drop(store);
+    let store = ControlStore::open(&data).expect("replay");
+    for kind in ProviderKind::ALL {
+        if let Some(endpoint) = kind.fixed_endpoint() {
+            let status = store
+                .provider_profile(&kind.as_str().replace('_', "-"))
+                .expect("replayed profile");
+            assert_eq!(status.profile().kind(), kind);
+            assert_eq!(
+                status.profile().endpoint().map(ProviderEndpoint::as_str),
+                Some(endpoint)
+            );
+        }
+    }
+}
+
+/// An `openai_compatible` profile records the HTTPS base URL the operator
+/// typed, exactly, and refuses plain HTTP, user information, queries, and text
+/// the URL parser would rewrite (ADR-0090). Replay applies the same rule.
+#[test]
+fn an_openai_compatible_profile_records_an_https_base_url_under_the_custom_rule() {
+    let (_directory, data, mut store) = store();
+    let typed = "https://provider-api.example.org/v1";
+    store
+        .add_provider_profile(
+            &with_endpoint("custom", "openai_compatible", "api_key", Some(typed)),
+            0,
+        )
+        .expect("custom profile");
+    for refused in [
+        "http://provider-api.example.org/v1",
+        "https://Provider-API.example.org/v1",
+        "https://user@provider-api.example.org/v1",
+        "https://provider-api.example.org/v1?key=1",
+        "https://provider-api.example.org:443/v1",
+        "https://provider-api.example.org/a/../v1",
+        ENDPOINT,
+        "",
     ] {
-        assert!(!kind.uses_model_adapter(), "{kind:?}");
+        let message = refusal(store.add_provider_profile(
+            &with_endpoint("other", "openai_compatible", "api_key", Some(refused)),
+            1,
+        ));
+        assert!(
+            message.contains("openai_compatible endpoint"),
+            "{refused:?}: {message}"
+        );
+    }
+    for auth in ["none", "subscription"] {
+        assert!(matches!(
+            store.add_provider_profile(
+                &with_endpoint("other", "openai_compatible", auth, Some(typed)),
+                1
+            ),
+            Err(ControlError::ProviderRefused(_))
+        ));
+    }
+    // Without a bound key it cannot be chosen.
+    assert!(matches!(
+        store.select_active_provider(Some("custom"), 1),
+        Err(ControlError::ProviderRefused(message)) if message.contains("bound credential")
+    ));
+    assert_eq!(store.revision(), 1);
+    drop(store);
+    let original = fs::read_to_string(data.join(FILE_NAME)).expect("journal");
+    let store = ControlStore::open(&data).expect("replay");
+    assert_eq!(
+        store
+            .provider_profile("custom")
+            .and_then(|status| status.profile().endpoint())
+            .map(ProviderEndpoint::as_str),
+        Some(typed)
+    );
+    drop(store);
+    for replacement in [
+        "http://provider-api.example.org/v1",
+        "https://user@provider-api.example.org/v1",
+    ] {
+        let edited = original.replacen(typed, replacement, 1);
+        let directory = tempfile::tempdir().expect("copy");
+        let path = directory.path().join("data");
+        drop(ControlStore::open(&path).expect("directory"));
+        fs::write(path.join(FILE_NAME), edited).expect("edited fixture");
+        assert!(
+            matches!(ControlStore::open(&path), Err(ControlError::Invalid(_))),
+            "{replacement}"
+        );
     }
 }

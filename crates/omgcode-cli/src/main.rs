@@ -20,6 +20,7 @@ use omgcode_app::{
     redact_known_secret, resolve_local_connection, run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
+use omgcode_core::control::ProviderKind;
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
 use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig, list_local_models};
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
@@ -145,9 +146,9 @@ enum SessionCommand {
         context_tokens: u64,
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
-        /// Use this recorded `lm_studio`, `ollama_local`, or `ollama_cloud` provider profile's
-        /// endpoint, and its stored credential, if any, instead of
-        /// OMGCODE_LM_TOKEN.
+        /// Use this recorded provider profile's endpoint, and its stored
+        /// credential, if any, instead of OMGCODE_LM_TOKEN. A hosted profile
+        /// always has a credential.
         #[arg(long, value_parser = non_empty_name)]
         provider_profile: Option<String>,
     },
@@ -204,9 +205,9 @@ struct ChatArgs {
     /// Enable compaction at the effective trigger before a turn.
     #[arg(long)]
     auto_compact: bool,
-    /// Use this recorded `lm_studio`, `ollama_local`, or `ollama_cloud` provider profile's
-    /// endpoint, and its stored credential, if any, instead of
-    /// OMGCODE_LM_TOKEN. The variable is then not read.
+    /// Use this recorded provider profile's endpoint, and its stored
+    /// credential, if any, instead of OMGCODE_LM_TOKEN. The variable is then
+    /// not read.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
     /// Stream the model's text to standard error as it arrives. The text is
@@ -233,9 +234,9 @@ struct ModelsArgs {
         conflicts_with = "provider_profile"
     )]
     endpoint: String,
-    /// Use this recorded `lm_studio`, `ollama_local`, or `ollama_cloud` provider profile's
-    /// endpoint, and its stored credential, if any, instead of
-    /// OMGCODE_LM_TOKEN, exactly as `chat` does.
+    /// Use this recorded provider profile's endpoint, and its stored
+    /// credential, if any, instead of OMGCODE_LM_TOKEN, exactly as `chat`
+    /// does.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
 }
@@ -332,6 +333,17 @@ fn main() -> ExitCode {
 
 /// Dispatch trusted operator commands without providing any model execution route.
 /// `run` is an operator command; no model tool reaches it.
+/// The stored spellings of the provider kinds `filter` keeps, in the order
+/// `ProviderKind::ALL` lists them. Every kind is served by the one
+/// OpenAI-compatible adapter (ADR-0090).
+fn adapter_kinds(filter: impl Fn(ProviderKind) -> bool) -> Vec<&'static str> {
+    ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| filter(*kind))
+        .map(ProviderKind::as_str)
+        .collect()
+}
+
 fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Prompt => print_json(&json!({
@@ -378,9 +390,9 @@ fn run(cli: Cli) -> Result<(), CliError> {
             "provider_profiles": true,
             "provider_profile_endpoints": true,
             "provider_adapters": false,
-            "stored_credential_adapters": ["lm_studio", "ollama_cloud"],
-            "streaming_adapters": ["lm_studio", "ollama_local", "ollama_cloud"],
-            "cancellable_adapters": ["lm_studio", "ollama_local", "ollama_cloud"],
+            "stored_credential_adapters": adapter_kinds(|kind| kind != ProviderKind::OllamaLocal),
+            "streaming_adapters": adapter_kinds(|_| true),
+            "cancellable_adapters": adapter_kinds(|_| true),
             "provider_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "package_registry_credentials": omgcode_core::control::CredentialBackend::native().is_some(),
             "credential_store": credential_cli::capability(),

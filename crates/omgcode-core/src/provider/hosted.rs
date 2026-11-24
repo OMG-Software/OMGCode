@@ -1,0 +1,216 @@
+//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0090).
+//!
+//! Every hosted provider is reached through its OpenAI-compatible Chat
+//! Completions API with a bearer key. Each named provider has one fixed base
+//! URL, checked against its official documentation on 2026-11-24; an
+//! `openai_compatible` profile records a base URL the operator typed, which
+//! must pass [`validate_custom_url`]. A profile's endpoint never changes, so a
+//! stored key goes only to the destination recorded with it (ADR-0048).
+//!
+//! The base URL is the part before `/chat/completions` and `/models`.
+
+use super::ProviderError;
+use reqwest::Url;
+
+/// Ollama Cloud's OpenAI-compatible base URL (ADR-0071).
+pub const OLLAMA_CLOUD_ENDPOINT: &str = "https://ollama.com/v1";
+/// Anthropic's OpenAI SDK compatibility layer, which Anthropic describes as
+/// not production-ready.
+pub const ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1";
+/// OpenAI's API.
+pub const OPENAI_ENDPOINT: &str = "https://api.openai.com/v1";
+/// Google Gemini's OpenAI compatibility layer (beta).
+pub const GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+/// Meta's Llama API compatibility endpoint (preview).
+pub const META_ENDPOINT: &str = "https://api.llama.com/compat/v1";
+/// Moonshot AI (Kimi), international platform.
+pub const MOONSHOT_ENDPOINT: &str = "https://api.moonshot.ai/v1";
+/// Tencent Hunyuan's OpenAI-compatible API.
+pub const TENCENT_ENDPOINT: &str = "https://api.hunyuan.cloud.tencent.com/v1";
+/// Thinking Machines Lab's Tinker OpenAI-compatible API (beta, for testing).
+pub const THINKING_MACHINES_ENDPOINT: &str =
+    "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1";
+/// MiniMax, international platform.
+pub const MINIMAX_ENDPOINT: &str = "https://api.minimax.io/v1";
+/// OpenRouter.
+pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
+/// Z.ai's general API (GLM models).
+pub const Z_AI_ENDPOINT: &str = "https://api.z.ai/api/paas/v4";
+/// DeepSeek. Its documented base has no `/v1`.
+pub const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com";
+/// xAI (Grok).
+pub const XAI_ENDPOINT: &str = "https://api.x.ai/v1";
+
+/// The request field that carries the output budget.
+///
+/// OpenAI rejects `max_tokens` for its reasoning models and documents
+/// `max_completion_tokens`; Moonshot and MiniMax document `max_tokens` as
+/// deprecated. DeepSeek and Z.ai document only `max_tokens`, so the field is
+/// chosen per endpoint rather than sending both.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputLimitField {
+    /// `max_tokens`, which local servers and most providers accept.
+    MaxTokens,
+    /// `max_completion_tokens`.
+    MaxCompletionTokens,
+}
+
+/// Every fixed hosted endpoint and the output field it takes.
+const FIXED_ENDPOINTS: &[(&str, OutputLimitField)] = &[
+    (OLLAMA_CLOUD_ENDPOINT, OutputLimitField::MaxTokens),
+    (ANTHROPIC_ENDPOINT, OutputLimitField::MaxTokens),
+    (OPENAI_ENDPOINT, OutputLimitField::MaxCompletionTokens),
+    (GOOGLE_ENDPOINT, OutputLimitField::MaxTokens),
+    (META_ENDPOINT, OutputLimitField::MaxTokens),
+    (MOONSHOT_ENDPOINT, OutputLimitField::MaxCompletionTokens),
+    (TENCENT_ENDPOINT, OutputLimitField::MaxTokens),
+    (THINKING_MACHINES_ENDPOINT, OutputLimitField::MaxTokens),
+    (MINIMAX_ENDPOINT, OutputLimitField::MaxCompletionTokens),
+    (OPENROUTER_ENDPOINT, OutputLimitField::MaxTokens),
+    (Z_AI_ENDPOINT, OutputLimitField::MaxTokens),
+    (DEEPSEEK_ENDPOINT, OutputLimitField::MaxTokens),
+    (XAI_ENDPOINT, OutputLimitField::MaxCompletionTokens),
+];
+
+/// Longest endpoint text either hosted rule reads, checked before parsing.
+const MAX_ENDPOINT_BYTES: usize = 256;
+
+/// Whether `text` is `fixed` exactly, with or without one trailing `/`.
+pub(crate) fn matches_fixed(text: &str, fixed: &str) -> bool {
+    text == fixed || text.strip_suffix('/') == Some(fixed)
+}
+
+/// The fixed endpoint `text` names, with its output field, if any. The match
+/// is exact (one trailing `/` allowed), so no host, port, path, user
+/// information, query, fragment, scheme, or letter-case variant matches.
+pub(crate) fn fixed_endpoint(text: &str) -> Option<(Url, OutputLimitField)> {
+    let field = FIXED_ENDPOINTS
+        .iter()
+        .find(|(fixed, _)| matches_fixed(text, fixed))
+        .map(|(_, field)| *field)?;
+    Url::parse(text).ok().map(|url| (url, field))
+}
+
+/// The rule for an operator-typed hosted endpoint (`openai_compatible`).
+///
+/// The text must be at most 256 bytes of `https://` URL with a host, an
+/// optional port, and an optional path, and nothing else: no user
+/// information, query, fragment, percent-encoding, whitespace, control
+/// character, or empty path segment. It must also be exactly what the URL
+/// parser would write (one trailing `/` aside), so the text the operator
+/// confirms is the URL each request uses: an upper-case host, a default port,
+/// a `.` or `..` segment, or a non-ASCII host is refused rather than rewritten.
+/// Plain HTTP is refused: the key and every prompt would cross the network
+/// in clear text. A loopback HTTP server uses a local kind instead.
+///
+/// # Errors
+///
+/// `InvalidConfiguration` for any other text.
+pub(crate) fn validate_custom_url(text: &str) -> Result<Url, ProviderError> {
+    if text.len() > MAX_ENDPOINT_BYTES
+        || !text.starts_with("https://")
+        || text
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        || text.contains(['%', '@', '?', '#', '\\'])
+    {
+        return Err(ProviderError::InvalidConfiguration);
+    }
+    let url = Url::parse(text).map_err(|_| ProviderError::InvalidConfiguration)?;
+    let written = url.as_str();
+    if url.scheme() != "https"
+        || url.host_str().is_none_or(str::is_empty)
+        || url.cannot_be_a_base()
+        || !(written == text || written.strip_suffix('/') == Some(text))
+        || url.path().contains("//")
+    {
+        return Err(ProviderError::InvalidConfiguration);
+    }
+    Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_fixed_endpoint_is_https_and_passes_the_custom_rule() {
+        for (endpoint, _) in FIXED_ENDPOINTS {
+            assert!(validate_custom_url(endpoint).is_ok(), "{endpoint}");
+            let (url, _) = fixed_endpoint(endpoint).expect(endpoint);
+            assert_eq!(url.scheme(), "https");
+            assert!(
+                fixed_endpoint(&format!("{endpoint}/")).is_some(),
+                "{endpoint}"
+            );
+            assert!(
+                fixed_endpoint(&format!("{endpoint}//")).is_none(),
+                "{endpoint}"
+            );
+            assert!(
+                fixed_endpoint(&format!("{endpoint}x")).is_none(),
+                "{endpoint}"
+            );
+            assert!(
+                fixed_endpoint(&endpoint.to_ascii_uppercase()).is_none(),
+                "{endpoint}"
+            );
+        }
+        assert_eq!(
+            fixed_endpoint(OPENAI_ENDPOINT).map(|(_, field)| field),
+            Some(OutputLimitField::MaxCompletionTokens)
+        );
+        assert_eq!(
+            fixed_endpoint(DEEPSEEK_ENDPOINT).map(|(_, field)| field),
+            Some(OutputLimitField::MaxTokens)
+        );
+    }
+
+    #[test]
+    fn the_custom_rule_accepts_plain_https_base_urls() {
+        for text in [
+            "https://provider-api.example.org/v1",
+            "https://provider-api.example.org/v1/",
+            "https://provider-api.example.org",
+            "https://provider-api.example.org:8443/openai/v1",
+            "https://192.0.2.10/v1",
+            "https://[2001:db8::1]:8443/v1",
+        ] {
+            assert!(validate_custom_url(text).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_custom_rule_refuses_anything_that_could_mislead_or_leak() {
+        let long = format!("https://example.org/{}", "a".repeat(250));
+        for text in [
+            "http://provider-api.example.org/v1",
+            "HTTPS://provider-api.example.org/v1",
+            "https://Provider-API.example.org/v1",
+            "https://provider-api.example.org:443/v1",
+            "https://user@provider-api.example.org/v1",
+            "https://user:pass@provider-api.example.org/v1",
+            "https://provider-api.example.org/v1?key=1",
+            "https://provider-api.example.org/v1#f",
+            "https://provider-api.example.org/v1/../v2",
+            "https://provider-api.example.org/./v1",
+            "https://provider-api.example.org//v1",
+            "https://provider-api.example.org/v%31",
+            "https://exämple.org/v1",
+            " https://provider-api.example.org/v1",
+            "https://provider-api.example.org/v1\n",
+            "https://provider-api.example.org/v 1",
+            "https:///v1",
+            "https://",
+            "ftp://provider-api.example.org/v1",
+            "",
+            long.as_str(),
+        ] {
+            assert_eq!(
+                validate_custom_url(text),
+                Err(ProviderError::InvalidConfiguration),
+                "{text:?}"
+            );
+        }
+    }
+}

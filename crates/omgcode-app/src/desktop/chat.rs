@@ -83,7 +83,7 @@ impl DesktopService {
     ///
     /// The connection is resolved for the session exactly as
     /// [`chat_send`](Self::chat_send) resolves it, its credential included, and the one request goes only to
-    /// its validated endpoint, loopback or the fixed Ollama Cloud one. The list is untrusted provider text and
+    /// its validated endpoint, loopback or hosted. The list is untrusted provider text and
     /// grants nothing; `chat_send` still validates the chosen model. The call
     /// blocks for at most the core's ten-second deadline, so run it on a
     /// blocking task.

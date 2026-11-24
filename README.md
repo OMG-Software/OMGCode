@@ -247,10 +247,11 @@ data upstream; check the server's configuration before sending sensitive text.
 
 ## Planned features
 
-- **Additional model providers:** OpenAI, Anthropic / Claude, Ollama Cloud,
-  and OpenRouter. One bounded local chat path serves LM Studio and Ollama
-  Local in the prototype; its compatibility and security are not
-  release-qualified.
+- **Release-qualified model providers.** One bounded Chat Completions path
+  serves LM Studio, Ollama Local, Ollama Cloud, twelve other hosted providers,
+  and an OpenAI-compatible service in the prototype (ADR-0091). None of the
+  hosted connections was tested with a real key, and the path's compatibility
+  and security are not release-qualified.
 - **Subscription authentication:** Required ChatGPT and Claude subscription
   connections, alongside separate API-key connections. Provider eligibility
   and approval remain implementation gates.
@@ -302,13 +303,15 @@ data upstream; check the server's configuration before sending sensitive text.
 
 | Connection profile | Current state |
 | --- | --- |
-| OpenAI API | Planned: Responses API with API-key authentication |
+| OpenAI API | Prototype: Chat Completions at `https://api.openai.com/v1` with a stored API key (ADR-0091); not tested with a real key |
 | ChatGPT subscription | Planned: provider-supported sign-in and ChatGPT plan usage |
-| Anthropic API | Planned: Claude Messages API with API-key authentication |
+| Anthropic API | Prototype: Anthropic's OpenAI SDK compatibility layer with a stored API key (ADR-0091), documented by Anthropic for testing; the native Messages API is planned; not tested with a real key |
 | Claude subscription | Required; provider approval and route remain unresolved |
-| Ollama Local | Planned: local Ollama API |
-| Ollama Cloud | Planned: authenticated cloud API |
-| OpenRouter | Planned: explicit upstream routing controls |
+| Ollama Local | Prototype: Ollama's OpenAI-compatible `/v1` API over literal loopback HTTP (ADR-0064) |
+| Ollama Cloud | Prototype: the fixed endpoint `https://ollama.com/v1` with a stored API key (ADR-0071); chat not tested with a real key |
+| OpenRouter | Prototype: `https://openrouter.ai/api/v1` with a stored API key (ADR-0091); upstream routing controls are planned; not tested with a real key |
+| Google, Meta, Moonshot, Tencent, Thinking Machines Lab, MiniMax, Z.ai, DeepSeek, xAI | Prototype: each provider's one documented OpenAI-compatible endpoint with a stored API key (ADR-0091); not tested with a real key |
+| OpenAI compatible | Prototype: an operator-typed HTTPS base URL with a stored API key (ADR-0091) |
 | LM Studio | Prototype: bounded Chat Completions over literal loopback HTTP; a selected profile supplies the endpoint and the optional server token from its stored credential, otherwise `--endpoint` and `OMGCODE_LM_TOKEN` apply; model discovery and release authentication remain unqualified, and streamed replies have met local fixtures only |
 
 API-key and subscription connections are distinct authentication and billing

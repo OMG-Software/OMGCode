@@ -6,6 +6,26 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.57.0 adds hosted model providers and an OpenAI-compatible
+  connection (ADR-0091). New provider kinds `google`, `meta`, `moonshot`,
+  `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
+  `openai_compatible` join `anthropic`, `openai`, and `open_router`, which can
+  now be used. Each named kind accepts only its provider's one documented
+  OpenAI-compatible endpoint, which Rust supplies; an `openai_compatible`
+  profile records an `https://` base URL the operator types, refused rather
+  than rewritten when it is not in the form the URL parser writes. Every
+  hosted kind needs a stored API key and is used through the existing Chat
+  Completions client, which sends `max_completion_tokens` to OpenAI, Moonshot,
+  MiniMax, and xAI and `max_tokens` elsewhere, and appends request paths to
+  the endpoint's base path. The desktop **Add connection** form lists every
+  kind, and the native confirmation before choosing a hosted connection names
+  the host that receives prompts, and for a typed address says it was typed.
+  A model list may now hold 2048 models in 4 MiB. `capabilities` lists every
+  kind but `ollama_local` as a stored-credential adapter. No request was made
+  to any of these providers with a real key. Subscription sign-in is not
+  added. A control journal that records a new kind, or an endpoint on an
+  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.56.0 or
+  earlier.
 - Version 0.56.0 lets the operator remove a workspace (ADR-0081).
   `omgcode workspace unregister <workspace-id> --revision <n>` and
   **Remove workspace…** in the desktop settings window record one

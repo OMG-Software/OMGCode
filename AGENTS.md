@@ -35,7 +35,7 @@ A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only, with icon buttons named in their tooltips
 ([ADR-0069](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
-Chat offers the local LM Studio or Ollama model read and list tools; when the workspace
+Chat offers the session's model read and list tools; when the workspace
 also enables `read` and `write`, six file-write tools (exact edit, multi-edit,
 create, rename, delete, and directory creation); and, when it also enables `execute`, `read`, and
 `write`, one command tool. Each workspace preference except `model_tools` is
@@ -77,13 +77,20 @@ storage (DPAPI on Windows, the Secret Service on Linux) and bind them to
 `api_key` profiles. An `lm_studio` or `ollama_local` profile can record a
 loopback endpoint, and one local adapter serves both through the OpenAI-compatible
 `/v1` API. The same client reads a credential for an operator-selected
-`lm_studio` or `ollama_cloud` profile that supplies both the endpoint and the
+`lm_studio` or hosted profile that supplies both the endpoint and the
 token (ADR-0047, ADR-0048); an `ollama_local` profile has none. An
 `ollama_cloud` profile accepts only the fixed HTTPS endpoint
-`https://ollama.com/v1` and always needs a stored key; its chat, stream, and
-tool-call shapes were not verified with a real key
+`https://ollama.com/v1`
 ([ADR-0071](docs/adr/0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)).
-No other cloud adapter or login exists. Trusted
+The `anthropic`, `openai`, `google`, `meta`, `moonshot`, `tencent`,
+`thinking_machines`, `minimax`, `open_router`, `z_ai`, `deepseek`, and `xai`
+kinds each accept only their provider's one documented OpenAI-compatible
+endpoint, and an `openai_compatible` profile records an operator-typed
+`https://` base URL that core refuses rather than rewrites
+([ADR-0091](docs/adr/0091-add-hosted-providers-and-an-openai-compatible-connection.md)).
+Every hosted profile needs a stored API key. No hosted provider's chat,
+stream, or tool-call shapes were verified with a real key. No native provider
+API, subscription sign-in, or login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
 in the same turn; on the CLI only a later identical call may consume an
@@ -135,7 +142,7 @@ repairs them automatically
 ([ADR-0073](docs/adr/0073-remove-extra-data-folder-grants-after-operator-confirmation.md)).
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
-connections and Ollama Cloud connections, whose API key is typed once into a
+connections and hosted connections, whose API key is typed once into a
 write-only field. **Skills**, **Chat settings**, and **Workspace settings**
 icon buttons sit beside **Send**; the last shows the same window scoped to the
 open session's workspace. The `settings` window

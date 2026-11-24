@@ -8,11 +8,11 @@ export const CLOUD_SUFFIX = " (Ollama cloud)";
 /** Shown while a cloud-tagged model is chosen. */
 export const CLOUD_WARNING =
   "This Ollama model runs on Ollama's hosted service: prompts and workspace text sent to it leave this computer.";
-/** Added to every model of an Ollama Cloud connection (ADR-0071). */
+/** Added to every model of a hosted connection (ADR-0071, ADR-0090). */
 export const HOSTED_SUFFIX = " (hosted)";
-/** Shown while the session's connection is Ollama Cloud. */
+/** Shown while the session's connection is a hosted service. */
 export const HOSTED_WARNING =
-  "Ollama Cloud is a hosted service: prompts, workspace text read by tools, and command output sent to it leave this computer.";
+  "This connection is a hosted service: prompts, workspace text read by tools, and command output sent to it leave this computer.";
 /** Added to a chosen model the server did not report, such as a saved default. */
 export const UNLISTED_SUFFIX = " (not reported by the server)";
 export const LISTING_NOTE = "Listing models…";
@@ -37,7 +37,7 @@ export interface ModelPicker {
    * Never rejects: a failure is shown in the note.
    */
   load(sessionId: string): Promise<void>;
-  /** Whether the connection is Ollama Cloud, so every model runs off this computer. */
+  /** Whether the connection is a hosted service, so every model runs off this computer. */
   setHosted(hosted: boolean): void;
   setDisabled(disabled: boolean): void;
 }

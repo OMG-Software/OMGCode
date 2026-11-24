@@ -646,7 +646,9 @@ describe("mock backend", () => {
           endpoint: "http://127.0.0.1:11500/v1",
           ...fields,
         });
-      await expect(add({ kind: "openai" })).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(add({ kind: "bogus" })).rejects.toMatchObject({ code: "invalid_argument" });
+      // A named hosted provider takes a key and no endpoint (ADR-0090).
+      await expect(add({ kind: "openai" })).rejects.toMatchObject({ code: "invalid_request" });
       await expect(add({ endpoint: "http://example.com:11434/v1" })).rejects.toMatchObject({
         code: "control",
       });

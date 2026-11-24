@@ -170,15 +170,14 @@ pub struct LocalConnection {
     pub token: Option<LmToken>,
 }
 
-/// The profile kind the model adapter reads `name` as (local kinds and
-/// `ollama_cloud`, ADR-0071). A profile of another
-/// kind is read as `lm_studio`, so core refuses it as a different provider.
+/// The profile kind the model adapter reads `name` as. Every kind is served
+/// by the one OpenAI-compatible adapter (ADR-0090), so this is the profile's
+/// own kind; an unknown name is read as `lm_studio`, and core then refuses it
+/// as an unknown profile.
 fn local_adapter(control: &ControlStore, name: &str) -> ProviderKind {
     control
         .provider_profile(name)
-        .map(|status| status.profile().kind())
-        .filter(|kind| kind.uses_model_adapter())
-        .unwrap_or(ProviderKind::LmStudio)
+        .map_or(ProviderKind::LmStudio, |status| status.profile().kind())
 }
 
 /// The endpoint a turn from `source` would use and the profile it comes from,
@@ -289,11 +288,12 @@ pub(crate) fn resolve_connection_and_kind(
 
 /// The launch or default endpoint with the environment's local server token.
 fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
-    // The environment token is a local server's token. It is never sent to the
-    // hosted endpoint, whose key comes from a bound credential only (ADR-0071).
-    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_cloud()) {
+    // The environment token is a local server's token. It is never sent to a
+    // hosted endpoint, whose key comes from a bound credential only (ADR-0071,
+    // ADR-0090).
+    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.is_hosted()) {
         return Err(credential_error(
-            "cloud_needs_profile: the Ollama Cloud endpoint is used only through an ollama_cloud provider profile".to_owned(),
+            "cloud_needs_profile: a hosted endpoint is used only through a provider profile with a stored key".to_owned(),
         ));
     }
     Ok(LocalConnection {
@@ -309,12 +309,12 @@ fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
 /// token's fixed redaction. The type has no `Serialize`.
 #[derive(Debug)]
 pub struct ProfileConnection {
-    /// The profile's kind: a local kind or `ollama_cloud`.
+    /// The profile's kind.
     pub kind: ProviderKind,
     /// The recorded endpoint, validated again by the shared rule.
     pub endpoint: ModelEndpoint,
     /// The bound credential, or `None` for a `none` profile. It is present
-    /// for every `ollama_cloud` profile, which accepts only `api_key`.
+    /// for every hosted profile, which accepts only `api_key`.
     pub token: Option<LmToken>,
 }
 
@@ -348,7 +348,7 @@ pub fn resolve_profile_connection(
 /// Check that a profile can be chosen as a connection now, for a front end
 /// that offers a choice (ADR-0071): core's
 /// [`ControlStore::check_provider_selectable`] on the existing settings store,
-/// which for an `ollama_cloud` profile also needs a bound credential. No
+/// which for a hosted profile also needs a bound credential. No
 /// native storage is read.
 ///
 /// # Errors
@@ -364,8 +364,8 @@ pub fn check_profile_selectable(data_root: &Path, name: &str) -> Result<(), AppE
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProfileCheckError {
     /// The profile is gone, or can no longer be chosen: no settings store
-    /// exists, the name is unknown, or core refuses the profile (an
-    /// `ollama_cloud` profile without a bound credential, for example).
+    /// exists, the name is unknown, or core refuses the profile (a hosted
+    /// profile without a bound credential, for example).
     NotSelectable(AppError),
     /// The settings store is busy or unusable, so nothing is known about the
     /// profile.

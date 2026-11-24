@@ -5,22 +5,23 @@
 //! credential. Its status can name the opaque identifier of a credential bound
 //! through `credential`, never the secret.
 //!
-//! An `lm_studio` or `ollama_local` profile may record the endpoint the local
-//! adapter uses. Both servers speak the same OpenAI-compatible Chat
-//! Completions API, so one adapter and one rule serve both (ADR-0064). The
-//! text must pass the rule the local adapter applies to every request
-//! (`provider::validate_base_url`), is stored exactly as validated, and is
-//! fixed for the life of the profile: no operation changes it, so a bound
-//! credential cannot be moved to another destination. Every other kind refuses
-//! an endpoint until an adapter defines its rule. Replay applies the same
-//! validation. The local adapter reads a selected profile only through
-//! `ControlStore::provider_credential_binding` (ADR-0047, ADR-0048). See
-//! `docs/provider-authentication.md`, ADR-0038, and ADR-0042.
+//! Every kind is served by one adapter that speaks the OpenAI-compatible Chat
+//! Completions API (ADR-0064, ADR-0071, ADR-0090). An `lm_studio` or
+//! `ollama_local` profile may record a loopback endpoint that passes
+//! `provider::validate_base_url`. A named hosted kind accepts exactly its one
+//! fixed HTTPS endpoint ([`ProviderKind::fixed_endpoint`]), and an
+//! `openai_compatible` profile accepts an HTTPS base URL the operator typed,
+//! which must pass `provider::validate_custom_url`. The text is stored exactly
+//! as validated and is fixed for the life of the profile: no operation
+//! changes it, so a bound credential cannot be moved to another destination.
+//! Replay applies the same validation. The adapter reads a selected profile
+//! only through `ControlStore::provider_credential_binding` (ADR-0047,
+//! ADR-0048). See `docs/provider-authentication.md`, ADR-0038, and ADR-0042.
 //!
-//! The store also records which local profile is the *active* connection: the
-//! one a desktop process started without a connection argument uses for each
-//! turn (ADR-0059 decision 7, ADR-0064). Only a local profile that records an
-//! endpoint can be selected. Removing the selected profile clears the
+//! The store also records which profile is the *active* connection: the one a
+//! desktop process started without a connection argument uses for each turn
+//! (ADR-0059 decision 7, ADR-0064). Only a profile that records an endpoint,
+//! and for a hosted kind has a bound credential, can be selected. Removing the selected profile clears the
 //! selection in the same event, so the selection never names a missing
 //! profile.
 
@@ -29,7 +30,12 @@ use uuid::Uuid;
 
 use super::credential::{self, CredentialBinding, ProviderProfileRemoval};
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_profile_name, valid_uuid};
-use crate::provider::{validate_base_url, validate_cloud_url};
+use crate::provider::{
+    ANTHROPIC_ENDPOINT, DEEPSEEK_ENDPOINT, GOOGLE_ENDPOINT, META_ENDPOINT, MINIMAX_ENDPOINT,
+    MOONSHOT_ENDPOINT, OLLAMA_CLOUD_ENDPOINT, OPENAI_ENDPOINT, OPENROUTER_ENDPOINT,
+    TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT, matches_fixed,
+    validate_base_url, validate_custom_url,
+};
 
 /// Most recorded provider profiles.
 pub const MAX_PROVIDER_PROFILES: usize = 32;
@@ -54,6 +60,9 @@ impl ProviderEndpoint {
 }
 
 /// A provider that a profile may name.
+///
+/// A journal that records a kind added in 0.57.0 cannot be read by an older
+/// binary, which refuses the unknown spelling.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ProviderKind {
     #[serde(rename = "openai")]
@@ -68,9 +77,51 @@ pub enum ProviderKind {
     OpenRouter,
     #[serde(rename = "lm_studio")]
     LmStudio,
+    #[serde(rename = "google")]
+    Google,
+    #[serde(rename = "meta")]
+    Meta,
+    #[serde(rename = "moonshot")]
+    Moonshot,
+    #[serde(rename = "tencent")]
+    Tencent,
+    #[serde(rename = "thinking_machines")]
+    ThinkingMachines,
+    #[serde(rename = "minimax")]
+    MiniMax,
+    #[serde(rename = "z_ai")]
+    ZAi,
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    #[serde(rename = "xai")]
+    XAi,
+    /// Any service that speaks the OpenAI-compatible API at an HTTPS base URL
+    /// the operator types when adding the profile.
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
 }
 
 impl ProviderKind {
+    /// Every kind, in the order a front end lists them.
+    pub const ALL: [Self; 16] = [
+        Self::LmStudio,
+        Self::OllamaLocal,
+        Self::OllamaCloud,
+        Self::Anthropic,
+        Self::OpenAi,
+        Self::Google,
+        Self::Meta,
+        Self::Moonshot,
+        Self::Tencent,
+        Self::ThinkingMachines,
+        Self::MiniMax,
+        Self::OpenRouter,
+        Self::ZAi,
+        Self::DeepSeek,
+        Self::XAi,
+        Self::OpenAiCompatible,
+    ];
+
     /// The stored spelling.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -80,34 +131,56 @@ impl ProviderKind {
             Self::OllamaCloud => "ollama_cloud",
             Self::OpenRouter => "open_router",
             Self::LmStudio => "lm_studio",
+            Self::Google => "google",
+            Self::Meta => "meta",
+            Self::Moonshot => "moonshot",
+            Self::Tencent => "tencent",
+            Self::ThinkingMachines => "thinking_machines",
+            Self::MiniMax => "minimax",
+            Self::ZAi => "z_ai",
+            Self::DeepSeek => "deepseek",
+            Self::XAi => "xai",
+            Self::OpenAiCompatible => "openai_compatible",
         }
     }
 
-    /// Whether the local OpenAI-compatible adapter serves this kind: LM Studio
-    /// and Ollama on this computer (ADR-0064).
+    /// Whether this kind is a server on this computer, LM Studio or Ollama,
+    /// reached at a loopback endpoint (ADR-0064).
     pub const fn is_local(self) -> bool {
         matches!(self, Self::LmStudio | Self::OllamaLocal)
     }
 
-    /// Whether the model adapter that speaks the OpenAI-compatible Chat
-    /// Completions API serves this kind: the local kinds and Ollama Cloud
-    /// (ADR-0071). A profile of such a kind can record an endpoint and read a
-    /// stored credential through `provider_credential_binding`.
-    pub const fn uses_model_adapter(self) -> bool {
-        self.is_local() || matches!(self, Self::OllamaCloud)
+    /// Whether this kind is a hosted service: every request leaves this
+    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0090).
+    pub const fn is_hosted(self) -> bool {
+        !self.is_local()
+    }
+
+    /// The one endpoint a named hosted kind accepts, or `None` for a local
+    /// kind or `openai_compatible`, whose endpoint the operator supplies.
+    pub const fn fixed_endpoint(self) -> Option<&'static str> {
+        match self {
+            Self::LmStudio | Self::OllamaLocal | Self::OpenAiCompatible => None,
+            Self::OllamaCloud => Some(OLLAMA_CLOUD_ENDPOINT),
+            Self::Anthropic => Some(ANTHROPIC_ENDPOINT),
+            Self::OpenAi => Some(OPENAI_ENDPOINT),
+            Self::Google => Some(GOOGLE_ENDPOINT),
+            Self::Meta => Some(META_ENDPOINT),
+            Self::Moonshot => Some(MOONSHOT_ENDPOINT),
+            Self::Tencent => Some(TENCENT_ENDPOINT),
+            Self::ThinkingMachines => Some(THINKING_MACHINES_ENDPOINT),
+            Self::MiniMax => Some(MINIMAX_ENDPOINT),
+            Self::OpenRouter => Some(OPENROUTER_ENDPOINT),
+            Self::ZAi => Some(Z_AI_ENDPOINT),
+            Self::DeepSeek => Some(DEEPSEEK_ENDPOINT),
+            Self::XAi => Some(XAI_ENDPOINT),
+        }
     }
 
     /// Parse a stored or command-line spelling, case-insensitively.
     pub fn parse(text: &str) -> Option<Self> {
-        match text.to_ascii_lowercase().as_str() {
-            "openai" => Some(Self::OpenAi),
-            "anthropic" => Some(Self::Anthropic),
-            "ollama_local" => Some(Self::OllamaLocal),
-            "ollama_cloud" => Some(Self::OllamaCloud),
-            "open_router" => Some(Self::OpenRouter),
-            "lm_studio" => Some(Self::LmStudio),
-            _ => None,
-        }
+        let text = text.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|kind| kind.as_str() == text)
     }
 }
 
@@ -222,9 +295,9 @@ pub struct ProviderProfileDeclaration {
     pub kind: String,
     /// `subscription`, `api_key`, or `none`.
     pub auth: String,
-    /// The endpoint to record. Only `lm_studio` and `ollama_local` accept one
-    /// for now, and it must pass the local adapter's rule. It is stored
-    /// exactly as given.
+    /// The endpoint to record: a loopback endpoint for a local kind, the
+    /// kind's fixed endpoint for a named hosted kind, or an HTTPS base URL for
+    /// `openai_compatible`. It is stored exactly as given.
     pub endpoint: Option<String>,
 }
 
@@ -293,8 +366,8 @@ impl ControlStore {
     }
 
     /// Check that the named profile can be chosen as a connection now
-    /// (ADR-0071): a local kind that records an endpoint, or an `ollama_cloud`
-    /// profile with the cloud endpoint and a bound credential. It reads no
+    /// (ADR-0071, ADR-0090): a profile that records an endpoint and, for a
+    /// hosted kind, has a bound credential. It reads no
     /// native storage and so cannot show that the stored secret still exists;
     /// a turn without a usable credential fails with the `credential` errors.
     /// Replay applies the same rule without the credential check.
@@ -312,12 +385,12 @@ impl ControlStore {
             .ok_or(ControlError::UnknownProvider)?;
         if !selectable(&status.profile) {
             return Err(ControlError::ProviderRefused(
-                "only an lm_studio, ollama_local, or ollama_cloud profile with a recorded endpoint can be the active connection",
+                "only a provider profile with a recorded endpoint can be the active connection",
             ));
         }
-        if status.profile.kind == ProviderKind::OllamaCloud && status.credential.is_none() {
+        if status.profile.kind.is_hosted() && status.credential.is_none() {
             return Err(ControlError::ProviderRefused(
-                "an ollama_cloud profile needs a bound credential before it can be chosen",
+                "a hosted provider profile needs a bound credential before it can be chosen",
             ));
         }
         Ok(status)
@@ -326,8 +399,7 @@ impl ControlStore {
     /// Select the active local connection by profile name, or return to the
     /// default endpoint with `None`. This advances the settings revision.
     ///
-    /// The profile must be an `lm_studio` or `ollama_local` profile that
-    /// records an endpoint. Selecting grants nothing by itself: each turn
+    /// The profile must pass [`Self::check_provider_selectable`]. Selecting grants nothing by itself: each turn
     /// still resolves the endpoint and any credential from that one profile
     /// (ADR-0048). Selecting the current choice again is refused, so every
     /// recorded event is a change.
@@ -468,12 +540,12 @@ pub(super) fn apply(
     Ok(())
 }
 
-/// Whether a profile can be the active connection: a local kind that records
-/// the endpoint its turns use, or an `ollama_cloud` profile, whose recorded
-/// endpoint replay has already checked against the fixed cloud endpoint
-/// (ADR-0071). Replay applies exactly this; the credential is not read there.
-fn selectable(profile: &ProviderProfile) -> bool {
-    profile.kind.uses_model_adapter() && profile.endpoint.is_some()
+/// Whether a profile can be the active connection: it records the endpoint
+/// its turns use, which replay has already checked against its kind's rule
+/// (ADR-0071, ADR-0090). Replay applies exactly this; the credential is not
+/// read there.
+const fn selectable(profile: &ProviderProfile) -> bool {
+    profile.endpoint.is_some()
 }
 
 /// Check a profile name and the provider/authentication pairing.
@@ -497,45 +569,53 @@ fn validate_profile(profile: &ProviderProfile) -> Result<(), ControlError> {
 /// Check an endpoint for its provider kind. The length bound comes first, so
 /// no parser sees an unbounded string.
 fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError> {
-    match kind {
-        ProviderKind::LmStudio | ProviderKind::OllamaLocal => {
-            if text.len() > MAX_PROVIDER_ENDPOINT_BYTES {
-                return Err(ControlError::ProviderRefused(
-                    "the provider endpoint is longer than 256 bytes",
-                ));
-            }
-            validate_base_url(text).map(|_| ()).map_err(|_| {
-                ControlError::ProviderRefused(
-                    "a local provider endpoint must be http://<loopback IP>:<port>/v1 with no user information, query, or fragment",
-                )
-            })
-        }
-        ProviderKind::OllamaCloud => {
-            if text.len() > MAX_PROVIDER_ENDPOINT_BYTES {
-                return Err(ControlError::ProviderRefused(
-                    "the provider endpoint is longer than 256 bytes",
-                ));
-            }
-            validate_cloud_url(text).map(|_| ()).map_err(|_| {
-                ControlError::ProviderRefused(
-                    "an ollama_cloud endpoint must be exactly https://ollama.com/v1",
-                )
-            })
-        }
-        ProviderKind::OpenAi | ProviderKind::Anthropic | ProviderKind::OpenRouter => Err(
-            ControlError::ProviderRefused("this provider kind does not accept an endpoint yet"),
-        ),
+    if text.len() > MAX_PROVIDER_ENDPOINT_BYTES {
+        return Err(ControlError::ProviderRefused(
+            "the provider endpoint is longer than 256 bytes",
+        ));
+    }
+    if kind.is_local() {
+        return validate_base_url(text).map(|_| ()).map_err(|_| {
+            ControlError::ProviderRefused(
+                "a local provider endpoint must be http://<loopback IP>:<port>/v1 with no user information, query, or fragment",
+            )
+        });
+    }
+    match kind.fixed_endpoint() {
+        Some(fixed) if matches_fixed(text, fixed) => Ok(()),
+        Some(_) => Err(ControlError::ProviderRefused(
+            "this provider accepts only its one documented endpoint",
+        )),
+        None => validate_custom_url(text).map(|_| ()).map_err(|_| {
+            ControlError::ProviderRefused(
+                "an openai_compatible endpoint must be an https:// base URL with a lower-case host and no user information, query, fragment, percent-encoding, default port, or empty or dot path segment",
+            )
+        }),
     }
 }
 
+/// The authentication modes a kind may record. `subscription` stays
+/// recordable for OpenAI and Anthropic so journals written before 0.57.0
+/// replay, but no adapter uses it; every other hosted kind is `api_key` only.
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {
         ProviderKind::OpenAi | ProviderKind::Anthropic => {
             matches!(auth, ProviderAuth::Subscription | ProviderAuth::ApiKey)
         }
-        ProviderKind::OllamaCloud | ProviderKind::OpenRouter => auth == ProviderAuth::ApiKey,
         ProviderKind::OllamaLocal => auth == ProviderAuth::None,
         ProviderKind::LmStudio => matches!(auth, ProviderAuth::None | ProviderAuth::ApiKey),
+        ProviderKind::OllamaCloud
+        | ProviderKind::OpenRouter
+        | ProviderKind::Google
+        | ProviderKind::Meta
+        | ProviderKind::Moonshot
+        | ProviderKind::Tencent
+        | ProviderKind::ThinkingMachines
+        | ProviderKind::MiniMax
+        | ProviderKind::ZAi
+        | ProviderKind::DeepSeek
+        | ProviderKind::XAi
+        | ProviderKind::OpenAiCompatible => auth == ProviderAuth::ApiKey,
     }
 }
 

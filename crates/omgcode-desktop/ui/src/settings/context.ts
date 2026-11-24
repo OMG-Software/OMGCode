@@ -26,14 +26,17 @@ export interface Actions {
   /** Removes one workspace's registration; Rust confirms and touches no file (ADR-0081). */
   unregisterWorkspace(workspaceId: string): Change;
   selectConnection(profile: string | null): Change;
-  /** `endpoint` is for a local kind; `apiKey` is for Ollama Cloud. The other is `null`. */
+  /**
+   * `endpoint` is for a local kind or an OpenAI-compatible service; `apiKey` is for a hosted
+   * kind. A field the kind does not take is `null`.
+   */
   addConnection(
     name: string,
     kind: NewConnectionKind,
     endpoint: string | null,
     apiKey: string | null,
   ): Change;
-  /** Replaces an Ollama Cloud profile's stored API key. */
+  /** Replaces a hosted profile's stored API key. */
   setApiKey(name: string, apiKey: string): Change;
   removeConnection(name: string): Change;
   /** Saves the chat budgets and the global custom instructions (ADR-0080). */
