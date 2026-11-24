@@ -71,7 +71,7 @@ unauthenticated requests. No API key was used for any provider.
    therefore the URL every request uses. Port 0, which no request can reach,
    is refused, as the loopback rule refuses it. A host on this computer (a
    loopback or unspecified address, including IPv4-mapped IPv6, `localhost`,
-   or a `.localhost` name) is refused: a local server uses a local kind, and
+   or a `.localhost` name, with or without a trailing root dot) is refused: a local server uses a local kind, and
    the hosted confirmation would otherwise claim that prompts leave this
    computer. An HTTPS-only local server therefore has no connection yet. A typed endpoint that equals a named
    provider's endpoint is treated as that provider's endpoint, including its
