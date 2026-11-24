@@ -372,8 +372,8 @@ impl ControlStore {
         Ok(profile)
     }
 
-    /// The active local connection, if one is selected (ADR-0064). It always
-    /// names a recorded local profile with an endpoint.
+    /// The active connection, if one is selected (ADR-0064). It always names a
+    /// recorded profile with an endpoint, local or hosted (ADR-0092).
     pub fn active_provider_profile(&self) -> Option<&ProviderProfileStatus> {
         let id = self.snapshot.active_provider?;
         self.snapshot
@@ -413,12 +413,13 @@ impl ControlStore {
         Ok(status)
     }
 
-    /// Select the active local connection by profile name, or return to the
+    /// Select the active connection by profile name, or return to the
     /// default endpoint with `None`. This advances the settings revision.
     ///
-    /// The profile must pass [`Self::check_provider_selectable`]. Selecting grants nothing by itself: each turn
-    /// still resolves the endpoint and any credential from that one profile
-    /// (ADR-0048). Selecting the current choice again is refused, so every
+    /// The profile must pass [`Self::check_provider_selectable`]: it records an
+    /// endpoint and, if hosted, has a bound credential (ADR-0092). Selecting
+    /// grants nothing by itself: each turn still resolves the endpoint and any
+    /// credential from that one profile (ADR-0048). Selecting the current choice again is refused, so every
     /// recorded event is a change.
     ///
     /// # Errors
