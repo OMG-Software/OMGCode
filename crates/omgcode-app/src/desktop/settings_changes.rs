@@ -1164,8 +1164,9 @@ impl DesktopService {
                     "Only a hosted connection that uses an API key has a key set here.",
                 ));
             }
-            // A profile recorded without an endpoint (possible from the CLI) can never be
-            // used, and its endpoint cannot be added, so a key bound to it would serve nothing.
+            // A profile recorded without an endpoint can never be used, and its endpoint cannot
+            // be added, so a key bound to it would serve nothing. Core now records a named kind's
+            // endpoint at add time (ADR-0092), so only a journal from 0.58.0 or earlier holds one.
             if status.profile().endpoint().is_none() {
                 return Err(DesktopError::invalid_request(
                     "This connection has no endpoint, so it cannot be used. Remove it and add it again.",

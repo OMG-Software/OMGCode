@@ -679,22 +679,21 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           session_id: id,
           endpoint: view.endpoint,
           kind: view.kind,
-          models:
-            view.kind !== null && view.kind !== "ollama_local" && view.kind !== "lm_studio"
+          models: isHostedKind(view.kind)
+            ? [
+                { id: "gpt-oss:120b", cloud_tag: false },
+                { id: "qwen3-coder:480b", cloud_tag: false },
+              ]
+            : view.kind === "ollama_local"
               ? [
-                  { id: "gpt-oss:120b", cloud_tag: false },
-                  { id: "qwen3-coder:480b", cloud_tag: false },
+                  { id: "gpt-oss:120b-cloud", cloud_tag: true },
+                  { id: "lfm2.5:latest", cloud_tag: false },
+                  { id: "qwen2.5-coder:7b", cloud_tag: false },
                 ]
-              : view.kind === "ollama_local"
-                ? [
-                    { id: "gpt-oss:120b-cloud", cloud_tag: true },
-                    { id: "lfm2.5:latest", cloud_tag: false },
-                    { id: "qwen2.5-coder:7b", cloud_tag: false },
-                  ]
-                : [
-                    { id: "google/gemma-4-e4b", cloud_tag: false },
-                    { id: "qwen2.5-coder", cloud_tag: false },
-                  ],
+              : [
+                  { id: "google/gemma-4-e4b", cloud_tag: false },
+                  { id: "qwen2.5-coder", cloud_tag: false },
+                ],
         } satisfies ChatModels;
       }
       // A fixed fake estimate, so the Context tab has something to show (ADR-0087). The
