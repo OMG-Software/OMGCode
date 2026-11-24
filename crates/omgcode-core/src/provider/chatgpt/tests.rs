@@ -571,6 +571,11 @@ fn a_slow_browser_step_counts_against_the_sign_in_wait() {
     );
 }
 
+/// A regression guard, not coverage of the browser-step fix: the callback
+/// wait already checked the cancel token before its deadline, so this passes
+/// on the code before that fix too. The fix is covered by
+/// `a_slow_browser_step_counts_against_the_sign_in_wait` and by the platform
+/// crate's stop test.
 #[test]
 fn a_cancel_during_the_browser_step_ends_the_sign_in() {
     let service = MockService::start();

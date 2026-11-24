@@ -217,13 +217,16 @@ Changes are recorded here before a release version is assigned.
   Windows (ADR-0094). Sign-in ran `explorer.exe` with the authorization
   address, which opened a File Explorer window instead of a browser. A new
   `omgcode-platform::browser` module now calls `ShellExecuteExW` with the
-  `open` verb on a dedicated COM thread, without a shell or Explorer command
-  line. The sign-in waits at most five seconds for that hand-off and stops
-  waiting as soon as it is cancelled, and its five-minute deadline now
-  starts before the browser step, so a hung URL handler can neither block a
-  cancel nor stretch the sign-in. It accepts only an `https://` address of at most 8 KiB made of
-  RFC 3986 URI characters; Linux still runs `/usr/bin/xdg-open`. The real
-  browser launch was not exercised by an automated test.
+  handler's default verb on a dedicated COM thread, without a shell or
+  Explorer command line. The sign-in waits at most five seconds for that
+  hand-off and stops waiting as soon as it is cancelled, and its five-minute
+  deadline now starts before the browser step, so a hung URL handler can
+  neither block a cancel nor stretch the sign-in. Only one hand-off thread
+  runs at a time; while a hung one remains, a new sign-in reports
+  `browser_unavailable`. `omgcode-platform::browser` accepts only an
+  `https://` address of at most 8 KiB made of RFC 3986 URI characters; Linux
+  still runs `/usr/bin/xdg-open`. The real browser launch was not exercised
+  by an automated test.
 
 - On Windows, a settings command that waits for a withdrawn run, such as
   `workspace profile-remove`, no longer fails with "run journal I/O failed"

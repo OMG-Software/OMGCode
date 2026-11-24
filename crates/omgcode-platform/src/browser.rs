@@ -1,7 +1,8 @@
 //! Open an `https` address in the operator's default browser (ADR-0094).
 //!
 //! Windows hands the address to the shell's URL association with
-//! `ShellExecuteExW` and the `open` verb, the documented way to open a URL.
+//! `ShellExecuteExW` and the handler's default verb, the documented way to
+//! open a URL.
 //! Linux and other Unix systems run `/usr/bin/xdg-open` with the address as
 //! one argument. Neither route starts a command shell, and neither parses the
 //! address as a command line. A started browser is not supervised: it belongs
@@ -42,6 +43,37 @@ pub enum BrowserError {
     InvalidAddress,
     /// No browser could be started for the address.
     LaunchFailed,
+    /// An earlier Windows hand-off is still inside the shell call, so a URL
+    /// handler appears to be hung. Only one hand-off thread runs at a time.
+    Busy,
+}
+
+/// Set while a Windows hand-off thread is inside the shell call, so a hung
+/// URL handler holds one thread for the process, not one per retry.
+#[cfg(any(windows, test))]
+static HAND_OFF_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The one hand-off thread's claim on [`HAND_OFF_RUNNING`]. Dropping it,
+/// including when the thread unwinds or is never started, releases it.
+#[cfg(any(windows, test))]
+struct HandOffSlot;
+
+#[cfg(any(windows, test))]
+impl HandOffSlot {
+    fn claim() -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        HAND_OFF_RUNNING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+#[cfg(any(windows, test))]
+impl Drop for HandOffSlot {
+    fn drop(&mut self) {
+        HAND_OFF_RUNNING.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Open `address` in the default browser.
@@ -57,14 +89,17 @@ pub enum BrowserError {
 /// promptly. After either it returns [`Handoff::Pending`] and leaves the
 /// thread to finish on its own: the thread holds only its copy of the address,
 /// and no OMGCode lock, so a hung URL handler keeps that one thread alive and
-/// nothing else. `stop` is not consulted on Unix, where `xdg-open` is started
-/// without waiting.
+/// nothing else. While that thread is still in the shell call, a new Windows
+/// hand-off is refused as [`BrowserError::Busy`] instead of starting another.
+/// `stop` is not consulted on Unix, where `xdg-open` is started without
+/// waiting.
 ///
 /// # Errors
 ///
-/// [`BrowserError::InvalidAddress`] for a refused address and
-/// [`BrowserError::LaunchFailed`] when the shell or `xdg-open` could not be
-/// started or reported failure.
+/// [`BrowserError::InvalidAddress`] for a refused address,
+/// [`BrowserError::Busy`] while an earlier Windows hand-off is still running,
+/// and [`BrowserError::LaunchFailed`] when the shell or `xdg-open` could not
+/// be started or reported failure.
 pub fn open_https_address(address: &str, stop: &dyn Fn() -> bool) -> Result<Handoff, BrowserError> {
     if !is_plain_https(address) {
         return Err(BrowserError::InvalidAddress);
@@ -88,6 +123,7 @@ fn is_uri_byte(byte: u8) -> bool {
 
 #[cfg(windows)]
 fn launch(address: &str, stop: &dyn Fn() -> bool) -> Result<Handoff, BrowserError> {
+    let slot = HandOffSlot::claim().ok_or(BrowserError::Busy)?;
     let file: Vec<u16> = address.encode_utf16().chain(std::iter::once(0)).collect();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     // A new thread owns its COM apartment, so the caller's apartment (the
@@ -98,6 +134,9 @@ fn launch(address: &str, stop: &dyn Fn() -> bool) -> Result<Handoff, BrowserErro
     std::thread::Builder::new()
         .name("omgcode-browser".to_owned())
         .spawn(move || {
+            // The slot is released when this closure ends, or is dropped
+            // unrun if the thread cannot be started.
+            let _slot = slot;
             // After a Pending return nobody receives; that outcome is
             // documented as unreported, so a failed send is ignored.
             let _ = sender.send(shell_open(&file));
@@ -129,8 +168,8 @@ fn await_handoff(
     }
 }
 
-/// Open the NUL-terminated UTF-16 `file` with the shell's `open` verb. Must
-/// run on a thread that has not initialized COM.
+/// Open the NUL-terminated UTF-16 `file` with the URL handler's default
+/// verb. Must run on a thread that has not initialized COM.
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn shell_open(file: &[u16]) -> Result<(), BrowserError> {
@@ -141,8 +180,6 @@ fn shell_open(file: &[u16]) -> Result<(), BrowserError> {
         SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    const OPEN: [u16; 5] = [0x6f, 0x70, 0x65, 0x6e, 0]; // "open\0"
 
     if file.last() != Some(&0) {
         return Err(BrowserError::InvalidAddress);
@@ -165,14 +202,16 @@ fn shell_open(file: &[u16]) -> Result<(), BrowserError> {
         // NOASYNC waits for the hand-off to finish before this thread ends;
         // FLAG_NO_UI reports failure instead of showing a dialog.
         fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-        lpVerb: OPEN.as_ptr(),
+        // A null verb uses the handler's default verb, then `open`, so a
+        // handler without an `open` verb still works.
+        lpVerb: std::ptr::null(),
         lpFile: file.as_ptr(),
         nShow: SW_SHOWNORMAL,
         ..Default::default()
     };
     // SAFETY: `info` is a fully initialized SHELLEXECUTEINFOW whose cbSize is
-    // its own size. `lpVerb` and `lpFile` point to NUL-terminated UTF-16 that
-    // outlives the call, and the other pointers and handles are null. Without
+    // its own size. `lpFile` points to NUL-terminated UTF-16 that outlives
+    // the call, and the verb and the other pointers and handles are null. Without
     // SEE_MASK_NOCLOSEPROCESS no process handle is returned, so nothing needs
     // closing afterwards.
     let opened = unsafe { ShellExecuteExW(&mut info) };
@@ -288,6 +327,19 @@ mod tests {
             await_handoff(&receiver, Duration::from_secs(5), &|| false),
             Err(BrowserError::LaunchFailed)
         );
+    }
+
+    #[test]
+    fn only_one_hand_off_thread_holds_the_slot_at_a_time() {
+        // No other test reaches a launch, so this test alone uses the slot.
+        let first = HandOffSlot::claim().expect("the slot starts free");
+        assert!(
+            HandOffSlot::claim().is_none(),
+            "a second hand-off must not start while one is running"
+        );
+        drop(first);
+        let again = HandOffSlot::claim().expect("dropping the claim frees the slot");
+        drop(again);
     }
 
     #[test]

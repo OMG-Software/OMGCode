@@ -18,8 +18,9 @@ inference, not verified by reproduction, is that Explorer did not accept the
 long address as a URL and fell back to opening a folder window. Either way the
 route depended on undocumented behaviour.
 
-Microsoft documents `ShellExecuteEx` with the `open` verb as the way to open a
-URL with the handler registered for its scheme. It may activate shell
+Microsoft documents `ShellExecuteEx` as the way to open a URL with the
+handler registered for its scheme. With no verb it uses the handler's default
+verb, then `open`, then the first registered verb. It may activate shell
 extensions through COM, so the calling thread should initialize COM first. With
 `SEE_MASK_NOASYNC` it finishes the hand-off before it returns.
 
@@ -29,7 +30,8 @@ extensions through COM, so the calling thread should initialize COM first. With
   `open_https_address` accepts only an `https://` address of at most 8 KiB made
   of RFC 3986 URI characters. It refuses spaces, quotes, backslashes, control
   bytes, and non-ASCII before any launch.
-- On Windows it calls `ShellExecuteExW` with the `open` verb,
+- On Windows it calls `ShellExecuteExW` with no verb, so the handler's
+  default verb is used and a handler without an `open` verb still works,
   `SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI`, and `SW_SHOWNORMAL`. The call runs
   on a new thread that initializes a single-threaded COM apartment with OLE1
   DDE disabled and uninitializes it afterwards, so the caller's apartment is
@@ -44,6 +46,10 @@ extensions through COM, so the calling thread should initialize COM first. With
   cancel token as the stop condition, treats `Pending` as "the browser may
   still open", and goes on to the callback wait, which reports a cancel at
   once.
+- Only one hand-off thread runs per process. While a hung handler still holds
+  it, a new hand-off is refused as `BrowserError::Busy`, which the sign-in
+  reports as `browser_unavailable`, so retries cannot pile up blocked
+  threads.
 - The sign-in's five-minute deadline starts before the browser step, and the
   callback wait gets only what is left, so a slow hand-off cannot stretch
   the sign-in past five minutes.
@@ -74,15 +80,18 @@ extensions through COM, so the calling thread should initialize COM first. With
 - `omgcode-platform` enables the `windows-sys` features `Win32_UI_Shell`,
   `Win32_UI_WindowsAndMessaging`, and `Win32_System_Registry`, which
   `SHELLEXECUTEINFOW` requires.
-- A URL handler that hangs leaves one detached thread until the shell call
-  returns. A cancel ends the sign-in within about 50 ms, and the deadline
-  holds at five minutes from the start of the sign-in.
+- A URL handler that hangs leaves one detached thread for the process until
+  the shell call returns, and later sign-ins fail as `browser_unavailable`
+  until it does. A cancel ends the sign-in within about 50 ms, and the
+  deadline holds at five minutes from the start of the sign-in.
 - Tests cover address validation; the bounded wait (done, failed, panicked,
-  still running, and stopped); a sign-in whose browser step outlasts the
-  wait; a cancel during the browser step; and a desktop sign-in cancelled
-  during a stalled browser step, which ends `cancelled` and releases its slot. A test that opens a browser on the developer's desktop
-  is not practical, so the launch itself was not exercised by an automated
-  test, and the original failure was not reproduced.
+  still running, and stopped); the one-thread claim; a sign-in whose browser
+  step outlasts the wait; and a desktop sign-in cancelled during a stalled
+  browser step, which ends `cancelled` and releases its slot. A core test of
+  a cancel during the browser step is kept as a regression guard; it passed
+  before this change too. A test that opens a browser on the developer's
+  desktop is not practical, so the launch itself was not exercised by an
+  automated test, and the original failure was not reproduced.
 
 ## References
 
