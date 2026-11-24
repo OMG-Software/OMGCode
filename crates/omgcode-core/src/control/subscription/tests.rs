@@ -231,6 +231,24 @@ fn sign_out_deletes_both_slots_and_keeps_the_registration() {
         store.provider_subscription("chatgpt"),
         Err(ProviderCredentialUseError::NotBound { .. })
     ));
+    drop(store);
+    // Removing a credential that a subscription profile does not hold names
+    // that cause, not a ChatGPT session.
+    let mut store = fixture.store();
+    let revision = store.revision();
+    for name in ["chatgpt", "claude", "no-endpoint"] {
+        match store.remove_provider_credential(&fixture.credentials, name, revision) {
+            Err(ProviderCredentialError::Control(ControlError::ProviderRefused(message))) => {
+                assert_eq!(
+                    message, "no credential is bound to this provider profile",
+                    "{name}"
+                );
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    drop(store);
+    let store = fixture.store();
     // Each refusal names its real cause.
     let refused = |name| store.provider_subscription(name).expect_err(name).code();
     assert_eq!(refused("keys"), "not_subscription");

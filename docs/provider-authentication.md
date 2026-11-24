@@ -494,7 +494,8 @@ documented route for local and open-source apps
   compaction that fails on the plan reports a `provider` error whose stable
   code names the cause: `signin_required`, `access_token_unavailable`,
   `plan_request_failed`, `plan_response_incomplete`, or the route's own code,
-  such as `usage_limit_exceeded`. Nothing falls back to API-key billing. API-key `openai` profiles keep the Chat Completions path.
+  such as `usage_limit_exceeded`. A model list whose access token cannot be
+  had reports the same `provider` code. Nothing falls back to API-key billing. API-key `openai` profiles keep the Chat Completions path.
 - **Not verified.** No test contacts OpenAI. No real sign-in, refresh,
   revocation, model list, or Responses request was made, and a completed
   sign-in is not evidence that a plan, model, or account may be used. The

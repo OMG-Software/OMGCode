@@ -540,17 +540,21 @@ impl ControlStore {
     /// # Errors
     ///
     /// Refuses a stale revision, an unknown profile, or a profile without a
-    /// binding before any native I/O.
+    /// binding before any native I/O. A signed-in ChatGPT profile is refused
+    /// too: only `provider-signout` revokes the session and deletes both of
+    /// its slots.
     pub fn remove_provider_credential(
         &mut self,
         credentials: &CredentialStore,
         name: &str,
         expected_revision: u64,
     ) -> Result<ProviderCredentialRemoval, ProviderCredentialError> {
-        if self
-            .provider_profile(name)
-            .is_some_and(|status| status.profile().auth() == ProviderAuth::Subscription)
-        {
+        // Only a ChatGPT sign-in binds a subscription profile (ADR-0093), so
+        // a bound one is a session. An unbound one, or another provider's
+        // subscription profile, gets the refusal below that names its cause.
+        if self.provider_profile(name).is_some_and(|status| {
+            status.profile().auth() == ProviderAuth::Subscription && status.credential().is_some()
+        }) {
             return Err(ControlError::ProviderRefused(
                 "a ChatGPT session ends with provider-signout, which also revokes it",
             )

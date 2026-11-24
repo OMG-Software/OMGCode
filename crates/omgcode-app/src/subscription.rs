@@ -289,13 +289,15 @@ pub(crate) fn plan_session(
 ///
 /// # Errors
 ///
-/// `provider` for a refused list, `credential` for an unusable plan session.
+/// `provider` for a refused list. A plan session whose access token cannot be
+/// had is also `provider`, with the stable code a chat turn would report
+/// (`signin_required` or `access_token_unavailable`).
 pub fn list_connection_models(connection: &LocalConnection) -> Result<Vec<ListedModel>, AppError> {
     if let Some(plan) = &connection.plan {
         let token = plan
             .tokens()
             .access_token(&CancelToken::new())
-            .map_err(|error| credential_error(format!("plan_session: {error}")))?;
+            .map_err(AppError::provider)?;
         return list_subscription_models(&connection.endpoint, &token).map_err(AppError::provider);
     }
     list_local_models(

@@ -22,6 +22,7 @@ pub use store::{
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use omgcode_platform::credentials::Zeroizing;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Url};
@@ -525,6 +526,11 @@ fn auth_client(endpoints: &AuthEndpoints) -> Result<Client, SignInError> {
 
 /// Post a form and read at most 64 KiB of the answer. A longer body is
 /// returned as `None`.
+///
+/// The form holds an authorization code and PKCE verifier, or a refresh
+/// token, so the copy handed to reqwest lives in a buffer that is zeroed when
+/// reqwest drops it. Copies made below reqwest, such as a TLS write buffer,
+/// are outside this code's reach.
 async fn post_form(
     client: &Client,
     url: &Url,
@@ -540,7 +546,7 @@ async fn post_form(
                 "application/x-www-form-urlencoded",
             )
             .header(reqwest::header::ACCEPT, "application/json")
-            .body(body.as_bytes().to_vec())
+            .body(Bytes::from_owner(Zeroizing::new(body.as_bytes().to_vec())))
     };
     let mut response = send_request(AUTH_REQUEST_TIMEOUT, build, cancel)
         .await

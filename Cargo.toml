@@ -30,6 +30,9 @@ zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 rsa = { version = "0.10.0", default-features = false, features = ["std", "pkcs1v15"] }
 base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.4.3", default-features = false }
+# Already in the tree through reqwest; named so an outgoing token form is held
+# in a buffer that is zeroed when reqwest drops it (ADR-0093).
+bytes = { version = "1.12.1", default-features = false }
 # Event-level YAML parser for skill frontmatter (ADR-0057). No value tree is built.
 saphyr-parser = "0.3.4"
 # Derived session index cache (ADR pending). Bundled SQLite; no extension loading.
