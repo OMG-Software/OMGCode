@@ -768,3 +768,35 @@ describe("mock chat defaults (ADR-0080)", () => {
     expect(saved.workspaces[0]?.instructions_max_bytes).toBe(10_000);
   });
 });
+
+describe("mock workspace_entries", () => {
+  const session_id = "00000000-0000-4000-8000-000000000001";
+
+  it("lists one directory, directories first, and refuses what Rust refuses", async () => {
+    const { invoke } = createMockBackend();
+    const root = (await invoke("workspace_entries", { session_id, path: [] })) as {
+      entries: Array<{ name: string; kind: string }>;
+      truncated: boolean;
+    };
+    expect(root.truncated).toBe(false);
+    const kinds = root.entries.map((entry) => entry.kind);
+    expect(kinds).toEqual(
+      [...kinds].sort((a, b) => Number(a !== "directory") - Number(b !== "directory")),
+    );
+    expect(root.entries.map((entry) => entry.name)).toContain("src");
+    const nested = (await invoke("workspace_entries", { session_id, path: ["src", "main"] })) as {
+      entries: Array<{ name: string }>;
+    };
+    expect(nested.entries.map((entry) => entry.name)).toEqual(["app.ts", "layout.ts"]);
+    for (const path of [[".."], ["."], [""], ["a/b"], [".OMGCode"], ["missing"], ["Cargo.toml"]]) {
+      await expect(invoke("workspace_entries", { session_id, path })).rejects.toMatchObject({
+        code: "invalid_request",
+      });
+    }
+    await expect(
+      invoke("workspace_entries", { session_id: "nope", path: [] }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+});

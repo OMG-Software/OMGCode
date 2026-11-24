@@ -474,3 +474,21 @@ export interface SettingsOverview {
   /** The workspace the window is scoped to (ADR-0071), or `null` for the full view. Display only. */
   scope: { workspace_id: string } | null;
 }
+
+/** What one entry of a workspace directory is. `other` covers links and special entries. */
+export type WorkspaceEntryKind = "directory" | "file" | "other";
+
+/** One name in a workspace directory (ADR-0083). The name is untrusted text. */
+export interface WorkspaceEntry {
+  name: string;
+  kind: WorkspaceEntryKind;
+  /** The native name is not valid Unicode: `name` is for display and is never sent back. */
+  lossy: boolean;
+}
+
+/** One directory of the open session's workspace: names and kinds, directories first. */
+export interface WorkspaceListing {
+  entries: WorkspaceEntry[];
+  /** More entries exist than were returned. */
+  truncated: boolean;
+}

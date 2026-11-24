@@ -41,8 +41,9 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
 
 ## Windows
 
-- `index.html` is the main window: session tree, search, transcript, composer, and a terminal
-  panel that holds no terminal yet. Both side panels resize and collapse (ADR-0072).
+- `index.html` is the main window: session tree, search, transcript, composer, and a tabbed
+  right-hand panel (a Terminal tab that holds no terminal, and a names-only Files tab, ADR-0083).
+  Both side panels resize and collapse (ADR-0072).
 - `approvals.html` is the approvals window. Only this entry imports
   `src/ipc/approvals_client.ts`, so the main bundle never contains `approval_decide` or
   `approval_detail`. It renders no transcript text.

@@ -163,6 +163,7 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::chat::chat_preferences_save,
             commands::chat::session_skills,
             commands::chat::session_context,
+            commands::sessions::workspace_entries,
             commands::chat::connection_status,
             commands::chat::connection_select,
             commands::chat::session_model_select,

@@ -243,7 +243,7 @@ describe("the terminal panel", () => {
     byLabel("Show terminal panel").click();
     expect(shell().classList.contains("right-collapsed")).toBe(false);
     const panel = root.querySelector(".terminal-panel") as HTMLElement;
-    expect(panel.getAttribute("aria-label")).toBe("Terminal");
+    expect(panel.getAttribute("aria-label")).toBe("Side panel");
     expect(panel.querySelector(".terminal-empty")?.textContent).toBe(TERMINAL_UNAVAILABLE);
     expect(panel.querySelectorAll("input, textarea, [contenteditable]")).toHaveLength(0);
     await settle(3000);
@@ -254,7 +254,7 @@ describe("the terminal panel", () => {
   it("collapses again and moves focus to its rail", async () => {
     await start();
     byLabel("Show terminal panel").click();
-    const collapse = byLabel("Collapse terminal panel");
+    const collapse = byLabel("Collapse side panel");
     collapse.focus();
     collapse.click();
     expect(shell().classList.contains("right-collapsed")).toBe(true);

@@ -132,7 +132,7 @@
   line-height: 16px;
 }
 
-/* Terminal panel: a title row and, until a terminal exists, a note that none is available. */
+/* Side panel header (tabs and the collapse button), and the Terminal tab's note that no terminal exists. */
 .terminal-header {
   display: flex;
   align-items: center;
@@ -142,16 +142,107 @@
   border-bottom: 1px solid var(--border);
 }
 
-.terminal-header h2 {
-  margin: 0;
-  font-size: 13px;
-}
-
 .terminal-empty {
   margin: 0;
   padding: var(--gap);
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Side panel (the right-hand column): a tab strip and collapse button, the selected tab's content
+   in a scrolling area, and a fixed footer that stays visible on every tab. */
+.side-tabs {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  border-bottom: 0;
+}
+
+.side-panes {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.side-pane[hidden] {
+  display: none;
+}
+
+.side-footer {
+  flex: none;
+}
+
+.side-footer:not(:empty) {
+  border-top: 1px solid var(--border);
+}
+
+/* Files tab. */
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px var(--gap);
+}
+
+.files-title {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.files-message,
+.files-note {
+  margin: 0;
+  padding: 4px var(--gap);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.files-error {
+  color: var(--danger);
+}
+
+.files-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.files-children .files-list {
+  padding-left: 14px;
+}
+
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px var(--gap);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+button.files-row:hover {
+  background: var(--surface-2);
+}
+
+.files-chevron {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.files-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-header {

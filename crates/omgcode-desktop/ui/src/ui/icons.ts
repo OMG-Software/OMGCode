@@ -71,8 +71,16 @@ const ICONS = {
     ["rect", { x: "3", y: "4", width: "18", height: "4", rx: "1" }],
     ["path", { d: "M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M12 17v-6M9.5 13.5L12 11l2.5 2.5" }],
   ],
-  /** A chevron pointing down: an expanded group; a collapsed one is drawn turned aside. */
+  /** A page with a folded corner: a file in the Files tab. */
+  file: [
+    ["path", { d: "M6 3h8l4 4v14H6z" }],
+    ["path", { d: "M14 3v4h4" }],
+  ],
+  /** Chevrons: a directory collapsed, then expanded. */
+  chevronRight: [["path", { d: "M9 6l6 6-6 6" }]],
   chevronDown: [["path", { d: "M6 9l6 6 6-6" }]],
+  /** A circular arrow: reload the file tree. */
+  refresh: [["path", { d: "M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" }]],
   /** A tick: an action that succeeded. */
   check: [["path", { d: "M5 12.5l4.5 4.5L19 7" }]],
   /** A cross: an action that failed. */

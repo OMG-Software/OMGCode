@@ -21,12 +21,14 @@ import type {
   SnippetPart,
   TreeSort,
   TreeView,
+  WorkspaceListing,
   WorkspaceSettingsView,
 } from "../ipc/types";
 import {
   buildFixtures,
   type FixtureSession,
   HOSTILE,
+  MOCK_WORKSPACE_TREE,
   OMGCODE_MOCK_FIXTURE_MARKER,
 } from "./fixtures";
 
@@ -59,6 +61,46 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/** Rust's bounds on a `workspace_entries` path (ADR-0083). */
+const MOCK_PATH_DEPTH_MAX = 32;
+const MOCK_COMPONENT_CHARS_MAX = 255;
+
+/** Lists one directory of the fake workspace, refusing a path as Rust does. */
+function mockWorkspaceEntries(path: unknown): WorkspaceListing {
+  if (!Array.isArray(path) || path.length > MOCK_PATH_DEPTH_MAX) {
+    fail("invalid_request", "The folder path is not acceptable.");
+  }
+  let directory: Record<string, unknown> = MOCK_WORKSPACE_TREE;
+  for (const part of path) {
+    if (
+      typeof part !== "string" ||
+      part === "" ||
+      part === "." ||
+      part === ".." ||
+      part.toLowerCase() === ".omgcode" ||
+      /[/\\0]/.test(part) ||
+      part.length > MOCK_COMPONENT_CHARS_MAX
+    ) {
+      fail("invalid_request", "The folder path is not acceptable.");
+    }
+    const next = Object.hasOwn(directory, part) ? directory[part] : undefined;
+    if (typeof next !== "object" || next === null) {
+      fail("invalid_request", "The folder could not be listed.");
+    }
+    directory = next as Record<string, unknown>;
+  }
+  const entries = Object.entries(directory).map(([name, value]) => ({
+    name,
+    kind: value === null ? ("file" as const) : ("directory" as const),
+    lossy: false,
+  }));
+  entries.sort(
+    (a, b) =>
+      Number(a.kind !== "directory") - Number(b.kind !== "directory") ||
+      a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+  );
+  return { entries, truncated: false };
+}
 function snippet(text: string, query: string): SnippetPart[] | null {
   const index = text.toLowerCase().indexOf(query.toLowerCase());
   if (index < 0) {
@@ -761,6 +803,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       // (a native dialog in the application) is accepted here.
       case "settings_select_connection":
         return changeSettings(args, () => selectConnection(args.profile));
+      // The Files tab (ADR-0083): one directory of a small fake workspace, validated like Rust.
+      case "workspace_entries": {
+        session(str(args, "session_id"));
+        return mockWorkspaceEntries(args.path);
+      }
       // The main window's status bar (ADR-0064). The mock's workspace is on a fixed branch.
       case "session_context":
         str(args, "session_id");

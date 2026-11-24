@@ -24,3 +24,4 @@ mod storage;
 mod test_support;
 pub mod turn;
 mod workspace;
+pub mod workspace_entries;

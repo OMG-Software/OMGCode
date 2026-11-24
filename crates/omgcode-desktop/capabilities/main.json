@@ -28,6 +28,7 @@
     "allow-chat-preferences-save",
     "allow-session-skills",
     "allow-session-context",
+    "allow-workspace-entries",
     "allow-connection-status",
     "allow-connection-select",
     "allow-session-model-select",

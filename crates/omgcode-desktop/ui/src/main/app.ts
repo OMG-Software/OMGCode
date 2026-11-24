@@ -3,11 +3,13 @@ import { api } from "../ipc/client";
 import { createPoller } from "../poll";
 import { createConnectionModel } from "./connection_state";
 import { createConversation } from "./conversation";
+import { createFilesTab } from "./files_tab";
 import { createShellLayout } from "./layout";
 import { createNewSessionDialog } from "./new_session";
+import { createSidePanel } from "./side_panel";
 import { createSidebar } from "./sidebar";
 import { createStatusFooter } from "./status_footer";
-import { createTerminalPanel } from "./terminal_panel";
+import { terminalTab } from "./terminal_panel";
 
 export const APPROVALS_POLL_MS = 3000;
 
@@ -69,6 +71,7 @@ export function startMain(root: HTMLElement): MainApp {
   const sidebar = createSidebar({
     onOpen: (session, folder, seq) => {
       void connection.open(session.session_id);
+      files.setSession(session.session_id);
       footer.showSession(session, folder);
       void conversation.open(session, folder, seq);
     },
@@ -78,19 +81,22 @@ export function startMain(root: HTMLElement): MainApp {
     onCollapse: () => layout.left.setCollapsed(true),
     onExpand: () => layout.left.setCollapsed(false),
   });
-  const terminal = createTerminalPanel({
+  // The right-hand panel's tabs (ADR-0072, ADR-0083). One entry adds one tab.
+  const files = createFilesTab();
+  const sidePanel = createSidePanel([terminalTab(), files], {
     onCollapse: () => layout.right.setCollapsed(true),
     onExpand: () => layout.right.setCollapsed(false),
   });
-  // Sessions, conversation, and terminal, with a resizable, collapsible panel each side (ADR-0072).
+  // Sessions, conversation, and the side panel, with a resizable, collapsible panel each side (ADR-0072).
   const layout = createShellLayout({
     left: sidebar,
     center: conversation.element,
-    right: terminal,
+    right: sidePanel,
   });
   const newSession = createNewSessionDialog((session, folder) => {
     sidebar.setSelected(session.session_id);
     void connection.open(session.session_id);
+    files.setSession(session.session_id);
     footer.showSession(session, folder);
     void conversation.open(session, folder, null);
     void sidebar.refresh();

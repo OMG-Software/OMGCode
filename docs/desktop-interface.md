@@ -89,6 +89,11 @@ merged to `main` at the time of writing):
   follows its end after a send until the operator scrolls up. The terminal
   panel holds no terminal. No command, IPC shape, or permission changed. See
   [appearance](#appearance) and [transcript view](#transcript-view).
+- Unreleased (ADR-0083), the `main` window's right-hand panel has tabs. The
+  Terminal tab keeps its note; a **Files** tab shows a lazily expanded tree of
+  the open session's workspace through the new `workspace_entries` command,
+  and a fixed footer slot sits under every tab. See
+  [right-hand panel](#right-hand-panel).
 
 Not implemented:
 
@@ -106,9 +111,10 @@ Not implemented:
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
   are not implemented: execution setup. Skills are imported, enabled, and
   removed in the `settings` window since ADR-0082.
-- Development panels: a working terminal, task logs, diffs, and a file
-  browser. The terminal panel (ADR-0072) only says that no terminal is
-  available; it starts no shell and runs no command.
+- Development panels: a working terminal, task logs, and diffs. The Terminal
+  tab (ADR-0072) only says that no terminal is available; it starts no shell
+  and runs no command. The Files tab (ADR-0083) shows file and folder names
+  only, with no file content, search, or editing.
 - Git, MCP, and memory interfaces. The `main` window
   can only select an already enabled skill for one turn; the `settings`
   window manages skills (ADR-0082). Skill updates, Git sources, and the
@@ -239,7 +245,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 45 commands (17 in the `settings` window). No other command exists.
+The shell has three webview windows and 46 commands (17 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -259,6 +265,7 @@ their registered identifier, and approvals by identifier.
 | `chat_preferences_save` | main | Save the composer's own chat defaults: compaction threshold, auto-compact, and the send key (ADR-0080) |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
+| `workspace_entries` | main | List the names and kinds in one directory of a session's registered workspace, for the Files tab; takes the session id and relative name components (ADR-0083) |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
@@ -330,7 +337,7 @@ confirmation dialogs follow the operating system's theme.
 
 The `main` window is laid out as follows.
 
-- **Columns.** The sessions panel, the conversation, and the terminal panel,
+- **Columns.** The sessions panel, the conversation, and the right-hand panel,
   with a one-pixel separator between each pair (ADR-0072). A separator is a
   focusable window splitter: drag it, or use the arrow keys (16 pixels, 64
   with Shift), Home and End for the limits, and Enter or a double click to
@@ -356,10 +363,12 @@ The `main` window is laid out as follows.
   each with an accessible name and a tooltip. The sessions rail holds Expand,
   **New session**, Search, Sessions, **Approvals** with the waiting count, and
   **Settings**; Search and Sessions expand the panel and focus the search box
-  or the open session. The terminal rail holds one button that expands it.
-- **Terminal panel.** A title row with a collapse button and a note that no
-  terminal is available and that the panel starts no shell and runs no
-  command. It calls no command and has no input.
+  or the open session. The right-hand rail holds one icon per tab; each
+  expands the panel on its tab.
+- **Right-hand panel.** Tabs, a scrolling content area, and a fixed footer;
+  see [right-hand panel](#right-hand-panel). The Terminal tab holds a note
+  that no terminal is available and that the panel starts no shell and runs
+  no command. It calls no command and has no input.
 - **Sidebar.** A title row with **New session** and a collapse button, then
   the search field with a **View** menu beside it. The menu holds Active or
   Archived as a segmented control, the sort field, and the direction toggle.
@@ -424,6 +433,55 @@ The `main` window is laid out as follows.
   approval belongs to: `chat_status`, the chat events, and `approvals_summary`
   carry no such signal, and the approval detail is not available to its
   bundle. It therefore shows only the advisory count.
+
+### Right-hand panel
+
+The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
+`ui/src/main/side_panel.ts`. Its layout, resizing, and collapsing are those of
+[the columns](#appearance). It holds:
+
+- **A tab strip and a collapse button.** The strip follows the WAI-ARIA tabs
+  pattern through `ui/src/ui/tabs.ts`: arrow keys move focus and select, and
+  each tab controls a `tabpanel`. The selected tab is remembered until the
+  window closes; no storage is used. Today the tabs are **Terminal** and
+  **Files**. A new tab is one entry in the list `app.ts` gives
+  `createSidePanel`: an id, a label, a rail icon, its content, and an optional
+  callback that says when it becomes visible or hidden.
+- **A rail.** Collapsed, the panel shows one icon button per tab. A click
+  expands the panel on that tab.
+- **A scrolling content area** with the selected tab's content.
+- **A fixed footer** under the content area, outside its scrolling and shown
+  on every tab. The panel's API exposes it as `footer`. It is empty until a
+  feature fills it.
+
+**Terminal tab.** The note from ADR-0072; no command is called.
+
+**Files tab.** A lazily expanded tree of the open session's workspace. It
+loads nothing while the tab is hidden or collapsed. Opening a session clears
+the tree and loads the workspace's top level once the tab is visible; opening
+a folder lists just that folder, and opening it again lists it again. A
+chevron shows each folder's state, **Refresh** lists the top level again and
+keeps open folders open, and loading, empty, truncated, and error states are
+text. At most 5,000 rows are drawn. A name that is not valid Unicode is shown
+but its folder is not opened, and a link or special entry is shown but not
+opened. Names are text nodes, never markup. The tab shows names and kinds
+only: no content, no size, no date.
+
+`workspace_entries` takes the session id and `path`, an array of relative name
+components for the folder to list (empty lists the workspace). Rust finds the
+workspace from the session's recorded, registered workspace; the webview never
+supplies a host path. Each component must be non-empty, not `.` or `..`, free
+of separators, NUL and the `.OMGCode` store name, at most 255 characters, and
+at most 32 components are allowed. The listing goes through the platform
+broker's directory handle, which does not follow links out of the workspace,
+and returns at most 512 entries (the broker's bound) with a `truncated` flag,
+directories first and then by name. Entries are `directory`, `file`, or `other`
+(the broker does not tell a link from a special entry); a name that is not valid
+Unicode is shown lossily with `lossy` set. `.OMGCode` is hidden. The command
+does not need the workspace's `read` preference, is not a model action, and is
+not journaled; it needs a registered workspace and refuses an unregistered one
+with `unknown_workspace`. It grants nothing: a listing never authorizes a
+read, edit, or run.
 
 ## Session tree
 
@@ -1338,7 +1396,14 @@ What the design does:
   `--left-width` and `--right-width` through the CSSOM, each a whole number
   of pixels it computes and clamps (ADR-0072). No other frontend code sets a
   style, and no text reaches one; `tests/security.test.ts` checks both.
-- **No host paths.** No command accepts a path. The service returns no journal
+- **A names-only file view.** `workspace_entries` lets the `main` webview learn
+  the file and folder names of the open session's registered workspace without
+  the `read` preference (ADR-0083). It returns no content, size, or date,
+  hides the `.OMGCode` store, never follows a link out of the workspace, takes
+  no host path, and grants nothing.
+- **No host paths.** No command accepts a host path; `workspace_entries` takes
+  only relative name components that Rust validates and resolves below the
+  session's workspace. The service returns no journal
   path, no data root, no token, and no tool output digest. Workspace folder
   display text is the only path-like text the `main` window receives. The
   `settings` window also receives the recorded development root, profile
@@ -1495,7 +1560,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 39 |
+| Commands | 43 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
