@@ -158,6 +158,12 @@
   border-bottom: 0;
 }
 
+/* Five tabs fit the panel's default width; a narrower panel scrolls the strip. */
+.side-tabs .tab {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
 .side-panes {
   flex: 1;
   min-height: 0;
