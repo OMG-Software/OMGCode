@@ -52,6 +52,10 @@ Constraints:
    - The listing goes through the platform broker's directory handle on the
      registered development root and workspace, with the same creation-time
      identity check as the Git branch read ([ADR-0064](0064-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
+     The recorded folders are taken while the settings store is open, and the
+     store, which is the settings lock, is released before the listing touches
+     the file system, as the Git status run does (ADR-0085), so a send or a
+     settings change is not refused as busy meanwhile.
      No link is followed out of the workspace. The `.OMGCode` store is refused
      as a path and hidden from a listing.
    - It returns names and kinds (`directory`, `file`, `other`) and a

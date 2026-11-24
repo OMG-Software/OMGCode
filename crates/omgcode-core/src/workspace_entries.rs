@@ -20,7 +20,7 @@ use omgcode_platform::broker::{self, EntryKind, RelativePath, Workspace, is_rese
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::control::{ControlError, ControlStore};
+use crate::control::{ControlError, ControlStore, FileScope};
 use crate::policy::WorkspaceId;
 
 /// The most entries one listing returns. It equals the broker's bound.
@@ -127,25 +127,61 @@ pub fn validate_components(components: &[String]) -> Result<RelativePath, Entrie
     })
 }
 
-/// List one directory of a registered workspace.
+/// The validated path and the recorded folders of one listing, taken by
+/// [`entries_scope`] while the control store is open.
 ///
-/// `components` are validated by [`validate_components`] before any file
-/// system access. The workspace is found only through `control` and
-/// `workspace_id`; the caller supplies no host path.
+/// An open control store is the settings lock, so [`list_entries`] needs no
+/// store: the caller releases it before any file system access, and a send or
+/// a settings change is not refused as busy meanwhile. The listing still opens
+/// both folders by their recorded native identities and creation times, so a
+/// replaced folder is refused. A workspace unregistered between the two calls
+/// is listed once more for display, which grants nothing.
+pub struct EntriesScope {
+    scope: FileScope,
+    target: RelativePath,
+    components: Vec<String>,
+}
+
+/// Validate `components` and take the recorded folders of a registered
+/// workspace for [`list_entries`].
+///
+/// `components` are validated by [`validate_components`] before anything
+/// else. The workspace is found only through `control` and `workspace_id`;
+/// the caller supplies no host path. Nothing here touches the file system
+/// below the control store.
 ///
 /// # Errors
 ///
-/// [`EntriesError::InvalidPath`] before any access, [`EntriesError::Control`]
-/// for an unknown workspace or an unusable root, [`EntriesError::Changed`] when
-/// either folder's creation time no longer matches the record, and
-/// [`EntriesError::Native`] for a missing directory, a file, or a refused name.
-pub fn list_workspace_entries(
+/// [`EntriesError::InvalidPath`] first, then [`EntriesError::Control`] for an
+/// unknown workspace or a missing development root.
+pub fn entries_scope(
     control: &ControlStore,
     workspace_id: WorkspaceId,
     components: &[String],
-) -> Result<WorkspaceListing, EntriesError> {
+) -> Result<EntriesScope, EntriesError> {
     let target = validate_components(components)?;
     let scope = control.file_scope(workspace_id)?;
+    Ok(EntriesScope {
+        scope,
+        target,
+        components: components.to_vec(),
+    })
+}
+
+/// List one directory of a workspace whose scope [`entries_scope`] took. Call
+/// it after the control store is released.
+///
+/// # Errors
+///
+/// [`EntriesError::Control`] for an unusable root, [`EntriesError::Changed`]
+/// when either folder's creation time no longer matches the record, and
+/// [`EntriesError::Native`] for a missing directory, a file, or a refused name.
+pub fn list_entries(entries: &EntriesScope) -> Result<WorkspaceListing, EntriesError> {
+    let EntriesScope {
+        scope,
+        target,
+        components,
+    } = entries;
     let root_path = scope
         .root
         .live_path()
@@ -174,7 +210,7 @@ pub fn list_workspace_entries(
         return Err(EntriesError::Changed);
     }
     let listing = workspace
-        .list(&target, MAX_ENTRIES, broker::MAX_DIRECTORY_NAME_UNITS)
+        .list(target, MAX_ENTRIES, broker::MAX_DIRECTORY_NAME_UNITS)
         .map_err(EntriesError::Native)?;
     Ok(WorkspaceListing {
         entries: shape(listing.entries, components),

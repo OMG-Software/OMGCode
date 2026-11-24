@@ -8,7 +8,9 @@
 //! `read` preference, is not a model action, is not journaled, and grants
 //! nothing. It returns names and kinds only.
 
-use omgcode_core::workspace_entries::{EntriesError, WorkspaceListing, list_workspace_entries};
+use omgcode_core::workspace_entries::{
+    EntriesError, WorkspaceListing, entries_scope, list_entries,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -47,9 +49,13 @@ impl DesktopService {
         else {
             return Err(DesktopError::unknown_workspace());
         };
-        let listing = list_workspace_entries(&store, workspace_id, &request.path);
+        let scope = entries_scope(&store, workspace_id, &request.path)
+            .map_err(|error| DesktopError::from_entries(&error))?;
+        // The open store is the settings lock: release it before the listing
+        // touches the file system, as the Git status run does, so a send or a
+        // settings change is not refused as busy meanwhile.
         drop(store);
-        listing.map_err(|error| DesktopError::from_entries(&error))
+        list_entries(&scope).map_err(|error| DesktopError::from_entries(&error))
     }
 }
 

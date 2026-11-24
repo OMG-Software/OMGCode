@@ -12,15 +12,24 @@ const byPath = new Map<string, string>(
 
 const MARKER = "OMGCODE_MOCK_FIXTURE_MARKER";
 
-/** Commands granted to the settings window alone (ADR-0059, ADR-0060). */
-const SETTINGS_WINDOW_COMMANDS = [
-  "settings_overview",
-  "settings_choose_root",
-  "settings_register_workspace",
-  "settings_set_permissions",
-  "settings_choose_package_cache",
-  "settings_clear_package_cache",
-  "settings_unregister_workspace",
+const settingsClient = import.meta.glob<string>("../src/ipc/settings_client.ts", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+
+/**
+ * Commands granted to the settings window alone (ADR-0059, ADR-0060): every command the settings
+ * client invokes, matched as `tests/layers.rs` matches them. That Rust test holds the client to
+ * exactly the policy's settings commands, so a command added there is checked here too.
+ */
+const SETTINGS_WINDOW_COMMANDS: string[] = [
+  ...new Set(
+    Array.from(
+      (Object.values(settingsClient)[0] ?? "").matchAll(/invokeCommand<[^;\n]*?>\("([a-z_]+)"/g),
+      (match) => match[1] as string,
+    ),
+  ),
 ];
 
 /** JS files reachable from an HTML entry, following static and dynamic relative imports. */
@@ -73,6 +82,13 @@ suite(
       for (const [path, text] of reachableScripts("approvals.html")) {
         expect(text, path).not.toContain("chat_subscribe");
       }
+    });
+
+    it("reads every settings-window command from the settings client", () => {
+      // 24 in `settings`, as `policy.rs` and the guide count them.
+      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(24);
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_overview");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_revoke_container_grant");
     });
 
     it("settings window bundle reads the overview and never decides or subscribes", () => {

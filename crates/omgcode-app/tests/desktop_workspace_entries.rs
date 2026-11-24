@@ -8,6 +8,9 @@ use std::fs;
 
 use omgcode_app::create_session;
 use omgcode_app::desktop::{DesktopService, WorkspaceListing};
+use omgcode_core::control::ControlStore;
+use omgcode_core::policy::WorkspaceId;
+use omgcode_core::workspace_entries::{entries_scope, list_entries};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -93,6 +96,25 @@ fn lists_directories_first_then_by_name_without_the_read_preference() {
         names(&list(&service, session, &["src", "nested"]).expect("nested")),
         []
     );
+}
+
+/// The scope is taken while the control store, which is the settings lock, is
+/// open. The listing itself needs no store, so it runs after the store is
+/// released, even while another holder has the store open again.
+#[test]
+fn a_listing_needs_no_open_settings_store() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    fs::create_dir(workspace.path.join("src")).expect("src");
+    let id: WorkspaceId = workspace.id.to_string().parse().expect("workspace id");
+    let scope = {
+        let control = ControlStore::open(&fixture.data).expect("control store");
+        entries_scope(&control, id, &[]).expect("scope")
+    };
+
+    let _held = ControlStore::open(&fixture.data).expect("the lock is free again");
+    let listing = list_entries(&scope).expect("listing");
+    assert_eq!(names(&listing), [("src".to_owned(), "directory")]);
 }
 
 #[test]

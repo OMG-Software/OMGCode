@@ -527,7 +527,9 @@ components for the folder to list (empty lists the workspace). Rust finds the
 workspace from the session's recorded, registered workspace; the webview never
 supplies a host path. Each component must be non-empty, not `.` or `..`, free
 of separators, NUL and the `.OMGCode` store name, at most 255 characters, and
-at most 32 components are allowed. The listing goes through the platform
+at most 32 components are allowed. Rust takes the recorded folders while the
+settings store is open and releases that lock before the listing touches the
+file system. The listing goes through the platform
 broker's directory handle, which does not follow links out of the workspace,
 and returns at most 512 entries (the broker's bound) with a `truncated` flag,
 directories first and then by name. Entries are `directory`, `file`, or `other`
