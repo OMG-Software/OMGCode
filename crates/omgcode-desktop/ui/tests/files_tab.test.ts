@@ -22,10 +22,10 @@ import {
 } from "./helpers";
 
 function dir(name: string): WorkspaceEntry {
-  return { name, kind: "directory", lossy: false };
+  return { name, kind: "directory", lossy: false, openable: true };
 }
 function file(name: string): WorkspaceEntry {
-  return { name, kind: "file", lossy: false };
+  return { name, kind: "file", lossy: false, openable: false };
 }
 function listing(entries: WorkspaceEntry[], truncated = false): WorkspaceListing {
   return { entries, truncated };
@@ -210,8 +210,9 @@ describe("the Files tab", () => {
     const tab = mount(() =>
       listing([
         dir(hostile),
-        { name: lossyName, kind: "directory", lossy: true },
-        { name: "link", kind: "other", lossy: false },
+        // A lossy name stays closed even if the flag were set.
+        { name: lossyName, kind: "directory", lossy: true, openable: true },
+        { name: "link", kind: "other", lossy: false, openable: false },
       ]),
     );
     tab.setSession("s-1");
@@ -224,6 +225,24 @@ describe("the Files tab", () => {
     ) as HTMLElement;
     expect(lossy.tagName).toBe("DIV");
     lossy.click();
+    await settle();
+    expect(ipc.callsTo("workspace_entries")).toHaveLength(1);
+  });
+
+  it("shows a directory Rust would refuse as a closed row and never lists it", async () => {
+    const tab = mount(() =>
+      listing([{ name: "src\\generated", kind: "directory", lossy: false, openable: false }]),
+    );
+    tab.setSession("s-1");
+    tab.onVisible?.(true);
+    await settle();
+    expect(document.querySelector("button.files-dir")).toBeNull();
+    const row = document.querySelector(".files-dir") as HTMLElement;
+    expect(row.tagName).toBe("DIV");
+    expect(row.title).toBe(
+      "This folder's name or depth cannot be used as a path here, so it is not opened.",
+    );
+    row.click();
     await settle();
     expect(ipc.callsTo("workspace_entries")).toHaveLength(1);
   });

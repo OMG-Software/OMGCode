@@ -35,7 +35,8 @@ Changes are recorded here before a release version is assigned.
   when a turn settles.
   - **Files** lists names and kinds in one folder of the open session's
     workspace at a time through `workspace_entries`: at most 512 per folder,
-    no content, `.OMGCode` hidden, not journaled (ADR-0083).
+    no content, `.OMGCode` hidden, not journaled (ADR-0083). Rust flags which
+    folders it would list next, and the tab opens no other.
   - **Git** shows the branch and up to 1,000 changed paths through
     `workspace_git_status`, read in process with the pure-Rust `gix` 0.91.0
     crate (`status` and `sha1` features only). The repository's own

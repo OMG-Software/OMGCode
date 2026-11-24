@@ -605,6 +605,11 @@ export interface WorkspaceEntry {
   kind: WorkspaceEntryKind;
   /** The native name is not valid Unicode: `name` is for display and is never sent back. */
   lossy: boolean;
+  /**
+   * A directory Rust would list next: its name, joined to the listed path, passes the same
+   * checks as a request. False for files, other entries, lossy names, and refused names.
+   */
+  openable: boolean;
 }
 
 /** One directory of the open session's workspace: names and kinds, directories first. */

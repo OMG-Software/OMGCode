@@ -101,6 +101,7 @@ function mockWorkspaceEntries(path: unknown): WorkspaceListing {
     name,
     kind: value === null ? ("file" as const) : ("directory" as const),
     lossy: false,
+    openable: value !== null,
   }));
   entries.sort(
     (a, b) =>

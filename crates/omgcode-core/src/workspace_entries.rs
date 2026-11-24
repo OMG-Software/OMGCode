@@ -54,6 +54,11 @@ pub struct WorkspaceEntry {
     /// The native name is not valid Unicode, so `name` has replacement
     /// characters.
     pub lossy: bool,
+    /// A directory that can be listed next: its name, joined to the listed
+    /// path, passes [`validate_components`]. False for every other kind, for
+    /// a lossy name, and for a name the path rules refuse or that would be too
+    /// deep, such as a Unix directory whose name holds a backslash.
+    pub openable: bool,
 }
 
 /// A bounded listing of one directory.
@@ -172,14 +177,15 @@ pub fn list_workspace_entries(
         .list(&target, MAX_ENTRIES, broker::MAX_DIRECTORY_NAME_UNITS)
         .map_err(EntriesError::Native)?;
     Ok(WorkspaceListing {
-        entries: shape(listing.entries),
+        entries: shape(listing.entries, components),
         truncated: listing.truncated,
     })
 }
 
 /// Hide the store, name each entry, and sort directories first, then by name
-/// (case-insensitively, then exactly, so the order is total).
-fn shape(entries: Vec<broker::DirectoryEntry>) -> Vec<WorkspaceEntry> {
+/// (case-insensitively, then exactly, so the order is total). `parent` is the
+/// listed path, which decides whether each directory can be listed next.
+fn shape(entries: Vec<broker::DirectoryEntry>, parent: &[String]) -> Vec<WorkspaceEntry> {
     let mut shaped: Vec<WorkspaceEntry> = entries
         .into_iter()
         .filter(|entry| !is_reserved_name(&entry.name))
@@ -189,7 +195,7 @@ fn shape(entries: Vec<broker::DirectoryEntry>) -> Vec<WorkspaceEntry> {
                 EntryKind::File => EntryClass::File,
                 EntryKind::Blocked => EntryClass::Other,
             };
-            entry_of(entry.name, kind)
+            entry_of(entry.name, kind, parent)
         })
         .collect();
     shaped.sort_by_cached_key(|entry| {
@@ -202,19 +208,34 @@ fn shape(entries: Vec<broker::DirectoryEntry>) -> Vec<WorkspaceEntry> {
     shaped
 }
 
-fn entry_of(name: OsString, kind: EntryClass) -> WorkspaceEntry {
+fn entry_of(name: OsString, kind: EntryClass, parent: &[String]) -> WorkspaceEntry {
     match name.into_string() {
-        Ok(name) => WorkspaceEntry {
-            name,
-            kind,
-            lossy: false,
-        },
+        Ok(name) => {
+            let openable = kind == EntryClass::Directory && listable_below(parent, &name);
+            WorkspaceEntry {
+                name,
+                kind,
+                lossy: false,
+                openable,
+            }
+        }
         Err(native) => WorkspaceEntry {
             name: native.to_string_lossy().into_owned(),
             kind,
             lossy: true,
+            openable: false,
         },
     }
+}
+
+/// Whether `parent` followed by `name` is a path this module would list: the
+/// same check a request for it meets, so the tree never offers a folder that
+/// is then refused.
+fn listable_below(parent: &[String], name: &str) -> bool {
+    let mut path = Vec::with_capacity(parent.len() + 1);
+    path.extend_from_slice(parent);
+    path.push(name.to_owned());
+    validate_components(&path).is_ok()
 }
 
 #[cfg(test)]
@@ -299,14 +320,17 @@ mod tests {
 
     #[test]
     fn sorts_directories_first_then_by_name_and_hides_the_store() {
-        let shaped = shape(vec![
-            native("zeta.txt", EntryKind::File),
-            native(".OMGCode", EntryKind::Directory),
-            native("beta", EntryKind::Directory),
-            native("Alpha.txt", EntryKind::File),
-            native("alpha", EntryKind::Directory),
-            native("link", EntryKind::Blocked),
-        ]);
+        let shaped = shape(
+            vec![
+                native("zeta.txt", EntryKind::File),
+                native(".OMGCode", EntryKind::Directory),
+                native("beta", EntryKind::Directory),
+                native("Alpha.txt", EntryKind::File),
+                native("alpha", EntryKind::Directory),
+                native("link", EntryKind::Blocked),
+            ],
+            &[],
+        );
         let order: Vec<(&str, EntryClass)> = shaped
             .iter()
             .map(|entry| (entry.name.as_str(), entry.kind))
@@ -322,14 +346,47 @@ mod tests {
             ]
         );
         assert!(shaped.iter().all(|entry| !entry.lossy));
+        // Only the directories can be listed next.
+        let openable: Vec<bool> = shaped.iter().map(|entry| entry.openable).collect();
+        assert_eq!(openable, [true, true, false, false, false]);
+    }
+
+    #[test]
+    fn a_directory_that_would_be_refused_is_not_openable() {
+        // A backslash is a legal Unix name character but never a component.
+        let shaped = shape(
+            vec![
+                native("ok", EntryKind::Directory),
+                native("a\\b", EntryKind::Directory),
+            ],
+            &[],
+        );
+        let by_name: Vec<(&str, bool)> = shaped
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.openable))
+            .collect();
+        assert_eq!(by_name, [("a\\b", false), ("ok", true)]);
+
+        // At the depth limit a child would be one component too deep.
+        let full = vec!["d".to_owned(); MAX_DEPTH];
+        let below_full = shape(vec![native("child", EntryKind::Directory)], &full);
+        assert!(!below_full[0].openable);
+        let room = vec!["d".to_owned(); MAX_DEPTH - 1];
+        let below_room = shape(vec![native("child", EntryKind::Directory)], &room);
+        assert!(below_room[0].openable);
     }
 
     #[cfg(unix)]
     #[test]
     fn marks_a_name_that_is_not_unicode_as_lossy() {
         use std::os::unix::ffi::OsStringExt;
-        let entry = entry_of(OsString::from_vec(vec![b'a', 0xff, b'b']), EntryClass::File);
+        let entry = entry_of(
+            OsString::from_vec(vec![b'a', 0xff, b'b']),
+            EntryClass::Directory,
+            &[],
+        );
         assert!(entry.lossy);
+        assert!(!entry.openable);
         assert_eq!(entry.name, "a\u{fffd}b");
     }
 }

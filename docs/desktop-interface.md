@@ -516,8 +516,9 @@ keeps open folders open, and loading, empty, truncated, and error states are
 text. At most 5,000 rows are drawn across the open folders; closing a folder
 drops its rows, and a listing that arrives after its folder closed is
 discarded. A name that is not valid Unicode is shown
-but its folder is not opened, and a link or special entry is shown but not
-opened. Names are text nodes, never markup. The tab shows names and kinds
+but its folder is not opened, nor is a folder Rust says it would not list
+(too deep, or a name the path rules refuse), and a link or special entry is
+shown but not opened. Names are text nodes, never markup. The tab shows names and kinds
 only: no content, no size, no date.
 
 `workspace_entries` takes the session id and `path`, an array of relative name
@@ -530,7 +531,9 @@ broker's directory handle, which does not follow links out of the workspace,
 and returns at most 512 entries (the broker's bound) with a `truncated` flag,
 directories first and then by name. Entries are `directory`, `file`, or `other`
 (the broker does not tell a link from a special entry); a name that is not valid
-Unicode is shown lossily with `lossy` set. `.OMGCode` is hidden. The command
+Unicode is shown lossily with `lossy` set. Each entry's `openable` is true only
+for a directory whose name, joined to the listed path, passes the component
+checks above, and the tab opens no other folder. `.OMGCode` is hidden. The command
 does not need the workspace's `read` preference, is not a model action, and is
 not journaled; it needs a registered workspace and refuses an unregistered one
 with `unknown_workspace`. It grants nothing: a listing never authorizes a
@@ -1696,8 +1699,15 @@ What the design does:
 - **No host paths.** No command accepts a host path; `workspace_entries` takes
   only relative name components that Rust validates and resolves below the
   session's workspace. The service returns no journal
-  path, no data root, no token, and no tool output digest. Workspace folder
-  display text is the only path-like text the `main` window receives. The
+  path, no data root, no token, and no tool output digest. The path-like
+  text the `main` window receives is: workspace folder display text; the
+  Files tab's names, which are names and kinds only, at most 512 per folder,
+  with `.OMGCode` hidden and no link followed (ADR-0083); the Git tab's
+  changed paths relative to the workspace, as lossy text, at most 1,000
+  (ADR-0085); and the Processes tab's program text, escaped to one line and
+  at most 256 characters, which can be the run's resolved program path
+  (ADR-0086). The view shows all of it as text nodes, and only
+  `workspace_entries` takes listed names back, as relative components. The
   `settings` window also receives the recorded development root, profile
   roots and path entries, package cache roots, and grant folders, all as
   display-safe text. No command takes any of them back as input. A settings

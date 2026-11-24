@@ -1,4 +1,4 @@
-import { button, el, replaceChildren } from "../dom";
+import { button, el, neutralise, replaceChildren } from "../dom";
 import { formatAbsolute } from "../format";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
@@ -109,7 +109,8 @@ function renderEntry(entry: ProcessEntry): HTMLElement {
     meta.push(el("span", { class: "process-profile", text: entry.profile }));
   }
   const command = el("div", { class: "process-command", text: line });
-  command.title = line;
+  // Rust escaped the text already; the tooltip is an attribute, so it is neutralised here too.
+  command.title = neutralise(line);
   return el(
     "li",
     { class: "process-entry" },

@@ -688,6 +688,10 @@ describe("settings window", () => {
     expect(root.textContent).toContain(HOSTILE.img);
     expect(root.textContent).toContain(neutralise(HOSTILE.rtl));
     expect(root.textContent).not.toContain(String.fromCharCode(0x202e));
+    // The navigation's tooltip is an attribute, which `el` does not neutralise for it.
+    const navItem = root.querySelector(".nav-child") as HTMLElement;
+    expect(navItem.title).not.toContain(String.fromCharCode(0x202e));
+    expect(navItem.title).toBe(navItem.textContent);
     openWorkspace();
     expect(root.querySelector("img, script")).toBeNull();
     expect(root.textContent).toContain(HOSTILE.script);

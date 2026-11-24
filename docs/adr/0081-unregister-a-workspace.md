@@ -82,8 +82,10 @@ Surfaces:
   not touched. The running-turn check is repeated after the dialog. A turn
   that starts after the second check still loses its tools, because each tool
   call reads live settings.
-  The command is in the `settings` capability only. The shell then has 43
-  commands, 15 of them for `settings`.
+  The command is in the `settings` capability only. It adds one command:
+  43 in total and 15 for `settings` with this change alone. With ADR-0081 to
+  ADR-0089 merged in version 0.56.0, the shell has 56 commands, 24 of them
+  for `settings`.
 - Desktop UI: **Remove workspace…** at the end of the workspace block in the
   full Workspaces view. The scoped **Workspace settings** view has none.
 

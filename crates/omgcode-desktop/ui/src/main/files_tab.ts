@@ -4,8 +4,6 @@ import type { WorkspaceEntry, WorkspaceListing } from "../ipc/types";
 import { icon, iconButton } from "../ui/icons";
 import type { SideTab } from "./side_panel";
 
-/** Rust refuses a path of more than this many components (ADR-0083). */
-export const FILES_MAX_DEPTH = 32;
 /** The most rows the tree draws, however many directories are open. */
 export const FILES_MAX_ROWS = 5000;
 
@@ -86,7 +84,9 @@ export function createFilesTab(): FilesTab {
     const item = el("li", { class: "files-item" });
     const path = [...parent, entry.name];
     const nameNode = el("span", { class: "files-name", text: entry.name });
-    if (entry.kind === "directory" && !entry.lossy && path.length <= FILES_MAX_DEPTH) {
+    // Rust says which directories it would list next (too deep, or a name such as a Unix one with
+    // a backslash, is refused); a lossy name is never sent back whatever the flag says.
+    if (entry.kind === "directory" && entry.openable && !entry.lossy) {
       const toggle = el("button", {
         class: "files-row files-dir",
         attrs: { "aria-expanded": "false" },
@@ -130,7 +130,7 @@ export function createFilesTab(): FilesTab {
       row.append(el("span", { class: "files-chevron" }), icon("folder"), nameNode);
       row.title = entry.lossy
         ? "The name is not valid Unicode, so this folder cannot be opened here."
-        : "This folder is too deep to open here.";
+        : "This folder's name or depth cannot be used as a path here, so it is not opened.";
     } else {
       row.append(el("span", { class: "files-chevron" }), icon("file"), nameNode);
       if (entry.kind === "other") {

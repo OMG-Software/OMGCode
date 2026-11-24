@@ -60,8 +60,12 @@ Constraints:
      shows a subset chosen by the file system). The broker reports a link,
      reparse point, or special entry as one blocked kind, so `other` stands for
      all three. A name that is not valid Unicode is returned lossily with
-     `lossy` set, and the frontend never sends it back. No content, size, or
-     date is returned.
+     `lossy` set, and the frontend never sends it back. Each entry's
+     `openable` flag says whether Rust would list it next: a directory whose
+     name, joined to the listed path, passes the same component checks as a
+     request. The frontend offers only those folders, so a name the rules
+     refuse, such as a Unix folder name with a backslash, is shown but never
+     sent. No content, size, or date is returned.
    - **Security decision.** The operator's own view does not require the
      workspace's `read` preference, is not a model action, is not journaled,
      and grants nothing: a listing never authorizes a read, edit, or run, and

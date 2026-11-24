@@ -1,4 +1,4 @@
-import { button, el, replaceChildren } from "../dom";
+import { button, el, neutralise, replaceChildren } from "../dom";
 import { icon } from "../ui/icons";
 import type { SectionId } from "./context";
 
@@ -87,7 +87,8 @@ export function createNav(handlers: NavHandlers): Nav {
     const items = state.workspaces.map((workspace) => {
       const item = button(workspace.label, () => handlers.onSelectWorkspace(workspace.id), {
         class: "nav-child",
-        attrs: { title: workspace.label },
+        // An attribute skips the text-node neutralising, so the folder text is neutralised here.
+        attrs: { title: neutralise(workspace.label) },
       });
       item.dataset.workspaceId = workspace.id;
       item.disabled = disabled;

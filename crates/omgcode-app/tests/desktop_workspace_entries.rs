@@ -76,7 +76,9 @@ fn lists_directories_first_then_by_name_without_the_read_preference() {
     assert!(!text.contains("secret contents"));
     for entry in json_of(&root)["entries"].as_array().expect("entries") {
         let keys: Vec<&String> = entry.as_object().expect("object").keys().collect();
-        assert_eq!(keys, ["kind", "lossy", "name"]);
+        assert_eq!(keys, ["kind", "lossy", "name", "openable"]);
+        // Every directory here can be listed next; a file never can.
+        assert_eq!(entry["openable"], entry["kind"] == "directory");
     }
 
     let nested = list(&service, session, &["src"]).expect("src");
