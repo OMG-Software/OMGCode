@@ -475,15 +475,24 @@ pub fn list_connection_models(connection: &LocalConnection) -> Result<Vec<Listed
 /// (`ShellExecuteExW`), not `explorer.exe`, which opened a File Explorer
 /// window for the long authorize address (ADR-0094).
 ///
+/// A Windows hand-off still running after
+/// [`omgcode_platform::browser::HAND_OFF_WAIT`] is not a failure here: the
+/// browser may yet open, so the sign-in goes on to wait for the callback,
+/// which observes cancellation and the sign-in deadline. The CLI prints the
+/// address before this call either way.
+///
 /// # Errors
 ///
 /// [`SignInError::Browser`] when the address is not OpenAI's or no browser
 /// could be started.
 pub fn open_system_browser(address: &str) -> Result<(), SignInError> {
+    use omgcode_platform::browser::{Handoff, open_https_address};
     if !address.starts_with("https://auth.openai.com/api/accounts/authorize?") {
         return Err(SignInError::Browser);
     }
-    omgcode_platform::browser::open_https_address(address).map_err(|_| SignInError::Browser)
+    match open_https_address(address).map_err(|_| SignInError::Browser)? {
+        Handoff::Done | Handoff::Pending => Ok(()),
+    }
 }
 
 #[cfg(test)]

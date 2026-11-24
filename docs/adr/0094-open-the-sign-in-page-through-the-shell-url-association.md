@@ -34,6 +34,14 @@ extensions through COM, so the calling thread should initialize COM first. With
   on a new thread that initializes a single-threaded COM apartment with OLE1
   DDE disabled and uninitializes it afterwards, so the caller's apartment is
   never changed. No shell, `cmd.exe`, or `explorer.exe` command line is used.
+- The caller waits at most five seconds (`HAND_OFF_WAIT`) for that thread's
+  result. `NOASYNC` makes the shell call wait for the URL handler, and the
+  sign-in calls the opener before its callback wait, which is what observes
+  cancellation and the five-minute deadline. An unbounded wait would let a hung
+  handler hold the sign-in, its slot, and the settings change guard. After the
+  bound the function returns `Handoff::Pending` and leaves the thread to
+  finish alone; it holds only its copy of the address. `omgcode-app` treats
+  `Pending` as "the browser may still open" and goes on to the callback wait.
 - On Linux and other Unix systems it runs `/usr/bin/xdg-open` with the address
   as one argument, as before.
 - `omgcode-app` keeps its check that the address is OpenAI's authorization
@@ -61,9 +69,13 @@ extensions through COM, so the calling thread should initialize COM first. With
 - `omgcode-platform` enables the `windows-sys` features `Win32_UI_Shell`,
   `Win32_UI_WindowsAndMessaging`, and `Win32_System_Registry`, which
   `SHELLEXECUTEINFOW` requires.
-- Tests cover address validation only. A test that opens a browser on the
-  developer's desktop is not practical, so the launch itself was not exercised
-  by an automated test, and the original failure was not reproduced.
+- A URL handler that hangs for longer than five seconds leaves one detached
+  thread until the shell call returns. A cancel or the deadline still ends the
+  sign-in, at most five seconds later than the hand-off began.
+- Tests cover address validation and the bounded wait (done, failed, panicked,
+  and still running). A test that opens a browser on the developer's desktop
+  is not practical, so the launch itself was not exercised by an automated
+  test, and the original failure was not reproduced.
 
 ## References
 

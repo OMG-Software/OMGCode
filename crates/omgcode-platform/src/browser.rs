@@ -7,8 +7,27 @@
 //! address as a command line. A started browser is not supervised: it belongs
 //! to the operator's desktop session, not to OMGCode.
 
+use std::time::Duration;
+
 /// Longest address handed to a browser, in bytes.
 pub const MAX_ADDRESS_LEN: usize = 8 * 1024;
+
+/// Longest time [`open_https_address`] waits for the Windows shell to finish
+/// the hand-off. A URL handler that hangs must not hold the caller, which may
+/// own a sign-in slot and must still observe its own cancellation and deadline.
+pub const HAND_OFF_WAIT: Duration = Duration::from_secs(5);
+
+/// How far the hand-off got before [`open_https_address`] returned.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handoff {
+    /// The Windows shell accepted the address, or `xdg-open` was started.
+    Done,
+    /// The Windows shell had not finished within [`HAND_OFF_WAIT`]. The call
+    /// continues on its own thread and its outcome is not reported, so the
+    /// browser may or may not open.
+    Pending,
+}
 
 /// Why an address was not handed to a browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,22 +39,25 @@ pub enum BrowserError {
     LaunchFailed,
 }
 
-/// Open `address` in the default browser and return once the hand-off is done.
+/// Open `address` in the default browser.
 ///
 /// Only an `https://` address made of RFC 3986 URI characters is accepted,
 /// so a caller's already-encoded URL cannot be mistaken for a file path, a
 /// second argument, or a different scheme. The caller remains responsible
 /// for checking that the address points where it should.
 ///
-/// On Windows this blocks while the shell resolves the URL association, on a
-/// dedicated thread that initializes COM for the call.
+/// On Windows the shell call runs on a dedicated thread that initializes COM
+/// for it, and this function waits at most [`HAND_OFF_WAIT`] for its result.
+/// After that it returns [`Handoff::Pending`] and leaves the thread to finish
+/// on its own: the thread holds only its copy of the address, and no OMGCode
+/// lock, so a hung URL handler keeps that one thread alive and nothing else.
 ///
 /// # Errors
 ///
 /// [`BrowserError::InvalidAddress`] for a refused address and
 /// [`BrowserError::LaunchFailed`] when the shell or `xdg-open` could not be
 /// started or reported failure.
-pub fn open_https_address(address: &str) -> Result<(), BrowserError> {
+pub fn open_https_address(address: &str) -> Result<Handoff, BrowserError> {
     if !is_plain_https(address) {
         return Err(BrowserError::InvalidAddress);
     }
@@ -57,17 +79,38 @@ fn is_uri_byte(byte: u8) -> bool {
 }
 
 #[cfg(windows)]
-fn launch(address: &str) -> Result<(), BrowserError> {
+fn launch(address: &str) -> Result<Handoff, BrowserError> {
     let file: Vec<u16> = address.encode_utf16().chain(std::iter::once(0)).collect();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     // A new thread owns its COM apartment, so the caller's apartment (the
     // desktop shell's UI thread, a runtime worker, or the CLI's main thread)
-    // is never changed.
+    // is never changed. Its join handle is dropped on purpose: the result
+    // arrives through the channel, and a thread still in the shell call after
+    // HAND_OFF_WAIT is left to finish (see `open_https_address`).
     std::thread::Builder::new()
         .name("omgcode-browser".to_owned())
-        .spawn(move || shell_open(&file))
-        .map_err(|_| BrowserError::LaunchFailed)?
-        .join()
-        .map_err(|_| BrowserError::LaunchFailed)?
+        .spawn(move || {
+            // After a Pending return nobody receives; that outcome is
+            // documented as unreported, so a failed send is ignored.
+            let _ = sender.send(shell_open(&file));
+        })
+        .map_err(|_| BrowserError::LaunchFailed)?;
+    await_handoff(&receiver, HAND_OFF_WAIT)
+}
+
+/// Wait at most `wait` for a hand-off result. A sender dropped without a
+/// result means the shell thread panicked.
+#[cfg(any(windows, test))]
+fn await_handoff(
+    receiver: &std::sync::mpsc::Receiver<Result<(), BrowserError>>,
+    wait: Duration,
+) -> Result<Handoff, BrowserError> {
+    use std::sync::mpsc::RecvTimeoutError;
+    match receiver.recv_timeout(wait) {
+        Ok(result) => result.map(|()| Handoff::Done),
+        Err(RecvTimeoutError::Timeout) => Ok(Handoff::Pending),
+        Err(RecvTimeoutError::Disconnected) => Err(BrowserError::LaunchFailed),
+    }
 }
 
 /// Open the NUL-terminated UTF-16 `file` with the shell's `open` verb. Must
@@ -128,7 +171,7 @@ fn shell_open(file: &[u16]) -> Result<(), BrowserError> {
 }
 
 #[cfg(not(windows))]
-fn launch(address: &str) -> Result<(), BrowserError> {
+fn launch(address: &str) -> Result<Handoff, BrowserError> {
     let mut child = std::process::Command::new("/usr/bin/xdg-open")
         .arg(address)
         .stdin(std::process::Stdio::null())
@@ -142,7 +185,7 @@ fn launch(address: &str) -> Result<(), BrowserError> {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    Ok(())
+    Ok(Handoff::Done)
 }
 
 #[cfg(test)]
@@ -186,5 +229,48 @@ mod tests {
             "s".repeat(600)
         );
         assert!(is_plain_https(&address));
+    }
+
+    #[test]
+    fn a_hand_off_that_does_not_finish_in_time_is_pending_not_a_block() {
+        // The sender stays alive and never sends, as a hung URL handler would.
+        let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            await_handoff(&receiver, Duration::from_millis(50)),
+            Ok(Handoff::Pending)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait must end at its bound"
+        );
+    }
+
+    #[test]
+    fn a_finished_hand_off_reports_its_result() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender.send(Ok(())).expect("the receiver is alive");
+        assert_eq!(
+            await_handoff(&receiver, Duration::from_secs(5)),
+            Ok(Handoff::Done)
+        );
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender
+            .send(Err(BrowserError::LaunchFailed))
+            .expect("the receiver is alive");
+        assert_eq!(
+            await_handoff(&receiver, Duration::from_secs(5)),
+            Err(BrowserError::LaunchFailed)
+        );
+    }
+
+    #[test]
+    fn a_shell_thread_that_ends_without_a_result_is_a_failure() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Result<(), BrowserError>>(1);
+        drop(sender);
+        assert_eq!(
+            await_handoff(&receiver, Duration::from_secs(5)),
+            Err(BrowserError::LaunchFailed)
+        );
     }
 }
