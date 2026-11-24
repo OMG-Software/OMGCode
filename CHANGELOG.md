@@ -6,6 +6,14 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.57.0 adds **Set all** beside **File-write tool limits** in the
+  desktop `settings` window (ADR-0090). One Deny, Prompt, or Allow choice sets
+  all six file-write tool limits in one `settings_set_permissions` request and
+  leaves Write unchanged, so a widening change shows one native confirmation
+  that names each widened limit. The control works while the disclosure is
+  closed, and it marks a state only while all six limits share it. Core, the
+  stored settings, and the CLI are unchanged.
+
 - Version 0.56.0 lets the operator remove a workspace (ADR-0081).
   `omgcode workspace unregister <workspace-id> --revision <n>` and
   **Remove workspace…** in the desktop settings window record one
