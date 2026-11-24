@@ -774,13 +774,15 @@ impl ControlStore {
 /// Delete an unbound credential's native item. An already absent item is not
 /// an orphan. An item recorded by another backend cannot be reached here and
 /// is returned as an orphan.
+///
+/// It reports at most one item, the bound slot first. Only a ChatGPT session
+/// has a second, companion slot (ADR-0093), so delete a session binding with
+/// `delete_unbound_slots`, which reports both; this function would hide a
+/// companion slot that also failed.
 pub fn delete_unbound_credential(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Option<OrphanedCredential> {
-    // The bound slot is reported first. An API key never has a companion
-    // slot, so only a ChatGPT session can leave two; its sign-out uses
-    // `delete_unbound_slots` and reports both.
     delete_unbound_slots(credentials, binding).pop()
 }
 
