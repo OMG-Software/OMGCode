@@ -92,6 +92,7 @@ mod error;
 mod events;
 mod instructions;
 mod preferences;
+mod processes;
 mod review_tokens;
 mod session_connections;
 mod sessions;
@@ -117,6 +118,10 @@ pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
 use self::events::EventHub;
 pub use self::instructions::remove as remove_workspace_instructions;
+pub use self::processes::{
+    ProcessEntry, ProcessLimit, ProcessResult, ProcessResultKind, ProcessState, RunDetails,
+    SessionProcesses,
+};
 use self::review_tokens::ReviewTokens;
 pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
 pub use self::settings_skills::{SkillChoice, SkillRemoveRequest, SkillStateRequest};

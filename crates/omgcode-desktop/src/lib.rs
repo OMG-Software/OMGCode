@@ -186,7 +186,8 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_set_workspace_instructions,
             commands::settings::settings_import_skill,
             commands::settings::settings_set_skill_state,
-            commands::settings::settings_remove_skill
+            commands::settings::settings_remove_skill,
+            commands::sessions::session_processes
         ])
         .build(tauri::generate_context!());
     match built {

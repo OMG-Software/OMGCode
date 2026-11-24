@@ -390,6 +390,20 @@ impl RunJournal {
         }
     }
 
+    /// Open the journal once, only if it exists: it never creates the file
+    /// and never waits. `Busy` reports a held lock.
+    pub(crate) fn try_open_existing(
+        data_root: &Path,
+        store_id: Uuid,
+    ) -> Result<Option<Self>, RunJournalError> {
+        let path = data_root.join(FILE_NAME);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Self::replay(&path, store_id).map(|(journal, _)| Some(journal)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// [`Self::open`], calling `on_busy` after each attempt that found the
     /// lock held. Tests use it to observe real contention.
     fn open_observed(

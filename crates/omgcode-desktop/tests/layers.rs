@@ -236,15 +236,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 48 unique policy names.
+    // And the shared list holds the 49 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 48);
-    assert_eq!(unique.len(), 48);
+    assert_eq!(listed.len(), 49);
+    assert_eq!(unique.len(), 49);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -332,13 +332,13 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
     );
     let main_calls: BTreeSet<String> = main_calls.union(&channel_calls).cloned().collect();
 
-    // Then the main side uses a subset of the main commands (all 27 today)...
+    // Then the main side uses a subset of the main commands (all 28 today)...
     let main_commands: BTreeSet<String> = commands_for(WindowLabel::Main)
         .into_iter()
         .map(str::to_owned)
         .collect();
     assert!(main_calls.is_subset(&main_commands), "{main_calls:?}");
-    assert_eq!(main_calls.len(), 27);
+    assert_eq!(main_calls.len(), 28);
     assert_eq!(main_calls, main_commands);
 
     // ...the approvals client uses exactly the three approval commands...
@@ -355,7 +355,7 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(settings_calls, settings_commands);
 
-    // ...and together they cover all 48 policy commands.
+    // ...and together they cover all 49 policy commands.
     let union: BTreeSet<String> = main_calls
         .union(&approval_calls)
         .cloned()
@@ -613,10 +613,10 @@ fn generate_handler_registers_exactly_the_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 48 shared names, once each.
+    // Then they are the 49 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 48);
-    assert_eq!(unique.len(), 48);
+    assert_eq!(registered.len(), 49);
+    assert_eq!(unique.len(), 49);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -633,7 +633,7 @@ fn generate_handler_registers_exactly_the_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 48);
+    assert_eq!(handlers.len(), 49);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -767,7 +767,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     }
     assert_eq!(
         expected.len(),
-        48,
+        49,
         "all commands are called by the frontend"
     );
 

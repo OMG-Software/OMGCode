@@ -436,6 +436,61 @@ export interface ContextBreakdown {
   estimate_scope: string;
 }
 
+export type ProcessState = "running" | "finished" | "unfinished" | "refused";
+
+export type ProcessResultKind =
+  | "exited"
+  | "signalled"
+  | "deadline_exceeded"
+  | "cancelled"
+  | "revoked"
+  | "not_started"
+  | "supervision_failed"
+  | "cleanup_unconfirmed"
+  | "limit_exceeded";
+
+export type ProcessLimit = "memory" | "processes" | "cpu_time" | "disk";
+
+/** How a recorded run ended. */
+export interface ProcessResult {
+  kind: ProcessResultKind;
+  exit_code: number | null;
+  signal: number | null;
+}
+
+/**
+ * One command-tool call of a session (ADR-0086). Every text field is untrusted model data:
+ * render it as text only. No output, environment value, or credential is ever returned.
+ */
+export interface ProcessEntry {
+  call_id: string;
+  state: ProcessState;
+  /** RFC 3339. */
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  program: string | null;
+  /** Escaped to one line each and bounded; `null` when unknown. */
+  arguments: string[] | null;
+  /** Whether the program or arguments were shortened or dropped to a bound. */
+  text_truncated: boolean;
+  argument_count: number | null;
+  profile: string | null;
+  result: ProcessResult | null;
+  limit: ProcessLimit | null;
+  /** The refusal reason, or the failure code of a finished call with no run result. */
+  reason: string | null;
+}
+
+/** The open session's command-tool calls, newest first, at most 100. */
+export interface SessionProcesses {
+  entries: ProcessEntry[];
+  /** Whether older calls exist that are not listed. */
+  truncated: boolean;
+  /** Whether the run journal could be joined. */
+  run_details: "available" | "unavailable" | "busy";
+}
+
 export interface ProviderProfileView {
   name: string;
   kind: string;

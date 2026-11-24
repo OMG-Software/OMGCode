@@ -11,6 +11,7 @@ import type {
   ContextBreakdown,
   SearchResult,
   SessionContext,
+  SessionProcesses,
   SessionSkills,
   SessionSummary,
   SessionTree,
@@ -124,6 +125,9 @@ export const api = {
     invokeCommand<ContextBreakdown>("session_context_breakdown", { session_id: sessionId }),
   sessionContext: (sessionId: string) =>
     invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
+  /** The session's command-tool calls, newest first (ADR-0086). Read-only. */
+  sessionProcesses: (sessionId: string) =>
+    invokeCommand<SessionProcesses>("session_processes", { session_id: sessionId }),
   /** The session's connection and model; `null` describes the default when no session is open. */
   connectionStatus: (sessionId: string | null) =>
     invokeCommand<ConnectionStatus>("connection_status", { session_id: sessionId }),

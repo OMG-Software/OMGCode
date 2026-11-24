@@ -51,6 +51,11 @@ const ICONS = {
     ["circle", { cx: "12", cy: "12", r: "3" }],
   ],
   terminal: [FRAME, ["path", { d: "M7 9l3 3-3 3M13 15h4" }]],
+  /** A play triangle in a circle: the session's subprocesses (ADR-0086). */
+  processes: [
+    ["circle", { cx: "12", cy: "12", r: "9" }],
+    ["path", { d: "M10 8.5l5 3.5-5 3.5z" }],
+  ],
   /** A frame with an M and a down arrow: copy the reply's Markdown source. */
   markdown: [
     ["rect", { x: "2", y: "5", width: "20", height: "14", rx: "2" }],

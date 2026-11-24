@@ -450,6 +450,11 @@ the most recent calls, oldest first, from 1 to 1,000. Like the other journals
 it is private data: targets and codes can reveal workspace names. It is not
 tamper-evident against another process running as the same user.
 
+The desktop shell reads this journal, read-only, to list one session's command
+calls and which of them were refused or never finished (ADR-0086). It reads
+the 1,000 newest records of all sessions, so an older call of a busy journal
+is not listed.
+
 ## Model read/list and command tools
 
 The paragraphs below describe `write` and `execute` at `prompt`, the state

@@ -249,7 +249,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 48 commands (18 in the `settings` window). No other command exists.
+The shell has three webview windows and 49 commands (18 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -271,6 +271,7 @@ their registered identifier, and approvals by identifier.
 | `session_context_breakdown` | main | Estimate, by part, what a session's next turn would send; takes the session id, sends nothing to a model, records nothing, and returns names and numbers only (ADR-0087) |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
 | `workspace_entries` | main | List the names and kinds in one directory of a session's registered workspace, for the Files tab; takes the session id and relative name components (ADR-0083) |
+| `session_processes` | main | List a session's model command-tool calls, newest first, at most 100, read-only (ADR-0086) |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
@@ -946,6 +947,74 @@ ends, and this section must say where it appears.
 - **Limits.** The estimate counts one byte as one token, so it overstates a
   real tokenizer's count. It is not provider-reported usage and is not
   recomputed while a turn runs.
+
+## Processes tab
+
+Status: the Rust command and a self-contained view module exist; the view is
+**not yet wired** into the `main` window. The right-hand panel's tab
+framework, and the tab that shows this view, are separate work. The
+coordinator of that work adjusts this section when the tab exists
+([ADR-0086](adr/0086-show-the-sessions-subprocesses-in-the-main-window.md)).
+
+The only subprocess a session starts is a model `workspace_run_command` call.
+`session_processes { session_id }` lists those calls for one session, newest
+first, at most 100, with `truncated` set when older calls exist. It is
+read-only: it cancels, restarts, and runs nothing, and the webview names only
+the session identifier. Rust resolves every source from trusted state, on the
+blocking pool, with the same bounded readers the trusted CLI uses.
+
+| Source | Gives |
+| --- | --- |
+| Model action journal (`ActionJournal::recent`, the 1,000 newest records of all sessions) | The call identifier, start and refusal time, how the call was authorised or why it was refused, the finish time and outcome, and the run identifier a finished call recorded |
+| Run journal (`run::audit_existing`, the newest 100 events; one attempt, no wait, nothing created) | Through that run identifier: the resolved program, the profile name, the result (exit code, signal, deadline, cancellation, or the limit that stopped it: memory, processes, CPU time, or disk growth), and the elapsed time |
+| Session journal (`SessionInspection`) | The program and argument text the model sent, matched to the action records by call identifier |
+
+The action journal records no argument text and the run journal records only
+an argument count and digest, so the command text comes from the session
+journal. A call identifier is unique within one turn only, so records and
+requests that share one are paired in order from the newest end. A call
+with no matching request, or a session journal that cannot be read (for
+example while a turn holds it on Windows), shows the run journal's program
+when it has one, and otherwise "(command unavailable)". A run journal that
+cannot be read sets `run_details` to `unavailable`, and one that another holder
+has locked sets it to `busy`: results and durations are then absent and the
+action journal data is still listed. The run journal read never creates the
+settings store or the journal, and never waits. A missing store or journal
+lists no runs and is not an error. A run holds the settings and journal locks
+only while it records its start and its finish, not while the program runs.
+The action journal read waits at most 250 ms for a writer, well under the
+two-second poll, and then fails with `busy`; the shared poller never starts a
+read while one is in flight.
+
+Each entry has a `state`:
+
+- `running`: started, no finish recorded, and this desktop has a chat turn
+  active for the session.
+- `unfinished`: started, no finish recorded, and no turn is active here, for
+  example after a crash. The outcome is unknown, never failed.
+- `finished`: started and finished. `result` and `limit` come from the run
+  journal; a finished call with no run result shows its failure code.
+- `refused`: never started, with the refusal reason.
+
+The reply returns, per entry, only: the call identifier, the state, the start
+and finish times, the run's elapsed milliseconds, the program, the arguments,
+whether text was shortened, the argument count, the profile name, the result
+kind with exit code or signal, the limit, and a reason code. It never returns
+captured output, environment values, credentials, working directories, or
+digests. Program, arguments, and the profile name are untrusted model-chosen
+text. Rust escapes each to one line with `display_safe_line`, renders a
+non-Unicode program path lossily, and bounds them: 256 characters per item, 32
+arguments, 2,048 characters per call. The view builds text nodes only and shows
+the full command line in a tooltip.
+
+`createProcessesTab()` in `ui/src/main/processes_tab.ts` returns a
+`PanelView` (`element`, `showSession`, `refresh`, `dispose`). It shows each
+call on one ellipsized line with a state badge, start time, duration, and
+outcome, the empty state "No subprocess has run in this session.", errors as
+text, and a **Refresh** button. While the list holds a `running` call it reads
+again every two seconds, through the shared poller, which also pauses while the
+page is hidden; it stops when nothing runs, on `showSession(null)`, and on
+`dispose()`. An answer for a session that is no longer shown is dropped.
 
 ## Settings window
 
@@ -1662,7 +1731,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 48 |
+| Commands | 49 |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
@@ -1694,6 +1763,7 @@ What it does not do:
 | Shutdown grace | 5 seconds |
 | Model request cancel check interval | 25 ms |
 | Approve button delay | 1 second |
+| Processes listed | 100 calls; 32 arguments and 256 characters per item, 2,048 characters per call; 100 run journal events read; polled every 2 seconds only while a call runs (ADR-0086) |
 | Poll and check intervals | chat reconcile 5 seconds, chat fallback poll 750 ms, approvals 3 seconds |
 
 ## Development
