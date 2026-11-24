@@ -57,6 +57,7 @@ function profile(overrides: Partial<ProviderProfileView> = {}): ProviderProfileV
     credential_bound: false,
     selectable: true,
     active: false,
+    account_label: null,
     ...overrides,
   };
 }

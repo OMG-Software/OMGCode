@@ -328,10 +328,26 @@ pub enum ProviderCredentialUseError {
         /// The profile name as recorded.
         profile: String,
     },
+    /// A ChatGPT sign-in was asked of an `openai` profile that authenticates
+    /// with an API key (ADR-0093).
+    #[error("provider profile {profile} uses an API key, not a ChatGPT sign-in")]
+    NotSubscription {
+        /// The profile name as recorded.
+        profile: String,
+    },
     /// The profile is `api_key` but has no bound credential. It never
     /// becomes a request without a credential.
     #[error("provider profile {profile} has no credential bound")]
     NotBound {
+        /// The profile name as recorded.
+        profile: String,
+    },
+    /// The profile is a ChatGPT connection that is not signed in: never
+    /// signed in, or signed out (ADR-0093). It needs a sign-in, not a key.
+    #[error(
+        "provider profile {profile} is not signed in with ChatGPT; sign in with `omgcode workspace provider-signin` or Sign in with ChatGPT in the settings window"
+    )]
+    NotSignedIn {
         /// The profile name as recorded.
         profile: String,
     },
@@ -376,7 +392,9 @@ impl ProviderCredentialUseError {
             Self::WrongProvider { .. } => "wrong_provider",
             Self::EndpointNotRecorded { .. } => "endpoint_not_recorded",
             Self::SubscriptionUnsupported { .. } => "subscription_unsupported",
+            Self::NotSubscription { .. } => "not_subscription",
             Self::NotBound { .. } => "not_bound",
+            Self::NotSignedIn { .. } => "not_signed_in",
             Self::OtherBackend { .. } => "other_backend",
             Self::Store { error, .. } => Self::native_code(error),
         }
@@ -532,13 +550,29 @@ impl ControlStore {
     /// # Errors
     ///
     /// Refuses a stale revision, an unknown profile, or a profile without a
-    /// binding before any native I/O.
+    /// binding before any native I/O. A signed-in ChatGPT profile is refused
+    /// too: only `provider-signout` revokes the session and deletes both of
+    /// its slots.
     pub fn remove_provider_credential(
         &mut self,
         credentials: &CredentialStore,
         name: &str,
         expected_revision: u64,
     ) -> Result<ProviderCredentialRemoval, ProviderCredentialError> {
+        // A stale caller gets the conflict it re-reads on, never a refusal
+        // that describes state its revision may no longer show.
+        self.check_revision(expected_revision)?;
+        // Only a ChatGPT sign-in binds a subscription profile (ADR-0093), so
+        // a bound one is a session. An unbound one, or another provider's
+        // subscription profile, gets the refusal below that names its cause.
+        if self.provider_profile(name).is_some_and(|status| {
+            status.profile().auth() == ProviderAuth::Subscription && status.credential().is_some()
+        }) {
+            return Err(ControlError::ProviderRefused(
+                "a ChatGPT session ends with provider-signout, which also revokes it",
+            )
+            .into());
+        }
         let (profile_id, binding) = self.unbind_credential(name, expected_revision)?;
         let orphan = delete_unbound_credential(credentials, &binding);
         Ok(ProviderCredentialRemoval {
@@ -727,7 +761,7 @@ impl ControlStore {
     }
 
     /// Record that the named profile's binding is removed.
-    fn unbind_credential(
+    pub(super) fn unbind_credential(
         &mut self,
         name: &str,
         expected_revision: u64,
@@ -757,26 +791,61 @@ impl ControlStore {
 /// Delete an unbound credential's native item. An already absent item is not
 /// an orphan. An item recorded by another backend cannot be reached here and
 /// is returned as an orphan.
+///
+/// It deletes and reports only the bound item, which is all an API key has.
+/// A ChatGPT session also has a companion slot (ADR-0093), so delete a
+/// session binding with `delete_unbound_slots`, which deletes and reports
+/// both.
 pub fn delete_unbound_credential(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Option<OrphanedCredential> {
-    if binding.backend != credentials.backend() {
-        return Some(OrphanedCredential {
-            id: binding.id.clone(),
-            error: CredentialError::Unavailable(format!(
-                "the credential was stored by {}, not {}",
-                binding.backend.as_str(),
-                credentials.backend().as_str()
-            )),
-        });
-    }
-    match credentials.delete(&binding.id) {
+    unreachable_backend(credentials, binding, binding.id.clone())
+        .or_else(|| delete_item(credentials, binding.id.clone()))
+}
+
+/// Delete an unbound ChatGPT session's native items: its bound slot and its
+/// companion slot (ADR-0093). Every item that could not be deleted is
+/// returned, the companion first and the bound slot last, so none is lost
+/// from the operator's report. An absent item is not an orphan. When the
+/// binding names another backend, neither slot can be reached and both are
+/// returned.
+pub fn delete_unbound_slots(
+    credentials: &CredentialStore,
+    binding: &CredentialBinding,
+) -> Vec<OrphanedCredential> {
+    let companion = crate::provider::chatgpt::companion_credential_id(&binding.id);
+    [companion, binding.id.clone()]
+        .into_iter()
+        .filter_map(|id| {
+            unreachable_backend(credentials, binding, id.clone())
+                .or_else(|| delete_item(credentials, id))
+        })
+        .collect()
+}
+
+/// `id`, recorded with `binding` by another backend, which this store
+/// cannot reach.
+fn unreachable_backend(
+    credentials: &CredentialStore,
+    binding: &CredentialBinding,
+    id: CredentialId,
+) -> Option<OrphanedCredential> {
+    (binding.backend != credentials.backend()).then(|| OrphanedCredential {
+        id,
+        error: CredentialError::Unavailable(format!(
+            "the credential was stored by {}, not {}",
+            binding.backend.as_str(),
+            credentials.backend().as_str()
+        )),
+    })
+}
+
+/// Delete one native item; an absent one is not an orphan.
+fn delete_item(credentials: &CredentialStore, id: CredentialId) -> Option<OrphanedCredential> {
+    match credentials.delete(&id) {
         Ok(()) | Err(CredentialError::NotFound) => None,
-        Err(error) => Some(OrphanedCredential {
-            id: binding.id.clone(),
-            error,
-        }),
+        Err(error) => Some(OrphanedCredential { id, error }),
     }
 }
 
@@ -879,7 +948,7 @@ fn require_api_key(auth: ProviderAuth) -> Result<(), ControlError> {
     match auth {
         ProviderAuth::ApiKey => Ok(()),
         ProviderAuth::Subscription => Err(ControlError::ProviderRefused(
-            "subscription credentials are not supported yet; only api_key profiles accept a stored credential",
+            "a subscription profile is not given a stored credential; an openai subscription profile signs in with ChatGPT",
         )),
         ProviderAuth::None => Err(ControlError::ProviderRefused(
             "this provider profile uses no credential; only api_key profiles accept a stored credential",

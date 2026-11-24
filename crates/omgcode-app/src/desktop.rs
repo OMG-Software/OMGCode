@@ -99,6 +99,7 @@ mod sessions;
 mod settings;
 mod settings_changes;
 mod settings_chat;
+mod settings_chatgpt;
 mod settings_execution;
 mod settings_skills;
 mod state;
@@ -137,21 +138,21 @@ pub use self::wire::{
     ApiKeySetRequest, ApiKeyText, ApprovalDecideRequest, ApprovalDetail, ApprovalField,
     ApprovalList, ApprovalOperationDto, ApprovalRequest, ApprovalStateDto, ApprovalView,
     ApprovalsSummary, Binding, BranchState, BranchView, ChatBudgetsDto, ChatBudgetsSaveRequest,
-    ChatDefaults, ChatDefaultsView, ChatEvent, ChatModels, ChatOutcome, ChatPreferencesDto,
-    ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
-    ComposerPreferencesDto, ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest,
-    ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView,
-    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView,
-    ContextBreakdown, ContextMeterDto, ContextPartDto, ContextPartId, Decision, EntryKind,
-    GitIndexState, GitPathView, GitStatusState, GitStatusView, GitWorktreeState, MessageRoleDto,
-    ModelChoice, NewConnectionKind, PackageProfileView, PermissionFlags, PermissionsChangeRequest,
-    PreferencesSource, ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
-    SessionContext, SessionCreateRequest, SessionModelSelectRequest, SessionRequest, SessionSkills,
-    SessionStatus, SessionSummary, SessionTree, SettingsOverview, SettingsRevisionRequest,
-    SettingsScope, SkillOverrideView, SkillSettingView, SnippetPart, ToolOutcomeDto,
-    ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest,
-    TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest,
-    WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
+    ChatDefaults, ChatDefaultsView, ChatEvent, ChatGptRequest, ChatGptSignOutResult, ChatModels,
+    ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
+    ChatState, ChatStatus, ComposerPreferencesDto, ConnectionAddRequest, ConnectionChoice,
+    ConnectionChooseRequest, ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest,
+    ConnectionSourceView, ConnectionStatus, ConnectionStatusRequest, ConnectionView,
+    ContainerGrantView, ContextBreakdown, ContextMeterDto, ContextPartDto, ContextPartId, Decision,
+    EntryKind, GitIndexState, GitPathView, GitStatusState, GitStatusView, GitWorktreeState,
+    MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView, PermissionFlags,
+    PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit, SearchRequest,
+    SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest, SessionModelSelectRequest,
+    SessionRequest, SessionSkills, SessionStatus, SessionSummary, SessionTree, SettingsOverview,
+    SettingsRevisionRequest, SettingsScope, SkillOverrideView, SkillSettingView, SnippetPart,
+    ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
+    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
+    WorkspaceInstructionsRequest, WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
 pub use self::workspace_entries::WorkspaceEntriesRequest;
 use crate::credential_source::resolve_connection_and_kind;
@@ -248,6 +249,7 @@ impl TokenResolver {
                 LocalConnection {
                     endpoint: launch_endpoint.to_owned(),
                     token: supplier()?.map(LmToken::new),
+                    plan: None,
                 },
                 None,
             )),
@@ -316,6 +318,10 @@ struct Inner {
     /// and the workspace instruction files, which the `main` and `settings`
     /// windows both write (ADR-0080). Held for file input and output only.
     preferences: Mutex<()>,
+    /// The cancel token of the running ChatGPT sign-in, if any (ADR-0093).
+    chatgpt_sign_in: Mutex<Option<omgcode_core::turn::CancelToken>>,
+    /// Opens the ChatGPT sign-in address. Tests replace it.
+    open_browser: settings_chatgpt::BrowserOpener,
 }
 
 /// The desktop command service. See the [module documentation](self).
@@ -373,6 +379,8 @@ impl DesktopService {
                 settings_scope: Mutex::new(None),
                 session_choices: Mutex::new(()),
                 preferences: Mutex::new(()),
+                chatgpt_sign_in: Mutex::new(None),
+                open_browser: crate::open_system_browser,
             }),
         })
     }

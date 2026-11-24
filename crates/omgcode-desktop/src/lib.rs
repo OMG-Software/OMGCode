@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use omgcode_app::desktop::{DesktopConfig, DesktopService};
 use omgcode_app::{
-    ChatClients, ChatSettings, ConnectionSource, LmToken, LocalConnection, TokenSource,
+    ChatClients, ChatSettings, ConnectionSource, LocalConnection, TokenSource,
     resolve_local_connection,
 };
 use tauri::{Manager, RunEvent};
@@ -105,10 +105,8 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
             // resolves it again. The endpoint is the one the profile recorded,
             // and it is validated like any other so a hand-edited journal
             // cannot slip past.
-            let LocalConnection { endpoint, token } = connection;
-            check_endpoint(&endpoint, token.as_ref().map(LmToken::expose))?;
-            drop(token);
-            (data_root, endpoint, TokenSource::Profile(name))
+            check_connection(&connection)?;
+            (data_root, connection.endpoint, TokenSource::Profile(name))
         }
     };
     DesktopService::open(DesktopConfig {
@@ -126,6 +124,16 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
 fn check_endpoint(endpoint: &str, token: Option<&str>) -> Result<(), String> {
     let probe = ChatSettings::new(endpoint, "endpoint-check", PROBE_CONTEXT_TOKENS);
     ChatClients::new(&probe, token)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// Validate a resolved profile connection the way a chat turn would, with a
+/// plan session's clients for a ChatGPT profile (ADR-0093). No request is
+/// made and no token is read.
+fn check_connection(connection: &LocalConnection) -> Result<(), String> {
+    let probe = ChatSettings::new(&connection.endpoint, "endpoint-check", PROBE_CONTEXT_TOKENS);
+    ChatClients::for_connection(&probe, connection)
         .map(drop)
         .map_err(|error| error.to_string())
 }
@@ -180,6 +188,9 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_select_connection,
             commands::settings::settings_add_connection,
             commands::settings::settings_remove_connection,
+            commands::settings::settings_sign_in_chatgpt,
+            commands::settings::settings_cancel_chatgpt_sign_in,
+            commands::settings::settings_sign_out_chatgpt,
             commands::settings::settings_set_api_key,
             commands::settings::settings_clear_scope,
             commands::settings::settings_repair_data_folder,

@@ -531,6 +531,15 @@ export interface ProviderProfileView {
   selectable: boolean;
   /** Whether it is the active connection. */
   active: boolean;
+  /** For a signed-in ChatGPT connection, the account's email, for display only (ADR-0093). */
+  account_label: string | null;
+}
+
+/** The answer to `settings_sign_out_chatgpt` (ADR-0093). */
+export interface ChatGptSignOutResult {
+  overview: SettingsOverview;
+  /** Whether OpenAI confirmed the revocation; the local sign-out is recorded either way. */
+  revoked: boolean;
 }
 
 /** A local provider the settings window may record (ADR-0064). */

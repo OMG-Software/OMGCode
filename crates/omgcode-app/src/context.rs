@@ -89,6 +89,12 @@ pub fn compact_journal(
         ContextError::Provider(ProviderError::Cancelled) if cancel.is_cancelled() => {
             AppError::new(ErrorKind::Cancelled, COMPACTION_CANCELLED_MESSAGE)
         }
+        // A ChatGPT plan failure keeps its specific code, as in a chat turn.
+        ContextError::Provider(
+            error @ (ProviderError::SignInRequired
+            | ProviderError::AccessTokenUnavailable
+            | ProviderError::ResponseFailed(_)),
+        ) => AppError::provider(error),
         error => AppError::new(ErrorKind::Context, error.to_string()),
     })
 }

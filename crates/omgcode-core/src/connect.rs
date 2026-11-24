@@ -95,7 +95,7 @@ const fn is_reused_local_port(_error: &reqwest::Error) -> bool {
 }
 
 /// The sockets that hold one skipped port, one per address family.
-struct HeldPort {
+pub(crate) struct HeldPort {
     _v4: Option<tokio::net::TcpSocket>,
     _v6: Option<tokio::net::TcpSocket>,
 }
@@ -106,7 +106,9 @@ struct HeldPort {
 ///
 /// The destination's family is not known here, so both are held. Returns
 /// `None` when neither family can bind; then there is no way to skip the port.
-fn reserve_next_port() -> Option<HeldPort> {
+/// The sign-in tests' simulated browser uses it too, because its plain
+/// `std` connects meet the same refusal (ADR-0078).
+pub(crate) fn reserve_next_port() -> Option<HeldPort> {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     let v4 = tokio::net::TcpSocket::new_v4().ok().filter(|socket| {
         socket

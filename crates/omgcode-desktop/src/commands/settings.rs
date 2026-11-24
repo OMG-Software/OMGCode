@@ -10,12 +10,13 @@
 //! store block.
 
 use omgcode_app::desktop::{
-    ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ConnectionAddRequest,
-    ConnectionRemoveRequest, ConnectionSelectRequest, ContainerAccessChoice, ContainerGrantRequest,
-    ContainerRevokeRequest, EnvironmentEntry, NewConnectionKind, PackageProfileAddRequest,
-    PermissionFlags, PermissionsChangeRequest, ProfileRemoveRequest, SettingsOverview,
-    SettingsRevisionRequest, SkillChoice, SkillRemoveRequest, SkillStateRequest,
-    ToolchainProfileAddRequest, WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
+    ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ChatGptRequest,
+    ChatGptSignOutResult, ConnectionAddRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
+    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
+    NewConnectionKind, PackageProfileAddRequest, PermissionFlags, PermissionsChangeRequest,
+    ProfileRemoveRequest, SettingsOverview, SettingsRevisionRequest, SkillChoice,
+    SkillRemoveRequest, SkillStateRequest, ToolchainProfileAddRequest,
+    WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -297,6 +298,77 @@ pub async fn settings_remove_connection(
     let request = ConnectionRemoveRequest { revision, name };
     blocking(&state, move |service| {
         service.settings_remove_connection(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the browser step
+/// and what goes to OpenAI, signs a connection in with ChatGPT (ADR-0093),
+/// recording an `openai` subscription profile first when `name` names none.
+/// Rust opens the system browser and waits for the loopback callback for at
+/// most five minutes; the webview never sees the address, the callback, or a
+/// token. `settings_cancel_chatgpt_sign_in` ends the wait.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`,
+/// `stale_revision`, `settings_change_running`, `control`, `credential`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_sign_in_chatgpt(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSignInChatGpt, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ChatGptRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_sign_in_chatgpt(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Cancels the running ChatGPT sign-in, if any, including
+/// one still waiting for its native confirmation. With no sign-in running it
+/// does nothing. It takes nothing and grants nothing.
+///
+/// # Errors
+///
+/// `forbidden_window`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_cancel_chatgpt_sign_in(
+    webview: Webview,
+    state: Service<'_>,
+) -> Result<(), CommandError> {
+    authorize(Command::SettingsCancelChatGptSignIn, webview.label())?;
+    blocking(&state, move |service| {
+        service.settings_cancel_chatgpt_sign_in();
+        Ok(())
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation, revokes a ChatGPT session
+/// once, records the sign-out, and deletes its tokens. `revoked` says
+/// whether OpenAI confirmed the revocation.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`,
+/// `stale_revision`, `settings_change_running`, `credential`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_sign_out_chatgpt(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<ChatGptSignOutResult, CommandError> {
+    authorize(Command::SettingsSignOutChatGpt, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ChatGptRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_sign_out_chatgpt(request, &prompt)
     })
     .await
 }

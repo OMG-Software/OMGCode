@@ -6,6 +6,103 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.60.0 adds Sign in with ChatGPT (ADR-0093). An `openai` profile
+  with authentication `subscription` and OpenAI's fixed endpoint signs in
+  through `omgcode workspace provider-signin <name> --revision <n>` or **Sign
+  in with ChatGPT** in the desktop `settings` window, which records the
+  profile first when the name has none. Rust opens the system browser on
+  OpenAI's authorization page with PKCE S256, a random `state` and `nonce`,
+  and a per-host `urn:uuid:` identifier, waits at most five minutes for a
+  `127.0.0.1` loopback callback, checks the state and issued client, and
+  validates the ID token's RS256 signature, issuer, audience, expiry, nonce,
+  and subject. The granted scopes must include `chatgpt.tokens.use.direct`.
+  The access and refresh tokens are kept in protected OS storage as one
+  record in two immutable slots and are refreshed, with rotation, under a
+  per-session OS file lock; a refused refresh asks for a new sign-in. A new
+  control-journal event, `provider_subscription_bound`, records the client,
+  subject, account label, host identifier, and binding; a journal that holds
+  it cannot be read by 0.59.0 or earlier. `provider-signout` and **Sign out**
+  revoke the refresh token once and delete the tokens, naming every token slot
+  that could not be deleted; a signed-in profile
+  cannot be removed, and `provider-credential-remove` refuses subscription
+  profiles. Chat, compaction, and tool turns of a ChatGPT connection use the
+  Responses API with `store:false` and streaming, the model list reads the
+  plan route's `models` array, and plan failures, including a model list
+  without a usable access token, keep a stable error code
+  (`signin_required`, `usage_limit_exceeded`, and others) with no fallback to
+  API billing.
+  API-key profiles keep the Chat Completions path. The desktop shell gains
+  `settings_sign_in_chatgpt`, `settings_cancel_chatgpt_sign_in`, and
+  `settings_sign_out_chatgpt` (59 commands, 27 in `settings`). New
+  dependencies: `rsa` (with `pkcs1v15`), `base64`, `getrandom`, and `bytes`
+  (the last three already in the tree through reqwest, `uuid`, and `hyper`).
+  Every test
+  uses loopback mock servers; no real sign-in, refresh, revocation, or
+  plan-backed request was made, and plan usage is not verified. A token slot
+  that exists but cannot be read or decoded fails with
+  `token_store_unavailable` instead
+  of falling back to an older, possibly rotated record. The model list always
+  goes to OpenAI's fixed endpoint. The stream reader joins an event's `data`
+  lines at its blank line, keeping the LF after an empty first line, and
+  refuses a completed response whose listed output does not match the
+  finished items in index, type, identifier, and reply content. Sign-out
+  reports both token slots when the binding names another backend, and the
+  desktop's `credential_orphaned` sign-out error says whether OpenAI
+  confirmed the revocation. A sign-in refused after the exchange (key fetch,
+  ID-token, or account check) revokes the issued refresh token, best effort.
+  A refresh that lost the plan scope is `signin_required` rather than
+  `access_token_unavailable`, and a token answer's tokens are zeroed even
+  when a later check refuses it. A ChatGPT connection that is not signed in
+  is refused as `not_signed_in`, whose message names `provider-signin`,
+  instead of the API-key `not_bound`. A failed random source is
+  `random_unavailable` rather than `transport`, and the settings window hides
+  **Remove** on a signed-in ChatGPT row, which core refuses to remove. A
+  cancel that arrives after the token exchange but before recording revokes
+  the new tokens and records nothing, and the plan model list skips hidden
+  and non-object entries and caps only the listed ones. The host identifier
+  is made from the same random source, so its failure is also
+  `random_unavailable` rather than a panic, and `signin_not_recorded` is
+  reserved for a token item that could not be deleted; a settings change
+  during the browser step is the `control` conflict or refusal. The desktop
+  checks a new connection name before its sign-in confirmation, and a
+  sign-out shows the wait bar with **Cancel sign-out**, which ends the wait
+  for the session lock or for OpenAI. A token answer is read straight into
+  zeroing storage, so a refused answer leaves no unzeroed copy of a token
+  without an escape (`serde_json` unescapes through a scratch buffer that is
+  not zeroed, and that OpenAI's tokens need no escaping is an assumption,
+  not a check);
+  `signin_binding_uncertain` also says to disconnect OMGCode in ChatGPT
+  settings when the item is deleted by hand; and removing a signed-in
+  ChatGPT profile's credential with a stale revision is the conflict. A
+  sign-out that finds the profile signed in to a new session is a conflict
+  rather than a success, and every other sign-out failure after the
+  revocation that records nothing says whether OpenAI revoked the refresh
+  token, that the sign-out was not recorded, and to sign out again. A
+  sign-out whose journal write may have been recorded still deletes the
+  token slots and is `signout_uncertain`, which claims neither outcome and
+  names any slot that remains in its message rather than in
+  `orphaned_credential_ids` or `credential_orphaned`. A
+  sign-out first
+  writes a marker under the session lock, which every token request checks
+  under that lock, so a running session gives no token and writes no
+  record after a sign-out even when a slot could not be deleted; a
+  ChatGPT profile recorded with `https://api.openai.com/v1/` (one trailing
+  `/`, which recording accepts) can sign in, and its connection reports that
+  recorded spelling so a desktop session using it is not stale. A marker
+  that cannot be written is removed again; a sign-out that cannot take the
+  session lock is `session_lock_unavailable` or a cancelled sign-out, not a
+  sign-in or token-store error. The key set is read
+  within 1 MiB instead of the
+  64 KiB error-body bound; a poisoned sign-in lock is `internal`; and a
+  recorded desktop sign-in or sign-out whose settings cannot be read again
+  is `signed_in_unread` or `signed_out_unread`, not a failed change. The
+  docs state that a plan request can take the whole default turn timeout.
+  The settings window's sign-in bar covers the confirmation as well as the
+  browser step. A cancel sent during the desktop
+  confirmation is kept; sign-out checks the revision and session again after
+  taking the session lock; a sign-in whose binding write is uncertain keeps its tokens unrevoked
+  and reports `signin_binding_uncertain` with advice that names
+  `provider-signout`.
 - Version 0.59.0 adds hosted model providers and an OpenAI-compatible
   connection (ADR-0092). New provider kinds `google`, `meta`, `moonshot`,
   `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
@@ -15,7 +112,8 @@ Changes are recorded here before a release version is assigned.
   profile records an `https://` base URL the operator types, refused rather
   than rewritten when it is not in the form the URL parser writes. A hosted
   connection runs only with a stored API key (`openai` and `anthropic` still
-  record `subscription` so older journals replay, and no adapter reads one)
+  record `subscription` so older journals replay, and no adapter read one
+  until 0.60.0 added ChatGPT sign-in for `openai`)
   and is used through the existing Chat
   Completions client, which sends `max_completion_tokens` to OpenAI, Moonshot,
   Thinking Machines Lab, MiniMax, and xAI and `max_tokens` elsewhere, appends request paths to the

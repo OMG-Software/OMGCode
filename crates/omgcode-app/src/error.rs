@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use omgcode_core::provider::ProviderError;
+use omgcode_core::provider::{ProviderError, ResponseFailure};
 use omgcode_core::session::SessionError;
 
 /// The stable failure category behind an [`AppError`] code.
@@ -105,9 +105,15 @@ impl AppError {
         Self::new(ErrorKind::Session, error.to_string())
     }
 
-    /// Map a provider failure to the `provider` category.
+    /// Map a provider failure to the `provider` category. A ChatGPT plan
+    /// failure keeps a specific stable code, such as `signin_required` or
+    /// `usage_limit_exceeded`, so a front end can say what to do (ADR-0093).
     pub fn provider(error: ProviderError) -> Self {
-        Self::new(ErrorKind::Provider, error.to_string())
+        Self {
+            kind: ErrorKind::Provider,
+            detail: plan_failure_code(error),
+            message: error.to_string(),
+        }
     }
 
     /// The failure category.
@@ -122,6 +128,14 @@ impl AppError {
             Some(code) => code,
             None => self.kind.code(),
         }
+    }
+
+    /// Add `note` to the message in brackets, keeping the category and code.
+    /// `note` must not contain secrets or untrusted text.
+    #[must_use]
+    pub fn with_note(mut self, note: &str) -> Self {
+        self.message = format!("{} ({note})", self.message);
+        self
     }
 
     /// The human-readable message.
@@ -142,6 +156,21 @@ impl fmt::Display for AppError {
 }
 
 impl std::error::Error for AppError {}
+
+/// The specific code of a ChatGPT plan failure, which the runtime's model
+/// error categories do not carry (ADR-0093). Other failures have none.
+const fn plan_failure_code(error: ProviderError) -> Option<&'static str> {
+    match error {
+        ProviderError::SignInRequired => Some("signin_required"),
+        ProviderError::AccessTokenUnavailable => Some("access_token_unavailable"),
+        ProviderError::ResponseFailed(ResponseFailure::Failed) => Some("plan_request_failed"),
+        ProviderError::ResponseFailed(ResponseFailure::Incomplete) => {
+            Some("plan_response_incomplete")
+        }
+        ProviderError::ResponseFailed(failure) => Some(failure.as_str()),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -182,6 +211,25 @@ mod tests {
         let provider = AppError::provider(ProviderError::Transport);
         assert_eq!(provider.code(), "provider");
         assert_eq!(provider.message(), "local model transport failed");
+        let plan = AppError::provider(ProviderError::SignInRequired);
+        assert_eq!(plan.kind(), ErrorKind::Provider);
+        assert_eq!(plan.code(), "signin_required");
+        assert!(plan.message().contains("sign in again"));
+        for (failure, code) in [
+            (ResponseFailure::UsageLimitExceeded, "usage_limit_exceeded"),
+            (ResponseFailure::NotAuthorized, "not_authorized"),
+            (ResponseFailure::Failed, "plan_request_failed"),
+            (ResponseFailure::Incomplete, "plan_response_incomplete"),
+        ] {
+            assert_eq!(
+                AppError::provider(ProviderError::ResponseFailed(failure)).code(),
+                code
+            );
+        }
+        assert_eq!(
+            AppError::provider(ProviderError::AccessTokenUnavailable).code(),
+            "access_token_unavailable"
+        );
         let session = AppError::session(SessionError::LimitReached);
         assert_eq!(session.code(), "session");
         assert_eq!(session.message(), SessionError::LimitReached.to_string());

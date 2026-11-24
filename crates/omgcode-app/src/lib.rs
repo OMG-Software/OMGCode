@@ -25,6 +25,7 @@ mod error;
 mod paths;
 mod secrets;
 mod sessions;
+mod subscription;
 mod tool_mode;
 
 pub use chat::{
@@ -42,4 +43,8 @@ pub use error::{AppError, ErrorKind};
 pub use paths::data_root;
 pub use secrets::{StreamRedactor, read_lm_token, redact_known_secret};
 pub use sessions::create_session;
+pub use subscription::{
+    PlanSession, SignInOutcome, SignOutOutcome, list_connection_models, open_system_browser,
+    sign_in_with_chatgpt, sign_out_of_chatgpt,
+};
 pub use tool_mode::{MODEL_TOOLS_SUPPORTED, ToolMode, select, tool_replay_allowed};

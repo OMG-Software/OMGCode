@@ -499,6 +499,7 @@ impl Inner {
             connection: LocalConnection {
                 endpoint: resolved.endpoint.as_str().to_owned(),
                 token: resolved.token,
+                plan: resolved.plan,
             },
             kind: Some(resolved.kind),
         })

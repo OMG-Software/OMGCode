@@ -20,10 +20,14 @@ import {
   REPAIR_FOLDER_LABEL,
   RETRY_AFTER_REPAIR,
   type SettingsApp,
+  SIGN_IN_WAITING,
+  SIGN_OUT_UNCONFIRMED,
+  SIGN_OUT_WAITING,
   startSettings,
   WORKSPACES_HELP,
   WRITE_TOOL_LABELS,
 } from "../src/settings/app";
+import { CHATGPT_NOTICE, NO_ENDPOINT_NOTE } from "../src/settings/model_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -73,6 +77,7 @@ function lms(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView 
     credential_bound: true,
     selectable: true,
     active: false,
+    account_label: null,
     ...overrides,
   };
 }
@@ -86,6 +91,7 @@ function ollama(overrides: Partial<ProviderProfileView> = {}): ProviderProfileVi
     credential_bound: false,
     selectable: true,
     active: false,
+    account_label: null,
     ...overrides,
   };
 }
@@ -316,6 +322,7 @@ describe("settings window", () => {
       "New connection name",
       "New connection endpoint",
       "API key",
+      "ChatGPT connection name",
       "new-toolchain-name",
       "new-toolchain-roots",
       "new-toolchain-paths",
@@ -901,6 +908,7 @@ describe("settings window", () => {
         credential_bound: true,
         selectable: true,
         active: false,
+        account_label: null,
         ...overrides,
       };
     }
@@ -1471,5 +1479,183 @@ describe("settings window", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await settle();
     expect(ipc.callsTo("settings_overview")).toHaveLength(2);
+  });
+});
+
+describe("ChatGPT sign-in (ADR-0093)", () => {
+  function chatgpt(overrides: Partial<ProviderProfileView> = {}): ProviderProfileView {
+    return {
+      name: "chatgpt",
+      kind: "openai",
+      auth: "subscription",
+      endpoint: "https://api.openai.com/v1",
+      credential_bound: true,
+      selectable: true,
+      active: false,
+      account_label: "person@example.test",
+      ...overrides,
+    };
+  }
+
+  function signInBar(): HTMLElement {
+    return root.querySelector(".sign-in-wait") as HTMLElement;
+  }
+
+  it("signs a new connection in by name and keeps Cancel usable during the wait", async () => {
+    let finish: (value: SettingsOverview) => void = () => undefined;
+    await start(() => choosable(), {
+      settings_sign_in_chatgpt: () =>
+        new Promise<SettingsOverview>((resolve) => {
+          finish = resolve;
+        }),
+      settings_cancel_chatgpt_sign_in: () => null,
+    });
+    go("Model");
+    expect(signInBar().hidden).toBe(true);
+    field("ChatGPT connection name").value = " plan ";
+    buttonByText(root, "Sign in with ChatGPT").click();
+    await settle();
+    expect(ipc.callsTo("settings_sign_in_chatgpt")[0]?.args).toEqual({
+      revision: 7,
+      name: "plan",
+    });
+    // The wait shows its bar outside the disabled body, so Cancel still works.
+    expect(signInBar().hidden).toBe(false);
+    expect(signInBar().textContent).toContain(SIGN_IN_WAITING);
+    expect(body().disabled).toBe(true);
+    const cancel = buttonByText(signInBar(), "Cancel sign-in");
+    expect(cancel.disabled).toBe(false);
+    expect(cancel.closest("fieldset")).toBeNull();
+    cancel.click();
+    await settle();
+    expect(ipc.callsTo("settings_cancel_chatgpt_sign_in")[0]?.args).toEqual({});
+
+    finish(
+      choosable({
+        revision: 9,
+        provider_profiles: [lms(), chatgpt({ name: "plan" })],
+      }),
+    );
+    await settle();
+    expect(signInBar().hidden).toBe(true);
+    expect(body().disabled).toBe(false);
+    const row = rowOf("plan");
+    expect(row.textContent).toContain("Signed in with ChatGPT as person@example.test");
+    expect(row.textContent).toContain("ChatGPT plan");
+    expect(row.textContent).not.toContain("Hosted");
+    // A plan connection has no API key to set.
+    expect(row.querySelector("input[type=password]")).toBeNull();
+    expect(buttonByText(row, "Sign out").disabled).toBe(false);
+  });
+
+  it("hides the wait and shows the error when the sign-in fails", async () => {
+    await start(() => choosable(), {
+      settings_sign_in_chatgpt: () =>
+        rejection(
+          "credential",
+          "plan_usage_not_granted: the ChatGPT sign-in did not grant use of the plan",
+        ),
+    });
+    go("Model");
+    buttonByText(root, "Sign in with ChatGPT").click();
+    await settle();
+    expect(signInBar().hidden).toBe(true);
+    expect(root.querySelector(".change-error")?.textContent).toContain("plan_usage_not_granted");
+  });
+
+  it("offers no sign-in for a ChatGPT profile recorded without OpenAI's endpoint", async () => {
+    await start(() =>
+      choosable({
+        provider_profiles: [
+          chatgpt({
+            name: "bare",
+            endpoint: null,
+            credential_bound: false,
+            selectable: false,
+            account_label: null,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const row = rowOf("bare");
+    expect(row.textContent).toContain(NO_ENDPOINT_NOTE);
+    expect(row.textContent).not.toContain(CHATGPT_NOTICE);
+    const buttons = Array.from(row.querySelectorAll("button"), (b) => b.textContent);
+    expect(buttons).toEqual(["Remove"]);
+  });
+
+  it("offers sign-in on a signed-out row and sign-out on a signed-in one", async () => {
+    const both = (): SettingsOverview =>
+      choosable({
+        provider_profiles: [
+          chatgpt({
+            name: "out",
+            credential_bound: false,
+            selectable: false,
+            account_label: null,
+          }),
+          chatgpt(),
+        ],
+      });
+    await start(both, {
+      settings_sign_in_chatgpt: both,
+      settings_sign_out_chatgpt: () => ({
+        overview: choosable({ revision: 8 }),
+        revoked: false,
+      }),
+    });
+    go("Model");
+    expect(rowOf("out").textContent).toContain("Not signed in");
+    // Rust refuses to remove a signed-in connection, so only a signed-out one offers Remove.
+    const labels = (name: string) =>
+      Array.from(rowOf(name).querySelectorAll("button"), (b) => b.textContent);
+    expect(labels("out")).toEqual(["Sign in with ChatGPT", "Remove"]);
+    expect(labels("chatgpt")).toEqual(["Sign out"]);
+    buttonByText(rowOf("out"), "Sign in with ChatGPT").click();
+    await settle();
+    expect(ipc.callsTo("settings_sign_in_chatgpt")[0]?.args).toEqual({
+      revision: 7,
+      name: "out",
+    });
+
+    buttonByText(rowOf("chatgpt"), "Sign out").click();
+    await settle();
+    expect(ipc.callsTo("settings_sign_out_chatgpt")[0]?.args).toEqual({
+      revision: 7,
+      name: "chatgpt",
+    });
+    // OpenAI did not confirm the revocation, so the window says so.
+    expect(root.querySelector(".notice[role=status]:not(.sign-in-wait)")?.textContent).toBe(
+      SIGN_OUT_UNCONFIRMED,
+    );
+  });
+
+  it("keeps a Cancel sign-out button usable while a sign-out waits", async () => {
+    let finish: (value: { overview: SettingsOverview; revoked: boolean }) => void = () => undefined;
+    await start(() => choosable({ provider_profiles: [lms(), chatgpt()] }), {
+      settings_sign_out_chatgpt: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      settings_cancel_chatgpt_sign_in: () => null,
+    });
+    go("Model");
+    buttonByText(rowOf("chatgpt"), "Sign out").click();
+    await settle();
+    expect(signInBar().hidden).toBe(false);
+    expect(signInBar().textContent).toContain(SIGN_OUT_WAITING);
+    expect(signInBar().textContent).not.toContain(SIGN_IN_WAITING);
+    expect(body().disabled).toBe(true);
+    const cancel = buttonByText(signInBar(), "Cancel sign-out");
+    expect(cancel.disabled).toBe(false);
+    cancel.click();
+    await settle();
+    expect(ipc.callsTo("settings_cancel_chatgpt_sign_in")[0]?.args).toEqual({});
+
+    finish({ overview: choosable({ revision: 8 }), revoked: true });
+    await settle();
+    expect(signInBar().hidden).toBe(true);
+    expect(body().disabled).toBe(false);
   });
 });

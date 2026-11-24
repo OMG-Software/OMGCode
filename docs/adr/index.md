@@ -107,3 +107,4 @@ meaningful alternative does not need an ADR.
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Compact automatically at 400K by default in the desktop](0091-compact-automatically-at-400k-by-default-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0092: Add hosted providers and an OpenAI-compatible connection](0092-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |
+| [0093: Sign in with ChatGPT and use the plan through the Responses API](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md) | Accepted | 2026-11-24 |

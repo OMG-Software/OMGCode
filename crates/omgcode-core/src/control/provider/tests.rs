@@ -77,18 +77,39 @@ fn invalid_provider_profiles_are_refused_without_a_record() {
         ("openai", "password"),
     ];
     for (kind, auth) in cases {
+        // The check refuses exactly what the add refuses, and records nothing.
+        let checked = store.check_provider_profile(&declaration("bad", kind, auth));
+        assert!(
+            matches!(checked, Err(ControlError::ProviderRefused(_))),
+            "{kind}/{auth}: {checked:?}"
+        );
         let result = store.add_provider_profile(&declaration("bad", kind, auth), 0);
         assert!(
             matches!(result, Err(ControlError::ProviderRefused(_))),
             "{kind}/{auth}: {result:?}"
         );
     }
+    for name in ["", "-x", "a b"] {
+        assert!(
+            store
+                .check_provider_profile(&declaration(name, "openai", "api_key"))
+                .is_err(),
+            "{name:?}"
+        );
+    }
+    store
+        .check_provider_profile(&declaration("work", "openai", "api_key"))
+        .expect("a valid declaration");
     assert_eq!(store.revision(), 0);
     assert!(store.provider_profiles().is_empty());
 
     store
         .add_provider_profile(&declaration("work", "openai", "api_key"), 0)
         .expect("profile");
+    assert!(matches!(
+        store.check_provider_profile(&declaration("WORK", "anthropic", "api_key")),
+        Err(ControlError::ProviderRefused(_))
+    ));
     let result = store.add_provider_profile(&declaration("work", "anthropic", "api_key"), 1);
     assert!(matches!(result, Err(ControlError::ProviderRefused(_))));
     drop(store);

@@ -69,8 +69,30 @@ const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
   SETTINGS_CHANGE_RUNNING_CODE,
 ]);
 
-/** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
-const ACTIONS: Actions = {
+/**
+ * Shown for the whole ChatGPT sign-in (ADR-0093): first the native confirmation, then the browser
+ * step. Its Cancel works in both, because Rust registers the cancel before the confirmation.
+ */
+export const SIGN_IN_WAITING =
+  "Confirm the sign-in, then finish it in your browser. It ends after five minutes.";
+
+/**
+ * Shown while a ChatGPT sign-out runs. Its Cancel ends the wait for the session lock, or, once
+ * OpenAI has been asked, the wait for OpenAI; the sign-out is then still recorded here.
+ */
+export const SIGN_OUT_WAITING =
+  "Confirm the sign-out. OMGCode then asks OpenAI to end the session, which can take a minute.";
+
+/** Shown when OpenAI did not confirm a sign-out's revocation. */
+export const SIGN_OUT_UNCONFIRMED =
+  "Signed out here, but OpenAI did not confirm the revocation. You can also disconnect OMGCode in your ChatGPT settings.";
+
+/**
+ * What each control asks the core to do. Folders are chosen in a system dialog Rust opens. The
+ * ChatGPT sign-in and sign-out drive the window's wait bar and notice, so `startSettings` defines
+ * them beside those elements and they have no entry here.
+ */
+const ACTIONS: Omit<Actions, "signInChatGpt" | "signOutChatGpt"> = {
   chooseRoot: () => (revision) => settingsApi.chooseRoot(revision),
   registerWorkspace: () => (revision) => settingsApi.registerWorkspace(revision),
   setPermissions: (workspaceId, permissions) => (revision) =>
@@ -133,6 +155,47 @@ export function startSettings(root: HTMLElement): SettingsApp {
   readProblem.hidden = true;
   const notice = el("p", { class: "notice", attrs: { role: "status" } });
   notice.hidden = true;
+  // Shown while Rust runs a ChatGPT sign-in or sign-out (ADR-0093). It sits outside the disabled
+  // body, so its Cancel button stays usable while the change runs. One Rust command cancels
+  // whichever is running.
+  const waitText = el("span");
+  const cancelWait = button("", () => {
+    void settingsApi.cancelChatGptSignIn().catch(() => undefined);
+  });
+  const signInBar = el(
+    "div",
+    { class: "notice sign-in-wait", attrs: { role: "status" } },
+    waitText,
+    cancelWait,
+  );
+  signInBar.hidden = true;
+  async function whileWaiting<T>(text: string, cancelLabel: string, run: () => Promise<T>) {
+    replaceChildren(waitText, text);
+    replaceChildren(cancelWait, cancelLabel);
+    signInBar.hidden = false;
+    try {
+      return await run();
+    } finally {
+      signInBar.hidden = true;
+    }
+  }
+  const actions: Actions = {
+    ...ACTIONS,
+    signInChatGpt: (name) => (revision) =>
+      whileWaiting(SIGN_IN_WAITING, "Cancel sign-in", () =>
+        settingsApi.signInChatGpt(revision, name),
+      ),
+    signOutChatGpt: (name) => async (revision) => {
+      const result = await whileWaiting(SIGN_OUT_WAITING, "Cancel sign-out", () =>
+        settingsApi.signOutChatGpt(revision, name),
+      );
+      if (!result.revoked) {
+        replaceChildren(notice, SIGN_OUT_UNCONFIRMED);
+        notice.hidden = false;
+      }
+      return result.overview;
+    },
+  };
   // A disabled fieldset disables every control inside it without touching their own state.
   const body = el("fieldset", { class: "settings-body" });
   // The one scroll container for every section.
@@ -147,6 +210,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     problem,
     readProblem,
     notice,
+    signInBar,
     body,
   );
   const nav = createNav({
@@ -207,7 +271,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
       overview: current,
       view,
       submit,
-      actions: ACTIONS,
+      actions,
       rerender: draw,
     };
     const scoped = scopedWorkspace(current) !== null;

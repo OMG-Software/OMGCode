@@ -340,6 +340,31 @@ impl DesktopError {
         )
     }
 
+    /// A ChatGPT sign-in was recorded, but the settings could not be read
+    /// again for the window.
+    pub(crate) fn signed_in_unread() -> Self {
+        Self::new(
+            "signed_in_unread",
+            "The connection is signed in with ChatGPT, but OMGCode could not read its settings again. Close and reopen this window.",
+        )
+    }
+
+    /// A ChatGPT sign-out was recorded, but the settings could not be read
+    /// again for the window. `revoked` says whether OpenAI confirmed it.
+    pub(crate) fn signed_out_unread(revoked: bool) -> Self {
+        let remote = if revoked {
+            "OpenAI confirmed the revocation."
+        } else {
+            "OpenAI did not confirm the revocation; you can also disconnect OMGCode in your ChatGPT settings."
+        };
+        Self::new(
+            "signed_out_unread",
+            format!(
+                "The connection is signed out of ChatGPT here, but OMGCode could not read its settings again. Close and reopen this window. {remote}"
+            ),
+        )
+    }
+
     /// The repair removed the grants, but reading the settings afterwards
     /// failed. The folder is fixed; only the window's view is stale.
     pub(crate) fn data_folder_repaired_unread() -> Self {
@@ -416,6 +441,32 @@ impl DesktopError {
         Self::new(
             "instructions_orphaned",
             "The workspace was removed, but its saved instructions file could not be deleted. No turn sends it. Delete the file from the application's workspace-instructions folder.",
+        )
+    }
+
+    /// A ChatGPT sign-out is recorded, but some token slots could not be
+    /// deleted. Each opaque identifier is named so none is lost; the tokens
+    /// themselves are never shown. `revoked` says whether OpenAI confirmed
+    /// the revocation, so an unconfirmed one still gets its advice.
+    pub(crate) fn signed_out_tokens_orphaned(
+        credential_ids: &[CredentialId],
+        revoked: bool,
+    ) -> Self {
+        let ids = credential_ids
+            .iter()
+            .map(CredentialId::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let revocation = if revoked {
+            "OpenAI confirmed the revocation."
+        } else {
+            "OpenAI did not confirm the revocation, so the session may still be live: you can also disconnect OMGCode in your ChatGPT settings."
+        };
+        Self::new(
+            "credential_orphaned",
+            format!(
+                "The sign-out is recorded, but these stored ChatGPT token items could not be deleted and may remain in the operating system's credential store with no connection naming them: {ids}. Delete them there. {revocation}"
+            ),
         )
     }
 
@@ -631,6 +682,29 @@ mod tests {
         assert!(!first.message().contains("replaced"), "{}", first.message());
     }
 
+    /// A ChatGPT sign-out that leaves both token slots names each one and
+    /// says the sign-out itself is recorded.
+    #[test]
+    fn a_sign_out_that_leaves_token_slots_names_every_one() {
+        let error = DesktopError::signed_out_tokens_orphaned(&[id(KEPT), id(REPLACED)], true);
+        assert_eq!(error.code(), "credential_orphaned");
+        assert!(error.message().contains(KEPT), "{}", error.message());
+        assert!(error.message().contains(REPLACED), "{}", error.message());
+        assert!(error.message().contains("sign-out is recorded"));
+        assert!(!error.message().contains("API key"), "{}", error.message());
+        assert!(error.message().contains("OpenAI confirmed the revocation"));
+        // An unconfirmed revocation keeps its advice on this path too.
+        let unconfirmed = DesktopError::signed_out_tokens_orphaned(&[id(KEPT)], false);
+        assert!(
+            unconfirmed
+                .message()
+                .contains("did not confirm the revocation"),
+            "{}",
+            unconfirmed.message()
+        );
+        assert!(unconfirmed.message().contains("ChatGPT settings"));
+    }
+
     /// A key replacement or a removal that leaves the old item names it and
     /// says the change itself took effect, because no profile names the item.
     #[test]
@@ -665,6 +739,21 @@ mod tests {
             assert_eq!(shown.code(), "credential_orphaned");
             assert!(shown.message().contains(KEPT), "{}", shown.message());
             assert!(!shown.message().contains("NATIVE-DETAIL"));
+        }
+    }
+
+    /// A recorded sign-in or sign-out whose settings could not be read again
+    /// says that the change took effect.
+    #[test]
+    fn a_recorded_chatgpt_change_is_not_reported_as_failed() {
+        let signed_in = DesktopError::signed_in_unread();
+        assert_eq!(signed_in.code(), "signed_in_unread");
+        assert!(signed_in.message().contains("is signed in"));
+        for (revoked, advice) in [(true, "confirmed"), (false, "ChatGPT settings")] {
+            let signed_out = DesktopError::signed_out_unread(revoked);
+            assert_eq!(signed_out.code(), "signed_out_unread");
+            assert!(signed_out.message().contains("is signed out"));
+            assert!(signed_out.message().contains(advice), "{revoked}");
         }
     }
 

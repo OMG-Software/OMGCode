@@ -21,11 +21,8 @@ use super::wire::{
     ChatState, ChatStatus, ModelChoice, PreferencesSource, SessionRequest,
 };
 use super::{DesktopService, Inner};
-use crate::{
-    AppError, ChatClients, ChatSettings, LmToken, LocalConnection, validate_skill_selection,
-};
+use crate::{ChatClients, ChatSettings, list_connection_models, validate_skill_selection};
 use omgcode_core::control::ProviderKind;
-use omgcode_core::provider::list_local_models;
 use omgcode_core::turn::{MAX_TOOL_CALLS, MAX_TURN_DEADLINE};
 
 /// Largest message accepted before core applies its own, smaller bound. It only
@@ -87,8 +84,11 @@ impl DesktopService {
     /// The connection is resolved for the session exactly as
     /// [`chat_send`](Self::chat_send) resolves it, its credential included, and the one request goes only to
     /// its validated endpoint, loopback or hosted. The list is untrusted provider text and
-    /// grants nothing; `chat_send` still validates the chosen model. The call
-    /// blocks for at most the core's ten-second deadline, so run it on a
+    /// grants nothing; `chat_send` still validates the chosen model. The list
+    /// request has the core's ten-second deadline. A signed-in ChatGPT
+    /// connection first gets its access token, which can wait up to 40
+    /// seconds for the session lock and then run a refresh of up to 30
+    /// seconds, so the call can block for about 80 seconds. Run it on a
     /// blocking task.
     ///
     /// # Errors
@@ -102,15 +102,13 @@ impl DesktopService {
         let inner = &self.inner;
         inner.resolve_path(request.session_id)?;
         let SessionConnection {
-            connection: LocalConnection { endpoint, token },
-            kind,
-            ..
+            connection, kind, ..
         } = inner.resolve_session(request.session_id)?;
-        let models = list_local_models(&endpoint, token.as_ref().map(LmToken::expose))
-            .map_err(|error| DesktopError::from_app(&AppError::provider(error)))?;
+        let models =
+            list_connection_models(&connection).map_err(|error| DesktopError::from_app(&error))?;
         Ok(ChatModels {
             session_id: request.session_id,
-            endpoint,
+            endpoint: connection.endpoint,
             kind: kind.map(ProviderKind::as_str),
             models: models
                 .into_iter()
@@ -262,16 +260,14 @@ impl DesktopService {
         // endpoint, which was compared with the request above. The active
         // connection must equal what the window sent, so a change made in
         // `settings` after the window read it is never used unseen.
-        let SessionConnection {
-            connection: LocalConnection { endpoint, token },
-            ..
-        } = inner.resolve_session(session_id)?;
-        if endpoint != turn_settings.endpoint {
+        let SessionConnection { connection, .. } = inner.resolve_session(session_id)?;
+        if connection.endpoint != turn_settings.endpoint {
             return Err(DesktopError::connection_changed());
         }
-        let settings = chat_settings(turn_settings, endpoint);
-        let clients = ChatClients::new(&settings, token.as_ref().map(LmToken::expose))
+        let settings = chat_settings(turn_settings, connection.endpoint.clone());
+        let clients = ChatClients::for_connection(&settings, &connection)
             .map_err(|error| DesktopError::from_app(&error))?;
+        let token = connection.token;
         let approval_wait = ApprovalWaitSlot::new();
         let job = TurnJob {
             session_id,

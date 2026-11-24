@@ -4,7 +4,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    ContainerGrantAccess, ControlError, ControlStore, PackageProfileDeclaration,
+    ContainerGrantAccess, ControlError, ControlStore, CredentialId, PackageProfileDeclaration,
     ProfileDeclaration, ProviderProfileDeclaration,
 };
 use omgcode_core::policy::{
@@ -176,6 +176,83 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
+    /// Sign an `openai` subscription profile in with ChatGPT (ADR-0093).
+    ///
+    /// Opens OpenAI's sign-in page in the system browser and prints its
+    /// address on standard error. It waits up to five minutes for the
+    /// browser to return to 127.0.0.1; Ctrl-C cancels. Tokens are kept only
+    /// in protected OS storage. A sign-in does not show that plan-backed
+    /// requests will be accepted.
+    ProviderSignin {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Revoke a ChatGPT sign-in once, record the sign-out, and delete its
+    /// stored tokens. A revocation OpenAI does not confirm is reported, and
+    /// the local sign-out still happens.
+    ProviderSignout {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+}
+
+/// Sign a profile in with ChatGPT. The settings store is not held while the
+/// browser step runs.
+fn provider_signin(data_root: &Path, name: &str, revision: u64) -> Result<(), CliError> {
+    let cancel = omgcode_core::turn::CancelToken::new();
+    let interrupts = crate::cancel_on_interrupt(&cancel)?;
+    let mut open = |address: &str| {
+        eprintln!("Sign in with ChatGPT in your browser. If it does not open, visit:\n{address}");
+        if omgcode_app::open_system_browser(address).is_err() {
+            eprintln!("The system browser could not be opened; open the address yourself.");
+        }
+        Ok(())
+    };
+    let result = omgcode_app::sign_in_with_chatgpt(data_root, name, revision, &mut open, &cancel);
+    crate::stop_interrupts(interrupts);
+    let outcome = result?;
+    print_json(&json!({
+        "provider_signin": {
+            "profile": outcome.profile,
+            "account": outcome.account_label,
+            "credential_id": outcome.credential_id,
+            "revision": outcome.revision,
+            "note": "Signed in. This does not show that plan-backed requests will be accepted.",
+        },
+    }))
+}
+
+/// Revoke and forget a ChatGPT sign-in.
+fn provider_signout(data_root: &Path, name: &str, revision: u64) -> Result<(), CliError> {
+    let cancel = omgcode_core::turn::CancelToken::new();
+    let interrupts = crate::cancel_on_interrupt(&cancel)?;
+    let result = omgcode_app::sign_out_of_chatgpt(data_root, name, revision, &cancel);
+    crate::stop_interrupts(interrupts);
+    let outcome = result?;
+    let mut output = json!({
+        "provider_signout": {
+            "profile": name,
+            "revoked": outcome.revoked,
+            "revision": outcome.revision,
+        },
+    });
+    if !outcome.revoked {
+        output["warning"] = json!(
+            "OpenAI did not confirm the revocation. The local sign-out is recorded; you can also disconnect OMGCode in your ChatGPT settings."
+        );
+    }
+    if !outcome.orphans.is_empty() {
+        output["orphaned_credential_ids"] = json!(
+            outcome
+                .orphans
+                .iter()
+                .map(CredentialId::as_str)
+                .collect::<Vec<_>>()
+        );
+    }
+    print_json(&output)
 }
 
 #[derive(Args)]
@@ -580,6 +657,12 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
             credential_cli::remove(&mut store, data_root, &name, revision)
+        }
+        WorkspaceCommand::ProviderSignin { name, revision } => {
+            provider_signin(data_root, &name, revision)
+        }
+        WorkspaceCommand::ProviderSignout { name, revision } => {
+            provider_signout(data_root, &name, revision)
         }
         WorkspaceCommand::ContainerRevoke { grant } => {
             let mut store = open_existing(data_root)?

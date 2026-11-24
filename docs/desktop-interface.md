@@ -262,7 +262,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 56 commands (24 in the `settings` window). No other command exists.
+The shell has three webview windows and 59 commands (27 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -313,6 +313,9 @@ their registered identifier, and approvals by identifier.
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0092) |
 | `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
+| `settings_sign_in_chatgpt` | settings | After a native confirmation, sign a connection in with ChatGPT, recording an `openai` subscription profile first when the name has none; Rust opens the browser and waits at most five minutes (ADR-0093) |
+| `settings_cancel_chatgpt_sign_in` | settings | End the running ChatGPT sign-in's or sign-out's wait; takes nothing and grants nothing |
+| `settings_sign_out_chatgpt` | settings | After a native confirmation, revoke a ChatGPT session once, record the sign-out, and delete its tokens; reports whether OpenAI confirmed the revocation |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
 | `settings_import_skill` | settings | Import a skill folder, chosen in a native dialog, through core as `omgcode skills add` does; the skill arrives disabled and no confirmation follows (ADR-0082) |
@@ -741,7 +744,10 @@ untouched controls take the returned values.
   (ADR-0092). Core refuses the whole list when it is not a `data` array of at
   most 2048 entries (512 before ADR-0092) with string ids, or when an id is empty, over
   256 bytes, repeated, or holds a control or bidirectional formatting
-  character. The deadline is ten seconds. The answer carries the session id,
+  character. The deadline is ten seconds. A signed-in ChatGPT connection
+  first gets its access token, which can wait up to 40 seconds for the
+  session lock and run a refresh of up to 30 seconds, so its list can take
+  about 80 seconds. The answer carries the session id,
   the endpoint it asked (display only), and the provider kind. **The list is
   keyed on the session and the request, never on endpoint text.** The
   composer keeps an answer only when it is for the session still shown and no
@@ -1531,6 +1537,62 @@ revision check and validation (ADR-0064, ADR-0071).
   reported as `credential_orphaned` with that item's identifier. A session that chose the removed profile
   refuses its next turn with `session_connection_stale` until the provider is
   chosen again.
+- **Signing in with ChatGPT** (ADR-0093). The **Model** section's **Sign in
+  with ChatGPT** disclosure takes a connection name (default `chatgpt`), and a
+  signed-out ChatGPT row offers the same button. `settings_sign_in_chatgpt`
+  takes the revision and the name. Rust refuses a stale revision, a profile
+  that is not an `openai` subscription profile, one already signed in, and a
+  new name the settings store would not record (for example a blank one),
+  then asks "Open OpenAI's sign-in page in your browser to connect `<name>`
+  to your ChatGPT plan?", which names what goes to OpenAI and says that a
+  completed sign-in does not show the plan will accept OMGCode's requests.
+  After Yes a new name is recorded as an `openai` subscription profile with
+  OpenAI's endpoint, and Rust opens the system browser itself: the webview
+  never receives the authorization address, the callback, or a token. From
+  the confirmation to the end of the browser step, the window shows a bar
+  reading "Confirm the sign-in, then finish it in your browser." with
+  **Cancel sign-in** outside the disabled body; it calls
+  `settings_cancel_chatgpt_sign_in`, which only sets the sign-in's cancel
+  token, so a cancel sent while the confirmation is open is kept. A cancel
+  that arrives after the browser step but before the tokens are recorded
+  revokes them (best effort) and returns `cancelled`; once the one local
+  recording write starts, the sign-in completes. A failed
+  sign-in shows its stable code, such
+  as `plan_usage_not_granted`, and stores no token, except in two cases. When
+  the write that binds the new tokens has an uncertain result, the tokens are
+  kept and not revoked, and the error (`signin_binding_uncertain`) names their
+  identifier and says to check it with `provider-profile-show`; if the
+  profile does not name it, the operator deletes the item and disconnects
+  OMGCode in ChatGPT's settings. When the
+  binding certainly failed but the new token item could not be deleted, the
+  session is revoked (best effort) and the error (`signin_not_recorded`) names
+  the item's identifier; the item may remain in the operating system's
+  credential store, and the operator deletes that named item there. A
+  settings change during the browser step that makes the recording stale or
+  refused stores nothing and returns the `control` conflict or refusal; the
+  operator reads the settings again and signs in again. A sign-in or
+  sign-out that was recorded but whose settings could not be read again
+  for the window is `signed_in_unread` or `signed_out_unread`, which says
+  the change took effect and to reopen the window. A signed-in
+  row reads
+  "Signed in with ChatGPT as `<email>`", carries a **ChatGPT plan** chip and
+  no API key field, and offers **Sign out**, which asks "Sign `<name>` out of
+  ChatGPT?" and calls `settings_sign_out_chatgpt`. From the confirmation to
+  the end of the revocation the same bar reads "Confirm the sign-out. OMGCode
+  then asks OpenAI to end the session, which can take a minute." with
+  **Cancel sign-out**, which calls the same cancel command. A cancel before
+  the sign-out holds the session lock returns `cancelled` and changes
+  nothing; a later cancel stops the wait for OpenAI, and the sign-out is
+  still recorded here as unconfirmed. When OpenAI did not
+  confirm the revocation the window says so and points to ChatGPT's
+  settings. A token slot that could not be deleted makes a recorded
+  sign-out `credential_orphaned`, naming each slot's identifier and saying
+  whether OpenAI confirmed the revocation; a sign-out whose record is
+  uncertain is a `credential` error whose `signout_uncertain` message names
+  them instead. A signed-in connection cannot be removed. A ChatGPT profile
+  recorded without OpenAI's endpoint shows the no-endpoint note and offers no
+  sign-in, because core would refuse it. No real sign-in was
+  made from the shell, and the browser launch is not driven by a test.
 - **Ollama context length.** OMGCode cannot set Ollama's context length over
   this API. Set it in Ollama, for example with `OLLAMA_CONTEXT_LENGTH`, and
   give the composer the same context size.

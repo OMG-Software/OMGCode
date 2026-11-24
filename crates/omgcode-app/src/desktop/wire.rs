@@ -1044,6 +1044,31 @@ pub struct ProviderProfileView {
     pub selectable: bool,
     /// Whether it is the recorded active connection.
     pub active: bool,
+    /// For a ChatGPT connection that has signed in, the account's email as
+    /// its ID token gave it, for display only (ADR-0093).
+    pub account_label: Option<String>,
+}
+
+/// Arguments of `settings_sign_in_chatgpt` and `settings_sign_out_chatgpt`
+/// (ADR-0093).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChatGptRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// The connection's name. Sign-in records an `openai` subscription
+    /// profile with this name when none exists.
+    pub name: String,
+}
+
+/// The result of `settings_sign_out_chatgpt`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChatGptSignOutResult {
+    /// The settings after the sign-out.
+    pub overview: SettingsOverview,
+    /// Whether OpenAI confirmed the revocation. The local sign-out is
+    /// recorded either way.
+    pub revoked: bool,
 }
 
 /// Where a session's effective connection comes from (ADR-0071).

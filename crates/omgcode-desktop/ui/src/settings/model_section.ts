@@ -158,11 +158,31 @@ function setKeyDisclosure(
   );
 }
 
+/** Whether a profile is a ChatGPT plan connection: `openai` with `subscription` (ADR-0093). */
+export function isChatGpt(profile: ProviderProfileView): boolean {
+  return profile.kind === "openai" && profile.auth === "subscription";
+}
+
 function credentialLine(profile: ProviderProfileView): string {
+  if (isChatGpt(profile)) {
+    if (!profile.credential_bound) {
+      return "Not signed in";
+    }
+    return profile.account_label === null
+      ? "Signed in with ChatGPT"
+      : `Signed in with ChatGPT as ${profile.account_label}`;
+  }
   if (!profile.credential_bound) {
     return "No credential";
   }
   return isHostedKind(profile.kind) ? "API key stored" : "Credential stored";
+}
+
+/** The sign-in or sign-out button of a ChatGPT connection. Rust confirms both natively. */
+function chatGptButton(profile: ProviderProfileView, { submit, actions }: SectionContext) {
+  return profile.credential_bound
+    ? button("Sign out", () => submit(actions.signOutChatGpt(profile.name)))
+    : button("Sign in with ChatGPT", () => submit(actions.signInChatGpt(profile.name)));
 }
 
 /** The line under a hosted profile: where prompts go, or why it cannot be used at all. */
@@ -182,7 +202,8 @@ function hostedRowNote(profile: ProviderProfileView): string {
 
 function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElement {
   const { submit, actions } = ctx;
-  const hosted = isHostedKind(profile.kind);
+  const plan = isChatGpt(profile);
+  const hosted = isHostedKind(profile.kind) && !plan;
   // Removing a profile with a stored key deletes the key too; Rust asks a system Yes/No first.
   const remove = button("Remove", () => submit(actions.removeConnection(profile.name)));
   return el(
@@ -197,6 +218,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         el("span", { class: "row-title", text: profile.name }),
         profile.active ? el("span", { class: "chip chip-active", text: "Active" }) : null,
         hosted ? el("span", { class: "chip", text: "Hosted" }) : null,
+        plan ? el("span", { class: "chip", text: "ChatGPT plan" }) : null,
       ),
       el("div", {
         class: "row-meta",
@@ -209,8 +231,56 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
       hosted && profile.auth === "api_key" && profile.endpoint !== null
         ? setKeyDisclosure(profile, ctx)
         : null,
+      plan
+        ? el("div", {
+            class: "row-meta",
+            text: profile.endpoint === null ? NO_ENDPOINT_NOTE : CHATGPT_NOTICE,
+          })
+        : null,
     ),
-    remove,
+    // A ChatGPT profile recorded without OpenAI's endpoint can never sign in (ADR-0093).
+    plan && profile.endpoint !== null ? chatGptButton(profile, ctx) : null,
+    // Rust refuses to remove a signed-in ChatGPT connection, so it offers Sign out first.
+    plan && profile.credential_bound ? null : remove,
+  );
+}
+
+/** What a ChatGPT connection sends where, and what a sign-in does not show. */
+export const CHATGPT_NOTICE =
+  "Chat turns go to OpenAI under your ChatGPT plan. A sign-in does not show that the plan will accept OMGCode's requests.";
+
+/**
+ * Signs a new ChatGPT connection in (ADR-0093). Rust records an `openai` subscription profile
+ * with the name, asks a system confirmation, and opens OpenAI's sign-in page in the browser; this
+ * window never sees the address or a token.
+ */
+function chatGptSignIn({ submit, actions }: SectionContext): HTMLElement {
+  const name = el("input", {
+    attrs: {
+      id: "chatgpt-connection-name",
+      type: "text",
+      "aria-label": "ChatGPT connection name",
+      value: "chatgpt",
+    },
+  });
+  const signIn = button("Sign in with ChatGPT", () =>
+    submit(actions.signInChatGpt(name.value.trim())),
+  );
+  return el(
+    "details",
+    { class: "disclosure" },
+    el("summary", { text: "Sign in with ChatGPT" }),
+    el("p", {
+      class: "muted",
+      text: "Uses your ChatGPT plan instead of an API key. OMGCode asks you to confirm, then opens OpenAI's sign-in page in your browser. The tokens stay in this computer's protected credential store.",
+    }),
+    el("p", { class: "muted", text: CHATGPT_NOTICE }),
+    el(
+      "div",
+      { class: "form" },
+      labelled("Name", "chatgpt-connection-name", name),
+      el("div", { class: "row-actions" }, signIn),
+    ),
   );
 }
 
@@ -406,5 +476,6 @@ export function renderModel(ctx: SectionContext): HTMLElement[] {
     chatDefaultsBlock(ctx),
     connectionList(ctx),
     addConnection(ctx),
+    chatGptSignIn(ctx),
   ];
 }

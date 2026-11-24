@@ -39,6 +39,10 @@
 //!    call `load_provider_credential`;
 //! 5. close both stores before returning, so none is held while a model request
 //!    is in flight. Nothing is cached: each turn resolves again.
+//!
+//! A signed-in ChatGPT profile (`openai` with `subscription`, ADR-0093) skips
+//! steps 2 to 4: it resolves to its fixed endpoint and a [`PlanSession`] that
+//! reads and refreshes its tokens for each request, and never to a token.
 
 use std::fmt;
 use std::path::Path;
@@ -52,6 +56,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::read_lm_token;
+use crate::subscription::{PlanSession, plan_session};
 
 /// Where a desktop process gets the optional local server token. The launch
 /// endpoint is held beside this value; it is the endpoint itself for
@@ -168,6 +173,9 @@ pub struct LocalConnection {
     pub endpoint: String,
     /// The optional server token, zeroed on drop.
     pub token: Option<LmToken>,
+    /// The token source of a signed-in ChatGPT profile (ADR-0093). It is
+    /// set only with no `token`.
+    pub plan: Option<PlanSession>,
 }
 
 /// The profile kind the model adapter reads `name` as. Every kind is served
@@ -215,6 +223,15 @@ pub fn resolve_local_endpoint(
         }
     };
     let kind = local_adapter(&control, &name);
+    if is_plan_profile(&control, &name) {
+        let connection = control
+            .provider_subscription(&name)
+            .map_err(|error| credential_error(format!("{}: {error}", error.code())))?;
+        return Ok(LocalEndpoint {
+            endpoint: connection.endpoint,
+            profile: Some((name, kind)),
+        });
+    }
     let connection = control
         .provider_credential_binding(&name, kind)
         .map_err(|error| credential_error(format!("{}: {error}", error.code())))?;
@@ -301,6 +318,7 @@ fn environment_connection(endpoint: &str) -> Result<LocalConnection, AppError> {
     Ok(LocalConnection {
         endpoint: endpoint.to_owned(),
         token: read_lm_token()?.map(LmToken::new),
+        plan: None,
     })
 }
 
@@ -316,10 +334,13 @@ pub struct ProfileConnection {
     /// The recorded endpoint, validated again by the shared rule.
     pub endpoint: ModelEndpoint,
     /// The bound credential, or `None` for a `none` profile. It is present
-    /// for a hosted `api_key` profile with a bound credential. An `openai` or
-    /// `anthropic` profile may record `subscription`, which carries no token
-    /// and is refused before a credential is read.
+    /// for a hosted `api_key` profile with a bound credential. A signed-in
+    /// `openai` `subscription` profile carries no token here and uses `plan`
+    /// instead; an `anthropic` `subscription` profile is refused before a
+    /// credential is read.
     pub token: Option<LmToken>,
+    /// The token source of a signed-in ChatGPT profile (ADR-0093).
+    pub plan: Option<PlanSession>,
 }
 
 /// Resolve the named profile for one turn: its kind, validated endpoint, and
@@ -346,6 +367,7 @@ pub fn resolve_profile_connection(
         kind,
         endpoint,
         token: connection.token,
+        plan: connection.plan,
     })
 }
 
@@ -415,12 +437,37 @@ fn profile_connection(
     data_root: &Path,
     name: &str,
 ) -> Result<LocalConnection, AppError> {
+    if is_plan_profile(&control, name) {
+        let (endpoint, plan) = plan_session(&control, data_root, name)?;
+        return Ok(LocalConnection {
+            endpoint,
+            token: None,
+            plan: Some(plan),
+        });
+    }
     let (endpoint, secret) = load_profile_connection(control, data_root, name)?;
     let token = match secret {
         Some(secret) => Some(token_from_secret(&secret)?),
         None => None,
     };
-    Ok(LocalConnection { endpoint, token })
+    Ok(LocalConnection {
+        endpoint,
+        token,
+        plan: None,
+    })
+}
+
+/// Whether the named profile is an `openai` subscription profile, which signs
+/// in with ChatGPT rather than holding a stored key (ADR-0093).
+fn is_plan_profile(control: &ControlStore, name: &str) -> bool {
+    // The same rule as the core's sign-in check, without its endpoint test:
+    // every openai subscription profile takes the plan branch, whose
+    // `provider_subscription` refuses a missing endpoint as
+    // `endpoint_not_recorded` and a signed-out profile as `not_signed_in`,
+    // never as the API-key path's `subscription_unsupported`.
+    control
+        .provider_profile(name)
+        .is_some_and(|status| status.profile().uses_chatgpt_plan())
 }
 
 /// Open the existing settings store for a named profile. A missing store is a
@@ -520,6 +567,7 @@ mod tests {
         let connection = LocalConnection {
             endpoint: "http://127.0.0.1:1234/v1".to_owned(),
             token: Some(token),
+            plan: None,
         };
         let printed = format!("{connection:?}");
         assert!(!printed.contains("fake-token-value"), "{printed}");

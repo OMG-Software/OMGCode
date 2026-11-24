@@ -67,7 +67,37 @@ pub fn list_local_models(
     base_url: &str,
     token: Option<&str>,
 ) -> Result<Vec<ListedModel>, ProviderError> {
-    list_with_timeout(base_url, token, LIST_TIMEOUT)
+    list_with_timeout(base_url, token, LIST_TIMEOUT, ListShape::Data)
+}
+
+/// List the models a ChatGPT account may use through its plan (ADR-0093).
+///
+/// The request always goes to OpenAI's fixed endpoint, so the plan's bearer
+/// can never be sent to another host; `token` is the account's current access
+/// token. The request is the one
+/// [`list_local_models`] sends, with the same limits. The plan route answers
+/// `{"models":[{"slug":...,"visibility":...}, ...]}`; only entries whose
+/// `visibility` is `list` are returned, by `slug`, in the server's order.
+///
+/// # Errors
+///
+/// As [`list_local_models`]; the list must hold a `models` array, and every
+/// kept `slug` passes the same id checks.
+pub fn list_subscription_models(token: &str) -> Result<Vec<ListedModel>, ProviderError> {
+    list_with_timeout(
+        super::OPENAI_ENDPOINT,
+        Some(token),
+        LIST_TIMEOUT,
+        ListShape::Subscription,
+    )
+}
+
+/// The two list bodies: the OpenAI-compatible `data` list and the ChatGPT
+/// plan route's `models` list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ListShape {
+    Data,
+    Subscription,
 }
 
 /// [`list_local_models`] with a chosen deadline, so a unit test can bound a
@@ -76,6 +106,7 @@ fn list_with_timeout(
     base_url: &str,
     token: Option<&str>,
     timeout: Duration,
+    shape: ListShape,
 ) -> Result<Vec<ListedModel>, ProviderError> {
     let model_endpoint = ModelEndpoint::parse(base_url)?;
     model_endpoint.check_token(token)?;
@@ -126,7 +157,46 @@ fn list_with_timeout(
         let response = send_request(timeout, build, &never).await?;
         read_whole_body(response, MAX_LIST_BYTES, &never).await
     })?;
-    parse_model_list(&bytes)
+    match shape {
+        ListShape::Data => parse_model_list(&bytes),
+        ListShape::Subscription => parse_subscription_list(&bytes),
+    }
+}
+
+/// Parse the plan route's list: a `models` array, bounded by the 4 MiB body
+/// limit. An entry that is not an object, or whose `visibility` is not the
+/// string `list`, is skipped, because hidden and legacy entries are never
+/// offered and the route's shape was not observed. At most
+/// [`MAX_LISTED_MODELS`] entries may be kept; a kept entry needs a listable
+/// `slug`, and a repeated slug refuses the list. Other members are ignored.
+fn parse_subscription_list(bytes: &[u8]) -> Result<Vec<ListedModel>, ProviderError> {
+    let value = parse_strict_json(bytes).map_err(|_| ProviderError::MalformedResponse)?;
+    let entries = value
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or(ProviderError::MalformedResponse)?;
+    let mut models: Vec<ListedModel> = Vec::new();
+    for entry in entries {
+        if entry.get("visibility").and_then(Value::as_str) != Some("list") {
+            continue;
+        }
+        if models.len() >= MAX_LISTED_MODELS {
+            return Err(ProviderError::MalformedResponse);
+        }
+        let slug = entry
+            .get("slug")
+            .and_then(Value::as_str)
+            .filter(|slug| listable_id(slug))
+            .ok_or(ProviderError::MalformedResponse)?;
+        if models.iter().any(|model| model.id == slug) {
+            return Err(ProviderError::MalformedResponse);
+        }
+        models.push(ListedModel {
+            id: slug.to_owned(),
+            cloud_tag: false,
+        });
+    }
+    Ok(models)
 }
 
 /// Parse a model list strictly. Duplicate keys at any depth are refused, and
@@ -191,6 +261,71 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::Instant;
+
+    /// The plan route's list keeps only `visibility: "list"` entries, by
+    /// slug, in the server's order (ADR-0093).
+    #[test]
+    fn a_subscription_list_keeps_listed_slugs_in_server_order() {
+        let body = br#"{"models":[{"slug":"gpt-z","display_name":"Z","visibility":"list"},{"slug":"hidden","visibility":"hide"},{"slug":"gpt-a","display_name":"A","visibility":"list"},{"slug":"no-visibility"}]}"#;
+        let models = parse_subscription_list(body).expect("list");
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-z", "gpt-a"]);
+        assert!(models.iter().all(|model| !model.cloud_tag));
+        // An entry that is not an object is skipped like a hidden one.
+        let models =
+            parse_subscription_list(br#"{"models":[1,{"slug":"gpt-a","visibility":"list"}]}"#)
+                .expect("list");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-a");
+    }
+
+    /// Only kept entries count against the cap: hidden entries beyond it do
+    /// not fail the list, but more listed entries than the cap do.
+    #[test]
+    fn the_subscription_list_cap_counts_only_listed_entries() {
+        let body = |listed: usize, hidden: usize| {
+            let entries: Vec<String> = (0..listed)
+                .map(|n| format!(r#"{{"slug":"listed-{n}","visibility":"list"}}"#))
+                .chain(
+                    (0..hidden).map(|n| format!(r#"{{"slug":"hidden-{n}","visibility":"hide"}}"#)),
+                )
+                .collect();
+            format!(r#"{{"models":[{}]}}"#, entries.join(","))
+        };
+        let models = parse_subscription_list(body(2, MAX_LISTED_MODELS + 1).as_bytes())
+            .expect("hidden entries do not count");
+        assert_eq!(ids(&models), ["listed-0", "listed-1"]);
+        assert_eq!(
+            parse_subscription_list(body(MAX_LISTED_MODELS, 0).as_bytes())
+                .expect("at the cap")
+                .len(),
+            MAX_LISTED_MODELS
+        );
+        assert_eq!(
+            parse_subscription_list(body(MAX_LISTED_MODELS + 1, 0).as_bytes()),
+            Err(ProviderError::MalformedResponse)
+        );
+    }
+
+    #[test]
+    fn a_subscription_list_refuses_a_bad_shape_or_a_repeated_or_bad_slug() {
+        for body in [
+            &br#"{"data":[{"id":"gpt"}]}"#[..],
+            br#"{"models":{}}"#,
+            br#"{"models":[{"visibility":"list"}]}"#,
+            br#"{"models":[{"slug":"","visibility":"list"}]}"#,
+            br#"{"models":[{"slug":"a","visibility":"list"},{"slug":"a","visibility":"list"}]}"#,
+            br#"{"models":[{"slug":"a","slug":"b","visibility":"list"}]}"#,
+            "{\"models\":[{\"slug\":\"a\u{202e}b\",\"visibility\":\"list\"}]}".as_bytes(),
+        ] {
+            assert_eq!(
+                parse_subscription_list(body),
+                Err(ProviderError::MalformedResponse),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
 
     /// The body LM Studio returned on the development host, ids unchanged.
     const LM_STUDIO_LIST: &str = r#"{"data":[{"id":"google/gemma-4-e4b","object":"model","owned_by":"organization_owner"},{"id":"omnicoder-9b","object":"model","owned_by":"organization_owner"},{"id":"text-embedding-nomic-embed-text-v1.5","object":"model","owned_by":"organization_owner"}],"object":"list"}"#;
@@ -482,7 +617,8 @@ mod tests {
             drop(stream);
         });
         let started = Instant::now();
-        let result = list_with_timeout(&base_url, None, Duration::from_millis(250));
+        let result =
+            list_with_timeout(&base_url, None, Duration::from_millis(250), ListShape::Data);
         let elapsed = started.elapsed();
         // The fixture may already be gone after its own limit.
         let _ignored = release.send(());

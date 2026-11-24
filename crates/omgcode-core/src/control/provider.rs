@@ -259,6 +259,14 @@ impl ProviderProfile {
     pub const fn auth(&self) -> ProviderAuth {
         self.auth
     }
+
+    /// Whether this is an `openai` subscription profile, which signs in with
+    /// ChatGPT rather than holding a stored key (ADR-0093). Whether it may
+    /// sign in also needs OpenAI's endpoint; a turn refuses a missing one as
+    /// `endpoint_not_recorded`.
+    pub fn uses_chatgpt_plan(&self) -> bool {
+        self.kind == ProviderKind::OpenAi && self.auth == ProviderAuth::Subscription
+    }
 }
 
 /// A profile, the settings revision that recorded it, and its credential
@@ -270,6 +278,9 @@ pub struct ProviderProfileStatus {
     revision: u64,
     #[serde(serialize_with = "credential::serialize_state")]
     pub(super) credential: Option<CredentialBinding>,
+    /// The ChatGPT registration, kept after sign-out (ADR-0093).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) subscription: Option<super::SubscriptionRegistration>,
 }
 
 impl ProviderProfileStatus {
@@ -286,6 +297,11 @@ impl ProviderProfileStatus {
     /// The bound credential, if any.
     pub const fn credential(&self) -> Option<&CredentialBinding> {
         self.credential.as_ref()
+    }
+
+    /// The ChatGPT registration, if the profile has ever signed in.
+    pub const fn subscription(&self) -> Option<&super::SubscriptionRegistration> {
+        self.subscription.as_ref()
     }
 }
 
@@ -318,6 +334,21 @@ impl ControlStore {
             .find(|status| status.profile.name.eq_ignore_ascii_case(name))
     }
 
+    /// Run every check [`Self::add_provider_profile`] applies to
+    /// `declaration`, except the revision, without recording anything. The
+    /// desktop uses it before a native confirmation, so the operator is never
+    /// asked about a connection that would be refused.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_provider_profile`].
+    pub fn check_provider_profile(
+        &self,
+        declaration: &ProviderProfileDeclaration,
+    ) -> Result<(), ControlError> {
+        self.new_provider_profile(declaration).map(|_| ())
+    }
+
     /// Record a provider connection shape. This advances the settings revision
     /// and records no credential or runtime authority.
     pub fn add_provider_profile(
@@ -326,6 +357,21 @@ impl ControlStore {
         expected_revision: u64,
     ) -> Result<ProviderProfile, ControlError> {
         self.check_revision(expected_revision)?;
+        let profile = self.new_provider_profile(declaration)?;
+        self.append(
+            Action::ProviderProfileAdded {
+                profile: profile.clone(),
+            },
+            self.next_revision()?,
+        )?;
+        Ok(profile)
+    }
+
+    fn new_provider_profile(
+        &self,
+        declaration: &ProviderProfileDeclaration,
+    ) -> Result<ProviderProfile, ControlError> {
+        self.ensure_healthy()?;
         if self.provider_profiles().len() >= MAX_PROVIDER_PROFILES {
             return Err(ControlError::ProviderRefused(
                 "at most 32 provider profiles may be recorded",
@@ -363,12 +409,6 @@ impl ControlStore {
             endpoint: endpoint.map(ProviderEndpoint),
         };
         validate_profile(&profile)?;
-        self.append(
-            Action::ProviderProfileAdded {
-                profile: profile.clone(),
-            },
-            self.next_revision()?,
-        )?;
         Ok(profile)
     }
 
@@ -465,6 +505,11 @@ impl ControlStore {
             .ok_or(ControlError::UnknownProvider)?;
         let profile_id = status.profile.id;
         let credential = status.credential.clone();
+        if status.profile.auth == ProviderAuth::Subscription && credential.is_some() {
+            return Err(ControlError::ProviderRefused(
+                "this profile is signed in with ChatGPT; sign out first",
+            ));
+        }
         self.append(
             Action::ProviderProfileRemoved {
                 profile_id,
@@ -503,6 +548,7 @@ pub(super) fn apply(
                 profile: profile.clone(),
                 revision,
                 credential: None,
+                subscription: None,
             });
         }
         Action::ProviderProfileRemoved {
@@ -612,9 +658,10 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
     }
 }
 
-/// The authentication modes a kind may record. `subscription` stays
-/// recordable for OpenAI and Anthropic so journals written by 0.58.0 and
-/// earlier replay, but no adapter uses it; every other hosted kind is `api_key` only.
+/// The authentication modes a kind may record. An OpenAI `subscription`
+/// profile signs in with ChatGPT (ADR-0093). An Anthropic `subscription`
+/// profile stays recordable so journals written by 0.58.0 and earlier
+/// replay, but no adapter uses it; every other hosted kind is `api_key` only.
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {
         ProviderKind::OpenAi | ProviderKind::Anthropic => {

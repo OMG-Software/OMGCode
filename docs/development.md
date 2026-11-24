@@ -265,15 +265,24 @@ for the workspace's AppContainer and record each change; see
 
 Version 0.27.0 stores provider API keys in protected OS storage and binds each
 one to an `api_key` provider profile ([ADR-0042](adr/0042-store-provider-credentials-in-protected-os-storage.md)).
-Subscription and `none` profiles refuse a credential. Only the local LM Studio
-adapter reads a stored credential, and only through `--provider-profile` (see
+Subscription and `none` profiles refuse a stored API key; a signed-in ChatGPT
+`subscription` profile holds the tokens its sign-in stored instead
+([ADR-0093](adr/0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+On the CLI a stored credential is read only through `--provider-profile`: an
+`lm_studio` profile's server token, a hosted `api_key` profile's key
+(ADR-0092), or a signed-in ChatGPT profile's tokens (see
 [Use a stored credential for chat](#use-a-stored-credential-for-chat)). Without
 that flag `chat` uses the prototype `OMGCODE_LM_TOKEN` input.
 
 A profile can record one endpoint (ADR-0048). `provider-profile-add` takes an
-optional `--endpoint <url>`. Only an `lm_studio` profile accepts one, in the
-form `http://<literal loopback IP>:<non-zero port>/v1`, at most 256 bytes, with
-no user information, query, or fragment. The endpoint is not a secret, and no
+optional `--endpoint <url>` of at most 256 bytes, checked against the
+profile's kind. A local kind (`lm_studio`, `ollama_local`) accepts the form
+`http://<literal loopback IP>:<non-zero port>/v1`, with no user information,
+query, or fragment. A hosted kind accepts only its provider's one documented
+endpoint (ADR-0092); an `openai` profile, including a ChatGPT `subscription`
+profile, accepts only `https://api.openai.com/v1`. An `openai_compatible`
+profile accepts an `https://` base URL under the rules in
+[provider authentication](provider-authentication.md). The endpoint is not a secret, and no
 command changes it. To use another endpoint, remove the profile and add a new
 one. For example:
 
@@ -407,9 +416,11 @@ omgcode --data-dir C:\omgcode-data session compact <journal-path> --provider-pro
 
 With the flag, `OMGCODE_LM_TOKEN` is not read, and the endpoint is the one
 recorded with the profile. `--endpoint` and `--provider-profile` together are a
-usage error (exit status 2). Core refuses an unknown profile, a profile of
-another provider kind, a profile with no recorded endpoint, a `subscription`
-profile, an unbound `api_key` profile, and a binding from another backend. A `none` profile sends
+usage error (exit status 2). A local profile, a hosted `api_key` profile, and
+a signed-in ChatGPT profile can be used. Core refuses an unknown profile, a
+profile with no recorded endpoint, a `subscription` profile that is not a
+signed-in ChatGPT connection (below), an unbound `api_key` profile, and a
+binding from another backend. A `none` profile sends
 no token. Any failure ends the command with a `credential` error whose message
 is `<cause code>: <text>`; nothing falls back to no token or to another token.
 The credential is resolved before the endpoint check and before any session or
@@ -422,6 +433,36 @@ native store access or request. Remove the profile, add it again with
 endpoint recorded with its profile. The desktop shell takes the same flag at
 launch and then uses the profile's endpoint
 ([desktop shell](desktop-interface.md#development)).
+
+### Sign in with ChatGPT
+
+ADR-0093 adds a ChatGPT connection: an `openai` profile with `--auth
+subscription` and `--endpoint https://api.openai.com/v1`. The profile name
+below is a placeholder:
+
+```text
+omgcode --data-dir C:\omgcode-data workspace provider-profile-add example-plan --kind openai --auth subscription --endpoint https://api.openai.com/v1 --revision 7
+omgcode --data-dir C:\omgcode-data workspace provider-signin example-plan --revision 8
+omgcode --data-dir C:\omgcode-data models --provider-profile example-plan
+omgcode --data-dir C:\omgcode-data workspace provider-signout example-plan --revision 9
+```
+
+`provider-signin` prints OpenAI's authorization address on standard error,
+opens it in the system browser, and waits at most five minutes for the
+loopback callback; Ctrl-C cancels the wait. It prints the profile, the
+account label, the credential identifier, and the new revision, and says that
+a sign-in does not show that plan-backed requests will be accepted. A profile
+that is not an `openai` subscription profile with that endpoint, or one
+already signed in, is refused with a `control` error before the browser step.
+`chat --provider-profile` and `session compact --provider-profile` use the
+plan through the Responses API for a signed-in profile. `provider-signout`
+revokes the refresh token once, records the sign-out, deletes the tokens, and
+adds a `warning` when OpenAI did not confirm the revocation. A token slot
+that could not be deleted is listed in `orphaned_credential_ids`.
+`provider-credential-remove` refuses a subscription profile, and
+`provider-profile-remove` refuses one that is signed in. See
+[provider authentication](provider-authentication.md#chatgpt-sign-in-adr-0093).
+No real sign-in was made with these commands.
 
 ## Trusted runs
 

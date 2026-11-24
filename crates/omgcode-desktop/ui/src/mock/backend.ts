@@ -1057,6 +1057,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             credential_bound: isHostedKind(kind),
             selectable: true,
             active: false,
+            account_label: null,
           });
         });
       case "settings_set_api_key":
@@ -1243,6 +1244,53 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           settings.container_grants.splice(index, 1);
         });
+      // The mock stands in for the browser step: a sign-in succeeds at once (ADR-0093).
+      case "settings_sign_in_chatgpt":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const known = settings.provider_profiles.find((p) => p.name === name);
+          if (known !== undefined && (known.kind !== "openai" || known.auth !== "subscription")) {
+            fail("control", "only an openai subscription profile can sign in with ChatGPT");
+          }
+          if (known?.credential_bound === true) {
+            fail("control", "this profile is already signed in; sign out first");
+          }
+          const profile = known ?? {
+            name,
+            kind: "openai",
+            auth: "subscription",
+            endpoint: "https://api.openai.com/v1",
+            credential_bound: false,
+            selectable: false,
+            active: false,
+            account_label: null,
+          };
+          profile.credential_bound = true;
+          profile.selectable = true;
+          profile.account_label = "person@example.test";
+          if (known === undefined) {
+            settings.provider_profiles.push(profile);
+          }
+        });
+      case "settings_cancel_chatgpt_sign_in":
+        return null;
+      case "settings_sign_out_chatgpt": {
+        const overview = changeSettings(args, () => {
+          const name = str(args, "name");
+          const profile = settings.provider_profiles.find((p) => p.name === name);
+          if (
+            profile === undefined ||
+            !profile.credential_bound ||
+            profile.auth !== "subscription"
+          ) {
+            fail("credential", "not_signed_in: this profile is not signed in with ChatGPT");
+          }
+          profile.credential_bound = false;
+          profile.selectable = false;
+          profile.account_label = null;
+        });
+        return { overview, revoked: true };
+      }
       case "settings_remove_connection":
         return changeSettings(args, () => {
           const name = str(args, "name");
@@ -1250,6 +1298,9 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           const profile = settings.provider_profiles[index];
           if (profile === undefined) {
             fail("control", "unknown provider profile");
+          }
+          if (profile.auth === "subscription" && profile.credential_bound) {
+            fail("control", "this profile is signed in with ChatGPT; sign out first");
           }
           // Rust asks a native Yes/No first when a key is stored, then deletes both.
           settings.provider_profiles.splice(index, 1);
@@ -1527,6 +1578,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           credential_bound: true,
           selectable: true,
           active: false,
+          account_label: null,
         },
         {
           name: "ollama",
@@ -1536,6 +1588,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           credential_bound: false,
           selectable: true,
           active: false,
+          account_label: null,
         },
       ],
       toolchain_profiles: [
