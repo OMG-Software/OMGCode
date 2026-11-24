@@ -45,16 +45,26 @@ use crate::chat::{DEFAULT_TURN_TIMEOUT_SECONDS, validate_turn_budgets};
 /// Output reserve of the built-in preferences.
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
 /// Compaction threshold of the built-in preferences: inside the slider's
-/// range, and larger than the CLI's `DEFAULT_COMPACT_THRESHOLD` (ADR-0091).
+/// range and on its step, and larger than the CLI's
+/// `DEFAULT_COMPACT_THRESHOLD` (ADR-0091).
 const DEFAULT_DESKTOP_COMPACT_THRESHOLD: u64 = 400_000;
 /// Whether the built-in preferences compact automatically (ADR-0091). The
 /// CLI keeps `--auto-compact` opt-in.
 const DEFAULT_DESKTOP_AUTO_COMPACT: bool = true;
+/// The composer slider's step from [`COMPACT_THRESHOLD_MIN`]. The slider
+/// itself takes `COMPACT_THRESHOLD_STEP` in `ui/src/main/composer.ts`, which
+/// must stay equal to this, and rounds any other value onto the step. Rust
+/// uses it only to check the default below.
+const COMPACT_THRESHOLD_STEP: u64 = 8_000;
 
-// The default must be a value the composer's slider can show and save.
+// The default must be a value the composer's slider can show and save
+// unchanged: inside its range and on its step, since the composer rounds a
+// value between steps.
 const _: () = assert!(
     DEFAULT_DESKTOP_COMPACT_THRESHOLD >= COMPACT_THRESHOLD_MIN
         && DEFAULT_DESKTOP_COMPACT_THRESHOLD <= COMPACT_THRESHOLD_MAX
+        && (DEFAULT_DESKTOP_COMPACT_THRESHOLD - COMPACT_THRESHOLD_MIN)
+            .is_multiple_of(COMPACT_THRESHOLD_STEP)
 );
 
 /// The directory under the data root that holds desktop-only files.

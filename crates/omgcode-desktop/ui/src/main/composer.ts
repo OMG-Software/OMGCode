@@ -44,7 +44,9 @@ export const COUNTER_SHOW_RATIO = 0.8;
 
 /**
  * The compaction slider's range and step until Rust's defaults arrive (ADR-0080). Rust refuses a
- * saved value outside its own range, which it reports in `chat_defaults`.
+ * saved value outside its own range, which it reports in `chat_defaults`. The step is not sent:
+ * Rust's `COMPACT_THRESHOLD_STEP` in `desktop/preferences.rs` must stay equal to it, because Rust
+ * checks that its built-in threshold sits on this step (ADR-0091).
  */
 export const COMPACT_THRESHOLD_MIN = 128_000;
 export const COMPACT_THRESHOLD_MAX = 1_000_000;
