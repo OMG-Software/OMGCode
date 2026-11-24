@@ -39,6 +39,7 @@ use crate::policy::{Command, WindowLabel, authorize};
 // the macro each `#[tauri::command]` generates is not re-exported by `pub use`.
 pub mod approvals;
 pub mod chat;
+pub mod git;
 pub mod sessions;
 pub mod settings;
 

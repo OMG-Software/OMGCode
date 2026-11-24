@@ -40,7 +40,7 @@ export interface ConnectionModel {
 
 /**
  * The one source of truth for the open session's provider and model (ADR-0071 decision 11).
- * The composer's and the footer's dropdowns both render from it, so they cannot disagree. Every
+ * The model box's provider and model dropdowns render from it. Every
  * answer is matched to the session that asked, so a late answer for a session that was left
  * never touches what is shown.
  */

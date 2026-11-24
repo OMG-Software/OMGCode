@@ -13,8 +13,10 @@ import {
   messageProblem,
   settingsValid,
 } from "./model";
-import { createModelPicker } from "./model_picker";
-import { createProviderSelect } from "./provider_select";
+import type { ModelBox } from "./model_box";
+
+/** The Skills trigger's name with no skill selected; a count follows it otherwise. */
+const SKILLS_LABEL = "Skills for this turn";
 
 /** The most skills one turn may load; the core enforces the same bound (ADR-0057). */
 export const SKILLS_PER_TURN = 4;
@@ -22,11 +24,6 @@ export const SKILLS_PER_TURN = 4;
 /** Message box hints for each "Enter to send" choice. */
 export const PLACEHOLDER_ENTER = "Message (Enter to send, Shift+Enter for a new line)";
 export const PLACEHOLDER_CTRL_ENTER = "Message (Ctrl+Enter to send)";
-/** Shown while Rust reports that the saved per-session provider and model choices are unreadable. */
-export const SESSION_CHOICES_UNREADABLE =
-  "Saved provider and model choices could not be read, so this session follows the default " +
-  "connection. Choosing a provider or model replaces the damaged file and every other session's " +
-  "saved choice.";
 /** Opens the message shown when the saved chat defaults cannot be read. */
 export const DEFAULTS_UNREADABLE = "The chat defaults could not be read; Send tries again.";
 /** Shown while no context size is saved; the settings window owns it (ADR-0080). */
@@ -109,10 +106,14 @@ interface Budgets {
  * (ADR-0080); the composer reads them from `chat_defaults` when it starts, when the window gains
  * focus, and again just before each send, so a turn uses what was saved last. The compaction
  * settings and the send key are the composer's own. The provider, the endpoint, and the model
- * belong to the open session (ADR-0071): they come from `connection`, which the footer's provider
- * dropdown shares.
+ * belong to the open session (ADR-0071): the endpoint comes from `connection`, and the model from
+ * `modelBox`, the side panel's provider and model choice (ADR-0089), which shares `connection`.
  */
-export function createComposer(handlers: ComposerHandlers, connection: ConnectionModel): Composer {
+export function createComposer(
+  handlers: ComposerHandlers,
+  connection: ConnectionModel,
+  modelBox: ModelBox,
+): Composer {
   const box = el("textarea", {
     class: "message-box",
     attrs: { rows: "3", "aria-label": "Message", placeholder: PLACEHOLDER_ENTER },
@@ -156,23 +157,6 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   );
 
   const endpointValue = el("span", { class: "fixed-value" });
-  const providerNote = el("span", { class: "muted", attrs: { role: "status" } });
-  providerNote.hidden = true;
-  // Rust could not read the saved per-session choices; it follows the global choice meanwhile.
-  const choicesNote = el("span", {
-    class: "model-warning",
-    text: SESSION_CHOICES_UNREADABLE,
-    attrs: { role: "status" },
-  });
-  choicesNote.hidden = true;
-  const model = createModelPicker(
-    () => refresh(),
-    (id) => void connection.chooseModel(id),
-  );
-  const providerSelect = createProviderSelect(connection, "Provider");
-  /** What the model list was last requested for, so only a real change reloads it. */
-  let loadedKey: string | null = null;
-
   /** The saved budgets, read from `chat_defaults`; `null` until the first read succeeds. */
   let budgets: Budgets | null = null;
   // Whether the last read reported the saved file unreadable and gave the built-in values.
@@ -201,7 +185,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
 
   const settingsMenu = createPopover(
     "Chat settings",
-    { class: "open-up settings", label: "Chat settings" },
+    { class: "open-up settings", label: "Chat settings", icon: "gear" },
     el(
       "div",
       { class: "settings-grid" },
@@ -249,8 +233,8 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
 
   const skillsList = el("div", { class: "skill-choices" });
   const skillsMenu = createPopover(
-    "Skills (0)",
-    { class: "open-up skills", label: "Skills for this turn" },
+    SKILLS_LABEL,
+    { class: "open-up skills", label: SKILLS_LABEL, icon: "skills" },
     el("p", { class: "popover-title", text: `Skills for this turn (at most ${SKILLS_PER_TURN})` }),
     skillsList,
   );
@@ -275,7 +259,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   function readSettings(): ChatSettings {
     return {
       endpoint: fixedEndpoint,
-      model: model.value(),
+      model: modelBox.model(),
       context_tokens: budgets?.context_tokens ?? 0,
       max_output_tokens: budgets?.max_output_tokens ?? 0,
       max_tool_calls: budgets?.max_tool_calls ?? 0,
@@ -400,7 +384,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     if (status.stale) {
       return "The provider chosen for this session changed. Choose the provider again.";
     }
-    if (model.value().trim() === "") {
+    if (modelBox.model().trim() === "") {
       return "Choose a model.";
     }
     if (budgets === null) {
@@ -412,13 +396,26 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     return messageProblem(box.value);
   }
 
+  /** Names the count in the tooltip and shows it as a badge; the icon child is never replaced. */
+  function refreshSkillsTrigger(count: number): void {
+    const label = count === 0 ? SKILLS_LABEL : `${SKILLS_LABEL} (${count} selected)`;
+    skillsMenu.summary.title = label;
+    skillsMenu.summary.setAttribute("aria-label", label);
+    skillsMenu.summary.querySelector(".icon-badge")?.remove();
+    if (count > 0) {
+      skillsMenu.summary.appendChild(
+        el("span", { class: "icon-badge", attrs: { "aria-hidden": "true" }, text: String(count) }),
+      );
+    }
+  }
+
   function refresh(): void {
     const bytes = utf8Length(box.value);
     counter.textContent = `${bytes} / ${MESSAGE_MAX_BYTES} bytes`;
     counter.classList.toggle("over", bytes > MESSAGE_MAX_BYTES);
     // Only near the limit, or over it, so a short message shows no number.
     counter.hidden = bytes <= MESSAGE_MAX_BYTES * COUNTER_SHOW_RATIO;
-    replaceChildren(skillsMenu.summary, `Skills (${selectedSkills().length})`);
+    refreshSkillsTrigger(selectedSkills().length);
     const issue = currentProblem();
     element.hidden = !state.visible;
     box.disabled = !state.enabled;
@@ -434,11 +431,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     replaceChildren(problem, shown ?? "");
     problem.hidden = shown === null;
     workspaceButton.disabled = sessionId === null;
-    model.setDisabled(!state.enabled || connection.busy());
-    providerSelect.setLocked(!state.enabled);
-    replaceChildren(providerNote, connection.message());
-    providerNote.hidden = connection.message() === "";
-    choicesNote.hidden = connection.status()?.session_choices_unreadable !== true;
+    modelBox.setEnabled(state.enabled);
     for (const input of composerInputs) {
       input.disabled = !state.enabled;
     }
@@ -501,42 +494,27 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
   }
 
   /**
-   * Follows the shared connection (ADR-0071 decision 11). A different session, a confirmed
-   * provider choice, or a changed connection clears the model and lists the new session's models;
-   * the model shown is always the one the connection holds for the session.
+   * Follows the shared connection for the endpoint a send names (ADR-0071 decision 11). The model
+   * box lists the models and holds the model; it subscribed first, so `modelBox.model()` is
+   * current when this runs.
    */
   function onConnection(change: ConnectionChange): void {
-    providerSelect.render();
     const status = connection.status();
     const id = connection.sessionId();
-    if (change === "opening") {
-      loadedKey = null;
-      model.reset();
-      model.setHosted(false);
-    } else if (status !== null && id !== null && change !== "busy" && change !== "message") {
+    if (
+      status !== null &&
+      id !== null &&
+      change !== "opening" &&
+      change !== "busy" &&
+      change !== "message"
+    ) {
       fixedEndpoint = status.connection.endpoint;
       replaceChildren(endpointValue, fixedEndpoint);
-      model.setHosted(status.connection.kind === "ollama_cloud");
-      const key = [
-        id,
-        status.connection.profile ?? "",
-        status.connection.endpoint,
-        status.origin,
-        String(status.stale),
-      ].join("|");
-      if (change === "selected" || key !== loadedKey) {
-        loadedKey = key;
-        model.reset();
-        model.setValue(status.model);
-        void model.load(id);
-      } else {
-        model.setValue(status.model);
-      }
     }
     refresh();
   }
   const unsubscribe = connection.subscribe(onConnection);
-  providerSelect.render();
+  const unsubscribeModel = modelBox.onChange(refresh);
 
   box.addEventListener("input", refresh);
   autoCompact.addEventListener("change", () => {
@@ -576,34 +554,15 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
       { class: "composer-row" },
       el(
         "div",
-        { class: "composer-tools" },
-        skillsMenu.element,
-        el(
-          "label",
-          { class: "toolbar-field" },
-          el("span", { text: "Provider" }),
-          providerSelect.element,
-        ),
-        el("div", { class: "toolbar-field" }, el("span", { text: "Model" }), model.element),
-        settingsMenu.element,
-      ),
-      el(
-        "div",
         { class: "composer-send" },
         counter,
         runningLabel,
+        skillsMenu.element,
+        settingsMenu.element,
         workspaceButton,
         cancelButton,
         sendButton,
       ),
-    ),
-    el(
-      "div",
-      { class: "composer-model-status" },
-      model.note,
-      model.warning,
-      providerNote,
-      choicesNote,
     ),
     reason,
     problem,
@@ -648,6 +607,7 @@ export function createComposer(handlers: ComposerHandlers, connection: Connectio
     setSkills,
     dispose() {
       unsubscribe();
+      unsubscribeModel();
       window.removeEventListener("focus", onFocus);
       settingsMenu.dispose();
       skillsMenu.dispose();

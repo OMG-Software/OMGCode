@@ -102,7 +102,7 @@ export function createShellLayout(parts: {
   }
 
   const left = makeState("left", parts.left, "sessions panel");
-  const right = makeState("right", parts.right, "terminal panel");
+  const right = makeState("right", parts.right, "side panel");
   element.append(
     left.panel.element,
     left.separator,

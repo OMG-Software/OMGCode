@@ -6,6 +6,65 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.56.0 lets the operator remove a workspace (ADR-0081).
+  `omgcode workspace unregister <workspace-id> --revision <n>` and
+  **Remove workspace…** in the desktop settings window record one
+  `workspace_unregistered` event. It drops the registration with its
+  preferences, package cache selection, skill overrides, and checkpoint-folder
+  record, and deletes the saved workspace instructions file. A file that
+  cannot be deleted is reported as `instructions_orphaned` only after the
+  withdrawn runs are stopped and waited for, and is never sent. The folder, its
+  `.OMGCode` folder, and its sessions are not touched; the sessions chat
+  without tools. A container grant refuses the removal until it is revoked,
+  and the desktop also refuses while a turn runs in the workspace.
+  Registering the folder again gives a new identifier. A control journal that
+  records the event cannot be read by 0.55.0 or earlier. `chat_send` and the
+  Context tab now count workspace instructions only for a registered
+  workspace, checked under the same lock as the file read.
+- The desktop `settings` window imports a skill from a native folder dialog,
+  enables or disables it for the application and per workspace, and removes
+  it, each after a native confirmation where access widens or data is
+  deleted (ADR-0082). It also adds and removes toolchain profiles,
+  package-network profiles, and, on Windows, container grants, through the
+  same core calls as the trusted CLI (ADR-0088). None of the three can be
+  edited; remove and add again. Registry credentials, package fetch, and runs
+  stay CLI-only. The settings overview gains `container_grants_supported`.
+- The `main` window's right-hand panel has tabs: **Terminal** (the existing
+  note), **Files**, **Git**, **Processes**, and **Context**, each with a rail
+  icon. A tab reads only while it is visible, and a visible tab reads again
+  when a turn settles.
+  - **Files** lists names and kinds in one folder of the open session's
+    workspace at a time through `workspace_entries`: at most 512 per folder,
+    no content, `.OMGCode` hidden, not journaled (ADR-0083). Rust flags which
+    folders it would list next, and the tab opens no other. The listing
+    releases the settings lock before it touches the file system.
+  - **Git** shows the branch and up to 1,000 changed paths through
+    `workspace_git_status`, read in process with the pure-Rust `gix` 0.91.0
+    crate (`status` and `sha1` features only). The repository's own
+    configuration is not applied, so no filter, diff driver, hook, or
+    fsmonitor program runs, not even from an included file, and nothing is
+    written. A run stops after 10 seconds and holds no settings lock, so it
+    never makes a send or a settings change busy (ADR-0085). A `.git` it
+    cannot read is named as a pointer file, a folder without `HEAD`, or a
+    link, without following it. The dependency adds 81 lockfile packages.
+  - **Processes** lists the session's model command-tool calls, newest first,
+    through `session_processes`, joined from the model action, run, and
+    session journals. It never starts, stops, or re-runs anything, returns no
+    output or environment value, and reads the run journal without creating
+    it or waiting for its lock (ADR-0086). A full record window is shown as
+    "Older calls may not be shown.", never as a session that ran nothing.
+  - **Context** estimates by part what the next turn would send (system
+    prompt, instructions, tool definitions, compaction summary, history,
+    framing) through `session_context_breakdown`, with the pre-turn trigger's
+    arithmetic and no model request (ADR-0087).
+- The desktop shell has 56 commands: 29 in `main`, 3 in `approvals`, and 24
+  in `settings`.
+- The frontend's DOM builder neutralises the attributes a person reads or
+  hears (`title`, `aria-label`, `placeholder`, and the like) as it does text,
+  and so do the icon-button and popover helpers. Recorded text such as a
+  workspace folder can no longer put a raw bidirectional override into a
+  tooltip or an accessible name.
+
 - Version 0.55.0 adds the model tool `workspace_create_directory`, which
   creates one directory beneath the workspace (ADR-0079). A model could create
   `Cargo.toml` but not `src/main.rs` in an empty workspace, because a new
@@ -78,6 +137,27 @@ Changes are recorded here before a release version is assigned.
   it as stale.
 
 ### Changed
+
+- The provider and model choice moves from under the message box to a box in
+  the right-hand panel's fixed footer, with a **Model** rail icon when the
+  panel is collapsed (ADR-0089). The status bar no longer offers a connection
+  choice (ADR-0084).
+- The settings window lists registered workspaces as a collapsible group
+  under **Workspaces** in its navigation instead of a dropdown. The package
+  cache row now says what the folder is for: the trusted CLI's
+  `packages fetch` stores downloads there, and a trusted run sees it
+  read-only; the desktop itself never fetches.
+- The conversation header drops the **Details** disclosure, which repeated
+  the title and folder; their full text is now a tooltip. **Archive**,
+  **Restore**, and the composer's **Chat settings** are icon buttons named in
+  their tooltips.
+- Session rows in the sessions panel are one line, with a compact time since
+  the last update (now, 5m, 3h, 2d, 4w, or a short date) that refreshes every
+  30 seconds. The row tooltip has the full title and update time.
+- The composer's **Skills** menu is now a puzzle-piece icon button whose
+  tooltip and accessible name give the selected count, with a small count
+  badge. It and **Chat settings** move to the right, beside **Workspace
+  settings** and before **Send**; their panels end at the toolbar's right edge.
 
 - Version 0.54.0 moves the desktop chat budgets into the `settings` window
   and adds per-workspace custom instructions (ADR-0080).

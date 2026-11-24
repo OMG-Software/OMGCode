@@ -1,6 +1,7 @@
 /**
  * Minimal typed DOM builder. Text always goes through text nodes, so untrusted strings
- * can never become markup. Attributes that can execute or navigate are refused.
+ * can never become markup. Attributes that can execute or navigate are refused, and the
+ * attributes a person reads or hears (a tooltip, an accessible name) are neutralised like text.
  */
 
 export type Child = Node | string | null | undefined | false;
@@ -20,6 +21,20 @@ export function neutralise(value: string): string {
     return `[U+${hex}]`;
   });
 }
+
+/**
+ * Attributes whose value is shown or announced rather than read back as data. `el` neutralises
+ * them as it does text; a value such as `value` or `id` is left exactly as given.
+ */
+const DISPLAY_ATTRIBUTES: ReadonlySet<string> = new Set([
+  "title",
+  "aria-label",
+  "aria-description",
+  "aria-roledescription",
+  "aria-valuetext",
+  "alt",
+  "placeholder",
+]);
 
 function attributeAllowed(name: string): boolean {
   const lower = name.toLowerCase();
@@ -65,7 +80,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(
     if (!attributeAllowed(name)) {
       throw new Error(`Attribute ${name} is not allowed.`);
     }
-    node.setAttribute(name, value);
+    node.setAttribute(name, DISPLAY_ATTRIBUTES.has(name.toLowerCase()) ? neutralise(value) : value);
   }
   append(node, ...children);
   return node;

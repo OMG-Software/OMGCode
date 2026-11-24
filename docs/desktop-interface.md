@@ -39,13 +39,15 @@ merged to `main` at the time of writing):
   stored credential instead of `OMGCODE_LM_TOKEN`.
 - Since version 0.31.0 (Phase D3, ADR-0048), a selected profile also supplies
   the endpoint. `--endpoint` and `--provider-profile` are mutually exclusive.
-- Since version 0.44.0 (ADR-0064), the `settings` window and a status bar at
-  the bottom of the `main` window choose the model connection from a
-  dropdown: the default LM Studio endpoint or a recorded `lm_studio` or
-  `ollama_local` profile, after a native confirmation. The `settings` window
-  can also add and remove local connections without a credential. The status
-  bar also shows the open session's workspace and its Git branch. A launch
-  argument still fixes the connection for the process.
+- Since version 0.44.0 (ADR-0064), the `settings` window chooses the model
+  connection from a dropdown: the default LM Studio endpoint or a recorded
+  `lm_studio` or `ollama_local` profile, after a native confirmation. The
+  `settings` window can also add and remove local connections without a
+  credential. The status bar at the bottom of the `main` window shows the
+  open session's workspace and its Git branch. It offered the same
+  dropdown until ADR-0084 removed it; the model box in the
+  right-hand panel's footer chooses a session's provider (ADR-0089). A launch argument still fixes the connection for the
+  process.
 - Since version 0.32.0 (Phase D4 and E6, ADR-0049), a chat turn streams the
   local model's reply and the shell pushes chat events to the `main` window
   through one caller-scoped channel. The window shows the provisional text
@@ -87,6 +89,23 @@ merged to `main` at the time of writing):
   follows its end after a send until the operator scrolls up. The terminal
   panel holds no terminal. No command, IPC shape, or permission changed. See
   [appearance](#appearance) and [transcript view](#transcript-view).
+- Since version 0.56.0 (ADR-0083, ADR-0085 to ADR-0087), the `main`
+  window's right-hand panel has tabs. The Terminal tab keeps its note;
+  **Files** shows a lazily expanded tree of the open session's workspace
+  through `workspace_entries`; **Git** shows the branch and changed paths
+  through `workspace_git_status`; **Processes** lists the session's model
+  command-tool calls through `session_processes`; and **Context** estimates
+  the next turn by part through `session_context_breakdown`. A fixed footer
+  sits under every tab. See [right-hand panel](#right-hand-panel).
+- Since version 0.56.0 (ADR-0089, ADR-0084), the provider and model choice
+  moved from the composer to a box in the right-hand panel's fixed footer,
+  with a **Model** rail icon when the panel is collapsed, and the status bar
+  offers no connection choice.
+- Since version 0.56.0 (ADR-0081, ADR-0082, ADR-0088), the `settings` window
+  lists workspaces under **Workspaces** in its navigation, unregisters a
+  workspace, manages skills, and adds and removes toolchain profiles,
+  package-network profiles, and, on Windows, container grants. See
+  [settings window](#settings-window).
 
 Not implemented:
 
@@ -94,20 +113,26 @@ Not implemented:
   `latest` archives hold the bare binaries only.
 - Interrupting a read, list, or edit tool call in progress. Cancelling such a
   turn waits for the call to end.
-- Changing toolchain profiles, container grants, package-network profiles,
-  and skills in the desktop application, binding a credential to a local
+- Binding a credential to a local
   LM Studio profile, and adding any cloud provider other than Ollama Cloud.
   They change only through the trusted CLI. The `settings` window adds an
   Ollama Cloud connection with its API key, replaces the key, and removes the
   connection, through the write-only key field (ADR-0071). The rest of phase
   S3 (a local profile's credential) and phases S4 and S5 of
   [ADR-0059](adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-  are not implemented: execution setup and skill management.
-- Development panels: a working terminal, task logs, diffs, and a file
-  browser. The terminal panel (ADR-0072) only says that no terminal is
-  available; it starts no shell and runs no command.
-- Git, MCP, and memory interfaces, and skill management. The `main` window
-  can only select an already enabled skill for one turn.
+  are not implemented: credentials and the trusted package fetch and run. Skills
+  are imported, enabled, and removed in the `settings` window since ADR-0082,
+  and toolchain profiles, package-network profiles, and container grants are
+  added and removed there since ADR-0088 (none can be edited).
+- Development panels: a working terminal, task logs, and diffs. The Terminal
+  tab (ADR-0072) only says that no terminal is available; it starts no shell
+  and runs no command. The Files tab (ADR-0083) shows file and folder names
+  only, with no file content, search, or editing.
+- Git actions (the Git tab only reads the status: no diff, staging, commit,
+  or branch change), MCP, and memory interfaces. The `main` window
+  can only select an already enabled skill for one turn; the `settings`
+  window manages skills (ADR-0082). Skill updates, Git sources, and the
+  per-skill description and body view are not implemented.
 - A recovery interface for damaged journals or an incomplete tail.
 - A provider other than a local LM Studio or Ollama server and Ollama Cloud.
   Stored API keys are used only for an LM Studio server's token and an Ollama
@@ -234,7 +259,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 39 commands. No other command exists.
+The shell has three webview windows and 56 commands (24 in the `settings` window). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -253,7 +278,11 @@ their registered identifier, and approvals by identifier.
 | `chat_models` | main | List the model ids a session's connection reports, for the composer's model choice; takes the session id |
 | `chat_preferences_save` | main | Save the composer's own chat defaults: compaction threshold, auto-compact, and the send key (ADR-0080) |
 | `session_skills` | main | List the names of the skills enabled for a session's workspace |
+| `session_context_breakdown` | main | Estimate, by part, what a session's next turn would send; takes the session id, sends nothing to a model, records nothing, and returns names and numbers only (ADR-0087) |
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
+| `workspace_entries` | main | List the names and kinds in one directory of a session's registered workspace, for the Files tab; takes the session id and relative name components (ADR-0083) |
+| `session_processes` | main | List a session's model command-tool calls, newest first, at most 100, read-only (ADR-0086) |
+| `workspace_git_status` | main | Report the Git branch and a bounded list of changed paths for a session's registered workspace, read in process by `gix` with no program run (ADR-0085); takes the session id |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
@@ -276,12 +305,22 @@ their registered identifier, and approvals by identifier.
 | `settings_set_permissions` | settings | Set one workspace's preferences and per-tool write limits; widening any needs a native confirmation |
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
+| `settings_unregister_workspace` | settings | Remove one workspace's registration after a native confirmation that names its folder; its settings and instructions file go, its files and sessions stay (ADR-0081) |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, or an `ollama_cloud` profile with its fixed endpoint and a write-only API key |
 | `settings_set_api_key` | settings | Replace the stored API key of an `ollama_cloud` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
+| `settings_import_skill` | settings | Import a skill folder, chosen in a native dialog, through core as `omgcode skills add` does; the skill arrives disabled and no confirmation follows (ADR-0082) |
+| `settings_set_skill_state` | settings | Set a skill's application setting or one workspace's override (`enabled`, `disabled`, `inherit`); a change that leaves it enabled needs a native confirmation that names it (ADR-0082) |
+| `settings_remove_skill` | settings | Remove a skill and delete its stored copy after a native confirmation that names it; the source folder is kept (ADR-0082) |
+| `settings_add_toolchain_profile` | settings | Open a native folder dialog for each read-only root and `PATH` entry, then, after a native confirmation that lists them and the variable names, record a toolchain profile as `workspace profile-add` does (ADR-0088) |
+| `settings_remove_toolchain_profile` | settings | Remove a toolchain profile after a native confirmation; the runs the settings then withdraw are stopped (ADR-0088) |
+| `settings_add_package_profile` | settings | Record a package-network profile (configuration only) after a native confirmation that lists the origins core parsed (ADR-0088) |
+| `settings_remove_package_profile` | settings | Remove a package-network profile, which also unbinds and deletes the credentials bound to its origins, after a native confirmation (ADR-0088) |
+| `settings_grant_container_folder` | settings | Windows only. Open a native folder dialog and, after a native confirmation that names the workspace, folder, and access and says the folder's access-control list changes, grant it to the workspace's container (ADR-0088) |
+| `settings_revoke_container_grant` | settings | Windows only. Revoke one recorded grant after a native confirmation and stop the workspace's earlier runs (ADR-0088) |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -322,7 +361,7 @@ confirmation dialogs follow the operating system's theme.
 
 The `main` window is laid out as follows.
 
-- **Columns.** The sessions panel, the conversation, and the terminal panel,
+- **Columns.** The sessions panel, the conversation, and the right-hand panel,
   with a one-pixel separator between each pair (ADR-0072). A separator is a
   focusable window splitter: drag it, or use the arrow keys (16 pixels, 64
   with Shift), Home and End for the limits, and Enter or a double click to
@@ -338,22 +377,39 @@ The `main` window is laid out as follows.
   operator expands it. Widths and collapsed
   states last until the window closes. The shell's two width properties are
   the frontend's only inline style.
+- **Conversation header.** The title clamps to two lines and the workspace
+  folder to one. Each carries its full text, neutralised, as a `title`
+  tooltip; there is no separate disclosure that repeats them.
+- **Session header actions.** **Archive** and **Restore** are icon buttons
+  named in their tooltip and accessible name; **Interrupt**, **Confirm
+  interrupt**, **Keep**, and **Cancel** stay text buttons.
 - **Collapsed panels.** A collapsed panel is a 44-pixel rail of icon buttons,
   each with an accessible name and a tooltip. The sessions rail holds Expand,
   **New session**, Search, Sessions, **Approvals** with the waiting count, and
   **Settings**; Search and Sessions expand the panel and focus the search box
-  or the open session. The terminal rail holds one button that expands it.
-- **Terminal panel.** A title row with a collapse button and a note that no
-  terminal is available and that the panel starts no shell and runs no
-  command. It calls no command and has no input.
+  or the open session. The right-hand rail holds one icon per tab, each
+  expanding the panel on its tab, and, at its bottom, a **Model** icon button
+  that expands the panel to the model box (ADR-0089).
+- **Right-hand panel.** Tabs, a scrolling content area, and a fixed footer;
+  see [right-hand panel](#right-hand-panel). The Terminal tab holds a note
+  that no terminal is available and that the panel starts no shell and runs
+  no command. It calls no command and has no input.
 - **Sidebar.** A title row with **New session** and a collapse button, then
   the search field with a **View** menu beside it. The menu holds Active or
   Archived as a segmented control, the sort field, and the direction toggle.
   The session tree follows, with quiet group labels and an accent bar on the
-  open session. **Approvals**, with the pending-count badge, and **Settings**
+  open session. Each session row is one line: the title, shortened with an
+  ellipsis when it does not fit, then any status chip, then a muted age of the
+  last update at the right ("now", "5m", "3h", "2d", "4w", then a short date;
+  a missing or unreadable time reads "unknown"). The ages are drawn again in
+  place every 30 seconds, and the timer stops when the panel is disposed. A
+  row's tooltip holds the full title and the full update time. A group label
+  is also one line. An unreadable session adds its reason as a second line.
+  Search hits keep their own layout. **Approvals**, with the pending-count badge, and **Settings**
   are rows at the bottom.
-- **Status bar.** The workspace, the branch, an approvals segment, and the
-  **Model** dropdown. The segment reads "N approvals waiting" with a
+- **Status bar.** The workspace, the branch, and an approvals segment.
+  It has no model or provider control and shows no connection message
+  (ADR-0084). The segment reads "N approvals waiting" with a
   **Review** button while the advisory count is above zero, and is hidden at
   zero. **Review** and the sidebar row only call `approvals_show_window`. The
   notice line above the status bar now only reports a failure to open a
@@ -386,20 +442,105 @@ The `main` window is laid out as follows.
   manifest, and archive or restore notes are thin divider lines. A tool
   request and its result stay separate rows, because paging can put them on
   different pages.
-- **Composer.** The message box, then one toolbar: a **Skills (n)** menu,
-  where n counts the skills chosen for the turn, hidden when no skill is
-  enabled; a **Provider** dropdown and a **Model** dropdown with its
-  **Refresh** button for the open session (see "Provider and model per
-  session"); and a **Chat settings** menu with the read-only endpoint,
-  **Auto-compact**, the compaction slider, **Enter to send**, and **Save as
-  defaults**. On the right are the byte counter, the running label, the
-  **Workspace settings** icon button (see "Settings window"), **Cancel**, and
-  **Send**. The counter appears only above 80% of the
-  message limit or when the message is over it.
+- **Composer.** The message box, then one toolbar on the right. Left to
+  right it holds the byte counter, the running label, a **Skills** icon button
+  (a puzzle piece) that opens the skills menu, hidden when no skill is
+  enabled, a **Chat settings** icon button (a gear) that opens the chat
+  settings menu, the **Workspace settings** icon button (see "Settings
+  window"), **Cancel**, and **Send**. Each menu button is named and tooltipped
+  by `aria-label` and `title`, and reports `aria-expanded` and `aria-controls`.
+  The Skills tooltip is "Skills for this turn", or "Skills for this turn (n
+  selected)" when n skills are chosen, and a small badge with n shows on the
+  button then (hidden from assistive technology). The gear is distinct from the
+  three-slider **Settings** icon. The chat settings menu holds the read-only
+  endpoint, **Auto-compact**, the compaction slider, **Enter to send**, and
+  **Save as defaults**. Panels open upward and end at the toolbar's right edge.
+  The counter appears only above 80% of the
+  message limit or when the message is over it. The composer holds no
+  provider or model control since ADR-0089: a send reads the chosen model
+  from the model box and the endpoint from the shared connection.
 - **No waiting marker.** The `main` window cannot tell which session an
   approval belongs to: `chat_status`, the chat events, and `approvals_summary`
   carry no such signal, and the approval detail is not available to its
   bundle. It therefore shows only the advisory count.
+
+### Right-hand panel
+
+The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
+`ui/src/main/side_panel.ts`. Its layout, resizing, and collapsing are those of
+[the columns](#appearance). It holds:
+
+- **A tab strip and a collapse button.** The strip follows the WAI-ARIA tabs
+  pattern through `ui/src/ui/tabs.ts`: arrow keys move focus and select, and
+  each tab controls a `tabpanel`. The selected tab is remembered until the
+  window closes; no storage is used. The tabs are **Terminal**, **Files**,
+  **Git**, **Processes**, and **Context**. A new tab is one entry in the list `app.ts` gives
+  `createSidePanel`: an id, a label, a rail icon, its content, and an optional
+  callback that says when it becomes visible or hidden.
+- **A rail.** Collapsed, the panel shows one icon button per tab. A click
+  expands the panel on that tab.
+- **A scrolling content area** with the selected tab's content.
+- **A fixed footer** under the content area, outside its scrolling and shown
+  on every tab. The panel's API exposes it as `footer`. It holds the model
+  box (ADR-0089).
+- **The model box** (`ui/src/main/model_box.ts`, ADR-0089): a "Model" heading,
+  the **Provider** dropdown, the **Model** dropdown with its **Refresh**
+  button, and the status notes (list status, off-machine warning, connection
+  message, unreadable saved choices), stacked vertically. It does not scroll
+  with the tab content and stays when the tab changes. A collapsed panel
+  hides it, so the rail's **Model** icon button (named and tooltipped
+  "Model") expands the panel. The controls are the ones ADR-0071 placed in
+  the composer, over the same shared connection state, with the same
+  commands, native confirmation, and disabled states: disabled while no
+  session accepts a message or a turn runs. Only the place changed.
+
+**Terminal tab.** The note from ADR-0072; no command is called.
+
+**Git, Processes, and Context tabs.** Each wraps one session view
+(`createGitTab`, `createProcessesTab`, `createContextTab`) through
+`ui/src/main/panel_tab.ts`, which reads only while the tab is visible: a
+hidden or collapsed tab is cleared, so it reads nothing, polls nothing, and
+keeps no stale data, and showing it again reads the open session afresh.
+Opening a session passes it to every tab; a visible tab reads it at once.
+When a turn settles, or the session tree changes after an action, the visible
+tab reads again. The Processes tab's own two-second poll therefore runs only
+while it is visible. See [Git status tab](#git-status-tab),
+[Processes tab](#processes-tab), and [Context tab](#context-tab).
+
+**Files tab.** A lazily expanded tree of the open session's workspace. It
+loads nothing while the tab is hidden or collapsed. Opening a session clears
+the tree and loads the workspace's top level once the tab is visible; opening
+a folder lists just that folder, and opening it again lists it again. A
+chevron shows each folder's state, **Refresh** lists the top level again and
+keeps open folders open, and loading, empty, truncated, and error states are
+text. A top level that failed to list keeps its error until the tab is shown
+again, which lists it again. At most 5,000 rows are drawn across the open folders; closing a folder
+drops its rows, and a listing that arrives after its folder closed is
+discarded. A name that is not valid Unicode is shown
+but its folder is not opened, nor is a folder Rust says it would not list
+(too deep, or a name the path rules refuse), and a link or special entry is
+shown but not opened. Names are text nodes, never markup. The tab shows names and kinds
+only: no content, no size, no date.
+
+`workspace_entries` takes the session id and `path`, an array of relative name
+components for the folder to list (empty lists the workspace). Rust finds the
+workspace from the session's recorded, registered workspace; the webview never
+supplies a host path. Each component must be non-empty, not `.` or `..`, free
+of separators, NUL and the `.OMGCode` store name, at most 255 characters, and
+at most 32 components are allowed. Rust takes the recorded folders while the
+settings store is open and releases that lock before the listing touches the
+file system. The listing goes through the platform
+broker's directory handle, which does not follow links out of the workspace,
+and returns at most 512 entries (the broker's bound) with a `truncated` flag,
+directories first and then by name. Entries are `directory`, `file`, or `other`
+(the broker does not tell a link from a special entry); a name that is not valid
+Unicode is shown lossily with `lossy` set. Each entry's `openable` is true only
+for a directory whose name, joined to the listed path, passes the component
+checks above, and the tab opens no other folder. `.OMGCode` is hidden. The command
+does not need the workspace's `read` preference, is not a model action, and is
+not journaled; it needs a registered workspace and refuses an unregistered one
+with `unknown_workspace`. It grants nothing: a listing never authorizes a
+read, edit, or run.
 
 ## Session tree
 
@@ -584,7 +725,8 @@ untouched controls take the returned values.
   kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
   outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Model choice.** Since 0.46.0 (ADR-0066) the model is a dropdown with a
-  **Refresh** button, in the composer toolbar since ADR-0071. `chat_models`
+  **Refresh** button, in the model box in the side panel footer since ADR-0089
+  (the composer toolbar from ADR-0071 until then). `chat_models`
   takes the session id, resolves that session's connection exactly as
   `chat_send` does, stored credential included, and sends one
   `GET /v1/models` to its endpoint, which is a loopback endpoint or the fixed
@@ -597,7 +739,7 @@ untouched controls take the returned values.
   composer keeps an answer only when it is for the session still shown and no
   later request or reset began; it never compares the endpoint of an answer
   with another endpoint. It once did, and discarded the whole list
-  whenever the connection had changed outside the footer (a regression test
+  whenever the connection had changed outside this window (a regression test
   covers it). The list loads when a session opens, after a provider is
   chosen for it, when the connection read for it changes, and on
   **Refresh**, which is disabled while a list is being read. While it loads,
@@ -618,10 +760,9 @@ untouched controls take the returned values.
   model is chosen. Choosing a model grants nothing; `chat_send` validates it
   as before. Embedding models are listed too and cannot answer a turn.
 - **Provider and model per session** (ADR-0071 decisions 6 to 11). The
-  provider and the model belong to the open session. The composer's
-  **Provider** dropdown and the footer's provider dropdown both render one
-  shared state read from `connection_status` for the session, so they cannot
-  disagree. Opening a session reads its connection and model and lists its
+  provider and the model belong to the open session. The model box's
+  (ADR-0089; the composer's until then) **Provider** dropdown renders a state read from `connection_status` for
+  the session; the status bar no longer has a provider dropdown (ADR-0084). Opening a session reads its connection and model and lists its
   models; switching sessions switches both and shows no dialog, because the
   choice was confirmed when it was made. Choosing a provider calls
   `connection_select` with the session id and the profile name or `null`;
@@ -634,9 +775,9 @@ untouched controls take the returned values.
   the `settings` window. **Chat settings** keeps the endpoint as read-only text
   (the open session's endpoint). A launch argument
   (`--endpoint` or `--provider-profile`) fixes the connection of every
-  session: both provider dropdowns are disabled and show "Set at launch", and
-  the model is still chosen from that connection's list. `chat_send` keeps
-  sending the composer's endpoint and model; Send is disabled without a model
+  session: the model box's **Provider** dropdown is disabled and shows "Set
+  at launch", and the model is still chosen from that connection's list. `chat_send` keeps
+  sending the endpoint of the shared connection and the model the model box shows; Send is disabled without a model
   and while the session's provider is being read or has gone stale.
 - **Saved preferences.** Two windows save one file, each its own fields,
   under one service lock, so neither overwrites the other's (ADR-0080). The
@@ -785,6 +926,140 @@ untouched controls take the returned values.
 
 A panicked turn thread is recorded as a failed turn with the code `internal`.
 
+## Context tab
+
+The **Context** tab of the right-hand panel shows `createContextTab()` from
+`ui/src/main/context_tab.ts`, which the `session_context_breakdown` command
+serves (ADR-0087). The tab reads when it is shown, when the open session
+changes while it is shown, and again when a turn settles; see
+[right-hand panel](#right-hand-panel).
+
+- **Command.** `session_context_breakdown { session_id }` is `main`-only. Rust
+  resolves everything from trusted state by session id: the journal through the
+  index, the saved chat budgets and global instructions, the session
+  workspace's saved instructions (read under the preferences lock, as
+  `chat_send` reads them), and live settings for the tool decision. It
+  sends nothing to a model, appends nothing to any journal, and returns no
+  instruction or message text, only numbers and fixed codes. It runs on a
+  blocking task.
+- **Parts.** In display order: the system prompt (compiled base prompt and its
+  message overhead), global instructions, workspace instructions (including the
+  headings that join the two texts), tool definitions, the compaction summary,
+  the conversation history after the compaction boundary (with its message
+  count; the boundary is named only when a summary is sent), selected skills,
+  and message framing. Framing is the fixed overhead
+  no part owns (the instructions label and the instruction message's
+  overhead), reported as its own part so the parts add up to the estimate.
+  Tool definitions count only when live settings would offer tools (the same
+  rule a turn applies); otherwise the part is not included and carries a fixed
+  reason such as `preference_disabled`. Skills are loaded only when selected
+  for one turn, so the part is always not included (`selected_per_turn`).
+- **One estimator.** The parts come from the arithmetic the pre-turn trigger
+  uses (`estimate_history_parts` in core, whose total is
+  `estimate_history_input_tokens`), applied to the same history the next
+  request would send. The estimate leaves out the operator's next message,
+  which is not known; the trigger counts it. Tests show that the parts sum to
+  the preflight total for the same session state, less that message.
+- **Totals.** The estimate, the output reserve, the effective compaction
+  trigger, the saved context capacity (`null` when none is saved; the
+  trigger is then the saved threshold alone), and whether auto-compaction is
+  on. They come from the saved chat budgets and composer preferences, the
+  values the composer sends with a turn.
+- **Errors.** `not_found` for an unknown session; `busy` while a turn runs
+  for the session or another process holds its journal; `invalid_journal`;
+  `instructions_unreadable` when a turn would also refuse. A session whose
+  workspace is no longer registered is not an error: as in `chat_send`, its
+  workspace instructions are not sent even when a saved file remains, so that
+  part and the tool definitions part are not included
+  (`workspace_unregistered`, ADR-0081).
+- **View.** A horizontal stacked bar of the included parts scaled to the
+  context capacity (or to the larger of the estimate and the trigger when the
+  capacity is unknown) with the compaction trigger marked, then a table of
+  every part with its tokens, its share of the estimate, and a note (the reason
+  a part is not included, or the history's message count), then the totals and
+  the plain statement "Conservative estimate before the next turn". The bar is
+  an SVG drawn through the DOM with sizes in attributes, so the view sets no
+  inline style. Each part has a colour from the shared tokens and a text label,
+  so colour is never the only cue. With no session open the view shows an empty
+  state; a failure shows as text, and a failed reload keeps the session's last
+  estimate below the error until a reload succeeds; **Refresh** reloads. A slow
+  answer for a session that is no longer open is ignored, and opening another
+  session clears the previous one's estimate.
+- **Limits.** The estimate counts one byte as one token, so it overstates a
+  real tokenizer's count. It is not provider-reported usage and is not
+  recomputed while a turn runs.
+
+## Processes tab
+
+The **Processes** tab of the right-hand panel shows `createProcessesTab()`
+([ADR-0086](adr/0086-show-the-sessions-subprocesses-in-the-main-window.md)).
+It reads only while it is visible; see [right-hand panel](#right-hand-panel).
+
+The only subprocess a session starts is a model `workspace_run_command` call.
+`session_processes { session_id }` lists those calls for one session, newest
+first, at most 100, with `truncated` set when older calls may exist: more
+than 100 matched, or the 1,000-record window was full. It is
+read-only: it cancels, restarts, and runs nothing, and the webview names only
+the session identifier. Rust resolves every source from trusted state, on the
+blocking pool, with the same bounded readers the trusted CLI uses.
+
+| Source | Gives |
+| --- | --- |
+| Model action journal (`ActionJournal::recent`, the 1,000 newest records of all sessions) | The call identifier, start and refusal time, how the call was authorised or why it was refused, the finish time and outcome, and the run identifier a finished call recorded |
+| Run journal (`run::audit_existing`, the newest 100 events; one attempt, no wait, nothing created) | Through that run identifier: the resolved program, the profile name, the result (exit code, signal, deadline, cancellation, or the limit that stopped it: memory, processes, CPU time, or disk growth), and the elapsed time |
+| Session journal (`SessionInspection`) | The program and argument text the model sent, matched to the action records by call identifier |
+
+The action journal records no argument text and the run journal records only
+an argument count and digest, so the command text comes from the session
+journal. A call identifier is unique within one turn only, so records and
+requests that share one are paired in order from the newest end. A call
+with no matching request, or a session journal that cannot be read (for
+example while a turn holds it on Windows), shows the run journal's program
+when it has one, and otherwise "(command unavailable)". A run journal that
+cannot be read sets `run_details` to `unavailable`, and one that another holder
+has locked sets it to `busy`: results and durations are then absent and the
+action journal data is still listed. The run journal read never creates the
+settings store or the journal, and never waits. A missing store or journal
+lists no runs and is not an error. A run holds the settings and journal locks
+only while it records its start and its finish, not while the program runs.
+The action journal read waits at most 250 ms for a writer, well under the
+two-second poll, and then fails with `busy`; the shared poller never starts a
+read while one is in flight.
+
+Each entry has a `state`:
+
+- `running`: started, no finish recorded, and this desktop has a chat turn
+  active for the session.
+- `unfinished`: started, no finish recorded, and no turn is active here, for
+  example after a crash. The outcome is unknown, never failed.
+- `finished`: started and finished. `result` and `limit` come from the run
+  journal; a finished call with no run result shows its failure code.
+- `refused`: never started, with the refusal reason.
+
+The reply returns, per entry, only: the call identifier, the state, the start
+and finish times, the run's elapsed milliseconds, the program, the arguments,
+whether text was shortened, the argument count, the profile name, the result
+kind with exit code or signal, the limit, and a reason code. It never returns
+captured output, environment values, credentials, working directories, or
+digests. Program, arguments, and the profile name are untrusted model-chosen
+text. Rust escapes each to one line with `display_safe_line`, renders a
+non-Unicode program path lossily, and bounds them: 256 characters per item, 32
+arguments, 2,048 characters per call, charged to the program, then the profile
+name, then the arguments. The view builds text nodes only and shows
+the full command line in a tooltip.
+
+`createProcessesTab()` in `ui/src/main/processes_tab.ts` returns a
+`PanelView` (`element`, `showSession`, `refresh`, `dispose`). It shows each
+call on one ellipsized line with a state badge, start time, duration, and
+outcome, the empty state "No subprocess has run in this session.", errors as
+text, and a **Refresh** button. A `truncated` answer adds "Older calls may not
+be shown."; with no call listed it can only mean the record window was full,
+so the empty state reads "No recent subprocess was found in this session."
+instead. While the list holds a `running` call it reads
+again every two seconds, through the shared poller, which also pauses while the
+page is hidden; it stops when nothing runs, on `showSession(null)`, and on
+`dispose()`. An answer for a session that is no longer shown is dropped.
+
 ## Settings window
 
 **Settings** in the session sidebar calls `settings_show_window`, which shows
@@ -798,9 +1073,14 @@ store exists from the first launch.
 Since 0.45.0 (ADR-0065) a sidebar chooses one of three sections: **Model**,
 **Workspaces** (shown first), and **Advanced**. **Refresh** and the settings
 revision sit at the bottom of the sidebar, and errors and notices at the top
-of the section. The chosen section, the chosen workspace, and which
-disclosures are open are kept in memory only and survive a refresh and every
-change. The sidebar is disabled with every other control while a change
+of the section. **Workspaces** is a collapsible group: a chevron button
+beside it (`aria-expanded`, named "Workspaces list") opens or closes a list
+with one entry for each registered workspace, each showing its folder with an
+ellipsis and the full text as a tooltip. The group starts open and is hidden
+when no workspace is registered. The chosen section, the chosen workspace,
+whether the group is open, and which disclosures are open are kept in memory
+only and survive a refresh and every change. The sidebar, the chevron, and
+the workspace entries are disabled with every other control while a change
 waits. The window shows:
 
 - **Model.** The connection the next turn uses, with a **Model provider**
@@ -830,10 +1110,12 @@ waits. The window shows:
   change keeps it. A note says when the saved file could not be read.
 - **Workspaces.** The meaning of Deny, Prompt, and Allow, stated once. The
   development root, with **Choose folder…** or **Change…**, and
-  **Register workspace…**, which is disabled until a root is set. With two or
-  more workspaces, a **Workspace** field chooses which one is shown; choosing
+  **Register workspace…**, which is disabled until a root is set, and a line
+  saying when no workspace is registered. That overview is what the
+  **Workspaces** entry shows. Choosing a workspace's entry under it shows that
+  workspace instead and marks only that entry as the current page; choosing
   sends nothing, and the window shows the first workspace when the chosen one
-  is gone. The shown workspace has its folder, a **Model tools** checkbox for
+  is gone, or the overview when none is left. The shown workspace has its folder, a **Model tools** checkbox for
   `model_tools`, and one row each for `read`, `write`, `execute`,
   `task_network`, and `host_services`, each with a short description and a
   Deny, Prompt, or Allow segmented control. Under Write, the disclosure
@@ -841,7 +1123,10 @@ waits. The window shows:
   (edit, multi-edit, create, rename, and delete; since 0.43.0, ADR-0063). A
   tool whose limit is wider than `write` says "Limited by Write:" and the
   `write` state. Then the workspace identifier and its package cache root with
-  **Choose…** and, when one is set, **Clear**. Then **Custom instructions**
+  **Choose…** and, when one is set, **Clear**, and one line of help: the root
+  is where the trusted CLI command `omgcode packages fetch` stores downloads
+  for that workspace, a trusted run exposes it read-only, and the app never
+  fetches packages. Then **Custom instructions**
   (ADR-0080): a box with a byte counter and **Save instructions**, which
   calls `settings_set_workspace_instructions` with the workspace identifier
   and the text, with no dialog. Rust refuses a workspace that is not
@@ -870,13 +1155,106 @@ waits. The window shows:
   which reads the other text again. Each workspace's typed draft is kept in window memory
   until its save succeeds. A note says when the saved file could not be
   read; until it is saved again, that workspace's sessions cannot send.
-- **Advanced.** Read-only, with no control that changes anything: toolchain
-  profiles with their platform, read-only roots, path entries, and
-  environment variable names, without values; package-network profiles with
-  their origins and how many credentials are bound; container grants with
-  their folder, access, and state; and each imported skill's name, its
-  application setting, and its workspace overrides, with the workspace shown
-  by its folder. A line says these change only through the trusted CLI.
+
+  **Remove workspace…** (ADR-0081) ends each workspace's page under
+  **Workspaces**; the scoped view has none. It calls
+  `settings_unregister_workspace` with the workspace identifier and the
+  revision the window read, never a path. Rust refuses an unknown workspace, a
+  stale revision, a workspace that a container grant names (revoke it under
+  **Advanced** or with the trusted CLI first), and a workspace in which a chat turn is running, all
+  before any dialog. A native Yes/No confirmation then names the folder and
+  states that its preferences, instructions, package cache selection, skill
+  overrides, and checkpoint record are removed, that its files are not
+  touched, and that its sessions stay and can chat without tools only. On
+  Yes, one `workspace_unregistered` event is recorded and the workspace's
+  instructions file is deleted under the preferences lock. If that file cannot
+  be deleted, the command still stops and waits for the runs the removal
+  withdraws, then fails with `instructions_orphaned` (a run that was not
+  stopped is reported first); no turn sends the file, because `chat_send`
+  checks registration and reads a workspace's instructions under the same
+  lock, only while that workspace is registered. A turn that starts
+  while the dialog is open is found again before the change; a turn that
+  starts in the instant after that loses its tools, because every tool call
+  reads the live settings. A `settings` window opened for the removed
+  workspace shows the full view with the existing notice.
+- **Advanced.** Four groups, each with controls (ADR-0082, ADR-0088). The
+  window sends identifiers, counts, typed names, origins, and variables, and
+  never a path; Rust opens every folder dialog and composes every
+  confirmation. Core has no edit operation for a toolchain profile, a
+  package-network profile, or a grant, so there is none here: remove and add
+  again. Adding is not atomic with removing, which is why no edit is offered.
+
+  **Toolchain profiles** list each profile's platform, read-only roots, path
+  entries, and environment variable names, without values, and a **Remove**
+  button. **Add toolchain profile** takes a name, how many read-only roots
+  (1 to 16) and `PATH` entries (0 to 16) to choose, and the variables as
+  `NAME=VALUE` lines, typed in the webview because they are stored in plain
+  text by design; a line says never to put a secret in one. **Add profile…**
+  calls `settings_add_toolchain_profile`, and Rust then opens one native folder
+  dialog per root and per entry (the entry dialogs start at the first chosen
+  root), shows one native confirmation with the name, platform, every root and
+  `PATH` entry, and the variable names (never the values), and applies the
+  change with the revision the window read. A closed dialog or a declined
+  confirmation changes nothing; core's refusals (name, variables, overlap
+  with the development root or application storage, a `PATH` entry outside a
+  root, a name in use) come back as controlled errors after the dialogs.
+  Removing is confirmed natively and stops the runs the settings then
+  withdraw, as `workspace profile-remove` does; a run already started keeps
+  its recorded profile.
+
+  **Package-network profiles** list each profile's origins and how many
+  credentials are bound, and a **Remove** button. A line says a profile is
+  configuration only: no run uses it and it grants no network access.
+  **Add package profile…** sends a name and 1 to 8 origins typed one per line;
+  Rust has core parse them first (a bad origin is refused before any dialog)
+  and the native confirmation lists the canonical origins. Removing is
+  confirmed natively; when credentials are bound to the profile's origins the
+  confirmation says they are unbound and their stored keys deleted, as
+  `workspace package-profile-remove` does, and `credential_orphaned` reports a
+  key that could not be deleted. Binding a credential stays CLI-only.
+
+  **Container grants** are Windows only. Elsewhere the group says so and offers
+  no control, the overview's `container_grants_supported` is false, and the two
+  commands return `unsupported_platform`. On Windows each grant lists its
+  folder, workspace, access, and state (`pending`, `active`, `revoking`) with a
+  **Revoke** button, and **Grant a folder** has a workspace select and an
+  access select (read and execute, or read and write for the workspace
+  folder only). **Grant folder…** calls `settings_grant_container_folder`;
+  Rust opens the folder dialog and shows a confirmation naming the workspace,
+  the folder, and the access, and saying that the folder's access-control
+  list changes on disk for that workspace's AppContainer. A failed list
+  change leaves the grant `pending` (the command fails with
+  `container_access_failed`); **Revoke** tries again, and a revocation that
+  fails stays `revoking`. Revoking checks the revision under the lock, stops
+  the workspace's earlier runs, and needs no revision from core.
+
+  The **Skills** group (ADR-0082): **Import skill…** calls
+  `settings_import_skill` with only the revision; Rust opens a native folder
+  dialog and imports the folder through the call `omgcode skills add` uses,
+  so the skill arrives disabled, nothing in it runs, and core's checks apply
+  (a folder named as the skill, `SKILL.md`, the size and shape bounds, at
+  most 64 skills). A refusal comes back as a controlled error with core's
+  code and fixed text that names no path. Each skill then has one select
+  for its **Application** setting (enabled or disabled; "Not set (disabled)"
+  while unset) and one select per registered workspace, shown by its folder,
+  with **Inherit the application setting**, **Enabled**, and **Disabled**,
+  which call `settings_set_skill_state` (a `null` workspace is the
+  application scope; `skill_state` is `enabled`, `disabled`, or `inherit`),
+  and a **Remove** button, which calls `settings_remove_skill`. Enabling lets
+  the `main` window select the skill for a turn, which sends its text to the
+  model as a labelled untrusted message, so Rust shows a native confirmation
+  that names the skill, its scope, and a bounded display-safe description
+  before any change that leaves the skill enabled at that scope, including an
+  inherit that ends enabled; a change that leaves it as it was, and every
+  disable, asks nothing. Removing is always confirmed: the text says the
+  registration, its settings, and its stored copy in private storage are
+  deleted, the imported folder is not touched, and the skill must be imported
+  again, disabled, to return. When the registration is removed but the stored
+  copy cannot be fully deleted, the command fails with `package_orphaned`;
+  the copy is inert, and the window reads the settings again and shows the
+  skill gone. Each select shows the recorded state again after a declined
+  dialog or a refusal. The window shows a skill's name only; its description
+  and body stay unrendered.
 - **Workspace scope** (ADR-0071). **Workspace settings**, an icon button
   with a folder beside **Send** (ADR-0080), calls `settings_show_workspace` with
   the open session's identifier and nothing else; it is disabled until a
@@ -892,8 +1270,8 @@ waits. The window shows:
   Deny, Prompt, and Allow help, its folder, **Model tools**, the permission
   rows, **File-write tool limits**, its identifier, its package cache, and
   its **Custom instructions**.
-  It shows no development root, **Register workspace…**, or workspace
-  chooser. **All settings** calls `settings_clear_scope`, a `settings`
+  It shows no development root or **Register workspace…**, and the hidden
+  sidebar lists only that workspace. **All settings** calls `settings_clear_scope`, a `settings`
   command, and the window then shows the sections as before. **Settings** in
   the sidebar calls `settings_show_window`, which clears the scope first. If
   the scoped workspace is no longer registered, the window shows the full
@@ -903,28 +1281,25 @@ waits. The window shows:
   could already change every workspace, and the scope grants and removes
   nothing. A poisoned scope lock reads as no scope.
 - **Status bar.** A footer along the bottom of `main` shows the open
-  session's workspace folder, its Git branch, and the model provider
-  (ADR-0064). The provider is a dropdown of "LM Studio: default" and each
-  selectable profile, from `connection_status`, labelled with provider,
-  profile name, and endpoint. A profile is selectable when it is a local
-  profile with a recorded endpoint, or an `ollama_cloud` profile with the
-  cloud endpoint and a bound credential. Since ADR-0071 the dropdown acts on
-  the open session and is the same control, over the same state, as the
-  composer's **Provider** dropdown: choosing one calls `connection_select`
-  with the session id and the profile name only. Rust refuses an unknown
-  session, an unchanged choice, an unselectable profile, and a launch-fixed
-  connection before any dialog, then asks the native Yes/No dialog and records
-  the choice only on Yes. A declined dialog shows "The model provider was not
-  changed.". With no session open the dropdown is disabled. When a launch
-  argument fixed the connection, it is disabled and shows "Set at launch".
-  A recorded choice that no longer holds (its profile was removed, is no
-  longer selectable, or has another endpoint) shows "Choose again" and the
-  next send is refused with `session_connection_stale`. The branch comes from
+  session's workspace folder, its Git branch, and the approvals segment
+  (ADR-0064). Until ADR-0084 it also held a **Model** provider dropdown and
+  a connection message; both are removed because the model box in the side
+  panel footer chooses the provider and model per session (ADR-0071, ADR-0089)
+  and shows the failure or
+  "The model provider was not changed." note beside its own dropdowns, so no
+  connection message is lost. The footer calls no connection command, but
+  its focus and tree-change refresh still asks the shared connection state
+  to read `connection_status` again, so the model box follows a connection
+  changed in the `settings` window. `connection_select` stays in the `main`
+  capability only for the model box's **Provider** dropdown, with the native
+  Yes/No dialog described there. The branch comes from
   `session_context`, which reads only `HEAD` through the anchored broker (see
-  "Git branch display"). The footer reads both again when the window regains
-  focus, when a session opens, and after a turn settles. Like the rest of
-  `main`, it uses no `title` tooltips; the reason a branch is unavailable is
-  shown as text.
+  "Git branch display"). The footer reads the branch again when the window
+  regains focus, when a session opens, and after a turn settles. The footer
+  uses no `title` tooltips; the reason a branch is unavailable is shown as
+  text. Elsewhere in `main` a tooltip holds fixed text, or untrusted text
+  that is neutralised: the session row, the conversation header, a
+  transcript label, and the Processes command line.
 - **Git branch display.** `session_context` opens the session's registered
   workspace by its recorded root and workspace identities and reads
   `.git/HEAD`, at most 4096 bytes, without following a link. No Git program
@@ -1268,14 +1643,62 @@ escaped too. The character list is `is_hidden_format` in
 (homoglyphs), mixed scripts, or ordinary spaces. An operator can still be
 misled by a request that uses such text.
 
+## Git status tab
+
+`workspace_git_status` and the view in `ui/src/main/git_tab.ts` show the open
+session's Git branch and changed files, read-only
+([ADR-0085](adr/0085-read-git-status-with-gix-without-running-programs.md)).
+The **Git** tab of the right-hand panel shows `createGitTab()` with the
+`gitStatus` rail icon, and its styles are part of `ui/src/styles/main.css`. It
+reads when it is shown, when the open session changes while it is shown, and
+when a turn settles, so the status run never starts for a hidden tab; see
+[right-hand panel](#right-hand-panel).
+
+- **Scope.** The command takes only a session id. Rust resolves the session's
+  recorded workspace, opens it by its recorded identities as the branch reader
+  does, and refuses an unregistered workspace with `unknown_workspace`. A
+  folder with no `.git` is the `not_repository` state, shown as "Not a Git
+  repository.", not an error. When `.git/HEAD` cannot be read, the anchored
+  handle names what `.git` is, and nothing is followed: a `.git` file (a
+  linked worktree or submodule pointer) shows "Git status unavailable: the
+  .git entry is a file, so linked worktrees and submodules are not shown"; a
+  `.git` folder without a readable `HEAD`, and a `.git` link or special entry,
+  each show their own reason.
+- **No program runs.** The repository is read in process with the `gix` crate,
+  opened with isolated permissions (no system, global, user, or environment
+  configuration, no includes). Every section of the repository's own
+  `.git/config` is rejected, so a `filter.<name>.*` or `diff.<name>.*` command
+  is never known, and `core.fsmonitor` is read by nothing. No hook runs.
+  Submodules are ignored. The status run writes nothing, not even the index.
+  A test sets each of those keys to a command that would create a marker file
+  and asserts that none appears.
+- **Result.** The branch is the same view as the status bar's. Up to 1,000
+  changed paths are sorted by path, each with a `HEAD`-to-index state (added,
+  modified, deleted, renamed, type change) and an index-to-worktree state
+  (modified, deleted, untracked, conflicted). An untracked folder is one entry
+  with a trailing `/`. `truncated` is true when more paths changed. A run that
+  takes over 10 seconds is interrupted and reported as unavailable. A path is
+  display-safe text, lossy for non-Unicode names, and never used as a path.
+  The command runs on the blocking pool.
+- **View.** A branch line and a **Refresh** button, then the paths grouped as
+  **Staged**, **Changed**, **Untracked**, and **Conflicted**, each row a
+  state letter (`A`, `M`, `D`, `R`, `T`, `?`, `U`) and the path. A path both
+  staged and changed appears in both groups. The letter's tooltip is fixed
+  text such as "Staged: added"; a path is never placed in a tooltip. "No
+  changes." shows for a clean repository, a note shows when the list is
+  truncated, and an error shows as text. `showSession(null)` clears the view
+  and a new session reads again; an older answer is dropped.
+- **Mock.** `npm run dev` answers `workspace_git_status` with a small fixed
+  status that includes a markup-like name.
+
 ## Security properties and limits
 
 What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the eleven settings-window
-  commands. The `settings` file grants only those eleven. Every handler also calls the Rust
+  not grant the three approval commands or any of the twenty-four settings-window
+  commands. The `settings` file grants only those twenty-four. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -1284,9 +1707,23 @@ What the design does:
   `--left-width` and `--right-width` through the CSSOM, each a whole number
   of pixels it computes and clamps (ADR-0072). No other frontend code sets a
   style, and no text reaches one; `tests/security.test.ts` checks both.
-- **No host paths.** No command accepts a path. The service returns no journal
-  path, no data root, no token, and no tool output digest. Workspace folder
-  display text is the only path-like text the `main` window receives. The
+- **A names-only file view.** `workspace_entries` lets the `main` webview learn
+  the file and folder names of the open session's registered workspace without
+  the `read` preference (ADR-0083). It returns no content, size, or date,
+  hides the `.OMGCode` store, never follows a link out of the workspace, takes
+  no host path, and grants nothing.
+- **No host paths.** No command accepts a host path; `workspace_entries` takes
+  only relative name components that Rust validates and resolves below the
+  session's workspace. The service returns no journal
+  path, no data root, no token, and no tool output digest. The path-like
+  text the `main` window receives is: workspace folder display text; the
+  Files tab's names, which are names and kinds only, at most 512 per folder,
+  with `.OMGCode` hidden and no link followed (ADR-0083); the Git tab's
+  changed paths relative to the workspace, as lossy text, at most 1,000
+  (ADR-0085); and the Processes tab's program text, escaped to one line and
+  at most 256 characters, which can be the run's resolved program path
+  (ADR-0086). The view shows all of it as text nodes, and only
+  `workspace_entries` takes listed names back, as relative components. The
   `settings` window also receives the recorded development root, profile
   roots and path entries, package cache roots, and grant folders, all as
   display-safe text. No command takes any of them back as input. A settings
@@ -1372,7 +1809,7 @@ What the design does:
   `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
   test checks that no approvals asset contains it.
 - **The configuration view and changes only in `settings`.** The settings
-  window loads its own bundle. The six settings-window command names appear
+  window loads its own bundle. The twenty-four settings-window command names appear
   only in `src/ipc/settings_client.ts`. Bundle tests check that no main or
   approvals asset contains any of them, and that no settings asset contains
   `approval_decide`, `approval_detail`, or `chat_subscribe`.
@@ -1396,9 +1833,17 @@ What it does not do:
   settings window. It cannot call any settings-window command.
 - A compromised `settings` webview can read the configuration view: recorded
   paths, profile names, endpoints, origins, and skill names. It can turn
-  preferences off, clear package cache roots, and open the native dialogs
-  again and again, one at a time. It cannot choose a folder, answer a
-  dialog, widen access, read a secret, or call any other window's command.
+  preferences off, clear package cache roots, disable a skill, remove an
+  unselected connection that holds no API key, and open the native dialogs
+  again and again, one at a time. It can also ask to delete, each behind a
+  native confirmation it cannot answer: a workspace registration with its
+  settings and instructions file, a skill's stored copy, a connection with
+  its stored API key, a toolchain profile, a package-network profile with
+  the credentials bound to its origins, and a Windows container grant. It
+  cannot choose a folder, answer a dialog, widen access or enable a skill
+  without the native confirmation, read a secret, or call any other window's
+  command. It can ask to import a
+  folder only through the native folder dialog, so it cannot name one.
 - On Windows the native confirmation's default button is Yes, because `rfd`
   offers no way to change it. A keyboard Enter confirms.
 - The approvals webview is still web content. The design reduces what reaches
@@ -1414,7 +1859,11 @@ What it does not do:
   by the model: a reply can make text look like a heading, a quote, or a code
   block that the operator did not write. A code block's **Copy** button writes
   what the block shows, including any command the model chose; it is
-  user-initiated and write-only. Visible markers replace bidirectional
+  user-initiated and write-only. The DOM builder neutralises the
+  attributes a person reads or hears (`title`, `aria-label`, and the like) as
+  it does text, and so do the icon-button and popover helpers, so recorded
+  text such as a workspace folder in a tooltip or an accessible name cannot
+  reorder what is shown or announced. Visible markers replace bidirectional
   overrides, but zero-width and other invisible characters are neither marked
   nor removed, so they are copied too. A reply's **Copy Markdown**, **Copy
   text**, and **Copy image** buttons follow the same rule (ADR-0068). A
@@ -1438,7 +1887,8 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 39 |
+| Commands | 56 |
+| Git status changed paths | 1,000, and a 10-second deadline |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
 | Search hits per request | 200 |
@@ -1470,6 +1920,7 @@ What it does not do:
 | Shutdown grace | 5 seconds |
 | Model request cancel check interval | 25 ms |
 | Approve button delay | 1 second |
+| Processes listed | 100 calls; 32 arguments and 256 characters per item, 2,048 characters per call; 100 run journal events read; polled every 2 seconds only while a call runs (ADR-0086) |
 | Poll and check intervals | chat reconcile 5 seconds, chat fallback poll 750 ms, approvals 3 seconds |
 
 ## Development
@@ -1538,7 +1989,10 @@ ACLs the private store refuses, see the notes in
   key, and that a late detail answer is dropped;
   `ui/tests/settings_sections.test.ts` the sections, the workspace field, the
   workspace scope (one workspace, no sidebar, **All settings**, a focus read),
-  permission rows, and the read-only Advanced section; and
+  permission rows, and the Advanced groups; `ui/tests/settings_skills.test.ts`
+  the Skills controls and the mock skill commands (ADR-0082);
+  `ui/tests/settings_execution.test.ts` the profile and grant controls and
+  their mock commands (ADR-0088); and
   `ui/tests/main_redesign.test.ts` the View menu, the status-bar approvals
   segment, the composer menus and counter, and the compact transcript rows.
   Since ADR-0071: `ui/tests/model_picker.test.ts` covers the model
@@ -1546,8 +2000,8 @@ ACLs the private store refuses, see the notes in
   differs from the composer's; `ui/tests/session_connection.test.ts` covers
   reading a session's provider and model when it opens, switching sessions
   without a dialog, choosing a provider for the open session (the model is
-  cleared and disabled until the list arrives), the footer and the composer
-  staying in step, a status or list that arrives for a session that was left,
+  cleared and disabled until the list arrives), the status bar showing
+  no provider dropdown, a status or list that arrives for a session that was left,
   the hosted warning, launch-fixed connections, and a stale choice.
   `ui/tests/settings_window.test.ts` and `ui/tests/settings_sections.test.ts`
   also cover the Ollama Cloud form (the endpoint hidden and the fixed one
@@ -1634,6 +2088,20 @@ ACLs the private store refuses, see the notes in
   selection were checked by unit, service, and bundle tests and in the Vite
   development server against the mock backend. The real shell's windows were
   not driven for 0.40.0.
+- ADR-0082: the skill commands were checked by service tests with a scripted
+  prompt (`crates/omgcode-app/tests/desktop_settings_skills.rs`), by unit,
+  layer, and bundle tests, and against the mock backend. The native dialogs
+  and the real shell's settings window were not driven by automation, and
+  nothing ran on Linux.
+- ADR-0088: the profile and grant commands were checked by service tests with
+  a scripted prompt (`crates/omgcode-app/tests/desktop_settings_execution.rs`),
+  by unit, layer, and bundle tests, and against the mock backend. No test
+  applies a container grant, because that changes a folder's access-control
+  list and creates an AppContainer profile on the host; the confirmation text
+  and the paths before the change are tested instead, and the platform refusal
+  is tested only for non-Windows builds, which did not run here. A package
+  profile with a bound credential was not exercised. The native dialogs and
+  the real shell's settings window were not driven by automation.
 - Phase S2 (0.41.0): the change commands were checked by service tests with a
   scripted prompt, by unit, layer, and bundle tests, and in the Vite
   development server against the mock backend. The native dialogs and the

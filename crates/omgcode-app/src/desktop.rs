@@ -86,20 +86,25 @@
 
 mod approvals;
 mod chat;
+mod context_breakdown;
 mod data_folder;
 mod error;
 mod events;
 mod instructions;
 mod preferences;
+mod processes;
 mod review_tokens;
 mod session_connections;
 mod sessions;
 mod settings;
 mod settings_changes;
 mod settings_chat;
+mod settings_execution;
+mod settings_skills;
 mod state;
 mod turns;
 mod wire;
+mod workspace_entries;
 mod workspaces;
 
 use std::path::{Path, PathBuf};
@@ -113,8 +118,18 @@ use uuid::Uuid;
 pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
 use self::events::EventHub;
+pub use self::instructions::remove as remove_workspace_instructions;
+pub use self::processes::{
+    ProcessEntry, ProcessLimit, ProcessResult, ProcessResultKind, ProcessState, RunDetails,
+    SessionProcesses,
+};
 use self::review_tokens::ReviewTokens;
 pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
+pub use self::settings_execution::{
+    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
+    PackageProfileAddRequest, ProfileRemoveRequest, ToolchainProfileAddRequest,
+};
+pub use self::settings_skills::{SkillChoice, SkillRemoveRequest, SkillStateRequest};
 use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
@@ -126,22 +141,25 @@ pub use self::wire::{
     ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
     ComposerPreferencesDto, ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest,
     ConnectionOrigin, ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView,
-    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView, ContextMeterDto,
-    Decision, EntryKind, MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView,
-    PermissionFlags, PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit,
-    SearchRequest, SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest,
-    SessionModelSelectRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
-    SessionTree, SettingsOverview, SettingsRevisionRequest, SettingsScope, SkillOverrideView,
-    SkillSettingView, SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode,
-    TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
-    WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest, WorkspaceList,
-    WorkspaceRevisionRequest, WorkspaceSettingsView,
+    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView,
+    ContextBreakdown, ContextMeterDto, ContextPartDto, ContextPartId, Decision, EntryKind,
+    GitIndexState, GitPathView, GitStatusState, GitStatusView, GitWorktreeState, MessageRoleDto,
+    ModelChoice, NewConnectionKind, PackageProfileView, PermissionFlags, PermissionsChangeRequest,
+    PreferencesSource, ProviderProfileView, SearchHit, SearchRequest, SearchResult, SearchRoleDto,
+    SessionContext, SessionCreateRequest, SessionModelSelectRequest, SessionRequest, SessionSkills,
+    SessionStatus, SessionSummary, SessionTree, SettingsOverview, SettingsRevisionRequest,
+    SettingsScope, SkillOverrideView, SkillSettingView, SnippetPart, ToolOutcomeDto,
+    ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage, TranscriptRequest,
+    TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest,
+    WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
+pub use self::workspace_entries::WorkspaceEntriesRequest;
 use crate::credential_source::resolve_connection_and_kind;
 use crate::{
     AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
     resolve_local_endpoint,
 };
+pub use omgcode_core::workspace_entries::{EntryClass, WorkspaceEntry, WorkspaceListing};
 
 /// Fixed settings of one desktop process.
 #[derive(Clone, Debug, Eq, PartialEq)]

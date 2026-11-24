@@ -14,7 +14,9 @@ permission grants or trusted application extensions.
 - **Commands.** `omgcode skills add <folder> --revision N`, `list`, `show`,
   `enable`, `disable`, `inherit`, and `remove`. All are trusted CLI commands
   that print JSON. `show` prints the manifest, digests, sizes, source, settings,
-  and the `SKILL.md` body as a JSON string. There is no desktop control.
+  and the `SKILL.md` body as a JSON string. The desktop `settings` window
+  imports, enables, disables, and removes skills through the same core calls
+  (ADR-0082); it has no `show`, so it never displays a body.
 - **Import.** The folder is read through the native broker with a pinned
   directory identity. A link, junction, reparse point, special file, multi-link
   file, hidden or non-portable name (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, no
@@ -50,8 +52,8 @@ permission grants or trusted application extensions.
   registration write's outcome is uncertain, `add` keeps the copy and reports
   `registration_uncertain` with its identifier; `skills list` shows whether
   it was recorded. An import never deletes a package directory it did not
-  create. `list` and `show` refuse an unregistered `--workspace`. The control
-  journal has no workspace removal, so no override is dropped that way yet.
+  create. `list` and `show` refuse an unregistered `--workspace`. Unregistering a workspace
+  drops its overrides in the same event (ADR-0081).
 - **Loading.** `omgcode chat --skill <name>` selects up to four skills for one
   turn. Each must be registered and effectively enabled for the session's
   workspace, and its stored `SKILL.md` must match the recorded size and
@@ -72,9 +74,26 @@ permission grants or trusted application extensions.
   load, so deleting or editing the stored `SKILL.md` affects later loads
   only. The context estimate counts each skill message with its per-message
   overhead.
+- **Desktop settings window** ([ADR-0082](adr/0082-manage-skills-in-the-settings-window.md)).
+  **Import skill…** has Rust open a native folder dialog and call the same
+  `import_skill` as `skills add`, with the revision the window read; the skill
+  arrives disabled. A per-skill select sets the application setting and one per
+  registered workspace sets its override (`enabled`, `disabled`, `inherit`), as
+  `skills enable|disable|inherit`. Rust shows a native confirmation that names
+  the skill before any change that leaves it enabled at that scope, including
+  an inherit that ends enabled, because enabling makes its text loadable into a
+  turn as untrusted text. Disabling asks nothing. **Remove** is confirmed
+  natively, calls the same `remove_skill_and_package` as `skills remove`, and
+  the confirmation says that the registration, its settings, and the stored
+  copy are deleted and that the source folder is not touched. A stored copy
+  that cannot be fully deleted fails the command with `package_orphaned`; the
+  removal stands and the copy is inert. The window sends names, workspace
+  identifiers, and the revision, never a path. It shows a skill's name, not
+  its description or body. Selecting skills for a turn stays in the `main`
+  window.
 - **Not implemented:** Git sources, updates that keep the old version,
   session overrides, agent selection, resource loading, script execution,
-  desktop controls, a settings page, cache invalidation beyond the
+  a skill description or body view in the desktop, cache invalidation beyond the
   request-only rule, and observing the end of dependent work: a command that
   is already running keeps running when a skill selected for its turn is
   withdrawn, and the runner's own admission step does not recheck skills.

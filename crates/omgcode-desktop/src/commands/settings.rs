@@ -11,9 +11,11 @@
 
 use omgcode_app::desktop::{
     ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ConnectionAddRequest,
-    ConnectionRemoveRequest, ConnectionSelectRequest, NewConnectionKind, PermissionFlags,
-    PermissionsChangeRequest, SettingsOverview, SettingsRevisionRequest,
-    WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
+    ConnectionRemoveRequest, ConnectionSelectRequest, ContainerAccessChoice, ContainerGrantRequest,
+    ContainerRevokeRequest, EnvironmentEntry, NewConnectionKind, PackageProfileAddRequest,
+    PermissionFlags, PermissionsChangeRequest, ProfileRemoveRequest, SettingsOverview,
+    SettingsRevisionRequest, SkillChoice, SkillRemoveRequest, SkillStateRequest,
+    ToolchainProfileAddRequest, WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -157,6 +159,33 @@ pub async fn settings_clear_package_cache(
     };
     blocking(&state, move |service| {
         service.settings_clear_package_cache(request)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the folder and what
+/// is removed, unregisters one workspace (ADR-0081). The folder and its files
+/// are not touched.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unknown_workspace`,
+/// `turn_running`, `cancelled`, `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_unregister_workspace(
+    webview: Webview,
+    state: Service<'_>,
+    workspace_id: Uuid,
+    revision: u64,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsUnregisterWorkspace, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = WorkspaceRevisionRequest {
+        workspace_id,
+        revision,
+    };
+    blocking(&state, move |service| {
+        service.settings_unregister_workspace(request, &prompt)
     })
     .await
 }
@@ -359,6 +388,258 @@ pub async fn settings_set_workspace_instructions(
     };
     blocking(&state, move |service| {
         service.settings_set_workspace_instructions(request)
+    })
+    .await
+}
+
+/// `settings` only. Opens a native folder dialog and imports the chosen skill
+/// folder through the same core path as `omgcode skills add`. The skill is
+/// registered disabled and nothing in it runs (ADR-0082). The request carries
+/// only the revision; no path comes from the webview.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`, `stale_revision`,
+/// and core's skill codes such as `skill_name_taken` or `skill_md_missing`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_import_skill(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsImportSkill, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = SettingsRevisionRequest { revision };
+    blocking(&state, move |service| {
+        service.settings_import_skill(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Sets a skill's application setting (`workspace_id` null)
+/// or one workspace's override (`enabled`, `disabled`, or `inherit`). A change
+/// that leaves the skill enabled there first needs a native confirmation that
+/// names it; disabling needs none (ADR-0082).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`skill_not_found`,
+/// `skill_workspace_unknown`, `skill_inherit_needs_workspace`, `cancelled`,
+/// `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_set_skill_state(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+    workspace_id: Option<Uuid>,
+    skill_state: SkillChoice,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsSetSkillState, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = SkillStateRequest {
+        revision,
+        name,
+        workspace_id,
+        state: skill_state,
+    };
+    blocking(&state, move |service| {
+        service.settings_set_skill_state(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the skill and says
+/// its stored copy is deleted, removes it as `omgcode skills remove` does
+/// (ADR-0082). The folder it was imported from is never touched.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`skill_not_found`, `cancelled`,
+/// `stale_revision`, `package_orphaned` when the removal is recorded but the
+/// stored copy was not fully deleted).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_remove_skill(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRemoveSkill, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = SkillRemoveRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_remove_skill(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Opens a native folder dialog for each read-only root and
+/// each `PATH` entry (`root_count` and `path_entry_count` say how many; no
+/// path is carried), then, after a native confirmation that lists them and
+/// the variable names, records a toolchain profile as `omgcode workspace
+/// profile-add` does (ADR-0088).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `cancelled`, `stale_revision`, or `control` with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_add_toolchain_profile(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+    environment: Vec<EnvironmentEntry>,
+    root_count: u8,
+    path_entry_count: u8,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsAddToolchainProfile, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ToolchainProfileAddRequest {
+        revision,
+        name,
+        environment,
+        root_count,
+        path_entry_count,
+    };
+    blocking(&state, move |service| {
+        service.settings_add_toolchain_profile(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation, removes a toolchain profile
+/// as `omgcode workspace profile-remove` does and stops the runs the settings
+/// then withdraw (ADR-0088).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`,
+/// `stale_revision`, `runs_not_stopped`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_remove_toolchain_profile(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRemoveToolchainProfile, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ProfileRemoveRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_remove_toolchain_profile(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that lists the origins core
+/// parsed, records a package-network profile (configuration only) as `omgcode
+/// workspace package-profile-add` does (ADR-0088).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `cancelled`, `stale_revision`, or `control` with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_add_package_profile(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+    origins: Vec<String>,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsAddPackageProfile, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = PackageProfileAddRequest {
+        revision,
+        name,
+        origins,
+    };
+    blocking(&state, move |service| {
+        service.settings_add_package_profile(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation, removes a package-network
+/// profile as `omgcode workspace package-profile-remove` does, which also
+/// unbinds and deletes the registry credentials bound to its origins
+/// (ADR-0088).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`,
+/// `stale_revision`, `credential_orphaned`, `runs_not_stopped`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_remove_package_profile(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRemovePackageProfile, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ProfileRemoveRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_remove_package_profile(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only, Windows only. Opens a native folder dialog and, after a
+/// native confirmation that names the workspace, the folder and the access and
+/// says the folder's access-control list changes, grants the folder to the
+/// workspace's container as `omgcode workspace container-grant` does
+/// (ADR-0088).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unsupported_platform`,
+/// `unknown_workspace`, `cancelled`, `stale_revision`,
+/// `container_access_failed`, or `control` with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_grant_container_folder(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    workspace_id: Uuid,
+    access: ContainerAccessChoice,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsGrantContainerFolder, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ContainerGrantRequest {
+        revision,
+        workspace_id,
+        access,
+    };
+    blocking(&state, move |service| {
+        service.settings_grant_container_folder(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only, Windows only. After a native confirmation, revokes one
+/// recorded container grant as `omgcode workspace container-revoke` does and
+/// stops the workspace's runs that started before it (ADR-0088).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unsupported_platform`,
+/// `cancelled`, `stale_revision`, `container_access_failed`,
+/// `runs_not_stopped`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_revoke_container_grant(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    grant_id: Uuid,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRevokeContainerGrant, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ContainerRevokeRequest { revision, grant_id };
+    blocking(&state, move |service| {
+        service.settings_revoke_container_grant(request, &prompt)
     })
     .await
 }

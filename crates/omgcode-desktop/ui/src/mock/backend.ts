@@ -14,19 +14,26 @@ import type {
   ComposerPreferences,
   ConnectionStatus,
   ConnectionView,
+  ContextBreakdown,
+  ContextPart,
+  ContextPartId,
   PermissionFlags,
+  ProcessEntry,
   SearchHit,
+  SessionProcesses,
   SessionSummary,
   SettingsOverview,
   SnippetPart,
   TreeSort,
   TreeView,
+  WorkspaceListing,
   WorkspaceSettingsView,
 } from "../ipc/types";
 import {
   buildFixtures,
   type FixtureSession,
   HOSTILE,
+  MOCK_WORKSPACE_TREE,
   OMGCODE_MOCK_FIXTURE_MARKER,
 } from "./fixtures";
 
@@ -59,6 +66,50 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/** Rust's bounds on a `workspace_entries` path (ADR-0083). */
+const MOCK_PATH_DEPTH_MAX = 32;
+const MOCK_COMPONENT_CHARS_MAX = 255;
+
+/** Lists one directory of the fake workspace, refusing a path as Rust does. */
+function mockWorkspaceEntries(path: unknown): WorkspaceListing {
+  if (!Array.isArray(path) || path.length > MOCK_PATH_DEPTH_MAX) {
+    fail("invalid_request", "The folder path is not acceptable.");
+  }
+  let directory: Record<string, unknown> = MOCK_WORKSPACE_TREE;
+  for (const part of path) {
+    if (
+      typeof part !== "string" ||
+      part === "" ||
+      part === "." ||
+      part === ".." ||
+      part.toLowerCase() === ".omgcode" ||
+      // A separator or NUL, as Rust refuses; the digit zero is an ordinary character.
+      part.includes("/") ||
+      part.includes("\\") ||
+      part.includes("\u0000") ||
+      part.length > MOCK_COMPONENT_CHARS_MAX
+    ) {
+      fail("invalid_request", "The folder path is not acceptable.");
+    }
+    const next = Object.hasOwn(directory, part) ? directory[part] : undefined;
+    if (typeof next !== "object" || next === null) {
+      fail("invalid_request", "The folder could not be listed.");
+    }
+    directory = next as Record<string, unknown>;
+  }
+  const entries = Object.entries(directory).map(([name, value]) => ({
+    name,
+    kind: value === null ? ("file" as const) : ("directory" as const),
+    lossy: false,
+    openable: value !== null,
+  }));
+  entries.sort(
+    (a, b) =>
+      Number(a.kind !== "directory") - Number(b.kind !== "directory") ||
+      a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+  );
+  return { entries, truncated: false };
+}
 function snippet(text: string, query: string): SnippetPart[] | null {
   const index = text.toLowerCase().indexOf(query.toLowerCase());
   if (index < 0) {
@@ -135,6 +186,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   let subscriber: Subscriber | null = null;
   /** The saved chat defaults, as Rust keeps them in one file; `null` until something is saved. */
   let savedPreferences: MockPreferences | null = null;
+  let nextSkillFolder = 0;
+  let mockFolders = 0;
+  /** The next sample folder a mock dialog "chooses". */
+  const nextMockFolder = (kind: string): string => {
+    mockFolders += 1;
+    return `/opt/mock/${kind}-${mockFolders}`;
+  };
   /**
    * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
    * for it, as Rust records it, and its model.
@@ -632,6 +690,39 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
                   ],
         } satisfies ChatModels;
       }
+      // A fixed fake estimate, so the Context tab has something to show (ADR-0087). The
+      // parts add up to the estimate, as in Rust; the history grows with the transcript.
+      case "session_context_breakdown": {
+        const id = str(args, "session_id");
+        const open = session(id);
+        const messages = open.entries.filter((entry) => entry.kind === "message").length;
+        const part = (partId: ContextPartId, tokens: number, reason?: string): ContextPart => ({
+          id: partId,
+          tokens,
+          included: reason === undefined,
+          ...(reason === undefined ? {} : { reason }),
+        });
+        const parts: ContextPart[] = [
+          part("system", 5_700),
+          part("global_instructions", 120),
+          part("workspace_instructions", 0, "none_saved"),
+          part("tools", 8_192),
+          part("summary", 0, "no_compaction"),
+          { ...part("history", 600 + messages * 400), messages },
+          part("skills", 0, "selected_per_turn"),
+          part("framing", 320),
+        ];
+        return {
+          session_id: id,
+          parts,
+          estimated_input_tokens: parts.reduce((total, one) => total + one.tokens, 0),
+          max_output_tokens: 1024,
+          effective_trigger: 60_000,
+          context_tokens: 128_000,
+          auto_compaction: true,
+          estimate_scope: "pre_turn_conservative",
+        } satisfies ContextBreakdown;
+      }
       // Each window saves only its own fields; the rest keep their values (ADR-0080).
       case "chat_preferences_save": {
         const saved = clone(args.preferences as ComposerPreferences);
@@ -756,16 +847,106 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         return changeSettings(args, () => {
           mockWorkspace(args).package_cache_root = null;
         });
+      // Like core: the registration goes; the folder and the sessions recorded in it stay (ADR-0081).
+      case "settings_unregister_workspace":
+        return changeSettings(args, () => {
+          const removed = mockWorkspace(args);
+          settings.workspaces = settings.workspaces.filter((w) => w !== removed);
+        });
       // Like core: only a local profile with an endpoint can be chosen, and the confirmation
       // (a native dialog in the application) is accepted here.
       case "settings_select_connection":
         return changeSettings(args, () => selectConnection(args.profile));
+      // The Files tab (ADR-0083): one directory of a small fake workspace, validated like Rust.
+      case "workspace_entries": {
+        session(str(args, "session_id"));
+        return mockWorkspaceEntries(args.path);
+      }
       // The main window's status bar (ADR-0064). The mock's workspace is on a fixed branch.
       case "session_context":
         str(args, "session_id");
         return {
           workspace_registered: true,
           branch: { state: "branch", name: "main", note: null },
+        };
+      // The session's command-tool calls (ADR-0086): fixed fake entries. A call is `running` only
+      // while the mock session's chat turn runs, as with core; otherwise it is `unfinished`.
+      case "session_processes": {
+        const item = session(str(args, "session_id"));
+        const at = (secondsAgo: number): string =>
+          new Date(now() - secondsAgo * 1000).toISOString();
+        const open = item.summary.status === "running" ? "running" : "unfinished";
+        const entry = (
+          call_id: string,
+          started: number,
+          overrides: Partial<ProcessEntry>,
+        ): ProcessEntry => ({
+          call_id,
+          state: "finished",
+          started_at: at(started),
+          finished_at: null,
+          duration_ms: null,
+          program: "cargo",
+          arguments: [],
+          text_truncated: false,
+          argument_count: 0,
+          profile: "rust",
+          result: null,
+          limit: null,
+          reason: null,
+          ...overrides,
+        });
+        const processes: SessionProcesses = {
+          entries: [
+            entry("call_5", 5, { state: open, program: "cargo", arguments: ["test", "--lib"] }),
+            entry("call_4", 60, {
+              finished_at: at(30),
+              duration_ms: 30_000,
+              arguments: ["build", "--release"],
+              result: { kind: "limit_exceeded", exit_code: null, signal: null },
+              limit: "memory",
+            }),
+            entry("call_3", 120, {
+              state: "refused",
+              program: "rm",
+              arguments: ["-rf", "target"],
+              profile: null,
+              reason: "approval_denied",
+            }),
+            entry("call_2", 180, {
+              finished_at: at(179),
+              duration_ms: 1200,
+              arguments: ["test"],
+              result: { kind: "exited", exit_code: 1, signal: null },
+            }),
+            entry("call_1", 240, {
+              finished_at: at(239),
+              duration_ms: 350,
+              arguments: ["--version"],
+              result: { kind: "exited", exit_code: 0, signal: null },
+            }),
+          ],
+          truncated: false,
+          run_details: "available",
+        };
+        return clone(processes);
+      }
+      // The Git status tab (ADR-0085). A small fixed status; nothing is read from disk.
+      case "workspace_git_status":
+        session(str(args, "session_id"));
+        return {
+          branch: { state: "branch", name: "main", note: null },
+          state: "ready",
+          note: null,
+          paths: [
+            { path: "src/lib.rs", index: "modified", worktree: null },
+            { path: "src/main.rs", index: "modified", worktree: "modified" },
+            { path: "docs/old.md", index: null, worktree: "deleted" },
+            { path: "src/merge.rs", index: null, worktree: "conflicted" },
+            { path: "notes/<b>x</b>.txt", index: null, worktree: "untracked" },
+            { path: "target/", index: null, worktree: "untracked" },
+          ],
+          truncated: false,
         };
       case "connection_status": {
         const id = args.session_id;
@@ -865,6 +1046,168 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           checkApiKey(args.api_key);
           profile.credential_bound = true;
+        });
+      // The mock stands in for the native folder dialog: each import "chooses" the next sample
+      // folder, and the last one is already registered, so the refusal shows (ADR-0082).
+      case "settings_import_skill":
+        return changeSettings(args, () => {
+          const name = SAMPLE_SKILL_FOLDERS[nextSkillFolder % SAMPLE_SKILL_FOLDERS.length] ?? "";
+          nextSkillFolder += 1;
+          if (settings.skills.some((skill) => skill.name === name)) {
+            fail(
+              "skill_name_taken",
+              "a skill with this name is already registered; remove it first",
+            );
+          }
+          if (settings.skills.length >= MAX_SKILLS) {
+            fail("too_many_skills", `at most ${MAX_SKILLS} skills may be registered`);
+          }
+          settings.skills.push({ name, application: null, workspace_overrides: [] });
+        });
+      // Rust confirms in a native dialog before a change that enables the skill; the mock accepts.
+      case "settings_set_skill_state":
+        return changeSettings(args, () => {
+          const skill = settings.skills.find((entry) => entry.name === str(args, "name"));
+          const state = str(args, "skill_state");
+          const workspaceId = args.workspace_id ?? null;
+          if (state !== "enabled" && state !== "disabled" && state !== "inherit") {
+            fail("invalid_argument", "Bad skill state.");
+          }
+          if (skill === undefined) {
+            fail("skill_not_found", "no registered skill has this name or identifier");
+          }
+          if (workspaceId === null) {
+            if (state === "inherit") {
+              fail("skill_inherit_needs_workspace", "inherit applies only to a workspace scope");
+            }
+            skill.application = state === "enabled";
+            return;
+          }
+          if (typeof workspaceId !== "string") {
+            fail("invalid_argument", "Bad workspace_id.");
+          }
+          mockWorkspace({ workspace_id: workspaceId });
+          skill.workspace_overrides = skill.workspace_overrides.filter(
+            (entry) => entry.workspace_id !== workspaceId,
+          );
+          if (state !== "inherit") {
+            skill.workspace_overrides.push({
+              workspace_id: workspaceId,
+              enabled: state === "enabled",
+            });
+          }
+        });
+      case "settings_remove_skill":
+        return changeSettings(args, () => {
+          const index = settings.skills.findIndex((entry) => entry.name === str(args, "name"));
+          if (index < 0) {
+            fail("skill_not_found", "no registered skill has this name or identifier");
+          }
+          settings.skills.splice(index, 1);
+        });
+      // The mock stands in for the native folder dialogs and confirmations (ADR-0088): each
+      // root, PATH entry, or granted folder "chosen" is the next sample folder, and every
+      // confirmation is accepted. Core's rules are only sampled; the real core is the authority.
+      case "settings_add_toolchain_profile":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const rootCount = Number(args.root_count);
+          const pathCount = Number(args.path_entry_count);
+          const environment = Array.isArray(args.environment) ? args.environment : [];
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+            fail(
+              "control",
+              "profile names are 1 to 64 ASCII letters, digits, '.', '-', or '_', starting with a letter or digit",
+            );
+          }
+          if (
+            settings.toolchain_profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())
+          ) {
+            fail("control", "a profile with this name already exists; remove it first");
+          }
+          if (!Number.isInteger(rootCount) || rootCount < 1 || rootCount > 16) {
+            fail("invalid_request", "A profile needs 1 to 16 read-only roots.");
+          }
+          if (!Number.isInteger(pathCount) || pathCount < 0 || pathCount > 16) {
+            fail("invalid_request", "A profile has at most 16 PATH entries.");
+          }
+          const roots = Array.from({ length: rootCount }, () => nextMockFolder("root"));
+          settings.toolchain_profiles.push({
+            name,
+            platform: "linux",
+            read_only_roots: roots,
+            path_entries: Array.from(
+              { length: pathCount },
+              (_, index) => `${roots[0] ?? "/opt/mock"}/bin${index + 1}`,
+            ),
+            environment_names: environment.map((entry) =>
+              typeof entry === "object" && entry !== null && "name" in entry
+                ? String(entry.name)
+                : "",
+            ),
+          });
+        });
+      case "settings_remove_toolchain_profile":
+        return changeSettings(args, () => {
+          const index = settings.toolchain_profiles.findIndex((p) => p.name === str(args, "name"));
+          if (index < 0) {
+            fail("control", "unknown profile");
+          }
+          settings.toolchain_profiles.splice(index, 1);
+        });
+      case "settings_add_package_profile":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          const origins = Array.isArray(args.origins) ? args.origins.map(String) : [];
+          if (origins.length < 1 || origins.length > 8) {
+            fail("invalid_request", "A profile needs 1 to 8 origins.");
+          }
+          if (settings.package_profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+            fail(
+              "control",
+              "a package-network profile with this name already exists; remove it first",
+            );
+          }
+          for (const origin of origins) {
+            if (!/^https?:\/\/[^/\s]+(\/\S*)?$/.test(origin)) {
+              fail("control", "an origin must be an http or https URL without credentials");
+            }
+          }
+          settings.package_profiles.push({ name, origins, credentials_bound: 0 });
+        });
+      case "settings_remove_package_profile":
+        return changeSettings(args, () => {
+          const index = settings.package_profiles.findIndex((p) => p.name === str(args, "name"));
+          if (index < 0) {
+            fail("control", "unknown package-network profile");
+          }
+          settings.package_profiles.splice(index, 1);
+        });
+      case "settings_grant_container_folder":
+        return changeSettings(args, () => {
+          const workspaceId = str(args, "workspace_id");
+          mockWorkspace({ workspace_id: workspaceId });
+          const access = str(args, "access");
+          if (access !== "read_execute" && access !== "read_write") {
+            fail("invalid_argument", "Bad access.");
+          }
+          settings.container_grants.push({
+            grant_id: `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`,
+            workspace_id: workspaceId,
+            directory: nextMockFolder("grant"),
+            access,
+            state: "active",
+          });
+        });
+      case "settings_revoke_container_grant":
+        return changeSettings(args, () => {
+          const index = settings.container_grants.findIndex(
+            (grant) => grant.grant_id === str(args, "grant_id"),
+          );
+          if (index < 0) {
+            fail("control", "unknown container grant");
+          }
+          settings.container_grants.splice(index, 1);
         });
       case "settings_remove_connection":
         return changeSettings(args, () => {
@@ -1038,7 +1381,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** What the composer and the status bar read for a session (ADR-0071). */
+  /** What the composer reads for a session (ADR-0071). */
   function connectionStatus(sessionId: string | null): ConnectionStatus {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
     const view = effectiveConnection(sessionId);
@@ -1171,6 +1514,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       ],
       package_profiles: [],
       container_grants: [],
+      container_grants_supported: true,
       skills: [
         {
           name: "review-checklist",
@@ -1187,6 +1531,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
 }
 
 export const mockInvoke: Invoker = createMockBackend().invoke;
+
+/** The sample folders the mock's skill import cycles through; the last is already registered. */
+const SAMPLE_SKILL_FOLDERS = ["release-notes", "api-docs", "review-checklist"];
+
+/** The most skills core registers. */
+const MAX_SKILLS = 64;
 
 /** The most bytes a recorded provider endpoint may have, as in core. */
 const MAX_ENDPOINT_BYTES = 256;

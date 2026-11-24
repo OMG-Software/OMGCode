@@ -180,6 +180,14 @@ impl Inner {
         retry_busy(|| ControlStore::open_existing(&self.data_root))
     }
 
+    /// Whether current settings register this workspace identifier. An absent
+    /// store registers none.
+    pub(super) fn workspace_registered(&self, workspace: Uuid) -> Result<bool, DesktopError> {
+        Ok(self
+            .open_control()?
+            .is_some_and(|store| store.registered_workspace(workspace).is_some()))
+    }
+
     /// Open the settings store, creating an empty one when none exists, and
     /// wait briefly for another holder (ADR-0060).
     ///

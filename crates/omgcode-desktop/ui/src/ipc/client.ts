@@ -8,8 +8,11 @@ import type {
   ChatStatus,
   ComposerPreferences,
   ConnectionStatus,
+  ContextBreakdown,
+  GitStatusView,
   SearchResult,
   SessionContext,
+  SessionProcesses,
   SessionSkills,
   SessionSummary,
   SessionTree,
@@ -17,6 +20,7 @@ import type {
   TreeSort,
   TreeView,
   WorkspaceList,
+  WorkspaceListing,
 } from "./types";
 
 /** The only module that imports `@tauri-apps/api`. All IPC goes through `invokeCommand`. */
@@ -114,8 +118,20 @@ export const api = {
     invokeCommand<ChatStatus>("chat_send", { session_id: sessionId, message, settings, skills }),
   sessionSkills: (sessionId: string) =>
     invokeCommand<SessionSkills>("session_skills", { session_id: sessionId }),
+  /** One directory of the session's workspace; `path` is relative name components (ADR-0083). */
+  workspaceEntries: (sessionId: string, path: string[]) =>
+    invokeCommand<WorkspaceListing>("workspace_entries", { session_id: sessionId, path }),
+  /** What the session's next turn would send, by part (ADR-0087). Sends nothing to a model. */
+  sessionContextBreakdown: (sessionId: string) =>
+    invokeCommand<ContextBreakdown>("session_context_breakdown", { session_id: sessionId }),
   sessionContext: (sessionId: string) =>
     invokeCommand<SessionContext>("session_context", { session_id: sessionId }),
+  /** The session's command-tool calls, newest first (ADR-0086). Read-only. */
+  sessionProcesses: (sessionId: string) =>
+    invokeCommand<SessionProcesses>("session_processes", { session_id: sessionId }),
+  /** The Git branch and changed paths of the session's workspace, read with no program run. */
+  workspaceGitStatus: (sessionId: string) =>
+    invokeCommand<GitStatusView>("workspace_git_status", { session_id: sessionId }),
   /** The session's connection and model; `null` describes the default when no session is open. */
   connectionStatus: (sessionId: string | null) =>
     invokeCommand<ConnectionStatus>("connection_status", { session_id: sessionId }),

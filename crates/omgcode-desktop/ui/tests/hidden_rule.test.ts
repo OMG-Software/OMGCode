@@ -25,20 +25,25 @@ describe("the hidden attribute in each window stylesheet", () => {
 
   // A text match accepts a rule that still loses the cascade: `[hidden]` and `.settings-nav`
   // have equal specificity, so the later `display: flex` won. Check the computed style instead.
-  it("hides the settings sidebar when it has the hidden attribute", () => {
+  // The settings sidebar, and the collapsible Workspaces group inside it, whose list sets
+  // `display: flex` and is hidden when the group is collapsed.
+  it.each([
+    ["nav", "settings-nav"],
+    ["div", "nav-children"],
+  ] as const)("hides a settings %s.%s when it has the hidden attribute", (tag, className) => {
     const style = document.createElement("style");
     style.textContent = sheet("settings.css").replace(/@import[^;]*;/g, "");
     document.head.appendChild(style);
-    const nav = document.createElement("nav");
-    nav.className = "settings-nav";
-    nav.hidden = true;
-    document.body.appendChild(nav);
+    const node = document.createElement(tag);
+    node.className = className;
+    node.hidden = true;
+    document.body.appendChild(node);
     try {
-      expect(getComputedStyle(nav).display).toBe("none");
-      nav.hidden = false;
-      expect(getComputedStyle(nav).display).toBe("flex");
+      expect(getComputedStyle(node).display).toBe("none");
+      node.hidden = false;
+      expect(getComputedStyle(node).display).toBe("flex");
     } finally {
-      nav.remove();
+      node.remove();
       style.remove();
     }
   });

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setInvoker } from "../src/ipc/client";
 import type { ChatModels, ConnectionStatus } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
-import { SESSION_CHOICES_UNREADABLE } from "../src/main/composer";
 import { CONNECTION_UNCHANGED } from "../src/main/connection_state";
+import { SESSION_CHOICES_UNREADABLE } from "../src/main/model_box";
 import { CLOUD_WARNING, HOSTED_SUFFIX, HOSTED_WARNING } from "../src/main/model_picker";
 import {
   buttonByLabel,
@@ -14,6 +14,7 @@ import {
   type Handler,
   installFakeIpc,
   mainHandlers,
+  modelRefresh,
   modelSelect,
   mountRoot,
   page,
@@ -119,14 +120,8 @@ async function open(id: string): Promise<void> {
   await settle();
 }
 
-function composerProvider(): HTMLSelectElement {
-  return root.querySelector('.composer select[aria-label="Provider"]') as HTMLSelectElement;
-}
-
-function footerProvider(): HTMLSelectElement {
-  return root.querySelector(
-    '.status-footer select[aria-label="Model provider"]',
-  ) as HTMLSelectElement;
+function boxProvider(): HTMLSelectElement {
+  return root.querySelector('.model-box select[aria-label="Provider"]') as HTMLSelectElement;
 }
 
 function modelLabels(): string[] {
@@ -157,8 +152,7 @@ describe("per-session provider and model", () => {
       session_id: "s-a",
     });
     expect(ipc.callsTo("chat_models").map((call) => call.args)).toEqual([{ session_id: "s-a" }]);
-    expect(composerProvider().value).toBe("ollama");
-    expect(footerProvider().value).toBe("ollama");
+    expect(boxProvider().value).toBe("ollama");
     expect(modelSelect(root).value).toBe("ollama-model");
     expect(modelLabels()).toContain("ollama-model");
   });
@@ -171,14 +165,13 @@ describe("per-session provider and model", () => {
       }),
     );
     await open("s-a");
-    expect(composerProvider().value).toBe("ollama");
+    expect(boxProvider().value).toBe("ollama");
     await open("s-b");
-    expect(composerProvider().value).toBe("lms");
-    expect(footerProvider().value).toBe("lms");
+    expect(boxProvider().value).toBe("lms");
     expect(modelSelect(root).value).toBe("lms-model");
     expect(modelLabels()).not.toContain("ollama-model");
     await open("s-a");
-    expect(composerProvider().value).toBe("ollama");
+    expect(boxProvider().value).toBe("ollama");
     expect(modelSelect(root).value).toBe("ollama-model");
     // Switching is a read; only a change of provider asks Rust to confirm.
     expect(ipc.callsTo("connection_select")).toHaveLength(0);
@@ -204,7 +197,7 @@ describe("per-session provider and model", () => {
             });
         }),
     );
-    choose(composerProvider(), "ollama");
+    choose(boxProvider(), "ollama");
     await settle();
     expect(ipc.callsTo("connection_select").map((call) => call.args)).toEqual([
       { session_id: "s-a", profile: "ollama" },
@@ -217,21 +210,21 @@ describe("per-session provider and model", () => {
     await settle();
     expect(modelSelect(root).disabled).toBe(false);
     expect(modelLabels()).toContain("ollama-model");
-    // The footer shows the same choice: one source of truth.
-    expect(footerProvider().value).toBe("ollama");
+    // The status bar has no provider dropdown (ADR-0084).
+    expect(root.querySelector(".status-footer select")).toBeNull();
     expect(ipc.callsTo("session_model_select")).toHaveLength(0);
   });
 
-  it("changes the same session's provider from the footer and keeps the composer in step", async () => {
+  it("changes the same session's provider from the model box", async () => {
     await start(backend());
     await open("s-a");
-    choose(footerProvider(), "lms");
+    choose(boxProvider(), "lms");
     await settle();
     expect(ipc.callsTo("connection_select")[0]?.args).toEqual({
       session_id: "s-a",
       profile: "lms",
     });
-    expect(composerProvider().value).toBe("lms");
+    expect(boxProvider().value).toBe("lms");
     expect(modelLabels()).toContain("lms-model");
   });
 
@@ -254,13 +247,10 @@ describe("per-session provider and model", () => {
     });
     await open("s-a");
     const lists = ipc.callsTo("chat_models").length;
-    choose(composerProvider(), "ollama");
+    choose(boxProvider(), "ollama");
     await settle();
-    expect(root.querySelector(".composer-model-status")?.textContent).toContain(
-      CONNECTION_UNCHANGED,
-    );
-    expect(composerProvider().value).toBe("lms");
-    expect(footerProvider().value).toBe("lms");
+    expect(root.querySelector(".model-box-status")?.textContent).toContain(CONNECTION_UNCHANGED);
+    expect(boxProvider().value).toBe("lms");
     expect(modelSelect(root).value).toBe("lms-model");
     expect(ipc.callsTo("chat_models")).toHaveLength(lists);
   });
@@ -289,7 +279,7 @@ describe("per-session provider and model", () => {
     });
     await open("s-a");
     await open("s-b");
-    expect(composerProvider().value).toBe("lms");
+    expect(boxProvider().value).toBe("lms");
     lateStatus(
       connectionStatus({
         origin: "session",
@@ -311,7 +301,7 @@ describe("per-session provider and model", () => {
       models: [{ id: "ollama-model", cloud_tag: false }],
     });
     await settle();
-    expect(composerProvider().value).toBe("lms");
+    expect(boxProvider().value).toBe("lms");
     expect(modelSelect(root).value).toBe("lms-model");
     expect(modelLabels()).not.toContain("ollama-model");
   });
@@ -335,7 +325,7 @@ describe("per-session provider and model", () => {
     finish(null);
     await settle();
     expect(modelSelect(root).disabled).toBe(false);
-    expect(buttonByText(root, "Refresh").disabled).toBe(false);
+    expect(modelRefresh(root).disabled).toBe(false);
   });
 
   it("warns that Ollama Cloud models leave this computer", async () => {
@@ -353,12 +343,11 @@ describe("per-session provider and model", () => {
     expect(warning()).toBe(CLOUD_WARNING);
   });
 
-  it("disables both provider dropdowns when a launch argument fixed the connection", async () => {
+  it("disables the provider dropdown when a launch argument fixed the connection", async () => {
     await start(backend({}, false));
     await open("s-a");
-    expect(composerProvider().disabled).toBe(true);
-    expect(footerProvider().disabled).toBe(true);
-    expect(composerProvider().textContent).toContain("Set at launch");
+    expect(boxProvider().disabled).toBe(true);
+    expect(boxProvider().textContent).toContain("Set at launch");
     // The model is still chosen from the fixed connection's list.
     expect(modelSelect(root).disabled).toBe(false);
   });
@@ -383,11 +372,11 @@ describe("per-session provider and model", () => {
     buttonByText(root, "Send").click();
     await settle();
     expect(root.querySelector(".notice")?.textContent).toContain("session_connection_stale");
-    expect(composerProvider().selectedOptions[0]?.textContent).toContain("Choose again");
+    expect(boxProvider().selectedOptions[0]?.textContent).toContain("Choose again");
     expect(buttonByText(root, "Send").disabled).toBe(true);
     // Choosing the provider again works from the stale entry.
     stale = false;
-    choose(composerProvider(), "ollama");
+    choose(boxProvider(), "ollama");
     await settle();
     expect(ipc.callsTo("connection_select")).toHaveLength(1);
   });
@@ -453,5 +442,94 @@ describe("per-session provider and model", () => {
     const problem = root.querySelector(".composer-error") as HTMLElement;
     expect(problem.hidden).toBe(true);
     expect(problem.textContent).not.toContain("The workspace is not registered.");
+  });
+});
+
+// The provider and model choice sits in the side panel's footer (ADR-0089).
+describe("model box placement", () => {
+  function modelBox(): HTMLElement {
+    return root.querySelector(".model-box") as HTMLElement;
+  }
+
+  function railButton(): HTMLButtonElement {
+    return buttonByLabel(root, "Model");
+  }
+
+  it("sits in the side panel footer, outside the scrolling tab content and the composer", async () => {
+    await start(backend());
+    await open("s-a");
+    const panel = root.querySelector("#terminal-panel") as HTMLElement;
+    const footer = panel.querySelector(".side-footer") as HTMLElement;
+    expect(footer.contains(modelBox())).toBe(true);
+    expect(panel.querySelector(".side-panes")?.contains(modelBox())).toBe(false);
+    expect((root.querySelector(".composer") as HTMLElement).contains(modelBox())).toBe(false);
+    expect(modelBox().querySelector("h3")?.textContent).toBe("Model");
+    expect(boxProvider().closest(".model-box")).toBe(modelBox());
+    expect(modelSelect(root).closest(".model-box")).toBe(modelBox());
+    expect(
+      (root.querySelector(".composer") as HTMLElement).querySelectorAll("select"),
+    ).toHaveLength(0);
+  });
+
+  it("stays in place while the tabs change", async () => {
+    await start(backend());
+    await open("s-a");
+    const footer = root.querySelector(".side-footer") as HTMLElement;
+    const before = modelBox();
+    const filesTab = root.querySelector('[role="tab"][data-tab="files"]') as HTMLElement;
+    filesTab.click();
+    expect(modelBox()).toBe(before);
+    expect(footer.contains(before)).toBe(true);
+    expect(before.hidden).toBe(false);
+    (root.querySelector('[role="tab"][data-tab="terminal"]') as HTMLElement).click();
+    expect(modelBox()).toBe(before);
+    expect(footer.contains(before)).toBe(true);
+  });
+
+  it("is reached from the collapsed rail by an icon button named Model", async () => {
+    await start(backend());
+    await open("s-a");
+    const shell = root.querySelector(".shell") as HTMLElement;
+    expect(shell.classList.contains("right-collapsed")).toBe(true);
+    const button = railButton();
+    expect(button.title).toBe("Model");
+    expect(button.textContent).toBe("");
+    expect(button.querySelector("svg.icon")).not.toBeNull();
+    button.click();
+    expect(shell.classList.contains("right-collapsed")).toBe(false);
+    expect((root.querySelector(".side-footer") as HTMLElement).hidden).toBe(false);
+    expect((root.querySelector(".terminal-full") as HTMLElement).hidden).toBe(false);
+    expect((root.querySelector(".terminal-full") as HTMLElement).contains(modelBox())).toBe(true);
+  });
+
+  it("sends with the provider's endpoint and the model the box shows", async () => {
+    await start(backend({ "s-a": { profile: "ollama", model: "ollama-model" } }));
+    await open("s-a");
+    choose(modelSelect(root), "tagged:cloud");
+    await settle();
+    const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+    box.value = "hello";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(ipc.callsTo("chat_send")[0]?.args).toMatchObject({
+      settings: { endpoint: OLLAMA, model: "tagged:cloud" },
+    });
+  });
+
+  it("disables both choices while a turn runs and while no session is open", async () => {
+    await start(backend());
+    expect(boxProvider().disabled).toBe(true);
+    expect(modelSelect(root).disabled).toBe(true);
+    await open("s-a");
+    expect(boxProvider().disabled).toBe(false);
+    expect(modelSelect(root).disabled).toBe(false);
+    const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+    box.value = "hello";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    buttonByText(root, "Send").click();
+    await settle();
+    expect(boxProvider().disabled).toBe(true);
+    expect(modelSelect(root).disabled).toBe(true);
   });
 });

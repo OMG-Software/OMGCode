@@ -66,7 +66,13 @@ shell shows the context meter line after each turn (estimated tokens, context
 size, and the compaction trigger). Since 0.40.0 it saves the chat
 preferences, including the compaction threshold and the automatic
 compaction switch, which grant nothing. It has no live meter while a turn
-runs, and it shows the meter only for a turn that reports one.
+runs, and it shows the meter only for a turn that reports one. A
+`session_context_breakdown` command and a Context tab view estimate the open
+session's next turn by part (system prompt, global and workspace instructions,
+tool definitions, compaction summary, retained history, and fixed framing) from
+the same arithmetic as the pre-turn trigger, without a model request or a
+journal write. The view is the right-hand panel's **Context** tab
+([ADR-0087](adr/0087-show-a-per-part-context-estimate-for-the-open-session.md)).
 
 ## Settings and accounting
 

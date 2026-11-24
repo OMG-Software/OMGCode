@@ -114,6 +114,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     ],
     package_profiles: [],
     container_grants: [],
+    container_grants_supported: true,
     skills: [
       {
         name: "review",
@@ -131,7 +132,8 @@ let app: SettingsApp | null = null;
 let root: HTMLElement;
 let ipc: FakeIpc;
 
-async function start(
+/** Opens the window on the Workspaces overview, as the operator first sees it. */
+async function startOverview(
   reply: () => unknown,
   more: Record<string, (args: Record<string, unknown>) => unknown> = {},
 ): Promise<void> {
@@ -139,6 +141,20 @@ async function start(
   root = mountRoot();
   app = startSettings(root);
   await settle();
+}
+
+/** Opens the window and then the first workspace listed under Workspaces, when there is one. */
+async function start(
+  reply: () => unknown,
+  more: Record<string, (args: Record<string, unknown>) => unknown> = {},
+): Promise<void> {
+  await startOverview(reply, more);
+  openWorkspace();
+}
+
+/** Shows a workspace as the operator would, by pressing its entry under Workspaces. */
+function openWorkspace(index = 0): void {
+  root.querySelectorAll<HTMLButtonElement>(".nav-child")[index]?.click();
 }
 
 function checkbox(label: string): HTMLInputElement {
@@ -261,8 +277,10 @@ describe("settings window", () => {
     expect(root.textContent).toContain(MODEL_HELP);
     go("Advanced");
     expect(root.textContent).toContain(ADVANCED_HELP);
-    expect(ADVANCED_HELP).toContain("omgcode workspace");
-    expect(ADVANCED_HELP).toContain("omgcode skills");
+    // Every group changes in this window; credentials, fetches, and runs stay with the CLI.
+    expect(ADVANCED_HELP).toContain("are changed here");
+    expect(ADVANCED_HELP).toContain("trusted CLI");
+    expect(ADVANCED_HELP).not.toContain("only through the trusted CLI");
   });
 
   it("types no path and offers exactly three access states everywhere", async () => {
@@ -270,10 +288,14 @@ describe("settings window", () => {
     // No control takes a typed path: folders come only from the system dialog. The only typed
     // values are a new connection name, a loopback URL (ADR-0064), the write-only API key of an
     // Ollama Cloud connection (ADR-0071), the chat budgets as numbers, and the global and
-    // workspace custom instructions (ADR-0080).
+    // workspace custom instructions (ADR-0080), and in Advanced a profile name, root and PATH counts,
+    // variables and origins (ADR-0088).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
       go(section);
+      if (section === "Workspaces") {
+        openWorkspace();
+      }
       for (const input of Array.from(root.querySelectorAll("input, textarea"))) {
         if (input instanceof HTMLInputElement && input.type === "checkbox") {
           continue;
@@ -294,6 +316,12 @@ describe("settings window", () => {
       "New connection name",
       "New connection endpoint",
       "API key",
+      "new-toolchain-name",
+      "new-toolchain-roots",
+      "new-toolchain-paths",
+      "new-toolchain-environment",
+      "new-package-name",
+      "new-package-origins",
     ]);
     // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
     // group, and the three labels are the same everywhere.
@@ -302,6 +330,7 @@ describe("settings window", () => {
     const selects = Array.from(root.querySelectorAll("select"));
     expect(selects.map((s) => s.ariaLabel)).toEqual(providerLabels);
     go("Workspaces");
+    openWorkspace();
     expect(root.querySelectorAll("select")).toHaveLength(0);
     const groups = Array.from(root.querySelectorAll("[role=radiogroup]"));
     expect(groups).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length);
@@ -351,7 +380,9 @@ describe("settings window", () => {
     // A skill override names the workspace by its folder.
     const skill = rowOf("review");
     expect(skill.textContent).toContain("/home/dev/project");
-    expect(skill.textContent).toContain("disabled");
+    const [application, inWorkspace] = Array.from(skill.querySelectorAll("select"));
+    expect(application?.value).toBe("enabled");
+    expect(inWorkspace?.value).toBe("disabled");
   });
 
   it("asks the core to choose the root with the revision it read and shows the reply", async () => {
@@ -373,7 +404,7 @@ describe("settings window", () => {
   });
 
   it("registers a workspace with only the revision", async () => {
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_register_workspace: () =>
         overview({
           revision: 8,
@@ -490,7 +521,7 @@ describe("settings window", () => {
   });
 
   it("keeps a change's error and its failed read apart, and a later read clears only the read's", async () => {
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_choose_root: () =>
         rejection("stale_revision", "The settings changed since this window read them."),
     });
@@ -516,7 +547,7 @@ describe("settings window", () => {
   });
 
   it("shows a refusal and reads the configuration again", async () => {
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_choose_root: () =>
         rejection("stale_revision", "The settings changed since this window read them."),
     });
@@ -534,7 +565,7 @@ describe("settings window", () => {
 
   it("disables every control while a change waits for the operator", async () => {
     let answer: (value: SettingsOverview) => void = () => undefined;
-    await start(() => overview(), {
+    await startOverview(() => overview(), {
       settings_choose_root: () =>
         new Promise<SettingsOverview>((resolve) => {
           answer = resolve;
@@ -549,15 +580,24 @@ describe("settings window", () => {
     const items = Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-item"));
     expect(items).toHaveLength(3);
     expect(items.every((item) => item.disabled)).toBe(true);
+    // The workspace entries and the group toggle are disabled too.
+    const group = Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-child, .nav-toggle"));
+    expect(group).toHaveLength(2);
+    expect(group.every((item) => item.disabled)).toBe(true);
 
     // A second click while the first waits sends nothing.
-    choose("Write", "allow");
+    buttonByText(root, "Register workspace").click();
     await settle();
-    expect(ipc.callsTo("settings_set_permissions")).toHaveLength(0);
+    expect(ipc.callsTo("settings_register_workspace")).toHaveLength(0);
 
     answer(overview({ revision: 8 }));
     await settle();
     expect(body().disabled).toBe(false);
+    expect(
+      Array.from(root.querySelectorAll<HTMLButtonElement>(".nav-child, .nav-toggle")).every(
+        (item) => !item.disabled,
+      ),
+    ).toBe(true);
     expect(buttonByText(root, "Refresh").disabled).toBe(false);
   });
 
@@ -589,8 +629,49 @@ describe("settings window", () => {
     expect(() => buttonByText(workspaceCard(), "Clear")).toThrow();
   });
 
+  it("removes a workspace by identifier and revision, and shows none afterwards", async () => {
+    await start(() => overview(), {
+      settings_unregister_workspace: () => overview({ revision: 8, workspaces: [] }),
+    });
+    expect(workspaceCard().textContent).toContain("The folder and its files are not touched.");
+
+    buttonByText(workspaceCard(), "Remove workspace…").click();
+    await settle();
+
+    // The call carries the identifier and the revision the window read, never a path.
+    expect(ipc.callsTo("settings_unregister_workspace")[0]?.args).toEqual({
+      workspace_id: WORKSPACE,
+      revision: 7,
+    });
+    expect(root.querySelector(".workspace-block")).toBeNull();
+    expect(root.textContent).toContain("No workspace is registered.");
+  });
+
+  it("keeps the workspace when the operator declines or a turn is running", async () => {
+    await start(() => overview(), {
+      settings_unregister_workspace: () => rejection("cancelled", "No change was made."),
+    });
+    buttonByText(workspaceCard(), "Remove workspace…").click();
+    await settle();
+    expect(workspaceCard().textContent).toContain("/home/dev/project");
+
+    ipc.on("settings_unregister_workspace", () =>
+      rejection("turn_running", "A chat turn is running in a session of this workspace."),
+    );
+    buttonByText(workspaceCard(), "Remove workspace…").click();
+    await settle();
+    expect(root.textContent).toContain("A chat turn is running in a session of this workspace.");
+    expect(workspaceCard().textContent).toContain("/home/dev/project");
+  });
+
+  it("offers no removal in the view scoped to one session's workspace", async () => {
+    await start(() => overview({ scope: { workspace_id: WORKSPACE } }));
+    expect(workspaceCard().textContent).toContain("/home/dev/project");
+    expect(() => buttonByText(root, "Remove workspace…")).toThrow();
+  });
+
   it("renders hostile recorded text as text", async () => {
-    await start(() =>
+    await startOverview(() =>
       overview({
         development_root: HOSTILE.img,
         workspaces: [
@@ -607,6 +688,13 @@ describe("settings window", () => {
     expect(root.textContent).toContain(HOSTILE.img);
     expect(root.textContent).toContain(neutralise(HOSTILE.rtl));
     expect(root.textContent).not.toContain(String.fromCharCode(0x202e));
+    // The navigation's tooltip is an attribute, which `el` does not neutralise for it.
+    const navItem = root.querySelector(".nav-child") as HTMLElement;
+    expect(navItem.title).not.toContain(String.fromCharCode(0x202e));
+    expect(navItem.title).toBe(navItem.textContent);
+    openWorkspace();
+    expect(root.querySelector("img, script")).toBeNull();
+    expect(root.textContent).toContain(HOSTILE.script);
   });
 
   it("shows the core error and keeps the Refresh button", async () => {

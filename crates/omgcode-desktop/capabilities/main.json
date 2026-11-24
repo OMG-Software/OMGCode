@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Application commands for the main window only. No core permissions, no approval-decision commands, and no settings-window commands. The status bar may choose a model connection only through a native confirmation (ADR-0064).",
+  "description": "Application commands for the main window only. No core permissions, no approval-decision commands, and no settings-window commands. The model box may choose a session's model connection only through a native confirmation (ADR-0071, ADR-0084, ADR-0089).",
   "local": true,
   "windows": [
     "main"
@@ -28,9 +28,13 @@
     "allow-chat-preferences-save",
     "allow-session-skills",
     "allow-session-context",
+    "allow-workspace-entries",
+    "allow-workspace-git-status",
     "allow-connection-status",
     "allow-connection-select",
     "allow-session-model-select",
-    "allow-chat-models"
+    "allow-chat-models",
+    "allow-session-context-breakdown",
+    "allow-session-processes"
   ]
 }

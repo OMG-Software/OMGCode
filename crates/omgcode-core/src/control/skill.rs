@@ -526,6 +526,23 @@ pub(super) fn apply(state: &mut ControlSnapshot, action: &Action) -> Result<(), 
     Ok(())
 }
 
+/// Drop every override that names an unregistered workspace and count each as
+/// an enablement change, so a turn that loaded the skill sees the change.
+pub(super) fn drop_workspace_overrides(state: &mut ControlSnapshot, workspace_id: WorkspaceId) {
+    let scope = SkillScope::Workspace { workspace_id };
+    let dropped: Vec<Uuid> = state
+        .skill_enablement
+        .iter()
+        .filter(|item| item.scope == scope)
+        .map(|item| item.skill_id)
+        .collect();
+    state.skill_enablement.retain(|item| item.scope != scope);
+    for skill_id in dropped {
+        let changes = state.skill_enablement_changes.entry(skill_id).or_insert(0);
+        *changes = changes.saturating_add(1);
+    }
+}
+
 fn replay_error(refusal: SkillRefusal) -> ControlError {
     ControlError::Invalid(refusal.message())
 }

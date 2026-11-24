@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/omgcode-core", "crates/omgcode-cli", "crates/omgcode-platform", "crates/omgcode-app", "crates/omgcode-desktop"]
 
 [workspace.package]
-version = "0.55.0"
+version = "0.56.0"
 edition = "2024"
 rust-version = "1.99.1"
 license = "Apache-2.0"
@@ -33,6 +33,10 @@ secret-service = { version = "5.2", default-features = false, features = ["rt-to
 # Pinned to the version secret-service already uses, with the same features,
 # for raw Secret Service calls that refuse prompts (ADR-0042).
 zbus = { version = "=5.19.0", default-features = false, features = ["blocking-api", "tokio"] }
+
+# Pure-Rust Git reader for the Git status tab (ADR-0085). No network, credential,
+# transport, or fsmonitor feature, no C compression backend, and Git is never run.
+gix = { version = "=0.91.0", default-features = false, features = ["status", "sha1"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

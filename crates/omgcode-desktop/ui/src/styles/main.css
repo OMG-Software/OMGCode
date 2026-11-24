@@ -132,7 +132,7 @@
   line-height: 16px;
 }
 
-/* Terminal panel: a title row and, until a terminal exists, a note that none is available. */
+/* Side panel header (tabs and the collapse button), and the Terminal tab's note that no terminal exists. */
 .terminal-header {
   display: flex;
   align-items: center;
@@ -142,16 +142,113 @@
   border-bottom: 1px solid var(--border);
 }
 
-.terminal-header h2 {
-  margin: 0;
-  font-size: 13px;
-}
-
 .terminal-empty {
   margin: 0;
   padding: var(--gap);
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Side panel (the right-hand column): a tab strip and collapse button, the selected tab's content
+   in a scrolling area, and a fixed footer that stays visible on every tab. */
+.side-tabs {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  border-bottom: 0;
+}
+
+/* Five tabs fit the panel's default width; a narrower panel scrolls the strip. */
+.side-tabs .tab {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.side-panes {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.side-pane[hidden] {
+  display: none;
+}
+
+.side-footer {
+  flex: none;
+}
+
+.side-footer:not(:empty) {
+  border-top: 1px solid var(--border);
+}
+
+/* Files tab. */
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px var(--gap);
+}
+
+.files-title {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.files-message,
+.files-note {
+  margin: 0;
+  padding: 4px var(--gap);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.files-error {
+  color: var(--danger);
+}
+
+.files-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.files-children .files-list {
+  padding-left: 14px;
+}
+
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px var(--gap);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+button.files-row:hover {
+  background: var(--surface-2);
+}
+
+.files-chevron {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.files-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-header {
@@ -267,8 +364,18 @@
 }
 
 .tree-title {
+  flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.tree-time {
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .tree-session {
@@ -371,16 +478,6 @@ mark {
   margin: 0;
   font-size: 16px;
   overflow-wrap: anywhere;
-}
-
-.pane-details {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.pane-details-body {
-  max-height: 30vh;
-  overflow: auto;
 }
 
 .pane-sub {
@@ -794,43 +891,75 @@ mark {
   display: flex;
   gap: 8px;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 
-.composer-tools,
 .composer-send {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
-.composer-tools {
-  flex-wrap: wrap;
+/* A small count at the corner of an icon menu button, as for the selected skills. */
+.composer-send > .popover > summary.icon-summary {
+  position: relative;
 }
 
-/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0071). */
-.toolbar-field {
+.icon-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* The provider and model choice in the side panel's fixed footer (ADR-0089). */
+.model-box {
   display: flex;
-  gap: 4px;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px var(--gap);
   font-size: 12px;
+}
+
+.model-box-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
 }
 
-.toolbar-field select {
-  max-width: 220px;
+.model-box-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+}
+
+.model-box select {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
   font-size: 12px;
   padding: 1px 4px;
 }
 
-.composer-model-status {
+.model-box-status {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
 }
 
-.composer-model-status:empty {
+.model-box-status:empty {
   display: none;
 }
 
@@ -839,20 +968,21 @@ mark {
   overflow: auto;
 }
 
-/* Composer menus are placed against the toolbar row, not their own button, so a panel starts at
-   the row's left edge and never runs past the conversation column (at the 800-pixel minimum the
+/* Composer menus are placed against the toolbar row, not their own button, so a panel ends at
+   the row's right edge and never runs past the conversation column (at the 800-pixel minimum the
    column is about 540 pixels wide). It opens upward from the toolbar over the message box, so a
    tall message box cannot push it above the window. */
-.composer-tools > .popover {
+.composer-send > .popover {
   position: static;
 }
 
-.composer-tools > .popover > .composer-panel {
-  left: 0;
+.composer-send > .popover > .composer-panel {
+  right: 0;
+  left: auto;
   max-width: 100%;
 }
 
-.composer-tools > .settings > .composer-panel {
+.composer-send > .settings > .composer-panel {
   width: 420px;
 }
 
@@ -1012,11 +1142,6 @@ mark {
   flex: 1;
 }
 
-.status-message {
-  color: var(--muted);
-  white-space: nowrap;
-}
-
 .status-provider {
   max-width: 360px;
   font-size: 12px;
@@ -1076,4 +1201,361 @@ mark {
 /* While a reply is painted into an image, its controls leave the layout (src/main/capture.ts). */
 .capturing [data-capture="skip"] {
   display: none;
+}
+
+/*
+ * Context tab (ADR-0087): a stacked bar and a table of the parts of the next turn's context.
+ * Every part has a colour and a text label, so colour is never the only cue. The bar is an SVG
+ * whose rects take their size from attributes; no inline style is used.
+ */
+.context-tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  gap: 10px;
+}
+
+.ctx-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ctx-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ctx-body[aria-busy="true"] {
+  opacity: 0.7;
+}
+
+.ctx-empty,
+.ctx-bar-note,
+.ctx-scope {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ctx-error {
+  margin: 0;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.ctx-report {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ctx-bar {
+  display: block;
+  width: 100%;
+  height: 24px;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ctx-track {
+  fill: var(--surface-3);
+}
+
+.ctx-seg {
+  stroke: var(--surface);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.ctx-trigger {
+  stroke: var(--text);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.ctx-fill-system {
+  fill: var(--control-border);
+  background: var(--control-border);
+}
+
+.ctx-fill-global_instructions {
+  fill: var(--accent);
+  background: var(--accent);
+}
+
+.ctx-fill-workspace_instructions {
+  fill: var(--accent-fg);
+  background: var(--accent-fg);
+}
+
+.ctx-fill-tools {
+  fill: var(--warn);
+  background: var(--warn);
+}
+
+.ctx-fill-summary {
+  fill: var(--success);
+  background: var(--success);
+}
+
+.ctx-fill-history {
+  fill: var(--muted);
+  background: var(--muted);
+}
+
+.ctx-fill-skills {
+  fill: var(--mark);
+  background: var(--mark);
+}
+
+.ctx-fill-framing {
+  fill: var(--border);
+  background: var(--border);
+}
+
+.ctx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ctx-table th,
+.ctx-table td {
+  padding: 4px 6px;
+  text-align: left;
+  font-weight: 400;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.ctx-table thead th {
+  color: var(--muted);
+}
+
+.ctx-table .ctx-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ctx-note {
+  color: var(--muted);
+}
+
+.ctx-table .ctx-row-off th,
+.ctx-table .ctx-row-off td {
+  color: var(--muted);
+}
+
+.ctx-table .ctx-sum th,
+.ctx-table .ctx-sum td {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ctx-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 2px;
+}
+
+.ctx-swatch-off {
+  background: transparent;
+  border: 1px dashed var(--control-border);
+}
+
+.ctx-totals {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ctx-total {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ctx-total dt {
+  color: var(--muted);
+}
+
+.ctx-total dd {
+  margin: 0;
+  text-align: right;
+}
+
+/* Processes tab (ADR-0086): the session's command-tool calls, one entry each. */
+.processes-tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.processes-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px var(--gap);
+  border-bottom: 1px solid var(--border);
+}
+
+.processes-status,
+.processes-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.processes-notes {
+  padding: 0 var(--gap);
+}
+
+.processes-notes .error {
+  margin: 6px 0 0;
+}
+
+.processes-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.process-entry {
+  display: grid;
+  gap: 4px;
+  padding: 8px var(--gap);
+  border-bottom: 1px solid var(--border);
+}
+
+.process-command {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.process-state-running {
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+
+.process-state-refused {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.process-state-unfinished {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/*
+ * The Git status tab (ADR-0085). It uses only tokens.css values.
+ * Nothing here sets `display` on an element that is hidden by the `hidden` attribute.
+ */
+.git-tab {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-size: 12px;
+}
+
+.git-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-branch {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.git-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+
+.git-message {
+  margin: 4px 0;
+}
+
+.git-error {
+  color: var(--danger);
+}
+
+.git-group-title {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.git-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.git-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 1px 0;
+  min-width: 0;
+}
+
+.git-state {
+  flex: none;
+  width: 1.2em;
+  font-family: var(--mono);
+  font-weight: 600;
+  text-align: center;
+  color: var(--accent-fg);
+}
+
+.git-path {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
 }

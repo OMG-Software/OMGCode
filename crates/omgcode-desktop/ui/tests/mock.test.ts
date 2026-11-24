@@ -581,6 +581,47 @@ describe("mock backend", () => {
       expect(cleared.revision).toBe(start.revision + 4);
     });
 
+    it("unregisters a workspace like core: revisioned, and the sessions stay", async () => {
+      const { invoke } = createMockBackend();
+      const start = (await invoke("settings_overview", {})) as SettingsOverview;
+      const sessions = (await invoke("session_tree", {
+        view: "active",
+        sort: "updated",
+        descending: true,
+      })) as { indexed_sessions: number };
+      await expect(
+        invoke("settings_unregister_workspace", {
+          workspace_id: WORKSPACE,
+          revision: start.revision - 1,
+        }),
+      ).rejects.toMatchObject({ code: "stale_revision" });
+      await expect(
+        invoke("settings_unregister_workspace", {
+          workspace_id: "missing",
+          revision: start.revision,
+        }),
+      ).rejects.toMatchObject({ code: "unknown_workspace" });
+
+      const removed = (await invoke("settings_unregister_workspace", {
+        workspace_id: WORKSPACE,
+        revision: start.revision,
+      })) as SettingsOverview;
+      expect(removed.revision).toBe(start.revision + 1);
+      expect(removed.workspaces.some((w) => w.workspace_id === WORKSPACE)).toBe(false);
+      const after = (await invoke("session_tree", {
+        view: "active",
+        sort: "updated",
+        descending: true,
+      })) as { indexed_sessions: number };
+      expect(after.indexed_sessions).toBe(sessions.indexed_sessions);
+      await expect(
+        invoke("settings_unregister_workspace", {
+          workspace_id: WORKSPACE,
+          revision: removed.revision,
+        }),
+      ).rejects.toMatchObject({ code: "unknown_workspace" });
+    });
+
     it("refuses a stale revision and an unknown workspace", async () => {
       const { invoke } = createMockBackend();
       const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
@@ -766,5 +807,54 @@ describe("mock chat defaults (ADR-0080)", () => {
     })) as SettingsOverview;
     // With that global text saved, the workspace has exactly its own text's room.
     expect(saved.workspaces[0]?.instructions_max_bytes).toBe(10_000);
+  });
+});
+
+describe("mock workspace_entries", () => {
+  const session_id = "00000000-0000-4000-8000-000000000001";
+
+  it("lists one directory, directories first, and refuses what Rust refuses", async () => {
+    const { invoke } = createMockBackend();
+    const root = (await invoke("workspace_entries", { session_id, path: [] })) as {
+      entries: Array<{ name: string; kind: string }>;
+      truncated: boolean;
+    };
+    expect(root.truncated).toBe(false);
+    const kinds = root.entries.map((entry) => entry.kind);
+    expect(kinds).toEqual(
+      [...kinds].sort((a, b) => Number(a !== "directory") - Number(b !== "directory")),
+    );
+    expect(root.entries.map((entry) => entry.name)).toContain("src");
+    const nested = (await invoke("workspace_entries", { session_id, path: ["src", "main"] })) as {
+      entries: Array<{ name: string }>;
+    };
+    expect(nested.entries.map((entry) => entry.name)).toEqual(["app.ts", "layout.ts"]);
+    for (const path of [[".."], ["."], [""], ["a/b"], [".OMGCode"], ["missing"], ["Cargo.toml"]]) {
+      await expect(invoke("workspace_entries", { session_id, path })).rejects.toMatchObject({
+        code: "invalid_request",
+      });
+    }
+    await expect(
+      invoke("workspace_entries", { session_id: "nope", path: [] }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("refuses a separator or NUL in a name but accepts the digit zero", async () => {
+    const { invoke } = createMockBackend();
+    for (const path of [["a/b"], ["a\\b"], ["a\u0000b"]]) {
+      await expect(invoke("workspace_entries", { session_id, path })).rejects.toMatchObject({
+        code: "invalid_request",
+        message: "The folder path is not acceptable.",
+      });
+    }
+    // A name with a zero passes the path check and fails only because the fake tree lacks it.
+    await expect(
+      invoke("workspace_entries", { session_id, path: ["v0.56"] }),
+    ).rejects.toMatchObject({
+      code: "invalid_request",
+      message: "The folder could not be listed.",
+    });
   });
 });

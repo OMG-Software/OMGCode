@@ -23,6 +23,8 @@ export interface Actions {
   setPermissions(workspaceId: string, permissions: PermissionFlags): Change;
   choosePackageCache(workspaceId: string): Change;
   clearPackageCache(workspaceId: string): Change;
+  /** Removes one workspace's registration; Rust confirms and touches no file (ADR-0081). */
+  unregisterWorkspace(workspaceId: string): Change;
   selectConnection(profile: string | null): Change;
   /** `endpoint` is for a local kind; `apiKey` is for Ollama Cloud. The other is `null`. */
   addConnection(
@@ -38,6 +40,29 @@ export interface Actions {
   saveChatDefaults(defaults: ChatBudgets): Change;
   /** Replaces one workspace's custom instructions; empty text removes them. */
   setWorkspaceInstructions(workspaceId: string, instructions: string): Change;
+  /** Opens Rust's system folder dialog and imports the chosen skill folder, disabled (ADR-0082). */
+  importSkill(): Change;
+  /** Sets a skill's application setting (`workspaceId` null) or one workspace's override. */
+  setSkillState(name: string, workspaceId: string | null, state: SkillState): Change;
+  /** Removes a skill and its stored copy after a system confirmation. */
+  removeSkill(name: string): Change;
+  /**
+   * Records a toolchain profile (ADR-0088). Rust opens `rootCount` folder dialogs, then
+   * `pathEntryCount` more, and confirms natively; the window sends no path.
+   */
+  addToolchainProfile(
+    name: string,
+    environment: Array<{ name: string; value: string }>,
+    rootCount: number,
+    pathEntryCount: number,
+  ): Change;
+  removeToolchainProfile(name: string): Change;
+  /** Records a package-network profile, which is configuration only. */
+  addPackageProfile(name: string, origins: string[]): Change;
+  removePackageProfile(name: string): Change;
+  /** Windows only. Rust opens the folder dialog. */
+  grantContainerFolder(workspaceId: string, access: ContainerAccess): Change;
+  revokeContainerGrant(grantId: string): Change;
 }
 
 /**
@@ -52,13 +77,20 @@ export function scopedWorkspace(overview: SettingsOverview): WorkspaceSettingsVi
   return overview.workspaces.find((w) => w.workspace_id === scope.workspace_id) ?? null;
 }
 
+/** A skill's setting at one scope. `inherit` applies only to a workspace. */
+export type SkillState = "enabled" | "disabled" | "inherit";
+
 export type SectionId = "model" | "workspaces" | "advanced";
 
 /** What the window remembers between renders. It lives in memory only; nothing is stored. */
 export interface ViewState {
   section: SectionId;
-  /** The workspace shown in the Workspaces section, by identifier. */
+  /** The workspace chosen under Workspaces in the navigation, by identifier. */
   workspaceId: string | null;
+  /** Whether the Workspaces section shows that workspace, not the overview. */
+  workspacePage: boolean;
+  /** Whether the navigation lists the workspaces under Workspaces. */
+  workspacesExpanded: boolean;
   toolLimitsOpen: boolean;
   addConnectionOpen: boolean;
   /** What the operator has typed into the add-connection form, kept until an add succeeds. */
@@ -67,6 +99,8 @@ export interface ViewState {
   chatDraft: ChatDraft | null;
   /** Typed but unsaved workspace instructions, by workspace identifier. */
   instructionDrafts: Map<string, string>;
+  /** The Advanced section's three add forms, kept until an add succeeds (ADR-0088). */
+  executionForms: ExecutionForms;
 }
 
 /** The chat defaults form's values as typed; numbers stay text until a save checks them. */
@@ -92,4 +126,33 @@ export interface SectionContext {
   actions: Actions;
   /** Draws the current overview again, for a choice that sends nothing to the core. */
   rerender(): void;
+}
+
+/** What a container grant gives. */
+export type ContainerAccess = "read_execute" | "read_write";
+
+/**
+ * The add-profile and grant forms' typed values and whether each is open. Counts and the
+ * environment stay text until the operator clicks. Variable values are typed here and nowhere
+ * else; they are plain configuration, never secrets.
+ */
+export interface ExecutionForms {
+  toolchainOpen: boolean;
+  toolchain: { name: string; roots: string; pathEntries: string; environment: string };
+  packageOpen: boolean;
+  package: { name: string; origins: string };
+  grantOpen: boolean;
+  grant: { workspaceId: string; access: ContainerAccess };
+}
+
+/** The forms' starting values. */
+export function newExecutionForms(): ExecutionForms {
+  return {
+    toolchainOpen: false,
+    toolchain: { name: "", roots: "1", pathEntries: "0", environment: "" },
+    packageOpen: false,
+    package: { name: "", origins: "" },
+    grantOpen: false,
+    grant: { workspaceId: "", access: "read_execute" },
+  };
 }

@@ -55,6 +55,7 @@ use omgcode_core::turn::display_safe_line;
 
 use super::DesktopService;
 use super::error::DesktopError;
+use super::instructions;
 use super::session_connections::{ChosenConnection, SessionRecord, check_model, recorded_endpoint};
 use super::settings::overview_of;
 use super::state::folder_of_directory;
@@ -75,6 +76,14 @@ pub enum FolderPurpose {
     Workspace,
     /// One workspace's package cache root.
     PackageCache,
+    /// A skill folder to import.
+    Skill,
+    /// A read-only root of a toolchain profile.
+    ToolchainRoot,
+    /// A `PATH` entry of a toolchain profile, inside one of its roots.
+    ToolchainPathEntry,
+    /// A folder to grant to a workspace's container.
+    ContainerGrant,
 }
 
 impl FolderPurpose {
@@ -85,6 +94,10 @@ impl FolderPurpose {
             Self::DevelopmentRoot => "Choose the development root",
             Self::Workspace => "Choose a workspace folder",
             Self::PackageCache => "Choose a package cache folder",
+            Self::Skill => "Choose a skill folder",
+            Self::ToolchainRoot => "Choose a read-only root for the toolchain profile",
+            Self::ToolchainPathEntry => "Choose a PATH entry inside a root of the profile",
+            Self::ContainerGrant => "Choose a folder to grant to the workspace's container",
         }
     }
 }
@@ -491,7 +504,7 @@ fn roll_back_profile(
     }
 }
 
-fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopError> {
+pub(super) fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopError> {
     if store.revision() == expected {
         Ok(())
     } else {
@@ -499,7 +512,10 @@ fn check_revision(store: &ControlStore, expected: u64) -> Result<(), DesktopErro
     }
 }
 
-fn confirm(prompt: &dyn SettingsPrompt, confirmation: &Confirmation) -> Result<(), DesktopError> {
+pub(super) fn confirm(
+    prompt: &dyn SettingsPrompt,
+    confirmation: &Confirmation,
+) -> Result<(), DesktopError> {
     if prompt.confirm(confirmation) {
         Ok(())
     } else {
@@ -508,7 +524,7 @@ fn confirm(prompt: &dyn SettingsPrompt, confirmation: &Confirmation) -> Result<(
 }
 
 /// The display-safe text of a folder the operator chose.
-fn shown(folder: &Path) -> String {
+pub(super) fn shown(folder: &Path) -> String {
     folder_of_directory(Some(folder.to_path_buf()))
 }
 
@@ -692,6 +708,106 @@ impl DesktopService {
                 .ok_or(ControlError::UnknownWorkspace)?;
             store.clear_package_cache_root(workspace_id, request.revision)
         })
+    }
+
+    /// `settings` only. Remove one workspace's registration after a native
+    /// confirmation that names its folder and lists what is removed
+    /// (ADR-0081).
+    ///
+    /// One settings event drops the registration, its preferences, its
+    /// package cache root selection, its skill overrides, and its checkpoint
+    /// folder record. The workspace's instructions file is then deleted under
+    /// the preferences lock, so no later turn sends its text. The folder, its
+    /// `.OMGCode` folder, cached packages, and the sessions recorded in the
+    /// workspace are not touched. Registering the folder again assigns a new
+    /// identifier, so those sessions stay in the journals and chat without
+    /// tools.
+    ///
+    /// # Errors
+    ///
+    /// `unknown_workspace`; `turn_running` while a chat turn runs in a session
+    /// of the workspace (checked before the dialog and again before the
+    /// change); `control` with core's refusal while a container grant names
+    /// the workspace; `instructions_orphaned` when the workspace was removed
+    /// and its withdrawn runs were stopped, but its instructions file could
+    /// not be deleted; otherwise as
+    /// [`settings_choose_root`](Self::settings_choose_root).
+    pub fn settings_unregister_workspace(
+        &self,
+        request: WorkspaceRevisionRequest,
+        prompt: &dyn SettingsPrompt,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        let (workspace_id, workspace_folder) = {
+            let store = self.inner.open_or_create_control()?;
+            check_revision(&store, request.revision)?;
+            let workspace = store
+                .registered_workspace(request.workspace_id)
+                .ok_or_else(DesktopError::unknown_workspace)?;
+            store
+                .check_removable(workspace.id())
+                .map_err(|error| DesktopError::from_control(&error))?;
+            (
+                workspace.id(),
+                folder_of_directory(workspace.directory_path()),
+            )
+        };
+        self.refuse_running_turns(request.workspace_id)?;
+        confirm(
+            prompt,
+            &Confirmation {
+                title: "Remove a workspace",
+                message: format!(
+                    "Remove this workspace?\n\n{workspace_folder}\n\nIts preferences, instructions, package cache selection, skill overrides, and checkpoint record are removed from OMGCode. The folder and its files are not touched, and its checkpoints stay in its .OMGCode folder. Its sessions stay, and can chat without tools only. Registering the folder again makes a new workspace with the default preferences."
+                ),
+            },
+        )?;
+        // The dialog can stay open for a long time, so a turn started meanwhile
+        // is found here. A turn that starts after this check stops using tools,
+        // because every tool call checks the live settings.
+        self.refuse_running_turns(request.workspace_id)?;
+        // The preferences lock comes first, as in every other save that also
+        // reads settings, so the removal of the instructions file never
+        // overlaps a save or a turn's read of it.
+        let (listed, removed) = {
+            let _lock = self
+                .inner
+                .preferences
+                .lock()
+                .map_err(|_| DesktopError::poisoned())?;
+            let mut store = self.inner.open_or_create_control()?;
+            store
+                .unregister_workspace(workspace_id, request.revision)
+                .map_err(|error| DesktopError::from_control(&error))?;
+            // The removal is recorded, so the runs it withdraws are listed
+            // before anything else can fail, and are stopped and waited for
+            // even when the file below cannot be deleted.
+            let listed = run::withdrawn_runs(&store);
+            let removed = instructions::remove(&self.inner.data_root, *workspace_id.as_uuid());
+            (listed, removed)
+        };
+        // A run that was not stopped is reported first; a remaining
+        // instructions file is never sent, because the workspace is no longer
+        // registered.
+        let overview = self.finish_change(listed, AlsoWithdrawn::default())?;
+        removed.map_err(|_| DesktopError::removed_instructions_orphaned())?;
+        Ok(overview)
+    }
+
+    /// Refuse while a chat turn runs in any session recorded in this workspace.
+    fn refuse_running_turns(&self, workspace: uuid::Uuid) -> Result<(), DesktopError> {
+        for session_id in self.inner.running_sessions()? {
+            let recorded = self.inner.with_index(|state| {
+                state
+                    .index
+                    .session(session_id)
+                    .map_err(|error| DesktopError::from_index(&error))
+            })?;
+            if recorded.and_then(|session| session.workspace_id) == Some(workspace) {
+                return Err(DesktopError::workspace_turn_running());
+            }
+        }
+        Ok(())
     }
 
     /// `settings` only. Choose the global default model connection: a
@@ -1138,30 +1254,61 @@ impl DesktopService {
     /// them from the wait. Their watchers stop them even then, because a
     /// watcher checks every settings state recorded since it last read them
     /// (ADR-0061).
-    fn apply_checked(
+    pub(super) fn apply_checked(
         &self,
         change: impl FnOnce(&mut ControlStore) -> Result<(), DesktopError>,
     ) -> Result<SettingsOverview, DesktopError> {
-        let listed = {
+        self.apply_checked_also(|store| change(store).map(|()| AlsoWithdrawn::default()))
+    }
+
+    /// As [`apply_checked`](Self::apply_checked), for a change that also names
+    /// runs to stop that the settings alone do not show as withdrawn, such as
+    /// the runs of a workspace whose container grant was revoked.
+    pub(super) fn apply_checked_also(
+        &self,
+        change: impl FnOnce(&mut ControlStore) -> Result<AlsoWithdrawn, DesktopError>,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let (listed, also) = {
             let mut store = self.inner.open_or_create_control()?;
-            change(&mut store)?;
-            run::withdrawn_runs(&store)
+            let also = change(&mut store)?;
+            (run::withdrawn_runs(&store), also)
         };
+        self.finish_change(listed, also)
+    }
+
+    /// After a recorded change: wait for the runs it withdrew, the runs in
+    /// `also`, and any others the settings withdraw to stop, then return the
+    /// new overview.
+    fn finish_change(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+        also: AlsoWithdrawn,
+    ) -> Result<SettingsOverview, DesktopError> {
         // An unreadable run journal never undoes the recorded change, and the
         // watchers still stop the runs: wait for what the settings now
         // withdraw, then report that the runs were not all checked.
-        let named = listed.as_deref().unwrap_or(&[]);
-        let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, named)
+        let mut named = listed.as_deref().unwrap_or(&[]).to_vec();
+        named.extend(also.runs);
+        let withdrawn = run::stop_withdrawn_runs(&self.inner.data_root, REVOCATION_WAIT, &named)
             .map_err(|_| DesktopError::runs_unchecked())?;
         if !withdrawn.unconfirmed.is_empty() {
             return Err(DesktopError::runs_not_stopped(withdrawn.unconfirmed.len()));
         }
-        if listed.is_err() {
+        if listed.is_err() || also.unchecked {
             return Err(DesktopError::runs_unchecked());
         }
         let store = self.inner.open_or_create_control()?;
         Ok(overview_of(&self.inner, store))
     }
+}
+
+/// Runs a change stops in addition to those the settings withdraw.
+#[derive(Debug, Default)]
+pub(super) struct AlsoWithdrawn {
+    /// Pending runs to wait for.
+    pub runs: Vec<uuid::Uuid>,
+    /// The run journal could not be read, so the list may be incomplete.
+    pub unchecked: bool,
 }
 
 #[cfg(test)]

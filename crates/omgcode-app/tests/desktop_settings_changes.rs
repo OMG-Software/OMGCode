@@ -19,7 +19,10 @@ use omgcode_core::control::ControlStore;
 use omgcode_core::policy::{Access, PermissionSet};
 use serde_json::json;
 
-use common::{Fixture, read_tools, wire};
+use common::{
+    Fixture, MockServer, Step, gate, read_tools, settings_json, text, text_only, wait_arrived,
+    wait_finished, wire,
+};
 
 /// What the scripted prompt was asked.
 #[derive(Debug, PartialEq)]
@@ -578,4 +581,243 @@ fn requests_carry_no_path_and_refuse_unknown_fields() {
         "folder": "/etc",
     });
     assert!(serde_json::from_value::<WorkspaceRevisionRequest>(extra).is_err());
+}
+
+/// Start one chat turn against `endpoint`.
+fn send(
+    service: &DesktopService,
+    session: uuid::Uuid,
+    endpoint: &str,
+) -> Result<omgcode_app::desktop::ChatStatus, DesktopError> {
+    service.chat_send(wire(json!({
+        "session_id": session,
+        "message": "hi",
+        "settings": settings_json(endpoint),
+        "skills": [],
+    })))
+}
+
+fn instructions_file(fixture: &Fixture, workspace: uuid::Uuid) -> PathBuf {
+    fixture
+        .data
+        .join("desktop-v1")
+        .join("workspace-instructions")
+        .join(format!("{workspace}.json"))
+}
+
+/// The confirmation names the folder and what is removed, one event removes
+/// the registration and the saved instructions, the folder and the session
+/// stay, and a later turn in the session chats without tools and without the
+/// workspace text (ADR-0081).
+#[test]
+fn unregistering_confirms_removes_the_instructions_and_keeps_the_sessions() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let server = MockServer::start(vec![Step::reply(text("still here"))]);
+    let service = fixture.service(&server.endpoint);
+    let session = service
+        .session_create(wire(json!({"workspace_id": workspace.id, "title": "kept"})))
+        .expect("session")
+        .session_id;
+    service
+        .settings_set_workspace_instructions(wire(json!({
+            "workspace_id": workspace.id,
+            "instructions": "Use tabs."
+        })))
+        .expect("instructions");
+    let file = instructions_file(&fixture, workspace.id);
+    assert!(file.exists());
+    let start = current_revision(&fixture.data);
+
+    let prompt = ScriptedPrompt::new().answer(true);
+    let overview = service
+        .settings_unregister_workspace(for_workspace(workspace.id, start), &prompt)
+        .expect("unregistered");
+
+    assert!(overview.workspaces.is_empty());
+    assert_eq!(overview.revision, start + 1);
+    let confirmations = prompt.confirmations();
+    assert_eq!(confirmations.len(), 1);
+    let message = &confirmations[0].message;
+    assert!(message.contains("project"), "names the folder: {message}");
+    for part in [
+        "preferences",
+        "instructions",
+        "package cache",
+        "skill overrides",
+        "not touched",
+        "without tools",
+    ] {
+        assert!(message.contains(part), "{part}: {message}");
+    }
+    assert!(!file.exists(), "the instructions file is deleted");
+    assert!(workspace.path.is_dir(), "the folder stays");
+
+    // The session stays listed, and a turn in it is text-only, with none of
+    // the workspace text even if a file reappears (a concurrent save).
+    let tree = service
+        .session_tree(wire(
+            json!({"view": "active", "sort": "updated", "descending": true}),
+        ))
+        .expect("tree");
+    assert_eq!(tree.indexed_sessions, 1);
+    fs::create_dir_all(file.parent().expect("parent")).expect("directory");
+    fs::write(&file, br#"{"version":1,"instructions":"Use tabs."}"#).expect("stray file");
+    send(&service, session, &server.endpoint).expect("send");
+    assert_eq!(
+        wait_finished(&service, session).state,
+        omgcode_app::desktop::ChatState::Completed
+    );
+    let (_, requests) = server.finish_recorded();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].body.contains("Use tabs."));
+    assert!(!requests[0].body.contains("workspace_read_file"));
+}
+
+/// An instructions file that cannot be deleted does not skip the run check:
+/// the removal is recorded, the withdrawn runs are still listed and waited
+/// for, and a run problem is reported ahead of the remaining file, which no
+/// turn sends. A folder in the file's place makes the deletion fail, and an
+/// unreadable run journal makes the run check fail.
+#[test]
+fn a_failed_instructions_deletion_still_checks_the_withdrawn_runs() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let service = service(&fixture.data);
+    let file = instructions_file(&fixture, workspace.id);
+    fs::create_dir_all(&file).expect("a folder where the file belongs");
+    let start = current_revision(&fixture.data);
+
+    // Only the deletion fails: the change is recorded and the orphan named.
+    let error = service
+        .settings_unregister_workspace(
+            for_workspace(workspace.id, start),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect_err("the file cannot be deleted");
+    assert_eq!(error.code(), "instructions_orphaned");
+    assert_eq!(current_revision(&fixture.data), start + 1);
+
+    // With the run journal unreadable as well, the run check still runs and
+    // its failure is reported first. An unchecked run list shares the
+    // `runs_not_stopped` code and says that the runs could not be checked.
+    let other = fixture.workspace("second", read_tools());
+    let other_file = instructions_file(&fixture, other.id);
+    fs::create_dir_all(&other_file).expect("a folder where the file belongs");
+    fs::write(fixture.data.join("runs-v1.jsonl"), b"not a journal\n").expect("journal");
+    let revision = current_revision(&fixture.data);
+    let error = service
+        .settings_unregister_workspace(
+            for_workspace(other.id, revision),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect_err("the runs cannot be checked");
+    assert_eq!(error.code(), "runs_not_stopped");
+    assert!(
+        error.message().contains("could not be checked"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(current_revision(&fixture.data), revision + 1);
+}
+
+#[test]
+fn unregistering_refuses_unknown_stale_or_declined_requests_without_changing_anything() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let service = service(&fixture.data);
+    let start = current_revision(&fixture.data);
+
+    let prompt = ScriptedPrompt::new();
+    assert_eq!(
+        code(
+            service
+                .settings_unregister_workspace(for_workspace(uuid::Uuid::new_v4(), start), &prompt)
+        ),
+        "unknown_workspace"
+    );
+    assert_eq!(
+        code(
+            service.settings_unregister_workspace(for_workspace(workspace.id, start - 1), &prompt)
+        ),
+        "stale_revision"
+    );
+    assert!(prompt.asked().is_empty(), "refused before any dialog");
+
+    let declined = ScriptedPrompt::new().answer(false);
+    assert_eq!(
+        code(service.settings_unregister_workspace(for_workspace(workspace.id, start), &declined)),
+        "cancelled"
+    );
+    assert_eq!(declined.confirmations().len(), 1);
+    assert_eq!(current_revision(&fixture.data), start);
+
+    // A change made while the operator decides is not overwritten.
+    let data = fixture.data.clone();
+    let id = workspace.id;
+    let racing = ScriptedPrompt::new().answer(true).meanwhile(move || {
+        self::service(&data)
+            .settings_set_permissions(
+                permissions(id, start, [false, true, false, false]),
+                &ScriptedPrompt::new().answer(true),
+            )
+            .expect("a concurrent change");
+    });
+    assert_eq!(
+        code(service.settings_unregister_workspace(for_workspace(workspace.id, start), &racing)),
+        "stale_revision"
+    );
+    assert_eq!(
+        service
+            .settings_overview()
+            .expect("overview")
+            .workspaces
+            .len(),
+        1
+    );
+}
+
+/// A turn running in a session of the workspace refuses the removal, before
+/// the dialog; another workspace is not blocked, and once the turn ends the
+/// removal succeeds.
+#[test]
+fn unregistering_is_refused_while_a_turn_runs_in_the_workspace() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let other = fixture.workspace("other", text_only());
+    let (release, gated) = gate();
+    let (announce, arrived) = std::sync::mpsc::channel();
+    let server = MockServer::start(vec![Step::gated(text("done"), gated).announcing(announce)]);
+    let service = fixture.service(&server.endpoint);
+    let session = service
+        .session_create(wire(json!({"workspace_id": workspace.id, "title": "busy"})))
+        .expect("session")
+        .session_id;
+    send(&service, session, &server.endpoint).expect("send");
+    wait_arrived(&arrived);
+
+    let start = current_revision(&fixture.data);
+    let prompt = ScriptedPrompt::new();
+    assert_eq!(
+        code(service.settings_unregister_workspace(for_workspace(workspace.id, start), &prompt)),
+        "turn_running"
+    );
+    assert!(prompt.asked().is_empty(), "refused before any dialog");
+    assert_eq!(current_revision(&fixture.data), start);
+
+    let allowed = ScriptedPrompt::new().answer(true);
+    service
+        .settings_unregister_workspace(for_workspace(other.id, start), &allowed)
+        .expect("another workspace is removable");
+
+    drop(release);
+    wait_finished(&service, session);
+    let allowed = ScriptedPrompt::new().answer(true);
+    service
+        .settings_unregister_workspace(
+            for_workspace(workspace.id, current_revision(&fixture.data)),
+            &allowed,
+        )
+        .expect("removable after the turn");
+    server.finish();
 }

@@ -137,6 +137,21 @@ pub(super) fn save(
         .map_err(|_| DesktopError::workspace_instructions())
 }
 
+/// Delete one workspace's saved instructions file, if there is one (ADR-0081).
+///
+/// The `settings` window calls it under the preferences lock when it
+/// unregisters a workspace. The trusted CLI calls it without that lock, which
+/// lives in one process, so a concurrent save in a running desktop could
+/// recreate the file. `chat_send` sends the text only for a registered
+/// workspace, so a file that remains is never sent.
+///
+/// # Errors
+///
+/// `preferences` when the file cannot be removed.
+pub fn remove(data_root: &Path, workspace: Uuid) -> Result<(), DesktopError> {
+    save(data_root, workspace, "")
+}
+
 /// The custom instructions one turn sends: the global text alone when the
 /// workspace has none, so earlier turns' manifests keep their shape, and
 /// otherwise both under headings, global first.
@@ -160,6 +175,21 @@ pub(super) fn compose(global: &str, workspace: &str) -> Result<String, DesktopEr
         )));
     }
     Ok(composed)
+}
+
+/// The bytes of [`compose`]'s result that belong to the global instructions:
+/// all of them when the workspace has none, none when the global text is
+/// empty, and otherwise the global heading and text. The workspace share is
+/// the rest of the composed text, which includes the separator and its own
+/// heading. Used only to split an estimate (ADR-0087).
+pub(super) fn global_share(global: &str, workspace: &str) -> usize {
+    if workspace.is_empty() {
+        global.len()
+    } else if global.is_empty() {
+        0
+    } else {
+        GLOBAL_HEADING.len() + global.len()
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +297,30 @@ mod tests {
             compose("Be brief.", "Use tabs.").expect("both"),
             "Global instructions:\nBe brief.\n\nWorkspace instructions:\nUse tabs."
         );
+    }
+
+    #[test]
+    fn the_global_share_is_a_prefix_of_the_composed_text() {
+        for (global, workspace) in [
+            ("", ""),
+            ("Be brief.", ""),
+            ("", "Use tabs."),
+            ("Be brief.", "Use tabs."),
+        ] {
+            let composed = compose(global, workspace).expect("compose");
+            let share = global_share(global, workspace);
+            assert!(share <= composed.len());
+            let expected_head = match (global.is_empty(), workspace.is_empty()) {
+                (_, true) => global.to_owned(),
+                (true, false) => String::new(),
+                (false, false) => format!("{GLOBAL_HEADING}{global}"),
+            };
+            assert_eq!(
+                &composed[..share],
+                expected_head,
+                "{global:?} {workspace:?}"
+            );
+        }
     }
 
     #[test]

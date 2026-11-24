@@ -14,6 +14,7 @@ import { renderAdvanced } from "./advanced_section";
 import {
   type Actions,
   type Change,
+  newExecutionForms,
   type SectionContext,
   type SectionId,
   scopedWorkspace,
@@ -78,6 +79,8 @@ const ACTIONS: Actions = {
     settingsApi.choosePackageCache(workspaceId, revision),
   clearPackageCache: (workspaceId) => (revision) =>
     settingsApi.clearPackageCache(workspaceId, revision),
+  unregisterWorkspace: (workspaceId) => (revision) =>
+    settingsApi.unregisterWorkspace(workspaceId, revision),
   selectConnection: (profile) => (revision) => settingsApi.selectConnection(revision, profile),
   addConnection: (name, kind, endpoint, apiKey) => (revision) =>
     settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
@@ -87,6 +90,21 @@ const ACTIONS: Actions = {
   saveChatDefaults: (defaults) => () => settingsApi.saveChatDefaults(defaults),
   setWorkspaceInstructions: (workspaceId, instructions) => () =>
     settingsApi.setWorkspaceInstructions(workspaceId, instructions),
+  importSkill: () => (revision) => settingsApi.importSkill(revision),
+  setSkillState: (name, workspaceId, state) => (revision) =>
+    settingsApi.setSkillState(revision, name, workspaceId, state),
+  removeSkill: (name) => (revision) => settingsApi.removeSkill(revision, name),
+  addToolchainProfile: (name, environment, rootCount, pathEntryCount) => (revision) =>
+    settingsApi.addToolchainProfile(revision, name, environment, rootCount, pathEntryCount),
+  removeToolchainProfile: (name) => (revision) =>
+    settingsApi.removeToolchainProfile(revision, name),
+  addPackageProfile: (name, origins) => (revision) =>
+    settingsApi.addPackageProfile(revision, name, origins),
+  removePackageProfile: (name) => (revision) => settingsApi.removePackageProfile(revision, name),
+  grantContainerFolder: (workspaceId, access) => (revision) =>
+    settingsApi.grantContainerFolder(revision, workspaceId, access),
+  revokeContainerGrant: (grantId) => (revision) =>
+    settingsApi.revokeContainerGrant(revision, grantId),
 };
 
 /**
@@ -98,11 +116,14 @@ export function startSettings(root: HTMLElement): SettingsApp {
   const view: ViewState = {
     section: "workspaces",
     workspaceId: null,
+    workspacePage: false,
+    workspacesExpanded: true,
     toolLimitsOpen: false,
     addConnectionOpen: false,
     connectionDraft: newConnectionDraft(),
     chatDraft: null,
     instructionDrafts: new Map(),
+    executionForms: newExecutionForms(),
   };
   // A change's error stays until the next change starts; a read's failure until a read succeeds.
   // Two elements, so neither outcome can overwrite or clear the other.
@@ -128,11 +149,18 @@ export function startSettings(root: HTMLElement): SettingsApp {
     notice,
     body,
   );
-  const nav = createNav(
-    view.section,
-    (id) => select(id),
-    () => void refresh(),
-  );
+  const nav = createNav({
+    onSelect: (id) => select(id),
+    onSelectWorkspace: (id) => {
+      view.workspaceId = id;
+      select("workspaces", true);
+    },
+    onToggleWorkspaces: () => {
+      view.workspacesExpanded = !view.workspacesExpanded;
+      draw();
+    },
+    onRefresh: () => void refresh(),
+  });
   const windowElement = el("main", { class: "settings-window" }, nav.element, content);
   let current: SettingsOverview | null = null;
   let working = false;
@@ -167,7 +195,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
       case "workspaces":
         return renderWorkspaces(context);
       case "advanced":
-        return renderAdvanced(context.overview);
+        return renderAdvanced(context);
     }
   }
 
@@ -187,14 +215,23 @@ export function startSettings(root: HTMLElement): SettingsApp {
     nav.element.hidden = scoped;
     scopeBar.hidden = !scoped;
     windowElement.classList.toggle("scoped", scoped);
-    nav.select(view.section);
-    // Drawing replaces every control. A focused control with an id (the workspace chooser) gets
-    // focus back on its replacement, so a keyboard user keeps their place.
+    // Drawing replaces every control. A focused control with an id gets focus back on its
+    // replacement, so a keyboard user keeps their place.
     const active = document.activeElement;
     const focusedId = active instanceof HTMLElement && body.contains(active) ? active.id : "";
     const unsent = takeUnsentKeys();
     replaceChildren(body, ...renderSection(scoped ? "workspaces" : view.section, context));
     restoreUnsentKeys(unsent);
+    // After the section, which settles the workspace shown when the chosen one is gone.
+    nav.update({
+      section: view.section,
+      workspacePage: view.workspacePage,
+      workspaceId: view.workspaceId,
+      expanded: view.workspacesExpanded,
+      workspaces: current.workspaces
+        .filter((w) => !scoped || w.workspace_id === view.workspaceId)
+        .map((w) => ({ id: w.workspace_id, label: w.folder_display })),
+    });
     const replacement = focusedId === "" ? null : document.getElementById(focusedId);
     if (replacement !== null && body.contains(replacement)) {
       replacement.focus();
@@ -259,8 +296,9 @@ export function startSettings(root: HTMLElement): SettingsApp {
     unsent.clear();
   }
 
-  function select(id: SectionId): void {
+  function select(id: SectionId, workspacePage = false): void {
     view.section = id;
+    view.workspacePage = id === "workspaces" && workspacePage;
     // A new section starts at its heading, not at the last section's scroll offset.
     content.scrollTop = 0;
     draw();

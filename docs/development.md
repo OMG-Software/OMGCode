@@ -239,10 +239,14 @@ omgcode --data-dir C:\omgcode-data workspace audit --limit 20
 omgcode --data-dir C:\omgcode-data workspace container-grant WORKSPACE_ID C:\dev\project --access read-write --revision 4
 omgcode --data-dir C:\omgcode-data workspace container-grant WORKSPACE_ID C:\Users\me\.cargo --access read-execute --revision 5
 omgcode --data-dir C:\omgcode-data workspace container-revoke GRANT_UUID
+omgcode --data-dir C:\omgcode-data workspace unregister WORKSPACE_ID --revision 6
 ```
 
 `status` initializes an absent store at revision zero. `check` and `audit`
-require existing state. Flags take explicit `true` or `false` values. Read/write
+require existing state. `unregister` removes a registration and its settings,
+deletes its saved desktop instructions, and touches no file in the folder; a
+container grant refuses it until it is revoked
+([ADR-0081](adr/0081-unregister-a-workspace.md)). Flags take explicit `true` or `false` values. Read/write
 default to enabled; execute, task-network, host-services, and model-tools
 default to disabled. All decisions still report `execution_allowed: false`;
 only the trusted `run` command starts a process, and the model command tool
@@ -992,6 +996,7 @@ Direct dependencies have specific purposes:
 | rusqlite | 0.43.0 with `default-features = false` and `bundled`; SQLite 3.54.1 with FTS5 for the derived session index. MIT. Compiles SQLite's C amalgamation through `cc` at build time, so a C compiler is required. Uses `unsafe` internally; core uses only its safe API. Adds `libsqlite3-sys`, `fallible-iterator`, and `fallible-streaming-iterator` |
 | tauri (`omgcode-desktop`) | 2.12.6 with `default-features = false` and features `wry` and `x11`. Apache-2.0 OR MIT. No plugin, tray, updater, asset protocol, or devtools feature. Linux needs the WebKitGTK development packages. The lockfile gained about 283 entries |
 | tauri-build (`omgcode-desktop`, build dependency) | 2.7.5 with `config-json`. Runs in `build.rs` to declare the application commands and generate permission manifests |
+| gix (`omgcode-core`) | 0.91.0, pinned with `=`, `default-features = false` and features `status` and `sha1`. MIT OR Apache-2.0. Pure Rust: reads the Git index, objects, and worktree for the Git status tab without running Git (ADR-0085). No network, transport client, credential, `fsmonitor`, or `max-performance` feature; compression is `zlib-rs`. The lockfile gained 81 packages net (82 added, one `syn` patch release replaced), the `gix-*` crates and helpers such as `jiff`, `dashmap`, `memmap2`, and `prodash`. `gix-filter` and `gix-command` compile but the status run is opened with isolated permissions and a section filter that rejects the repository's own configuration, so no filter, diff driver, hook, or fsmonitor command is known to it. Not audited beyond the feature selection |
 | tempfile | Private disposable test data; development dependency only |
 
 The frontend in `crates/omgcode-desktop/ui` has one runtime dependency,

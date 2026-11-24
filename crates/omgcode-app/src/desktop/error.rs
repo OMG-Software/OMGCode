@@ -40,6 +40,17 @@ impl DesktopError {
         }
     }
 
+    /// A skill registry or import failure with core's stable code (ADR-0082).
+    pub(crate) fn skill(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
+    /// A toolchain, package-network, or container-grant failure with a fixed
+    /// message (ADR-0088).
+    pub(crate) fn execution(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
     /// The stable machine-readable code.
     pub const fn code(&self) -> &'static str {
         self.code
@@ -386,6 +397,25 @@ impl DesktopError {
             format!(
                 "The new API key is set, but the key it replaced, {old}, could not be deleted and may remain in the operating system's credential store with no connection naming it. Delete it there."
             ),
+        )
+    }
+
+    /// A chat turn is running in a session of the workspace the operator is
+    /// removing, so nothing is removed (ADR-0081).
+    pub(crate) fn workspace_turn_running() -> Self {
+        Self::new(
+            "turn_running",
+            "A chat turn is running in a session of this workspace. Wait for it to finish, or cancel it in the main window, and remove the workspace again.",
+        )
+    }
+
+    /// The workspace is removed, but its instructions file was not deleted
+    /// (ADR-0081). The workspace's identifier is never reused, so no turn
+    /// sends the text.
+    pub(crate) fn removed_instructions_orphaned() -> Self {
+        Self::new(
+            "instructions_orphaned",
+            "The workspace was removed, but its saved instructions file could not be deleted. No turn sends it. Delete the file from the application's workspace-instructions folder.",
         )
     }
 

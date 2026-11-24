@@ -10,7 +10,8 @@ use std::path::Path;
 
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
-    BranchState, ChatState, ConnectionSourceView, DesktopConfig, DesktopService, PreferencesSource,
+    BranchState, ChatState, ConnectionSourceView, DesktopConfig, DesktopService, GitStatusState,
+    PreferencesSource,
 };
 use omgcode_core::control::{ControlStore, SkillScope, SkillSetting};
 use omgcode_core::policy::Access;
@@ -988,6 +989,76 @@ fn session_context_reads_the_workspace_branch_for_display() {
         .session_context(wire(session_request(Uuid::new_v4())))
         .expect_err("unknown session");
     assert_eq!(unknown.code(), "not_found");
+}
+
+/// The Git status tab (ADR-0085): a folder without `.git` is a normal state, a
+/// `.git` folder that is not a repository is a controlled `unavailable` value
+/// that still carries the branch, and an unknown session is refused.
+#[test]
+fn workspace_git_status_reports_states_without_failing() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let session = new_session(&service, &workspace);
+
+    let status = service
+        .workspace_git_status(wire(session_request(session)))
+        .expect("status");
+    assert_eq!(status.state, GitStatusState::NotRepository);
+    assert!(status.paths.is_empty());
+    assert!(!status.truncated);
+    assert_eq!(status.branch.state, BranchState::None);
+
+    fs::create_dir(workspace.path.join(".git")).expect("git dir");
+    fs::write(
+        workspace.path.join(".git").join("HEAD"),
+        "ref: refs/heads/feature
+",
+    )
+    .expect("head");
+    let status = service
+        .workspace_git_status(wire(session_request(session)))
+        .expect("status");
+    assert_eq!(status.state, GitStatusState::Unavailable);
+    assert!(status.note.is_some());
+    assert_eq!(status.branch.state, BranchState::Branch);
+    assert_eq!(
+        json_of(&status)["state"],
+        Value::String("unavailable".to_owned())
+    );
+
+    let unknown = service
+        .workspace_git_status(wire(session_request(Uuid::new_v4())))
+        .expect_err("unknown session");
+    assert_eq!(unknown.code(), "not_found");
+}
+
+/// A `.git` entry without `HEAD` is named by what it is: a folder that has no
+/// `HEAD` is not reported as a pointer file, and a pointer file is.
+#[test]
+fn a_git_entry_without_head_is_named_by_what_it_is() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let service = fixture.service("http://127.0.0.1:1234/v1");
+    let session = new_session(&service, &workspace);
+    let note = || {
+        let status = service
+            .workspace_git_status(wire(session_request(session)))
+            .expect("status");
+        assert_eq!(status.state, GitStatusState::Unavailable);
+        status.note.expect("note")
+    };
+
+    let git = workspace.path.join(".git");
+    fs::create_dir(&git).expect("git dir");
+    assert_eq!(note(), "the .git folder has no HEAD");
+
+    fs::remove_dir(&git).expect("remove dir");
+    fs::write(&git, "gitdir: ../elsewhere\n").expect("git file");
+    assert_eq!(
+        note(),
+        "the .git entry is a file, so linked worktrees and submodules are not shown"
+    );
 }
 
 /// The `settings` window's scope (ADR-0071) comes from the session's recorded

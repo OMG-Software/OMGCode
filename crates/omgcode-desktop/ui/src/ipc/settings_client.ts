@@ -29,6 +29,15 @@ export const settingsApi = {
       workspace_id: workspaceId,
       revision,
     }),
+  /**
+   * Removes one workspace's registration after a native confirmation Rust shows (ADR-0081). The
+   * folder and its files are not touched. Sends the identifier and revision, never a path.
+   */
+  unregisterWorkspace: (workspaceId: string, revision: number) =>
+    invokeCommand<SettingsOverview>("settings_unregister_workspace", {
+      workspace_id: workspaceId,
+      revision,
+    }),
   /** Chooses the active model connection: a recorded profile, or `null` for the default. */
   selectConnection: (revision: number, profile: string | null) =>
     invokeCommand<SettingsOverview>("settings_select_connection", { revision, profile }),
@@ -76,5 +85,79 @@ export const settingsApi = {
     invokeCommand<SettingsOverview>("settings_set_workspace_instructions", {
       workspace_id: workspaceId,
       instructions,
+    }),
+  /**
+   * Asks Rust to open its system folder dialog and import the chosen skill folder through core,
+   * disabled (ADR-0082). It sends only the revision: the window never names a path.
+   */
+  importSkill: (revision: number) =>
+    invokeCommand<SettingsOverview>("settings_import_skill", { revision }),
+  /**
+   * Sets a skill's application setting (`workspaceId` null) or one workspace's override. Rust
+   * confirms in a system dialog, naming the skill, before any change that leaves it enabled.
+   */
+  setSkillState: (
+    revision: number,
+    name: string,
+    workspaceId: string | null,
+    state: "enabled" | "disabled" | "inherit",
+  ) =>
+    invokeCommand<SettingsOverview>("settings_set_skill_state", {
+      revision,
+      name,
+      workspace_id: workspaceId,
+      skill_state: state,
+    }),
+  /** Removes a skill and its stored copy after a system confirmation that names it. */
+  removeSkill: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_skill", { revision, name }),
+  /**
+   * Asks Rust to open a system folder dialog for each read-only root and each `PATH` entry
+   * (`rootCount`, `pathEntryCount`), then confirm natively, and record a toolchain profile
+   * (ADR-0088). No path is sent. Variable values are plain text by design and never shown in a
+   * dialog.
+   */
+  addToolchainProfile: (
+    revision: number,
+    name: string,
+    environment: Array<{ name: string; value: string }>,
+    rootCount: number,
+    pathEntryCount: number,
+  ) =>
+    invokeCommand<SettingsOverview>("settings_add_toolchain_profile", {
+      revision,
+      name,
+      environment,
+      root_count: rootCount,
+      path_entry_count: pathEntryCount,
+    }),
+  /** Removes a toolchain profile after a system confirmation. */
+  removeToolchainProfile: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_toolchain_profile", { revision, name }),
+  /** Records a package-network profile (configuration only) after a system confirmation. */
+  addPackageProfile: (revision: number, name: string, origins: string[]) =>
+    invokeCommand<SettingsOverview>("settings_add_package_profile", { revision, name, origins }),
+  /** Removes a package-network profile, and unbinds its credentials, after a confirmation. */
+  removePackageProfile: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_package_profile", { revision, name }),
+  /**
+   * Windows only. Asks Rust for a folder in a system dialog, confirms natively, and grants it to
+   * the workspace's container. No path is sent.
+   */
+  grantContainerFolder: (
+    revision: number,
+    workspaceId: string,
+    access: "read_execute" | "read_write",
+  ) =>
+    invokeCommand<SettingsOverview>("settings_grant_container_folder", {
+      revision,
+      workspace_id: workspaceId,
+      access,
+    }),
+  /** Windows only. Revokes one container grant after a system confirmation. */
+  revokeContainerGrant: (revision: number, grantId: string) =>
+    invokeCommand<SettingsOverview>("settings_revoke_container_grant", {
+      revision,
+      grant_id: grantId,
     }),
 };

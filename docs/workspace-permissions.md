@@ -21,7 +21,9 @@ diagnostic result; see [trusted runs](execution.md#trusted-runs).
 ## Trusted settings and identity
 
 Only the trusted local CLI and, since 0.41.0, the desktop `settings` window
-can change these settings (ADR-0060). Neither is a model tool. The window gets
+can change these settings (ADR-0060). Neither is a model tool. The window
+also adds and removes toolchain profiles, package-network profiles, and
+container grants (ADR-0088), and manages skills (ADR-0082). The window gets
 every folder from a native dialog and asks for a native confirmation before
 any change that widens access. Prompts, conversation history, imported IDs, skills, and repository files
 cannot set a development root, change permissions, or recreate a binding.
@@ -177,7 +179,42 @@ revision and increments it; revocation needs none and keeps it. `workspace
 status` lists outstanding grants under `container_grants` and omits the field
 when there are none, so settings without grants keep their exact output.
 Version 0.14.0 refuses a settings log that records a grant. The
-[execution guide](execution.md#container-grants) owns the rules.
+[execution guide](execution.md#container-grants) owns the rules. Since
+[ADR-0088](adr/0088-change-execution-settings-in-the-settings-window.md) the
+desktop `settings` window grants a folder and revokes a grant through the same
+core calls, with native dialogs and confirmations; on other platforms it
+returns `unsupported_platform`. It adds no new event.
+
+## Unregistering a workspace
+
+`workspace unregister <workspace-id> --revision <n>` removes one registration
+([ADR-0081](adr/0081-unregister-a-workspace.md)). It needs the expected revision
+and increments it, through one `workspace_unregistered` event that replay
+applies. The event also drops what names the workspace: its preferences, its
+package cache root selection, its skill workspace overrides, and its bound
+`.OMGCode` checkpoint folder record (as `file forget-checkpoint-store` does). Nothing
+on disk changes: the folder, its `.OMGCode` folder, cached packages, and the
+sessions recorded in the workspace stay. Approval records, package-fetch
+records, and policy-audit records stay as history. The revision change makes
+every outstanding approval unusable, and a started run of the workspace is
+withdrawn like any run whose workspace is no longer registered.
+
+The command is refused while any container grant, in any state, names the
+workspace (`grant refused`): revoke it with `workspace container-revoke`
+first. An unknown workspace and a stale revision are refused as for any other
+settings change. Registering the same folder afterwards assigns a new
+identifier and the default preferences; the old identifier is never reused.
+
+The desktop `settings` window removes the workspace's saved custom
+instructions file with the same event
+([ADR-0080](adr/0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)),
+and the CLI deletes it right after the event is recorded. Sessions recorded in
+the removed workspace keep their journals and index entries. A turn in one
+finds no registered workspace, so chat is text only with the reason
+`workspace_unregistered`, as described under
+[model tools](#model-readlist-and-command-tools), and sends no workspace
+instructions. A control journal that records `workspace_unregistered` cannot be
+read by 0.55.0 or earlier.
 
 ## Toolchain profiles
 
@@ -191,6 +228,9 @@ same as version 0.15.0's. Version 0.15.0 refuses a settings log
 that records a profile. The
 [execution guide](execution.md#toolchain-profiles) owns the rules. Profile
 variables are stored here in plain text; never put secrets in them.
+The desktop `settings` window adds and removes profiles through the same core
+calls, with a native folder dialog for each root and `PATH` entry and a native
+confirmation (ADR-0088); it records the same events and offers no edit.
 
 ## Package-network profiles
 
@@ -205,7 +245,10 @@ text is at most 2,048 bytes. No run accepts a profile, and a profile never
 authorizes network access. Version 0.19.0 refuses a settings log that records
 one; a 0.20.0 control journal cannot be read by 0.19.0. The
 [execution guide](execution.md#package-network-profile-contract-only) owns the
-contract and the remaining enforcement gate.
+contract and the remaining enforcement gate. The desktop `settings` window adds
+and removes profiles through the same core calls after a native confirmation
+(ADR-0088); removal also unbinds the credentials bound to the profile's
+origins. Binding a credential stays a trusted CLI action.
 
 A trusted `packages fetch` appends `package_fetch_started` and
 `package_fetch_finished` events. They preserve the settings revision. They
@@ -418,6 +461,11 @@ archives; a record is at most 32 KiB. `omgcode actions list [--limit N]` lists
 the most recent calls, oldest first, from 1 to 1,000. Like the other journals
 it is private data: targets and codes can reveal workspace names. It is not
 tamper-evident against another process running as the same user.
+
+The desktop shell reads this journal, read-only, to list one session's command
+calls and which of them were refused or never finished (ADR-0086). It reads
+the 1,000 newest records of all sessions, so an older call of a busy journal
+is not listed.
 
 ## Model read/list and command tools
 

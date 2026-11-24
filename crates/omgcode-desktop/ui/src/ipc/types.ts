@@ -352,7 +352,7 @@ export interface ConnectionView {
   selectable: boolean;
 }
 
-/** One connection the main window's status bar may offer (ADR-0064). Never a credential. */
+/** One connection the main window's composer may offer (ADR-0071). Never a credential. */
 export interface ConnectionChoice {
   name: string;
   /** `lm_studio`, `ollama_local`, or `ollama_cloud`. */
@@ -395,6 +395,128 @@ export interface BranchView {
 export interface SessionContext {
   workspace_registered: boolean;
   branch: BranchView;
+}
+
+/** The parts of a context estimate, in display order (ADR-0087). */
+export type ContextPartId =
+  | "system"
+  | "global_instructions"
+  | "workspace_instructions"
+  | "tools"
+  | "summary"
+  | "history"
+  | "skills"
+  | "framing";
+
+/** One part of the estimate. It holds numbers and a fixed code, never instruction or message text. */
+export interface ContextPart {
+  id: ContextPartId;
+  /** Conservative token estimate; zero when the part is not included. */
+  tokens: number;
+  /** Whether the next turn would send this part. */
+  included: boolean;
+  /** For `history`: the retained messages after the compaction boundary. */
+  messages?: number;
+  /** A fixed code that says why the part is not included. */
+  reason?: string;
+}
+
+/** What the open session's next turn would send, by part. Nothing was sent or recorded. */
+export interface ContextBreakdown {
+  session_id: string;
+  parts: ContextPart[];
+  /** The sum of the parts. */
+  estimated_input_tokens: number;
+  max_output_tokens: number;
+  /** The estimate at which compaction triggers. */
+  effective_trigger: number;
+  /** The saved context capacity, or `null` when none is saved. */
+  context_tokens: number | null;
+  auto_compaction: boolean;
+  estimate_scope: string;
+}
+
+export type ProcessState = "running" | "finished" | "unfinished" | "refused";
+
+export type ProcessResultKind =
+  | "exited"
+  | "signalled"
+  | "deadline_exceeded"
+  | "cancelled"
+  | "revoked"
+  | "not_started"
+  | "supervision_failed"
+  | "cleanup_unconfirmed"
+  | "limit_exceeded";
+
+export type ProcessLimit = "memory" | "processes" | "cpu_time" | "disk";
+
+/** How a recorded run ended. */
+export interface ProcessResult {
+  kind: ProcessResultKind;
+  exit_code: number | null;
+  signal: number | null;
+}
+
+/**
+ * One command-tool call of a session (ADR-0086). Every text field is untrusted model data:
+ * render it as text only. No output, environment value, or credential is ever returned.
+ */
+export interface ProcessEntry {
+  call_id: string;
+  state: ProcessState;
+  /** RFC 3339. */
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  program: string | null;
+  /** Escaped to one line each and bounded; `null` when unknown. */
+  arguments: string[] | null;
+  /** Whether the program or arguments were shortened or dropped to a bound. */
+  text_truncated: boolean;
+  argument_count: number | null;
+  profile: string | null;
+  result: ProcessResult | null;
+  limit: ProcessLimit | null;
+  /** The refusal reason, or the failure code of a finished call with no run result. */
+  reason: string | null;
+}
+
+/** The open session's command-tool calls, newest first, at most 100. */
+export interface SessionProcesses {
+  entries: ProcessEntry[];
+  /**
+   * Whether older calls may exist that are not listed: more than 100 matched, or the record
+   * window was full, so older records were not read.
+   */
+  truncated: boolean;
+  /** Whether the run journal could be joined. */
+  run_details: "available" | "unavailable" | "busy";
+}
+
+/** `HEAD`-to-index state of a changed path (ADR-0085). */
+export type GitIndexState = "added" | "modified" | "deleted" | "renamed" | "type_change";
+
+/** Index-to-worktree state of a changed path (ADR-0085). */
+export type GitWorktreeState = "modified" | "deleted" | "untracked" | "conflicted";
+
+/** One changed path. `path` is display text, never a path to open. */
+export interface GitPathView {
+  /** Relative to the workspace; a trailing `/` marks an untracked folder. */
+  path: string;
+  index: GitIndexState | null;
+  worktree: GitWorktreeState | null;
+}
+
+/** What the Git status tab shows about a session's workspace (ADR-0085). */
+export interface GitStatusView {
+  branch: BranchView;
+  state: "ready" | "not_repository" | "unavailable";
+  /** A fixed reason when `state` is `unavailable`. */
+  note: string | null;
+  /** Sorted by path, at most 1,000. */
+  paths: GitPathView[];
+  truncated: boolean;
 }
 
 export interface ProviderProfileView {
@@ -468,9 +590,34 @@ export interface SettingsOverview {
   toolchain_profiles: ToolchainProfileView[];
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
+  /** Whether this computer can record container grants (Windows only). */
+  container_grants_supported: boolean;
   skills: SkillSettingView[];
   /** The chat defaults shown beside the model connection (ADR-0080). */
   chat: ChatDefaultsView;
   /** The workspace the window is scoped to (ADR-0071), or `null` for the full view. Display only. */
   scope: { workspace_id: string } | null;
+}
+
+/** What one entry of a workspace directory is. `other` covers links and special entries. */
+export type WorkspaceEntryKind = "directory" | "file" | "other";
+
+/** One name in a workspace directory (ADR-0083). The name is untrusted text. */
+export interface WorkspaceEntry {
+  name: string;
+  kind: WorkspaceEntryKind;
+  /** The native name is not valid Unicode: `name` is for display and is never sent back. */
+  lossy: boolean;
+  /**
+   * A directory Rust would list next: its name, joined to the listed path, passes the same
+   * checks as a request. False for files, other entries, lossy names, and refused names.
+   */
+  openable: boolean;
+}
+
+/** One directory of the open session's workspace: names and kinds, directories first. */
+export interface WorkspaceListing {
+  entries: WorkspaceEntry[];
+  /** More entries exist than were returned. */
+  truncated: boolean;
 }

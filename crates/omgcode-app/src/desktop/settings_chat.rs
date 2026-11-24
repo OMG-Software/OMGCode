@@ -89,17 +89,20 @@ impl DesktopService {
         request: WorkspaceInstructionsRequest,
     ) -> Result<SettingsOverview, DesktopError> {
         {
-            let store = self.inner.open_or_create_control()?;
-            store
-                .registered_workspace(request.workspace_id)
-                .ok_or_else(DesktopError::unknown_workspace)?;
-        }
-        {
             let _lock = self
                 .inner
                 .preferences
                 .lock()
                 .map_err(|_| DesktopError::poisoned())?;
+            // Checked under the lock that the unregister holds while it
+            // records the removal and deletes the file, so a save cannot
+            // recreate the file of a workspace removed meanwhile.
+            {
+                let store = self.inner.open_or_create_control()?;
+                store
+                    .registered_workspace(request.workspace_id)
+                    .ok_or_else(DesktopError::unknown_workspace)?;
+            }
             // A turn sends the saved global text with these. Removing them
             // needs no room.
             if !request.instructions.is_empty() {

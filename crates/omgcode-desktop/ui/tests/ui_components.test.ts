@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { el } from "../src/dom";
 import { createPopover } from "../src/ui/popover";
 import { segmented } from "../src/ui/segmented";
 import { createTabs, tabIdFor } from "../src/ui/tabs";
@@ -154,6 +155,22 @@ describe("popover", () => {
     key(inside, "Escape");
     expect(popover.element.open).toBe(false);
     expect(document.activeElement).toBe(popover.summary);
+  });
+
+  it("shows an icon trigger named by the text, and tracks the open state", async () => {
+    const popover = createPopover("Chat settings", { icon: "gear" }, el("p", { text: "x" }));
+    document.body.append(popover.element);
+    const { summary, panel } = popover;
+    expect(summary.textContent).toBe("");
+    expect(summary.title).toBe("Chat settings");
+    expect(summary.getAttribute("aria-label")).toBe("Chat settings");
+    expect(summary.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    expect(summary.getAttribute("aria-controls")).toBe(panel.id);
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
+    popover.element.open = true;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
+    popover.dispose();
   });
 
   it("stops listening after dispose", () => {

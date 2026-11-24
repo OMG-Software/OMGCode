@@ -1170,6 +1170,76 @@ pub struct SessionContext {
     pub branch: BranchView,
 }
 
+/// The parts of a context estimate, in display order (ADR-0087).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextPartId {
+    /// The compiled base prompt and its message overhead.
+    System,
+    /// The saved global custom instructions.
+    GlobalInstructions,
+    /// The session's workspace custom instructions and the headings that join
+    /// the two texts.
+    WorkspaceInstructions,
+    /// The advertised workspace tool definitions.
+    Tools,
+    /// The active compaction summary.
+    Summary,
+    /// The retained conversation after the compaction boundary.
+    History,
+    /// Skills selected for one turn. Always `included: false`.
+    Skills,
+    /// The fixed overhead no part owns: the instructions label and the
+    /// instruction message's overhead.
+    Framing,
+}
+
+/// One part of the context estimate. It carries no instruction or message
+/// text, only numbers and fixed codes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ContextPartDto {
+    /// Which part this is.
+    pub id: ContextPartId,
+    /// Its conservative token estimate; zero when not included.
+    pub tokens: u64,
+    /// Whether the next turn would send this part.
+    pub included: bool,
+    /// For `history`, the retained messages after the compaction boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages: Option<u64>,
+    /// A fixed code that says why the part is not included, such as
+    /// `preference_disabled`, `workspace_unregistered`, `no_compaction`,
+    /// `none_saved`, or `selected_per_turn`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+}
+
+/// What the next turn of a session would send, by part (ADR-0087).
+///
+/// The estimate is the one the pre-turn trigger uses, without the new user
+/// message, and the parts add up to `estimated_input_tokens`. Nothing was sent
+/// to a model and nothing was recorded to produce it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ContextBreakdown {
+    /// The session the estimate is for.
+    pub session_id: Uuid,
+    /// Every part, in display order, including those not included.
+    pub parts: Vec<ContextPartDto>,
+    /// The sum of the parts, in estimated tokens.
+    pub estimated_input_tokens: u64,
+    /// The output reserve of the saved chat budgets.
+    pub max_output_tokens: u32,
+    /// The estimate at which compaction triggers. Without a known capacity it
+    /// is the saved threshold alone.
+    pub effective_trigger: u64,
+    /// The saved context capacity; `null` when none is saved.
+    pub context_tokens: Option<u64>,
+    /// Whether compaction before a turn is on.
+    pub auto_compaction: bool,
+    /// A fixed label of what the estimate covers.
+    pub estimate_scope: &'static str,
+}
+
 /// A workspace's Git branch, read from `HEAD` for display only.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct BranchView {
@@ -1194,6 +1264,75 @@ pub enum BranchState {
     None,
     /// A `.git` entry exists but the branch cannot be shown.
     Unavailable,
+}
+
+/// What the Git status tab shows about a session's workspace (ADR-0085).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitStatusView {
+    /// The Git branch that workspace has checked out.
+    pub branch: BranchView,
+    /// Whether the workspace is a repository and its status could be read.
+    pub state: GitStatusState,
+    /// A fixed reason when `state` is `unavailable`. Never file content.
+    pub note: Option<String>,
+    /// The changed paths, sorted by path, at most 1,000.
+    pub paths: Vec<GitPathView>,
+    /// Whether more paths changed than are listed.
+    pub truncated: bool,
+}
+
+/// The kinds of [`GitStatusView`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStatusState {
+    /// The status was read. `paths` may be empty.
+    Ready,
+    /// The workspace folder is not a Git repository.
+    NotRepository,
+    /// A repository exists but its status cannot be shown.
+    Unavailable,
+}
+
+/// One changed path of a [`GitStatusView`], for display only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitPathView {
+    /// The path relative to the workspace, display-safe. A trailing `/` marks
+    /// an untracked folder. It is text to show, never a path to open.
+    pub path: String,
+    /// The `HEAD`-to-index state, if any.
+    pub index: Option<GitIndexState>,
+    /// The index-to-worktree state, if any.
+    pub worktree: Option<GitWorktreeState>,
+}
+
+/// How a path differs between `HEAD` and the index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitIndexState {
+    /// Added.
+    Added,
+    /// Modified.
+    Modified,
+    /// Deleted.
+    Deleted,
+    /// Renamed.
+    Renamed,
+    /// A file became a link or the reverse.
+    TypeChange,
+}
+
+/// How a path differs between the index and the worktree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitWorktreeState {
+    /// Modified.
+    Modified,
+    /// Deleted.
+    Deleted,
+    /// Not tracked.
+    Untracked,
+    /// An unresolved merge conflict.
+    Conflicted,
 }
 
 /// A provider the `settings` window may add (ADR-0064, ADR-0071).
@@ -1388,6 +1527,8 @@ pub struct SettingsOverview {
     pub package_profiles: Vec<PackageProfileView>,
     /// Recorded container grants.
     pub container_grants: Vec<ContainerGrantView>,
+    /// Whether this platform can record and apply container grants (Windows).
+    pub container_grants_supported: bool,
     /// Registered skills and their settings.
     pub skills: Vec<SkillSettingView>,
     /// The chat defaults shown beside the model connection (ADR-0080).

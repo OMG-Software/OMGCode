@@ -63,10 +63,13 @@ pub enum Command {
     ChatPreferencesSave,
     SessionSkills,
     SessionContext,
+    WorkspaceEntries,
+    WorkspaceGitStatus,
     ConnectionStatus,
     ConnectionSelect,
     SessionModelSelect,
     ChatModels,
+    SessionContextBreakdown,
     SettingsOverview,
     SettingsChooseRoot,
     SettingsRegisterWorkspace,
@@ -81,11 +84,22 @@ pub enum Command {
     SettingsRepairDataFolder,
     SettingsSaveChatDefaults,
     SettingsSetWorkspaceInstructions,
+    SettingsImportSkill,
+    SettingsSetSkillState,
+    SettingsRemoveSkill,
+    SettingsUnregisterWorkspace,
+    SessionProcesses,
+    SettingsAddToolchainProfile,
+    SettingsRemoveToolchainProfile,
+    SettingsAddPackageProfile,
+    SettingsRemovePackageProfile,
+    SettingsGrantContainerFolder,
+    SettingsRevokeContainerGrant,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 56] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -110,10 +124,13 @@ impl Command {
         Self::ChatPreferencesSave,
         Self::SessionSkills,
         Self::SessionContext,
+        Self::WorkspaceEntries,
+        Self::WorkspaceGitStatus,
         Self::ConnectionStatus,
         Self::ConnectionSelect,
         Self::SessionModelSelect,
         Self::ChatModels,
+        Self::SessionContextBreakdown,
         Self::SettingsOverview,
         Self::SettingsChooseRoot,
         Self::SettingsRegisterWorkspace,
@@ -128,6 +145,17 @@ impl Command {
         Self::SettingsRepairDataFolder,
         Self::SettingsSaveChatDefaults,
         Self::SettingsSetWorkspaceInstructions,
+        Self::SettingsImportSkill,
+        Self::SettingsSetSkillState,
+        Self::SettingsRemoveSkill,
+        Self::SettingsUnregisterWorkspace,
+        Self::SessionProcesses,
+        Self::SettingsAddToolchainProfile,
+        Self::SettingsRemoveToolchainProfile,
+        Self::SettingsAddPackageProfile,
+        Self::SettingsRemovePackageProfile,
+        Self::SettingsGrantContainerFolder,
+        Self::SettingsRevokeContainerGrant,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -158,10 +186,13 @@ impl Command {
             Self::ChatPreferencesSave => "chat_preferences_save",
             Self::SessionSkills => "session_skills",
             Self::SessionContext => "session_context",
+            Self::WorkspaceEntries => "workspace_entries",
+            Self::WorkspaceGitStatus => "workspace_git_status",
             Self::ConnectionStatus => "connection_status",
             Self::ConnectionSelect => "connection_select",
             Self::SessionModelSelect => "session_model_select",
             Self::ChatModels => "chat_models",
+            Self::SessionContextBreakdown => "session_context_breakdown",
             Self::SettingsOverview => "settings_overview",
             Self::SettingsChooseRoot => "settings_choose_root",
             Self::SettingsRegisterWorkspace => "settings_register_workspace",
@@ -176,6 +207,17 @@ impl Command {
             Self::SettingsRepairDataFolder => "settings_repair_data_folder",
             Self::SettingsSaveChatDefaults => "settings_save_chat_defaults",
             Self::SettingsSetWorkspaceInstructions => "settings_set_workspace_instructions",
+            Self::SettingsImportSkill => "settings_import_skill",
+            Self::SettingsSetSkillState => "settings_set_skill_state",
+            Self::SettingsRemoveSkill => "settings_remove_skill",
+            Self::SettingsUnregisterWorkspace => "settings_unregister_workspace",
+            Self::SessionProcesses => "session_processes",
+            Self::SettingsAddToolchainProfile => "settings_add_toolchain_profile",
+            Self::SettingsRemoveToolchainProfile => "settings_remove_toolchain_profile",
+            Self::SettingsAddPackageProfile => "settings_add_package_profile",
+            Self::SettingsRemovePackageProfile => "settings_remove_package_profile",
+            Self::SettingsGrantContainerFolder => "settings_grant_container_folder",
+            Self::SettingsRevokeContainerGrant => "settings_revoke_container_grant",
         }
     }
 
@@ -199,7 +241,17 @@ impl Command {
             | Self::SettingsClearScope
             | Self::SettingsRepairDataFolder
             | Self::SettingsSaveChatDefaults
-            | Self::SettingsSetWorkspaceInstructions => WindowLabel::Settings,
+            | Self::SettingsSetWorkspaceInstructions
+            | Self::SettingsImportSkill
+            | Self::SettingsSetSkillState
+            | Self::SettingsRemoveSkill
+            | Self::SettingsUnregisterWorkspace
+            | Self::SettingsAddToolchainProfile
+            | Self::SettingsRemoveToolchainProfile
+            | Self::SettingsAddPackageProfile
+            | Self::SettingsRemovePackageProfile
+            | Self::SettingsGrantContainerFolder
+            | Self::SettingsRevokeContainerGrant => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -221,10 +273,14 @@ impl Command {
             | Self::ChatPreferencesSave
             | Self::SessionSkills
             | Self::SessionContext
+            | Self::WorkspaceEntries
+            | Self::WorkspaceGitStatus
             | Self::ConnectionStatus
             | Self::ConnectionSelect
             | Self::SessionModelSelect
-            | Self::ChatModels => WindowLabel::Main,
+            | Self::ChatModels
+            | Self::SessionContextBreakdown
+            | Self::SessionProcesses => WindowLabel::Main,
         }
     }
 }
@@ -262,10 +318,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 42);
-        assert_eq!(with_window(WindowLabel::Main).len(), 25);
+        assert_eq!(Command::ALL.len(), 56);
+        assert_eq!(with_window(WindowLabel::Main).len(), 29);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 14);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 24);
     }
 
     #[test]
@@ -350,8 +406,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 42);
-        assert_eq!(shared.len(), 42);
+        assert_eq!(COMMAND_NAMES.len(), 56);
+        assert_eq!(shared.len(), 56);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }
