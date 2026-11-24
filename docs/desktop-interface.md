@@ -89,15 +89,23 @@ merged to `main` at the time of writing):
   follows its end after a send until the operator scrolls up. The terminal
   panel holds no terminal. No command, IPC shape, or permission changed. See
   [appearance](#appearance) and [transcript view](#transcript-view).
-- Unreleased (ADR-0083), the `main` window's right-hand panel has tabs. The
-  Terminal tab keeps its note; a **Files** tab shows a lazily expanded tree of
-  the open session's workspace through the new `workspace_entries` command,
-  and a fixed footer slot sits under every tab. See
-  [right-hand panel](#right-hand-panel).
-- Unreleased (ADR-0089), the provider and model choice moved from the
-  composer to a box in the right-hand panel's fixed footer, with a **Model**
-  rail icon when the panel is collapsed. No command, IPC shape, or permission
-  changed.
+- Since version 0.56.0 (ADR-0083, ADR-0085 to ADR-0087), the `main`
+  window's right-hand panel has tabs. The Terminal tab keeps its note;
+  **Files** shows a lazily expanded tree of the open session's workspace
+  through `workspace_entries`; **Git** shows the branch and changed paths
+  through `workspace_git_status`; **Processes** lists the session's model
+  command-tool calls through `session_processes`; and **Context** estimates
+  the next turn by part through `session_context_breakdown`. A fixed footer
+  sits under every tab. See [right-hand panel](#right-hand-panel).
+- Since version 0.56.0 (ADR-0089, ADR-0084), the provider and model choice
+  moved from the composer to a box in the right-hand panel's fixed footer,
+  with a **Model** rail icon when the panel is collapsed, and the status bar
+  offers no connection choice.
+- Since version 0.56.0 (ADR-0081, ADR-0082, ADR-0088), the `settings` window
+  lists workspaces under **Workspaces** in its navigation, unregisters a
+  workspace, manages skills, and adds and removes toolchain profiles,
+  package-network profiles, and, on Windows, container grants. See
+  [settings window](#settings-window).
 
 Not implemented:
 
@@ -120,7 +128,8 @@ Not implemented:
   tab (ADR-0072) only says that no terminal is available; it starts no shell
   and runs no command. The Files tab (ADR-0083) shows file and folder names
   only, with no file content, search, or editing.
-- Git, MCP, and memory interfaces. The `main` window
+- Git actions (the Git tab only reads the status: no diff, staging, commit,
+  or branch change), MCP, and memory interfaces. The `main` window
   can only select an already enabled skill for one turn; the `settings`
   window manages skills (ADR-0082). Skill updates, Git sources, and the
   per-skill description and body view are not implemented.

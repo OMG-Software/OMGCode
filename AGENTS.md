@@ -16,10 +16,21 @@ renders a recorded assistant reply as a bounded Markdown subset built from
 elements and text nodes; links and images stay inert text, and a code block's
 **Copy** button writes its shown text to the clipboard
 ([ADR-0067](docs/adr/0067-render-recorded-replies-as-inert-markdown.md)).
-Its sessions panel and a terminal panel resize and collapse to rails of
-icons; the terminal panel starts no shell and runs no command, and the
-transcript follows its end after a send until the operator scrolls up
+Its sessions panel and a right-hand panel resize and collapse to rails of
+icons, and the transcript follows its end after a send until the operator
+scrolls up
 ([ADR-0072](docs/adr/0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md)).
+Session rows are one line with the time since the last update. The right-hand
+panel's tabs read only while visible: a Terminal note that starts no shell and
+runs no command; a Files tree of names and kinds only
+([ADR-0083](docs/adr/0083-show-a-names-only-workspace-file-tree-in-the-right-panel.md));
+a Git branch and changed-path list read in process with `gix`, which applies
+no repository configuration and runs no program or hook
+([ADR-0085](docs/adr/0085-read-git-status-with-gix-without-running-programs.md));
+the session's model command-tool calls, read-only
+([ADR-0086](docs/adr/0086-show-the-sessions-subprocesses-in-the-main-window.md));
+and a per-part estimate of the next turn's context
+([ADR-0087](docs/adr/0087-show-a-per-part-context-estimate-for-the-open-session.md)).
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only, with icon buttons named in their tooltips
@@ -110,7 +121,10 @@ A third, isolated desktop `settings` window shows the trusted configuration;
 the `main` window saves chat preferences and selects enabled
 skills for one turn ([ADR-0059](docs/adr/0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)).
 The `settings` window changes the development root, workspace registrations,
-workspace preferences, and package cache roots. Rust opens a native folder
+workspace preferences, and package cache roots, and lists workspaces under
+**Workspaces** in its navigation. It can unregister a workspace, which keeps
+its folder, files, and sessions and is refused while a container grant names
+it ([ADR-0081](docs/adr/0081-unregister-a-workspace.md)). Rust opens a native folder
 dialog for each folder and a native confirmation before each change that
 widens access, and creates an empty settings store on first use
 ([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
@@ -129,20 +143,27 @@ connection, and each workspace's own custom instructions, which a turn sends
 after the global ones as untrusted user-level text; the composer keeps
 auto-compact, a 128K to 1M token compaction slider, and the send key
 ([ADR-0080](docs/adr/0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)). The provider and model
-are chosen per session in the composer; a provider change needs the native
-confirmation, and each turn re-checks the session's recorded endpoint
-(ADR-0071). A status bar at the bottom of the `main`
+are chosen per session in a box in the right-hand panel's footer, reachable
+from the collapsed rail; a provider change needs the native confirmation, and
+each turn re-checks the session's recorded endpoint (ADR-0071,
+[ADR-0089](docs/adr/0089-choose-the-provider-and-model-in-the-side-panel-footer.md)).
+A status bar at the bottom of the `main`
 window shows the open session's workspace and Git branch, read from `HEAD`
-without a Git process, and offers the same connection choice through the same
-native confirmation
-([ADR-0064](docs/adr/0064-choose-the-model-connection-in-settings-and-add-ollama-local.md)).
-The composer chooses the model from the list that connection's server reports
+without a Git process, and the approvals count; it offers no connection choice
+([ADR-0064](docs/adr/0064-choose-the-model-connection-in-settings-and-add-ollama-local.md),
+[ADR-0084](docs/adr/0084-drop-the-status-bar-connection-choice.md)).
+The model box chooses the model from the list that connection's server reports
 through `GET /v1/models`, and `omgcode models` prints that list; the list
 grants nothing, and an Ollama cloud tag is labelled by name only
 ([ADR-0066](docs/adr/0066-choose-the-chat-model-from-the-local-servers-model-list.md)).
-Other credentials, execution setup, and skills still change only through the
-trusted CLI. The desktop shell has no development
-panels, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
+The `settings` window imports, enables, and removes skills
+([ADR-0082](docs/adr/0082-manage-skills-in-the-settings-window.md)) and adds
+and removes toolchain profiles, package-network profiles, and, on Windows,
+container grants, after native confirmations; none can be edited
+([ADR-0088](docs/adr/0088-change-execution-settings-in-the-settings-window.md)).
+Other credentials still change, and packages are fetched and programs run,
+only through the trusted CLI. The desktop shell has no working terminal, diff
+view, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.
 The core validates replacement records and can prepare protected checkpoints on
