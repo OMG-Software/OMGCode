@@ -407,10 +407,11 @@ omgcode --data-dir C:\omgcode-data session compact <journal-path> --provider-pro
 
 With the flag, `OMGCODE_LM_TOKEN` is not read, and the endpoint is the one
 recorded with the profile. `--endpoint` and `--provider-profile` together are a
-usage error (exit status 2). Core refuses an unknown profile, a profile of
-another provider kind, a profile with no recorded endpoint, a `subscription`
-profile that is not a signed-in ChatGPT connection (below), an unbound
-`api_key` profile, and a binding from another backend. A `none` profile sends
+usage error (exit status 2). A local profile, a hosted `api_key` profile, and
+a signed-in ChatGPT profile can be used. Core refuses an unknown profile, a
+profile with no recorded endpoint, a `subscription` profile that is not a
+signed-in ChatGPT connection (below), an unbound `api_key` profile, and a
+binding from another backend. A `none` profile sends
 no token. Any failure ends the command with a `credential` error whose message
 is `<cause code>: <text>`; nothing falls back to no token or to another token.
 The credential is resolved before the endpoint check and before any session or

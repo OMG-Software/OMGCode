@@ -257,6 +257,49 @@ fn an_existing_profile_with_a_failed_browser_step_is_left_signed_out() {
     assert!(profile.credential().is_none());
 }
 
+/// Accepts the confirmation after the operator presses Cancel while it is
+/// open.
+struct CancelDuringConfirmation<'a> {
+    service: &'a DesktopService,
+}
+
+impl SettingsPrompt for CancelDuringConfirmation<'_> {
+    fn pick_folder(&self, _purpose: FolderPurpose, _start: Option<&Path>) -> Option<PathBuf> {
+        panic!("no folder dialog is expected");
+    }
+
+    fn confirm(&self, _confirmation: &Confirmation) -> bool {
+        self.service.settings_cancel_chatgpt_sign_in();
+        true
+    }
+}
+
+#[test]
+fn a_cancel_during_the_confirmation_is_kept_and_nothing_is_recorded() {
+    let fixture = Fixture::new();
+    // The opener would fail the test's expectations if it were reached.
+    let service = fixture.service(unreachable_opener);
+    let before = fixture.store().revision();
+    let error = service
+        .settings_sign_in_chatgpt(
+            fixture.request("fresh"),
+            &CancelDuringConfirmation { service: &service },
+        )
+        .expect_err("cancelled");
+    assert_eq!(error.code(), "cancelled", "{}", error.message());
+    let store = fixture.store();
+    assert_eq!(store.revision(), before);
+    assert!(store.provider_profile("fresh").is_none());
+    assert!(
+        service
+            .inner
+            .chatgpt_sign_in
+            .lock()
+            .expect("slot")
+            .is_none()
+    );
+}
+
 #[test]
 fn cancel_without_a_sign_in_does_nothing() {
     let fixture = Fixture::new();

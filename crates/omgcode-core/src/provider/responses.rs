@@ -245,6 +245,10 @@ pub(super) enum ResponsesFlow {
 pub(super) struct ResponsesParser {
     mode: ResponsesMode,
     line: Vec<u8>,
+    /// The `data` lines of the event being read, joined by LF. It is
+    /// dispatched at the blank line that ends the event and is bounded by
+    /// the stream limit.
+    data: Option<Vec<u8>>,
     total: u64,
     items: BTreeMap<u64, Value>,
     usage: Option<Usage>,
@@ -257,6 +261,7 @@ impl ResponsesParser {
         Self {
             mode,
             line: Vec::new(),
+            data: None,
             total: 0,
             items: BTreeMap::new(),
             usage: None,
@@ -340,29 +345,43 @@ impl ResponsesParser {
         })
     }
 
-    /// Judge one complete line without its line ending.
+    /// Judge one complete line without its line ending. An event's `data`
+    /// lines are joined by LF and dispatched at the blank line that ends it,
+    /// as server-sent events require.
     fn handle_line(
         &mut self,
         raw: &[u8],
         on_text: &mut dyn FnMut(&str),
     ) -> Result<ResponsesFlow, ProviderError> {
         let line = std::str::from_utf8(raw).map_err(|_| ProviderError::MalformedResponse)?;
-        if line.is_empty() || line.starts_with(':') {
+        if line.is_empty() {
+            let Some(data) = self.data.take() else {
+                return Ok(ResponsesFlow::Continue);
+            };
+            // The route ends with `response.completed`; a `[DONE]` before it
+            // is an ending without completion.
+            if data == b"[DONE]" {
+                return Err(ProviderError::IncompleteStream);
+            }
+            return self.handle_event(&data, on_text);
+        }
+        if line.starts_with(':') {
             return Ok(ResponsesFlow::Continue);
         }
         let (field, value) = line.split_once(':').unwrap_or((line, ""));
         let value = value.strip_prefix(' ').unwrap_or(value);
         match field {
-            "data" => {}
-            "event" | "id" | "retry" => return Ok(ResponsesFlow::Continue),
-            _ => return Err(ProviderError::MalformedResponse),
+            "data" => {
+                let data = self.data.get_or_insert_with(Vec::new);
+                if !data.is_empty() {
+                    data.push(b'\n');
+                }
+                data.extend_from_slice(value.as_bytes());
+                Ok(ResponsesFlow::Continue)
+            }
+            "event" | "id" | "retry" => Ok(ResponsesFlow::Continue),
+            _ => Err(ProviderError::MalformedResponse),
         }
-        // The route ends with `response.completed`; a `[DONE]` before it is
-        // an ending without completion.
-        if value == "[DONE]" {
-            return Err(ProviderError::IncompleteStream);
-        }
-        self.handle_event(value.as_bytes(), on_text)
     }
 
     /// Validate one event payload and act on its type.
@@ -410,6 +429,7 @@ impl ResponsesParser {
                 if response.get("status").and_then(Value::as_str) != Some("completed") {
                     return Err(ProviderError::MalformedResponse);
                 }
+                self.check_terminal_output(response.get("output"))?;
                 self.usage = match response.get("usage") {
                     None | Some(Value::Null) => None,
                     Some(usage) => Some(parse_responses_usage(usage)?),
@@ -441,6 +461,30 @@ impl ResponsesParser {
             _ => {}
         }
         Ok(ResponsesFlow::Continue)
+    }
+}
+
+impl ResponsesParser {
+    /// Refuse a completed response whose finished items do not account for
+    /// its whole output: when the completed response lists its output, the
+    /// finished items must be exactly as many, of the same types in the same
+    /// order. An empty or absent list is not compared, because the route may
+    /// leave the output to the item events; no real stream was observed.
+    fn check_terminal_output(&self, output: Option<&Value>) -> Result<(), ProviderError> {
+        let listed = match output {
+            Some(Value::Array(listed)) if !listed.is_empty() => listed,
+            None | Some(Value::Null | Value::Array(_)) => return Ok(()),
+            Some(_) => return Err(ProviderError::MalformedResponse),
+        };
+        if listed.len() != self.items.len() {
+            return Err(ProviderError::MalformedResponse);
+        }
+        for (finished, terminal) in self.items.values().zip(listed) {
+            if item_kind(finished)? != item_kind(terminal)? {
+                return Err(ProviderError::MalformedResponse);
+            }
+        }
+        Ok(())
     }
 }
 

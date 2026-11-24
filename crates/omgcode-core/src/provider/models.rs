@@ -72,8 +72,9 @@ pub fn list_local_models(
 
 /// List the models a ChatGPT account may use through its plan (ADR-0093).
 ///
-/// `base_url` is the subscription profile's recorded endpoint and `token` the
-/// account's current access token. The request is the one
+/// The request always goes to OpenAI's fixed endpoint, so the plan's bearer
+/// can never be sent to another host; `token` is the account's current access
+/// token. The request is the one
 /// [`list_local_models`] sends, with the same limits. The plan route answers
 /// `{"models":[{"slug":...,"visibility":...}, ...]}`; only entries whose
 /// `visibility` is `list` are returned, by `slug`, in the server's order.
@@ -82,11 +83,13 @@ pub fn list_local_models(
 ///
 /// As [`list_local_models`]; the list must hold a `models` array, and every
 /// kept `slug` passes the same id checks.
-pub fn list_subscription_models(
-    base_url: &str,
-    token: &str,
-) -> Result<Vec<ListedModel>, ProviderError> {
-    list_with_timeout(base_url, Some(token), LIST_TIMEOUT, ListShape::Subscription)
+pub fn list_subscription_models(token: &str) -> Result<Vec<ListedModel>, ProviderError> {
+    list_with_timeout(
+        super::OPENAI_ENDPOINT,
+        Some(token),
+        LIST_TIMEOUT,
+        ListShape::Subscription,
+    )
 }
 
 /// The two list bodies: the OpenAI-compatible `data` list and the ChatGPT

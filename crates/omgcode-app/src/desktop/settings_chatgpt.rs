@@ -50,6 +50,15 @@ impl DesktopService {
         prompt: &dyn SettingsPrompt,
     ) -> Result<SettingsOverview, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        // The cancel token is registered before the native confirmation, so a
+        // cancel sent while the confirmation is open is kept and honoured
+        // before anything is recorded or the browser opens.
+        let cancel = CancelToken::new();
+        let slot = SignInSlot(&self.inner.chatgpt_sign_in);
+        *slot
+            .0
+            .lock()
+            .map_err(|_| DesktopError::from_control(&ControlError::Busy))? = Some(cancel.clone());
         let exists = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
@@ -71,6 +80,9 @@ impl DesktopService {
                 ),
             },
         )?;
+        if cancel.is_cancelled() {
+            return Err(DesktopError::cancelled());
+        }
         let mut revision = request.revision;
         if !exists {
             let mut store = self.inner.open_or_create_control()?;
@@ -87,12 +99,6 @@ impl DesktopService {
                 .map_err(|error| DesktopError::from_control(&error))?;
             revision = store.revision();
         }
-        let cancel = CancelToken::new();
-        let slot = SignInSlot(&self.inner.chatgpt_sign_in);
-        *slot
-            .0
-            .lock()
-            .map_err(|_| DesktopError::from_control(&ControlError::Busy))? = Some(cancel.clone());
         let opener = self.inner.open_browser;
         let mut open = |address: &str| opener(address);
         let signed_in = crate::sign_in_with_chatgpt(
@@ -109,7 +115,10 @@ impl DesktopService {
     }
 
     /// `settings` only. Cancel the running ChatGPT sign-in, if any. It only
-    /// sets that sign-in's cancel token; the sign-in returns `cancelled`.
+    /// sets that sign-in's cancel token; the sign-in returns `cancelled`. A
+    /// sign-in registers its token before its native confirmation, so a
+    /// cancel sent during the confirmation is kept. With no sign-in running
+    /// it does nothing.
     pub fn settings_cancel_chatgpt_sign_in(&self) {
         if let Ok(slot) = self.inner.chatgpt_sign_in.lock()
             && let Some(cancel) = slot.as_ref()

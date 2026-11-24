@@ -36,7 +36,17 @@ Changes are recorded here before a release version is assigned.
   `settings_sign_out_chatgpt` (59 commands, 27 in `settings`). New
   dependencies: `rsa` (with `pkcs1v15`), `base64`, and `getrandom`. Every test
   uses loopback mock servers; no real sign-in, refresh, revocation, or
-  plan-backed request was made, and plan usage is not verified.
+  plan-backed request was made, and plan usage is not verified. A token slot
+  that exists but cannot be read or decoded fails with
+  `token_store_unavailable` instead
+  of falling back to an older, possibly rotated record. The model list always
+  goes to OpenAI's fixed endpoint. The stream reader joins an event's `data`
+  lines at its blank line and refuses a completed response whose listed
+  output does not match the finished items. A cancel sent during the desktop
+  confirmation is kept; sign-out checks the revision and session again after
+  taking the session lock; a sign-in whose binding write is uncertain keeps its tokens unrevoked
+  and reports `signin_binding_uncertain` with advice that names
+  `provider-signout`.
 - Version 0.59.0 adds hosted model providers and an OpenAI-compatible
   connection (ADR-0092). New provider kinds `google`, `meta`, `moonshot`,
   `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and

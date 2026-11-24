@@ -221,8 +221,10 @@ pub fn initial_token_record(
 ///
 /// # Errors
 ///
-/// [`SignInError::SignInRequired`] when neither slot holds a readable record
-/// and [`SignInError::TokenStore`] when a slot could not be read at all.
+/// [`SignInError::SignInRequired`] when neither slot holds a record, and
+/// [`SignInError::TokenStore`] when a slot that exists cannot be read or
+/// decoded. A newer record that cannot be read is never skipped for an older
+/// one, because the older refresh token may already have been rotated.
 pub fn load_current_record(
     store: &dyn SlotStore,
     binding_id: &CredentialId,
@@ -230,18 +232,14 @@ pub fn load_current_record(
     subject: &str,
 ) -> Result<StoredTokens, SignInError> {
     let mut current: Option<StoredTokens> = None;
-    let mut unreadable = false;
     for slot in [binding_id.clone(), companion_credential_id(binding_id)] {
         let secret = match store.load(&slot) {
             Ok(secret) => secret,
             Err(CredentialError::NotFound) => continue,
-            Err(_) => {
-                unreadable = true;
-                continue;
-            }
+            Err(_) => return Err(SignInError::TokenStore),
         };
         let Some((generation, tokens)) = decode(&secret, client_id, subject) else {
-            continue;
+            return Err(SignInError::TokenStore);
         };
         if current
             .as_ref()
@@ -254,11 +252,7 @@ pub fn load_current_record(
             });
         }
     }
-    current.ok_or(if unreadable {
-        SignInError::TokenStore
-    } else {
-        SignInError::SignInRequired
-    })
+    current.ok_or(SignInError::SignInRequired)
 }
 
 /// Store `tokens` as the next generation in the slot `current` does not
@@ -342,13 +336,14 @@ impl SessionLock {
             .map_err(|_| SignInError::TokenStore)?;
         let deadline = Instant::now() + LOCK_WAIT;
         loop {
+            // A cancelled caller never takes the lock, even a free one.
+            if cancel.is_cancelled() {
+                return Err(SignInError::Cancelled);
+            }
             match file.try_lock() {
                 Ok(()) => return Ok(Self { _file: file }),
                 Err(TryLockError::WouldBlock) => {}
                 Err(TryLockError::Error(_)) => return Err(SignInError::TokenStore),
-            }
-            if cancel.is_cancelled() {
-                return Err(SignInError::Cancelled);
             }
             if Instant::now() >= deadline {
                 return Err(SignInError::TokenStore);

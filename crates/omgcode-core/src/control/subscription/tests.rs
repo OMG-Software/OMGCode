@@ -282,7 +282,8 @@ fn every_sign_in_shares_one_host_and_a_registration_cannot_change() {
     assert_eq!(request.host_id, first_host);
     sign_out(&fixture, "chatgpt");
 
-    // Replay refuses a sign-in that changes the recorded account.
+    // A sign-in that changes the recorded account is refused before any
+    // native write.
     let mut store = fixture.store();
     let request = store
         .subscription_sign_in_request("chatgpt")
@@ -297,7 +298,9 @@ fn every_sign_in_shares_one_host_and_a_registration_cannot_change() {
     );
     assert!(matches!(
         changed,
-        Err(ProviderCredentialError::Control(ControlError::Invalid(_)))
+        Err(ProviderCredentialError::Control(
+            ControlError::ProviderRefused(_)
+        ))
     ));
     // A stale revision is refused before any native write.
     let stale = store.record_provider_subscription(

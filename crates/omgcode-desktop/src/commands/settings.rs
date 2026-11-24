@@ -329,8 +329,9 @@ pub async fn settings_sign_in_chatgpt(
     .await
 }
 
-/// `settings` only. Cancels the running ChatGPT sign-in, if any. It takes
-/// nothing and grants nothing.
+/// `settings` only. Cancels the running ChatGPT sign-in, if any, including
+/// one still waiting for its native confirmation. With no sign-in running it
+/// does nothing. It takes nothing and grants nothing.
 ///
 /// # Errors
 ///

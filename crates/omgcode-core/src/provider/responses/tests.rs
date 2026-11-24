@@ -217,6 +217,49 @@ fn a_stream_that_ends_or_says_done_before_completion_is_incomplete() {
 }
 
 #[test]
+fn an_event_is_dispatched_at_its_blank_line_with_its_data_lines_joined() {
+    // One event whose JSON spans two `data:` lines.
+    let split = "event: response.completed\ndata: {\"type\":\"response.completed\",\ndata: \"response\":{\"status\":\"completed\"}}\n\n";
+    let stream = event(CREATED) + &event(MESSAGE_DONE) + split;
+    let outcome = read(&stream, ResponsesMode::Text).0.expect("completed");
+    assert_eq!(outcome.content, "Hello, world!");
+    // Without the blank line the event is never dispatched.
+    let unfinished = event(CREATED) + &event(MESSAGE_DONE) + "data: " + COMPLETED + "\n";
+    assert_eq!(
+        read(&unfinished, ResponsesMode::Text).0,
+        Err(ProviderError::IncompleteStream)
+    );
+}
+
+#[test]
+fn a_completed_output_must_match_the_finished_items() {
+    let listing = |output: &str| {
+        format!(
+            r#"{{"type":"response.completed","response":{{"status":"completed","output":{output}}}}}"#
+        )
+    };
+    let finished = event(CREATED) + &event(REASONING_DONE) + &event(MESSAGE_DONE);
+    // The same items, an empty list, or none at all are accepted.
+    for output in [r#"[{"type":"reasoning"},{"type":"message"}]"#, "[]", "null"] {
+        let stream = finished.clone() + &event(&listing(output));
+        assert!(read(&stream, ResponsesMode::Text).0.is_ok(), "{output}");
+    }
+    // A listed item that never finished, or another type, is refused.
+    for output in [
+        r#"[{"type":"reasoning"},{"type":"message"},{"type":"message"}]"#,
+        r#"[{"type":"reasoning"},{"type":"function_call"}]"#,
+        r#"{"type":"message"}"#,
+    ] {
+        let stream = finished.clone() + &event(&listing(output));
+        assert_eq!(
+            read(&stream, ResponsesMode::Text).0,
+            Err(ProviderError::MalformedResponse),
+            "{output}"
+        );
+    }
+}
+
+#[test]
 fn a_malformed_line_or_event_is_refused() {
     for stream in [
         "data: {\"type\":\"response.created\",\"type\":\"x\"}\n\n".to_owned(),

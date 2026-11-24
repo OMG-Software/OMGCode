@@ -779,43 +779,57 @@ impl ControlStore {
 /// an orphan. An item recorded by another backend cannot be reached here and
 /// is returned as an orphan.
 ///
-/// It reports at most one item, the bound slot first. Only a ChatGPT session
-/// has a second, companion slot (ADR-0093), so delete a session binding with
-/// `delete_unbound_slots`, which reports both; this function would hide a
-/// companion slot that also failed.
+/// It deletes and reports only the bound item, which is all an API key has.
+/// A ChatGPT session also has a companion slot (ADR-0093), so delete a
+/// session binding with `delete_unbound_slots`, which deletes and reports
+/// both.
 pub fn delete_unbound_credential(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Option<OrphanedCredential> {
-    delete_unbound_slots(credentials, binding).pop()
+    unreachable_backend(credentials, binding)
+        .or_else(|| delete_item(credentials, binding.id.clone()))
 }
 
-/// Delete an unbound credential's native items: its bound slot and, for a
-/// ChatGPT session, its companion slot (ADR-0093). Every item that could not
-/// be deleted is returned, the companion first and the bound slot last, so
-/// none is lost from the operator's report. An absent item is not an orphan.
+/// Delete an unbound ChatGPT session's native items: its bound slot and its
+/// companion slot (ADR-0093). Every item that could not be deleted is
+/// returned, the companion first and the bound slot last, so none is lost
+/// from the operator's report. An absent item is not an orphan.
 pub fn delete_unbound_slots(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Vec<OrphanedCredential> {
-    if binding.backend != credentials.backend() {
-        return vec![OrphanedCredential {
-            id: binding.id.clone(),
-            error: CredentialError::Unavailable(format!(
-                "the credential was stored by {}, not {}",
-                binding.backend.as_str(),
-                credentials.backend().as_str()
-            )),
-        }];
+    if let Some(orphan) = unreachable_backend(credentials, binding) {
+        return vec![orphan];
     }
     let companion = crate::provider::chatgpt::companion_credential_id(&binding.id);
     [companion, binding.id.clone()]
         .into_iter()
-        .filter_map(|id| match credentials.delete(&id) {
-            Ok(()) | Err(CredentialError::NotFound) => None,
-            Err(error) => Some(OrphanedCredential { id, error }),
-        })
+        .filter_map(|id| delete_item(credentials, id))
         .collect()
+}
+
+/// An item recorded by another backend, which this store cannot reach.
+fn unreachable_backend(
+    credentials: &CredentialStore,
+    binding: &CredentialBinding,
+) -> Option<OrphanedCredential> {
+    (binding.backend != credentials.backend()).then(|| OrphanedCredential {
+        id: binding.id.clone(),
+        error: CredentialError::Unavailable(format!(
+            "the credential was stored by {}, not {}",
+            binding.backend.as_str(),
+            credentials.backend().as_str()
+        )),
+    })
+}
+
+/// Delete one native item; an absent one is not an orphan.
+fn delete_item(credentials: &CredentialStore, id: CredentialId) -> Option<OrphanedCredential> {
+    match credentials.delete(&id) {
+        Ok(()) | Err(CredentialError::NotFound) => None,
+        Err(error) => Some(OrphanedCredential { id, error }),
+    }
 }
 
 /// Report a failed native store. When the failure may have left an item for

@@ -13,7 +13,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use omgcode_core::control::{
-    ControlError, ControlStore, CredentialId, CredentialStore, ProviderCredentialUseError,
+    ControlError, ControlStore, CredentialId, CredentialStore, ProviderCredentialError,
+    ProviderCredentialUseError,
 };
 use omgcode_core::provider::chatgpt::{
     self, AuthEndpoints, ChatGptTokens, SessionLock, SignInError, SignInRequest,
@@ -153,6 +154,9 @@ pub fn sign_in_with_chatgpt(
     let endpoints = AuthEndpoints::openai();
     let signed_in = chatgpt::sign_in(&endpoints, &request, open_browser, cancel)
         .map_err(|error| sign_in_error(&error))?;
+    // Set when the binding write's outcome is unknown: the profile may then be
+    // signed in with these tokens, so they are kept and not revoked.
+    let uncertain = std::cell::Cell::new(false);
     let recorded = (|| {
         let mut store = open_settings(data_root)?;
         let credentials = CredentialStore::open(data_root).map_err(|error| {
@@ -169,7 +173,17 @@ pub fn sign_in_with_chatgpt(
                 &signed_in,
                 expected_revision,
             )
-            .map_err(|error| credential_error(format!("signin_not_recorded: {error}")))?;
+            .map_err(|error| match error {
+                // The API-key advice names provider-credential-remove, which
+                // refuses a subscription profile; a session ends with sign-out.
+                ProviderCredentialError::BindingUncertain { credential_id, .. } => {
+                    uncertain.set(true);
+                    credential_error(format!(
+                        "signin_binding_uncertain: the sign-in's tokens were kept as {credential_id}, but whether the profile names them is uncertain. Run provider-profile-show: if it shows this identifier, the profile is signed in; to end the session, run provider-signout. Otherwise delete the item by hand"
+                    ))
+                }
+                other => credential_error(format!("signin_not_recorded: {other}")),
+            })?;
         let profile = store.provider_profile(name).map_or_else(
             || name.to_owned(),
             |status| status.profile().name().to_owned(),
@@ -181,8 +195,10 @@ pub fn sign_in_with_chatgpt(
             revision: store.revision(),
         })
     })();
-    if recorded.is_err() {
-        // The tokens were not kept, so ask OpenAI to end them. Best effort.
+    if recorded.is_err() && !uncertain.get() {
+        // The tokens were not recorded, so ask OpenAI to end them. Best
+        // effort. An uncertain write keeps them, as `set_provider_credential`
+        // keeps a key, because a recorded binding must name a live session.
         let _ = chatgpt::revoke(
             &endpoints,
             &signed_in.client_id,
@@ -218,6 +234,22 @@ pub fn sign_out_of_chatgpt(
     };
     let _lock = SessionLock::acquire(data_root, connection.binding.id(), cancel)
         .map_err(|error| sign_in_error(&error))?;
+    // A refresh may have held the lock meanwhile, so the revision and the
+    // binding are checked again before the revocation, the one remote effect.
+    // The settings store is released before the network call.
+    {
+        let store = open_settings(data_root)?;
+        check_revision(&store, expected_revision)?;
+        match store.provider_subscription(name) {
+            Ok(current) if current.binding == connection.binding => {}
+            _ => {
+                return Err(AppError::new(
+                    ErrorKind::Control,
+                    "conflict: the profile's session changed; read the settings again",
+                ));
+            }
+        }
+    }
     let credentials = CredentialStore::open(data_root).map_err(|error| {
         credential_error(format!(
             "{}: {error}",
@@ -298,7 +330,7 @@ pub fn list_connection_models(connection: &LocalConnection) -> Result<Vec<Listed
             .tokens()
             .access_token(&CancelToken::new())
             .map_err(AppError::provider)?;
-        return list_subscription_models(&connection.endpoint, &token).map_err(AppError::provider);
+        return list_subscription_models(&token).map_err(AppError::provider);
     }
     list_local_models(
         &connection.endpoint,

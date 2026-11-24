@@ -78,7 +78,10 @@ impl CallbackListener {
             }
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    if let Some(result) = serve(stream, state, returning_client) {
+                    // A connection that sends nothing still lets a cancel or
+                    // the overall deadline end the wait within 50 ms.
+                    let limit = deadline.min(Instant::now() + CONNECTION_TIMEOUT);
+                    if let Some(result) = serve(stream, state, returning_client, limit, cancel) {
                         return result;
                     }
                 }
@@ -96,14 +99,16 @@ fn serve(
     mut stream: TcpStream,
     state: &str,
     returning_client: Option<&str>,
+    limit: Instant,
+    cancel: &CancelToken,
 ) -> Option<Result<Callback, SignInError>> {
     if stream.set_nonblocking(false).is_err()
-        || stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+        || stream.set_read_timeout(Some(POLL)).is_err()
         || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
     {
         return None;
     }
-    let target = read_request_target(&mut stream)?;
+    let target = read_request_target(&mut stream, limit, cancel)?;
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     if path != CALLBACK_PATH {
         respond(&mut stream, "404 Not Found", PAGE_NOT_FOUND);
@@ -119,19 +124,29 @@ fn serve(
     Some(result)
 }
 
-/// Read until the end of the headers, within 8 KiB and five seconds, and
-/// return the target of a `GET` request. Anything else is dropped.
-fn read_request_target(stream: &mut TcpStream) -> Option<Zeroizing<String>> {
-    let deadline = Instant::now() + CONNECTION_TIMEOUT;
+/// Read until the end of the headers, within 8 KiB and `limit` (at most five
+/// seconds), and return the target of a `GET` request. Each read waits at
+/// most 50 ms, so a cancel ends it. Anything else is dropped.
+fn read_request_target(
+    stream: &mut TcpStream,
+    limit: Instant,
+    cancel: &CancelToken,
+) -> Option<Zeroizing<String>> {
     let mut bytes = Zeroizing::new(Vec::with_capacity(1024));
     let mut chunk = [0_u8; 1024];
     while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-        if Instant::now() >= deadline || bytes.len() >= MAX_REQUEST_BYTES {
+        if cancel.is_cancelled() || Instant::now() >= limit || bytes.len() >= MAX_REQUEST_BYTES {
             return None;
         }
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return None,
+            Ok(0) => return None,
             Ok(read) => bytes.extend_from_slice(chunk.get(..read)?),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) => {}
+            Err(_) => return None,
         }
     }
     let line_end = bytes.windows(2).position(|window| window == b"\r\n")?;

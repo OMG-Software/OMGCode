@@ -71,6 +71,11 @@ fn claims(nonce: &str) -> Value {
     })
 }
 
+/// A random nonce for a test, like the one each sign-in attempt generates.
+fn test_nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 fn id_token(nonce: &str) -> String {
     sign(
         &json!({"alg": "RS256", "kid": KID, "typ": "JWT"}),
@@ -250,6 +255,7 @@ fn run_sign_in(
 ) {
     let seen: Arc<Mutex<Option<Url>>> = Arc::default();
     let statuses: Arc<Mutex<Vec<String>>> = Arc::default();
+    let browser: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
     let visit = Arc::new(visit);
     let mut opener = |address: &str| {
         let url = Url::parse(address).expect("authorization address");
@@ -259,12 +265,12 @@ fn run_sign_in(
         let redirect = authorization.get("redirect_uri").expect("redirect");
         let requests = visit(&authorization);
         let statuses = Arc::clone(&statuses);
-        std::thread::spawn(move || {
+        *browser.lock().expect("browser") = Some(std::thread::spawn(move || {
             for request in requests {
                 let status = browse(&redirect, &request);
                 statuses.lock().expect("statuses").push(status);
             }
-        });
+        }));
         Ok(())
     };
     let result = sign_in_within(
@@ -275,8 +281,14 @@ fn run_sign_in(
         &CancelToken::new(),
     );
     let url = seen.lock().expect("seen").take();
-    // The browser thread finishes once the listener has answered.
-    std::thread::sleep(Duration::from_millis(50));
+    // Every request was answered before the sign-in returned, so the browser
+    // thread ends; its failure fails the test.
+    let worker = browser.lock().expect("browser").take();
+    if let Some(worker) = worker
+        && let Err(panic) = worker.join()
+    {
+        std::panic::resume_unwind(panic);
+    }
     let statuses = statuses.lock().expect("statuses").clone();
     (result, url.map(|url| Authorization { url }), statuses)
 }
@@ -540,7 +552,7 @@ fn an_exchange_without_the_plan_scope_or_with_a_bad_id_token_stores_nothing() {
         service.answer(
             TOKEN_PATH,
             200,
-            token_answer(&id_token("another-nonce"), SCOPE),
+            token_answer(&id_token(&test_nonce()), SCOPE),
         );
         service.answer(KEYS_PATH, 200, key_set(KID));
     };
@@ -570,6 +582,8 @@ fn an_exchange_without_the_plan_scope_or_with_a_bad_id_token_stores_nothing() {
 #[test]
 fn the_id_token_check_refuses_every_invalid_token() {
     let keys = key_set(KID);
+    // The nonce is generated, as a real attempt's is, never a literal.
+    let nonce = test_nonce();
     let header = json!({"alg": "RS256", "kid": KID});
     let check = |token: &str| {
         id_token::validate(
@@ -577,17 +591,19 @@ fn the_id_token_check_refuses_every_invalid_token() {
             keys.as_bytes(),
             AUTH_ISSUER,
             ISSUED_CLIENT,
-            "n",
+            &nonce,
             now_seconds(),
         )
     };
     let with = |change: &dyn Fn(&mut Value)| {
-        let mut claims = claims("n");
+        let mut claims = claims(&nonce);
         change(&mut claims);
         sign(&header, &claims)
     };
     assert_eq!(
-        check(&sign(&header, &claims("n"))).expect("valid").subject,
+        check(&sign(&header, &claims(&nonce)))
+            .expect("valid")
+            .subject,
         SUBJECT
     );
     assert_eq!(
@@ -606,18 +622,18 @@ fn the_id_token_check_refuses_every_invalid_token() {
             "wrong audience",
         ),
         (with(&|c| c["exp"] = json!(now_seconds() - 120)), "expired"),
-        (with(&|c| c["nonce"] = json!("other")), "wrong nonce"),
+        (with(&|c| c["nonce"] = json!(test_nonce())), "wrong nonce"),
         (with(&|c| c["sub"] = json!("")), "no subject"),
         (
-            sign(&json!({"alg": "HS256", "kid": KID}), &claims("n")),
+            sign(&json!({"alg": "HS256", "kid": KID}), &claims(&nonce)),
             "not signed with RS256",
         ),
         (
-            sign(&json!({"alg": "RS256", "kid": "unknown"}), &claims("n")),
+            sign(&json!({"alg": "RS256", "kid": "unknown"}), &claims(&nonce)),
             "unknown signing key",
         ),
         (
-            sign(&json!({"alg": "RS256"}), &claims("n")),
+            sign(&json!({"alg": "RS256"}), &claims(&nonce)),
             "no key identifier",
         ),
         ("a.b".to_owned(), "not a signed token"),
@@ -629,9 +645,9 @@ fn the_id_token_check_refuses_every_invalid_token() {
         );
     }
     // A changed payload under the original signature fails verification.
-    let valid = sign(&header, &claims("n"));
+    let valid = sign(&header, &claims(&nonce));
     let parts: Vec<&str> = valid.split('.').collect();
-    let mut forged_claims = claims("n");
+    let mut forged_claims = claims(&nonce);
     forged_claims["sub"] = json!("attacker");
     let forged = format!(
         "{}.{}.{}",
@@ -794,7 +810,7 @@ fn the_companion_slot_is_a_distinct_stable_identifier() {
 }
 
 #[test]
-fn records_alternate_slots_and_the_newest_readable_record_wins() {
+fn records_alternate_slots_and_an_unreadable_slot_is_never_skipped() {
     let store = MemoryStore::default();
     let id = binding_id();
     assert_eq!(
@@ -824,12 +840,14 @@ fn records_alternate_slots_and_the_newest_readable_record_wins() {
         assert_ne!(next.slot(), current.slot(), "the write used the other slot");
         assert_eq!(store.items.lock().expect("items").len(), 2);
     }
-    // A record for another registration is never used.
+    // A record for another registration is never used, and is not skipped
+    // for the other slot either.
     assert_eq!(
         load_current_record(&store, &id, "oaiapp_other", SUBJECT).expect_err("other client"),
-        SignInError::SignInRequired
+        SignInError::TokenStore
     );
-    // A corrupt newer slot leaves the older record current.
+    // A corrupt newer slot never falls back to the older record, whose
+    // refresh token may already have been rotated.
     let current = load_current_record(&store, &id, ISSUED_CLIENT, SUBJECT).expect("current");
     store.delete(current.slot()).expect("delete");
     store
@@ -839,10 +857,8 @@ fn records_alternate_slots_and_the_newest_readable_record_wins() {
         )
         .expect("store");
     assert_eq!(
-        load_current_record(&store, &id, ISSUED_CLIENT, SUBJECT)
-            .expect("older")
-            .generation(),
-        3
+        load_current_record(&store, &id, ISSUED_CLIENT, SUBJECT).expect_err("corrupt newer"),
+        SignInError::TokenStore
     );
 }
 
@@ -987,6 +1003,13 @@ fn a_held_session_lock_makes_a_cancelled_waiter_stop() {
     );
     assert!(started.elapsed() < Duration::from_secs(5));
     drop(held);
+    // A caller that is already cancelled never takes even a free lock.
+    let cancelled = CancelToken::new();
+    cancelled.cancel();
+    assert_eq!(
+        SessionLock::acquire(root.path(), &id, &cancelled).expect_err("cancelled"),
+        SignInError::Cancelled
+    );
     SessionLock::acquire(root.path(), &id, &CancelToken::new()).expect("free again");
 }
 

@@ -419,8 +419,6 @@ impl DesktopError {
         )
     }
 
-    /// The connection is removed, but its stored item was not deleted. No
-    /// profile names the item any more, so its opaque identifier is reported.
     /// A ChatGPT sign-out is recorded, but some token slots could not be
     /// deleted. Each opaque identifier is named so none is lost; the tokens
     /// themselves are never shown.
@@ -438,6 +436,8 @@ impl DesktopError {
         )
     }
 
+    /// The connection is removed, but its stored item was not deleted. No
+    /// profile names the item any more, so its opaque identifier is reported.
     pub(crate) fn removed_key_orphaned(credential_id: &CredentialId) -> Self {
         Self::new(
             "credential_orphaned",

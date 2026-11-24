@@ -1548,7 +1548,11 @@ revision check and validation (ADR-0064, ADR-0071).
   Rust waits, the window shows a bar with **Cancel sign-in** outside the
   disabled body; it calls `settings_cancel_chatgpt_sign_in`, which only sets
   the sign-in's cancel token. A failed sign-in shows its stable code, such
-  as `plan_usage_not_granted`, and stores no token. A signed-in row reads
+  as `plan_usage_not_granted`, and stores no token, except when the write that
+  binds the new tokens has an uncertain result: the tokens are then kept and
+  not revoked, and the error (`signin_binding_uncertain`) names their
+  identifier and says to check it with `provider-profile-show`. A signed-in
+  row reads
   "Signed in with ChatGPT as `<email>`", carries a **ChatGPT plan** chip and
   no API key field, and offers **Sign out**, which asks "Sign `<name>` out of
   ChatGPT?" and calls `settings_sign_out_chatgpt`. When OpenAI did not

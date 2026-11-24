@@ -7,8 +7,11 @@ Claude, as well as separate API-key connections. An API-key-only implementation
 does not meet this requirement.
 
 Subscription support is a product requirement, not a claim of implementation or
-provider approval. The current prototype has no sign-in, account management, or
-subscription adapter. Any unresolved provider approval or technical restriction
+provider approval. The prototype has a ChatGPT sign-in and a Responses adapter
+for the plan ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)), tested only
+against loopback mock servers: no real sign-in or plan-backed request was
+made, so plan usage is not verified and the requirement stays open. It has no
+Claude sign-in and no account management. Any unresolved provider approval or technical restriction
 remains a release blocker for that feature; do not silently replace it with API
 billing or defer it.
 
@@ -219,8 +222,9 @@ only identifiers, backends, and store state. See
 Only `api_key` profiles accept a credential through these commands. Since
 ADR-0093 a ChatGPT sign-in stores its own token record
 ([below](#chatgpt-sign-in-adr-0093)); login codes and ID tokens are never
-stored, and Claude subscription sign-in remains blocked as described above. Until 0.30.0 no adapter read a stored credential. Now only
-the local LM Studio adapter does (next section). A memory-only session
+stored, and Claude subscription sign-in remains blocked as described above. Until 0.30.0 no adapter read a stored credential. Now the
+LM Studio adapter (next section) and the hosted API-key connections read a
+bound key, and a signed-in ChatGPT connection reads its token record. A memory-only session
 credential is not implemented. Any process running as the same user can read
 these credentials.
 
@@ -469,7 +473,9 @@ documented route for local and open-source apps
   window end the wait. No other application's client or login cache is used.
 - **Storage.** The access and refresh tokens are kept in protected OS storage
   (DPAPI on Windows, the Secret Service on Linux) as a record in one of two
-  immutable slots, never in a file, journal, log, error, or the webview. The
+  immutable slots: on Windows a DPAPI-protected file in the private data
+  folder, on Linux a Secret Service item. They are never in a plaintext file,
+  journal, log, error, or the webview. The
   control journal records `provider_subscription_bound` with the client, the
   subject, the account email as a display label, the host identifier, and the
   binding.
@@ -560,7 +566,9 @@ read one too, through the same profile selection.
   copies and transport buffers are not zeroed.
 - **Limits.** Any process running as the same user can still read the stored
   credential. A memory-only session credential, subscription
-  sign-in, token refresh, and account lifecycle are not implemented. The
+  sign-in, token refresh, and account lifecycle were not implemented in
+  0.30.0; 0.60.0 adds ChatGPT sign-in and token refresh (ADR-0093), and a
+  memory-only credential and account lifecycle are still not implemented. The
   frontend shows nothing about the credential source beyond the endpoint text
   it already displayed. Version 0.30.0 bound the credential to a provider kind
   only; 0.31.0 amends that (next section).

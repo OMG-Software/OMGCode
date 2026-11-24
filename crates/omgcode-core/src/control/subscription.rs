@@ -187,6 +187,22 @@ impl ControlStore {
             )
             .into());
         }
+        // A returning sign-in must name the recorded client and account. This
+        // is checked here, before any native write; replay checks it again.
+        if current
+            .client_id
+            .as_deref()
+            .is_some_and(|client| client != registration.client_id)
+            || current
+                .subject
+                .as_deref()
+                .is_some_and(|subject| subject != registration.subject)
+        {
+            return Err(ControlError::ProviderRefused(
+                "the sign-in returned another client or account than this profile records",
+            )
+            .into());
+        }
         let profile_id = self
             .provider_profile(name)
             .ok_or(ControlError::UnknownProvider)?
