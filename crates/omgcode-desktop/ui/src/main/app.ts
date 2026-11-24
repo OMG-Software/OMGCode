@@ -5,6 +5,7 @@ import { createConnectionModel } from "./connection_state";
 import { createConversation } from "./conversation";
 import { createFilesTab } from "./files_tab";
 import { createShellLayout } from "./layout";
+import { createModelBox, MODEL_RAIL_LABEL } from "./model_box";
 import { createNewSessionDialog } from "./new_session";
 import { createSidePanel } from "./side_panel";
 import { createSidebar } from "./sidebar";
@@ -53,16 +54,18 @@ export function startMain(root: HTMLElement): MainApp {
     }
   }
 
-  // The open session's provider and model: one source of truth for the composer's dropdowns and
-  // the open session's status read (ADR-0071).
+  // The open session's provider and model: one source of truth for the model box's dropdowns and
+  // the open session's status read (ADR-0071). The box sits in the side panel footer (ADR-0089).
   const connection = createConnectionModel();
   void connection.open(null);
+  const modelBox = createModelBox(connection);
   const footer = createStatusFooter({
     connection,
     onShowApprovals: () => void showApprovals(),
   });
   const conversation = createConversation({
     connection,
+    modelBox,
     onTreeChanged: () => {
       void sidebar.refresh();
       footer.refresh();
@@ -83,10 +86,15 @@ export function startMain(root: HTMLElement): MainApp {
   });
   // The right-hand panel's tabs (ADR-0072, ADR-0083). One entry adds one tab.
   const files = createFilesTab();
-  const sidePanel = createSidePanel([terminalTab(), files], {
-    onCollapse: () => layout.right.setCollapsed(true),
-    onExpand: () => layout.right.setCollapsed(false),
-  });
+  const sidePanel = createSidePanel(
+    [terminalTab(), files],
+    {
+      onCollapse: () => layout.right.setCollapsed(true),
+      onExpand: () => layout.right.setCollapsed(false),
+    },
+    { railActions: [{ icon: "model", label: MODEL_RAIL_LABEL }] },
+  );
+  sidePanel.footer.append(modelBox.element);
   // Sessions, conversation, and the side panel, with a resizable, collapsible panel each side (ADR-0072).
   const layout = createShellLayout({
     left: sidebar,
@@ -119,6 +127,7 @@ export function startMain(root: HTMLElement): MainApp {
       approvalsPoller.stop();
       layout.dispose();
       conversation.dispose();
+      modelBox.dispose();
       sidebar.dispose();
       footer.dispose();
       connection.dispose();

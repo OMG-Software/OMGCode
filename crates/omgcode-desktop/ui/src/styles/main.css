@@ -899,29 +899,45 @@ mark {
   flex-wrap: wrap;
 }
 
-/* A labelled dropdown in the toolbar: the provider and the model of the open session (ADR-0071). */
-.toolbar-field {
+/* The provider and model choice in the side panel's fixed footer (ADR-0089). */
+.model-box {
   display: flex;
-  gap: 4px;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px var(--gap);
   font-size: 12px;
+}
+
+.model-box-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
 }
 
-.toolbar-field select {
-  max-width: 220px;
+.model-box-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+}
+
+.model-box select {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
   font-size: 12px;
   padding: 1px 4px;
 }
 
-.composer-model-status {
+.model-box-status {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
 }
 
-.composer-model-status:empty {
+.model-box-status:empty {
   display: none;
 }
 

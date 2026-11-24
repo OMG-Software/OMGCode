@@ -19,7 +19,7 @@ export const LISTING_NOTE = "Listing models…";
 export const EMPTY_NOTE = "The server reported no models.";
 
 export interface ModelPicker {
-  /** The model choice and its Refresh button, for the composer toolbar. */
+  /** The model choice and its Refresh button, for the model box. */
   element: HTMLElement;
   /** Why the list could not be read, or that it is being read. */
   note: HTMLElement;
@@ -64,7 +64,7 @@ function option(value: string, label: string): HTMLOptionElement {
 }
 
 /**
- * Builds the model choice of the composer toolbar (ADR-0066, ADR-0071). The ids are untrusted
+ * Builds the model choice of the model box (ADR-0066, ADR-0071, ADR-0089). The ids are untrusted
  * provider text: they are shown as text only, and choosing one grants nothing, since `chat_send`
  * validates the model as it validates any other. The list belongs to a session and a request, so
  * it is keyed on the session id and a request counter, never on endpoint text.
@@ -220,7 +220,7 @@ export function createModelPicker(
       }
     },
     setDisabled(next) {
-      // The composer calls this on every keystroke; rebuilding the options then
+      // The model box calls this on every composer refresh; rebuilding the options then
       // would close an open list, so only a change re-renders.
       if (next !== disabled) {
         disabled = next;
