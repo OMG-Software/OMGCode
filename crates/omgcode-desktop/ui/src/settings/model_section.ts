@@ -105,7 +105,7 @@ function activeConnection(ctx: SectionContext): HTMLElement {
   );
 }
 
-/** The address field's hint for an OpenAI-compatible service (ADR-0091). */
+/** The address field's hint for an OpenAI-compatible service (ADR-0092). */
 export const CUSTOM_ENDPOINT_HINT = "https://llm.example.org/v1";
 
 /**
@@ -256,7 +256,7 @@ function kindOption(kind: NewConnectionKind): string {
 /**
  * A form that records a local LM Studio or Ollama connection without a credential, a named
  * hosted provider with its API key, or an OpenAI-compatible service with its HTTPS address and
- * API key (ADR-0091). The endpoint field starts at the chosen local provider's usual address; it
+ * API key (ADR-0092). The endpoint field starts at the chosen local provider's usual address; it
  * is hidden for a named hosted provider, whose fixed endpoint Rust supplies and the form only
  * shows; the core validates every value. The typed values (never the key) live in the view
  * state, so a redraw keeps them; they reset only after the core records the connection. The key

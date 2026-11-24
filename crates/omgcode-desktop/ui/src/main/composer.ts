@@ -43,8 +43,9 @@ export const WORKSPACE_SETTINGS_LABEL = "Workspace settings";
 export const COUNTER_SHOW_RATIO = 0.8;
 
 /**
- * The compaction slider's range and step until Rust's defaults arrive (ADR-0080). Rust refuses a
- * saved value outside its own range, which it reports in `chat_defaults`.
+ * The compaction slider's range and step until Rust's defaults arrive (ADR-0080). Rust owns all
+ * three and reports them in `chat_defaults`, which the slider then uses; Rust refuses a saved value
+ * outside its range and keeps its built-in threshold on its step (ADR-0091).
  */
 export const COMPACT_THRESHOLD_MIN = 128_000;
 export const COMPACT_THRESHOLD_MAX = 1_000_000;
@@ -58,12 +59,14 @@ export function tokenLabel(tokens: number): string {
   return `${Math.round(tokens / 1000)}K`;
 }
 
-/** `value` moved into `[min, max]` and onto the slider's step from `min`. */
-export function clampThreshold(value: number, min: number, max: number): number {
+/** `value` moved into `[min, max]` and onto the slider's `step` from `min`. */
+export function clampThreshold(value: number, min: number, max: number, step: number): number {
   if (!Number.isFinite(value)) {
     return min;
   }
-  const stepped = min + Math.round((value - min) / COMPACT_THRESHOLD_STEP) * COMPACT_THRESHOLD_STEP;
+  // A step that is not a positive number would divide by zero or move nothing: clamp only.
+  const stepped =
+    Number.isFinite(step) && step > 0 ? min + Math.round((value - min) / step) * step : value;
   return Math.min(max, Math.max(min, stepped));
 }
 
@@ -325,6 +328,7 @@ export function createComposer(
     }
     threshold.min = String(defaults.compact_threshold_min);
     threshold.max = String(defaults.compact_threshold_max);
+    threshold.step = String(defaults.compact_threshold_step);
     if (!editedSettings.has(threshold)) {
       // A value saved before the slider existed is shown, and sent, at the nearest stop.
       threshold.value = String(
@@ -332,6 +336,7 @@ export function createComposer(
           settings.compact_threshold,
           defaults.compact_threshold_min,
           defaults.compact_threshold_max,
+          defaults.compact_threshold_step,
         ),
       );
     }

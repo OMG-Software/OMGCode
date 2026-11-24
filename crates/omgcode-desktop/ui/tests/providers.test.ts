@@ -9,7 +9,7 @@ import {
   providerName,
 } from "../src/providers";
 
-describe("provider names and endpoints (ADR-0091)", () => {
+describe("provider names and endpoints (ADR-0092)", () => {
   it("names every kind the settings window can add", () => {
     for (const kind of NEW_CONNECTION_KINDS) {
       expect(PROVIDER_NAMES[kind]).toBeTruthy();

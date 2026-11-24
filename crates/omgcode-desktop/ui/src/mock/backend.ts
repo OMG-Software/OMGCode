@@ -179,7 +179,7 @@ const BUILT_IN_PREFERENCES: MockPreferences = {
   max_tool_calls: 128,
   turn_timeout_seconds: 120,
   instructions: "",
-  compact_threshold: 200_000,
+  compact_threshold: 400_000,
   auto_compact: true,
   enter_to_send: true,
 };
@@ -1018,7 +1018,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
           }
-          // The same three shapes Rust accepts (ADR-0091).
+          // The same three shapes Rust accepts (ADR-0092).
           let recorded: string;
           if (isLocalKind(kind)) {
             if (typeof endpoint !== "string" || apiKey !== null) {
@@ -1314,6 +1314,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       enter_to_send,
       compact_threshold_min: COMPACT_MIN,
       compact_threshold_max: COMPACT_MAX,
+      compact_threshold_step: 8_000,
     };
   }
 
@@ -1588,7 +1589,7 @@ export function isLocalEndpoint(endpoint: string): boolean {
 
 /**
  * The mock's copy of core's typed-endpoint rule for `openai_compatible` (`validate_custom_url`,
- * ADR-0091), step by step. The browser's `URL` follows the same WHATWG standard as the `url` crate,
+ * ADR-0092), step by step. The browser's `URL` follows the same WHATWG standard as the `url` crate,
  * so "written exactly as the parser writes it" carries over: a `.` or `..` segment, an upper-case
  * host, a default port, or a non-ASCII host is rewritten by the parser and therefore refused.
  */

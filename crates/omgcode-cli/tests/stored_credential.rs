@@ -426,7 +426,7 @@ fn an_unusable_profile_fails_with_a_credential_error_before_any_request_or_sessi
 
     for (name, cause) in [
         ("missing", "unknown_profile"),
-        // A hosted profile recorded without an endpoint cannot be used (ADR-0091).
+        // A hosted profile recorded without an endpoint cannot be used (ADR-0092).
         ("openai-key", "endpoint_not_recorded"),
         ("unbound", "not_bound"),
     ] {

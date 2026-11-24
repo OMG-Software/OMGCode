@@ -1249,8 +1249,11 @@ describe("settings window, saved defaults, and per-turn skills", () => {
       .find((candidate) => candidate.textContent === "Auto-compact")
       ?.querySelector("input") as HTMLInputElement;
     type(slider, "512000");
+    // Before the reply the slider uses the composer's own fallback step.
+    expect(slider.step).toBe("8000");
     finish({
       ...CHAT_BUDGET_BOUNDS,
+      compact_threshold_step: 16_000,
       settings: { ...SETTINGS, compact_threshold: 6000, auto_compact: false },
       preferences: "saved",
       enter_to_send: true,
@@ -1260,10 +1263,16 @@ describe("settings window, saved defaults, and per-turn skills", () => {
     expect(slider.value).toBe("512000");
     expect(autoCompact.checked).toBe(false);
 
+    // The slider takes Rust's reported step (ADR-0091).
+    expect(slider.step).toBe("16000");
+
     // A fresh composer shows a saved value below the range at the range's start.
-    expect(clampThreshold(6000, 128_000, 1_000_000)).toBe(128_000);
-    expect(clampThreshold(2_000_000, 128_000, 1_000_000)).toBe(1_000_000);
-    expect(clampThreshold(203_000, 128_000, 1_000_000)).toBe(200_000);
+    expect(clampThreshold(6000, 128_000, 1_000_000, 8_000)).toBe(128_000);
+    expect(clampThreshold(2_000_000, 128_000, 1_000_000, 8_000)).toBe(1_000_000);
+    expect(clampThreshold(203_000, 128_000, 1_000_000, 8_000)).toBe(200_000);
+    // A value snaps to the step that is passed, and an unusable step only clamps.
+    expect(clampThreshold(203_000, 128_000, 1_000_000, 10_000)).toBe(208_000);
+    expect(clampThreshold(203_000, 128_000, 1_000_000, 0)).toBe(203_000);
     expect(tokenLabel(1_000_000)).toBe("1M");
     expect(tokenLabel(128_000)).toBe("128K");
   });

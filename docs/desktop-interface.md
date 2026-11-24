@@ -116,7 +116,7 @@ Not implemented:
 - Binding a credential to a local
   LM Studio profile, which changes only through the trusted CLI. The
   `settings` window adds a hosted connection (Ollama Cloud since ADR-0071, the
-  other hosted providers and an OpenAI-compatible service since ADR-0091) with
+  other hosted providers and an OpenAI-compatible service since ADR-0092) with
   its API key, replaces the key, and removes the connection, through the
   write-only key field. The rest of phase
   S3 (a local profile's credential) and phases S4 and S5 of
@@ -310,7 +310,7 @@ their registered identifier, and approvals by identifier.
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
 | `settings_unregister_workspace` | settings | Remove one workspace's registration after a native confirmation that names its folder; its settings and instructions file go, its files and sessions stay (ADR-0081) |
 | `settings_select_connection` | settings | Choose the default or a recorded local profile as the model connection, after a native confirmation |
-| `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0091) |
+| `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0092) |
 | `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
@@ -711,8 +711,12 @@ turn were awaited are kept.
 
 **Auto-compact** and the compaction slider stay in **Chat settings**. The
 slider runs from 128K to 1M tokens (128,000 to 1,000,000) in steps of 8,000
-and shows its value, such as "200K tokens"; `chat_defaults` reports the
-range. Compaction still triggers earlier when the model's safe input is
+and shows its value, such as "400K tokens"; `chat_defaults` reports the
+range and, since 0.58.0, the step (`compact_threshold_step`), and the slider
+uses them once they arrive. When no chat preferences are saved, **Auto-compact** is on and the
+threshold is 400K tokens (since 0.58.0, ADR-0091). A saved preferences file
+keeps its own values. The CLI keeps a 200,000-token default and an opt-in
+`--auto-compact`. Compaction still triggers earlier when the model's safe input is
 smaller (`min(threshold, safe input)`). A saved threshold outside the range,
 such as one saved before 0.54.0, is shown and sent at the nearest end of
 the range. When defaults arrive after the operator has begun editing, only
@@ -734,8 +738,8 @@ untouched controls take the returned values.
   `chat_send` does, stored credential included, and sends one
   `GET /models` under its endpoint's base path, which is a loopback endpoint,
   a hosted provider's fixed endpoint, or a typed `openai_compatible` endpoint
-  (ADR-0091). Core refuses the whole list when it is not a `data` array of at
-  most 2048 entries (512 before ADR-0091) with string ids, or when an id is empty, over
+  (ADR-0092). Core refuses the whole list when it is not a `data` array of at
+  most 2048 entries (512 before ADR-0092) with string ids, or when an id is empty, over
   256 bytes, repeated, or holds a control or bidirectional formatting
   character. The deadline is ten seconds. The answer carries the session id,
   the endpoint it asked (display only), and the provider kind. **The list is
@@ -1103,7 +1107,7 @@ waits. The window shows:
   cannot be used and must be removed and added again. Then **Add connection**, a disclosure with
   labelled provider, name, and endpoint fields. The provider dropdown lists
   `Ollama`, `LM Studio`, and every hosted kind with "(hosted)" after its name,
-  ending with `OpenAI compatible (hosted)` (ADR-0091). For a local provider
+  ending with `OpenAI compatible (hosted)` (ADR-0092). For a local provider
   the endpoint is prefilled with its usual address
   (`http://127.0.0.1:11434/v1` or `http://127.0.0.1:1234/v1`). For a named
   hosted provider the endpoint field is hidden and its fixed endpoint is
@@ -1409,7 +1413,7 @@ session already has (`control`). It then shows the native Yes/No dialog:
 `<name>`?" with the endpoint, and, for a hosted provider, a paragraph saying
 that prompts, workspace text read by tools, and command output leave this
 computer for the endpoint's host. For an `openai_compatible` profile it adds
-that the address was typed when the connection was added (ADR-0091). The command takes the one settings change at a time, so a
+that the address was typed when the connection was added (ADR-0092). The command takes the one settings change at a time, so a
 second change is refused with `settings_change_running`. After Yes the
 settings are read again, and a profile removed or given another endpoint while
 the dialog was open records nothing (`stale_revision`). Only then is the
@@ -1443,13 +1447,13 @@ revision check and validation (ADR-0064, ADR-0071).
   most 256 bytes and a kind. For `lm_studio` or `ollama_local` it takes an
   endpoint and no key, and records a profile with authentication `none`;
   core refuses an endpoint that is not `http://<loopback IP>:<port>/v1`. For
-  a named hosted kind (`ollama_cloud` and, since ADR-0091, `anthropic`,
+  a named hosted kind (`ollama_cloud` and, since ADR-0092, `anthropic`,
   `openai`, `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`,
   `minimax`, `open_router`, `z_ai`, `deepseek`, and `xai`) it takes an
   `api_key` and no endpoint: Rust supplies the kind's one fixed endpoint and
   records authentication `api_key`. For `openai_compatible` it takes both an
   endpoint and an `api_key`; core applies the typed-endpoint rule of
-  [provider authentication](provider-authentication.md#hosted-providers-adr-0091).
+  [provider authentication](provider-authentication.md#hosted-providers-adr-0092).
   A request that gives a local kind a key, gives a named hosted kind an
   endpoint, or omits the field its kind needs is refused as
   `invalid_request` before anything is recorded. A new profile is not used
@@ -1766,7 +1770,7 @@ What the design does:
   recorded with its profile (ADR-0048).
 - **An API key crosses the `settings` webview once.** The operator types an
   hosted connection's key into a password field of the `settings` window
-  (ADR-0059 decision 6, ADR-0071 decision 5, ADR-0091). The key is in that webview's memory
+  (ADR-0059 decision 6, ADR-0071 decision 5, ADR-0092). The key is in that webview's memory
   while it is typed and in one IPC message (`settings_add_connection` or
   `settings_set_api_key`); the field is emptied as the button is pressed,
   whether the command succeeds or fails, and the window holds the key in no
@@ -2037,7 +2041,7 @@ ACLs the private store refuses, see the notes in
   shown, a password field, the key sent once and the field cleared after a
   success and after a refusal, and absent from the page and from every other
   call), a named hosted provider's fixed endpoint and an `openai_compatible`
-  endpoint and key (ADR-0091), **Set key…**, **Remove** for a profile with a
+  endpoint and key (ADR-0092), **Set key…**, **Remove** for a profile with a
   stored key, and the
   hosted label.
   Since ADR-0072: `ui/tests/layout.test.ts` covers the column order, the
@@ -2082,7 +2086,7 @@ ACLs the private store refuses, see the notes in
   its key, replacing a key, removing a bound profile with a declined and an
   accepted dialog (the native item is deleted), the active-profile dialog
   text, and a session that chose a removed profile becoming stale, and since
-  ADR-0091 adding a named hosted provider with its fixed endpoint and an
+  ADR-0092 adding a named hosted provider with its fixed endpoint and an
   `openai_compatible` connection with its typed endpoint, with their
   refusals. `crates/omgcode-desktop/tests/layers.rs` checks that the frontend
   names every provider kind and shows core's fixed endpoints. Unit tests in

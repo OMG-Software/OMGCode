@@ -333,7 +333,7 @@ fn main() -> ExitCode {
 
 /// The stored spellings of the provider kinds `filter` keeps, in the order
 /// `ProviderKind::ALL` lists them. Every kind is served by the one
-/// OpenAI-compatible adapter (ADR-0091).
+/// OpenAI-compatible adapter (ADR-0092).
 fn adapter_kinds(filter: impl Fn(ProviderKind) -> bool) -> Vec<&'static str> {
     ProviderKind::ALL
         .into_iter()

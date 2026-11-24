@@ -513,7 +513,7 @@ fn choosing_ollama_cloud_names_the_hosted_service_in_the_dialog() {
 /// A named hosted provider and an operator-typed OpenAI-compatible service are
 /// offered once their keys are bound. Each dialog names the provider and the
 /// host that receives the turn, and the typed address is called out as typed
-/// (ADR-0091). Nothing is sent: choosing records the session's choice only.
+/// (ADR-0092). Nothing is sent: choosing records the session's choice only.
 #[test]
 fn choosing_a_hosted_provider_names_its_host_and_flags_a_typed_address() {
     let fixture = Fixture::new();
@@ -576,7 +576,7 @@ fn choosing_a_hosted_provider_names_its_host_and_flags_a_typed_address() {
 
 /// A typed address with a non-default port is named with that port, as the
 /// settings window shows it: `host:8443` can be a different service from
-/// `host`, and the dialog must name the one that receives the key (ADR-0091).
+/// `host`, and the dialog must name the one that receives the key (ADR-0092).
 #[test]
 fn choosing_a_typed_address_with_a_port_names_the_port() {
     let fixture = Fixture::new();

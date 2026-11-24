@@ -6,8 +6,8 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.58.0 adds hosted model providers and an OpenAI-compatible
-  connection (ADR-0091). New provider kinds `google`, `meta`, `moonshot`,
+- Version 0.59.0 adds hosted model providers and an OpenAI-compatible
+  connection (ADR-0092). New provider kinds `google`, `meta`, `moonshot`,
   `tencent`, `thinking_machines`, `minimax`, `z_ai`, `deepseek`, `xai`, and
   `openai_compatible` join `anthropic`, `openai`, and `open_router`, which can
   now be used. Each named kind accepts only its provider's one documented
@@ -27,7 +27,7 @@ Changes are recorded here before a release version is assigned.
   kind but `ollama_local` as a stored-credential adapter. No request was made
   to any of these providers with a real key. Subscription sign-in is not
   added. A control journal that records a new kind, or an endpoint on an
-  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.57.0 or
+  `openai`, `anthropic`, or `open_router` profile, cannot be read by 0.58.0 or
   earlier.
 - Version 0.57.0 adds **Set all** beside **File-write tool limits** in the
   desktop `settings` window (ADR-0090). One Deny, Prompt, or Allow choice sets
@@ -168,6 +168,15 @@ Changes are recorded here before a release version is assigned.
   it as stale.
 
 ### Changed
+
+- Version 0.58.0 turns desktop auto-compaction on by default and sets the
+  default compaction threshold to 400K tokens (ADR-0091). The new values
+  apply only when no chat preferences are saved; a saved preferences file
+  keeps its own values. Compaction still triggers earlier when the model's
+  safe input is smaller. The CLI keeps a 200,000-token default and an opt-in
+  `--auto-compact`. `chat_defaults` now also reports the slider's step as
+  `compact_threshold_step`, and the composer uses it, so Rust owns the range
+  and the step its default is checked against.
 
 - The provider and model choice moves from under the message box to a box in
   the right-hand panel's fixed footer, with a **Model** rail icon when the

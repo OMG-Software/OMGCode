@@ -1,4 +1,4 @@
-//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0091).
+//! The hosted endpoints the model adapter may send to (ADR-0071, ADR-0092).
 //!
 //! Every hosted provider is reached through its OpenAI-compatible Chat
 //! Completions API with a bearer key. Each named provider has one fixed base
@@ -76,7 +76,7 @@ const FIXED_ENDPOINTS: &[(&str, OutputLimitField)] = &[
 /// answers HTTP 400 to a tool request that does not send every earlier
 /// turn's `reasoning_content` back. This client keeps no reasoning text, so
 /// requests to these endpoints send `"thinking": {"type": "disabled"}`
-/// (ADR-0091). DeepSeek documents both the default and the 400.
+/// (ADR-0092). DeepSeek documents both the default and the 400.
 const THINKING_OFF_ENDPOINTS: &[&str] = &[DEEPSEEK_ENDPOINT];
 
 /// Whether requests to `text` must switch the provider's thinking mode off.

@@ -885,6 +885,9 @@ pub struct ChatDefaults {
     pub compact_threshold_min: u64,
     /// Largest compaction threshold the composer's slider offers.
     pub compact_threshold_max: u64,
+    /// The slider's step from `compact_threshold_min`; the built-in threshold
+    /// sits on it (ADR-0091).
+    pub compact_threshold_step: u64,
 }
 
 /// The `session_skills` response: skills the operator may select for one turn
@@ -1036,7 +1039,7 @@ pub struct ProviderProfileView {
     /// read for this view.
     pub credential_bound: bool,
     /// Whether the profile can be chosen as a connection (ADR-0071,
-    /// ADR-0091): a profile with a recorded endpoint and, for a hosted kind,
+    /// ADR-0092): a profile with a recorded endpoint and, for a hosted kind,
     /// a bound credential.
     pub selectable: bool,
     /// Whether it is the recorded active connection.
@@ -1335,7 +1338,7 @@ pub enum GitWorktreeState {
     Conflicted,
 }
 
-/// A provider the `settings` window may add (ADR-0064, ADR-0071, ADR-0091):
+/// A provider the `settings` window may add (ADR-0064, ADR-0071, ADR-0092):
 /// any provider kind, by its stored spelling. An unknown spelling fails to
 /// deserialize, so it never reaches the service.
 pub type NewConnectionKind = omgcode_core::control::ProviderKind;

@@ -14,15 +14,15 @@ billing or defer it.
 
 | Connection profile | Required authentication and usage path | Current design readiness |
 | --- | --- | --- |
-| OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0091); API key only; no request was verified with a real key |
+| OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0092); API key only; no request was verified with a real key |
 | ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Official local/open-source integration documented; implementation and entitlement tests pending |
-| Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0091), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
+| Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0092), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
 | Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0071); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
-| OpenRouter | User API key and explicit upstream routing | Prototype at `https://openrouter.ai/api/v1` (ADR-0091); the model list shape was observed without a key; upstream routing preferences are not sent; API key only; no request was verified with a real key |
-| Google, Meta, Moonshot, Tencent, Thinking Machines Lab, MiniMax, Z.ai, DeepSeek, xAI | User API key; API-account billing | Prototype at each provider's one documented OpenAI-compatible endpoint ([hosted providers](#hosted-providers-adr-0091)); API key only; no request was verified with a real key |
-| OpenAI compatible | User API key for an operator-typed HTTPS base URL | Prototype ([hosted providers](#hosted-providers-adr-0091)); the service must speak the Chat Completions shapes the adapter parses |
+| OpenRouter | User API key and explicit upstream routing | Prototype at `https://openrouter.ai/api/v1` (ADR-0092); the model list shape was observed without a key; upstream routing preferences are not sent; API key only; no request was verified with a real key |
+| Google, Meta, Moonshot, Tencent, Thinking Machines Lab, MiniMax, Z.ai, DeepSeek, xAI | User API key; API-account billing | Prototype at each provider's one documented OpenAI-compatible endpoint ([hosted providers](#hosted-providers-adr-0092)); API key only; no request was verified with a real key |
+| OpenAI compatible | User API key for an operator-typed HTTPS base URL | Prototype ([hosted providers](#hosted-providers-adr-0092)); the service must speak the Chat Completions shapes the adapter parses |
 | LM Studio | Explicit local server profile; LM Studio API token when required | Local loopback chat prototype tested with Gemma on Windows; a token can be stored as an `api_key` credential, and the adapter reads it through an operator-selected profile (0.30.0), which also supplies the endpoint (0.31.0); full platform/auth qualification pending |
 
 The provider, authentication method, account/workspace, billing mode, and model
@@ -141,14 +141,14 @@ a separately billed Anthropic API connection remains a different profile.
 
 `workspace provider-profile-add/show/remove` record a name, a provider kind,
 and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
-`ollama_cloud`, `anthropic`, `openai`, `open_router`, and, since ADR-0091,
+`ollama_cloud`, `anthropic`, `openai`, `open_router`, and, since ADR-0092,
 `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`, `minimax`,
 `z_ai`, `deepseek`, `xai`, and `openai_compatible`. Modes are
 `subscription`, `api_key`, and `none`. Subscription is accepted only for
 OpenAI and Anthropic, and no adapter reads one. API keys are accepted for LM
 Studio and every hosted kind. Since ADR-0071 an `ollama_cloud` profile also
-accepts its one fixed endpoint, and since ADR-0091 every hosted kind accepts
-one ([hosted providers](#hosted-providers-adr-0091)). Ollama Local accepts
+accepts its one fixed endpoint, and since ADR-0092 every hosted kind accepts
+one ([hosted providers](#hosted-providers-adr-0092)). Ollama Local accepts
 only `none`.
 
 A profile stores no account, token, password, certificate, or other
@@ -160,7 +160,7 @@ local LM Studio adapter can read a bound credential of an `lm_studio` profile
 that the operator selects (below). `capabilities` reports
 `provider_profiles: true`, `provider_adapters: false`, and
 `stored_credential_adapters` (every kind except `ollama_local` since
-ADR-0091), and, since 0.31.0, `provider_profile_endpoints: true`. The
+ADR-0092), and, since 0.31.0, `provider_profile_endpoints: true`. The
 provider-specific login approvals remain prerequisites for any subscription
 connection. See [ADR-0038](adr/0038-record-provider-profiles-without-credentials.md).
 
@@ -171,8 +171,8 @@ applies to every request: plain `http`, a literal loopback IP, an explicit
 non-zero port, the path `/v1` or `/v1/`, no user information, query, or
 fragment, and at most 256 bytes. Core has one implementation of that rule, and
 both the provider client and the profile record use it. Replay of the control
-journal applies it again. An `ollama_cloud` profile accepts only the fixed cloud endpoint (Ollama Cloud, below). Since ADR-0091 every other hosted kind
-accepts its own rule ([hosted providers](#hosted-providers-adr-0091)). The
+journal applies it again. An `ollama_cloud` profile accepts only the fixed cloud endpoint (Ollama Cloud, below). Since ADR-0092 every other hosted kind
+accepts its own rule ([hosted providers](#hosted-providers-adr-0092)). The
 text is stored exactly as given, without normalisation. The refusals are
 `provider profile refused: a local provider endpoint must be http://<loopback
 IP>:<port>/v1 with no user information, query, or fragment`, `provider
@@ -264,15 +264,15 @@ OpenAI-compatible APIs, and both returned
   and the desktop `chat_models` command resolve the connection as `chat`
   does and send one `GET` for `/models` appended to the endpoint's base path.
   For a local server that is `GET /v1/models`, and the endpoint passes the
-  same loopback rule. For a hosted profile (since ADR-0091) the endpoint
+  same loopback rule. For a hosted profile (since ADR-0092) the endpoint
   passes its hosted rule instead, so DeepSeek is asked at
   `https://api.deepseek.com/models` and Z.ai at
   `https://api.z.ai/api/paas/v4/models`; a hosted request needs the
   profile's stored key. A stored credential is sent as the same bearer
   header. No proxy, redirect, or retry; a five-second connect timeout, a
-  ten-second deadline, and a 4 MiB body (1 MiB before ADR-0091).
+  ten-second deadline, and a 4 MiB body (1 MiB before ADR-0092).
 - **Response.** Parsed strictly: a `data` array of at most 2048 objects (512
-  before ADR-0091) with
+  before ADR-0092) with
   string ids, no duplicate key, and no repeated id. An id that is empty, over
   256 bytes, or holds a control or bidirectional formatting character
   refuses the whole list. Other members are ignored. Failures are the
@@ -286,7 +286,7 @@ OpenAI-compatible APIs, and both returned
   `/v1/models` does not report. Embedding models are listed.
 
 `capabilities` reports `streaming_adapters` and `cancellable_adapters` as
-every provider kind since ADR-0091 (`["lm_studio", "ollama_local",
+every provider kind since ADR-0092 (`["lm_studio", "ollama_local",
 "ollama_cloud"]` since ADR-0071), and `stored_credential_adapters` as every
 kind except `ollama_local`.
 
@@ -303,8 +303,8 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
   without an endpoint cannot be used (`endpoint_not_recorded`). Core has one
   implementation of the rule (`OLLAMA_CLOUD_ENDPOINT`, `ModelEndpoint`), which
   the profile record, replay, the client, and the model list share. Since
-  ADR-0091 the other hosted kinds have their own rules
-  ([hosted providers](#hosted-providers-adr-0091)). `omgcode workspace
+  ADR-0092 the other hosted kinds have their own rules
+  ([hosted providers](#hosted-providers-adr-0092)). `omgcode workspace
   provider-profile-add NAME --kind ollama_cloud --auth api_key --endpoint
   https://ollama.com/v1 --revision N` records one.
 - **Credential.** `provider-credential-set` stores the key and binds it as for
@@ -339,7 +339,7 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
   limits as a local request. A request to the cloud endpoint without a token
   is refused before any connection (`invalid local model token`).
 - **Selectable.** A profile can be the active connection when it is a local
-  kind with an endpoint, or a hosted profile (since ADR-0091, any hosted kind)
+  kind with an endpoint, or a hosted profile (since ADR-0092, any hosted kind)
   with its endpoint and a bound credential
   (`ControlStore::check_provider_selectable`). Replay
   checks the endpoint rule only, because it cannot read the credential store.
@@ -352,9 +352,9 @@ adapter's Chat Completions client, stream parser, cancellation, and model list.
 - **Not covered.** Ollama's native `/api` endpoints, account sign-in, usage
   limits and billing.
 
-## Hosted providers (ADR-0091)
+## Hosted providers (ADR-0092)
 
-[ADR-0091](adr/0091-add-hosted-providers-and-an-openai-compatible-connection.md)
+[ADR-0092](adr/0092-add-hosted-providers-and-an-openai-compatible-connection.md)
 connects the same Chat Completions client to twelve more hosted services and to
 any HTTPS service that speaks the same API. Each works as Ollama Cloud does
 (above): an `api_key` profile, a stored credential bound to it, the key sent
@@ -410,7 +410,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
 - **Selectable.** A hosted profile can be chosen only with a bound credential.
 - **Compatibility.** A control journal that records a new kind, or an endpoint
   on an `openai`, `anthropic`, or `open_router` profile, cannot be read by
-  0.57.0 or earlier.
+  0.58.0 or earlier.
 - **Not verified.** Endpoints and output fields come from each provider's
   documentation, read on 2026-11-24. No request was made to any of these
   providers with a key, and no test makes a network call to one. The reply,

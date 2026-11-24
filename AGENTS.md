@@ -87,7 +87,7 @@ The `anthropic`, `openai`, `google`, `meta`, `moonshot`, `tencent`,
 kinds each accept only their provider's one documented OpenAI-compatible
 endpoint, and an `openai_compatible` profile records an operator-typed
 `https://` base URL that core refuses rather than rewrites
-([ADR-0091](docs/adr/0091-add-hosted-providers-and-an-openai-compatible-connection.md)).
+([ADR-0092](docs/adr/0092-add-hosted-providers-and-an-openai-compatible-connection.md)).
 Every hosted profile needs a stored API key. No hosted provider's chat,
 stream, or tool-call shapes were verified with a real key. No native provider
 API, subscription sign-in, or login exists. Trusted

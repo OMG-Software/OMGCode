@@ -310,9 +310,10 @@ fn the_settings_window_and_the_composer_each_save_their_own_chat_defaults() {
     assert_eq!(
         (
             defaults.compact_threshold_min,
-            defaults.compact_threshold_max
+            defaults.compact_threshold_max,
+            defaults.compact_threshold_step
         ),
-        (128_000, 1_000_000)
+        (128_000, 1_000_000, 8_000)
     );
     let overview = service.settings_overview().expect("overview");
     assert_eq!(json_of(&overview.chat)["source"], "defaults");

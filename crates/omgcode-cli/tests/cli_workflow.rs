@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
 /// Every provider kind's stored spelling, in the order `capabilities` lists
-/// them (ADR-0091).
+/// them (ADR-0092).
 const ALL_KINDS: [&str; 16] = [
     "lm_studio",
     "ollama_local",

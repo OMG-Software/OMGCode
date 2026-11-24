@@ -3,7 +3,7 @@
 //! The window reads the trusted configuration and, from phase S2, changes the
 //! development root, workspace registrations, workspace preferences, and
 //! package cache roots. It also records model connections, sets a hosted provider's key, and
-//! chooses the active one (ADR-0064, ADR-0091). No handler takes a path: a folder comes from a native
+//! chooses the active one (ADR-0064, ADR-0092). No handler takes a path: a folder comes from a native
 //! dialog that Rust opens ([`NativePrompt`]), and every change that widens
 //! access waits for the operator's answer in a native confirmation. Each
 //! handler runs on the blocking pool because the dialogs and the settings
@@ -214,7 +214,7 @@ pub async fn settings_select_connection(
     .await
 }
 
-/// `settings` only. Records a connection (ADR-0064, ADR-0071, ADR-0091): a
+/// `settings` only. Records a connection (ADR-0064, ADR-0071, ADR-0092): a
 /// local LM Studio or Ollama connection with a loopback `endpoint`, a named
 /// hosted provider with an `api_key` and no endpoint, or `openai_compatible`
 /// with an HTTPS `endpoint` and an `api_key`. Recording it grants nothing, so no

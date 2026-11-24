@@ -6,7 +6,7 @@
 //! through `credential`, never the secret.
 //!
 //! Every kind is served by one adapter that speaks the OpenAI-compatible Chat
-//! Completions API (ADR-0064, ADR-0071, ADR-0091). An `lm_studio` or
+//! Completions API (ADR-0064, ADR-0071, ADR-0092). An `lm_studio` or
 //! `ollama_local` profile may record a loopback endpoint that passes
 //! `provider::validate_base_url`. A named hosted kind accepts exactly its one
 //! fixed HTTPS endpoint ([`ProviderKind::fixed_endpoint`]), and an
@@ -61,7 +61,7 @@ impl ProviderEndpoint {
 
 /// A provider that a profile may name.
 ///
-/// A journal that records a kind added in 0.58.0 cannot be read by 0.57.0 or
+/// A journal that records a kind added in 0.59.0 cannot be read by 0.58.0 or
 /// earlier, which refuse the unknown spelling.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ProviderKind {
@@ -154,7 +154,7 @@ impl ProviderKind {
     }
 
     /// Whether this kind is a hosted service: every request leaves this
-    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0091).
+    /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0092).
     pub const fn is_hosted(self) -> bool {
         !self.is_local()
     }
@@ -369,7 +369,7 @@ impl ControlStore {
     }
 
     /// Check that the named profile can be chosen as a connection now
-    /// (ADR-0071, ADR-0091): a profile that records an endpoint and, for a
+    /// (ADR-0071, ADR-0092): a profile that records an endpoint and, for a
     /// hosted kind, has a bound credential. It reads no
     /// native storage and so cannot show that the stored secret still exists;
     /// a turn without a usable credential fails with the `credential` errors.
@@ -545,7 +545,7 @@ pub(super) fn apply(
 
 /// Whether a profile can be the active connection: it records the endpoint
 /// its turns use, which replay has already checked against its kind's rule
-/// (ADR-0071, ADR-0091). Replay applies exactly this; the credential is not
+/// (ADR-0071, ADR-0092). Replay applies exactly this; the credential is not
 /// read there.
 const fn selectable(profile: &ProviderProfile) -> bool {
     profile.endpoint.is_some()
@@ -598,7 +598,7 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
 }
 
 /// The authentication modes a kind may record. `subscription` stays
-/// recordable for OpenAI and Anthropic so journals written by 0.57.0 and
+/// recordable for OpenAI and Anthropic so journals written by 0.58.0 and
 /// earlier replay, but no adapter uses it; every other hosted kind is `api_key` only.
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {

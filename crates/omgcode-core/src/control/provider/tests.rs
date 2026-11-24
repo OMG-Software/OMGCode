@@ -225,7 +225,7 @@ fn a_refused_endpoint_writes_no_event() {
 }
 
 /// A named hosted kind refuses a loopback endpoint, and `openai_compatible`
-/// refuses one too: it is HTTPS only (ADR-0091).
+/// refuses one too: it is HTTPS only (ADR-0092).
 #[test]
 fn hosted_kinds_refuse_a_loopback_endpoint() {
     let (_directory, _data, mut store) = store();
@@ -778,7 +778,7 @@ fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check(
 }
 
 /// Every kind except the two local ones is hosted, and every hosted kind but
-/// `openai_compatible` has one fixed HTTPS endpoint (ADR-0091). Each spelling
+/// `openai_compatible` has one fixed HTTPS endpoint (ADR-0092). Each spelling
 /// round-trips through `parse`.
 #[test]
 fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
@@ -820,7 +820,7 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
                 assert!(endpoint.starts_with("https://"), "{kind:?}");
                 // The kind's endpoint must be a row of the client's fixed table,
                 // not a URL that only passes the typed-endpoint rule, and carry
-                // the output field ADR-0091 records for that provider.
+                // the output field ADR-0092 records for that provider.
                 let (_, field) = crate::provider::fixed_endpoint(endpoint)
                     .unwrap_or_else(|| panic!("{kind:?}: endpoint missing from the fixed table"));
                 assert_eq!(field, documented_output_field(kind), "{kind:?}");
@@ -917,7 +917,7 @@ fn each_named_hosted_kind_records_only_its_own_endpoint() {
 
 /// An `openai_compatible` profile records the HTTPS base URL the operator
 /// typed, exactly, and refuses plain HTTP, user information, queries, and text
-/// the URL parser would rewrite (ADR-0091). Replay applies the same rule.
+/// the URL parser would rewrite (ADR-0092). Replay applies the same rule.
 #[test]
 fn an_openai_compatible_profile_records_an_https_base_url_under_the_custom_rule() {
     let (_directory, data, mut store) = store();
