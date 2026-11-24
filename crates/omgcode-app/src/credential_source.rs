@@ -460,9 +460,11 @@ fn profile_connection(
 /// Whether the named profile is an `openai` subscription profile, which signs
 /// in with ChatGPT rather than holding a stored key (ADR-0093).
 fn is_plan_profile(control: &ControlStore, name: &str) -> bool {
-    // The same rule as the core's sign-in check, without its endpoint test: a
-    // plan profile that lacks the endpoint is refused here as
-    // `endpoint_not_recorded` rather than treated as an API-key profile.
+    // The same rule as the core's sign-in check, without its endpoint test:
+    // every openai subscription profile takes the plan branch, whose
+    // `provider_subscription` refuses a missing endpoint as
+    // `endpoint_not_recorded` and a signed-out profile as `not_signed_in`,
+    // never as the API-key path's `subscription_unsupported`.
     control
         .provider_profile(name)
         .is_some_and(|status| status.profile().uses_chatgpt_plan())

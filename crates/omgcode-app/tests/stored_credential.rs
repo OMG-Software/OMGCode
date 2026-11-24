@@ -131,6 +131,18 @@ fn every_refusal_is_a_credential_error_with_its_cause_code() {
         message.starts_with("subscription_unsupported:"),
         "{message}"
     );
+    // An openai subscription profile takes the ChatGPT plan branch, so a
+    // signed-out one asks for a sign-in instead of being refused as an
+    // unsupported subscription.
+    vault.add_profile_at(
+        "chatgpt",
+        "openai",
+        "subscription",
+        "https://api.openai.com/v1",
+    );
+    let (_, message) = refusal(&fixture, &profile("chatgpt"));
+    assert!(message.starts_with("not_signed_in:"), "{message}");
+    assert!(message.contains("provider-signin"), "{message}");
     let (_, message) = refusal(&fixture, &profile("unbound"));
     assert!(message.starts_with("not_bound:"), "{message}");
 
@@ -151,9 +163,12 @@ fn a_profile_without_an_endpoint_is_refused_with_endpoint_not_recorded() {
     vault.add_profile("old-none", "lm_studio", "none");
     vault.add_profile("old-key", "lm_studio", "api_key");
     vault.add_profile("old-unbound", "lm_studio", "api_key");
+    // A ChatGPT plan profile takes the plan branch, whose check also refuses
+    // the missing endpoint first.
+    vault.add_profile("old-plan", "openai", "subscription");
     let id = vault.bind("old-key", STORED.as_bytes());
     vault.delete_native(&id);
-    for name in ["old-none", "old-key", "old-unbound", "OLD-KEY"] {
+    for name in ["old-none", "old-key", "old-unbound", "OLD-KEY", "old-plan"] {
         let (_, message) = refusal(&fixture, &profile(name));
         assert!(
             message.starts_with("endpoint_not_recorded:"),
