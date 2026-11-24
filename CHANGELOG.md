@@ -50,7 +50,8 @@ Changes are recorded here before a release version is assigned.
     through `session_processes`, joined from the model action, run, and
     session journals. It never starts, stops, or re-runs anything, returns no
     output or environment value, and reads the run journal without creating
-    it or waiting for its lock (ADR-0086).
+    it or waiting for its lock (ADR-0086). A full record window is shown as
+    "Older calls may not be shown.", never as a session that ran nothing.
   - **Context** estimates by part what the next turn would send (system
     prompt, instructions, tool definitions, compaction summary, history,
     framing) through `session_context_breakdown`, with the pre-turn trigger's

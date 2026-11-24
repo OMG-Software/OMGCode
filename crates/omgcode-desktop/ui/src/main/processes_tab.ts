@@ -8,6 +8,16 @@ import type { PanelView } from "./panel_tab";
 
 /** What the tab says when a session has started no subprocess. */
 export const PROCESSES_EMPTY = "No subprocess has run in this session.";
+/**
+ * What the tab says when no call is listed but older records were not read: the 1,000 newest
+ * action records of all sessions held none of this session's calls.
+ */
+export const PROCESSES_NONE_RECENT = "No recent subprocess was found in this session.";
+/**
+ * The note for `truncated`. Rust also sets it when the record window was full, which does not
+ * prove an older call exists, so it says "may".
+ */
+export const PROCESSES_TRUNCATED = "Older calls may not be shown.";
 /** What the tab says while no session is open. */
 export const PROCESSES_NO_SESSION = "Open a session to see its subprocesses.";
 /** How often the list is read again while a call is running. */
@@ -164,11 +174,14 @@ export function createProcessesTab(): PanelView {
       status.textContent = sessionId === null ? PROCESSES_NO_SESSION : "";
       return;
     }
-    status.textContent = data.entries.length === 0 ? PROCESSES_EMPTY : "";
+    // With nothing listed, `truncated` can only mean the record window was full, so the empty
+    // text must not claim the session never ran anything.
+    status.textContent =
+      data.entries.length > 0 ? "" : data.truncated ? PROCESSES_NONE_RECENT : PROCESSES_EMPTY;
     replaceChildren(list, ...data.entries.map(renderEntry));
     const lines: HTMLElement[] = [];
     if (data.truncated) {
-      lines.push(el("p", { class: "processes-note", text: "Older calls are not shown." }));
+      lines.push(el("p", { class: "processes-note", text: PROCESSES_TRUNCATED }));
     }
     if (data.run_details === "unavailable") {
       lines.push(

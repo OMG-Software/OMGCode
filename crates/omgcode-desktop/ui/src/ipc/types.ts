@@ -485,7 +485,10 @@ export interface ProcessEntry {
 /** The open session's command-tool calls, newest first, at most 100. */
 export interface SessionProcesses {
   entries: ProcessEntry[];
-  /** Whether older calls exist that are not listed. */
+  /**
+   * Whether older calls may exist that are not listed: more than 100 matched, or the record
+   * window was full, so older records were not read.
+   */
   truncated: boolean;
   /** Whether the run journal could be joined. */
   run_details: "available" | "unavailable" | "busy";

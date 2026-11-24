@@ -187,8 +187,9 @@ enum RunLookup {
 pub struct SessionProcesses {
     /// At most 100 calls, newest first.
     pub entries: Vec<ProcessEntry>,
-    /// Whether older calls exist that are not listed: more than 100 matched,
-    /// or the 1000 newest action records, all sessions together, were full.
+    /// Whether older calls may exist that are not listed: more than 100
+    /// matched, or the 1000 newest action records, all sessions together,
+    /// were full, so older records were not read.
     pub truncated: bool,
     /// Whether run details could be joined.
     pub run_details: RunDetails,

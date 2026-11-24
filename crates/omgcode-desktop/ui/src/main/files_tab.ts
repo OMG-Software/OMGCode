@@ -146,13 +146,14 @@ export function createFilesTab(): FilesTab {
 
   /**
    * Lists `path` into `target`, with loading, empty, truncated, and error text. `current` says
-   * whether the answer is still wanted when it lands; the session check is in `list`.
+   * whether the answer is still wanted when it lands; the session check is in `list`. Resolves
+   * `true` only when a listing, possibly empty, was drawn.
    */
   async function fill(
     target: HTMLElement,
     path: string[],
     current: () => boolean = () => true,
-  ): Promise<void> {
+  ): Promise<boolean> {
     replaceChildren(target, el("p", { class: "files-note", text: FILES_LOADING }));
     let listing: WorkspaceListing | null;
     try {
@@ -164,14 +165,14 @@ export function createFilesTab(): FilesTab {
           el("p", { class: "files-note files-error", text: failureText(reason) }),
         );
       }
-      return;
+      return false;
     }
     if (listing === null || !current()) {
-      return;
+      return false;
     }
     if (listing.entries.length === 0) {
       replaceChildren(target, el("p", { class: "files-note", text: FILES_EMPTY }));
-      return;
+      return true;
     }
     const entries = el("ul", { class: "files-list" });
     let drawn = 0;
@@ -193,6 +194,7 @@ export function createFilesTab(): FilesTab {
         }),
       );
     }
+    return true;
   }
 
   async function loadRoot(): Promise<void> {
@@ -201,7 +203,13 @@ export function createFilesTab(): FilesTab {
     }
     loaded = true;
     showMessage(null);
-    await fill(host, []);
+    const mine = generation;
+    const drawn = await fill(host, []);
+    // A failed root listing keeps its error text, but showing the tab again lists it again, as
+    // the other session tabs read afresh on show. A newer load owns `loaded` itself.
+    if (!drawn && mine === generation) {
+      loaded = false;
+    }
   }
 
   function refresh(): void {

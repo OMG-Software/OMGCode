@@ -162,6 +162,29 @@ describe("the Files tab", () => {
     expect(names()).toEqual(["src", "main", "lib.rs", "empty", "Cargo.toml"]);
   });
 
+  it("lists a root that failed again when the tab is shown again", async () => {
+    let fail = true;
+    const tab = mount((args) => {
+      if (fail) {
+        throw new IpcFailure({ code: "busy", message: "The data is in use." });
+      }
+      return fakeTree(TREE)(args);
+    });
+    tab.setSession("s-1");
+    tab.onVisible?.(true);
+    await settle();
+    expect(document.querySelector(".files-error")?.textContent).toBe(
+      "The folder could not be listed. The data is in use.",
+    );
+
+    fail = false;
+    tab.onVisible?.(false);
+    tab.onVisible?.(true);
+    await settle();
+    expect(document.querySelector(".files-error")).toBeNull();
+    expect(names()).toEqual(["src", "empty", "Cargo.toml"]);
+  });
+
   it("reads nothing on a refresh while hidden and lists again when shown", async () => {
     const tab = mount();
     tab.setSession("s-1");

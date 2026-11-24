@@ -513,7 +513,8 @@ the tree and loads the workspace's top level once the tab is visible; opening
 a folder lists just that folder, and opening it again lists it again. A
 chevron shows each folder's state, **Refresh** lists the top level again and
 keeps open folders open, and loading, empty, truncated, and error states are
-text. At most 5,000 rows are drawn across the open folders; closing a folder
+text. A top level that failed to list keeps its error until the tab is shown
+again, which lists it again. At most 5,000 rows are drawn across the open folders; closing a folder
 drops its rows, and a listing that arrives after its folder closed is
 discarded. A name that is not valid Unicode is shown
 but its folder is not opened, nor is a folder Rust says it would not list
@@ -994,7 +995,8 @@ It reads only while it is visible; see [right-hand panel](#right-hand-panel).
 
 The only subprocess a session starts is a model `workspace_run_command` call.
 `session_processes { session_id }` lists those calls for one session, newest
-first, at most 100, with `truncated` set when older calls exist. It is
+first, at most 100, with `truncated` set when older calls may exist: more
+than 100 matched, or the 1,000-record window was full. It is
 read-only: it cancels, restarts, and runs nothing, and the webview names only
 the session identifier. Rust resolves every source from trusted state, on the
 blocking pool, with the same bounded readers the trusted CLI uses.
@@ -1048,7 +1050,10 @@ the full command line in a tooltip.
 `PanelView` (`element`, `showSession`, `refresh`, `dispose`). It shows each
 call on one ellipsized line with a state badge, start time, duration, and
 outcome, the empty state "No subprocess has run in this session.", errors as
-text, and a **Refresh** button. While the list holds a `running` call it reads
+text, and a **Refresh** button. A `truncated` answer adds "Older calls may not
+be shown."; with no call listed it can only mean the record window was full,
+so the empty state reads "No recent subprocess was found in this session."
+instead. While the list holds a `running` call it reads
 again every two seconds, through the shared poller, which also pauses while the
 page is hidden; it stops when nothing runs, on `showSession(null)`, and on
 `dispose()`. An answer for a session that is no longer shown is dropped.
@@ -1826,11 +1831,16 @@ What it does not do:
   settings window. It cannot call any settings-window command.
 - A compromised `settings` webview can read the configuration view: recorded
   paths, profile names, endpoints, origins, and skill names. It can turn
-  preferences off, clear package cache roots, disable a skill
-  and open the native dialogs
-  again and again, one at a time. It cannot choose a folder, answer a
-  dialog, widen access or enable a skill without the native confirmation,
-  read a secret, or call any other window's command. It can ask to import a
+  preferences off, clear package cache roots, disable a skill, remove an
+  unselected connection that holds no API key, and open the native dialogs
+  again and again, one at a time. It can also ask to delete, each behind a
+  native confirmation it cannot answer: a workspace registration with its
+  settings and instructions file, a skill's stored copy, a connection with
+  its stored API key, a toolchain profile, a package-network profile with
+  the credentials bound to its origins, and a Windows container grant. It
+  cannot choose a folder, answer a dialog, widen access or enable a skill
+  without the native confirmation, read a secret, or call any other window's
+  command. It can ask to import a
   folder only through the native folder dialog, so it cannot name one.
 - On Windows the native confirmation's default button is Yes, because `rfd`
   offers no way to change it. A keyboard Enter confirms.

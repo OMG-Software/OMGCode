@@ -8,6 +8,7 @@ import {
   outcomeText,
   PROCESSES_EMPTY,
   PROCESSES_NO_SESSION,
+  PROCESSES_NONE_RECENT,
   PROCESSES_POLL_MS,
 } from "../src/main/processes_tab";
 import { createMockBackend } from "../src/mock/backend";
@@ -184,8 +185,20 @@ describe("the processes tab", () => {
     tab.showSession(SESSION);
     await settle();
 
-    expect(tab.element.textContent).toContain("Older calls are not shown.");
+    expect(tab.element.textContent).toContain("Older calls may not be shown.");
     expect(tab.element.textContent).toContain("Run details are unavailable");
+  });
+
+  it("does not claim an empty session never ran anything when the record window was full", async () => {
+    const { tab } = mount(() => processes([], { truncated: true }));
+
+    tab.showSession(SESSION);
+    await settle();
+
+    const text = tab.element.textContent ?? "";
+    expect(text).toContain(PROCESSES_NONE_RECENT);
+    expect(text).not.toContain(PROCESSES_EMPTY);
+    expect(text).toContain("Older calls may not be shown.");
   });
 
   it("notes a busy run journal", async () => {
