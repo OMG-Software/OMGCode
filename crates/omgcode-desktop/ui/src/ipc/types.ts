@@ -449,7 +449,7 @@ export interface SessionProcesses {
   /** Whether older calls exist that are not listed. */
   truncated: boolean;
   /** Whether the run journal could be joined. */
-  run_details: "available" | "unavailable";
+  run_details: "available" | "unavailable" | "busy";
 }
 
 export interface ProviderProfileView {

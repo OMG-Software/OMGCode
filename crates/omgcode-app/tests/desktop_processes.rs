@@ -52,6 +52,20 @@ fn a_session_with_no_calls_lists_nothing() {
 
     assert!(listed.entries.is_empty());
     assert!(!listed.truncated);
+    // A read-only listing creates no run journal.
+    assert_eq!(listed.run_details, RunDetails::Available);
+    assert!(!contains_run_journal(&fixture.data));
+}
+
+fn contains_run_journal(directory: &std::path::Path) -> bool {
+    std::fs::read_dir(directory)
+        .expect("read directory")
+        .filter_map(Result::ok)
+        .any(|entry| {
+            let path = entry.path();
+            path.file_name().is_some_and(|name| name == "runs-v1.jsonl")
+                || (path.is_dir() && contains_run_journal(&path))
+        })
 }
 
 #[test]

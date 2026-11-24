@@ -804,7 +804,7 @@ blocking pool, with the same bounded readers the trusted CLI uses.
 | Source | Gives |
 | --- | --- |
 | Model action journal (`ActionJournal::recent`, the 1,000 newest records of all sessions) | The call identifier, start and refusal time, how the call was authorised or why it was refused, the finish time and outcome, and the run identifier a finished call recorded |
-| Run journal (`run::audit`, the newest 100 events) | Through that run identifier: the resolved program, the profile name, the result (exit code, signal, deadline, cancellation, or the limit that stopped it: memory, processes, CPU time, or disk growth), and the elapsed time |
+| Run journal (`run::audit_existing`, the newest 100 events; one attempt, no wait, nothing created) | Through that run identifier: the resolved program, the profile name, the result (exit code, signal, deadline, cancellation, or the limit that stopped it: memory, processes, CPU time, or disk growth), and the elapsed time |
 | Session journal (`SessionInspection`) | The program and argument text the model sent, matched to the action records by call identifier |
 
 The action journal records no argument text and the run journal records only
@@ -814,8 +814,15 @@ requests that share one are paired in order from the newest end. A call
 with no matching request, or a session journal that cannot be read (for
 example while a turn holds it on Windows), shows the run journal's program
 when it has one, and otherwise "(command unavailable)". A run journal that
-cannot be read sets `run_details` to `unavailable`: results and durations are
-then absent and the action journal data is still listed.
+cannot be read sets `run_details` to `unavailable`, and one that another holder
+has locked sets it to `busy`: results and durations are then absent and the
+action journal data is still listed. The run journal read never creates the
+settings store or the journal, and never waits. A missing store or journal
+lists no runs and is not an error. A run holds the settings and journal locks
+only while it records its start and its finish, not while the program runs.
+The action journal read waits at most 250 ms for a writer, well under the
+two-second poll, and then fails with `busy`; the shared poller never starts a
+read while one is in flight.
 
 Each entry has a `state`:
 

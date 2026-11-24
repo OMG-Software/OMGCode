@@ -188,6 +188,41 @@ describe("the processes tab", () => {
     expect(tab.element.textContent).toContain("Run details are unavailable");
   });
 
+  it("notes a busy run journal", async () => {
+    const { tab } = mount(() => processes([entry()], { run_details: "busy" }));
+
+    tab.showSession(SESSION);
+    await settle();
+
+    expect(tab.element.textContent).toContain("Run details are busy");
+  });
+
+  it("never overlaps polling reads while one is still in flight", async () => {
+    let release: (value: SessionProcesses) => void = () => undefined;
+    let calls = 0;
+    const running = processes([entry({ state: "running", result: null })]);
+    const first = running;
+    const { tab } = mount(() => {
+      calls += 1;
+      if (calls === 1) {
+        return first;
+      }
+      return new Promise<SessionProcesses>((resolve) => {
+        release = resolve;
+      });
+    });
+    tab.showSession(SESSION);
+    await settle();
+
+    await vi.advanceTimersByTimeAsync(PROCESSES_POLL_MS * 5);
+    expect(calls).toBe(2);
+
+    release(running);
+    await vi.advanceTimersByTimeAsync(PROCESSES_POLL_MS);
+    expect(calls).toBe(3);
+    tab.dispose();
+  });
+
   it("shows an error as text and keeps the last list", async () => {
     let fail = false;
     const { tab } = mount(() =>

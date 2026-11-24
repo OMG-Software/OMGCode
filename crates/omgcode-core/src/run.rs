@@ -1393,6 +1393,45 @@ pub fn audit(data_root: &Path, limit: usize) -> Result<RunAuditView, RunError> {
     })
 }
 
+/// The result of [`audit_existing`].
+#[derive(Debug)]
+pub enum RecentRuns {
+    /// The newest events, oldest first.
+    Events(RunAuditView),
+    /// No settings store or no run journal exists. Nothing was created.
+    Absent,
+    /// The settings store or the run journal is locked by another holder.
+    Busy,
+}
+
+/// Recent run records for a read-only view (ADR-0086).
+///
+/// Unlike [`audit`], it never creates the settings store, the run journal, or
+/// a directory, and it never waits: a lock held by another holder is reported
+/// as [`RecentRuns::Busy`] at once. A run holds the settings lock and the
+/// journal lock only while it records its start, and the journal lock again
+/// only while it records its finish, not while the program runs, so `Busy` is
+/// brief.
+pub fn audit_existing(data_root: &Path, limit: usize) -> Result<RecentRuns, RunError> {
+    let control = match ControlStore::open_existing(data_root) {
+        Ok(Some(store)) => store,
+        Ok(None) => return Ok(RecentRuns::Absent),
+        Err(ControlError::Busy) => return Ok(RecentRuns::Busy),
+        Err(error) => return Err(error.into()),
+    };
+    let (root, store_id) = control.file_audit_context()?;
+    let journal = match RunJournal::try_open_existing(&root, store_id) {
+        Ok(Some(journal)) => journal,
+        Ok(None) => return Ok(RecentRuns::Absent),
+        Err(RunJournalError::Busy) => return Ok(RecentRuns::Busy),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(RecentRuns::Events(RunAuditView {
+        pending: journal.pending().to_vec(),
+        entries: describe(journal.entries(limit)?)?,
+    }))
+}
+
 /// Records from an archived run journal of this store.
 pub fn audit_archive(
     data_root: &Path,
@@ -1605,6 +1644,48 @@ mod tests {
             );
         }
         assert!(!journal_root.join("runs-v1.jsonl").exists());
+    }
+
+    #[test]
+    fn audit_existing_creates_nothing_and_reports_absence() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("data");
+
+        // No settings store.
+        assert!(matches!(
+            audit_existing(&data, 10).expect("audit"),
+            RecentRuns::Absent
+        ));
+        assert!(!data.exists());
+
+        // A store, but no run journal.
+        let (data, _workspace, journal_root, _store_id) = store(directory.path());
+        assert!(matches!(
+            audit_existing(&data, 10).expect("audit"),
+            RecentRuns::Absent
+        ));
+        assert!(!journal_root.join("runs-v1.jsonl").exists());
+    }
+
+    #[test]
+    fn audit_existing_lists_events_and_reports_a_held_lock_without_waiting() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, store_id) = store(directory.path());
+        let start = withdrawn_start(workspace_id);
+        let mut journal = RunJournal::open(&journal_root, store_id).expect("journal");
+        journal.start(start).expect("start");
+
+        // The writer still holds the journal lock.
+        let began = Instant::now();
+        let busy = audit_existing(&data, 10).expect("audit");
+        assert!(matches!(busy, RecentRuns::Busy), "{busy:?}");
+        assert!(began.elapsed() < Duration::from_secs(1));
+        drop(journal);
+
+        match audit_existing(&data, 10).expect("audit") {
+            RecentRuns::Events(view) => assert_eq!(view.entries.len(), 2),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

@@ -111,7 +111,8 @@ fn list(
     running: bool,
 ) -> SessionProcesses {
     let newest_first: Vec<ActionRecord> = chronological.into_iter().rev().collect();
-    build(session, &newest_first, requests, runs, running, false)
+    let lookup = runs.map_or(RunLookup::Unavailable, RunLookup::Index);
+    build(session, &newest_first, requests, lookup, running, false)
 }
 
 const DONE: &str = "2026-01-01T00:00:09Z";
@@ -359,7 +360,14 @@ fn more_than_one_hundred_calls_are_cut_and_flagged() {
 
 #[test]
 fn a_full_action_window_is_flagged_even_when_few_calls_match() {
-    let listed = build(Uuid::new_v4(), &[], None, None, false, true);
+    let listed = build(
+        Uuid::new_v4(),
+        &[],
+        None,
+        RunLookup::Unavailable,
+        false,
+        true,
+    );
 
     assert!(listed.truncated);
 }
@@ -496,4 +504,15 @@ fn an_entry_serializes_only_the_documented_fields() {
         ]
     );
     assert_eq!(value["entries"][0]["state"], "running");
+}
+
+#[test]
+fn a_busy_run_journal_is_reported_and_the_action_data_still_lists() {
+    let session = Uuid::new_v4();
+    let records = [executed(session, "a", 1, None)];
+
+    let listed = build(session, &records, None, RunLookup::Busy, true, false);
+
+    assert_eq!(listed.run_details, RunDetails::Busy);
+    assert_eq!(listed.entries[0].state, ProcessState::Running);
 }

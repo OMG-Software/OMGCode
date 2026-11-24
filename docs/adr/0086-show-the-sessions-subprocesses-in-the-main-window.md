@@ -38,12 +38,14 @@ framework is separate work.
 The command is read-only and resolves everything from trusted state by the
 session identifier. On the blocking pool it reads:
 
-1. the 1,000 newest action journal records (`ActionJournal::recent`, retrying
-   a busy journal for two seconds) and keeps those of this session whose tool
+1. the 1,000 newest action journal records (`ActionJournal::recent`, waiting
+   at most 250 ms for a writer, then `busy`) and keeps those of this session whose tool
    is `run_command`;
-2. the run journal's newest 100 events (`run::audit`, the trusted CLI's
-   reader) when the settings store exists, joined through the finish record's
-   `operation_id`;
+2. the run journal's newest 100 events through `run::audit_existing`, a core
+   reader added for this view, joined through the finish record's
+   `operation_id`. It makes one attempt, never waits, and never creates the
+   settings store, the journal, or a directory; absence lists no runs. A held
+   lock sets `run_details` to `busy`;
 3. the session journal's recorded `workspace_run_command` requests
    (`SessionInspection`), for the program and argument text.
 
@@ -127,9 +129,14 @@ session, and on disposal.
   run record shows the action outcome only.
 - A running call shows no run result until it finishes, because only a
   finish records the run identifier.
-- Reading the run journal with the CLI's reader opens it under its short lock
-  and creates an empty journal when the settings store exists but no run has
-  happened. It writes nothing else.
+- The view polls every two seconds, so no read may queue behind a lock. A run
+  takes the settings lock and the run journal lock only to record its start
+  and its finish (`run::run` drops both before the program starts); the
+  program runs holding neither. The run journal read does not wait at all, and
+  the action journal read waits at most 250 ms. The shared poller skips a tick
+  while its previous read is in flight, so reads do not stack.
+- `run::audit` was rejected for this view: it creates an empty journal and
+  waits up to 10 seconds for the locks.
 - On Windows an open turn can hold the session journal, so a running call may
   show only its run journal program, or no command text, until it finishes.
 - Tests: Rust unit tests of the join, the states, refused calls, the bounds, and

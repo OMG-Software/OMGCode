@@ -32,7 +32,7 @@ use omgcode_core::action_journal::{
     ActionDisposition, ActionJournal, ActionJournalError, ActionOutcome, ActionRecord, ActionTool,
     MAX_RECENT_RECORDS, RefusalReason,
 };
-use omgcode_core::run::{self, RunAuditView};
+use omgcode_core::run::{self, RecentRuns, RunAuditView};
 use omgcode_core::run_journal::{LimitKind, RunFinish, RunResult, RunStart};
 use omgcode_core::session::{SessionInspection, TranscriptEntryKind};
 use omgcode_core::turn::display_safe_line;
@@ -55,9 +55,10 @@ const MAX_ITEM_CHARS: usize = 256;
 const MAX_ARGUMENTS: usize = 32;
 /// Most characters of the program and arguments of one entry together.
 const MAX_TOTAL_CHARS: usize = 2048;
-/// Longest a read waits for a writer that holds the action journal.
-const BUSY_WAIT: Duration = Duration::from_secs(2);
-const BUSY_POLL: Duration = Duration::from_millis(20);
+/// Longest a read waits for a writer that holds the action journal. Well under
+/// the view's two-second poll, so a poll never queues behind a writer.
+const BUSY_WAIT: Duration = Duration::from_millis(250);
+const BUSY_POLL: Duration = Duration::from_millis(10);
 /// The recorded name of the command tool (`ToolName::Command`).
 const COMMAND_TOOL: &str = "workspace_run_command";
 /// Text for a recorded program path another operating system wrote.
@@ -170,6 +171,15 @@ pub enum RunDetails {
     Available,
     /// It could not be read, so only action journal data is shown.
     Unavailable,
+    /// Another holder had it locked just now; the next read may succeed.
+    Busy,
+}
+
+/// What the run journal read found.
+enum RunLookup {
+    Index(RunIndex),
+    Unavailable,
+    Busy,
 }
 
 /// The reply to `session_processes`.
@@ -226,12 +236,13 @@ impl DesktopService {
         let records = recent_actions(&inner.data_root)?;
         let window_full = records.len() >= MAX_RECENT_RECORDS;
         let requests = command_requests(&path);
-        let runs = if inner.open_control()?.is_some() {
-            run::audit(&inner.data_root, RUN_EVENTS)
-                .ok()
-                .map(|view| run_index(&view))
-        } else {
-            None
+        // One attempt, no waiting, nothing created: a poll must not queue
+        // behind a lock, and a read-only view must not make files.
+        let runs = match run::audit_existing(&inner.data_root, RUN_EVENTS) {
+            Ok(RecentRuns::Events(view)) => RunLookup::Index(run_index(&view)),
+            Ok(RecentRuns::Absent) => RunLookup::Index(RunIndex::default()),
+            Ok(RecentRuns::Busy) => RunLookup::Busy,
+            Err(_) => RunLookup::Unavailable,
         };
         Ok(build(
             request.session_id,
@@ -244,7 +255,7 @@ impl DesktopService {
     }
 }
 
-/// The newest action records, waiting briefly for a writer.
+/// The newest action records, waiting at most a quarter second for a writer.
 fn recent_actions(data_root: &std::path::Path) -> Result<Vec<ActionRecord>, DesktopError> {
     let started = Instant::now();
     loop {
@@ -330,7 +341,7 @@ fn build(
     session_id: Uuid,
     records: &[ActionRecord],
     requests: Option<Vec<CommandRequest>>,
-    runs: Option<RunIndex>,
+    runs: RunLookup,
     session_running: bool,
     window_full: bool,
 ) -> SessionProcesses {
@@ -353,12 +364,11 @@ fn build(
     // Pair the k-th record of a call identifier with the request at the same
     // position counted from the newest end.
     let mut seen: HashMap<&str, usize> = HashMap::new();
-    let run_details = if runs.is_some() {
-        RunDetails::Available
-    } else {
-        RunDetails::Unavailable
+    let (run_details, runs) = match runs {
+        RunLookup::Index(index) => (RunDetails::Available, index),
+        RunLookup::Unavailable => (RunDetails::Unavailable, RunIndex::default()),
+        RunLookup::Busy => (RunDetails::Busy, RunIndex::default()),
     };
-    let runs = runs.unwrap_or_default();
     let mut entries: Vec<ProcessEntry> = Vec::with_capacity(mine.len().min(MAX_ENTRIES));
     for record in &mine {
         let position = seen.entry(&record.call_id).or_default();

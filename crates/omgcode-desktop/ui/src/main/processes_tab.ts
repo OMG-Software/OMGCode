@@ -190,6 +190,14 @@ export function createProcessesTab(): PanelView {
         }),
       );
     }
+    if (data.run_details === "busy") {
+      lines.push(
+        el("p", {
+          class: "processes-note",
+          text: "Run details are busy; results and durations appear on the next read.",
+        }),
+      );
+    }
     replaceChildren(notes, ...lines);
   }
 
