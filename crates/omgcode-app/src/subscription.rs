@@ -254,8 +254,10 @@ fn after_revocation(error: AppError, revoked: bool) -> AppError {
     })
 }
 
-/// Sign the named profile out: revoke its refresh token once, record the
-/// sign-out, and delete both token slots, all under the session lock.
+/// Sign the named profile out: mark the session signed out, revoke its
+/// refresh token once, record the sign-out, and delete both token slots, all
+/// under the session lock. Once marked, the session gives no token even if a
+/// later step fails; signing out again completes it.
 ///
 /// # Errors
 ///
@@ -277,7 +279,7 @@ pub fn sign_out_of_chatgpt(
             .provider_subscription(name)
             .map_err(|error| credential_error(format!("{}: {error}", error.code())))?
     };
-    let _lock = SessionLock::acquire(data_root, connection.binding.id(), cancel)
+    let lock = SessionLock::acquire(data_root, connection.binding.id(), cancel)
         .map_err(|error| sign_in_error(&error))?;
     // A refresh may have held the lock meanwhile, so the revision and the
     // binding are checked again before the revocation, the one remote effect.
@@ -300,6 +302,13 @@ pub fn sign_out_of_chatgpt(
             "{}: {error}",
             ProviderCredentialUseError::native_code(&error)
         ))
+    })?;
+    // From here a token source already running for this session returns no
+    // token and writes no record, even if a slot survives the deletion. A
+    // marker that cannot be written stops the sign-out before any effect.
+    lock.mark_signed_out().map_err(|error| {
+        sign_in_error(&error)
+            .with_note("the sign-out marker could not be written; nothing was revoked or recorded")
     })?;
     let revoked = chatgpt::revoke_current(
         &credentials,

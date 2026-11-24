@@ -16,10 +16,10 @@ use super::{
     CredentialId, CredentialStore, OrphanedCredential, ProviderAuth, ProviderCredentialError,
     ProviderCredentialSet, ProviderCredentialUseError, ProviderKind,
 };
-use crate::provider::OPENAI_ENDPOINT;
 use crate::provider::chatgpt::{
     SignInRequest, SignedIn, initial_token_record, valid_host_id, valid_identifier,
 };
+use crate::provider::{OPENAI_ENDPOINT, matches_fixed};
 
 /// The outcome of a recorded ChatGPT sign-out.
 #[derive(Debug)]
@@ -94,13 +94,14 @@ pub struct SubscriptionConnection {
     pub endpoint: String,
 }
 
-/// Whether a profile is a ChatGPT subscription profile with its endpoint.
+/// Whether a profile is a ChatGPT subscription profile with its endpoint,
+/// in either spelling that recording a profile accepts (one trailing `/`).
 fn is_chatgpt_profile(status: &super::ProviderProfileStatus) -> bool {
     let profile = status.profile();
     profile.uses_chatgpt_plan()
         && profile
             .endpoint()
-            .is_some_and(|endpoint| endpoint.as_str() == OPENAI_ENDPOINT)
+            .is_some_and(|endpoint| matches_fixed(endpoint.as_str(), OPENAI_ENDPOINT))
 }
 
 impl ControlStore {

@@ -500,7 +500,14 @@ documented route for local and open-source apps
   signed out is a success; any other failure to read the profile then is
   `signout_not_recorded`. Every failure after the revocation, including one
   to open the settings, says whether OpenAI revoked the session. An
-  unconfirmed revocation is reported and not retried.
+  unconfirmed revocation is reported and not retried. Before the
+  revocation, the sign-out writes a marker for the session under the
+  session lock; every token request checks it under that lock and returns
+  `signin_required`, so a session already running gives no token and writes
+  no record afterwards, even when a slot could not be deleted. A marker
+  that cannot be written stops the sign-out before the revocation, and a
+  sign-out that fails after it leaves the session unusable until it is
+  signed out again.
   Every slot that could not be deleted is named by its opaque identifier:
   the CLI's `orphaned_credential_ids` lists each one, and the desktop's
   `credential_orphaned` error names each one, so neither slot is lost from

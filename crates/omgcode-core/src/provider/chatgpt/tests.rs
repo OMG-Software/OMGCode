@@ -1020,6 +1020,47 @@ fn a_fresh_token_is_used_and_an_expiring_one_is_refreshed_once_under_the_lock() 
 }
 
 #[test]
+fn a_signed_out_session_gives_no_token_and_writes_no_record() {
+    let root = tempfile::tempdir().expect("root");
+    let service = MockService::start();
+    let store = Arc::new(MemoryStore::default());
+    let id = binding_id();
+    // The slot survives, as one the sign-out could not delete would, and its
+    // token is about to expire, so an unmarked session would refresh it.
+    store
+        .store(
+            &id,
+            &initial_token_record(
+                ISSUED_CLIENT,
+                SUBJECT,
+                &token_set("old", "r1", now_seconds() + 60),
+            )
+            .expect("record"),
+        )
+        .expect("store");
+    let source = tokens_over(&store, &id, root.path(), &service);
+    {
+        let lock = SessionLock::acquire(root.path(), &id, &CancelToken::new()).expect("lock");
+        assert!(!lock.is_signed_out().expect("unmarked"));
+        lock.mark_signed_out().expect("mark");
+        assert!(lock.is_signed_out().expect("marked"));
+    }
+    assert_eq!(
+        source
+            .current_access_token(&CancelToken::new())
+            .expect_err("signed out"),
+        SignInError::SignInRequired
+    );
+    assert!(service.requests_to(TOKEN_PATH).is_empty(), "no refresh");
+    let stored = load_current_record(store.as_ref(), &id, ISSUED_CLIENT, SUBJECT).expect("kept");
+    assert_eq!(stored.generation(), 1, "no new record");
+    // A marker names one binding: another session is unaffected.
+    let other = binding_id();
+    let lock = SessionLock::acquire(root.path(), &other, &CancelToken::new()).expect("lock");
+    assert!(!lock.is_signed_out().expect("other"));
+}
+
+#[test]
 fn a_refused_refresh_or_a_missing_record_requires_a_new_sign_in() {
     let root = tempfile::tempdir().expect("root");
     let service = MockService::start();

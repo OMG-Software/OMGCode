@@ -37,6 +37,12 @@ fn fixture() -> Fixture {
     for (name, kind, auth, endpoint) in [
         ("chatgpt", "openai", "subscription", Some(OPENAI_ENDPOINT)),
         ("second", "openai", "subscription", Some(OPENAI_ENDPOINT)),
+        (
+            "slash",
+            "openai",
+            "subscription",
+            Some("https://api.openai.com/v1/"),
+        ),
         ("no-endpoint", "openai", "subscription", None),
         ("keys", "openai", "api_key", Some(OPENAI_ENDPOINT)),
         ("claude", "anthropic", "subscription", None),
@@ -109,6 +115,11 @@ fn only_a_signed_out_chatgpt_profile_can_start_a_sign_in() {
     let fixture = fixture();
     let store = fixture.store();
     store.check_subscription_sign_in("ChatGPT").expect("check");
+    // The endpoint with one trailing `/` is accepted when the profile is
+    // recorded, so it signs in too.
+    store
+        .check_subscription_sign_in("slash")
+        .expect("trailing slash");
     let new_host = host();
     let request = store
         .subscription_sign_in_request("ChatGPT", &new_host)

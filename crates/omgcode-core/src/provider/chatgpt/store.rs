@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use super::{AuthEndpoints, SignInError, TokenSet, now_seconds, refresh, revoke};
 use crate::control::CredentialBinding;
 use crate::provider::{AccessTokenSource, ProviderError};
-use crate::storage::create_private_directories;
+use crate::storage::{create_private_directories, sync_parent_directory};
 use crate::turn::CancelToken;
 
 /// The token record format version.
@@ -306,9 +306,20 @@ pub fn revoke_current(
 }
 
 /// An exclusive lock on one session, held until dropped.
+///
+/// It also guards the session's sign-out marker. A recorded sign-out can
+/// leave a token slot it could not delete, so a token source already running
+/// for the session would still find a record there. The sign-out writes the
+/// marker under this lock before it records anything, and every token
+/// request checks for it under the same lock before reading a slot, so a
+/// request after a sign-out returns no token and writes no new record. A
+/// binding identifier is new for every sign-in, so a marker is never
+/// cleared.
 #[derive(Debug)]
 pub struct SessionLock {
     _file: File,
+    directory: PathBuf,
+    signed_out: PathBuf,
 }
 
 impl SessionLock {
@@ -341,7 +352,13 @@ impl SessionLock {
                 return Err(SignInError::Cancelled);
             }
             match file.try_lock() {
-                Ok(()) => return Ok(Self { _file: file }),
+                Ok(()) => {
+                    return Ok(Self {
+                        _file: file,
+                        signed_out: directory.join(format!("{}.signed-out", binding_id.as_str())),
+                        directory,
+                    });
+                }
                 Err(TryLockError::WouldBlock) => {}
                 Err(TryLockError::Error(_)) => return Err(SignInError::TokenStore),
             }
@@ -349,6 +366,37 @@ impl SessionLock {
                 return Err(SignInError::TokenStore);
             }
             std::thread::sleep(LOCK_POLL);
+        }
+    }
+
+    /// Record durably that this session was signed out, before the sign-out
+    /// itself is recorded.
+    ///
+    /// # Errors
+    ///
+    /// `TokenStore` when the marker cannot be written and synced.
+    pub fn mark_signed_out(&self) -> Result<(), SignInError> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&self.signed_out)
+            .map_err(|_| SignInError::TokenStore)?;
+        file.sync_all().map_err(|_| SignInError::TokenStore)?;
+        sync_parent_directory(&self.directory).map_err(|_| SignInError::TokenStore)
+    }
+
+    /// Whether this session was signed out. Any entry at the marker's path
+    /// counts, so nothing placed there can make a session usable again.
+    ///
+    /// # Errors
+    ///
+    /// `TokenStore` when the marker's path cannot be checked.
+    pub fn is_signed_out(&self) -> Result<bool, SignInError> {
+        match std::fs::symlink_metadata(&self.signed_out) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(SignInError::TokenStore),
         }
     }
 }
@@ -363,8 +411,8 @@ enum Slots {
 }
 
 /// The access-token source of one signed-in subscription profile. Each
-/// request takes the session lock, reads the current record, and refreshes
-/// it when fewer than five minutes are left.
+/// request takes the session lock, refuses a signed-out session, reads the
+/// current record, and refreshes it when fewer than five minutes are left.
 pub struct ChatGptTokens {
     storage_root: PathBuf,
     binding: CredentialBinding,
@@ -451,7 +499,10 @@ impl ChatGptTokens {
         &self,
         cancel: &CancelToken,
     ) -> Result<Zeroizing<String>, SignInError> {
-        let _lock = SessionLock::acquire(&self.storage_root, self.binding.id(), cancel)?;
+        let lock = SessionLock::acquire(&self.storage_root, self.binding.id(), cancel)?;
+        if lock.is_signed_out()? {
+            return Err(SignInError::SignInRequired);
+        }
         self.with_store(|store| {
             let current =
                 load_current_record(store, self.binding.id(), &self.client_id, &self.subject)?;

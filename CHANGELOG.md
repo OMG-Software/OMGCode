@@ -67,13 +67,20 @@ Changes are recorded here before a release version is assigned.
   checks a new connection name before its sign-in confirmation, and a
   sign-out shows the wait bar with **Cancel sign-out**, which ends the wait
   for the session lock or for OpenAI. A token answer is read straight into
-  zeroing storage, so a refused answer leaves no unzeroed token copy;
+  zeroing storage, so a refused answer leaves no unzeroed copy of a token
+  without an escape (`serde_json` unescapes through a scratch buffer that is
+  not zeroed);
   `signin_binding_uncertain` also says to disconnect OMGCode in ChatGPT
   settings when the item is deleted by hand; and removing a signed-in
   ChatGPT profile's credential with a stale revision is the conflict. A
   sign-out that finds the profile signed in to a new session is a conflict
   rather than a success, and every other sign-out failure after the
-  revocation says whether OpenAI revoked the session; the key set is read
+  revocation says whether OpenAI revoked the session. A sign-out first
+  writes a marker under the session lock, which every token request checks
+  under that lock, so a running session gives no token and writes no
+  record after a sign-out even when a slot could not be deleted; a
+  ChatGPT profile recorded with `https://api.openai.com/v1/` (one trailing
+  `/`, which recording accepts) can sign in. The key set is read
   within 1 MiB instead of the
   64 KiB error-body bound; a poisoned sign-in lock is `internal`; and a
   recorded desktop sign-in or sign-out whose settings cannot be read again

@@ -644,9 +644,10 @@ const fn provider_to_sign_in(error: ProviderError) -> SignInError {
 /// It is read straight from the zeroing response body, never through a
 /// [`serde_json::Value`] tree: each token string moves into [`Zeroizing`] as
 /// it is read, so a duplicate key, a wrong type, or trailing data drops a
-/// partly read response whose tokens are zeroed. `serde_json` may unescape a
-/// string through its own scratch buffer, which is not zeroed; the tokens
-/// this accepts never contain an escape.
+/// partly read response whose tokens are zeroed. `serde_json` unescapes a
+/// string with an escape through its own scratch buffer, which is not
+/// zeroed, so a refused token with an escape can leave its text there; the
+/// tokens this accepts never contain an escape.
 #[derive(Default)]
 struct TokenResponse {
     access_token: Option<Zeroizing<String>>,

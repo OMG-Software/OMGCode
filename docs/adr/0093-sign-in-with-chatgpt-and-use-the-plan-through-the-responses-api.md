@@ -227,16 +227,27 @@ if the plan still refuses. Other failures keep the record and fail the
 request. The token answer is read straight from the zeroing body, not
 through a `serde_json::Value` tree: its access, refresh, and ID tokens move
 into zeroing buffers as they are read, so an answer refused for a duplicate
-key, a wrong type, trailing data, or a later check leaves no unzeroed copy.
-`serde_json`'s scratch buffer for unescaping is not zeroed; an accepted
-token never contains an escape.
+key, a wrong type, trailing data, or a later check leaves no unzeroed copy
+of a token that contains no escape. `serde_json` unescapes a string with an
+escape through its own scratch buffer, which is not zeroed, so a refused
+answer whose token contains an escape can leave that text there. An
+accepted token never contains an escape.
 
 ### Sign-out and removal
 
 `omgcode workspace provider-signout <name> --revision <n>` and **Sign out**
-in the `settings` window take the session lock, revoke the refresh token once,
-record the unbinding as `provider_credential_removed`, delete both slots, and
-report whether revocation was confirmed. A failed revocation is not retried and does not stop the local
+in the `settings` window take the session lock, write the session's
+sign-out marker, revoke the refresh token once, record the unbinding as
+`provider_credential_removed`, delete both slots, and report whether
+revocation was confirmed. The marker is an empty file named by the binding
+identifier beside the session's lock file, written and synced under the
+lock. Every token request checks for it under the same lock before reading
+a slot and returns `signin_required` if it exists, so a session already
+running gives no token and writes no record after a sign-out, even when a
+slot could not be deleted. A marker that cannot be written stops the
+sign-out before the revocation. A sign-out that fails after the marker
+leaves the session unusable until it is signed out again. A new sign-in
+gets a new binding identifier, so no marker is ever cleared. A failed revocation is not retried and does not stop the local
 sign-out; the report says remote revocation was not confirmed and that the
 operator can disconnect OMGCode in ChatGPT settings. Removing a signed-in
 subscription profile, and `omgcode workspace provider-credential-remove` on
@@ -339,6 +350,13 @@ model or the journal sees.
 - **Send `include: ["reasoning.encrypted_content"]`.** Storing opaque
   encrypted reasoning in journals needs its own record. Reasoning is not
   carried between requests.
+- **Check the settings journal before each token use.** It would also stop
+  a running session after a sign-out, but opening the control store takes
+  its exclusive lock, so a token request would fail while any other
+  process held the settings, and each request would replay the journal.
+  The marker shares the session lock that the sign-out already holds.
+- **Fail the sign-out when a slot remains.** The revocation has already
+  happened then, and the profile must not stay bound to dead tokens.
 - **Show the authorization address in the webview.** The address carries the
   `state`; a page that knows it and the port could complete a login with
   another account's code. Rust opens the browser itself.
