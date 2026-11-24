@@ -141,6 +141,10 @@ Changes are recorded here before a release version is assigned.
 - Session rows in the sessions panel are one line, with a compact time since
   the last update (now, 5m, 3h, 2d, 4w, or a short date) that refreshes every
   30 seconds. The row tooltip has the full title and update time.
+- The composer's **Skills** menu is now a puzzle-piece icon button whose
+  tooltip and accessible name give the selected count, with a small count
+  badge. It and **Chat settings** move to the right, beside **Workspace
+  settings** and before **Send**; their panels end at the toolbar's right edge.
 
 - Version 0.54.0 moves the desktop chat budgets into the `settings` window
   and adds per-workspace custom instructions (ADR-0080).

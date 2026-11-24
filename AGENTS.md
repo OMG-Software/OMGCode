@@ -136,8 +136,9 @@ repairs them automatically
 It also chooses the model connection from a dropdown, after a native
 confirmation, unless a launch argument fixed it, and adds or removes local
 connections and Ollama Cloud connections, whose API key is typed once into a
-write-only field. A **Workspace settings** icon button beside **Send** shows
-the same window scoped to the open session's workspace. The `settings` window
+write-only field. **Skills**, **Chat settings**, and **Workspace settings**
+icon buttons sit beside **Send**; the last shows the same window scoped to the
+open session's workspace. The `settings` window
 also saves the chat budgets and global custom instructions beside the model
 connection, and each workspace's own custom instructions, which a turn sends
 after the global ones as untrusted user-level text; the composer keeps

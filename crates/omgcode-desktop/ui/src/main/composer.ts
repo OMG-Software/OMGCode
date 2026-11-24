@@ -15,6 +15,9 @@ import {
 } from "./model";
 import type { ModelBox } from "./model_box";
 
+/** The Skills trigger's name with no skill selected; a count follows it otherwise. */
+const SKILLS_LABEL = "Skills for this turn";
+
 /** The most skills one turn may load; the core enforces the same bound (ADR-0057). */
 export const SKILLS_PER_TURN = 4;
 
@@ -230,8 +233,8 @@ export function createComposer(
 
   const skillsList = el("div", { class: "skill-choices" });
   const skillsMenu = createPopover(
-    "Skills (0)",
-    { class: "open-up skills", label: "Skills for this turn" },
+    SKILLS_LABEL,
+    { class: "open-up skills", label: SKILLS_LABEL, icon: "skills" },
     el("p", { class: "popover-title", text: `Skills for this turn (at most ${SKILLS_PER_TURN})` }),
     skillsList,
   );
@@ -393,13 +396,26 @@ export function createComposer(
     return messageProblem(box.value);
   }
 
+  /** Names the count in the tooltip and shows it as a badge; the icon child is never replaced. */
+  function refreshSkillsTrigger(count: number): void {
+    const label = count === 0 ? SKILLS_LABEL : `${SKILLS_LABEL} (${count} selected)`;
+    skillsMenu.summary.title = label;
+    skillsMenu.summary.setAttribute("aria-label", label);
+    skillsMenu.summary.querySelector(".icon-badge")?.remove();
+    if (count > 0) {
+      skillsMenu.summary.appendChild(
+        el("span", { class: "icon-badge", attrs: { "aria-hidden": "true" }, text: String(count) }),
+      );
+    }
+  }
+
   function refresh(): void {
     const bytes = utf8Length(box.value);
     counter.textContent = `${bytes} / ${MESSAGE_MAX_BYTES} bytes`;
     counter.classList.toggle("over", bytes > MESSAGE_MAX_BYTES);
     // Only near the limit, or over it, so a short message shows no number.
     counter.hidden = bytes <= MESSAGE_MAX_BYTES * COUNTER_SHOW_RATIO;
-    replaceChildren(skillsMenu.summary, `Skills (${selectedSkills().length})`);
+    refreshSkillsTrigger(selectedSkills().length);
     const issue = currentProblem();
     element.hidden = !state.visible;
     box.disabled = !state.enabled;
@@ -536,12 +552,13 @@ export function createComposer(
     el(
       "div",
       { class: "composer-row" },
-      el("div", { class: "composer-tools" }, skillsMenu.element, settingsMenu.element),
       el(
         "div",
         { class: "composer-send" },
         counter,
         runningLabel,
+        skillsMenu.element,
+        settingsMenu.element,
         workspaceButton,
         cancelButton,
         sendButton,

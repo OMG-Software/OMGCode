@@ -49,7 +49,7 @@ function menu(label: string): HTMLDetailsElement {
       const summary = details.querySelector("summary");
       return (
         summary?.textContent?.startsWith(label) === true ||
-        summary?.getAttribute("aria-label") === label
+        summary?.getAttribute("aria-label")?.startsWith(label) === true
       );
     },
   );
@@ -219,17 +219,17 @@ describe("composer toolbar", () => {
     expect(counter().hidden).toBe(true);
   });
 
-  it("puts Skills and Chat settings in upward menus on the left, Send on the right", async () => {
+  it("puts Skills and Chat settings in upward menus on the right, beside Send", async () => {
     await open({
       session_skills: () => ({ workspace_registered: true, skills: ["review"] }),
     });
     const row = root.querySelector(".composer-row") as HTMLElement;
-    const tools = row.querySelector(".composer-tools") as HTMLElement;
     const send = row.querySelector(".composer-send") as HTMLElement;
     expect(menu("Skills").classList.contains("open-up")).toBe(true);
     expect(menu("Chat settings").classList.contains("open-up")).toBe(true);
-    expect(tools.contains(menu("Skills"))).toBe(true);
-    expect(tools.contains(menu("Chat settings"))).toBe(true);
+    expect(send.contains(menu("Skills"))).toBe(true);
+    expect(send.contains(menu("Chat settings"))).toBe(true);
+    expect(root.querySelector(".composer-tools")).toBeNull();
     expect(buttonByText(send, "Send").classList.contains("primary")).toBe(true);
     expect(row.querySelectorAll("button.primary")).toHaveLength(1);
     expect(root.querySelector(".composer-panel .settings-grid")).not.toBeNull();
@@ -255,7 +255,20 @@ describe("composer toolbar", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("counts the chosen skills in the summary and keeps the at-most-four rule", async () => {
+  it("opens Skills from an icon button with a tooltip", async () => {
+    await open({
+      session_skills: () => ({ workspace_registered: true, skills: ["a1"] }),
+    });
+    const trigger = menu("Skills").querySelector("summary") as HTMLElement;
+    expect(trigger.classList.contains("icon-summary")).toBe(true);
+    expect(trigger.textContent).toBe("");
+    expect(trigger.title).toBe("Skills for this turn");
+    expect(trigger.getAttribute("aria-label")).toBe("Skills for this turn");
+    expect(trigger.querySelector("svg.icon")).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("counts the chosen skills in the tooltip and badge and keeps the at-most-four rule", async () => {
     await open({
       session_skills: () => ({
         workspace_registered: true,
@@ -263,18 +276,35 @@ describe("composer toolbar", () => {
       }),
     });
     const skills = menu("Skills");
+    const trigger = skills.querySelector("summary") as HTMLElement;
     expect(skills.hidden).toBe(false);
-    expect(skills.querySelector("summary")?.textContent).toBe("Skills (0)");
+    expect(trigger.title).toBe("Skills for this turn");
+    expect(trigger.querySelector(".icon-badge")).toBeNull();
     expect(skills.textContent).toContain(`Skills for this turn (at most ${SKILLS_PER_TURN})`);
     const boxes = Array.from(skills.querySelectorAll<HTMLInputElement>("input[type=checkbox]"));
     for (const choice of boxes.slice(0, SKILLS_PER_TURN)) {
       choice.click();
     }
-    expect(skills.querySelector("summary")?.textContent).toBe("Skills (4)");
+    expect(trigger.title).toBe("Skills for this turn (4 selected)");
+    expect(trigger.getAttribute("aria-label")).toBe("Skills for this turn (4 selected)");
+    const badge = trigger.querySelector(".icon-badge") as HTMLElement;
+    expect(badge.textContent).toBe("4");
+    expect(badge.getAttribute("aria-hidden")).toBe("true");
+    expect(trigger.querySelectorAll(".icon-badge")).toHaveLength(1);
+    // The icon survives every refresh.
+    expect(trigger.querySelector("svg.icon")).not.toBeNull();
     expect(boxes[4]?.disabled).toBe(true);
     boxes[0]?.click();
-    expect(skills.querySelector("summary")?.textContent).toBe("Skills (3)");
+    expect(trigger.title).toBe("Skills for this turn (3 selected)");
+    expect(trigger.querySelector(".icon-badge")?.textContent).toBe("3");
     expect(boxes[4]?.disabled).toBe(false);
+    for (const choice of boxes.slice(1, SKILLS_PER_TURN)) {
+      choice.click();
+    }
+    expect(trigger.title).toBe("Skills for this turn");
+    expect(trigger.getAttribute("aria-label")).toBe("Skills for this turn");
+    expect(trigger.querySelector(".icon-badge")).toBeNull();
+    expect(trigger.querySelector("svg.icon")).not.toBeNull();
   });
 
   it("hides the Skills menu when no skill is enabled", async () => {
@@ -317,13 +347,30 @@ describe("composer toolbar", () => {
     expect(workspace.title).toBe("Workspace settings");
     expect(workspace.textContent).toBe("");
     expect(workspace.querySelector("svg.icon")).not.toBeNull();
-    expect(root.querySelector(".composer-tools")?.contains(workspace)).toBe(false);
+    expect(root.querySelector(".composer-tools")).toBeNull();
     // It sits just before the Send button, on the right.
-    const order = Array.from(send.querySelectorAll("button")).filter((b) => !b.hidden);
+    const order = Array.from(send.querySelectorAll(":scope > button")).filter(
+      (b) => !(b as HTMLButtonElement).hidden,
+    );
     expect(order.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
       "Workspace settings",
       "Send",
     ]);
+  });
+
+  it("lines up Skills, Chat settings, and Workspace settings before Send", async () => {
+    await open({
+      session_skills: () => ({ workspace_registered: true, skills: ["review"] }),
+    });
+    const send = root.querySelector(".composer-send") as HTMLElement;
+    const kids = Array.from(send.children).filter((child) => !(child as HTMLElement).hidden);
+    const names = kids.map((child) => {
+      const control = child.matches("details")
+        ? (child.querySelector("summary") as HTMLElement)
+        : child;
+      return control.getAttribute("aria-label") ?? control.textContent;
+    });
+    expect(names).toEqual(["Skills for this turn", "Chat settings", "Workspace settings", "Send"]);
   });
 
   it("keeps Send and the draft working with both menus closed", async () => {

@@ -891,18 +891,34 @@ mark {
   display: flex;
   gap: 8px;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 
-.composer-tools,
 .composer-send {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
-.composer-tools {
-  flex-wrap: wrap;
+/* A small count at the corner of an icon menu button, as for the selected skills. */
+.composer-send > .popover > summary.icon-summary {
+  position: relative;
+}
+
+.icon-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* The provider and model choice in the side panel's fixed footer (ADR-0089). */
@@ -952,20 +968,21 @@ mark {
   overflow: auto;
 }
 
-/* Composer menus are placed against the toolbar row, not their own button, so a panel starts at
-   the row's left edge and never runs past the conversation column (at the 800-pixel minimum the
+/* Composer menus are placed against the toolbar row, not their own button, so a panel ends at
+   the row's right edge and never runs past the conversation column (at the 800-pixel minimum the
    column is about 540 pixels wide). It opens upward from the toolbar over the message box, so a
    tall message box cannot push it above the window. */
-.composer-tools > .popover {
+.composer-send > .popover {
   position: static;
 }
 
-.composer-tools > .popover > .composer-panel {
-  left: 0;
+.composer-send > .popover > .composer-panel {
+  right: 0;
+  left: auto;
   max-width: 100%;
 }
 
-.composer-tools > .settings > .composer-panel {
+.composer-send > .settings > .composer-panel {
   width: 420px;
 }
 

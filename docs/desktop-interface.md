@@ -442,15 +442,20 @@ The `main` window is laid out as follows.
   manifest, and archive or restore notes are thin divider lines. A tool
   request and its result stay separate rows, because paging can put them on
   different pages.
-- **Composer.** The message box, then one toolbar: a **Skills (n)** menu,
-  where n counts the skills chosen for the turn, hidden when no skill is
-  enabled; and a **Chat settings** menu, opened by a gear icon button named and
-  tooltipped "Chat settings" that reports `aria-expanded` and `aria-controls`
-  (distinct from the three-slider **Settings** icon), with the read-only endpoint,
-  **Auto-compact**, the compaction slider, **Enter to send**, and **Save as
-  defaults**. On the right are the byte counter, the running label, the
-  **Workspace settings** icon button (see "Settings window"), **Cancel**, and
-  **Send**. The counter appears only above 80% of the
+- **Composer.** The message box, then one toolbar on the right. Left to
+  right it holds the byte counter, the running label, a **Skills** icon button
+  (a puzzle piece) that opens the skills menu, hidden when no skill is
+  enabled, a **Chat settings** icon button (a gear) that opens the chat
+  settings menu, the **Workspace settings** icon button (see "Settings
+  window"), **Cancel**, and **Send**. Each menu button is named and tooltipped
+  by `aria-label` and `title`, and reports `aria-expanded` and `aria-controls`.
+  The Skills tooltip is "Skills for this turn", or "Skills for this turn (n
+  selected)" when n skills are chosen, and a small badge with n shows on the
+  button then (hidden from assistive technology). The gear is distinct from the
+  three-slider **Settings** icon. The chat settings menu holds the read-only
+  endpoint, **Auto-compact**, the compaction slider, **Enter to send**, and
+  **Save as defaults**. Panels open upward and end at the toolbar's right edge.
+  The counter appears only above 80% of the
   message limit or when the message is over it. The composer holds no
   provider or model control since ADR-0089: a send reads the chosen model
   from the model box and the endpoint from the shared connection.

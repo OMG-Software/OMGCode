@@ -50,6 +50,10 @@ const ICONS = {
     ],
     ["circle", { cx: "12", cy: "12", r: "3" }],
   ],
+  /** A jigsaw piece with a top knob and two side notches: the composer's skills menu. */
+  skills: [
+    ["path", { d: "M4 6h6V4a2 2 0 0 1 4 0v2h6v4h-2a2 2 0 0 0 0 4h2v6H4v-6h2a2 2 0 0 0 0-4H4z" }],
+  ],
   terminal: [FRAME, ["path", { d: "M7 9l3 3-3 3M13 15h4" }]],
   /** A play triangle in a circle: the session's subprocesses (ADR-0086). */
   processes: [
