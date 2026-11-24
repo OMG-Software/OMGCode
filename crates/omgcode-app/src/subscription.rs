@@ -245,6 +245,15 @@ pub fn sign_in_with_chatgpt(
     recorded
 }
 
+/// Add what OpenAI did with the revocation to a failure that follows it.
+fn after_revocation(error: AppError, revoked: bool) -> AppError {
+    error.with_note(if revoked {
+        "OpenAI revoked the session, so the tokens the profile still names no longer work; sign out again"
+    } else {
+        "OpenAI did not confirm the revocation; you can also disconnect OMGCode in your ChatGPT settings"
+    })
+}
+
 /// Sign the named profile out: revoke its refresh token once, record the
 /// sign-out, and delete both token slots, all under the session lock.
 ///
@@ -310,8 +319,10 @@ pub fn sign_out_of_chatgpt(
     // which is what the operator asked for. One that names another session
     // was signed in again: that session is live and was not revoked, so it is
     // a conflict. Any other failure records nothing and is reported, never
-    // taken for a sign-out.
-    let mut store = open_settings(data_root)?;
+    // taken for a sign-out. Every failure from here on says what OpenAI did,
+    // because the profile may now name tokens OpenAI no longer accepts.
+    let revocation = |error: AppError| after_revocation(error, revoked);
+    let mut store = open_settings(data_root).map_err(revocation)?;
     match store.provider_subscription(name) {
         Ok(current) if current.binding == connection.binding => {}
         Ok(_) => {
@@ -335,16 +346,16 @@ pub fn sign_out_of_chatgpt(
             });
         }
         Err(error) => {
-            return Err(credential_error(format!(
+            return Err(revocation(credential_error(format!(
                 "signout_not_recorded: {}: {error}",
                 error.code()
-            )));
+            ))));
         }
     }
     let current_revision = store.revision();
     let removal = store
         .sign_out_provider_subscription(&credentials, name, current_revision)
-        .map_err(|error| credential_error(format!("signout_not_recorded: {error}")))?;
+        .map_err(|error| revocation(credential_error(format!("signout_not_recorded: {error}"))))?;
     Ok(SignOutOutcome {
         revoked,
         orphans: removal
@@ -510,5 +521,26 @@ mod tests {
         for error in [conflict, refused] {
             assert!(!error.to_string().contains("signin_not_recorded"));
         }
+    }
+
+    #[test]
+    fn a_failure_after_the_revocation_says_what_openai_did() {
+        let failure = || credential_error("signout_not_recorded: the store is locked".to_owned());
+        let revoked = after_revocation(failure(), true);
+        assert_eq!(revoked.kind(), failure().kind());
+        assert_eq!(revoked.code(), failure().code());
+        assert!(
+            revoked.message().starts_with(
+                "signout_not_recorded: the store is locked (OpenAI revoked the session"
+            )
+        );
+        let unconfirmed = after_revocation(failure(), false);
+        assert!(
+            unconfirmed
+                .message()
+                .contains("(OpenAI did not confirm the revocation;")
+        );
+        let coded = AppError::skill("skill_unavailable", "gone");
+        assert_eq!(after_revocation(coded, true).code(), "skill_unavailable");
     }
 }

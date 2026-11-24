@@ -498,7 +498,9 @@ documented route for local and open-source apps
   sign-out. A profile found signed in to a new session after the revocation
   is a `control` conflict, because that session was not revoked; one found
   signed out is a success; any other failure to read the profile then is
-  `signout_not_recorded`. An unconfirmed revocation is reported and not retried.
+  `signout_not_recorded`. Every failure after the revocation, including one
+  to open the settings, says whether OpenAI revoked the session. An
+  unconfirmed revocation is reported and not retried.
   Every slot that could not be deleted is named by its opaque identifier:
   the CLI's `orphaned_credential_ids` lists each one, and the desktop's
   `credential_orphaned` error names each one, so neither slot is lost from

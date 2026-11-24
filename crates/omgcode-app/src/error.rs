@@ -130,6 +130,14 @@ impl AppError {
         }
     }
 
+    /// Add `note` to the message in brackets, keeping the category and code.
+    /// `note` must not contain secrets or untrusted text.
+    #[must_use]
+    pub fn with_note(mut self, note: &str) -> Self {
+        self.message = format!("{} ({note})", self.message);
+        self
+    }
+
     /// The human-readable message.
     pub fn message(&self) -> &str {
         &self.message

@@ -72,7 +72,9 @@ Changes are recorded here before a release version is assigned.
   settings when the item is deleted by hand; and removing a signed-in
   ChatGPT profile's credential with a stale revision is the conflict. A
   sign-out that finds the profile signed in to a new session is a conflict
-  rather than a success; the key set is read within 1 MiB instead of the
+  rather than a success, and every other sign-out failure after the
+  revocation says whether OpenAI revoked the session; the key set is read
+  within 1 MiB instead of the
   64 KiB error-body bound; a poisoned sign-in lock is `internal`; and a
   recorded desktop sign-in or sign-out whose settings cannot be read again
   is `signed_in_unread` or `signed_out_unread`, not a failed change. The
