@@ -467,8 +467,11 @@ fn entry_of(
     entry
 }
 
-/// Set the program, arguments, and profile from the model's recorded request,
-/// falling back to what the run journal resolved.
+/// Set the program and arguments from the model's recorded request, falling
+/// back to the run journal's program and argument count, and the profile from
+/// the run journal's resolved name, falling back to the requested one. The
+/// per-call text budget is charged to the program first, then the profile,
+/// then the arguments.
 fn fill_command(
     entry: &mut ProcessEntry,
     recorded: Option<&RecordedCommand>,
