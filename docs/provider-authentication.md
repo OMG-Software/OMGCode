@@ -391,7 +391,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   request uses. Port 0, which no request can reach, is refused too, as the
   loopback rule refuses it. A host on this computer is refused: a loopback
   or unspecified address (IPv4, IPv6, or IPv4-mapped IPv6), `localhost`, or a
-  `.localhost` name. A local server uses a local kind, and the hosted
+  `.localhost` name, with or without a trailing root dot. A local server uses a local kind, and the hosted
   confirmation would otherwise say that prompts leave this computer. The
   refusal is `provider profile refused: an openai_compatible endpoint must be
   an https:// base URL with a lower-case host that is not this computer and

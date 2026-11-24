@@ -157,9 +157,12 @@ pub(crate) fn validate_custom_url(text: &str) -> Result<Url, ProviderError> {
 
 /// Whether `host`, as the URL parser writes it, names this computer: a
 /// loopback or unspecified address, including an IPv4-mapped one, or
-/// `localhost` and its subdomains. An IPv6 host keeps its brackets.
+/// `localhost` and its subdomains. An IPv6 host keeps its brackets. A name
+/// with trailing root dots (`localhost.`) resolves the same, so they are
+/// dropped before the name is compared.
 fn is_this_computer(host: &str) -> bool {
-    if host == "localhost" || host.ends_with(".localhost") {
+    let name = host.trim_end_matches('.');
+    if name == "localhost" || name.ends_with(".localhost") {
         return true;
     }
     let bare = host
@@ -247,6 +250,8 @@ mod tests {
             "https://[::ffff:7f00:1]/v1",
             "https://localhost:8443/v1",
             "https://llm.localhost/v1",
+            "https://localhost.:8443/v1",
+            "https://llm.localhost./v1",
             "https://user@provider-api.example.org/v1",
             "https://user:pass@provider-api.example.org/v1",
             "https://provider-api.example.org/v1?key=1",

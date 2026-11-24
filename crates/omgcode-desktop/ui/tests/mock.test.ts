@@ -254,6 +254,8 @@ describe("mock backend", () => {
     ["https://[::ffff:7f00:1]/v1", false],
     ["https://localhost:8443/v1", false],
     ["https://llm.localhost/v1", false],
+    ["https://localhost.:8443/v1", false],
+    ["https://llm.localhost./v1", false],
     ["https://127.example.org/v1", true],
     ["https://user@provider-api.example.org/v1", false],
     ["https://user:pass@provider-api.example.org/v1", false],
