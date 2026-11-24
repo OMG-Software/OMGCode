@@ -90,7 +90,8 @@ pub struct SubscriptionConnection {
     pub client_id: String,
     /// The account subject.
     pub subject: String,
-    /// The profile's recorded endpoint.
+    /// The profile's recorded endpoint text: OpenAI's endpoint, with or
+    /// without one trailing `/`.
     pub endpoint: String,
 }
 
@@ -352,7 +353,12 @@ impl ControlStore {
             binding: binding.clone(),
             client_id: registration.client_id.clone(),
             subject: registration.subject.clone(),
-            endpoint: OPENAI_ENDPOINT.to_owned(),
+            // The recorded text, in whichever accepted spelling, so it equals
+            // the endpoint a desktop session records for this profile.
+            endpoint: profile
+                .endpoint()
+                .map_or(OPENAI_ENDPOINT, |endpoint| endpoint.as_str())
+                .to_owned(),
         })
     }
 }

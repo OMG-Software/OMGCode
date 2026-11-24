@@ -646,8 +646,10 @@ const fn provider_to_sign_in(error: ProviderError) -> SignInError {
 /// it is read, so a duplicate key, a wrong type, or trailing data drops a
 /// partly read response whose tokens are zeroed. `serde_json` unescapes a
 /// string with an escape through its own scratch buffer, which is not
-/// zeroed, so a refused token with an escape can leave its text there; the
-/// tokens this accepts never contain an escape.
+/// zeroed, so a token sent with an escape, refused or accepted, can leave
+/// its text there. Nothing here refuses an escaped token: it is an
+/// assumption that OpenAI's tokens need no escaping, so this does not
+/// happen with the documented service.
 #[derive(Default)]
 struct TokenResponse {
     access_token: Option<Zeroizing<String>>,

@@ -1044,6 +1044,9 @@ fn a_signed_out_session_gives_no_token_and_writes_no_record() {
         assert!(!lock.is_signed_out().expect("unmarked"));
         lock.mark_signed_out().expect("mark");
         assert!(lock.is_signed_out().expect("marked"));
+        // A second sign-out keeps the marker an earlier one left.
+        lock.mark_signed_out().expect("mark again");
+        assert!(lock.is_signed_out().expect("still marked"));
     }
     assert_eq!(
         source
@@ -1058,6 +1061,16 @@ fn a_signed_out_session_gives_no_token_and_writes_no_record() {
     let other = binding_id();
     let lock = SessionLock::acquire(root.path(), &other, &CancelToken::new()).expect("lock");
     assert!(!lock.is_signed_out().expect("other"));
+    // Any entry at the marker's path counts, so nothing placed there can make
+    // a session usable again, and marking it leaves that entry alone.
+    std::fs::create_dir(
+        root.path()
+            .join("subscription-locks")
+            .join(format!("{}.signed-out", other.as_str())),
+    )
+    .expect("directory");
+    assert!(lock.is_signed_out().expect("a directory counts"));
+    lock.mark_signed_out().expect("already marked");
 }
 
 #[test]

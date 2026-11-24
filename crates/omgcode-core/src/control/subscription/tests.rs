@@ -213,6 +213,30 @@ fn only_a_signed_in_chatgpt_profile_can_be_chosen() {
 }
 
 #[test]
+fn a_connection_reports_the_endpoint_text_the_profile_recorded() {
+    let fixture = fixture();
+    let _ = sign_in(&fixture, "chatgpt", "oaiapp_one", "subject-1");
+    let _ = sign_in(&fixture, "slash", "oaiapp_one", "subject-1");
+    let store = fixture.store();
+    // A desktop session records the profile's own endpoint text, so the
+    // connection must report the same spelling or the session is stale.
+    for (name, endpoint) in [
+        ("chatgpt", OPENAI_ENDPOINT),
+        ("slash", "https://api.openai.com/v1/"),
+    ] {
+        let connection = store.provider_subscription(name).expect("signed in");
+        assert_eq!(connection.endpoint, endpoint);
+        assert_eq!(
+            store
+                .provider_profile(name)
+                .and_then(|status| status.profile().endpoint())
+                .map(|recorded| recorded.as_str()),
+            Some(endpoint)
+        );
+    }
+}
+
+#[test]
 fn sign_out_deletes_both_slots_and_keeps_the_registration() {
     let fixture = fixture();
     let set = sign_in(&fixture, "chatgpt", "oaiapp_one", "subject-1");

@@ -370,20 +370,30 @@ impl SessionLock {
     }
 
     /// Record durably that this session was signed out, before the sign-out
-    /// itself is recorded.
+    /// itself is recorded. A marker an earlier sign-out left is kept as it is.
     ///
     /// # Errors
     ///
-    /// `TokenStore` when the marker cannot be written and synced.
+    /// `TokenStore` when the marker cannot be written and synced. A marker
+    /// this call created is then removed again, so a failure leaves the
+    /// session as it was, unless that removal also fails.
     pub fn mark_signed_out(&self) -> Result<(), SignInError> {
-        let file = OpenOptions::new()
+        if self.is_signed_out()? {
+            return Ok(());
+        }
+        let written = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(false)
+            .create_new(true)
             .open(&self.signed_out)
-            .map_err(|_| SignInError::TokenStore)?;
-        file.sync_all().map_err(|_| SignInError::TokenStore)?;
-        sync_parent_directory(&self.directory).map_err(|_| SignInError::TokenStore)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| SignInError::TokenStore)
+            .and_then(|()| {
+                sync_parent_directory(&self.directory).map_err(|_| SignInError::TokenStore)
+            });
+        if written.is_err() {
+            let _ = std::fs::remove_file(&self.signed_out);
+        }
+        written
     }
 
     /// Whether this session was signed out. Any entry at the marker's path

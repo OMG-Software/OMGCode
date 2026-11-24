@@ -509,7 +509,12 @@ documented route for local and open-source apps
   session lock; every token request checks it under that lock and returns
   `signin_required`, so a session already running gives no token and writes
   no record afterwards, even when a slot could not be deleted. A marker
-  that cannot be written stops the sign-out before the revocation, and a
+  that cannot be written and synced is removed again and stops the
+  sign-out before the revocation; one an earlier sign-out left is kept. A
+  sign-out that cannot take the session lock, because a running request
+  held it for 40 seconds or the lock cannot be opened, is
+  `session_lock_unavailable`, and a cancelled wait is `cancelled`; neither
+  changes anything. A
   sign-out that fails after it leaves the session unusable until it is
   signed out again.
   Every slot that could not be deleted is named by its opaque identifier:

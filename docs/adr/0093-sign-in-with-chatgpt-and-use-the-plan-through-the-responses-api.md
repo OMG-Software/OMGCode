@@ -229,9 +229,10 @@ through a `serde_json::Value` tree: its access, refresh, and ID tokens move
 into zeroing buffers as they are read, so an answer refused for a duplicate
 key, a wrong type, trailing data, or a later check leaves no unzeroed copy
 of a token that contains no escape. `serde_json` unescapes a string with an
-escape through its own scratch buffer, which is not zeroed, so a refused
-answer whose token contains an escape can leave that text there. An
-accepted token never contains an escape.
+escape through its own scratch buffer, which is not zeroed, so a token sent
+with an escape, refused or accepted, can leave its text there. No check
+refuses an escaped token; that OpenAI's tokens need no escaping is an
+assumption about the documented service, not something OMGCode enforces.
 
 ### Sign-out and removal
 

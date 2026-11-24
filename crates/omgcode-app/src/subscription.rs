@@ -245,6 +245,20 @@ pub fn sign_in_with_chatgpt(
     recorded
 }
 
+/// A sign-out that could not take the session lock. Nothing was changed.
+fn sign_out_lock_error(error: &SignInError) -> AppError {
+    match error {
+        SignInError::Cancelled => AppError::new(
+            ErrorKind::Cancelled,
+            "the ChatGPT sign-out was cancelled; nothing was changed",
+        ),
+        SignInError::TokenStore => credential_error(
+            "session_lock_unavailable: the ChatGPT session's lock could not be taken, usually because a running request held it for 40 seconds; nothing was changed; try again".to_owned(),
+        ),
+        other => sign_in_error(other),
+    }
+}
+
 /// Add to a failure after the revocation what happened and what to do. The
 /// sign-out was not recorded, so the profile still names its tokens, but
 /// the sign-out marker already stops OMGCode from using them. Only the
@@ -284,7 +298,7 @@ pub fn sign_out_of_chatgpt(
             .map_err(|error| credential_error(format!("{}: {error}", error.code())))?
     };
     let lock = SessionLock::acquire(data_root, connection.binding.id(), cancel)
-        .map_err(|error| sign_in_error(&error))?;
+        .map_err(|error| sign_out_lock_error(&error))?;
     // A refresh may have held the lock meanwhile, so the revision and the
     // binding are checked again before the revocation, the one remote effect.
     // The settings store is released before the network call.
@@ -533,6 +547,24 @@ mod tests {
         assert_eq!(refused.kind(), ErrorKind::Control);
         for error in [conflict, refused] {
             assert!(!error.to_string().contains("signin_not_recorded"));
+        }
+    }
+
+    #[test]
+    fn a_sign_out_that_cannot_take_the_lock_says_so_in_sign_out_terms() {
+        let cancelled = sign_out_lock_error(&SignInError::Cancelled);
+        assert_eq!(cancelled.kind(), ErrorKind::Cancelled);
+        assert!(
+            cancelled
+                .message()
+                .starts_with("the ChatGPT sign-out was cancelled")
+        );
+        let busy = sign_out_lock_error(&SignInError::TokenStore);
+        assert_eq!(busy.kind(), ErrorKind::Credential);
+        assert!(busy.message().starts_with("session_lock_unavailable: "));
+        for error in [cancelled, busy] {
+            assert!(!error.message().contains("sign-in"));
+            assert!(!error.message().contains("token_store_unavailable"));
         }
     }
 

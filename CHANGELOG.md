@@ -69,7 +69,8 @@ Changes are recorded here before a release version is assigned.
   for the session lock or for OpenAI. A token answer is read straight into
   zeroing storage, so a refused answer leaves no unzeroed copy of a token
   without an escape (`serde_json` unescapes through a scratch buffer that is
-  not zeroed);
+  not zeroed, and that OpenAI's tokens need no escaping is an assumption,
+  not a check);
   `signin_binding_uncertain` also says to disconnect OMGCode in ChatGPT
   settings when the item is deleted by hand; and removing a signed-in
   ChatGPT profile's credential with a stale revision is the conflict. A
@@ -81,7 +82,11 @@ Changes are recorded here before a release version is assigned.
   under that lock, so a running session gives no token and writes no
   record after a sign-out even when a slot could not be deleted; a
   ChatGPT profile recorded with `https://api.openai.com/v1/` (one trailing
-  `/`, which recording accepts) can sign in. The key set is read
+  `/`, which recording accepts) can sign in, and its connection reports that
+  recorded spelling so a desktop session using it is not stale. A marker
+  that cannot be written is removed again; a sign-out that cannot take the
+  session lock is `session_lock_unavailable` or a cancelled sign-out, not a
+  sign-in or token-store error. The key set is read
   within 1 MiB instead of the
   64 KiB error-body bound; a poisoned sign-in lock is `internal`; and a
   recorded desktop sign-in or sign-out whose settings cannot be read again
