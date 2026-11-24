@@ -1551,10 +1551,14 @@ revision check and validation (ADR-0064, ADR-0071).
   `settings_cancel_chatgpt_sign_in`, which only sets the sign-in's cancel
   token, so a cancel sent while the confirmation is open is kept. A failed
   sign-in shows its stable code, such
-  as `plan_usage_not_granted`, and stores no token, except when the write that
-  binds the new tokens has an uncertain result: the tokens are then kept and
-  not revoked, and the error (`signin_binding_uncertain`) names their
-  identifier and says to check it with `provider-profile-show`. A signed-in
+  as `plan_usage_not_granted`, and stores no token, except in two cases. When
+  the write that binds the new tokens has an uncertain result, the tokens are
+  kept and not revoked, and the error (`signin_binding_uncertain`) names their
+  identifier and says to check it with `provider-profile-show`. When the
+  binding certainly failed but the new token item could not be deleted, the
+  session is revoked (best effort) and the error (`signin_not_recorded`) names
+  the item's identifier; the item may remain in the operating system's
+  credential store, and the operator deletes that named item there. A signed-in
   row reads
   "Signed in with ChatGPT as `<email>`", carries a **ChatGPT plan** chip and
   no API key field, and offers **Sign out**, which asks "Sign `<name>` out of

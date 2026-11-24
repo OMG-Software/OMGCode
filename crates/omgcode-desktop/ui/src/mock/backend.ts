@@ -1283,7 +1283,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             !profile.credential_bound ||
             profile.auth !== "subscription"
           ) {
-            fail("credential", "not_bound: this profile is not signed in with ChatGPT");
+            fail("credential", "not_signed_in: this profile is not signed in with ChatGPT");
           }
           profile.credential_bound = false;
           profile.selectable = false;

@@ -325,7 +325,7 @@ impl ControlStore {
             });
         }
         let (Some(binding), Some(registration)) = (&status.credential, &status.subscription) else {
-            return Err(ProviderCredentialUseError::NotBound {
+            return Err(ProviderCredentialUseError::NotSignedIn {
                 profile: profile.name().to_owned(),
             });
         };

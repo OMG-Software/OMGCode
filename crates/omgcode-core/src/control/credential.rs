@@ -342,6 +342,15 @@ pub enum ProviderCredentialUseError {
         /// The profile name as recorded.
         profile: String,
     },
+    /// The profile is a ChatGPT connection that is not signed in: never
+    /// signed in, or signed out (ADR-0093). It needs a sign-in, not a key.
+    #[error(
+        "provider profile {profile} is not signed in with ChatGPT; sign in with `omgcode workspace provider-signin` or Sign in with ChatGPT in the settings window"
+    )]
+    NotSignedIn {
+        /// The profile name as recorded.
+        profile: String,
+    },
     /// The bound credential was stored by a different backend than the one
     /// this host opened.
     #[error(
@@ -385,6 +394,7 @@ impl ProviderCredentialUseError {
             Self::SubscriptionUnsupported { .. } => "subscription_unsupported",
             Self::NotSubscription { .. } => "not_subscription",
             Self::NotBound { .. } => "not_bound",
+            Self::NotSignedIn { .. } => "not_signed_in",
             Self::OtherBackend { .. } => "other_backend",
             Self::Store { error, .. } => Self::native_code(error),
         }

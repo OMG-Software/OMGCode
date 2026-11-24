@@ -227,10 +227,16 @@ fn sign_out_deletes_both_slots_and_keeps_the_registration() {
         Err(CredentialError::NotFound)
     ));
     let store = fixture.store();
+    // A signed-out connection asks for a sign-in, not for an API key.
+    let error = store
+        .provider_subscription("chatgpt")
+        .expect_err("signed out");
     assert!(matches!(
-        store.provider_subscription("chatgpt"),
-        Err(ProviderCredentialUseError::NotBound { .. })
+        error,
+        ProviderCredentialUseError::NotSignedIn { .. }
     ));
+    assert_eq!(error.code(), "not_signed_in");
+    assert!(error.to_string().contains("provider-signin"), "{error}");
     drop(store);
     // Removing a credential that a subscription profile does not hold names
     // that cause, not a ChatGPT session.

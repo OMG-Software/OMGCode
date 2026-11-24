@@ -550,7 +550,9 @@ read one too, through the same profile selection.
   code, and a busy store is refused without a retry. The cause codes are
   `unknown_profile`, `wrong_provider`, `endpoint_not_recorded`,
   `subscription_unsupported`, `not_subscription` (an `openai` API-key profile
-  asked for its ChatGPT sign-in), `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
+  asked for its ChatGPT sign-in), `not_bound`, `not_signed_in` (a ChatGPT
+  connection that was never signed in or was signed out; its message names
+  `provider-signin`), `other_backend`, `settings_unusable`, `credential_not_found`,
   `credential_locked`, `credential_unavailable`,
   `credential_storage_not_private`, `credential_corrupt`,
   `credential_prompt_required`, `credential_io`, `credential_refused`, and

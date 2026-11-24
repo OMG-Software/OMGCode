@@ -271,9 +271,14 @@ adapter reads a stored credential, and only through `--provider-profile` (see
 that flag `chat` uses the prototype `OMGCODE_LM_TOKEN` input.
 
 A profile can record one endpoint (ADR-0048). `provider-profile-add` takes an
-optional `--endpoint <url>`. Only an `lm_studio` profile accepts one, in the
-form `http://<literal loopback IP>:<non-zero port>/v1`, at most 256 bytes, with
-no user information, query, or fragment. The endpoint is not a secret, and no
+optional `--endpoint <url>` of at most 256 bytes, checked against the
+profile's kind. A local kind (`lm_studio`, `ollama_local`) accepts the form
+`http://<literal loopback IP>:<non-zero port>/v1`, with no user information,
+query, or fragment. A hosted kind accepts only its provider's one documented
+endpoint (ADR-0092); an `openai` profile, including a ChatGPT `subscription`
+profile, accepts only `https://api.openai.com/v1`. An `openai_compatible`
+profile accepts an `https://` base URL under the rules in
+[provider authentication](provider-authentication.md). The endpoint is not a secret, and no
 command changes it. To use another endpoint, remove the profile and add a new
 one. For example:
 
