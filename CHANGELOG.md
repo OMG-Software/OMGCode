@@ -44,7 +44,12 @@ Changes are recorded here before a release version is assigned.
   lines at its blank line, keeping the LF after an empty first line, and
   refuses a completed response whose listed output does not match the
   finished items in index, type, identifier, and reply content. Sign-out
-  reports both token slots when the binding names another backend. A cancel sent during the desktop
+  reports both token slots when the binding names another backend, and the
+  desktop's `credential_orphaned` sign-out error says whether OpenAI
+  confirmed the revocation. A sign-in refused after the exchange (key fetch,
+  ID-token, or account check) revokes the issued refresh token, best effort.
+  The settings window's sign-in bar covers the confirmation as well as the
+  browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after
   taking the session lock; a sign-in whose binding write is uncertain keeps its tokens unrevoked
   and reports `signin_binding_uncertain` with advice that names

@@ -307,25 +307,44 @@ pub(crate) fn sign_in_within(
             parse_code_exchange(status, body.as_deref().map(Vec::as_slice), now_seconds())?;
         Ok((tokens, id_token))
     })?;
-    let keys = on_auth_runtime(async {
-        let client = auth_client(endpoints)?;
-        get_json(&client, &endpoints.jwks, cancel).await
-    })?;
-    let identity = id_token::validate(
-        &id_token,
-        &keys,
-        &endpoints.issuer,
-        &client_id,
-        &nonce,
-        now_seconds(),
-    )?;
-    if request
-        .subject
-        .as_deref()
-        .is_some_and(|recorded| recorded != identity.subject)
-    {
-        return Err(SignInError::IdentityMismatch);
-    }
+    let verified = (|| {
+        let keys = on_auth_runtime(async {
+            let client = auth_client(endpoints)?;
+            get_json(&client, &endpoints.jwks, cancel).await
+        })?;
+        let identity = id_token::validate(
+            &id_token,
+            &keys,
+            &endpoints.issuer,
+            &client_id,
+            &nonce,
+            now_seconds(),
+        )?;
+        if request
+            .subject
+            .as_deref()
+            .is_some_and(|recorded| recorded != identity.subject)
+        {
+            return Err(SignInError::IdentityMismatch);
+        }
+        Ok(identity)
+    })();
+    let identity = match verified {
+        Ok(identity) => identity,
+        Err(error) => {
+            // OpenAI issued a session that will not be used, so ask it to
+            // end the session. Best effort, as the app does for a sign-in it
+            // could not record; the refusal is reported either way. A fresh
+            // token lets the revocation run even after a cancel.
+            let _ = revoke(
+                endpoints,
+                &client_id,
+                &tokens.refresh_token,
+                &CancelToken::new(),
+            );
+            return Err(error);
+        }
+    };
     Ok(SignedIn {
         client_id,
         subject: identity.subject,

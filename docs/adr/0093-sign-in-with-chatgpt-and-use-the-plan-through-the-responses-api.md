@@ -160,7 +160,10 @@ Steps:
    signature verified with the `rsa` crate, `iss`, `aud` (a string or a list
    holding the client id), `exp` in the future with 60 seconds of leeway, the
    nonce, and a non-empty `sub`. A returning registration must return the
-   recorded `sub`.
+   recorded `sub`. When the key fetch, the ID-token check, or the `sub`
+   check fails, the issued refresh token is revoked once, best effort, with
+   a fresh cancel token so a cancelled attempt still sends it, and the
+   refusal is returned whether or not OpenAI confirms it.
 8. Store the token record and record `provider_subscription_bound`, with the
    ordering and failure reporting of `set_provider_credential` (ADR-0042).
 
@@ -334,7 +337,9 @@ model or the journal sees.
   `xdg-open` from `/usr/bin` with the address as one argument, never a shell.
 - A sign-in that lacks plan permission records nothing; the issued client then
   stays registered at OpenAI until the operator removes it in ChatGPT
-  settings, and the next attempt registers another.
+  settings, and the next attempt registers another. A sign-in refused after
+  the exchange returned usable tokens (step 7) revokes its refresh token;
+  an unconfirmed revocation leaves that session live in the same way.
 
 ### Not verified
 

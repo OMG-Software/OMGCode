@@ -440,6 +440,9 @@ fn a_returning_sign_in_reuses_its_client_and_needs_the_same_account() {
         result.expect_err("another account"),
         SignInError::IdentityMismatch
     );
+    // The other account's session is not used, so it is revoked; the first,
+    // successful sign-in revoked nothing.
+    assert_revoked_once(&service, true, &SignInError::IdentityMismatch);
 }
 
 #[test]
@@ -596,20 +599,45 @@ fn an_exchange_without_the_plan_scope_or_with_a_bad_id_token_stores_nothing() {
             json!({"error": "invalid_grant"}).to_string(),
         );
     };
-    for (prepare, expected) in [
+    let keys_unavailable = |a: &Authorization, service: &MockService| {
+        let nonce = a.get("nonce").expect("nonce");
+        service.answer(TOKEN_PATH, 200, token_answer(&id_token(&nonce), SCOPE));
+        service.answer(KEYS_PATH, 503, "{}".to_owned());
+    };
+    // Whether the refusal came after OpenAI issued a usable session, which
+    // is then revoked. A refused exchange or plan scope returns no session.
+    for (prepare, expected, revoked) in [
         (
             without_plan as fn(&Authorization, &MockService),
             SignInError::PlanUsageNotGranted,
+            false,
         ),
-        (wrong_nonce, SignInError::IdToken("wrong nonce")),
-        (failed_exchange, SignInError::HttpStatus(400)),
+        (wrong_nonce, SignInError::IdToken("wrong nonce"), true),
+        (failed_exchange, SignInError::HttpStatus(400), false),
+        (keys_unavailable, SignInError::HttpStatus(503), true),
     ] {
         let service = MockService::start();
         let (result, _, _) = run_sign_in(&service, &new_request(), prepare, |a| {
             vec![callback_with(a, &format!("&client_id={ISSUED_CLIENT}"))]
         });
         assert_eq!(result.expect_err("refused exchange"), expected);
+        assert_revoked_once(&service, revoked, &expected);
     }
+}
+
+/// Check that a refused sign-in sent one revocation of the issued refresh
+/// token when `revoked`, and none otherwise.
+fn assert_revoked_once(service: &MockService, revoked: bool, case: &SignInError) {
+    let sent = service.requests_to(REVOKE_PATH);
+    if !revoked {
+        assert!(sent.is_empty(), "{case:?}: {sent:?}");
+        return;
+    }
+    assert_eq!(sent.len(), 1, "{case:?}");
+    let form = form(&sent[0]);
+    assert_eq!(form["token"], "refresh-1");
+    assert_eq!(form["token_type_hint"], "refresh_token");
+    assert_eq!(form["client_id"], ISSUED_CLIENT);
 }
 
 #[test]

@@ -469,7 +469,9 @@ documented route for local and open-source apps
   token's RS256 signature, issuer, audience, expiry, nonce, and subject are
   validated against OpenAI's published keys; and the granted scopes must
   include `chatgpt.tokens.use.direct`. Without that scope nothing is stored
-  (`plan_usage_not_granted`). Ctrl-C on the CLI and **Cancel sign-in** in the
+  (`plan_usage_not_granted`). When the key fetch, the ID-token check, or the
+  account check fails after the exchange, nothing is stored and the issued
+  refresh token is revoked once, best effort. Ctrl-C on the CLI and **Cancel sign-in** in the
   window end the wait. No other application's client or login cache is used.
 - **Storage.** The access and refresh tokens are kept in protected OS storage
   (DPAPI on Windows, the Secret Service on Linux) as a record in one of two

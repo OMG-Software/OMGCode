@@ -69,9 +69,12 @@ const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
   SETTINGS_CHANGE_RUNNING_CODE,
 ]);
 
-/** Shown while Rust waits for the browser step of a ChatGPT sign-in (ADR-0093). */
+/**
+ * Shown for the whole ChatGPT sign-in (ADR-0093): first the native confirmation, then the browser
+ * step. Its Cancel works in both, because Rust registers the cancel before the confirmation.
+ */
 export const SIGN_IN_WAITING =
-  "Waiting for the ChatGPT sign-in in your browser. It ends after five minutes.";
+  "Confirm the sign-in, then finish it in your browser. It ends after five minutes.";
 
 /** Shown when OpenAI did not confirm a sign-out's revocation. */
 export const SIGN_OUT_UNCONFIRMED =

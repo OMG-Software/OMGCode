@@ -130,7 +130,9 @@ impl DesktopService {
     /// `settings` only. After a native confirmation, revoke the named
     /// connection's ChatGPT session once, record the sign-out, and delete its
     /// tokens. `revoked` is `false` when OpenAI did not confirm the
-    /// revocation; the local sign-out is recorded either way.
+    /// revocation; the local sign-out is recorded either way. A slot that
+    /// could not be deleted makes this `credential_orphaned`, whose message
+    /// also says whether OpenAI confirmed the revocation.
     ///
     /// # Errors
     ///
@@ -173,7 +175,10 @@ impl DesktopService {
         )
         .map_err(|error| DesktopError::from_app(&error))?;
         if !outcome.orphans.is_empty() {
-            return Err(DesktopError::signed_out_tokens_orphaned(&outcome.orphans));
+            return Err(DesktopError::signed_out_tokens_orphaned(
+                &outcome.orphans,
+                outcome.revoked,
+            ));
         }
         let store = self.inner.open_or_create_control()?;
         Ok(ChatGptSignOutResult {

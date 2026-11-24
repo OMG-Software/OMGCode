@@ -421,17 +421,26 @@ impl DesktopError {
 
     /// A ChatGPT sign-out is recorded, but some token slots could not be
     /// deleted. Each opaque identifier is named so none is lost; the tokens
-    /// themselves are never shown.
-    pub(crate) fn signed_out_tokens_orphaned(credential_ids: &[CredentialId]) -> Self {
+    /// themselves are never shown. `revoked` says whether OpenAI confirmed
+    /// the revocation, so an unconfirmed one still gets its advice.
+    pub(crate) fn signed_out_tokens_orphaned(
+        credential_ids: &[CredentialId],
+        revoked: bool,
+    ) -> Self {
         let ids = credential_ids
             .iter()
             .map(CredentialId::as_str)
             .collect::<Vec<_>>()
             .join(", ");
+        let revocation = if revoked {
+            "OpenAI confirmed the revocation."
+        } else {
+            "OpenAI did not confirm the revocation, so the session may still be live: you can also disconnect OMGCode in your ChatGPT settings."
+        };
         Self::new(
             "credential_orphaned",
             format!(
-                "The sign-out is recorded, but these stored ChatGPT token items could not be deleted and may remain in the operating system's credential store with no connection naming them: {ids}. Delete them there."
+                "The sign-out is recorded, but these stored ChatGPT token items could not be deleted and may remain in the operating system's credential store with no connection naming them: {ids}. Delete them there. {revocation}"
             ),
         )
     }
@@ -652,12 +661,23 @@ mod tests {
     /// says the sign-out itself is recorded.
     #[test]
     fn a_sign_out_that_leaves_token_slots_names_every_one() {
-        let error = DesktopError::signed_out_tokens_orphaned(&[id(KEPT), id(REPLACED)]);
+        let error = DesktopError::signed_out_tokens_orphaned(&[id(KEPT), id(REPLACED)], true);
         assert_eq!(error.code(), "credential_orphaned");
         assert!(error.message().contains(KEPT), "{}", error.message());
         assert!(error.message().contains(REPLACED), "{}", error.message());
         assert!(error.message().contains("sign-out is recorded"));
         assert!(!error.message().contains("API key"), "{}", error.message());
+        assert!(error.message().contains("OpenAI confirmed the revocation"));
+        // An unconfirmed revocation keeps its advice on this path too.
+        let unconfirmed = DesktopError::signed_out_tokens_orphaned(&[id(KEPT)], false);
+        assert!(
+            unconfirmed
+                .message()
+                .contains("did not confirm the revocation"),
+            "{}",
+            unconfirmed.message()
+        );
+        assert!(unconfirmed.message().contains("ChatGPT settings"));
     }
 
     /// A key replacement or a removal that leaves the old item names it and

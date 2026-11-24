@@ -1544,10 +1544,13 @@ revision check and validation (ADR-0064, ADR-0071).
   completed sign-in does not show the plan will accept OMGCode's requests.
   After Yes a new name is recorded as an `openai` subscription profile with
   OpenAI's endpoint, and Rust opens the system browser itself: the webview
-  never receives the authorization address, the callback, or a token. While
-  Rust waits, the window shows a bar with **Cancel sign-in** outside the
-  disabled body; it calls `settings_cancel_chatgpt_sign_in`, which only sets
-  the sign-in's cancel token. A failed sign-in shows its stable code, such
+  never receives the authorization address, the callback, or a token. From
+  the confirmation to the end of the browser step, the window shows a bar
+  reading "Confirm the sign-in, then finish it in your browser." with
+  **Cancel sign-in** outside the disabled body; it calls
+  `settings_cancel_chatgpt_sign_in`, which only sets the sign-in's cancel
+  token, so a cancel sent while the confirmation is open is kept. A failed
+  sign-in shows its stable code, such
   as `plan_usage_not_granted`, and stores no token, except when the write that
   binds the new tokens has an uncertain result: the tokens are then kept and
   not revoked, and the error (`signin_binding_uncertain`) names their
@@ -1557,7 +1560,9 @@ revision check and validation (ADR-0064, ADR-0071).
   no API key field, and offers **Sign out**, which asks "Sign `<name>` out of
   ChatGPT?" and calls `settings_sign_out_chatgpt`. When OpenAI did not
   confirm the revocation the window says so and points to ChatGPT's
-  settings. A signed-in connection cannot be removed. A ChatGPT profile
+  settings. A token slot that could not be deleted makes the sign-out
+  `credential_orphaned`, naming each slot's identifier and saying whether
+  OpenAI confirmed the revocation. A signed-in connection cannot be removed. A ChatGPT profile
   recorded without OpenAI's endpoint shows the no-endpoint note and offers no
   sign-in, because core would refuse it. No real sign-in was
   made from the shell, and the browser launch is not driven by a test.
