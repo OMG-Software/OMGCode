@@ -119,6 +119,52 @@ fn provider_authentication_pairs_are_supported() {
     }
 }
 
+/// A hosted API-key profile added without an endpoint could never be used,
+/// and its endpoint cannot be added later. A named kind records its one
+/// documented endpoint instead, `openai_compatible` is refused, and a
+/// subscription or local profile keeps recording none (ADR-0092).
+#[test]
+fn a_hosted_api_key_profile_added_without_an_endpoint_records_its_fixed_one() {
+    let (_directory, _data, mut store) = store();
+    for kind in ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| kind.is_hosted())
+    {
+        let revision = store.revision();
+        let added = store.add_provider_profile(
+            &declaration(kind.as_str(), kind.as_str(), "api_key"),
+            revision,
+        );
+        match kind.fixed_endpoint() {
+            Some(fixed) => {
+                let profile = added.unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+                assert_eq!(
+                    profile.endpoint().map(ProviderEndpoint::as_str),
+                    Some(fixed)
+                );
+            }
+            None => {
+                assert_eq!(kind, ProviderKind::OpenAiCompatible);
+                assert_eq!(
+                    refusal(added),
+                    "an openai_compatible profile needs an endpoint"
+                );
+                assert_eq!(store.revision(), revision);
+            }
+        }
+    }
+    let revision = store.revision();
+    let plan = store
+        .add_provider_profile(&declaration("plan", "openai", "subscription"), revision)
+        .expect("subscription");
+    assert_eq!(plan.endpoint(), None);
+    let revision = store.revision();
+    let local = store
+        .add_provider_profile(&declaration("local", "lm_studio", "api_key"), revision)
+        .expect("local");
+    assert_eq!(local.endpoint(), None);
+}
+
 const ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 
 fn with_endpoint(
@@ -329,7 +375,7 @@ fn replay_rejects_invalid_endpoints_and_unknown_fields() {
         )
         .expect("profile");
     store
-        .add_provider_profile(&declaration("plain", "openai", "api_key"), 1)
+        .add_provider_profile(&declaration("plain", "openai", "subscription"), 1)
         .expect("profile");
     drop(store);
     let original = fs::read_to_string(data.join(FILE_NAME)).expect("journal");
@@ -339,8 +385,8 @@ fn replay_rejects_invalid_endpoints_and_unknown_fields() {
         (ENDPOINT, "https://127.0.0.1:1234/v1"),
         (ENDPOINT, "http://192.0.2.1:1234/v1"),
         (
-            r#""kind":"openai","auth":"api_key""#,
-            r#""kind":"openai","auth":"api_key","endpoint":"http://127.0.0.1:1234/v1""#,
+            r#""kind":"openai","auth":"subscription""#,
+            r#""kind":"openai","auth":"subscription","endpoint":"http://127.0.0.1:1234/v1""#,
         ),
         (r#""kind":"lm_studio""#, r#""kind":"lm_studio","extra":1"#),
     ];
@@ -484,7 +530,7 @@ fn the_active_connection_is_selected_replayed_and_cleared() {
 fn an_unselectable_or_unchanged_connection_is_refused_without_a_record() {
     let (_directory, data, mut store) = store();
     store
-        .add_provider_profile(&declaration("cloud", "openai", "api_key"), 0)
+        .add_provider_profile(&declaration("cloud", "openai", "subscription"), 0)
         .expect("cloud");
     store
         .add_provider_profile(&declaration("bare", "lm_studio", "none"), 1)
@@ -539,7 +585,7 @@ fn an_unselectable_or_unchanged_connection_is_refused_without_a_record() {
 fn replay_rejects_an_invalid_active_connection() {
     let (_directory, data, mut store) = store();
     let cloud = store
-        .add_provider_profile(&declaration("cloud", "openai", "api_key"), 0)
+        .add_provider_profile(&declaration("cloud", "openai", "subscription"), 0)
         .expect("cloud");
     let ollama = store
         .add_provider_profile(

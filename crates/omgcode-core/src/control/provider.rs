@@ -341,12 +341,26 @@ impl ControlStore {
         let auth = ProviderAuth::parse(&declaration.auth).ok_or(ControlError::ProviderRefused(
             "authentication must be subscription, api_key, or none",
         ))?;
+        let endpoint = match (&declaration.endpoint, auth, kind.is_local()) {
+            (Some(text), _, _) => Some(text.clone()),
+            // A hosted API-key profile with no endpoint could never be used,
+            // and its endpoint cannot be added later. A named kind takes its
+            // one documented endpoint, as the desktop records it (ADR-0092).
+            (None, ProviderAuth::ApiKey, false) => Some(
+                kind.fixed_endpoint()
+                    .ok_or(ControlError::ProviderRefused(
+                        "an openai_compatible profile needs an endpoint",
+                    ))?
+                    .to_owned(),
+            ),
+            (None, _, _) => None,
+        };
         let profile = ProviderProfile {
             id: Uuid::new_v4(),
             name: declaration.name.clone(),
             kind,
             auth,
-            endpoint: declaration.endpoint.clone().map(ProviderEndpoint),
+            endpoint: endpoint.map(ProviderEndpoint),
         };
         validate_profile(&profile)?;
         self.append(

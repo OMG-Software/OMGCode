@@ -68,7 +68,8 @@ unauthenticated requests. No API key was used for any provider.
 
    An upper-case host, a default port, a `.` or `..` segment, or a non-ASCII
    host is refused rather than rewritten. The text the operator confirms is
-   therefore the URL every request uses. A typed endpoint that equals a named
+   therefore the URL every request uses. Port 0, which no request can reach,
+   is refused, as the loopback rule refuses it. A typed endpoint that equals a named
    provider's endpoint is treated as that provider's endpoint, including its
    output field.
 4. **Every hosted kind needs an API key.** Hosted kinds take authentication
@@ -78,7 +79,12 @@ unauthenticated requests. No API key was used for any provider.
    profile can be chosen only with a bound credential
    (`a hosted provider profile needs a bound credential before it can be
    chosen`). `--endpoint` with a hosted URL and no profile is refused
-   (`cloud_needs_profile`).
+   (`cloud_needs_profile`). A named hosted kind's API-key profile added
+   without an endpoint records the provider's documented endpoint, as the
+   desktop does, because a hosted profile without one could never be used and
+   its endpoint cannot be added later. An `openai_compatible` API-key profile
+   without one is refused. A subscription profile still records none, so its
+   record stays readable by older versions.
 5. **The output field is chosen per endpoint.** Requests send either
    `max_tokens` or `max_completion_tokens`, as the table says. A loopback
    endpoint, and a typed endpoint that is not a named provider's endpoint,
@@ -94,8 +100,8 @@ unauthenticated requests. No API key was used for any provider.
    takes a key. `openai_compatible` takes an endpoint and a key. The window
    sends the key once and clears the field, as for Ollama Cloud (ADR-0071).
    The native confirmation before a hosted connection is chosen names the
-   host, with any non-default port, that will receive prompts, workspace text read by tools, and command
-   output. For `openai_compatible` it also says that the address was typed
+   host, with any non-default port, that will receive prompts, workspace
+   text read by tools, and command output. For `openai_compatible` it also says that the address was typed
    by the operator.
 9. **CLI.** `capabilities` lists every kind except `ollama_local` in
    `stored_credential_adapters`, and every kind in `streaming_adapters` and

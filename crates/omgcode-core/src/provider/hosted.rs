@@ -114,6 +114,7 @@ pub(crate) fn fixed_endpoint(text: &str) -> Option<(Url, OutputLimitField)> {
 /// parser would write (one trailing `/` aside), so the text the operator
 /// confirms is the URL each request uses: an upper-case host, a default port,
 /// a `.` or `..` segment, or a non-ASCII host is refused rather than rewritten.
+/// Port 0, which no request can reach, is refused as the loopback rule does.
 /// Plain HTTP is refused: the key and every prompt would cross the network
 /// in clear text. A loopback HTTP server uses a local kind instead.
 ///
@@ -135,6 +136,7 @@ pub(crate) fn validate_custom_url(text: &str) -> Result<Url, ProviderError> {
     if url.scheme() != "https"
         || url.host_str().is_none_or(str::is_empty)
         || url.cannot_be_a_base()
+        || url.port() == Some(0)
         || !(written == text || written.strip_suffix('/') == Some(text))
         || url.path().contains("//")
     {
@@ -202,6 +204,7 @@ mod tests {
             "HTTPS://provider-api.example.org/v1",
             "https://Provider-API.example.org/v1",
             "https://provider-api.example.org:443/v1",
+            "https://provider-api.example.org:0/v1",
             "https://user@provider-api.example.org/v1",
             "https://user:pass@provider-api.example.org/v1",
             "https://provider-api.example.org/v1?key=1",

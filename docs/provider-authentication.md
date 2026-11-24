@@ -388,7 +388,8 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   parser writes it, apart from one trailing `/`; and have no `//` in its path.
   An upper-case host, a default port, a `.` or `..` segment, or a non-ASCII
   host is refused, not rewritten, so the confirmed text is the URL every
-  request uses. The refusal is `provider profile refused: an
+  request uses. Port 0, which no request can reach, is refused too, as the
+  loopback rule refuses it. The refusal is `provider profile refused: an
   openai_compatible endpoint must be an https:// base URL with a lower-case
   host and no user information, query, fragment, percent-encoding, default
   port, or empty or dot path segment`. Plain HTTP is refused; a loopback HTTP
@@ -399,13 +400,18 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   `provider-credential-set NAME`. `--provider-profile NAME` selects it for
   `chat`, `session compact`, `models`, and the desktop launch. `--endpoint`
   with a hosted URL and no profile is refused (`cloud_needs_profile`).
+  `--endpoint` may be left out for a named hosted kind with `--auth api_key`:
+  core records that provider's documented endpoint, as the desktop does, so
+  no unusable profile is recorded. An `openai_compatible` API-key profile
+  without one is refused (`an openai_compatible profile needs an endpoint`).
+  A subscription or local profile added without one still records none.
 - **Desktop.** **Add connection** in the `settings` window lists every kind.
   A named hosted provider shows its fixed endpoint, which Rust supplies, and
   takes an API key; `openai_compatible` takes an endpoint and an API key.
   The key is sent once and the field cleared, as for Ollama Cloud. The native
   confirmation before choosing a hosted connection names the host, with any
-  non-default port, that receives prompts, workspace text read by tools, and command output; for
-  `openai_compatible` it adds that the address was typed when the connection
+  non-default port, that receives prompts, workspace text read by tools, and
+  command output; for `openai_compatible` it adds that the address was typed when the connection
   was added. See the [desktop interface](desktop-interface.md#choosing-the-model-connection).
 - **Selectable.** A hosted profile can be chosen only with a bound credential.
 - **Compatibility.** A control journal that records a new kind, or an endpoint

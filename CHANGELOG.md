@@ -22,8 +22,10 @@ Changes are recorded here before a release version is assigned.
   which the client does not keep. The desktop **Add connection** form lists every
   kind, and the native confirmation before choosing a hosted connection names
   the host and any non-default port that receives prompts, and for a typed
-  address says it was typed.
-  A model list may now hold 2048 models in 4 MiB. `capabilities` lists every
+  address says it was typed. A typed endpoint with port 0 is refused. A named
+  hosted kind's API-key profile added on the CLI without `--endpoint` records
+  its documented endpoint, and an `openai_compatible` one is refused, instead
+  of recording a profile that could never be used. A model list may now hold 2048 models in 4 MiB. `capabilities` lists every
   kind but `ollama_local` as a stored-credential adapter. No request was made
   to any of these providers with a real key. Subscription sign-in is not
   added. A control journal that records a new kind, or an endpoint on an
