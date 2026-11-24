@@ -475,14 +475,18 @@ documented route for local and open-source apps
   between OpenAI rotating the token and the store write loses the session.
 - **Sign-out.** `omgcode workspace provider-signout <name> --revision <n>` or
   **Sign out** revokes the refresh token once, records the sign-out, and
-  deletes both slots. An unconfirmed revocation is reported and not retried.
+  deletes both slots. The revision is checked before the revocation; a
+  settings change made while OpenAI answers does not stop the local
+  sign-out. An unconfirmed revocation is reported and not retried.
   A signed-in profile cannot be removed, and `provider-credential-remove`
   refuses every subscription profile.
 - **Requests.** Chat, compaction, and tool turns use the Responses API at
   `https://api.openai.com/v1/responses` with `store:false` and `stream:true`.
-  The model list reads the plan route's `models` array. Plan failures are
-  reported by code, such as `usage_limit_exceeded`, and never fall back to
-  API-key billing. API-key `openai` profiles keep the Chat Completions path.
+  The model list reads the plan route's `models` array. A chat turn or
+  compaction that fails on the plan reports a `provider` error whose stable
+  code names the cause: `signin_required`, `access_token_unavailable`,
+  `plan_request_failed`, `plan_response_incomplete`, or the route's own code,
+  such as `usage_limit_exceeded`. Nothing falls back to API-key billing. API-key `openai` profiles keep the Chat Completions path.
 - **Not verified.** No test contacts OpenAI. No real sign-in, refresh,
   revocation, model list, or Responses request was made, and a completed
   sign-in is not evidence that a plan, model, or account may be used. The
@@ -525,7 +529,8 @@ read one too, through the same profile selection.
   missing or busy settings store is also a `credential` error, without a cause
   code, and a busy store is refused without a retry. The cause codes are
   `unknown_profile`, `wrong_provider`, `endpoint_not_recorded`,
-  `subscription_unsupported`, `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
+  `subscription_unsupported`, `not_subscription` (an `openai` API-key profile
+  asked for its ChatGPT sign-in), `not_bound`, `other_backend`, `settings_unusable`, `credential_not_found`,
   `credential_locked`, `credential_unavailable`,
   `credential_storage_not_private`, `credential_corrupt`,
   `credential_prompt_required`, `credential_io`, `credential_refused`, and

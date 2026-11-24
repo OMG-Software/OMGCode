@@ -196,8 +196,10 @@ pub fn sign_in_with_chatgpt(
 /// # Errors
 ///
 /// A `credential` error for a profile that is not signed in or a store that
-/// cannot be used, and `control` for a stale revision. A failed revocation
-/// is not an error: [`SignOutOutcome::revoked`] reports it.
+/// cannot be used, and `control` for a revision that is stale before the
+/// revocation. A settings change made during the revocation does not stop
+/// the local sign-out. A failed revocation is not an error:
+/// [`SignOutOutcome::revoked`] reports it.
 pub fn sign_out_of_chatgpt(
     data_root: &Path,
     name: &str,
@@ -228,9 +230,27 @@ pub fn sign_out_of_chatgpt(
         cancel,
     )
     .is_ok();
+    // The operator's revision was checked before the revocation. Once OpenAI
+    // may have revoked the session, a settings change made meanwhile must not
+    // leave the dead tokens bound, so the sign-out is recorded against the
+    // current revision. Deleting the tokens widens no access. It is recorded
+    // only while the profile still names the session this call revoked; the
+    // lock keeps any other sign-out of that session out, so a different
+    // binding means it was already signed out.
     let mut store = open_settings(data_root)?;
+    match store.provider_subscription(name) {
+        Ok(current) if current.binding == connection.binding => {}
+        _ => {
+            return Ok(SignOutOutcome {
+                revoked,
+                orphan: None,
+                revision: store.revision(),
+            });
+        }
+    }
+    let current_revision = store.revision();
     let removal = store
-        .sign_out_provider_subscription(&credentials, name, expected_revision)
+        .sign_out_provider_subscription(&credentials, name, current_revision)
         .map_err(|error| credential_error(format!("signout_not_recorded: {error}")))?;
     Ok(SignOutOutcome {
         revoked,

@@ -26,7 +26,9 @@ Changes are recorded here before a release version is assigned.
   cannot be removed, and `provider-credential-remove` refuses subscription
   profiles. Chat, compaction, and tool turns of a ChatGPT connection use the
   Responses API with `store:false` and streaming, the model list reads the
-  plan route's `models` array, and plan failures are reported by code with no fallback to API billing.
+  plan route's `models` array, and plan failures keep a stable error code
+  (`signin_required`, `usage_limit_exceeded`, and others) with no fallback to
+  API billing.
   API-key profiles keep the Chat Completions path. The desktop shell gains
   `settings_sign_in_chatgpt`, `settings_cancel_chatgpt_sign_in`, and
   `settings_sign_out_chatgpt` (59 commands, 27 in `settings`). New

@@ -328,6 +328,13 @@ pub enum ProviderCredentialUseError {
         /// The profile name as recorded.
         profile: String,
     },
+    /// A ChatGPT sign-in was asked of an `openai` profile that authenticates
+    /// with an API key (ADR-0093).
+    #[error("provider profile {profile} uses an API key, not a ChatGPT sign-in")]
+    NotSubscription {
+        /// The profile name as recorded.
+        profile: String,
+    },
     /// The profile is `api_key` but has no bound credential. It never
     /// becomes a request without a credential.
     #[error("provider profile {profile} has no credential bound")]
@@ -376,6 +383,7 @@ impl ProviderCredentialUseError {
             Self::WrongProvider { .. } => "wrong_provider",
             Self::EndpointNotRecorded { .. } => "endpoint_not_recorded",
             Self::SubscriptionUnsupported { .. } => "subscription_unsupported",
+            Self::NotSubscription { .. } => "not_subscription",
             Self::NotBound { .. } => "not_bound",
             Self::OtherBackend { .. } => "other_backend",
             Self::Store { error, .. } => Self::native_code(error),

@@ -77,8 +77,12 @@ export const SIGN_IN_WAITING =
 export const SIGN_OUT_UNCONFIRMED =
   "Signed out here, but OpenAI did not confirm the revocation. You can also disconnect OMGCode in your ChatGPT settings.";
 
-/** What each control asks the core to do. Folders are chosen in a system dialog Rust opens. */
-const ACTIONS: Actions = {
+/**
+ * What each control asks the core to do. Folders are chosen in a system dialog Rust opens. The
+ * ChatGPT sign-in and sign-out drive the window's wait bar and notice, so `startSettings` defines
+ * them beside those elements and they have no entry here.
+ */
+const ACTIONS: Omit<Actions, "signInChatGpt" | "signOutChatGpt"> = {
   chooseRoot: () => (revision) => settingsApi.chooseRoot(revision),
   registerWorkspace: () => (revision) => settingsApi.registerWorkspace(revision),
   setPermissions: (workspaceId, permissions) => (revision) =>
@@ -94,9 +98,6 @@ const ACTIONS: Actions = {
     settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
   setApiKey: (name, apiKey) => (revision) => settingsApi.setApiKey(revision, name, apiKey),
   removeConnection: (name) => (revision) => settingsApi.removeConnection(revision, name),
-  signInChatGpt: (name) => (revision) => settingsApi.signInChatGpt(revision, name),
-  signOutChatGpt: (name) => async (revision) =>
-    (await settingsApi.signOutChatGpt(revision, name)).overview,
   // Neither is a permission, so neither names the settings revision.
   saveChatDefaults: (defaults) => () => settingsApi.saveChatDefaults(defaults),
   setWorkspaceInstructions: (workspaceId, instructions) => () =>

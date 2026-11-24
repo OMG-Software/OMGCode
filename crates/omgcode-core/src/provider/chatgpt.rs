@@ -302,7 +302,8 @@ pub(crate) fn sign_in_within(
     let (tokens, id_token) = on_auth_runtime(async {
         let client = auth_client(endpoints)?;
         let (status, body) = post_form(&client, &endpoints.token, form, cancel).await?;
-        let (tokens, id_token) = parse_code_exchange(status, body.as_deref(), now_seconds())?;
+        let (tokens, id_token) =
+            parse_code_exchange(status, body.as_deref().map(Vec::as_slice), now_seconds())?;
         Ok((tokens, id_token))
     })?;
     let keys = on_auth_runtime(async {
@@ -357,7 +358,12 @@ pub fn refresh(
     on_auth_runtime(async {
         let client = auth_client(endpoints)?;
         let (status, body) = post_form(&client, &endpoints.token, form, cancel).await?;
-        parse_refresh(status, body.as_deref(), refresh_token, now_seconds())
+        parse_refresh(
+            status,
+            body.as_deref().map(Vec::as_slice),
+            refresh_token,
+            now_seconds(),
+        )
     })
 }
 
@@ -524,7 +530,7 @@ async fn post_form(
     url: &Url,
     body: Zeroizing<String>,
     cancel: &CancelToken,
-) -> Result<(u16, Option<Vec<u8>>), SignInError> {
+) -> Result<(u16, Option<Zeroizing<Vec<u8>>>), SignInError> {
     let build = |remaining: Duration| {
         client
             .post(url.clone())
@@ -540,9 +546,12 @@ async fn post_form(
         .await
         .map_err(provider_to_sign_in)?;
     let status = response.status().as_u16();
+    // The answer to a code exchange or refresh holds both tokens, so it is
+    // zeroed when dropped, like every other copy of them in this module.
     let body = read_error_body(&mut response, cancel)
         .await
-        .map_err(provider_to_sign_in)?;
+        .map_err(provider_to_sign_in)?
+        .map(Zeroizing::new);
     Ok((status, body))
 }
 

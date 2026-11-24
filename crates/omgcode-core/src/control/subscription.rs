@@ -263,8 +263,8 @@ impl ControlStore {
     /// # Errors
     ///
     /// The `ProviderCredentialUseError` codes: an unknown profile, another
-    /// kind, a profile that is not a ChatGPT subscription profile, or one
-    /// that is not signed in.
+    /// kind, an API-key profile (`not_subscription`), a subscription profile
+    /// without OpenAI's endpoint, or one that is not signed in.
     pub fn provider_subscription(
         &self,
         name: &str,
@@ -284,6 +284,13 @@ impl ControlStore {
                 actual: profile.kind(),
             });
         }
+        if profile.auth() != ProviderAuth::Subscription {
+            return Err(ProviderCredentialUseError::NotSubscription {
+                profile: profile.name().to_owned(),
+            });
+        }
+        // An `openai` subscription profile is a ChatGPT connection only with
+        // OpenAI's fixed endpoint recorded.
         if !is_chatgpt_profile(status) {
             return Err(ProviderCredentialUseError::EndpointNotRecorded {
                 profile: profile.name().to_owned(),

@@ -206,6 +206,12 @@ fn sign_out_deletes_both_slots_and_keeps_the_registration() {
         store.provider_subscription("chatgpt"),
         Err(ProviderCredentialUseError::NotBound { .. })
     ));
+    // Each refusal names its real cause.
+    let refused = |name| store.provider_subscription(name).expect_err(name).code();
+    assert_eq!(refused("keys"), "not_subscription");
+    assert_eq!(refused("no-endpoint"), "endpoint_not_recorded");
+    assert_eq!(refused("claude"), "wrong_provider");
+    assert_eq!(refused("missing"), "unknown_profile");
     let request = store
         .subscription_sign_in_request("chatgpt")
         .expect("again");
