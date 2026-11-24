@@ -261,3 +261,46 @@ fn configured_filter_and_fsmonitor_commands_never_run() {
         "a configured command ran during the status run"
     );
 }
+
+/// The commands live only in a file that `.git/config` includes. Isolated
+/// permissions do not follow `include` or `includeIf`, and an included file
+/// would keep the including file's `Local` source, which the section filter
+/// rejects, so either control alone keeps the commands unknown.
+#[test]
+fn commands_in_an_included_config_file_never_run() {
+    let temp = tempfile::tempdir().expect("temp");
+    let work = temp.path().join("work");
+    fs::create_dir(&work).expect("work");
+    repository(&work);
+    let marker = temp.path().join("marker-executed");
+    let command = marker_command(&marker);
+
+    let config = work.join(".git/config");
+    let mut text = fs::read_to_string(&config).expect("config");
+    text.push_str("[include]\n\tpath = evil.inc\n[includeIf \"gitdir:**\"]\n\tpath = evil.inc\n");
+    fs::write(&config, text).expect("config");
+    fs::write(
+        work.join(".git/evil.inc"),
+        format!(
+            "[filter \"evil\"]\n\tclean = {command}\n\tsmudge = {command}\n\tprocess = {command}\n\trequired = true\n\
+             [diff \"evil\"]\n\ttextconv = {command}\n\tcommand = {command}\n\
+             [diff]\n\texternal = {command}\n"
+        ),
+    )
+    .expect("included file");
+    fs::write(work.join(".gitattributes"), "* filter=evil diff=evil\n").expect("attributes");
+
+    fs::write(work.join("tracked.txt"), "a much longer change\n").expect("modify");
+    fs::write(work.join("staged.txt"), "two\n").expect("same size rewrite");
+    fs::write(work.join("added.txt"), "new\n").expect("add");
+
+    let (paths, _) = changes(&work);
+    assert_eq!(
+        find(&paths, "tracked.txt").worktree,
+        Some(WorktreeChange::Modified)
+    );
+    assert!(
+        !marker.exists(),
+        "a command from an included file ran during the status run"
+    );
+}

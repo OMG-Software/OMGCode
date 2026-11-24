@@ -45,7 +45,7 @@ use std::time::Duration;
 use gix::bstr::ByteSlice;
 use gix::status::index_worktree::Item as WorktreeItem;
 
-use crate::control::{ControlError, ControlStore};
+use crate::control::{ControlError, ControlStore, FileScope};
 use crate::git_head::{MAX_HEAD_BYTES, OpenedScope, open_scope};
 use crate::policy::WorkspaceId;
 use omgcode_platform::broker::{RelativePath, is_missing_entry};
@@ -115,26 +115,44 @@ pub enum WorkspaceStatus {
     },
 }
 
-/// Read the status of a registered workspace.
+/// A registered workspace's recorded folders, taken while the control store is
+/// open so the status can be read after it is released.
+///
+/// A status run can take up to [`STATUS_DEADLINE`], and an open control store
+/// is the settings lock, so holding it for the run would refuse a send or a
+/// settings change as busy. [`workspace_status`] still opens the workspace by
+/// the recorded native identities, so a replaced folder is refused. A
+/// workspace unregistered between the two calls is read once more for display,
+/// which grants nothing.
+pub struct StatusScope(FileScope);
+
+/// Take the scope of a registered workspace for [`workspace_status`].
 ///
 /// # Errors
 ///
 /// The control errors of [`ControlStore`] for an unknown workspace, a missing
-/// development root, or an unhealthy store. Every repository problem is a
-/// [`WorkspaceStatus::Unavailable`] or [`WorkspaceStatus::NotRepository`]
-/// value instead.
-pub fn workspace_status(
+/// development root, or an unhealthy store.
+pub fn status_scope(
     control: &ControlStore,
     workspace_id: WorkspaceId,
-) -> Result<WorkspaceStatus, ControlError> {
-    let scope = control.file_scope(workspace_id)?;
+) -> Result<StatusScope, ControlError> {
+    control.file_scope(workspace_id).map(StatusScope)
+}
+
+/// Read the status of a workspace whose scope [`status_scope`] took. Call it
+/// after the control store is released.
+///
+/// Every repository problem is a [`WorkspaceStatus::Unavailable`] or
+/// [`WorkspaceStatus::NotRepository`] value.
+#[must_use]
+pub fn workspace_status(scope: &StatusScope) -> WorkspaceStatus {
     let OpenedScope {
         workspace_path,
         workspace,
         ..
-    } = match open_scope(&scope) {
+    } = match open_scope(&scope.0) {
         Ok(opened) => opened,
-        Err(reason) => return Ok(WorkspaceStatus::Unavailable(reason)),
+        Err(reason) => return WorkspaceStatus::Unavailable(reason),
     };
     // `.git/HEAD` read through the anchored handle proves `.git` is a real
     // folder inside the workspace, not a link or a pointer file.
@@ -143,24 +161,20 @@ pub fn workspace_status(
     match head {
         Ok(_) => {}
         Err(error) if is_missing_entry(&error) => {
-            return Ok(
-                match RelativePath::new(Path::new(".git"))
-                    .and_then(|path| workspace.read(&path, MAX_HEAD_BYTES))
-                {
-                    Err(error) if is_missing_entry(&error) => WorkspaceStatus::NotRepository,
-                    _ => WorkspaceStatus::Unavailable(
-                        "the .git entry is not a plain folder, so linked worktrees are not shown",
-                    ),
-                },
-            );
+            return match RelativePath::new(Path::new(".git"))
+                .and_then(|path| workspace.read(&path, MAX_HEAD_BYTES))
+            {
+                Err(error) if is_missing_entry(&error) => WorkspaceStatus::NotRepository,
+                _ => WorkspaceStatus::Unavailable(
+                    "the .git entry is not a plain folder, so linked worktrees are not shown",
+                ),
+            };
         }
         Err(_) => {
-            return Ok(WorkspaceStatus::Unavailable(
-                "the .git entry cannot be read",
-            ));
+            return WorkspaceStatus::Unavailable("the .git entry cannot be read");
         }
     }
-    Ok(status_of_directory(&workspace_path))
+    status_of_directory(&workspace_path)
 }
 
 /// The status of the repository whose worktree is exactly `directory`.

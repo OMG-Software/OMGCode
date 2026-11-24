@@ -54,7 +54,11 @@ and never run an external program.
    drivers only from accepted sections, so the status run knows no
    `filter.<name>.*` or `diff.<name>.*` command, and a `filter=<name>`
    attribute names no driver. Built-in conversions (line endings, `text`,
-   `ident`) stay in process. Because `gix` is built without `fsmonitor`,
+   `ident`) stay in process. The two controls overlap for included files.
+   In `gix` 0.91.0, isolated permissions set the `includes` permission to
+   false, so `include` and `includeIf` are not followed, and `gix-config`
+   0.63.0 gives a followed include the including file's source, so the filter
+   would still reject its sections as `Local`. Because `gix` is built without `fsmonitor`,
    `core.fsmonitor` is read by nothing. No hook runs: the status run does not
    call any. Submodules are ignored, so no second repository is opened.
 
@@ -78,7 +82,13 @@ and never run an external program.
    Untracked folders collapse to one entry. Rename detection between `HEAD`
    and the index considers at most 100 renames. Paths are lossy text for
    display, made display-safe in the app crate, and never reused as paths.
-   The command runs on the blocking pool, not the async executor.
+   The command runs on the blocking pool, not the async executor. The
+   service takes the workspace's recorded scope and branch with the control
+   store open, then releases that store, which is the settings lock, before
+   the status run, so a run of up to 10 seconds does not refuse a send or a
+   settings change as busy. The run still opens the workspace by its recorded
+   identities; a workspace unregistered between the two steps is read once
+   more for display, which grants nothing.
 
 6. **Read-only.** The status run does not write the index, refresh stat data,
    or create any file. The tab shows data and sends nothing back.
@@ -90,7 +100,11 @@ and never run an external program.
    `.gitattributes`, changes and adds files, runs the status function, and
    asserts the marker was never created. It runs on Windows and Linux. A
    control run, made once by hand with the section filter removed, created the
-   marker, so the test can fail. Other tests cover a clean repository,
+   marker, so the test can fail. A second test puts the same commands only in
+   a file that `.git/config` names with `include` and `includeIf`. Control
+   runs made by hand showed it creates the marker when includes are followed
+   and the filter is removed, and stays clean with includes followed and the
+   filter kept. Other tests cover a clean repository,
    worktree and staged changes, collapsed untracked folders, the 1,000-path
    bound, a `core.worktree` that points elsewhere, a `.git` folder that is not
    a repository, and a corrupt index; the last two are controlled

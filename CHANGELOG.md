@@ -38,8 +38,10 @@ Changes are recorded here before a release version is assigned.
     `workspace_git_status`, read in process with the pure-Rust `gix` 0.91.0
     crate (`status` and `sha1` features only). The repository's own
     configuration is not applied, so no filter, diff driver, hook, or
-    fsmonitor program runs, and nothing is written; a run stops after 10
-    seconds (ADR-0085). The dependency adds 81 lockfile packages.
+    fsmonitor program runs, not even from an included file, and nothing is
+    written. A run stops after 10 seconds and holds no settings lock, so it
+    never makes a send or a settings change busy (ADR-0085). The dependency
+    adds 81 lockfile packages.
   - **Processes** lists the session's model command-tool calls, newest first,
     through `session_processes`, joined from the model action, run, and
     session journals. It never starts, stops, or re-runs anything, returns no

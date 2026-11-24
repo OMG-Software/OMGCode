@@ -86,9 +86,11 @@ folder and registers it disabled, and nothing in it runs.
 
 ## Consequences
 
-- The shell has 45 commands, 17 of them in the `settings` window; the
-  capability file, the policy enum, the shared name list, and the layer tests
-  were updated together.
+- The `settings` window gains three commands; the capability file, the
+  policy enum, the shared name list, and the layer tests were updated
+  together. With ADR-0081 to ADR-0089 merged in version 0.56.0, the shell has
+  56 commands, 24 of them in the `settings` window; the "Commands" table in
+  the desktop interface guide is the current count.
 - A compromised settings webview can disable or remove skills, and can ask for
   an import or an enable, but it cannot choose a folder or answer the native
   dialog.

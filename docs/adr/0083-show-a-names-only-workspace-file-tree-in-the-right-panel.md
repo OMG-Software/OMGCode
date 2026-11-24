@@ -99,7 +99,8 @@ Constraints:
 
 ## Consequences
 
-- The `main` window gains a 43rd command and a Files tab. The model tools,
+- The `main` window gains one command and a Files tab (29 `main` commands
+  of 56 once ADR-0081 to ADR-0089 merged in version 0.56.0). The model tools,
   approvals, and workspace preferences do not change.
 - The tree shows at most 512 names per directory, and which names are left out
   of a larger one depends on the file system's order.

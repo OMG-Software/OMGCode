@@ -21,7 +21,9 @@ use omgcode_core::control::{
     ContainerGrantAccess, ContainerGrantState, ControlStore, ProfilePlatform,
 };
 use omgcode_core::git_head::{WorkspaceHead, workspace_head};
-use omgcode_core::git_status::{IndexChange, WorkspaceStatus, WorktreeChange, workspace_status};
+use omgcode_core::git_status::{
+    IndexChange, WorkspaceStatus, WorktreeChange, status_scope, workspace_status,
+};
 use omgcode_core::policy::WorkspaceId;
 use omgcode_core::turn::display_safe_line;
 
@@ -306,9 +308,13 @@ impl DesktopService {
             return Err(DesktopError::unknown_workspace());
         };
         let head = workspace_head(&store, workspace_id);
-        let status = workspace_status(&store, workspace_id)
+        let scope = status_scope(&store, workspace_id)
             .map_err(|error| DesktopError::from_control(&error))?;
+        // The status run can take seconds, and the open store is the settings
+        // lock: release it first so a send or a settings change is not refused
+        // as busy meanwhile. The run reopens the workspace by its identities.
         drop(store);
+        let status = workspace_status(&scope);
         let branch = branch_view(Some(head.unwrap_or(WorkspaceHead::Unreadable(
             "the workspace record cannot be used",
         ))));

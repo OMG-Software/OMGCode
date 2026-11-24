@@ -107,8 +107,9 @@ them (`workspace profile-add`, `profile-remove`, `package-profile-add`,
 
 - The three groups are changeable from the window with the CLI's validation and
   events, and the CLI still works on the same store.
-- The service has six more methods, the shell six more commands (51 in all,
-  23 in `settings`), and the overview one more field.
+- The service has six more methods, the shell six more `settings` commands
+  (56 in all and 24 in `settings` once ADR-0081 to ADR-0089 merged in version
+  0.56.0), and the overview one more field.
 - A refusal by core that depends on the folders (overlap, a `PATH` entry outside
   a root) arrives after the dialogs, because the window does not duplicate
   core's checks. The error is controlled text.
