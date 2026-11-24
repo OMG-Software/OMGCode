@@ -143,6 +143,34 @@ export function icon(name: IconName): SVGSVGElement {
 }
 
 /**
+ * The OMGCode knob from the OMG Software project icons (ADR-0095): the toggle's right-hand knob
+ * with a cut-out `>_` prompt, the brand's standalone symbol for small sizes. The path is fixed
+ * here and fills with the current text colour, so the window's CSS chooses the brand orange.
+ */
+const BRAND_KNOB =
+  "M64 32A32 32 0 1 1 0 32A32 32 0 1 1 64 32Z M15 17Q17 15 19 17L33 29Q36 32 33 35L19 47Q17 49 14 47L13 46Q11 44 14 42L25 32L14 22Q12 20 15 17Z M34 43H49Q52 43 52 46Q52 49 49 49H34Q31 49 31 46Q31 43 34 43Z";
+
+/**
+ * Creates the decorative 18-pixel OMGCode knob. It sits beside a heading that already names the
+ * window, so it is hidden from assistive technology.
+ */
+export function brandMark(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 64 64");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.classList.add("brand-mark");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("fill-rule", "evenodd");
+  path.setAttribute("d", BRAND_KNOB);
+  svg.appendChild(path);
+  return svg;
+}
+
+/**
  * Creates a `<button type="button">` that shows only an icon. `label` is its accessible name
  * and its tooltip.
  */

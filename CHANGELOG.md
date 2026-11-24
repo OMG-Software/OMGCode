@@ -213,6 +213,15 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Version 0.61.0 opens the ChatGPT sign-in page in the default browser on
+  Windows (ADR-0094). Sign-in ran `explorer.exe` with the authorization
+  address, which opened a File Explorer window instead of a browser. A new
+  `omgcode-platform::browser` module now calls `ShellExecuteExW` with the
+  `open` verb on a dedicated COM thread, without a shell or Explorer command
+  line. It accepts only an `https://` address of at most 8 KiB made of
+  RFC 3986 URI characters; Linux still runs `/usr/bin/xdg-open`. The real
+  browser launch was not exercised by an automated test.
+
 - On Windows, a settings command that waits for a withdrawn run, such as
   `workspace profile-remove`, no longer fails with "run journal I/O failed"
   (`os error 32`) when the run ends at that moment. The run's supervisor
@@ -271,6 +280,15 @@ Changes are recorded here before a release version is assigned.
   it as stale.
 
 ### Changed
+
+- Version 0.61.0 restyles the desktop windows in the OMG Software
+  outlined-toggle palette (ADR-0095). The theme uses neutral greys around
+  charcoal `#151515`, switch orange `#ff761f` as the accent, and charcoal
+  text on it; the Rust window background follows, and a test keeps it equal
+  to `--bg`. The sessions panel, the `settings` navigation, and the
+  `approvals` header lead their heading with the OMGCode knob, and the app
+  icons are the OMGCode project icons. **New session** no longer wraps at the
+  panel's default width.
 
 - Version 0.58.0 turns desktop auto-compaction on by default and sets the
   default compaction threshold to 400K tokens (ADR-0091). The new values

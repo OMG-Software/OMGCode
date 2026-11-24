@@ -471,7 +471,9 @@ pub fn list_connection_models(connection: &LocalConnection) -> Result<Vec<Listed
 }
 
 /// Open the sign-in address in the system browser without a shell. Only an
-/// OpenAI sign-in address is opened.
+/// OpenAI sign-in address is opened. Windows uses the shell's URL association
+/// (`ShellExecuteExW`), not `explorer.exe`, which opened a File Explorer
+/// window for the long authorize address (ADR-0094).
 ///
 /// # Errors
 ///
@@ -481,36 +483,7 @@ pub fn open_system_browser(address: &str) -> Result<(), SignInError> {
     if !address.starts_with("https://auth.openai.com/api/accounts/authorize?") {
         return Err(SignInError::Browser);
     }
-    launch_browser(address)
-}
-
-#[cfg(windows)]
-fn launch_browser(address: &str) -> Result<(), SignInError> {
-    let root = std::env::var_os("SystemRoot").ok_or(SignInError::Browser)?;
-    std::process::Command::new(std::path::PathBuf::from(root).join("explorer.exe"))
-        .arg(address)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(drop)
-        .map_err(|_| SignInError::Browser)
-}
-
-#[cfg(not(windows))]
-fn launch_browser(address: &str) -> Result<(), SignInError> {
-    let mut child = std::process::Command::new("/usr/bin/xdg-open")
-        .arg(address)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| SignInError::Browser)?;
-    // Reap the launcher so it does not linger as a zombie.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    omgcode_platform::browser::open_https_address(address).map_err(|_| SignInError::Browser)
 }
 
 #[cfg(test)]

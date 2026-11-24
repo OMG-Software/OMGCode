@@ -1,25 +1,26 @@
 /*
- * One dark theme for every window (ADR-0065): near-black greys with an orange accent.
- * tests/tokens.test.ts reads the colour values below and checks their contrast, so keep each
- * colour token a six-digit hex value on its own line.
+ * One dark theme for every window (ADR-0065) in the OMG Software outlined-toggle palette
+ * (ADR-0095): neutral greys built around charcoal #151515, with switch orange #ff761f as the
+ * accent and charcoal text on it. tests/tokens.test.ts reads the colour values below and checks
+ * their contrast, so keep each colour token a six-digit hex value on its own line.
  *
  * Orange marks actions, focus, selection, and "waiting for you". It never marks a permission
  * at Allow, so the riskiest state never looks like the recommended one.
  */
 :root {
   color-scheme: dark;
-  --bg: #0e0f11;
-  --surface: #16181b;
-  --surface-2: #1e2125;
-  --surface-3: #262a2f;
-  --border: #2c3036;
-  --control-border: #6b717a;
-  --text: #e8e6e3;
-  --muted: #a19d97;
-  --accent: #ff7a1a;
-  --accent-hover: #ff8f3d;
-  --accent-text: #1a0d00;
-  --accent-fg: #ff9447;
+  --bg: #111111;
+  --surface: #151515;
+  --surface-2: #1e1e1e;
+  --surface-3: #282828;
+  --border: #2e2e2e;
+  --control-border: #6e6e6e;
+  --text: #ededed;
+  --muted: #a6a6a6;
+  --accent: #ff761f;
+  --accent-hover: #ff8a3d;
+  --accent-text: #151515;
+  --accent-fg: #ff8a3d;
   --accent-soft: #2a1a0e;
   --danger: #ff7070;
   --danger-bg: #2d1416;
@@ -59,6 +60,18 @@ h3 {
 
 h1 {
   font-size: 16px;
+}
+
+/* A window heading led by the OMGCode knob (ADR-0095). */
+.brand-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.brand-mark {
+  flex: none;
+  color: var(--accent);
 }
 
 h2 {

@@ -2,6 +2,7 @@
 //! implement an execution sandbox.
 
 pub mod broker;
+pub mod browser;
 pub mod container;
 pub mod credentials;
 pub mod interrupt;

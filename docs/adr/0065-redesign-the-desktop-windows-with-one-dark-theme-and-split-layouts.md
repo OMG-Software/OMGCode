@@ -1,6 +1,6 @@
 # 0065: Redesign the desktop windows with one dark theme and split layouts
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0095](0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md)
 - Date: 2026-11-19
 - Implemented: version 0.45.0
 

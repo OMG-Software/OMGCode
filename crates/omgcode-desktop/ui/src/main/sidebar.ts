@@ -2,7 +2,7 @@ import { button, el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { SearchHit, SessionSummary, SessionTree, TreeSort, TreeView } from "../ipc/types";
-import { iconButton } from "../ui/icons";
+import { brandMark, iconButton } from "../ui/icons";
 import { createPopover } from "../ui/popover";
 import { segmented } from "../ui/segmented";
 import { SEARCH_LIMIT, SEARCH_MAX_CHARS } from "./model";
@@ -144,7 +144,7 @@ export function createSidebar(handlers: SidebarHandlers): Sidebar {
     el(
       "div",
       { class: "sidebar-title-row" },
-      el("h1", { text: "OMGCode" }),
+      el("h1", { class: "brand-title" }, brandMark(), "OMGCode"),
       el(
         "div",
         { class: "sidebar-title-actions" },

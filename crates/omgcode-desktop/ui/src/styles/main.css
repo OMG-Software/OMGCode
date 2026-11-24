@@ -84,6 +84,12 @@
   align-items: center;
 }
 
+/* The label stays on one line; a narrow panel moves the actions under the title instead. */
+.sidebar-title-actions .primary {
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+
 /* A collapsed panel: a column of icon buttons. */
 .panel-rail {
   display: flex;
@@ -259,6 +265,7 @@ button.files-row:hover {
 
 .sidebar-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
