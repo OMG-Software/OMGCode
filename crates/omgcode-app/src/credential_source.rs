@@ -314,7 +314,9 @@ pub struct ProfileConnection {
     /// The recorded endpoint, validated again by the shared rule.
     pub endpoint: ModelEndpoint,
     /// The bound credential, or `None` for a `none` profile. It is present
-    /// for every hosted profile, which accepts only `api_key`.
+    /// for a hosted `api_key` profile with a bound credential. An `openai` or
+    /// `anthropic` profile may record `subscription`, which carries no token
+    /// and is refused before a credential is read.
     pub token: Option<LmToken>,
 }
 

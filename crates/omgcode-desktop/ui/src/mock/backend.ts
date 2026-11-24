@@ -1042,7 +1042,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               );
             }
             checkApiKey(apiKey);
-            if (!/^https:\/\/[a-z0-9.-]+(:[0-9]+)?(\/[A-Za-z0-9._~-]+)*\/?$/.test(endpoint)) {
+            if (!isCustomEndpoint(endpoint)) {
               fail("control", "an openai_compatible endpoint must be an https:// base URL");
             }
             recorded = endpoint;
@@ -1583,6 +1583,39 @@ const MAX_ENDPOINT_BYTES = 256;
  * from accepting or refusing what the application would not.
  */
 export function isLocalEndpoint(endpoint: string): boolean {
+  return isLocalEndpointText(endpoint);
+}
+
+/**
+ * The mock's copy of core's typed-endpoint rule for `openai_compatible` (`validate_custom_url`,
+ * ADR-0091), step by step. The browser's `URL` follows the same WHATWG standard as the `url` crate,
+ * so "written exactly as the parser writes it" carries over: a `.` or `..` segment, an upper-case
+ * host, a default port, or a non-ASCII host is rewritten by the parser and therefore refused.
+ */
+export function isCustomEndpoint(endpoint: string): boolean {
+  if (
+    new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES ||
+    !endpoint.startsWith("https://") ||
+    Array.from(endpoint).some((c) => /[\p{Cc}\s%@?#\\]/u.test(c))
+  ) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const written = url.href;
+  return (
+    url.protocol === "https:" &&
+    url.hostname !== "" &&
+    (written === endpoint || written === `${endpoint}/`) &&
+    !url.pathname.includes("//")
+  );
+}
+
+function isLocalEndpointText(endpoint: string): boolean {
   if (new TextEncoder().encode(endpoint).length > MAX_ENDPOINT_BYTES) {
     return false;
   }

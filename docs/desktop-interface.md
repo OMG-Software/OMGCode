@@ -1094,10 +1094,13 @@ waits. The window shows:
   argument fixed the connection, it is disabled and says so. Then one row per
   provider profile, with its name, an **Active** chip, its provider,
   endpoint, and authentication, whether a credential is bound, and
-  **Remove**. A hosted profile also has a **Hosted** chip, a line saying that
-  prompts, workspace text read by tools, and command output leave this
-  computer for its endpoint's host, and a **Set key…** disclosure with a
-  password field and **Save key**. Then **Add connection**, a disclosure with
+  **Remove**. A hosted profile also has a **Hosted** chip and a line saying
+  that prompts, workspace text read by tools, and command output leave this
+  computer for its endpoint's host. A hosted `api_key` profile with a
+  recorded endpoint also has a **Set key…** disclosure with a password field
+  and **Save key**. A `subscription` profile has no key field, and a profile
+  recorded without an endpoint has none either; its line says instead that it
+  cannot be used and must be removed and added again. Then **Add connection**, a disclosure with
   labelled provider, name, and endpoint fields. The provider dropdown lists
   `Ollama`, `LM Studio`, and every hosted kind with "(hosted)" after its name,
   ending with `OpenAI compatible (hosted)` (ADR-0091). For a local provider

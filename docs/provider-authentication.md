@@ -370,7 +370,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
 | `z_ai` | `https://api.z.ai/api/paas/v4` | `max_tokens` |
 | `deepseek` | `https://api.deepseek.com` | `max_tokens` |
 | `xai` | `https://api.x.ai/v1` | `max_completion_tokens` |
-| `openai_compatible` | typed by the operator | `max_tokens` |
+| `openai_compatible` | typed by the operator | `max_tokens`, unless the typed address is a named provider's endpoint, which sends that provider's field (below) |
 
 - **Fixed endpoints.** A named kind accepts exactly its endpoint, or that text
   with one trailing `/`. Core has one table (`provider/hosted.rs`) that the
