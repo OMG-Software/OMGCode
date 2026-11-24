@@ -180,7 +180,8 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_clear_scope,
             commands::settings::settings_repair_data_folder,
             commands::settings::settings_save_chat_defaults,
-            commands::settings::settings_set_workspace_instructions
+            commands::settings::settings_set_workspace_instructions,
+            commands::sessions::session_processes
         ])
         .build(tauri::generate_context!());
     match built {

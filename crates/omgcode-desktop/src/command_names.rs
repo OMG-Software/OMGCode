@@ -46,4 +46,5 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_repair_data_folder",
     "settings_save_chat_defaults",
     "settings_set_workspace_instructions",
+    "session_processes",
 ];

@@ -15,7 +15,9 @@ import type {
   ConnectionStatus,
   ConnectionView,
   PermissionFlags,
+  ProcessEntry,
   SearchHit,
+  SessionProcesses,
   SessionSummary,
   SettingsOverview,
   SnippetPart,
@@ -767,6 +769,68 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           workspace_registered: true,
           branch: { state: "branch", name: "main", note: null },
         };
+      // The session's command-tool calls (ADR-0086): fixed fake entries. A call is `running` only
+      // while the mock session's chat turn runs, as with core; otherwise it is `unfinished`.
+      case "session_processes": {
+        const item = session(str(args, "session_id"));
+        const at = (secondsAgo: number): string =>
+          new Date(now() - secondsAgo * 1000).toISOString();
+        const open = item.summary.status === "running" ? "running" : "unfinished";
+        const entry = (
+          call_id: string,
+          started: number,
+          overrides: Partial<ProcessEntry>,
+        ): ProcessEntry => ({
+          call_id,
+          state: "finished",
+          started_at: at(started),
+          finished_at: null,
+          duration_ms: null,
+          program: "cargo",
+          arguments: [],
+          text_truncated: false,
+          argument_count: 0,
+          profile: "rust",
+          result: null,
+          limit: null,
+          reason: null,
+          ...overrides,
+        });
+        const processes: SessionProcesses = {
+          entries: [
+            entry("call_5", 5, { state: open, program: "cargo", arguments: ["test", "--lib"] }),
+            entry("call_4", 60, {
+              finished_at: at(30),
+              duration_ms: 30_000,
+              arguments: ["build", "--release"],
+              result: { kind: "limit_exceeded", exit_code: null, signal: null },
+              limit: "memory",
+            }),
+            entry("call_3", 120, {
+              state: "refused",
+              program: "rm",
+              arguments: ["-rf", "target"],
+              profile: null,
+              reason: "approval_denied",
+            }),
+            entry("call_2", 180, {
+              finished_at: at(179),
+              duration_ms: 1200,
+              arguments: ["test"],
+              result: { kind: "exited", exit_code: 1, signal: null },
+            }),
+            entry("call_1", 240, {
+              finished_at: at(239),
+              duration_ms: 350,
+              arguments: ["--version"],
+              result: { kind: "exited", exit_code: 0, signal: null },
+            }),
+          ],
+          truncated: false,
+          run_details: "available",
+        };
+        return clone(processes);
+      }
       case "connection_status": {
         const id = args.session_id;
         if (id !== null && typeof id !== "string") {
