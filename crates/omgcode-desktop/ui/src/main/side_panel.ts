@@ -23,11 +23,23 @@ export interface SidePanelHandlers {
   onExpand(): void;
 }
 
+/** A fixed action the collapsed rail offers below the tab icons; it only expands the panel. */
+export interface RailAction {
+  icon: IconName;
+  /** The button's tooltip and accessible name. */
+  label: string;
+}
+
+export interface SidePanelOptions {
+  /** Rail actions for what the fixed footer holds, since a collapsed panel hides the footer. */
+  railActions?: readonly RailAction[];
+}
+
 export interface SidePanel {
   element: HTMLElement;
   /**
    * The fixed footer: below the scrolling tab content, outside it, and visible on every tab.
-   * It is empty until a feature puts something in it.
+   * The model box fills it (ADR-0089).
    */
   footer: HTMLElement;
   setCollapsed(collapsed: boolean): void;
@@ -43,7 +55,11 @@ export interface SidePanel {
  * expands the panel on its tab. The selection lasts until the window closes. Keys follow the ARIA
  * tabs pattern through `createTabs`. A tab's content must be built from `el` and text nodes.
  */
-export function createSidePanel(specs: readonly SideTab[], handlers: SidePanelHandlers): SidePanel {
+export function createSidePanel(
+  specs: readonly SideTab[],
+  handlers: SidePanelHandlers,
+  options: SidePanelOptions = {},
+): SidePanel {
   const first = specs[0];
   if (first === undefined) {
     throw new Error("A side panel needs at least one tab.");
@@ -118,6 +134,13 @@ export function createSidePanel(specs: readonly SideTab[], handlers: SidePanelHa
     });
     railButtons.set(spec.id, railButton);
     rail.append(railButton);
+  }
+  const actions = options.railActions ?? [];
+  if (actions.length > 0) {
+    rail.append(el("span", { class: "rail-spacer" }));
+    for (const action of actions) {
+      rail.append(iconButton(action.icon, action.label, handlers.onExpand));
+    }
   }
 
   const element = el(

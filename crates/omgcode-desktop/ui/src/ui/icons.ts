@@ -15,6 +15,12 @@ const ICONS = {
   panelLeft: [FRAME, ["path", { d: "M9 4v16" }]],
   /** A frame with a right column: the terminal panel. */
   panelRight: [FRAME, ["path", { d: "M15 4v16" }]],
+  /** Two sliders: the provider and model choice. */
+  model: [
+    ["path", { d: "M4 8h9M19 8h1M4 16h1M11 16h9" }],
+    ["circle", { cx: "16", cy: "8", r: "2.5" }],
+    ["circle", { cx: "8", cy: "16", r: "2.5" }],
+  ],
   plus: [["path", { d: "M12 5v14M5 12h14" }]],
   search: [
     ["circle", { cx: "11", cy: "11", r: "6.5" }],

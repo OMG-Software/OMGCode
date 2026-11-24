@@ -26,6 +26,7 @@ import {
   statusLabel,
   TRANSCRIPT_PAGE_SIZE,
 } from "./model";
+import type { ModelBox } from "./model_box";
 import { createLiveEntry, entryContexts, type LiveEntry, renderEntry } from "./transcript";
 
 const MAX_PAGES_PER_LOAD = 50;
@@ -36,6 +37,8 @@ export interface ConversationDeps {
   onTreeChanged(): void;
   /** The open session's provider and model, shared with the composer (ADR-0071). */
   connection: ConnectionModel;
+  /** The provider and model choice in the side panel footer, which the composer reads (ADR-0089). */
+  modelBox: ModelBox;
 }
 
 export interface Conversation {
@@ -86,6 +89,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
       onCancel: () => void cancelChat(),
     },
     deps.connection,
+    deps.modelBox,
   );
 
   const header = el("header", { class: "pane-header" });
@@ -469,7 +473,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
       setNotice({ text: `${error.message} (${error.code})`, error: true });
       if (error.code === CONNECTION_CHANGED_CODE || error.code === SESSION_CONNECTION_STALE_CODE) {
         // The settings window chose another connection, or the profile this session chose was
-        // removed or changed. Read the session's connection again, so the dropdowns show the
+        // removed or changed. Read the session's connection again, so the model box shows the
         // truth and the model list is loaded for it; the draft is kept.
         await deps.connection.refresh().catch(() => undefined);
       }

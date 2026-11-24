@@ -1561,8 +1561,8 @@ describe("status bar", () => {
     expect(footer().querySelector("select")).toBeNull();
     expect(footer().textContent).not.toContain("Model");
     expect(footer().textContent).not.toContain("The settings store is unhealthy.");
-    // The composer still reports the failure.
-    expect(root.querySelector(".composer-model-status")?.textContent).toContain(
+    // The model box still reports the failure.
+    expect(root.querySelector(".model-box-status")?.textContent).toContain(
       "The settings store is unhealthy. (control)",
     );
   });

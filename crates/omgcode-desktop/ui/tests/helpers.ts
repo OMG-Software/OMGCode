@@ -238,7 +238,7 @@ export function choose(select: HTMLSelectElement, value: string): void {
 
 /** The composer's model choice. */
 export function modelSelect(scope: ParentNode): HTMLSelectElement {
-  const found = scope.querySelector<HTMLSelectElement>('.composer select[aria-label="Model"]');
+  const found = scope.querySelector<HTMLSelectElement>('.model-box select[aria-label="Model"]');
   if (found === null) {
     throw new Error("No model choice");
   }

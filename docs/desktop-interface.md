@@ -45,8 +45,8 @@ merged to `main` at the time of writing):
   `settings` window can also add and remove local connections without a
   credential. The status bar at the bottom of the `main` window shows the
   open session's workspace and its Git branch. It offered the same
-  dropdown until ADR-0084 removed it; the composer still chooses a
-  session's provider. A launch argument still fixes the connection for the
+  dropdown until ADR-0084 removed it; the model box in the
+  right-hand panel's footer chooses a session's provider (ADR-0089). A launch argument still fixes the connection for the
   process.
 - Since version 0.32.0 (Phase D4 and E6, ADR-0049), a chat turn streams the
   local model's reply and the shell pushes chat events to the `main` window
@@ -94,6 +94,10 @@ merged to `main` at the time of writing):
   the open session's workspace through the new `workspace_entries` command,
   and a fixed footer slot sits under every tab. See
   [right-hand panel](#right-hand-panel).
+- Unreleased (ADR-0089), the provider and model choice moved from the
+  composer to a box in the right-hand panel's fixed footer, with a **Model**
+  rail icon when the panel is collapsed. No command, IPC shape, or permission
+  changed.
 
 Not implemented:
 
@@ -363,8 +367,9 @@ The `main` window is laid out as follows.
   each with an accessible name and a tooltip. The sessions rail holds Expand,
   **New session**, Search, Sessions, **Approvals** with the waiting count, and
   **Settings**; Search and Sessions expand the panel and focus the search box
-  or the open session. The right-hand rail holds one icon per tab; each
-  expands the panel on its tab.
+  or the open session. The right-hand rail holds one icon per tab, each
+  expanding the panel on its tab, and, at its bottom, a **Model** icon button
+  that expands the panel to the model box (ADR-0089).
 - **Right-hand panel.** Tabs, a scrolling content area, and a fixed footer;
   see [right-hand panel](#right-hand-panel). The Terminal tab holds a note
   that no terminal is available and that the panel starts no shell and runs
@@ -419,16 +424,16 @@ The `main` window is laid out as follows.
   different pages.
 - **Composer.** The message box, then one toolbar: a **Skills (n)** menu,
   where n counts the skills chosen for the turn, hidden when no skill is
-  enabled; a **Provider** dropdown and a **Model** dropdown with its
-  **Refresh** button for the open session (see "Provider and model per
-  session"); and a **Chat settings** menu, opened by a gear icon button named and
+  enabled; and a **Chat settings** menu, opened by a gear icon button named and
   tooltipped "Chat settings" that reports `aria-expanded` and `aria-controls`
   (distinct from the three-slider **Settings** icon), with the read-only endpoint,
   **Auto-compact**, the compaction slider, **Enter to send**, and **Save as
   defaults**. On the right are the byte counter, the running label, the
   **Workspace settings** icon button (see "Settings window"), **Cancel**, and
   **Send**. The counter appears only above 80% of the
-  message limit or when the message is over it.
+  message limit or when the message is over it. The composer holds no
+  provider or model control since ADR-0089: a send reads the chosen model
+  from the model box and the endpoint from the shared connection.
 - **No waiting marker.** The `main` window cannot tell which session an
   approval belongs to: `chat_status`, the chat events, and `approvals_summary`
   carry no such signal, and the approval detail is not available to its
@@ -451,8 +456,18 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
   expands the panel on that tab.
 - **A scrolling content area** with the selected tab's content.
 - **A fixed footer** under the content area, outside its scrolling and shown
-  on every tab. The panel's API exposes it as `footer`. It is empty until a
-  feature fills it.
+  on every tab. The panel's API exposes it as `footer`. It holds the model
+  box (ADR-0089).
+- **The model box** (`ui/src/main/model_box.ts`, ADR-0089): a "Model" heading,
+  the **Provider** dropdown, the **Model** dropdown with its **Refresh**
+  button, and the status notes (list status, off-machine warning, connection
+  message, unreadable saved choices), stacked vertically. It does not scroll
+  with the tab content and stays when the tab changes. A collapsed panel
+  hides it, so the rail's **Model** icon button (named and tooltipped
+  "Model") expands the panel. The controls are the ones ADR-0071 placed in
+  the composer, over the same shared connection state, with the same
+  commands, native confirmation, and disabled states: disabled while no
+  session accepts a message or a turn runs. Only the place changed.
 
 **Terminal tab.** The note from ADR-0072; no command is called.
 
@@ -666,7 +681,8 @@ untouched controls take the returned values.
   kept; the loaded value does not replace it. `chat_defaults` returns it as `enter_to_send`,
   outside the turn settings, because it never reaches a turn (ADR-0062).
 - **Model choice.** Since 0.46.0 (ADR-0066) the model is a dropdown with a
-  **Refresh** button, in the composer toolbar since ADR-0071. `chat_models`
+  **Refresh** button, in the model box in the side panel footer since ADR-0089
+  (the composer toolbar from ADR-0071 until then). `chat_models`
   takes the session id, resolves that session's connection exactly as
   `chat_send` does, stored credential included, and sends one
   `GET /v1/models` to its endpoint, which is a loopback endpoint or the fixed
@@ -700,8 +716,8 @@ untouched controls take the returned values.
   model is chosen. Choosing a model grants nothing; `chat_send` validates it
   as before. Embedding models are listed too and cannot answer a turn.
 - **Provider and model per session** (ADR-0071 decisions 6 to 11). The
-  provider and the model belong to the open session. The composer's
-  **Provider** dropdown renders a state read from `connection_status` for
+  provider and the model belong to the open session. The model box's
+  (ADR-0089; the composer's until then) **Provider** dropdown renders a state read from `connection_status` for
   the session; the status bar no longer has a provider dropdown (ADR-0084). Opening a session reads its connection and model and lists its
   models; switching sessions switches both and shows no dialog, because the
   choice was confirmed when it was made. Choosing a provider calls
@@ -717,7 +733,7 @@ untouched controls take the returned values.
   (`--endpoint` or `--provider-profile`) fixes the connection of every
   session: both provider dropdowns are disabled and show "Set at launch", and
   the model is still chosen from that connection's list. `chat_send` keeps
-  sending the composer's endpoint and model; Send is disabled without a model
+  sending the endpoint of the shared connection and the model the model box shows; Send is disabled without a model
   and while the session's provider is being read or has gone stale.
 - **Saved preferences.** Two windows save one file, each its own fields,
   under one service lock, so neither overwrites the other's (ADR-0080). The
@@ -1023,14 +1039,15 @@ waits. The window shows:
 - **Status bar.** A footer along the bottom of `main` shows the open
   session's workspace folder, its Git branch, and the approvals segment
   (ADR-0064). Until ADR-0084 it also held a **Model** provider dropdown and
-  a connection message; both are removed because the composer chooses the
-  provider and model per session (ADR-0071) and shows the failure or
+  a connection message; both are removed because the model box in the side
+  panel footer chooses the provider and model per session (ADR-0071, ADR-0089)
+  and shows the failure or
   "The model provider was not changed." note beside its own dropdowns, so no
   connection message is lost. The footer calls no connection command, but
   its focus and tree-change refresh still asks the shared connection state
-  to read `connection_status` again, so the composer follows a connection
+  to read `connection_status` again, so the model box follows a connection
   changed in the `settings` window. `connection_select` stays in the `main`
-  capability only for the composer's **Provider** dropdown, with the native
+  capability only for the model box's **Provider** dropdown, with the native
   Yes/No dialog described there. The branch comes from
   `session_context`, which reads only `HEAD` through the anchored broker (see
   "Git branch display"). The footer reads the branch again when the window

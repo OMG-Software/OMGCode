@@ -289,12 +289,15 @@ describe("composer toolbar", () => {
     expect(settings.querySelector(".fixed-value")?.textContent).toBe(SETTINGS.endpoint);
     expect(settings.textContent).toContain("Follows the session's provider");
     expect(buttonByText(settings, "Save as defaults")).toBeDefined();
-    // The model and the provider moved to the toolbar (ADR-0071); nothing is typed (ADR-0066).
+    // The model and the provider moved to the side panel (ADR-0089); nothing is typed (ADR-0066).
     expect(settings.querySelectorAll("input[type=text]")).toHaveLength(0);
     expect(settings.querySelectorAll("select")).toHaveLength(0);
-    const tools = root.querySelector(".composer-tools") as HTMLElement;
-    expect(tools.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
-    expect(tools.querySelectorAll('select[aria-label="Provider"]')).toHaveLength(1);
+    // They sit in the side panel's model box, not the composer (ADR-0089).
+    const composer = root.querySelector(".composer") as HTMLElement;
+    expect(composer.querySelectorAll("select")).toHaveLength(0);
+    const modelBox = root.querySelector(".model-box") as HTMLElement;
+    expect(modelBox.querySelectorAll('select[aria-label="Model"]')).toHaveLength(1);
+    expect(modelBox.querySelectorAll('select[aria-label="Provider"]')).toHaveLength(1);
     // Budgets and instructions moved to the settings window (ADR-0080); a slider sets the
     // compaction threshold.
     expect(settings.querySelectorAll("input[type=number]")).toHaveLength(0);

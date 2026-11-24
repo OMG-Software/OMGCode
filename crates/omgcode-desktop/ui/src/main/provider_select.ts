@@ -16,8 +16,8 @@ export interface ProviderSelect {
 }
 
 /**
- * A provider dropdown over the shared connection state (ADR-0071 decision 11). The composer
- * builds it (the status bar no longer has one, ADR-0084). Choosing
+ * A provider dropdown over the shared connection state (ADR-0071 decision 11). The model box in the
+ * side panel footer builds it (ADR-0089; the status bar has none, ADR-0084). Choosing
  * an entry only names a profile: Rust asks for a native Yes/No confirmation before anything is
  * recorded, so this window cannot switch on its own.
  */
