@@ -13,8 +13,10 @@ Changes are recorded here before a release version is assigned.
   now be used. Each named kind accepts only its provider's one documented
   OpenAI-compatible endpoint, which Rust supplies; an `openai_compatible`
   profile records an `https://` base URL the operator types, refused rather
-  than rewritten when it is not in the form the URL parser writes. Every
-  hosted kind needs a stored API key and is used through the existing Chat
+  than rewritten when it is not in the form the URL parser writes. A hosted
+  connection runs only with a stored API key (`openai` and `anthropic` still
+  record `subscription` so older journals replay, and no adapter reads one)
+  and is used through the existing Chat
   Completions client, which sends `max_completion_tokens` to OpenAI, Moonshot,
   Thinking Machines Lab, MiniMax, and xAI and `max_tokens` elsewhere, appends request paths to the
   endpoint's base path, and switches DeepSeek's default thinking mode off,

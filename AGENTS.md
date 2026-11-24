@@ -88,7 +88,9 @@ kinds each accept only their provider's one documented OpenAI-compatible
 endpoint, and an `openai_compatible` profile records an operator-typed
 `https://` base URL that core refuses rather than rewrites
 ([ADR-0092](docs/adr/0092-add-hosted-providers-and-an-openai-compatible-connection.md)).
-Every hosted profile needs a stored API key. No hosted provider's chat,
+A hosted connection runs only with a stored API key; `openai` and
+`anthropic` still record `subscription` so older journals replay, and no
+adapter reads one. No hosted provider's chat,
 stream, or tool-call shapes were verified with a real key. No native provider
 API, subscription sign-in, or login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
