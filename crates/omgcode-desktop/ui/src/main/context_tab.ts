@@ -2,18 +2,7 @@ import { el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { ContextBreakdown, ContextPart, ContextPartId } from "../ipc/types";
-
-/**
- * What a right-hand panel tab hands to the window that hosts it. `showSession` follows the open
- * session, `refresh` reloads for the current one (call it after a turn ends), and `dispose`
- * ends any load in flight so its result is ignored.
- */
-export interface PanelView {
-  element: HTMLElement;
-  showSession(sessionId: string | null): void;
-  refresh(): void;
-  dispose(): void;
-}
+import type { PanelView } from "./panel_tab";
 
 /** What the tab says while no session is open. */
 export const CONTEXT_EMPTY = "Open a session to see how its context is made up.";

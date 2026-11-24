@@ -4,20 +4,7 @@ import { api } from "../ipc/client";
 import { toIpcError } from "../ipc/errors";
 import type { ProcessEntry, ProcessLimit, SessionProcesses } from "../ipc/types";
 import { createPoller, type Poller } from "../poll";
-
-/**
- * One view of the right-hand panel. The panel owns the element, shows it when its tab is
- * selected, and calls the rest as the open session changes.
- */
-export interface PanelView {
-  element: HTMLElement;
-  /** Shows the named session, or clears the view for `null`. */
-  showSession(sessionId: string | null): void;
-  /** Reads the session's list again now. */
-  refresh(): void;
-  /** Stops polling and ignores any answer still on its way. */
-  dispose(): void;
-}
+import type { PanelView } from "./panel_tab";
 
 /** What the tab says when a session has started no subprocess. */
 export const PROCESSES_EMPTY = "No subprocess has run in this session.";

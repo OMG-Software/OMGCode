@@ -1,13 +1,18 @@
 import type { IconName } from "../ui/icons";
 import type { SideTab } from "./side_panel";
 
-/** A session view for the right-hand panel: Git status, Processes, or Context. */
+/**
+ * A session view for the right-hand panel: Git status, Processes, or Context. The panel owns the
+ * element and shows it while its tab is selected; `panelTab` calls the rest. Every view declares
+ * this one contract.
+ */
 export interface PanelView {
   element: HTMLElement;
   /** Shows the given session's data, or clears the view with `null`. */
   showSession(sessionId: string | null): void;
-  /** Reads the open session's data again. */
+  /** Reads the open session's data again, for example after a turn ends. */
   refresh(): void;
+  /** Stops any polling and ignores any answer still on its way. */
   dispose(): void;
 }
 

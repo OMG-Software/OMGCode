@@ -1,4 +1,4 @@
-import { append, el, replaceChildren, text } from "../dom";
+import { append, el, neutralise, replaceChildren, text } from "../dom";
 import { formatAbsolute, formatTimeAgo } from "../format";
 import type { SearchHit, SessionSummary, SessionTree, SnippetPart } from "../ipc/types";
 import { statusLabel } from "./model";
@@ -33,7 +33,9 @@ function sessionRow(session: SessionSummary, selected: boolean, now: number): HT
       "data-kind": "session",
       "data-session-id": session.session_id,
       "aria-selected": selected ? "true" : "false",
-      title: `${session.title}
+      // An attribute does not go through the text-node builder, so the untrusted title is
+      // neutralised here, as the conversation header's tooltip is.
+      title: `${neutralise(session.title)}
 Updated ${formatAbsolute(session.updated_at)}`,
     },
   });

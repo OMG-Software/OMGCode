@@ -840,4 +840,21 @@ describe("mock workspace_entries", () => {
       code: "not_found",
     });
   });
+
+  it("refuses a separator or NUL in a name but accepts the digit zero", async () => {
+    const { invoke } = createMockBackend();
+    for (const path of [["a/b"], ["a\\b"], ["a\u0000b"]]) {
+      await expect(invoke("workspace_entries", { session_id, path })).rejects.toMatchObject({
+        code: "invalid_request",
+        message: "The folder path is not acceptable.",
+      });
+    }
+    // A name with a zero passes the path check and fails only because the fake tree lacks it.
+    await expect(
+      invoke("workspace_entries", { session_id, path: ["v0.56"] }),
+    ).rejects.toMatchObject({
+      code: "invalid_request",
+      message: "The folder could not be listed.",
+    });
+  });
 });

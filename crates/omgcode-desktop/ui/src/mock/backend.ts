@@ -83,7 +83,10 @@ function mockWorkspaceEntries(path: unknown): WorkspaceListing {
       part === "." ||
       part === ".." ||
       part.toLowerCase() === ".omgcode" ||
-      /[/\\0]/.test(part) ||
+      // A separator or NUL, as Rust refuses; the digit zero is an ordinary character.
+      part.includes("/") ||
+      part.includes("\\") ||
+      part.includes("\u0000") ||
       part.length > MOCK_COMPONENT_CHARS_MAX
     ) {
       fail("invalid_request", "The folder path is not acceptable.");

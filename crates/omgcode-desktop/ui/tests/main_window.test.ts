@@ -296,6 +296,14 @@ describe("long labels", () => {
     expect(root.querySelector(".hit-snippet")?.classList.contains("clamp-3")).toBe(true);
   });
 
+  it("neutralises the session title in the row tooltip", async () => {
+    await start({ session_tree: () => tree([{ id: "g1", folder, sessions: [s] }]) });
+    const row = root.querySelector(".tree-session") as HTMLElement;
+    expect(row.title.startsWith(`${neutralise(title)}\nUpdated `)).toBe(true);
+    expect(row.title).toContain("[U+202E]");
+    expect(row.title).not.toContain("\u202e");
+  });
+
   it("clamps the conversation header and keeps the full text in a tooltip", async () => {
     await start({
       session_tree: () => tree([{ id: "g1", folder, sessions: [s] }]),

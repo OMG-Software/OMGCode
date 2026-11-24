@@ -778,7 +778,7 @@ impl DesktopService {
             store
                 .unregister_workspace(workspace_id, request.revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
-            instructions::save(&self.inner.data_root, *workspace_id.as_uuid(), "")
+            instructions::remove(&self.inner.data_root, *workspace_id.as_uuid())
                 .map_err(|_| DesktopError::removed_instructions_orphaned())?;
             run::withdrawn_runs(&store)
         };

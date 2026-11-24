@@ -2,17 +2,8 @@ import { button, el, replaceChildren } from "../dom";
 import { api } from "../ipc/client";
 import { IpcFailure } from "../ipc/errors";
 import type { GitIndexState, GitPathView, GitStatusView, GitWorktreeState } from "../ipc/types";
+import type { PanelView } from "./panel_tab";
 import { branchText } from "./status_footer";
-
-/** What a right-hand panel tab provides to the main window. */
-export interface PanelView {
-  element: HTMLElement;
-  /** Shows the given session's data, or clears the view with `null`. */
-  showSession(sessionId: string | null): void;
-  /** Reads the open session's data again. */
-  refresh(): void;
-  dispose(): void;
-}
 
 const INDEX_LETTER: Readonly<Record<GitIndexState, [letter: string, tip: string]>> = {
   added: ["A", "Staged: added"],

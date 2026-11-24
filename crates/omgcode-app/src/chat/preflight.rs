@@ -274,6 +274,16 @@ mod tests {
     /// A journal with two finished exchanges and, when `compacted`, a
     /// compaction that covers the first one.
     fn journal(data_root: &Path, compacted: bool) -> SessionJournal {
+        journal_with(data_root, compacted, false)
+    }
+
+    /// As [`journal`], with a compaction summary that records whether it was
+    /// built over saved tool results.
+    fn journal_with(
+        data_root: &Path,
+        compacted: bool,
+        includes_tool_results: bool,
+    ) -> SessionJournal {
         let workspace = data_root.join("workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
         let mut journal = SessionJournal::create(data_root, &workspace, "parts").expect("create");
@@ -296,7 +306,7 @@ mod tests {
                 .record_compaction(CompactionRecord {
                     summary: SUMMARY.to_owned(),
                     compacted_messages: 2,
-                    includes_tool_results: false,
+                    includes_tool_results,
                     summary_sha256: digest,
                     model: "fixture".to_owned(),
                     prompt_tokens: None,
@@ -377,5 +387,24 @@ mod tests {
     fn the_tool_definitions_are_a_part_only_when_tools_are_offered() {
         assert_parts_match_preflight(false, true);
         assert_parts_match_preflight(true, true);
+    }
+
+    /// Without live tool authority a summary built over tool results is sent
+    /// as the withheld notice, which stays the first history message. The
+    /// Summary part is the notice, and every retained message stays in
+    /// History.
+    #[test]
+    fn a_withheld_summary_is_counted_as_its_notice_and_keeps_every_retained_message() {
+        let directory = tempfile::tempdir().expect("data root");
+        let journal = journal_with(directory.path(), true, true);
+        let parts =
+            estimate_next_turn_parts(&journal, directory.path(), "", 0, false).expect("parts");
+        let overhead = u64::try_from(MESSAGE_OVERHEAD).expect("overhead");
+        let notice =
+            u64::try_from(omgcode_core::turn::WITHHELD_COMPACTION_SUMMARY.len()).expect("length");
+        assert_eq!(parts.summary, Some(notice + overhead));
+        assert_eq!(parts.history_messages, 2);
+        let retained = u64::try_from("second".len() + "reply two".len()).expect("length");
+        assert_eq!(parts.history, retained + 2 * overhead);
     }
 }
