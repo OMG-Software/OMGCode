@@ -42,7 +42,9 @@ pub struct ListedModel {
     pub cloud_tag: bool,
 }
 
-/// List the models the local server at `base_url` reports, sorted by id.
+/// List the models the OpenAI-compatible server at `base_url` reports, sorted
+/// by id: a loopback server, a fixed hosted endpoint, or a typed HTTPS base
+/// URL (ADR-0092).
 ///
 /// `base_url` must pass the same endpoint rule as a chat connection: the
 /// loopback rule (ADR-0048) or a hosted rule (ADR-0071, ADR-0092), which also

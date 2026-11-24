@@ -1,6 +1,8 @@
 # 0071: Choose the provider and model per session and add Ollama Cloud
 
-- Status: Accepted, amended by [ADR-0080](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md)
+- Status: Accepted, amended by [ADR-0080](0080-move-chat-budgets-to-settings-and-add-workspace-instructions.md),
+  [ADR-0084](0084-drop-the-status-bar-connection-choice.md),
+  [ADR-0089](0089-choose-the-provider-and-model-in-the-side-panel-footer.md),
   and [ADR-0092](0092-add-hosted-providers-and-an-openai-compatible-connection.md)
 - Date: 2026-11-20
 
