@@ -323,8 +323,8 @@ describe("settings window", () => {
       "new-package-name",
       "new-package-origins",
     ]);
-    // Two dropdowns choose a provider. Every permission and tool limit is a Deny, Prompt, Allow
-    // group, and the three labels are the same everywhere.
+    // Two dropdowns choose a provider. Every permission, tool limit, and the Set all control for
+    // the tool limits is a Deny, Prompt, Allow group, and the three labels are the same everywhere.
     go("Model");
     const providerLabels = ["Model provider", "New connection provider"];
     const selects = Array.from(root.querySelectorAll("select"));
@@ -333,7 +333,7 @@ describe("settings window", () => {
     openWorkspace();
     expect(root.querySelectorAll("select")).toHaveLength(0);
     const groups = Array.from(root.querySelectorAll("[role=radiogroup]"));
-    expect(groups).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length);
+    expect(groups).toHaveLength(PERMISSION_LABELS.length + WRITE_TOOL_LABELS.length + 1);
     for (const one of groups) {
       expect(one.classList.contains("access")).toBe(true);
       const buttons = Array.from(one.querySelectorAll("button"));

@@ -391,7 +391,9 @@ one model file-write tool. Each defaults to `allow`. A limit can only narrow `wr
 the more restrictive of the two, and a `deny` limit removes the tool. For
 example, `--write allow --delete-tool prompt` lets the model edit, create, and
 rename files freely but still asks before each delete. `workspace status`
-reports the limits as `write_tools`.
+reports the limits as `write_tools`. In the desktop `settings` window,
+**Set all** beside **File-write tool limits** sets all six limits to one state
+in one change (ADR-0090); it does not change `write`.
 
 **What a model tool call uses.** With `model_tools` off, every model tool is
 denied. Otherwise:
