@@ -163,8 +163,8 @@ impl DesktopService {
             &CancelToken::new(),
         )
         .map_err(|error| DesktopError::from_app(&error))?;
-        if let Some(orphan) = outcome.orphan {
-            return Err(DesktopError::removed_key_orphaned(&orphan));
+        if !outcome.orphans.is_empty() {
+            return Err(DesktopError::signed_out_tokens_orphaned(&outcome.orphans));
         }
         let store = self.inner.open_or_create_control()?;
         Ok(ChatGptSignOutResult {

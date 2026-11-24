@@ -482,6 +482,10 @@ documented route for local and open-source apps
   deletes both slots. The revision is checked before the revocation; a
   settings change made while OpenAI answers does not stop the local
   sign-out. An unconfirmed revocation is reported and not retried.
+  Every slot that could not be deleted is named by its opaque identifier:
+  the CLI's `orphaned_credential_ids` lists each one, and the desktop's
+  `credential_orphaned` error names each one, so neither slot is lost from
+  the report.
   A signed-in profile cannot be removed, and `provider-credential-remove`
   refuses every subscription profile.
 - **Requests.** Chat, compaction, and tool turns use the Responses API at

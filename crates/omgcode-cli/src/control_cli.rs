@@ -4,7 +4,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    ContainerGrantAccess, ControlError, ControlStore, PackageProfileDeclaration,
+    ContainerGrantAccess, ControlError, ControlStore, CredentialId, PackageProfileDeclaration,
     ProfileDeclaration, ProviderProfileDeclaration,
 };
 use omgcode_core::policy::{
@@ -243,8 +243,14 @@ fn provider_signout(data_root: &Path, name: &str, revision: u64) -> Result<(), C
             "OpenAI did not confirm the revocation. The local sign-out is recorded; you can also disconnect OMGCode in your ChatGPT settings."
         );
     }
-    if let Some(orphan) = outcome.orphan {
-        output["orphaned_credential_id"] = json!(orphan.as_str());
+    if !outcome.orphans.is_empty() {
+        output["orphaned_credential_ids"] = json!(
+            outcome
+                .orphans
+                .iter()
+                .map(CredentialId::as_str)
+                .collect::<Vec<_>>()
+        );
     }
     print_json(&output)
 }

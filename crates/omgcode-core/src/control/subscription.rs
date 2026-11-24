@@ -10,16 +10,28 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::credential::{binding_write_uncertain, delete_unbound_credential, store_failure};
+use super::credential::{binding_write_uncertain, delete_unbound_slots, store_failure};
 use super::{
     Action, ControlError, ControlSnapshot, ControlStore, CredentialBinding, CredentialError,
-    CredentialId, CredentialStore, ProviderAuth, ProviderCredentialError,
-    ProviderCredentialRemoval, ProviderCredentialSet, ProviderCredentialUseError, ProviderKind,
+    CredentialId, CredentialStore, OrphanedCredential, ProviderAuth, ProviderCredentialError,
+    ProviderCredentialSet, ProviderCredentialUseError, ProviderKind,
 };
 use crate::provider::OPENAI_ENDPOINT;
 use crate::provider::chatgpt::{
     SignInRequest, SignedIn, initial_token_record, new_host_id, valid_host_id, valid_identifier,
 };
+
+/// The outcome of a recorded ChatGPT sign-out.
+#[derive(Debug)]
+#[must_use]
+pub struct SubscriptionSignOut {
+    /// The profile that was signed out.
+    pub profile_id: Uuid,
+    /// The removed session's binding identifier.
+    pub removed: CredentialId,
+    /// Every token slot that could not be deleted: none, one, or both.
+    pub orphans: Vec<OrphanedCredential>,
+}
 
 /// The longest kept account label.
 const MAX_ACCOUNT_LABEL_BYTES: usize = 256;
@@ -225,8 +237,8 @@ impl ControlStore {
 
     /// Record that the named ChatGPT profile is signed out, then delete both
     /// token slots. The caller holds the session lock and has already tried
-    /// to revoke the refresh token. A failed deletion is returned as an
-    /// orphan.
+    /// to revoke the refresh token. Every slot that could not be deleted is
+    /// returned as an orphan.
     ///
     /// # Errors
     ///
@@ -238,7 +250,7 @@ impl ControlStore {
         credentials: &CredentialStore,
         name: &str,
         expected_revision: u64,
-    ) -> Result<ProviderCredentialRemoval, ProviderCredentialError> {
+    ) -> Result<SubscriptionSignOut, ProviderCredentialError> {
         let status = self
             .provider_profile(name)
             .ok_or(ControlError::UnknownProvider)?;
@@ -249,11 +261,11 @@ impl ControlStore {
             .into());
         }
         let (profile_id, binding) = self.unbind_credential(name, expected_revision)?;
-        let orphan = delete_unbound_credential(credentials, &binding);
-        Ok(ProviderCredentialRemoval {
+        let orphans = delete_unbound_slots(credentials, &binding);
+        Ok(SubscriptionSignOut {
             profile_id,
             removed: binding.id().clone(),
-            orphan,
+            orphans,
         })
     }
 

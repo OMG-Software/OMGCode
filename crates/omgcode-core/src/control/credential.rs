@@ -778,33 +778,38 @@ pub fn delete_unbound_credential(
     credentials: &CredentialStore,
     binding: &CredentialBinding,
 ) -> Option<OrphanedCredential> {
+    // The bound slot is reported first. An API key never has a companion
+    // slot, so only a ChatGPT session can leave two; its sign-out uses
+    // `delete_unbound_slots` and reports both.
+    delete_unbound_slots(credentials, binding).pop()
+}
+
+/// Delete an unbound credential's native items: its bound slot and, for a
+/// ChatGPT session, its companion slot (ADR-0093). Every item that could not
+/// be deleted is returned, the companion first and the bound slot last, so
+/// none is lost from the operator's report. An absent item is not an orphan.
+pub fn delete_unbound_slots(
+    credentials: &CredentialStore,
+    binding: &CredentialBinding,
+) -> Vec<OrphanedCredential> {
     if binding.backend != credentials.backend() {
-        return Some(OrphanedCredential {
+        return vec![OrphanedCredential {
             id: binding.id.clone(),
             error: CredentialError::Unavailable(format!(
                 "the credential was stored by {}, not {}",
                 binding.backend.as_str(),
                 credentials.backend().as_str()
             )),
-        });
+        }];
     }
-    // A ChatGPT session also has a companion slot (ADR-0093); an API key
-    // never does, so its companion is simply absent.
     let companion = crate::provider::chatgpt::companion_credential_id(&binding.id);
-    let companion_orphan = match credentials.delete(&companion) {
-        Ok(()) | Err(CredentialError::NotFound) => None,
-        Err(error) => Some(OrphanedCredential {
-            id: companion,
-            error,
-        }),
-    };
-    match credentials.delete(&binding.id) {
-        Ok(()) | Err(CredentialError::NotFound) => companion_orphan,
-        Err(error) => Some(OrphanedCredential {
-            id: binding.id.clone(),
-            error,
-        }),
-    }
+    [companion, binding.id.clone()]
+        .into_iter()
+        .filter_map(|id| match credentials.delete(&id) {
+            Ok(()) | Err(CredentialError::NotFound) => None,
+            Err(error) => Some(OrphanedCredential { id, error }),
+        })
+        .collect()
 }
 
 /// Report a failed native store. When the failure may have left an item for

@@ -74,7 +74,7 @@ pub use provider::{
     ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
 };
 
-pub use subscription::{SubscriptionConnection, SubscriptionRegistration};
+pub use subscription::{SubscriptionConnection, SubscriptionRegistration, SubscriptionSignOut};
 
 pub use skill::{
     MAX_SKILL_ALLOWED_TOOLS, MAX_SKILL_ALLOWED_TOOLS_BYTES, MAX_SKILL_COMPATIBILITY_CHARS,

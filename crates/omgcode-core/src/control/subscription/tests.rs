@@ -95,7 +95,7 @@ fn sign_out(fixture: &Fixture, name: &str) {
     let removal = store
         .sign_out_provider_subscription(&fixture.credentials, name, revision)
         .expect("sign-out");
-    assert!(removal.orphan.is_none());
+    assert!(removal.orphans.is_empty());
 }
 
 #[test]
@@ -160,6 +160,31 @@ fn a_recorded_sign_in_stores_generation_one_and_survives_replay() {
     );
     drop(store);
     sign_out(&fixture, "chatgpt");
+}
+
+#[test]
+fn only_a_signed_in_chatgpt_profile_can_be_chosen() {
+    let fixture = fixture();
+    let refused = |store: &ControlStore, name: &str| {
+        matches!(
+            store.check_provider_selectable(name),
+            Err(ControlError::ProviderRefused(_))
+        )
+    };
+    let store = fixture.store();
+    assert!(refused(&store, "chatgpt"), "signed out");
+    assert!(refused(&store, "no-endpoint"), "no endpoint");
+    drop(store);
+    let _ = sign_in(&fixture, "chatgpt", "oaiapp_one", "subject-1");
+    let mut store = fixture.store();
+    assert!(store.check_provider_selectable("chatgpt").is_ok());
+    let revision = store.revision();
+    store
+        .select_active_provider(Some("chatgpt"), revision)
+        .expect("a signed-in plan connection is chosen");
+    drop(store);
+    sign_out(&fixture, "chatgpt");
+    assert!(refused(&fixture.store(), "chatgpt"), "signed out again");
 }
 
 #[test]

@@ -22,7 +22,8 @@ Changes are recorded here before a release version is assigned.
   control-journal event, `provider_subscription_bound`, records the client,
   subject, account label, host identifier, and binding; a journal that holds
   it cannot be read by 0.59.0 or earlier. `provider-signout` and **Sign out**
-  revoke the refresh token once and delete the tokens; a signed-in profile
+  revoke the refresh token once and delete the tokens, naming every token slot
+  that could not be deleted; a signed-in profile
   cannot be removed, and `provider-credential-remove` refuses subscription
   profiles. Chat, compaction, and tool turns of a ChatGPT connection use the
   Responses API with `store:false` and streaming, the model list reads the

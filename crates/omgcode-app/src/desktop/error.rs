@@ -421,6 +421,23 @@ impl DesktopError {
 
     /// The connection is removed, but its stored item was not deleted. No
     /// profile names the item any more, so its opaque identifier is reported.
+    /// A ChatGPT sign-out is recorded, but some token slots could not be
+    /// deleted. Each opaque identifier is named so none is lost; the tokens
+    /// themselves are never shown.
+    pub(crate) fn signed_out_tokens_orphaned(credential_ids: &[CredentialId]) -> Self {
+        let ids = credential_ids
+            .iter()
+            .map(CredentialId::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self::new(
+            "credential_orphaned",
+            format!(
+                "The sign-out is recorded, but these stored ChatGPT token items could not be deleted and may remain in the operating system's credential store with no connection naming them: {ids}. Delete them there."
+            ),
+        )
+    }
+
     pub(crate) fn removed_key_orphaned(credential_id: &CredentialId) -> Self {
         Self::new(
             "credential_orphaned",
@@ -629,6 +646,18 @@ mod tests {
             });
         assert!(first.message().contains(KEPT));
         assert!(!first.message().contains("replaced"), "{}", first.message());
+    }
+
+    /// A ChatGPT sign-out that leaves both token slots names each one and
+    /// says the sign-out itself is recorded.
+    #[test]
+    fn a_sign_out_that_leaves_token_slots_names_every_one() {
+        let error = DesktopError::signed_out_tokens_orphaned(&[id(KEPT), id(REPLACED)]);
+        assert_eq!(error.code(), "credential_orphaned");
+        assert!(error.message().contains(KEPT), "{}", error.message());
+        assert!(error.message().contains(REPLACED), "{}", error.message());
+        assert!(error.message().contains("sign-out is recorded"));
+        assert!(!error.message().contains("API key"), "{}", error.message());
     }
 
     /// A key replacement or a removal that leaves the old item names it and

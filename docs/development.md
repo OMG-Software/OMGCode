@@ -447,7 +447,8 @@ already signed in, is refused with a `control` error before the browser step.
 `chat --provider-profile` and `session compact --provider-profile` use the
 plan through the Responses API for a signed-in profile. `provider-signout`
 revokes the refresh token once, records the sign-out, deletes the tokens, and
-adds a `warning` when OpenAI did not confirm the revocation.
+adds a `warning` when OpenAI did not confirm the revocation. A token slot
+that could not be deleted is listed in `orphaned_credential_ids`.
 `provider-credential-remove` refuses a subscription profile, and
 `provider-profile-remove` refuses one that is signed in. See
 [provider authentication](provider-authentication.md#chatgpt-sign-in-adr-0093).

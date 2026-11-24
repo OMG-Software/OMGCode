@@ -68,8 +68,8 @@ pub struct SignOutOutcome {
     /// Whether OpenAI confirmed the refresh token's revocation. When it did
     /// not, the operator can disconnect OMGCode in ChatGPT settings.
     pub revoked: bool,
-    /// A token slot that could not be deleted, by identifier.
-    pub orphan: Option<CredentialId>,
+    /// Every token slot that could not be deleted, by identifier.
+    pub orphans: Vec<CredentialId>,
     /// The settings revision after the sign-out.
     pub revision: u64,
 }
@@ -243,7 +243,7 @@ pub fn sign_out_of_chatgpt(
         _ => {
             return Ok(SignOutOutcome {
                 revoked,
-                orphan: None,
+                orphans: Vec::new(),
                 revision: store.revision(),
             });
         }
@@ -254,7 +254,11 @@ pub fn sign_out_of_chatgpt(
         .map_err(|error| credential_error(format!("signout_not_recorded: {error}")))?;
     Ok(SignOutOutcome {
         revoked,
-        orphan: removal.orphan.map(|orphan| orphan.id),
+        orphans: removal
+            .orphans
+            .into_iter()
+            .map(|orphan| orphan.id)
+            .collect(),
         revision: store.revision(),
     })
 }
