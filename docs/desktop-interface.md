@@ -314,7 +314,7 @@ their registered identifier, and approvals by identifier.
 | `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
 | `settings_sign_in_chatgpt` | settings | After a native confirmation, sign a connection in with ChatGPT, recording an `openai` subscription profile first when the name has none; Rust opens the browser and waits at most five minutes (ADR-0093) |
-| `settings_cancel_chatgpt_sign_in` | settings | End the running ChatGPT sign-in's wait; takes nothing and grants nothing |
+| `settings_cancel_chatgpt_sign_in` | settings | End the running ChatGPT sign-in's or sign-out's wait; takes nothing and grants nothing |
 | `settings_sign_out_chatgpt` | settings | After a native confirmation, revoke a ChatGPT session once, record the sign-out, and delete its tokens; reports whether OpenAI confirmed the revocation |
 | `settings_clear_scope` | settings | Clear the window's workspace scope and return the unscoped overview |
 | `settings_repair_data_folder` | settings | Remove the data folder's extra grants, listed by Rust, after a native confirmation that names each account (ADR-0073) |
@@ -1538,7 +1538,8 @@ revision check and validation (ADR-0064, ADR-0071).
   with ChatGPT** disclosure takes a connection name (default `chatgpt`), and a
   signed-out ChatGPT row offers the same button. `settings_sign_in_chatgpt`
   takes the revision and the name. Rust refuses a stale revision, a profile
-  that is not an `openai` subscription profile, and one already signed in,
+  that is not an `openai` subscription profile, one already signed in, and a
+  new name the settings store would not record (for example a blank one),
   then asks "Open OpenAI's sign-in page in your browser to connect `<name>`
   to your ChatGPT plan?", which names what goes to OpenAI and says that a
   completed sign-in does not show the plan will accept OMGCode's requests.
@@ -1568,7 +1569,13 @@ revision check and validation (ADR-0064, ADR-0071).
   row reads
   "Signed in with ChatGPT as `<email>`", carries a **ChatGPT plan** chip and
   no API key field, and offers **Sign out**, which asks "Sign `<name>` out of
-  ChatGPT?" and calls `settings_sign_out_chatgpt`. When OpenAI did not
+  ChatGPT?" and calls `settings_sign_out_chatgpt`. From the confirmation to
+  the end of the revocation the same bar reads "Confirm the sign-out. OMGCode
+  then asks OpenAI to end the session, which can take a minute." with
+  **Cancel sign-out**, which calls the same cancel command. A cancel before
+  the sign-out holds the session lock returns `cancelled` and changes
+  nothing; a later cancel stops the wait for OpenAI, and the sign-out is
+  still recorded here as unconfirmed. When OpenAI did not
   confirm the revocation the window says so and points to ChatGPT's
   settings. A token slot that could not be deleted makes the sign-out
   `credential_orphaned`, naming each slot's identifier and saying whether

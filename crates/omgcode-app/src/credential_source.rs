@@ -57,7 +57,6 @@ use zeroize::Zeroizing;
 use crate::error::{AppError, ErrorKind};
 use crate::secrets::read_lm_token;
 use crate::subscription::{PlanSession, plan_session};
-use omgcode_core::control::ProviderAuth;
 
 /// Where a desktop process gets the optional local server token. The launch
 /// endpoint is held beside this value; it is the endpoint itself for
@@ -461,10 +460,12 @@ fn profile_connection(
 /// Whether the named profile is an `openai` subscription profile, which signs
 /// in with ChatGPT rather than holding a stored key (ADR-0093).
 fn is_plan_profile(control: &ControlStore, name: &str) -> bool {
-    control.provider_profile(name).is_some_and(|status| {
-        status.profile().kind() == ProviderKind::OpenAi
-            && status.profile().auth() == ProviderAuth::Subscription
-    })
+    // The same rule as the core's sign-in check, without its endpoint test: a
+    // plan profile that lacks the endpoint is refused here as
+    // `endpoint_not_recorded` rather than treated as an API-key profile.
+    control
+        .provider_profile(name)
+        .is_some_and(|status| status.profile().uses_chatgpt_plan())
 }
 
 /// Open the existing settings store for a named profile. A missing store is a

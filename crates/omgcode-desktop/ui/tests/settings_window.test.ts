@@ -22,6 +22,7 @@ import {
   type SettingsApp,
   SIGN_IN_WAITING,
   SIGN_OUT_UNCONFIRMED,
+  SIGN_OUT_WAITING,
   startSettings,
   WORKSPACES_HELP,
   WRITE_TOOL_LABELS,
@@ -1628,5 +1629,33 @@ describe("ChatGPT sign-in (ADR-0093)", () => {
     expect(root.querySelector(".notice[role=status]:not(.sign-in-wait)")?.textContent).toBe(
       SIGN_OUT_UNCONFIRMED,
     );
+  });
+
+  it("keeps a Cancel sign-out button usable while a sign-out waits", async () => {
+    let finish: (value: { overview: SettingsOverview; revoked: boolean }) => void = () => undefined;
+    await start(() => choosable({ provider_profiles: [lms(), chatgpt()] }), {
+      settings_sign_out_chatgpt: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      settings_cancel_chatgpt_sign_in: () => null,
+    });
+    go("Model");
+    buttonByText(rowOf("chatgpt"), "Sign out").click();
+    await settle();
+    expect(signInBar().hidden).toBe(false);
+    expect(signInBar().textContent).toContain(SIGN_OUT_WAITING);
+    expect(signInBar().textContent).not.toContain(SIGN_IN_WAITING);
+    expect(body().disabled).toBe(true);
+    const cancel = buttonByText(signInBar(), "Cancel sign-out");
+    expect(cancel.disabled).toBe(false);
+    cancel.click();
+    await settle();
+    expect(ipc.callsTo("settings_cancel_chatgpt_sign_in")[0]?.args).toEqual({});
+
+    finish({ overview: choosable({ revision: 8 }), revoked: true });
+    await settle();
+    expect(signInBar().hidden).toBe(true);
+    expect(body().disabled).toBe(false);
   });
 });

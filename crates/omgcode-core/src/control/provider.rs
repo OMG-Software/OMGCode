@@ -259,6 +259,14 @@ impl ProviderProfile {
     pub const fn auth(&self) -> ProviderAuth {
         self.auth
     }
+
+    /// Whether this is an `openai` subscription profile, which signs in with
+    /// ChatGPT rather than holding a stored key (ADR-0093). Whether it may
+    /// sign in also needs OpenAI's endpoint; a turn refuses a missing one as
+    /// `endpoint_not_recorded`.
+    pub fn uses_chatgpt_plan(&self) -> bool {
+        self.kind == ProviderKind::OpenAi && self.auth == ProviderAuth::Subscription
+    }
 }
 
 /// A profile, the settings revision that recorded it, and its credential
@@ -326,6 +334,21 @@ impl ControlStore {
             .find(|status| status.profile.name.eq_ignore_ascii_case(name))
     }
 
+    /// Run every check [`Self::add_provider_profile`] applies to
+    /// `declaration`, except the revision, without recording anything. The
+    /// desktop uses it before a native confirmation, so the operator is never
+    /// asked about a connection that would be refused.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_provider_profile`].
+    pub fn check_provider_profile(
+        &self,
+        declaration: &ProviderProfileDeclaration,
+    ) -> Result<(), ControlError> {
+        self.new_provider_profile(declaration).map(|_| ())
+    }
+
     /// Record a provider connection shape. This advances the settings revision
     /// and records no credential or runtime authority.
     pub fn add_provider_profile(
@@ -334,6 +357,21 @@ impl ControlStore {
         expected_revision: u64,
     ) -> Result<ProviderProfile, ControlError> {
         self.check_revision(expected_revision)?;
+        let profile = self.new_provider_profile(declaration)?;
+        self.append(
+            Action::ProviderProfileAdded {
+                profile: profile.clone(),
+            },
+            self.next_revision()?,
+        )?;
+        Ok(profile)
+    }
+
+    fn new_provider_profile(
+        &self,
+        declaration: &ProviderProfileDeclaration,
+    ) -> Result<ProviderProfile, ControlError> {
+        self.ensure_healthy()?;
         if self.provider_profiles().len() >= MAX_PROVIDER_PROFILES {
             return Err(ControlError::ProviderRefused(
                 "at most 32 provider profiles may be recorded",
@@ -371,12 +409,6 @@ impl ControlStore {
             endpoint: endpoint.map(ProviderEndpoint),
         };
         validate_profile(&profile)?;
-        self.append(
-            Action::ProviderProfileAdded {
-                profile: profile.clone(),
-            },
-            self.next_revision()?,
-        )?;
         Ok(profile)
     }
 

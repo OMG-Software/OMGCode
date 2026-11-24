@@ -97,8 +97,7 @@ pub struct SubscriptionConnection {
 /// Whether a profile is a ChatGPT subscription profile with its endpoint.
 fn is_chatgpt_profile(status: &super::ProviderProfileStatus) -> bool {
     let profile = status.profile();
-    profile.kind() == ProviderKind::OpenAi
-        && profile.auth() == ProviderAuth::Subscription
+    profile.uses_chatgpt_plan()
         && profile
             .endpoint()
             .is_some_and(|endpoint| endpoint.as_str() == OPENAI_ENDPOINT)

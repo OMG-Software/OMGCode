@@ -76,6 +76,13 @@ const REPAIR_RETRY_CODES: ReadonlySet<string> = new Set([
 export const SIGN_IN_WAITING =
   "Confirm the sign-in, then finish it in your browser. It ends after five minutes.";
 
+/**
+ * Shown while a ChatGPT sign-out runs. Its Cancel ends the wait for the session lock, or, once
+ * OpenAI has been asked, the wait for OpenAI; the sign-out is then still recorded here.
+ */
+export const SIGN_OUT_WAITING =
+  "Confirm the sign-out. OMGCode then asks OpenAI to end the session, which can take a minute.";
+
 /** Shown when OpenAI did not confirm a sign-out's revocation. */
 export const SIGN_OUT_UNCONFIRMED =
   "Signed out here, but OpenAI did not confirm the revocation. You can also disconnect OMGCode in your ChatGPT settings.";
@@ -148,30 +155,40 @@ export function startSettings(root: HTMLElement): SettingsApp {
   readProblem.hidden = true;
   const notice = el("p", { class: "notice", attrs: { role: "status" } });
   notice.hidden = true;
-  // Shown while Rust waits for the ChatGPT sign-in in the browser (ADR-0093). It sits outside
-  // the disabled body, so its Cancel button stays usable while the change runs.
-  const cancelSignIn = button("Cancel sign-in", () => {
+  // Shown while Rust runs a ChatGPT sign-in or sign-out (ADR-0093). It sits outside the disabled
+  // body, so its Cancel button stays usable while the change runs. One Rust command cancels
+  // whichever is running.
+  const waitText = el("span");
+  const cancelWait = button("", () => {
     void settingsApi.cancelChatGptSignIn().catch(() => undefined);
   });
   const signInBar = el(
     "div",
     { class: "notice sign-in-wait", attrs: { role: "status" } },
-    el("span", { text: SIGN_IN_WAITING }),
-    cancelSignIn,
+    waitText,
+    cancelWait,
   );
   signInBar.hidden = true;
+  async function whileWaiting<T>(text: string, cancelLabel: string, run: () => Promise<T>) {
+    replaceChildren(waitText, text);
+    replaceChildren(cancelWait, cancelLabel);
+    signInBar.hidden = false;
+    try {
+      return await run();
+    } finally {
+      signInBar.hidden = true;
+    }
+  }
   const actions: Actions = {
     ...ACTIONS,
-    signInChatGpt: (name) => async (revision) => {
-      signInBar.hidden = false;
-      try {
-        return await settingsApi.signInChatGpt(revision, name);
-      } finally {
-        signInBar.hidden = true;
-      }
-    },
+    signInChatGpt: (name) => (revision) =>
+      whileWaiting(SIGN_IN_WAITING, "Cancel sign-in", () =>
+        settingsApi.signInChatGpt(revision, name),
+      ),
     signOutChatGpt: (name) => async (revision) => {
-      const result = await settingsApi.signOutChatGpt(revision, name);
+      const result = await whileWaiting(SIGN_OUT_WAITING, "Cancel sign-out", () =>
+        settingsApi.signOutChatGpt(revision, name),
+      );
       if (!result.revoked) {
         replaceChildren(notice, SIGN_OUT_UNCONFIRMED);
         notice.hidden = false;

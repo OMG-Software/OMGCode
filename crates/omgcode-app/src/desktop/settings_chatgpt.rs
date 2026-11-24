@@ -59,15 +59,24 @@ impl DesktopService {
             .0
             .lock()
             .map_err(|_| DesktopError::from_control(&ControlError::Busy))? = Some(cancel.clone());
+        let declaration = ProviderProfileDeclaration {
+            name: request.name.clone(),
+            kind: "openai".to_owned(),
+            auth: "subscription".to_owned(),
+            endpoint: Some(OPENAI_ENDPOINT.to_owned()),
+        };
+        // Every check runs before the confirmation, so the operator is never
+        // asked to consent for a name or profile that would be refused.
         let exists = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let exists = store.provider_profile(&request.name).is_some();
             if exists {
-                store
-                    .check_subscription_sign_in(&request.name)
-                    .map_err(|error| DesktopError::from_control(&error))?;
+                store.check_subscription_sign_in(&request.name)
+            } else {
+                store.check_provider_profile(&declaration)
             }
+            .map_err(|error| DesktopError::from_control(&error))?;
             exists
         };
         confirm(
@@ -87,15 +96,7 @@ impl DesktopService {
         if !exists {
             let mut store = self.inner.open_or_create_control()?;
             store
-                .add_provider_profile(
-                    &ProviderProfileDeclaration {
-                        name: request.name.clone(),
-                        kind: "openai".to_owned(),
-                        auth: "subscription".to_owned(),
-                        endpoint: Some(OPENAI_ENDPOINT.to_owned()),
-                    },
-                    revision,
-                )
+                .add_provider_profile(&declaration, revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
             revision = store.revision();
         }
@@ -114,11 +115,13 @@ impl DesktopService {
         Ok(overview_of(&self.inner, store))
     }
 
-    /// `settings` only. Cancel the running ChatGPT sign-in, if any. It only
-    /// sets that sign-in's cancel token; the sign-in returns `cancelled`. A
-    /// sign-in registers its token before its native confirmation, so a
-    /// cancel sent during the confirmation is kept. With no sign-in running
-    /// it does nothing.
+    /// `settings` only. Cancel the running ChatGPT sign-in or sign-out, if
+    /// any. It only sets that change's cancel token. A sign-in returns
+    /// `cancelled`. A sign-out returns `cancelled` until it holds the
+    /// session lock; a later cancel stops the wait for OpenAI, and the
+    /// sign-out is still recorded here with `revoked` false. Each
+    /// registers its token before its native confirmation, so a cancel sent
+    /// during the confirmation is kept. With neither running it does nothing.
     pub fn settings_cancel_chatgpt_sign_in(&self) {
         if let Ok(slot) = self.inner.chatgpt_sign_in.lock()
             && let Some(cancel) = slot.as_ref()
@@ -145,6 +148,14 @@ impl DesktopService {
         prompt: &dyn SettingsPrompt,
     ) -> Result<ChatGptSignOutResult, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        // Registered as for the sign-in, so the window's Cancel can end the
+        // wait for the session lock or for OpenAI.
+        let cancel = CancelToken::new();
+        let slot = SignInSlot(&self.inner.chatgpt_sign_in);
+        *slot
+            .0
+            .lock()
+            .map_err(|_| DesktopError::from_control(&ControlError::Busy))? = Some(cancel.clone());
         {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
@@ -167,13 +178,17 @@ impl DesktopService {
                 ),
             },
         )?;
+        if cancel.is_cancelled() {
+            return Err(DesktopError::cancelled());
+        }
         let outcome = crate::sign_out_of_chatgpt(
             &self.inner.data_root,
             &request.name,
             request.revision,
-            &CancelToken::new(),
+            &cancel,
         )
         .map_err(|error| DesktopError::from_app(&error))?;
+        drop(slot);
         if !outcome.orphans.is_empty() {
             return Err(DesktopError::signed_out_tokens_orphaned(
                 &outcome.orphans,

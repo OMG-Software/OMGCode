@@ -63,7 +63,10 @@ Changes are recorded here before a release version is assigned.
   is made from the same random source, so its failure is also
   `random_unavailable` rather than a panic, and `signin_not_recorded` is
   reserved for a token item that could not be deleted; a settings change
-  during the browser step is the `control` conflict or refusal.
+  during the browser step is the `control` conflict or refusal. The desktop
+  checks a new connection name before its sign-in confirmation, and a
+  sign-out shows the wait bar with **Cancel sign-out**, which ends the wait
+  for the session lock or for OpenAI.
   The settings window's sign-in bar covers the confirmation as well as the
   browser step. A cancel sent during the desktop
   confirmation is kept; sign-out checks the revision and session again after

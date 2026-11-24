@@ -127,7 +127,10 @@ Core runs the browser flow; only trusted code starts it:
   that no profile has yet first records an `openai` subscription profile with
   OpenAI's endpoint. Rust opens the browser; the webview never sees the
   address, the callback, or any token. **Cancel sign-in** stays usable during
-  the wait and only sets the sign-in's cancel token.
+  the wait and only sets the sign-in's cancel token. A new name is checked
+  against the settings store's rules before the confirmation. **Sign out**
+  shows the same bar with **Cancel sign-out**, which ends the wait for the
+  session lock or for OpenAI.
 
 Steps:
 

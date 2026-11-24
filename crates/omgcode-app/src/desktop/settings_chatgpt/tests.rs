@@ -1,17 +1,20 @@
 //! Tests for the ChatGPT settings commands.
 //!
 //! No test reaches OpenAI: every service here replaces the browser opener
-//! with one that refuses, so a sign-in ends before any network request, and
-//! no test stores a token.
+//! with one that refuses, so a sign-in ends before any network request. One
+//! sign-out test records a made-up session through the core and is cancelled
+//! before the session lock, which a cancelled caller never takes, so it
+//! never reaches the revocation.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use omgcode_core::control::{ControlStore, ProviderProfileDeclaration};
+use omgcode_core::control::{ControlStore, CredentialStore, ProviderProfileDeclaration};
 use omgcode_core::provider::OPENAI_ENDPOINT;
-use omgcode_core::provider::chatgpt::SignInError;
+use omgcode_core::provider::chatgpt::{PLAN_SCOPE, SignInError, SignedIn, TokenSet, new_host_id};
+use zeroize::Zeroizing;
 
 use super::super::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
 use super::super::{DesktopConfig, DesktopService};
@@ -195,6 +198,22 @@ fn only_a_chatgpt_profile_can_sign_in() {
 }
 
 #[test]
+fn a_name_that_cannot_be_recorded_is_refused_before_asking() {
+    let fixture = Fixture::new();
+    let service = fixture.service(unreachable_opener);
+    let before = fixture.store().revision();
+    for name in ["", "-plan", "two words", &"x".repeat(65)] {
+        let answers = Answers::with(&[]);
+        let error = service
+            .settings_sign_in_chatgpt(fixture.request(name), &answers)
+            .expect_err("an invalid name");
+        assert_eq!(error.code(), "control", "{name:?}: {}", error.message());
+        assert!(answers.titles().is_empty(), "{name:?} reached the dialog");
+    }
+    assert_eq!(fixture.store().revision(), before);
+}
+
+#[test]
 fn a_stale_revision_is_refused_first() {
     let fixture = Fixture::new();
     let service = fixture.service(unreachable_opener);
@@ -269,6 +288,17 @@ impl SettingsPrompt for CancelDuringConfirmation<'_> {
     }
 
     fn confirm(&self, _confirmation: &Confirmation) -> bool {
+        // Without a registered token the change would run on towards OpenAI,
+        // so the test stops here, before any network request.
+        assert!(
+            self.service
+                .inner
+                .chatgpt_sign_in
+                .lock()
+                .expect("slot")
+                .is_some(),
+            "no cancel token is registered"
+        );
         self.service.settings_cancel_chatgpt_sign_in();
         true
     }
@@ -337,4 +367,70 @@ fn signing_out_a_profile_that_is_not_signed_in_is_refused_before_asking() {
         assert_eq!(error.code(), "credential", "{name}: {}", error.message());
         assert!(answers.titles().is_empty());
     }
+}
+
+#[test]
+fn a_cancel_during_the_sign_out_confirmation_keeps_the_session() {
+    let fixture = Fixture::new();
+    {
+        let mut store = fixture.store();
+        let credentials = CredentialStore::open(&fixture.data).expect("credential store");
+        let host = new_host_id().expect("host");
+        let request = store
+            .subscription_sign_in_request("plan", &host)
+            .expect("request");
+        let revision = store.revision();
+        let _recorded = store
+            .record_provider_subscription(
+                &credentials,
+                "plan",
+                &request,
+                &SignedIn {
+                    client_id: "oaiapp_test".to_owned(),
+                    subject: "subject-1".to_owned(),
+                    email: None,
+                    tokens: TokenSet {
+                        access_token: Zeroizing::new("access-token".to_owned()),
+                        refresh_token: Zeroizing::new("refresh-token".to_owned()),
+                        scopes: vec![PLAN_SCOPE.to_owned()],
+                        expires_at: 4_000_000_000,
+                    },
+                },
+                revision,
+            )
+            .expect("recorded session");
+    }
+    let service = fixture.service(unreachable_opener);
+    let before = fixture.store().revision();
+    let error: Result<ChatGptSignOutResult, _> = service.settings_sign_out_chatgpt(
+        fixture.request("plan"),
+        &CancelDuringConfirmation { service: &service },
+    );
+    let error = error.expect_err("cancelled");
+    assert_eq!(error.code(), "cancelled", "{}", error.message());
+    let store = fixture.store();
+    assert_eq!(store.revision(), before);
+    assert!(
+        store
+            .provider_profile("plan")
+            .and_then(|status| status.credential())
+            .is_some()
+    );
+    assert!(
+        service
+            .inner
+            .chatgpt_sign_in
+            .lock()
+            .expect("slot")
+            .is_none()
+    );
+    // Remove the made-up session's tokens without contacting OpenAI.
+    drop(store);
+    let mut store = fixture.store();
+    let revision = store.revision();
+    let credentials = CredentialStore::open(&fixture.data).expect("credential store");
+    let removal = store
+        .sign_out_provider_subscription(&credentials, "plan", revision)
+        .expect("local sign-out");
+    assert!(removal.orphans.is_empty());
 }
