@@ -1285,9 +1285,12 @@ waits. The window shows:
   Yes/No dialog described there. The branch comes from
   `session_context`, which reads only `HEAD` through the anchored broker (see
   "Git branch display"). The footer reads the branch again when the window
-  regains focus, when a session opens, and after a turn settles. Like the
-  rest of `main`, it uses no `title` tooltips; the reason a branch is
-  unavailable is shown as text.
+  regains focus, when a session opens, and after a turn settles. The footer
+  uses no `title` tooltips; the reason a branch is unavailable is shown as
+  text. Elsewhere in `main` a tooltip holds fixed text, or untrusted text
+  passed through `neutralise`, because an attribute does not get the text
+  node's neutralising: the session row, the conversation header, a
+  transcript label, and the Processes command line.
 - **Git branch display.** `session_context` opens the session's registered
   workspace by its recorded root and workspace identities and reads
   `.git/HEAD`, at most 4096 bytes, without following a link. No Git program

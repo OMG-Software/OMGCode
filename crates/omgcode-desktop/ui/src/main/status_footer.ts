@@ -25,8 +25,8 @@ export interface StatusFooter {
 }
 
 /**
- * What the branch segment says. The name and the reason are display text from the core; like the
- * rest of this window, the footer shows them as text rather than in `title` tooltips.
+ * What the branch segment says. The name and the reason are display text from the core; the
+ * footer shows them as text rather than in `title` tooltips.
  */
 export function branchText(branch: BranchView): string {
   switch (branch.state) {
