@@ -133,6 +133,9 @@ fn a_call_outside_the_namespace_or_a_hosted_tool_call_is_refused() {
     for item in [
         r#"{"type":"function_call","call_id":"","name":"x","arguments":"{}"}"#,
         r#"{"type":"function_call","call_id":"c","name":"x"}"#,
+        // An object in place of the arguments string ends the turn, as the
+        // runtime parser's `UnsupportedShape` does for Chat Completions.
+        r#"{"type":"function_call","call_id":"c","name":"workspace_read_file","arguments":{"path":"notes.txt"}}"#,
         r#"{"type":"message","role":"user","content":[]}"#,
         r#"{"type":"message","role":"assistant","content":[{"type":"input_text","text":"x"}]}"#,
         r#"{"type":"image"}"#,

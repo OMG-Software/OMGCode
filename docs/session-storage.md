@@ -97,11 +97,14 @@ records `{}` as its arguments, never the received text. A call to a tool the
 runtime does not have records its name only when the name is at most 64 bytes of
 letters, digits, `_`, `.`, and `-`, and otherwise `unsupported_tool`. The tool
 message holds the received argument text's byte length and SHA-256, and for
-`arguments_too_large` the tool's limit. No schema version changed. A build
-before 0.63.0 refuses to open a journal that holds a `tool.requested` event
-over 4 KiB of arguments or any event over 64 KiB, as an invalid journal;
-it does not repair it. A journal whose calls were all within 4 KiB opens in
-both.
+`arguments_too_large` the tool's limit; when the result limit cannot hold
+them, it keeps only the tool name and code. No schema version changed. A
+build before 0.63.0 refuses to open a journal that holds a `tool.requested`
+event over 4 KiB of arguments or any event over 64 KiB, as an invalid
+journal; it does not repair it. A journal opens in both only when every call
+is within 4 KiB and every event within 64 KiB. An event can pass 64 KiB with
+no large call, for example a message of control characters, each stored as
+a six-byte escape.
 
 The version-2 `request.manifest` payload adds optional `tool_schema_version` and
 `tools` fields. They are present together only when the request advertised

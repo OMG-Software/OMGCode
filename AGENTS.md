@@ -55,9 +55,10 @@ directory tool creates one directory whose parent exists, without a checkpoint
 ([ADR-0079](docs/adr/0079-add-a-model-tool-that-creates-one-directory.md)). All
 six need the operator's writers-stopped acknowledgement when approved. The
 create, edit, and multi-edit tools accept 32 KiB of argument JSON and every
-other tool 4 KiB. A call with a usable identifier whose tool is unknown or
-whose arguments are too large, malformed, or name an invalid path is answered
-with a recoverable result and recorded as refused, and the turn continues
+other tool 4 KiB. A call with the supported shape and a usable, unique
+identifier whose tool is unknown or whose arguments are too large, malformed,
+or name an invalid path is answered with a recoverable result and recorded as
+refused, and the turn continues
 ([ADR-0099](docs/adr/0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)). No model network,
 Git, or MCP tool exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. A model write or command

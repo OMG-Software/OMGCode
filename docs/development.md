@@ -725,10 +725,12 @@ runner; an edit calls the checkpointed apply, as the
 The output reports `model_tools.mode` as `enabled`, with the workspace ID,
 rounds, call count, tool bytes, and withheld count. `reply.finish_reason` is `length` when the token
 limit cut the final reply short; the turn is still recorded as complete. A call
-that is denied by a preference, a response with no supported call shape, or a
-duplicate call identifier ends the turn with a `permission`, `tool_call`, or
-`tool_limit` error, recorded in the journal. A call rejected for its tool name,
-argument size, arguments, or path does not (ADR-0099).
+that is denied by a preference ends the turn with a `permission` error, which
+the session journal records as `tool_denied`. A response with no supported
+call shape, or a duplicate call identifier, ends it with a `tool_call` error,
+recorded as `invalid_tool_call`. A spent turn budget ends it with
+`tool_limit`, recorded under the same code. A call rejected for its tool name,
+argument size, arguments, or path does not end the turn (ADR-0099).
 
 ```text
 omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Summarise README.md."

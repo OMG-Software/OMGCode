@@ -2,7 +2,7 @@ use omgcode_core::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use omgcode_core::provider::{
     LocalModelClient, LocalModelConfig, ModelReply, ProviderError, Usage,
 };
-use omgcode_core::turn::{CancelToken, ToolCall, ToolModelReply, tool_definitions};
+use omgcode_core::turn::{CancelToken, ToolCall, ToolCallError, ToolModelReply, tool_definitions};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -662,6 +662,26 @@ fn tool_requests_advertise_exact_function_tools_and_return_raw_calls() {
     // The adapter returns calls unvalidated; the runtime parses them strictly.
     assert_eq!(reply.tool_calls[0]["id"], "call-1");
     assert!(ToolCall::parse(&reply.tool_calls[0]).is_ok());
+}
+
+/// ADR-0099: an object in place of the arguments string is a shape error on
+/// every adapter. The buffered adapter returns the call unvalidated, and the
+/// runtime parser refuses it as `UnsupportedShape`, which ends the turn, as
+/// the Responses adapter's `MalformedResponse` does.
+#[test]
+fn object_valued_arguments_reach_the_runtime_as_an_unsupported_shape() {
+    let (reply, _) = tool_exchange(
+        r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"workspace_read_file","arguments":{"path":"notes.txt"}}}]},"finish_reason":"tool_calls"}]}"#,
+    );
+    let reply = reply.expect("the adapter returns calls unvalidated");
+    assert_eq!(
+        reply.tool_calls[0]["function"]["arguments"],
+        serde_json::json!({"path": "notes.txt"})
+    );
+    assert_eq!(
+        ToolCall::parse(&reply.tool_calls[0]).err(),
+        Some(ToolCallError::UnsupportedShape)
+    );
 }
 
 #[test]
