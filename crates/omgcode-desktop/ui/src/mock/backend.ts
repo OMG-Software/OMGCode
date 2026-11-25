@@ -78,6 +78,58 @@ const MOCK_PATH_DEPTH_MAX = 32;
 const MOCK_COMPONENT_CHARS_MAX = 255;
 
 /** Lists one directory of the fake workspace, refusing a path as Rust does. */
+const MOCK_WEB_HOSTS_MAX = 32;
+const MOCK_WEB_HOST_RESERVED = [
+  "localhost",
+  "local",
+  "internal",
+  "home.arpa",
+  "lan",
+  "localdomain",
+  "onion",
+];
+
+/** The canonical text of a typed host pattern, refused with core's stable `web_host_*` code. */
+function mockWebHostPattern(text: string): string {
+  if (text === "") {
+    fail("web_host_empty", "the host pattern is empty");
+  }
+  if (Array.from(text).some((c) => c.charCodeAt(0) > 0x7f)) {
+    fail("web_host_not_ascii", "the host pattern must be ASCII");
+  }
+  const lowered = text.toLowerCase();
+  const unwrapped = lowered.endsWith(".") ? lowered.slice(0, -1) : lowered;
+  const wildcard = unwrapped.startsWith("*.");
+  const name = wildcard ? unwrapped.slice(2) : unwrapped;
+  if (name === "") {
+    fail("web_host_empty", "the host pattern is empty");
+  }
+  if (name.length > 253) {
+    fail("web_host_too_long", "the host pattern is longer than 253 bytes");
+  }
+  if (!/^[a-z0-9.-]*$/.test(name)) {
+    fail("web_host_bad_character", "use only letters, digits, hyphens, dots, and one leading `*.`");
+  }
+  const labels = name.split(".");
+  if (labels.some((l) => l === "" || l.length > 63 || l.startsWith("-") || l.endsWith("-"))) {
+    fail(
+      "web_host_bad_label",
+      "each label must be 1 to 63 bytes and must not start or end with a hyphen",
+    );
+  }
+  const last = labels[labels.length - 1] ?? "";
+  if (/^[0-9]+$/.test(last) || /^0x[0-9a-f]*$/.test(last)) {
+    fail("web_host_ip_literal", "an IP address is not a host pattern");
+  }
+  if (MOCK_WEB_HOST_RESERVED.some((s) => name === s || name.endsWith(`.${s}`))) {
+    fail("web_host_reserved", "local and private names are not allowed");
+  }
+  if (labels.length < 2) {
+    fail("web_host_too_few_labels", "the pattern needs at least two labels after any `*.`");
+  }
+  return wildcard ? `*.${name}` : name;
+}
+
 function mockWorkspaceEntries(path: unknown): WorkspaceListing {
   if (!Array.isArray(path) || path.length > MOCK_PATH_DEPTH_MAX) {
     fail("invalid_request", "The folder path is not acceptable.");
@@ -828,6 +880,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             execute: "deny",
             task_network: "deny",
             host_services: "deny",
+            web_fetch: "deny",
+            web_fetch_hosts: [],
             write_tools: {
               edit: "allow",
               multi_edit: "allow",
@@ -1218,6 +1272,30 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           settings.package_profiles.splice(index, 1);
         });
+      // Like core: the pattern is parsed first and a refusal carries its stable code; the system
+      // confirmation is accepted here. A list holds at most 32 patterns and no duplicate.
+      case "settings_add_web_fetch_host":
+        return changeSettings(args, () => {
+          const workspace = mockWorkspace(args);
+          const pattern = mockWebHostPattern(str(args, "pattern"));
+          if (workspace.web_fetch_hosts.includes(pattern)) {
+            fail("web_host_duplicate", "the workspace already lists this host pattern");
+          }
+          if (workspace.web_fetch_hosts.length >= MOCK_WEB_HOSTS_MAX) {
+            fail("web_host_too_many", "a workspace may list at most 32 host patterns");
+          }
+          workspace.web_fetch_hosts.push(pattern);
+        });
+      case "settings_remove_web_fetch_host":
+        return changeSettings(args, () => {
+          const workspace = mockWorkspace(args);
+          const pattern = mockWebHostPattern(str(args, "pattern"));
+          const index = workspace.web_fetch_hosts.indexOf(pattern);
+          if (index < 0) {
+            fail("web_host_not_listed", "the workspace does not list this host pattern");
+          }
+          workspace.web_fetch_hosts.splice(index, 1);
+        });
       case "settings_grant_container_folder":
         return changeSettings(args, () => {
           const workspaceId = str(args, "workspace_id");
@@ -1528,6 +1606,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           execute: "deny",
           task_network: "deny",
           host_services: "deny",
+          web_fetch: "prompt",
+          web_fetch_hosts: ["docs.example.com", "*.example.org"],
           write_tools: {
             edit: "allow",
             multi_edit: "allow",
@@ -1549,6 +1629,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           execute: "deny",
           task_network: "deny",
           host_services: "deny",
+          web_fetch: "deny",
+          web_fetch_hosts: [],
           write_tools: {
             edit: "allow",
             multi_edit: "allow",

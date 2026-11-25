@@ -607,6 +607,7 @@ impl DesktopError {
                 "no_development_root",
                 "Choose a development root before registering a workspace.",
             ),
+            ControlError::WebHost(refusal) => Self::new(refusal.as_str(), refusal.to_string()),
             ControlError::Io(_)
             | ControlError::Container(_)
             | ControlError::ProfileRemoval(_)

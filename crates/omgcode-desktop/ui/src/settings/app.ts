@@ -22,6 +22,7 @@ import {
 } from "./context";
 import { newConnectionDraft, renderModel } from "./model_section";
 import { createNav } from "./nav";
+import { webHostMessage } from "./web_hosts";
 import { renderWorkspaces } from "./workspaces_section";
 
 export { DEFAULT_ENDPOINTS, PROVIDER_NAMES } from "../providers";
@@ -123,6 +124,10 @@ const ACTIONS: Omit<Actions, "signInChatGpt" | "signOutChatGpt"> = {
   addPackageProfile: (name, origins) => (revision) =>
     settingsApi.addPackageProfile(revision, name, origins),
   removePackageProfile: (name) => (revision) => settingsApi.removePackageProfile(revision, name),
+  addWebFetchHost: (workspaceId, pattern) => (revision) =>
+    settingsApi.addWebFetchHost(revision, workspaceId, pattern),
+  removeWebFetchHost: (workspaceId, pattern) => (revision) =>
+    settingsApi.removeWebFetchHost(revision, workspaceId, pattern),
   grantContainerFolder: (workspaceId, access) => (revision) =>
     settingsApi.grantContainerFolder(revision, workspaceId, access),
   revokeContainerGrant: (grantId) => (revision) =>
@@ -145,6 +150,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     connectionDraft: newConnectionDraft(),
     chatDraft: null,
     instructionDrafts: new Map(),
+    webHostDrafts: new Map(),
     executionForms: newExecutionForms(),
   };
   // A change's error stays until the next change starts; a read's failure until a read succeeds.
@@ -416,8 +422,13 @@ export function startSettings(root: HTMLElement): SettingsApp {
       notice.hidden = false;
       return;
     }
-    replaceChildren(problem, `${error.message} (${error.code})`);
+    const readable = webHostMessage(error.code);
+    replaceChildren(problem, `${readable ?? error.message} (${error.code})`);
     problem.hidden = false;
+    if (readable !== null) {
+      // The host list sits low in the workspace page; bring the reason into view.
+      content.scrollTop = 0;
+    }
   }
 
   /**

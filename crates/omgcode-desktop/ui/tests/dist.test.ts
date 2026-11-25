@@ -85,9 +85,11 @@ suite(
     });
 
     it("reads every settings-window command from the settings client", () => {
-      // 27 in `settings`, as `policy.rs` and the guide count them.
-      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(27);
+      // 29 in `settings`, as `policy.rs` and the guide count them.
+      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(29);
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_overview");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_add_web_fetch_host");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_remove_web_fetch_host");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_revoke_container_grant");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_sign_in_chatgpt");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_cancel_chatgpt_sign_in");

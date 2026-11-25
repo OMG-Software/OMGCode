@@ -159,6 +159,23 @@ export const settingsApi = {
   removePackageProfile: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_package_profile", { revision, name }),
   /**
+   * Adds one host pattern to a workspace's `web_fetch` allowlist. Rust parses the pattern first
+   * (an invalid one is refused with its `web_host_*` code and no dialog), then confirms natively.
+   */
+  addWebFetchHost: (revision: number, workspaceId: string, pattern: string) =>
+    invokeCommand<SettingsOverview>("settings_add_web_fetch_host", {
+      revision,
+      workspace_id: workspaceId,
+      pattern,
+    }),
+  /** Removes one host pattern from a workspace's allowlist after a system confirmation. */
+  removeWebFetchHost: (revision: number, workspaceId: string, pattern: string) =>
+    invokeCommand<SettingsOverview>("settings_remove_web_fetch_host", {
+      revision,
+      workspace_id: workspaceId,
+      pattern,
+    }),
+  /**
    * Windows only. Asks Rust for a folder in a system dialog, confirms natively, and grants it to
    * the workspace's container. No path is sent.
    */

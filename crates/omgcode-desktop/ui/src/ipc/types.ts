@@ -318,6 +318,14 @@ export interface WorkspaceSettingsView {
   execute: Access;
   task_network: Access;
   host_services: Access;
+  /** The model `web_fetch` tool: one HTTPS GET of a public page. */
+  web_fetch: Access;
+  /**
+   * The workspace's allowed web hosts, canonical pattern text in the order added: an exact name
+   * or `*.` and a name for its subdomains. Configuration only; it grants nothing while
+   * `web_fetch` is `deny`.
+   */
+  web_fetch_hosts: string[];
   write_tools: WriteToolAccess;
   package_cache_root: string | null;
   /** The workspace's custom instructions (ADR-0080); `null` when the saved file is unreadable. */
@@ -337,6 +345,7 @@ export interface PermissionFlags {
   execute: Access;
   task_network: Access;
   host_services: Access;
+  web_fetch: Access;
   write_tools: WriteToolAccess;
 }
 

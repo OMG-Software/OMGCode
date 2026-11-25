@@ -29,6 +29,8 @@ function workspace(id: string, folder: string): SettingsOverview["workspaces"][n
     execute: "deny",
     task_network: "deny",
     host_services: "deny",
+    web_fetch: "deny",
+    web_fetch_hosts: [],
     write_tools: {
       edit: "allow",
       multi_edit: "allow",

@@ -58,6 +58,8 @@ function workspace(overrides: Partial<WorkspaceSettingsView> = {}): WorkspaceSet
     execute: "deny",
     task_network: "deny",
     host_services: "deny",
+    web_fetch: "deny",
+    web_fetch_hosts: [],
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
     instructions: "",
@@ -294,7 +296,7 @@ describe("settings window", () => {
     // No control takes a typed path: folders come only from the system dialog. The only typed
     // values are a new connection name, a loopback URL (ADR-0064), the write-only API key of an
     // Ollama Cloud connection (ADR-0071), the chat budgets as numbers, and the global and
-    // workspace custom instructions (ADR-0080), and in Advanced a profile name, root and PATH counts,
+    // workspace custom instructions (ADR-0080), a web host pattern (a name, never a path), and in Advanced a profile name, root and PATH counts,
     // variables and origins (ADR-0088).
     const typed: Array<string | null> = [];
     for (const section of ["Workspaces", "Model", "Advanced"]) {
@@ -313,6 +315,7 @@ describe("settings window", () => {
       }
     }
     expect(typed).toEqual([
+      "Web host to allow",
       `workspace-instructions-${WORKSPACE}`,
       "chat-context-tokens",
       "chat-max-output-tokens",
@@ -359,6 +362,7 @@ describe("settings window", () => {
     expect(PERMISSION_LABELS.map(([, label]) => stateOf(label))).toEqual([
       "allow",
       "prompt",
+      "deny",
       "deny",
       "deny",
       "deny",
@@ -445,6 +449,7 @@ describe("settings window", () => {
         execute: "prompt",
         task_network: "deny",
         host_services: "deny",
+        web_fetch: "deny",
         write_tools: ALL_TOOLS,
       },
     });
@@ -472,6 +477,7 @@ describe("settings window", () => {
         execute: "deny",
         task_network: "deny",
         host_services: "deny",
+        web_fetch: "deny",
         write_tools: { ...ALL_TOOLS, delete: "deny" },
       },
     });

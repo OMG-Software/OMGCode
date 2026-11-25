@@ -102,6 +102,7 @@ mod settings_chat;
 mod settings_chatgpt;
 mod settings_execution;
 mod settings_skills;
+mod settings_web_hosts;
 mod state;
 mod turns;
 mod wire;
@@ -131,6 +132,7 @@ pub use self::settings_execution::{
     PackageProfileAddRequest, ProfileRemoveRequest, ToolchainProfileAddRequest,
 };
 pub use self::settings_skills::{SkillChoice, SkillRemoveRequest, SkillStateRequest};
+pub use self::settings_web_hosts::WebHostChangeRequest;
 use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
