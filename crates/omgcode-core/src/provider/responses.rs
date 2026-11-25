@@ -106,11 +106,14 @@ pub(super) fn failure_in_error_body(bytes: &[u8]) -> Option<ResponseFailure> {
     ResponseFailure::from_code(code)
 }
 
+/// The bytes one answered call's item adds beyond its three strings.
+const CALL_ITEM_OVERHEAD: u64 = 128;
+
 #[derive(Serialize)]
 struct ResponsesRequest<'a> {
     model: &'a str,
     instructions: &'a str,
-    input: Vec<InputMessage<'a>>,
+    input: Vec<InputItem<'a>>,
     store: bool,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,12 +122,25 @@ struct ResponsesRequest<'a> {
     tool_choice: Option<&'static str>,
 }
 
+/// One input item. A tool result in tools mode becomes the model's own call
+/// followed by its output, which is how the route pairs them (ADR-0097).
 #[derive(Serialize)]
-struct InputMessage<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    role: &'static str,
-    content: &'a str,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum InputItem<'a> {
+    Message {
+        role: &'static str,
+        content: &'a str,
+    },
+    FunctionCall {
+        call_id: &'a str,
+        namespace: &'static str,
+        name: &'a str,
+        arguments: &'a str,
+    },
+    FunctionCallOutput {
+        call_id: &'a str,
+        output: &'a str,
+    },
 }
 
 #[derive(Serialize)]
@@ -152,10 +168,14 @@ struct FunctionTool<'a> {
 ///
 /// The caller has checked that the first message is the compiled base prompt
 /// and the only system message. That prompt becomes `instructions`, because
-/// the route refuses `system` items; every other message becomes a message
-/// item with its role. `store` is `false` and `stream` is `true`, as the
-/// route requires. Tools, when given, go in one namespace. No output limit,
-/// sampling, reasoning, or conversation field is sent.
+/// the route refuses `system` items. When tools are given, a tool result
+/// becomes a `function_call` item that repeats the model's own namespaced
+/// call, then a `function_call_output` item with the source-labelled result
+/// text (ADR-0097). Every other message, and a tool result in a request
+/// without tools, becomes a message item; a tool result is `user` text there.
+/// `store` is `false` and `stream` is `true`, as the route requires. Tools,
+/// when given, go in one namespace. No output limit, sampling, reasoning, or
+/// conversation field is sent.
 pub(super) fn request_body(
     model: &str,
     messages: &[ModelMessage],
@@ -165,21 +185,31 @@ pub(super) fn request_body(
         .split_first()
         .filter(|(first, _)| first.role == ModelRole::System)
         .ok_or(ProviderError::InvalidConfiguration)?;
-    let input = rest
-        .iter()
-        .map(|message| {
-            let role = match message.role {
-                ModelRole::User => "user",
-                ModelRole::Assistant => "assistant",
-                ModelRole::System => return Err(ProviderError::InvalidConfiguration),
-            };
-            Ok(InputMessage {
-                kind: "message",
-                role,
-                content: &message.content,
-            })
-        })
-        .collect::<Result<Vec<_>, ProviderError>>()?;
+    let mut input = Vec::with_capacity(rest.len());
+    for message in rest {
+        let role = match &message.role {
+            ModelRole::ToolResult(call) if tools.is_some() => {
+                input.push(InputItem::FunctionCall {
+                    call_id: call.call_id(),
+                    namespace: TOOL_NAMESPACE,
+                    name: call.name(),
+                    arguments: call.arguments(),
+                });
+                input.push(InputItem::FunctionCallOutput {
+                    call_id: call.call_id(),
+                    output: &message.content,
+                });
+                continue;
+            }
+            ModelRole::User | ModelRole::ToolResult(_) => "user",
+            ModelRole::Assistant => "assistant",
+            ModelRole::System => return Err(ProviderError::InvalidConfiguration),
+        };
+        input.push(InputItem::Message {
+            role,
+            content: &message.content,
+        });
+    }
     let tools = tools.map(|tools| {
         [Namespace {
             kind: "namespace",
@@ -208,6 +238,24 @@ pub(super) fn request_body(
         tool_choice,
     })
     .map_err(|_| ProviderError::RequestTooLarge)
+}
+
+/// The bytes that answered calls add to a request with tools, beyond the
+/// message text the shared estimates already count.
+pub(super) fn answered_call_bytes(messages: &[ModelMessage]) -> Result<u64, ProviderError> {
+    messages
+        .iter()
+        .filter_map(|message| match &message.role {
+            ModelRole::ToolResult(call) => Some(call.byte_len()),
+            _ => None,
+        })
+        .try_fold(0_u64, |total, bytes| {
+            u64::try_from(bytes)
+                .ok()
+                .and_then(|bytes| bytes.checked_add(CALL_ITEM_OVERHEAD))
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or(ProviderError::RequestTooLarge)
+        })
 }
 
 /// Whether the request advertised tools.

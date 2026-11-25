@@ -107,6 +107,8 @@ meaningful alternative does not need an ADR.
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Compact automatically at 400K by default in the desktop](0091-compact-automatically-at-400k-by-default-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0092: Add hosted providers and an OpenAI-compatible connection](0092-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |
-| [0093: Sign in with ChatGPT and use the plan through the Responses API](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md) | Accepted; amended by ADR-0094 | 2026-11-24 |
+| [0093: Sign in with ChatGPT and use the plan through the Responses API](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md) | Accepted; amended by ADR-0094, ADR-0096, and ADR-0097 | 2026-11-24 |
 | [0094: Open the sign-in page through the shell URL association](0094-open-the-sign-in-page-through-the-shell-url-association.md) | Accepted | 2026-11-24 |
 | [0095: Use the OMG Software palette and OMGCode icons in the desktop](0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md) | Accepted | 2026-11-24 |
+| [0096: Accept a plan-route stream without a Content-Type](0096-accept-a-plan-route-stream-without-a-content-type.md) | Accepted; amended by ADR-0097 | 2026-11-24 |
+| [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted | 2026-11-24 |

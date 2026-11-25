@@ -1,5 +1,5 @@
 use super::*;
-use crate::prompt::BASE_PROMPT;
+use crate::prompt::{AnsweredCall, BASE_PROMPT};
 use crate::provider::{AccessTokenSource, LocalModelClient, LocalModelConfig};
 use crate::test_support::await_client_close;
 use crate::turn::{CancelToken, tool_definitions};
@@ -406,6 +406,93 @@ fn the_request_body_uses_instructions_input_items_and_one_namespace() {
     );
 }
 
+/// A tool turn after one call: the request, the model's interim text, and the
+/// source-labelled result of `list-1` (ADR-0097).
+fn tool_turn_messages(arguments: &str, result: &str) -> Vec<ModelMessage> {
+    let mut messages = messages();
+    messages.push(ModelMessage {
+        role: ModelRole::ToolResult(AnsweredCall::new(
+            "call_list_1",
+            "workspace_list_directory",
+            arguments,
+        )),
+        content: result.to_owned(),
+    });
+    messages
+}
+
+#[test]
+fn with_tools_a_tool_result_is_sent_as_its_call_and_output_items() {
+    let tools = tool_definitions();
+    let body = request_body(
+        "gpt-test",
+        &tool_turn_messages("{\"path\":\".\"}", "Tool result [call call_list_1]:\n[]"),
+        Some(&tools),
+    )
+    .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        value["input"],
+        serde_json::json!([
+            {"type": "message", "role": "user", "content": "List the files."},
+            {"type": "message", "role": "assistant", "content": "Looking."},
+            {
+                "type": "function_call",
+                "call_id": "call_list_1",
+                "namespace": TOOL_NAMESPACE,
+                "name": "workspace_list_directory",
+                "arguments": "{\"path\":\".\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_list_1",
+                "output": "Tool result [call call_list_1]:\n[]"
+            }
+        ])
+    );
+}
+
+#[test]
+fn without_tools_a_tool_result_stays_a_labelled_user_message() {
+    // No call item may name a function the request does not advertise.
+    let body = request_body(
+        "gpt-test",
+        &tool_turn_messages("{\"path\":\".\"}", "Tool result [call call_list_1]:\n[]"),
+        None,
+    )
+    .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        value["input"][2],
+        serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": "Tool result [call call_list_1]:\n[]"
+        })
+    );
+    assert_eq!(value["input"].as_array().map(Vec::len), Some(3));
+}
+
+#[test]
+fn a_tool_results_call_counts_against_the_context_estimate() {
+    // The result text fits; the echoed arguments push the request past the
+    // context. No token is asked for and nothing is sent.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let base = format!("http://{}/v1", listener.local_addr().expect("addr"));
+    drop(listener);
+    let tokens = token(Ok("t"));
+    let client = client(&base, Arc::clone(&tokens));
+    let arguments = format!("{{\"path\":\"{}\"}}", "a".repeat(120_000));
+    let messages = tool_turn_messages(&arguments, &"x".repeat(20_000));
+    assert_eq!(
+        client
+            .complete_with_tools(&messages, &tool_definitions(), &CancelToken::new())
+            .map(|reply| reply.content),
+        Err(ProviderError::ContextLimit)
+    );
+    assert_eq!(tokens.calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn only_a_documented_code_in_an_error_body_is_used() {
     assert_eq!(
@@ -459,10 +546,11 @@ fn client(base_url: &str, tokens: Arc<FixedToken>) -> LocalModelClient {
     .expect("client")
 }
 
-/// Serve one response and record the request head and body.
+/// Serve one response and record the request head and body. `None` sends no
+/// `Content-Type` header at all, as OpenAI's plan route does (ADR-0096).
 fn serve_once(
     status: &'static str,
-    content_type: &'static str,
+    content_type: Option<&'static str>,
     body: String,
 ) -> (String, thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -473,8 +561,11 @@ fn serve_once(
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("timeout");
         let request = read_request(&mut stream);
+        let content_type = content_type
+            .map(|media_type| format!("Content-Type: {media_type}\r\n"))
+            .unwrap_or_default();
         let reply = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(reply.as_bytes()).expect("reply");
@@ -511,7 +602,7 @@ fn read_request(stream: &mut impl Read) -> String {
 
 #[test]
 fn the_client_posts_to_responses_with_the_sources_bearer_token() {
-    let (base, server) = serve_once("200 OK", "text/event-stream", text_stream());
+    let (base, server) = serve_once("200 OK", Some("text/event-stream"), text_stream());
     let tokens = token(Ok("test-access-token"));
     let client = client(&base, Arc::clone(&tokens));
     let mut shown = String::new();
@@ -547,7 +638,7 @@ fn a_non_streaming_call_reads_the_stream_and_returns_tool_calls() {
         .iter()
         .map(|payload| event(payload))
         .collect();
-    let (base, server) = serve_once("200 OK", "text/event-stream", stream);
+    let (base, server) = serve_once("200 OK", Some("text/event-stream"), stream);
     let client = client(&base, token(Ok("t")));
     let reply = client
         .complete_with_tools(&messages(), &tool_definitions(), &CancelToken::new())
@@ -558,11 +649,111 @@ fn a_non_streaming_call_reads_the_stream_and_returns_tool_calls() {
     assert!(request.contains("\"type\":\"namespace\""), "{request}");
 }
 
+/// The events OpenAI's plan route sent for a short text reply on 2026-11-24,
+/// in order and with their observed fields (ADR-0096). Identifiers are
+/// shortened, the echoed request is left out of the lifecycle events, and the
+/// moderation metadata and token attribution are cut down.
+fn observed_plan_stream() -> String {
+    const DELTA: &str = r#""item_id":"msg_1","output_index":0,"content_index":0"#;
+    let delta = |sequence: u8, text: &str| {
+        format!(
+            r#"{{"type":"response.output_text.delta","sequence_number":{sequence},{DELTA},"delta":"{text}","logprobs":[],"safety_buffering":false,"obfuscation":"x"}}"#
+        )
+    };
+    let message = r#"{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello, world!","annotations":[],"logprobs":[]}],"phase":"final_answer"}"#;
+    [
+        r#"{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","output":[],"usage":null}}"#.to_owned(),
+        r#"{"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_1","object":"response","status":"in_progress","output":[],"usage":null}}"#.to_owned(),
+        r#"{"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[],"phase":"final_answer"}}"#.to_owned(),
+        format!(r#"{{"type":"response.content_part.added","sequence_number":3,{DELTA},"part":{{"type":"output_text","text":"","annotations":[],"logprobs":[]}}}}"#),
+        delta(4, "Hello"),
+        delta(5, ","),
+        delta(6, " world"),
+        delta(7, "!"),
+        r#"{"type":"response.metadata","sequence_number":8,"response_id":"resp_1","metadata":{"openai_chatgpt_moderation_metadata":{}}}"#.to_owned(),
+        format!(r#"{{"type":"response.output_text.done","sequence_number":9,{DELTA},"text":"Hello, world!","logprobs":[]}}"#),
+        format!(r#"{{"type":"response.content_part.done","sequence_number":10,{DELTA},"part":{{"type":"output_text","text":"Hello, world!","annotations":[],"logprobs":[]}}}}"#),
+        format!(r#"{{"type":"response.output_item.done","sequence_number":11,"output_index":0,"item":{message}}}"#),
+        format!(r#"{{"type":"response.completed","sequence_number":12,"response":{{"id":"resp_1","object":"response","status":"completed","output":[{message}],"usage":{{"input_tokens":1965,"input_tokens_details":{{"cached_tokens":0}},"output_tokens":8,"output_tokens_details":{{"reasoning_tokens":0}},"total_tokens":1973,"attribution":{{"items":{{}}}}}}}}}}"#),
+    ]
+    .iter()
+    .map(|payload| event(payload))
+    .collect()
+}
+
+#[test]
+fn a_plan_stream_without_a_content_type_is_read() {
+    // The plan route answers a streamed request with no `Content-Type` at
+    // all; the head check must not refuse it before the strict reader runs.
+    let (base, server) = serve_once("200 OK", None, observed_plan_stream());
+    let client = client(&base, token(Ok("t")));
+    let mut shown = String::new();
+    let reply = client
+        .complete_streaming(
+            &messages(),
+            &mut |text| shown.push_str(text),
+            &CancelToken::new(),
+        )
+        .expect("reply");
+    assert_eq!(reply.content, "Hello, world!");
+    assert_eq!(shown, "Hello, world!");
+    assert_eq!(
+        reply.usage,
+        Some(Usage {
+            prompt_tokens: Some(1965),
+            completion_tokens: Some(8),
+            total_tokens: Some(1973),
+        })
+    );
+    server.join().expect("server");
+}
+
+#[test]
+fn a_plan_reply_that_names_another_content_type_is_refused() {
+    for media_type in ["application/json", "text/plain; charset=utf-8", ""] {
+        let (base, server) = serve_once("200 OK", Some(media_type), observed_plan_stream());
+        let mut shown = String::new();
+        let result = client(&base, token(Ok("t"))).complete_streaming(
+            &messages(),
+            &mut |text| shown.push_str(text),
+            &CancelToken::new(),
+        );
+        assert_eq!(
+            result,
+            Err(ProviderError::MalformedResponse),
+            "{media_type:?}"
+        );
+        assert!(shown.is_empty(), "{media_type:?}");
+        server.join().expect("server");
+    }
+}
+
+#[test]
+fn a_plan_body_without_a_content_type_still_passes_the_strict_reader() {
+    // Accepting an absent header does not accept an arbitrary body: a JSON
+    // document or a page is not a stream that reaches `response.completed`.
+    for (body, expected) in [
+        (
+            r#"{"id":"resp_1","status":"completed"}"#.to_owned(),
+            ProviderError::IncompleteStream,
+        ),
+        (
+            "<html>\n<body>\n".to_owned(),
+            ProviderError::MalformedResponse,
+        ),
+    ] {
+        let (base, server) = serve_once("200 OK", None, body);
+        let result = client(&base, token(Ok("t"))).complete(&messages(), &CancelToken::new());
+        assert_eq!(result, Err(expected));
+        server.join().expect("server");
+    }
+}
+
 #[test]
 fn a_usage_limit_status_body_becomes_its_code_and_other_statuses_stay_statuses() {
     let (base, server) = serve_once(
         "429 Too Many Requests",
-        "application/json",
+        Some("application/json"),
         r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"m"}}"#
             .to_owned(),
     );
@@ -577,7 +768,7 @@ fn a_usage_limit_status_body_becomes_its_code_and_other_statuses_stay_statuses()
 
     let (base, server) = serve_once(
         "401 Unauthorized",
-        "application/json",
+        Some("application/json"),
         r#"{"detail":"Unauthorized"}"#.to_owned(),
     );
     let result = client(&base, token(Ok("t"))).complete(&messages(), &CancelToken::new());
