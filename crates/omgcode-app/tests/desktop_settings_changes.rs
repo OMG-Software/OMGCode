@@ -447,6 +447,54 @@ fn turning_preferences_off_applies_without_a_dialog() {
     );
 }
 
+/// The wire flags carry no `web_fetch` yet, so a desktop permission change
+/// keeps the stored state and the workspace's host allowlist untouched.
+#[test]
+fn a_desktop_permission_change_keeps_the_stored_web_fetch_state_and_hosts() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace(
+        "project",
+        PermissionSet {
+            web_fetch: Access::Allow,
+            ..read_tools()
+        },
+    );
+    {
+        let mut store = ControlStore::open(&fixture.data).expect("control store");
+        let id = store
+            .registered_workspace(workspace.id)
+            .expect("registered")
+            .id();
+        let revision = store.revision();
+        store
+            .add_web_fetch_host(id, "docs.example.com", revision)
+            .expect("host");
+    }
+    let start = current_revision(&fixture.data);
+    let prompt = ScriptedPrompt::new();
+
+    let overview = service(&fixture.data)
+        .settings_set_permissions(
+            permissions(workspace.id, start, [false, false, false, false]),
+            &prompt,
+        )
+        .expect("narrowed");
+
+    assert!(prompt.asked().is_empty());
+    assert!(!overview.workspaces[0].model_tools);
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("store exists");
+    let registered = store
+        .registered_workspace(workspace.id)
+        .expect("registered");
+    assert_eq!(registered.permissions().web_fetch, Access::Allow);
+    assert!(!registered.permissions().model_tools);
+    let hosts = store.web_fetch_hosts(registered.id());
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].as_str(), "docs.example.com");
+}
+
 /// A run journal that cannot be read never keeps access in place: the
 /// narrowing is recorded, and the change reports that runs were not all
 /// checked. Run watchers still stop withdrawn runs from the recorded settings

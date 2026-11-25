@@ -921,6 +921,7 @@ pub(super) fn binding_write_uncertain(error: &ControlError) -> bool {
         | ControlError::Conflict { .. }
         | ControlError::NoRoot
         | ControlError::UnknownWorkspace
+        | ControlError::WebHost(_)
         | ControlError::DirectoryChanged
         | ControlError::StorageOverlap
         | ControlError::WorkspacePath(_)

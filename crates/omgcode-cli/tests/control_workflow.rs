@@ -160,6 +160,8 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
             "task_network": "deny",
             "model_tools": false,
             "host_services": "deny",
+            "web_fetch": "deny",
+            "web_fetch_hosts": [],
             "write_tools": {
                 "edit": "allow",
                 "multi_edit": "allow",
@@ -1322,6 +1324,205 @@ fn unregister_removes_a_workspace_and_its_instructions_and_leaves_the_folder() {
         &["workspace", "unregister", &first_id, "--revision", "5"],
     );
     assert_control_error(&unknown_now);
+}
+
+/// The `web_fetch` preference and its host allowlist are revisioned,
+/// validated, listed, reported by status, and dropped by unregistering.
+#[test]
+fn web_fetch_preference_and_hosts_are_revisioned_and_validated() {
+    // Given two registered workspaces.
+    let temporary = TempDir::new().expect("private temporary directory");
+    let data_root = temporary.path().join("application-data");
+    let development_root = temporary.path().join("development");
+    let first = development_root.join("first");
+    let second = development_root.join("second");
+    fs::create_dir_all(&first).expect("create first workspace");
+    fs::create_dir_all(&second).expect("create second workspace");
+    set_root(&data_root, &development_root);
+    let first_id = register(&data_root, &first, 1);
+    let second_id = register(&data_root, &second, 2);
+
+    // When the preference is set, only the three state words are accepted.
+    for word in ["true", "false", "ask", "Allow", ""] {
+        let refused = run_cli(
+            &data_root,
+            &[
+                "workspace",
+                "permissions",
+                &first_id,
+                "--revision",
+                "3",
+                "--web-fetch",
+                word,
+            ],
+        );
+        assert!(!refused.status.success(), "{word:?} must be refused");
+    }
+    let set = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "permissions",
+            &first_id,
+            "--revision",
+            "3",
+            "--web-fetch",
+            "allow",
+        ],
+    );
+    assert_success(&set);
+    let set = json_output(&set);
+    assert_eq!(set["revision"], 4);
+    let status_of = |snapshot: &Value, id: &str| -> Value {
+        snapshot["workspaces"]
+            .as_array()
+            .expect("workspace registrations")
+            .iter()
+            .find(|workspace| workspace["id"] == id)
+            .expect("workspace registration")["permissions"]
+            .clone()
+    };
+    assert_eq!(status_of(&set, &first_id)["web_fetch"], "allow");
+    assert_eq!(status_of(&set, &second_id)["web_fetch"], "deny");
+
+    // And hosts are added, normalised, listed, and refused when invalid.
+    let added = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "web-host-add",
+            &first_id,
+            "Docs.Example.com.",
+            "--revision",
+            "4",
+        ],
+    );
+    assert_success(&added);
+    let added = json_output(&added);
+    assert_eq!(added["pattern"], "docs.example.com");
+    assert_eq!(added["snapshot"]["revision"], 5);
+    let wildcard = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "web-host-add",
+            &first_id,
+            "*.rust-lang.org",
+            "--revision",
+            "5",
+        ],
+    );
+    assert_success(&wildcard);
+    for (pattern, revision) in [
+        ("localhost", "6"),
+        ("127.0.0.1", "6"),
+        ("*.com", "6"),
+        ("docs.example.com", "6"),
+        ("docs.example.com", "5"),
+    ] {
+        let refused = run_cli(
+            &data_root,
+            &[
+                "workspace",
+                "web-host-add",
+                &first_id,
+                pattern,
+                "--revision",
+                revision,
+            ],
+        );
+        assert_control_error(&refused);
+    }
+    let unknown = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "web-host-add",
+            &Uuid::new_v4().to_string(),
+            "example.com",
+            "--revision",
+            "6",
+        ],
+    );
+    assert_control_error(&unknown);
+    let listed = run_cli(&data_root, &["workspace", "web-host-list", &first_id]);
+    assert_success(&listed);
+    let listed = json_output(&listed);
+    assert_eq!(listed["web_fetch"], "allow");
+    assert_eq!(
+        listed["web_fetch_hosts"],
+        json!(["docs.example.com", "*.rust-lang.org"])
+    );
+    assert_eq!(listed["revision"], 6);
+    let status = run_cli(&data_root, &["workspace", "status"]);
+    assert_success(&status);
+    let status = json_output(&status);
+    assert_eq!(
+        status_of(&status, &first_id)["web_fetch_hosts"],
+        json!(["docs.example.com", "*.rust-lang.org"])
+    );
+    assert_eq!(status_of(&status, &second_id)["web_fetch_hosts"], json!([]));
+
+    // When another preference changes, the stored state is kept.
+    let model_tools = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "permissions",
+            &first_id,
+            "--revision",
+            "6",
+            "--model-tools",
+            "true",
+        ],
+    );
+    assert_success(&model_tools);
+    assert_eq!(
+        status_of(&json_output(&model_tools), &first_id)["web_fetch"],
+        "allow"
+    );
+
+    // And removal is exact: an absent pattern is refused, a listed one leaves.
+    let absent = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "web-host-remove",
+            &first_id,
+            "*.example.com",
+            "--revision",
+            "7",
+        ],
+    );
+    assert_control_error(&absent);
+    let removed = run_cli(
+        &data_root,
+        &[
+            "workspace",
+            "web-host-remove",
+            &first_id,
+            "DOCS.example.com",
+            "--revision",
+            "7",
+        ],
+    );
+    assert_success(&removed);
+    let removed = json_output(&removed);
+    assert_eq!(removed["removed_pattern"], "docs.example.com");
+    let listed = json_output(&run_cli(
+        &data_root,
+        &["workspace", "web-host-list", &first_id],
+    ));
+    assert_eq!(listed["web_fetch_hosts"], json!(["*.rust-lang.org"]));
+
+    // Then unregistering drops the allowlist with the registration.
+    let gone = run_cli(
+        &data_root,
+        &["workspace", "unregister", &first_id, "--revision", "8"],
+    );
+    assert_success(&gone);
+    let missing = run_cli(&data_root, &["workspace", "web-host-list", &first_id]);
+    assert_control_error(&missing);
 }
 
 /// A recorded container grant refuses the removal until it is revoked.

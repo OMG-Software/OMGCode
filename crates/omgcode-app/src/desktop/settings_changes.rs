@@ -236,7 +236,10 @@ const fn widened_meaning(state: Access) -> &'static str {
     }
 }
 
-const fn permission_set(flags: PermissionFlags) -> PermissionSet {
+/// The preference set a window asked for. `web_fetch` is not in the wire
+/// flags yet, so the stored state carries over unchanged; the revision check
+/// in the change keeps it from being applied over a newer one.
+const fn permission_set(flags: PermissionFlags, stored: &PermissionSet) -> PermissionSet {
     PermissionSet {
         read: flags.read,
         write: flags.write,
@@ -244,6 +247,7 @@ const fn permission_set(flags: PermissionFlags) -> PermissionSet {
         task_network: flags.task_network,
         model_tools: flags.model_tools,
         host_services: flags.host_services,
+        web_fetch: stored.web_fetch,
         write_tools: flags.write_tools,
     }
 }
@@ -658,16 +662,17 @@ impl DesktopService {
         prompt: &dyn SettingsPrompt,
     ) -> Result<SettingsOverview, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        let wanted = permission_set(request.permissions);
-        let (workspace_id, confirmation) = {
+        let (workspace_id, wanted, confirmation) = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let workspace = store
                 .registered_workspace(request.workspace_id)
                 .ok_or_else(DesktopError::unknown_workspace)?;
             let folder = folder_of_directory(workspace.directory_path());
+            let wanted = permission_set(request.permissions, &workspace.permissions());
             (
                 workspace.id(),
+                wanted,
                 raise_confirmation(&folder, &workspace.permissions(), &wanted),
             )
         };
@@ -1374,6 +1379,7 @@ mod tests {
             task_network,
             model_tools,
             host_services,
+            web_fetch: Access::Deny,
             write_tools: WriteToolAccess::default(),
         }
     }

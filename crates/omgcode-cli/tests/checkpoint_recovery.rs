@@ -352,6 +352,7 @@ fn checkpoint_acknowledgement_does_not_restore_revoked_workspace_permissions() {
                     task_network: Access::Deny,
                     model_tools: false,
                     host_services: Access::Deny,
+                    web_fetch: Access::Deny,
                     write_tools: WriteToolAccess::default(),
                 },
                 control.revision(),

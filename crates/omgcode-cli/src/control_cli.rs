@@ -51,7 +51,7 @@ pub(crate) enum WorkspaceCommand {
         revision: u64,
     },
     /// Remove one workspace's registration and the settings that name it: its
-    /// preferences, package cache selection, skill overrides, checkpoint
+    /// preferences, `web_fetch` host allowlist, package cache selection, skill overrides, checkpoint
     /// record, and saved desktop instructions. The folder and its files are
     /// not touched. Refused while a container grant names the workspace; revoke
     /// it with `container-revoke` first. Registering the folder again assigns a
@@ -63,6 +63,26 @@ pub(crate) enum WorkspaceCommand {
     },
     /// Change one or more policy flags using an expected revision.
     Permissions(PermissionsArgs),
+    /// Add one host pattern to a workspace's `web_fetch` allowlist: an exact
+    /// name such as docs.example.com, or `*.example.com` for its subdomains
+    /// only. Under `--web-fetch allow`, the model tool fetches an allowlisted
+    /// host without a per-call approval. Names only: no IP address, no local
+    /// name, ASCII (use punycode). At most 32 per workspace.
+    WebHostAdd {
+        workspace: String,
+        pattern: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Remove one host pattern from a workspace's `web_fetch` allowlist.
+    WebHostRemove {
+        workspace: String,
+        pattern: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// List a workspace's `web_fetch` preference and host allowlist.
+    WebHostList { workspace: String },
     /// Evaluate one diagnostic policy request and record it in the audit log.
     Check(CheckArgs),
     /// Show recent policy audit entries.
@@ -354,7 +374,7 @@ pub(crate) struct PermissionsArgs {
     /// `deny`, `prompt`, or `allow`. The legacy `true` means `prompt`.
     #[arg(long, value_parser = parse_access)]
     execute: Option<Access>,
-    /// `deny`, `prompt`, or `allow`. No model tool uses it yet.
+    /// `deny`, `prompt`, or `allow`. No model tool uses it.
     #[arg(long = "task-network", value_parser = parse_access)]
     task_network: Option<Access>,
     /// Let chat offer the local model workspace tools at all.
@@ -365,6 +385,12 @@ pub(crate) struct PermissionsArgs {
     /// `deny`, `prompt`, or `allow`; never offered to a model.
     #[arg(long = "host-services", value_parser = parse_access)]
     host_services: Option<Access>,
+    /// `deny`, `prompt`, or `allow` for the model `web_fetch` tool, one HTTPS
+    /// GET of a public page. `prompt` asks before every fetch; `allow` skips
+    /// the ask only for hosts on the workspace allowlist (`web-host-add`). It
+    /// has no effect unless `--model-tools true`.
+    #[arg(long = "web-fetch", value_parser = parse_tool_limit)]
+    web_fetch: Option<Access>,
     /// Limit on the model edit tool; it can only narrow `--write`.
     #[arg(long = "edit-tool", value_parser = parse_tool_limit)]
     edit_tool: Option<Access>,
@@ -395,7 +421,8 @@ fn parse_read_access(value: &str) -> Result<Access, String> {
     parse_with_legacy(value, Access::Allow)
 }
 
-/// Parse a per-tool limit, which has no legacy form.
+/// Parse a state that has no legacy boolean form: `deny`, `prompt`, or
+/// `allow` only. Used for per-tool limits and `--web-fetch`.
 fn parse_tool_limit(value: &str) -> Result<Access, String> {
     value.parse::<Access>().map_err(|error| error.to_string())
 }
@@ -541,6 +568,52 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             }))
         }
         WorkspaceCommand::Permissions(args) => set_permissions(args, data_root),
+        WorkspaceCommand::WebHostAdd {
+            workspace,
+            pattern,
+            revision,
+        } => {
+            let workspace_id = parse_workspace_id(&workspace)?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let pattern = store
+                .add_web_fetch_host(workspace_id, &pattern, revision)
+                .map_err(control_error)?;
+            print_json(&json!({
+                "pattern": pattern.as_str(),
+                "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::WebHostRemove {
+            workspace,
+            pattern,
+            revision,
+        } => {
+            let workspace_id = parse_workspace_id(&workspace)?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let pattern = store
+                .remove_web_fetch_host(workspace_id, &pattern, revision)
+                .map_err(control_error)?;
+            print_json(&json!({
+                "removed_pattern": pattern.as_str(),
+                "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::WebHostList { workspace } => {
+            let workspace_id = parse_workspace_id(&workspace)?;
+            let store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let registration = store
+                .workspace(workspace_id)
+                .ok_or_else(|| CliError::new("control", "Workspace is not registered"))?;
+            print_json(&json!({
+                "workspace_id": workspace_id,
+                "web_fetch": registration.permissions().web_fetch,
+                "web_fetch_hosts": store.web_fetch_hosts(workspace_id),
+                "revision": store.revision(),
+            }))
+        }
         WorkspaceCommand::Check(args) => check(args, data_root),
         WorkspaceCommand::Audit { limit } => audit(limit, data_root),
         WorkspaceCommand::ContainerGrant(args) => container_grant(args, data_root),
@@ -790,6 +863,7 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         && args.task_network.is_none()
         && args.model_tools.is_none()
         && args.host_services.is_none()
+        && args.web_fetch.is_none()
         && args.edit_tool.is_none()
         && args.multi_edit_tool.is_none()
         && args.create_tool.is_none()
@@ -828,6 +902,7 @@ fn set_permissions(args: PermissionsArgs, data_root: &Path) -> Result<(), CliErr
         task_network: args.task_network.unwrap_or(current.task_network),
         model_tools: args.model_tools.unwrap_or(current.model_tools),
         host_services: args.host_services.unwrap_or(current.host_services),
+        web_fetch: args.web_fetch.unwrap_or(current.web_fetch),
         write_tools,
     };
     store
