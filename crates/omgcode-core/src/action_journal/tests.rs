@@ -22,6 +22,7 @@ fn started<'a>(call_id: &'a str, tool: ActionTool, targets: &'a [&'a str]) -> St
         authorization: Authorization::StandingAllow {
             settings_revision: 3,
         },
+        after_web_content: false,
     }
 }
 
@@ -34,6 +35,7 @@ fn refused<'a>(call_id: &'a str, reason: RefusalReason) -> RefusedAction<'a> {
         targets: &["notes.txt"],
         request_sha256: None,
         reason,
+        after_web_content: false,
     }
 }
 
@@ -732,6 +734,7 @@ fn worst_case_start_record_fits_the_event_bound() {
                 approval_id: Uuid::new_v4(),
                 settings_revision: u64::MAX,
             },
+            after_web_content: true,
         }),
     };
     assert!(encode_line(&line).expect("encode").len() <= MAX_EVENT_BYTES);
@@ -1190,4 +1193,104 @@ fn rejected_calls_are_recorded_with_their_reasons_and_an_unrecognized_tool() {
             reason: RefusalReason::UnsupportedTool
         }
     ));
+}
+
+#[test]
+fn a_network_target_is_stored_as_a_url_only_when_the_fetch_policy_accepts_it() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    let accepted = "https://docs.example.com/guide?page=2";
+    journal
+        .record_started(&started("fetch-ok", ActionTool::Network, &[accepted]))
+        .expect("accepted URL");
+    let hostile = [
+        "http://docs.example.com/",
+        "https://127.0.0.1/",
+        "https://localhost/",
+        "https://user:secret@docs.example.com/",
+        "docs/readme.md",
+        "",
+    ];
+    for target in hostile {
+        journal
+            .record_refused(&RefusedAction {
+                tool: ActionTool::Network,
+                targets: &[target],
+                ..refused("fetch-bad", RefusalReason::InvalidRequest)
+            })
+            .expect("a refused URL is recorded by digest");
+    }
+    let too_long = format!("https://example.com/{}", "a".repeat(MAX_URL_BYTES));
+    journal
+        .record_refused(&RefusedAction {
+            tool: ActionTool::Network,
+            targets: &[too_long.as_str()],
+            ..refused("fetch-long", RefusalReason::InvalidRequest)
+        })
+        .expect("an over-long URL is recorded by digest");
+    drop(journal);
+
+    let records = ActionJournal::recent(directory.path(), 100).expect("recent");
+    let stored = records
+        .iter()
+        .find(|record| record.call_id == "fetch-ok")
+        .expect("the accepted call");
+    assert_eq!(stored.targets, [StoredTarget::Path(accepted.to_owned())]);
+    let withheld = records
+        .iter()
+        .filter(|record| record.tool == ActionTool::Network && record.call_id != "fetch-ok")
+        .collect::<Vec<_>>();
+    assert_eq!(withheld.len(), hostile.len() + 1);
+    for record in withheld {
+        assert!(
+            matches!(record.targets.as_slice(), [StoredTarget::Withheld(_)]),
+            "{:?}",
+            record.targets
+        );
+    }
+}
+
+#[test]
+fn after_web_content_is_omitted_while_false_and_listed_when_true() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    journal
+        .record_started(&started("before", ActionTool::ReadFile, &["a"]))
+        .expect("start before");
+    journal
+        .record_started(&StartedAction {
+            after_web_content: true,
+            ..started("after-started", ActionTool::RunCommand, &[])
+        })
+        .expect("start after");
+    journal
+        .record_refused(&RefusedAction {
+            after_web_content: true,
+            ..refused("after-refused", RefusalReason::Cancelled)
+        })
+        .expect("refusal after");
+    drop(journal);
+
+    let lines = active_lines(directory.path());
+    assert!(
+        lines[0]["event"]["payload"]
+            .as_object()
+            .expect("payload")
+            .get("after_web_content")
+            .is_none(),
+        "a false flag keeps the record's earlier bytes"
+    );
+    assert_eq!(lines[1]["event"]["payload"]["after_web_content"], true);
+    assert_eq!(lines[2]["event"]["payload"]["after_web_content"], true);
+
+    let records = ActionJournal::recent(directory.path(), 10).expect("recent");
+    let flag = |call: &str| {
+        records
+            .iter()
+            .find(|record| record.call_id == call)
+            .map(|record| record.after_web_content)
+    };
+    assert_eq!(flag("before"), Some(false));
+    assert_eq!(flag("after-started"), Some(true));
+    assert_eq!(flag("after-refused"), Some(true));
 }

@@ -502,17 +502,25 @@ fn a_command_review_is_stale_or_not_found_when_nothing_matches() {
         fixture.review(&approval, &[]).expect("review"),
         ApprovalReview::NotFound
     );
-    // Operations without a reviewable tool.
-    for operation in [ApprovalOperation::GitPush, ApprovalOperation::Network] {
-        let unreviewable = ApprovalStatus {
-            operation,
-            ..approval.clone()
-        };
-        assert_eq!(
-            fixture.review(&unreviewable, &recorded).expect("review"),
-            ApprovalReview::NotFound
-        );
-    }
+    // An operation without a reviewable tool.
+    let unreviewable = ApprovalStatus {
+        operation: ApprovalOperation::GitPush,
+        ..approval.clone()
+    };
+    assert_eq!(
+        fixture.review(&unreviewable, &recorded).expect("review"),
+        ApprovalReview::NotFound
+    );
+    // A network approval is reviewed against web_fetch candidates only, so
+    // command candidates give nothing to show (ADR-0098).
+    let network = ApprovalStatus {
+        operation: ApprovalOperation::Network,
+        ..approval.clone()
+    };
+    assert_eq!(
+        fixture.review(&network, &recorded).expect("review"),
+        ApprovalReview::NotFound
+    );
     // An unregistered workspace.
     let unknown = ApprovalStatus {
         workspace_id: foreign_workspace_id(),
@@ -1515,4 +1523,188 @@ fn an_oversized_create_call_records_no_approval_and_is_not_a_review_candidate() 
     assert_eq!(recorded[0].tool, CREATE_TOOL);
     assert_eq!(recorded[0].arguments, "{}");
     assert!(!fixture.workspace.join("big.rs").exists());
+}
+
+const WEB_FETCH_TOOL: &str = "web_fetch";
+const FETCH_URL: &str = "https://docs.example.com/guide";
+
+impl Fixture {
+    /// Let the model fetch pages, asking the operator first.
+    fn enable_web_fetch(&self) {
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store");
+        control
+            .set_permissions(
+                self.workspace_id,
+                PermissionSet {
+                    model_tools: true,
+                    execute: Access::Prompt,
+                    read: Access::Allow,
+                    write: Access::Prompt,
+                    web_fetch: Access::Prompt,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("enable web_fetch");
+    }
+
+    fn allow_host(&self, pattern: &str) {
+        let mut control = ControlStore::open_existing(&self.data)
+            .expect("open control")
+            .expect("control store");
+        control
+            .add_web_fetch_host(self.workspace_id, pattern, control.revision())
+            .expect("allow host");
+    }
+}
+
+fn fetch_call(id: &str, arguments: Value) -> Value {
+    call(id, WEB_FETCH_TOOL, arguments)
+}
+
+#[test]
+fn a_network_approval_is_reviewed_with_its_url_host_allowlist_state_offset_and_size() {
+    let mut fixture = Fixture::new();
+    fixture.enable_web_fetch();
+    fixture.turn(vec![fetch_call(
+        "fetch-1",
+        json!({"url": "https://Docs.Example.com/guide#top", "offset": 4096, "max_bytes": 2048}),
+    )]);
+    let approval = fixture.pending(ApprovalOperation::Network);
+    let recorded = fixture.recorded();
+
+    let ApprovalReview::Exact(request) = fixture.review(&approval, &recorded).expect("review")
+    else {
+        panic!("the recorded call reproduces the digest");
+    };
+    assert_eq!(request.tool, WEB_FETCH_TOOL);
+    let labels: Vec<&str> = request.fields.iter().map(|field| field.label).collect();
+    assert_eq!(
+        labels,
+        [
+            "URL",
+            "Host",
+            "Host on the allowlist now",
+            "Offset",
+            "Maximum bytes"
+        ]
+    );
+    assert_eq!(field(&request, "URL").value, FETCH_URL);
+    assert_eq!(field(&request, "Host").value, "docs.example.com");
+    assert_eq!(field(&request, "Host on the allowlist now").value, "no");
+    assert_eq!(field(&request, "Offset").value, "4096");
+    assert_eq!(field(&request, "Maximum bytes").value, "2048");
+    assert!(request.fields.iter().all(|field| !field.multiline));
+    // Review reads nothing from the workspace and fetches nothing.
+    assert_eq!(fixture.audit_reads(), 0);
+    assert_eq!(fixture.state(approval.id), ApprovalState::Pending);
+}
+
+#[test]
+fn a_network_review_picks_the_candidate_that_reproduces_the_digest() {
+    let mut fixture = Fixture::new();
+    fixture.enable_web_fetch();
+    fixture.turn(vec![fetch_call("fetch-1", json!({"url": FETCH_URL}))]);
+    let approval = fixture.pending(ApprovalOperation::Network);
+    let decoy = |id: &str, arguments: &str| RecordedToolRequest {
+        request_id: Uuid::new_v4(),
+        call_id: id.into(),
+        tool: WEB_FETCH_TOOL.into(),
+        arguments: arguments.into(),
+    };
+    let mut recorded = fixture.recorded();
+    recorded.push(decoy("d1", r#"{"url":"https://docs.example.com/other"}"#));
+    recorded.push(decoy(
+        "d2",
+        r#"{"url":"https://docs.example.com/guide","offset":1}"#,
+    ));
+    recorded.push(decoy("d3", r#"{"url":"http://docs.example.com/guide"}"#));
+    recorded.push(decoy("d4", "not json"));
+    let ApprovalReview::Exact(request) = fixture.review(&approval, &recorded).expect("review")
+    else {
+        panic!("an older candidate still reproduces the digest");
+    };
+    assert_eq!(field(&request, "Offset").value, "0");
+    assert_eq!(field(&request, "Maximum bytes").value, "12288");
+
+    // Only decoys: nothing reproduces it.
+    assert_eq!(
+        fixture.review(&approval, &recorded[1..]).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+    // A different session with identical arguments has a different digest.
+    let other_session = ApprovalStatus {
+        session_id: Uuid::new_v4(),
+        ..approval.clone()
+    };
+    assert_eq!(
+        fixture.review(&other_session, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::NoMatchingRequest)
+    );
+}
+
+#[test]
+fn a_network_review_goes_stale_when_the_allowlist_changes() {
+    let mut fixture = Fixture::new();
+    fixture.enable_web_fetch();
+    fixture.turn(vec![fetch_call("fetch-1", json!({"url": FETCH_URL}))]);
+    let approval = fixture.pending(ApprovalOperation::Network);
+    let recorded = fixture.recorded();
+    assert!(matches!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Exact(_)
+    ));
+
+    // Adding a host moves the settings revision: the record can never be
+    // consumed, and review says so instead of showing a request.
+    fixture.allow_host("*.example.com");
+    assert_eq!(
+        fixture.review(&approval, &recorded).expect("review"),
+        ApprovalReview::Stale(StaleReason::SettingsChanged)
+    );
+
+    // A fresh request after the change reports the host as allowlisted now.
+    // Under `prompt` the operator is still asked for every fetch.
+    fixture.turn(vec![fetch_call("fetch-2", json!({"url": FETCH_URL}))]);
+    let fresh = fixture
+        .approvals()
+        .into_iter()
+        .find(|status| {
+            status.operation == ApprovalOperation::Network
+                && status.state == ApprovalState::Pending
+                && status.settings_revision != approval.settings_revision
+        })
+        .expect("a new pending approval");
+    let ApprovalReview::Exact(request) =
+        fixture.review(&fresh, &fixture.recorded()).expect("review")
+    else {
+        panic!("the new call reproduces its digest");
+    };
+    assert_eq!(field(&request, "Host on the allowlist now").value, "yes");
+}
+
+#[test]
+fn a_network_approval_needs_no_writers_stopped_acknowledgement() {
+    let mut fixture = Fixture::new();
+    fixture.enable_web_fetch();
+    fixture.turn(vec![fetch_call("fetch-1", json!({"url": FETCH_URL}))]);
+    let approval = fixture.pending(ApprovalOperation::Network);
+    assert!(!approval.writers_stopped);
+    let mut control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    // The plain decision approves it, and the acknowledgement is refused for
+    // any operation but a file write.
+    assert!(
+        control
+            .approve_with_writers_stopped(approval.id, now_unix())
+            .is_err()
+    );
+    control
+        .decide_approval(approval.id, true, now_unix())
+        .expect("approve without an acknowledgement");
+    drop(control);
+    assert_eq!(fixture.state(approval.id), ApprovalState::Approved);
 }

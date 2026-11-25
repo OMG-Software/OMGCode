@@ -600,7 +600,7 @@ pub enum ApprovalOperationDto {
     FileRead,
     /// A Git operation with remote access.
     GitPush,
-    /// A destination-scoped network operation.
+    /// One model `web_fetch` of an exact URL (ADR-0098).
     Network,
 }
 

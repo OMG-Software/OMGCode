@@ -58,7 +58,7 @@ const CANCEL_POLL: Duration = Duration::from_millis(25);
 const MESSAGE_OVERHEAD_ESTIMATE: u64 = 256;
 const PROMPT_HEADROOM_ESTIMATE: u64 = 512;
 /// Upper bound on advertised tool definitions in one request.
-const MAX_TOOL_DEFINITIONS: usize = 9;
+const MAX_TOOL_DEFINITIONS: usize = 10;
 /// Upper bound on raw tool calls accepted from one response before validation.
 /// The turn runtime applies its own, smaller per-round limit.
 const MAX_RESPONSE_TOOL_CALLS: usize = 64;
@@ -2321,5 +2321,63 @@ Connection: close
     fn the_default_ollama_endpoint_is_a_valid_local_endpoint() {
         assert!(validate_base_url("http://127.0.0.1:11434/v1").is_ok());
         assert!(validate_base_url("http://localhost:11434/v1").is_err());
+    }
+}
+
+#[cfg(test)]
+mod web_fetch_tool_tests {
+    use super::*;
+    use crate::turn::{
+        command_tool_definition, create_directory_tool_definition, create_tool_definition,
+        delete_tool_definition, edit_tool_definition, multi_edit_tool_definition,
+        rename_tool_definition, tool_definitions, web_fetch_tool_definition,
+    };
+
+    /// ADR-0098: the Chat Completions request builder accepts the ten tools
+    /// the runtime can advertise, with `web_fetch` last, and still refuses an
+    /// eleventh.
+    #[test]
+    fn the_chat_completions_builder_accepts_ten_tool_definitions_and_refuses_eleven() {
+        let mut tools = tool_definitions();
+        tools.push(edit_tool_definition());
+        tools.push(multi_edit_tool_definition());
+        tools.push(create_tool_definition());
+        tools.push(rename_tool_definition());
+        tools.push(delete_tool_definition());
+        tools.push(create_directory_tool_definition());
+        tools.push(command_tool_definition());
+        tools.push(web_fetch_tool_definition());
+        assert_eq!(tools.len(), 10);
+        let client = LocalModelClient::new(
+            LocalModelConfig {
+                base_url: "http://127.0.0.1:1234/v1".to_owned(),
+                model: "m".to_owned(),
+                context_tokens: 131_072,
+                max_output_tokens: 64,
+            },
+            None,
+        )
+        .expect("client");
+        let messages = [
+            ModelMessage {
+                role: ModelRole::System,
+                content: crate::prompt::BASE_PROMPT.to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "fetch the page".to_owned(),
+            },
+        ];
+        let body = client.tool_body(&messages, &tools, false).expect("body");
+        let value: Value = serde_json::from_slice(&body).expect("json");
+        let wire = value["tools"].as_array().expect("tools");
+        assert_eq!(wire.len(), 10);
+        assert_eq!(wire[9]["function"]["name"], "web_fetch");
+
+        tools.push(web_fetch_tool_definition());
+        assert_eq!(
+            client.tool_body(&messages, &tools, false).err(),
+            Some(ProviderError::InvalidConfiguration)
+        );
     }
 }

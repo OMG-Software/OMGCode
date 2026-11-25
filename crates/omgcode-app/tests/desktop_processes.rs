@@ -115,6 +115,7 @@ fn recorded_calls_join_their_requests_and_exclude_other_sessions() {
         targets: &[],
         request_sha256: None,
         authorization: authorization(),
+        after_web_content: false,
     };
     let ok = actions
         .record_started(&started("call-ok", session_id))
@@ -131,6 +132,7 @@ fn recorded_calls_join_their_requests_and_exclude_other_sessions() {
             targets: &[],
             request_sha256: None,
             reason: RefusalReason::AccessDenied,
+            after_web_content: false,
         })
         .expect("refuse");
     actions

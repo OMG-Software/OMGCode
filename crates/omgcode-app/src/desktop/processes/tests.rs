@@ -28,6 +28,7 @@ fn executed(session: Uuid, call_id: &str, sequence: u64, finish: Option<Finish>)
         tool: ActionTool::RunCommand,
         targets: Vec::new(),
         request_sha256: None,
+        after_web_content: false,
         disposition: ActionDisposition::Executed {
             action_id: Uuid::new_v4(),
             authorization: authorization(),

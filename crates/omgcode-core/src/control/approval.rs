@@ -42,7 +42,9 @@ pub enum ApprovalOperation {
     FileRead,
     /// Perform a Git operation with remote access.
     GitPush,
-    /// Use a destination-scoped network operation.
+    /// Fetch one URL for the model `web_fetch` tool (ADR-0098). The digest
+    /// binds the exact URL, offset, and size. No writers-stopped
+    /// acknowledgement applies.
     Network,
 }
 

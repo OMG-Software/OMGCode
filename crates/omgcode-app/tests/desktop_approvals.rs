@@ -1032,3 +1032,95 @@ fn a_delete_review_becomes_stale_once_the_file_changes() {
     setup.deny_and_finish(id, session);
     assert_eq!(setup.server.finish(), 2);
 }
+
+const WEB_FETCH_TOOL: &str = "web_fetch";
+
+/// Model tools with `web_fetch` set to ask for every fetch (ADR-0098).
+fn fetching() -> PermissionSet {
+    PermissionSet {
+        web_fetch: Access::Prompt,
+        ..all_tools()
+    }
+}
+
+/// These tests never approve a waiting fetch: the desktop service builds its
+/// turns with the production fetcher, which would reach the network.
+#[test]
+fn a_network_approval_is_reviewed_while_the_turn_waits_and_a_denial_ends_the_call() {
+    let args = json!({"url": "https://Docs.Example.com/guide#top", "offset": 10});
+    let setup = setup_with(
+        fetching(),
+        vec![
+            Step::reply(tool_call("fetch-1", WEB_FETCH_TOOL, &args)),
+            Step::reply(text("stopped")),
+        ],
+    );
+    let session = setup.session("Fetch");
+    setup.start(session, "read the docs");
+    let id = setup.await_pending(session);
+
+    let pending = setup.pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation, ApprovalOperationDto::Network);
+    assert!(!pending[0].writers_stopped);
+    assert_eq!(pending[0].summary, "Fetch https://docs.example.com/guide");
+
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Exact);
+    assert!(detail.waiting);
+    assert_eq!(detail.tool.as_deref(), Some(WEB_FETCH_TOOL));
+    assert_eq!(
+        field_value(&detail, "URL"),
+        "https://docs.example.com/guide"
+    );
+    assert_eq!(field_value(&detail, "Host"), "docs.example.com");
+    assert_eq!(field_value(&detail, "Host on the allowlist now"), "no");
+    assert_eq!(field_value(&detail, "Offset"), "10");
+    assert_eq!(field_value(&detail, "Maximum bytes"), "12288");
+    assert!(detail.review_token.is_some());
+
+    // A denial needs no token and ends the wait without a fetch.
+    setup.deny_and_finish(id, session);
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Denied);
+    assert_eq!(setup.server.finish(), 2);
+}
+
+#[test]
+fn a_network_approval_is_approved_with_a_review_token_and_no_writers_stopped_acknowledgement() {
+    let args = json!({"url": "https://docs.example.com/guide"});
+    let setup = setup_with(
+        fetching(),
+        vec![Step::reply(tool_call("fetch-1", WEB_FETCH_TOOL, &args))],
+    );
+    let session = setup.session("Fetch");
+    setup.start(session, "read the docs");
+    let id = setup.await_pending(session);
+
+    // Cancelling interrupts the wait and leaves the record pending, so the
+    // approval below spends nothing and nothing is fetched.
+    setup
+        .service
+        .chat_cancel(wire(json!({"session_id": session})))
+        .expect("cancel");
+    let cancelled = wait_finished(&setup.service, session);
+    assert_eq!(cancelled.state, ChatState::Failed);
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Exact);
+    assert!(!detail.waiting);
+    let refused = setup
+        .decide(id, "approve", true, None)
+        .expect_err("approval needs a review token");
+    assert_eq!(refused.code(), "review_expired");
+
+    let detail = setup.detail(id);
+    let token = detail.review_token.expect("a fresh token");
+    let approved = setup
+        .decide(id, "approve", false, Some(&token))
+        .expect("a network approval needs no writers-stopped acknowledgement");
+    assert_eq!(approved.state, ApprovalStateDto::Approved);
+    assert_eq!(approved.operation, ApprovalOperationDto::Network);
+    assert!(!approved.writers_stopped);
+    assert_eq!(setup.server.finish(), 1);
+}

@@ -31,6 +31,21 @@
 //! The same rules run again when a journal is read, so a hand-edited file
 //! cannot smuggle such values into an operator's terminal.
 //!
+//! A `network` record (a `web_fetch` call, ADR-0098) names the normalised URL
+//! as its target. The URL must re-parse under the fetch URL policy, at most
+//! 2048 bytes, or it is withheld like any other invalid target.
+//!
+//! # After web content
+//!
+//! A started or refused record carries `after_web_content: true` when the
+//! session had already fetched web content (a `web_fetch` whose fetcher
+//! returned a result) before the call was made. The field is left out while
+//! it is `false`, so earlier records keep their bytes. It marks every tool and
+//! every outcome, including refused and rejected calls, so an operator can
+//! review exactly what the model did after reading untrusted web text. A
+//! record names the tool and its targets. For `run_command` it names the
+//! program, not the files the program touched.
+//!
 //! # Failure behaviour
 //!
 //! A write or sync failure poisons the writer. Reopening revalidates the whole
@@ -53,6 +68,7 @@ use uuid::{Uuid, Version};
 
 use crate::policy::WorkspaceId;
 use crate::storage::{self, StorageError};
+use crate::web_fetch::{FetchUrl, MAX_URL_BYTES};
 
 const FILE_NAME: &str = "model-actions-v1.jsonl";
 const ARCHIVE_PREFIX: &str = "model-actions-v1.";
@@ -98,7 +114,9 @@ pub enum ActionTool {
     DeleteFile,
     /// Run one command.
     RunCommand,
-    /// A network action. Reserved: no model network tool exists yet.
+    /// One `web_fetch` call (ADR-0098). Its target is the normalised URL, not
+    /// a workspace path; a target that does not re-parse as a fetch URL is
+    /// withheld like any other invalid target.
     Network,
     /// The model named a tool this runtime does not have (ADR-0099). The
     /// name is hostile text and is not stored; the record holds no target.
@@ -232,6 +250,10 @@ pub struct StartedAction<'a> {
     pub request_sha256: Option<&'a str>,
     /// How the call was authorized.
     pub authorization: Authorization,
+    /// Whether the session had already fetched web content when the call was
+    /// made (ADR-0098). It marks the record for review; it changes nothing
+    /// about how the call is authorized.
+    pub after_web_content: bool,
 }
 
 /// Arguments for [`ActionJournal::record_refused`].
@@ -251,6 +273,9 @@ pub struct RefusedAction<'a> {
     pub request_sha256: Option<&'a str>,
     /// Why the call was refused.
     pub reason: RefusalReason,
+    /// Whether the session had already fetched web content when the call was
+    /// made (ADR-0098).
+    pub after_web_content: bool,
 }
 
 /// A failure while opening, reading, or appending to the action journal.
@@ -339,6 +364,13 @@ pub struct ActionRecord {
     pub targets: Vec<StoredTarget>,
     /// Lowercase SHA-256 of the request, when recorded.
     pub request_sha256: Option<String>,
+    /// Whether the session had already fetched web content when the call was
+    /// made (ADR-0098). A record written before this field existed is `false`.
+    ///
+    /// The record names the tool and its targets. For `run_command` it names
+    /// the program, not the files the program touched, so review such a record
+    /// with the run journal.
+    pub after_web_content: bool,
     /// Executed or refused.
     pub disposition: ActionDisposition,
 }
@@ -380,6 +412,9 @@ struct StartedPayload {
     targets: Vec<StoredTarget>,
     request_sha256: Option<String>,
     authorization: Authorization,
+    /// Omitted while `false`, so a record keeps the bytes it always had.
+    #[serde(default, skip_serializing_if = "is_false")]
+    after_web_content: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -402,6 +437,18 @@ struct RefusedPayload {
     targets: Vec<StoredTarget>,
     request_sha256: Option<String>,
     reason: RefusalReason,
+    /// Omitted while `false`, so a record keeps the bytes it always had.
+    #[serde(default, skip_serializing_if = "is_false")]
+    after_web_content: bool,
+}
+
+/// Serde helper that leaves a `false` flag out of the encoded record.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Reject malformed persisted IDs before constructing typed workspace metadata.
@@ -570,6 +617,7 @@ impl ActionJournal {
             targets,
             request_sha256: action.request_sha256.map(str::to_owned),
             authorization: action.authorization,
+            after_web_content: action.after_web_content,
         });
         // Reserve room for every finishable start, capped at half a file so
         // crash leftovers cannot make a start unfittable. A finish that still
@@ -643,6 +691,7 @@ impl ActionJournal {
             targets,
             request_sha256: action.request_sha256.map(str::to_owned),
             reason: action.reason,
+            after_web_content: action.after_web_content,
         });
         self.append(event, 0, 0)
     }
@@ -687,6 +736,7 @@ impl ActionJournal {
                         tool: start.tool,
                         targets: start.targets,
                         request_sha256: start.request_sha256,
+                        after_web_content: start.after_web_content,
                         disposition: ActionDisposition::Executed {
                             action_id: start.action_id,
                             authorization: start.authorization,
@@ -717,6 +767,7 @@ impl ActionJournal {
                     tool: refusal.tool,
                     targets: refusal.targets,
                     request_sha256: refusal.request_sha256,
+                    after_web_content: refusal.after_web_content,
                     disposition: ActionDisposition::Refused {
                         reason: refusal.reason,
                     },
@@ -1316,6 +1367,15 @@ fn validate_stored_targets(
 /// Only listing may name the workspace root with an empty string.
 fn validate_target(tool: ActionTool, target: &str) -> Result<(), ActionJournalError> {
     validate_text(target, MAX_TARGET_BYTES)?;
+    if tool == ActionTool::Network {
+        // A network target is a URL, not a path. It must pass the same URL
+        // policy that admitted the fetch, within its length bound.
+        return if target.len() <= MAX_URL_BYTES && FetchUrl::parse(target).is_ok() {
+            Ok(())
+        } else {
+            invalid("a network target must be a URL the fetch policy accepts")
+        };
+    }
     if target.is_empty() {
         return if tool == ActionTool::ListDirectory {
             Ok(())
