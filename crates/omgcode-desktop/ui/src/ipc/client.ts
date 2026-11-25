@@ -16,6 +16,7 @@ import type {
   SessionSkills,
   SessionSummary,
   SessionTree,
+  SessionWebAudit,
   TranscriptPage,
   TreeSort,
   TreeView,
@@ -129,6 +130,9 @@ export const api = {
   /** The session's command-tool calls, newest first (ADR-0086). Read-only. */
   sessionProcesses: (sessionId: string) =>
     invokeCommand<SessionProcesses>("session_processes", { session_id: sessionId }),
+  /** The session's web fetches and the actions after the first one (ADR-0098). Read-only. */
+  sessionWebAudit: (sessionId: string) =>
+    invokeCommand<SessionWebAudit>("session_web_audit", { session_id: sessionId }),
   /** The Git branch and changed paths of the session's workspace, read with no program run. */
   workspaceGitStatus: (sessionId: string) =>
     invokeCommand<GitStatusView>("workspace_git_status", { session_id: sessionId }),

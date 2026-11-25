@@ -4,6 +4,9 @@ import {
   approvalEffect,
   approveGate,
   decisionArgs,
+  NETWORK_CAUTION,
+  NOT_ON_ALLOWLIST_TEXT,
+  operationLabel,
   orderApprovals,
   remainingSeconds,
 } from "../src/approvals/model";
@@ -366,6 +369,124 @@ describe("approvals window", () => {
       decision: "approve",
       writers_stopped: false,
       review_token: "tok-1",
+    });
+  });
+
+  describe("a web fetch approval", () => {
+    function fetchDetail(listed: "yes" | "no", approval: Partial<ApprovalView> = {}) {
+      return detail(
+        {
+          tool: "web_fetch",
+          fields: [
+            { label: "URL", value: "https://docs.example.com/guide?page=2", multiline: false },
+            { label: "Host", value: "docs.example.com", multiline: false },
+            { label: "Host on the allowlist now", value: listed, multiline: false },
+            { label: "Offset", value: "0", multiline: false },
+            { label: "Maximum bytes", value: "12288", multiline: false },
+          ],
+        },
+        {
+          operation: "network",
+          summary: "Fetch https://docs.example.com/guide?page=2",
+          ...approval,
+        },
+      );
+    }
+
+    it("is labelled Web fetch, not Network", async () => {
+      approvals = [view({ operation: "network" })];
+      current = fetchDetail("yes");
+      await start();
+      await select();
+
+      expect(operationLabel("network")).toBe("Web fetch");
+      expect(root.querySelector(".review-title")?.textContent).toBe("Web fetch");
+      expect(root.querySelector(".approval")?.textContent).toContain("Web fetch");
+      expect(root.textContent).not.toContain("Network");
+    });
+
+    it("shows the review fields as text", async () => {
+      approvals = [view({ operation: "network" })];
+      current = fetchDetail("yes");
+      await start();
+      await select();
+
+      const review = root.querySelector(".review") as HTMLElement;
+      for (const text of [
+        "URL",
+        "https://docs.example.com/guide?page=2",
+        "Host",
+        "docs.example.com",
+        "Host on the allowlist now",
+        "Offset",
+        "Maximum bytes",
+        "12288",
+      ]) {
+        expect(review.textContent).toContain(text);
+      }
+    });
+
+    it("shows the fixed caution and no allowlist statement when the host is listed", async () => {
+      approvals = [view({ operation: "network" })];
+      current = fetchDetail("yes");
+      await start();
+      await select();
+
+      expect(NETWORK_CAUTION).toBe(
+        "Approving sends this exact URL, including its path and query, to that host.",
+      );
+      expect(Array.from(root.querySelectorAll(".network-note")).map((n) => n.textContent)).toEqual([
+        NETWORK_CAUTION,
+      ]);
+      expect(root.textContent).not.toContain(NOT_ON_ALLOWLIST_TEXT);
+    });
+
+    it("says the host is not on the workspace allowlist when the review says no", async () => {
+      approvals = [view({ operation: "network" })];
+      current = fetchDetail("no");
+      await start();
+      await select();
+
+      expect(NOT_ON_ALLOWLIST_TEXT).toBe("This host is not on the workspace allowlist.");
+      expect(Array.from(root.querySelectorAll(".network-note")).map((n) => n.textContent)).toEqual([
+        NETWORK_CAUTION,
+        NOT_ON_ALLOWLIST_TEXT,
+      ]);
+    });
+
+    it("shows no caution for a command approval or a decided fetch", async () => {
+      await start();
+      await select();
+      expect(root.querySelector(".network-note")).toBeNull();
+
+      approvals = [view({ operation: "network", state: "approved" })];
+      current = fetchDetail("no", { state: "approved" });
+      await start();
+      expect(root.querySelector(".network-note")).toBeNull();
+    });
+
+    it("never shows the writers-stopped checkbox and approves with writers_stopped false", async () => {
+      approvals = [view({ operation: "network" })];
+      current = fetchDetail("no");
+      await start();
+      await select();
+      await settle(1000);
+
+      expect(root.querySelector('input[type="checkbox"]')).toBeNull();
+      expect(root.querySelector(".review")?.textContent).not.toContain(
+        "stopped every other program",
+      );
+      const approve = buttonByText(root, "Approve");
+      expect(approve.disabled).toBe(false);
+      approve.click();
+      await settle();
+
+      expect(ipc.callsTo("approval_decide")[0]?.args).toEqual({
+        id: "a1",
+        decision: "approve",
+        writers_stopped: false,
+        review_token: "tok-1",
+      });
     });
   });
 

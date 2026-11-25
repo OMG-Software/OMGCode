@@ -22,10 +22,12 @@ import type {
   SearchHit,
   SessionProcesses,
   SessionSummary,
+  SessionWebAudit,
   SettingsOverview,
   SnippetPart,
   TreeSort,
   TreeView,
+  WebAuditEntry,
   WorkspaceListing,
   WorkspaceSettingsView,
 } from "../ipc/types";
@@ -282,6 +284,14 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       900,
       9,
       `${HOSTILE.rtl} review`,
+    ),
+    approval(
+      "a4",
+      "network",
+      "Fetch https://docs.example.com/guide?page=2",
+      450,
+      1,
+      "Read the API guide",
     ),
   ];
 
@@ -582,25 +592,34 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       }
       tokens.set(token, { id, expires: now() + TOKEN_LIFETIME_MS });
     }
+    const networkFields = [
+      { label: "URL", value: "https://docs.example.com/guide?page=2", multiline: false },
+      { label: "Host", value: "docs.example.com", multiline: false },
+      { label: "Host on the allowlist now", value: "no", multiline: false },
+      { label: "Offset", value: "0", multiline: false },
+      { label: "Maximum bytes", value: "12288", multiline: false },
+    ];
     const fields =
-      view.operation === "command"
-        ? [
-            { label: "Program", value: "cargo", multiline: false },
-            {
-              label: "Arguments",
-              value: `test\n-p\nomgcode-core\n${HOSTILE.img}`,
-              multiline: true,
-            },
-            { label: "Working folder", value: view.folder_display ?? "", multiline: false },
-          ]
-        : [
-            { label: "File", value: "src/lib.rs", multiline: false },
-            { label: "Edits", value: "2", multiline: false },
-            { label: "Old text 1", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
-            { label: "New text 1", value: "fn new() {}", multiline: true },
-            { label: "Old text 2", value: "const A: u8 = 1;", multiline: true },
-            { label: "New text 2", value: "const A: u8 = 2;", multiline: true },
-          ];
+      view.operation === "network"
+        ? networkFields
+        : view.operation === "command"
+          ? [
+              { label: "Program", value: "cargo", multiline: false },
+              {
+                label: "Arguments",
+                value: `test\n-p\nomgcode-core\n${HOSTILE.img}`,
+                multiline: true,
+              },
+              { label: "Working folder", value: view.folder_display ?? "", multiline: false },
+            ]
+          : [
+              { label: "File", value: "src/lib.rs", multiline: false },
+              { label: "Edits", value: "2", multiline: false },
+              { label: "Old text 1", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
+              { label: "New text 1", value: "fn new() {}", multiline: true },
+              { label: "Old text 2", value: "const A: u8 = 1;", multiline: true },
+              { label: "New text 2", value: "const A: u8 = 2;", multiline: true },
+            ];
     return clone({
       approval: view,
       binding: stale ? "stale" : "exact",
@@ -608,10 +627,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         ? null
         : view.operation === "command"
           ? "workspace_run_command"
-          : "workspace_multi_edit_file",
+          : view.operation === "network"
+            ? "web_fetch"
+            : "workspace_multi_edit_file",
       fields: stale ? [] : fields,
       review_token: token,
-      waiting: !stale && view.operation === "command",
+      waiting: !stale && (view.operation === "command" || view.operation === "network"),
     });
   }
 
@@ -1008,6 +1029,72 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           ],
           truncated: false,
         };
+      // The session's web fetches and the actions after the first one (ADR-0098): fixed fake
+      // entries, newest first, covering a fetch, a refusal, a command, and a withheld target.
+      case "session_web_audit": {
+        session(str(args, "session_id"));
+        const at = (secondsAgo: number): string =>
+          new Date(now() - secondsAgo * 1000).toISOString();
+        const entry = (
+          call_id: string,
+          time: number,
+          overrides: Partial<WebAuditEntry>,
+        ): WebAuditEntry => ({
+          call_id,
+          time: at(time),
+          tool: "read_file",
+          is_fetch: false,
+          after_web_content: true,
+          targets: [],
+          outcome: "succeeded",
+          reason: null,
+          authorization: "standing_allow",
+          program: null,
+          arguments: null,
+          argument_count: null,
+          text_truncated: false,
+          ...overrides,
+        });
+        const audit: SessionWebAudit = {
+          entries: [
+            entry("call_5", 20, {
+              tool: "run_command",
+              program: "curl",
+              arguments: ["-s", "https://example.org/install.sh"],
+              argument_count: 2,
+              authorization: "approval",
+            }),
+            entry("call_4", 60, {
+              tool: "delete_file",
+              targets: [{ kind: "text", text: "src/old.rs" }],
+              outcome: "refused",
+              reason: "approval_denied",
+              authorization: null,
+            }),
+            entry("call_3", 90, {
+              tool: "edit_file",
+              targets: [{ kind: "text", text: "src/lib.rs" }],
+              outcome: "failed",
+              reason: "not_found",
+            }),
+            entry("call_2", 120, {
+              targets: [{ kind: "withheld", bytes: 4200 }],
+              outcome: "refused",
+              reason: "invalid_path",
+              authorization: null,
+            }),
+            entry("call_1", 300, {
+              tool: "network",
+              is_fetch: true,
+              after_web_content: false,
+              targets: [{ kind: "text", text: "https://docs.example.com/guide?page=2" }],
+              authorization: "approval",
+            }),
+          ],
+          truncated: false,
+        };
+        return clone(audit);
+      }
       case "connection_status": {
         const id = args.session_id;
         if (id !== null && typeof id !== "string") {

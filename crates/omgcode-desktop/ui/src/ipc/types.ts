@@ -505,6 +505,44 @@ export interface SessionProcesses {
   run_details: "available" | "unavailable" | "busy";
 }
 
+export type WebAuditOutcome = "succeeded" | "failed" | "uncertain" | "unfinished" | "refused";
+
+/** One target of a web audit entry: validated text, or a withheld value known only by length. */
+export type WebAuditTarget = { kind: "text"; text: string } | { kind: "withheld"; bytes: number };
+
+/**
+ * One model call listed by the web audit (ADR-0098): a `web_fetch` call, or an action made after
+ * the session's first successful fetch. Every text field is untrusted: render it as text only.
+ */
+export interface WebAuditEntry {
+  call_id: string;
+  /** RFC 3339. */
+  time: string;
+  /** The tool's wire name: `network` for a fetch, otherwise for example `read_file`. */
+  tool: string;
+  is_fetch: boolean;
+  after_web_content: boolean;
+  targets: WebAuditTarget[];
+  outcome: WebAuditOutcome;
+  /** The refusal reason, or the finish code of an executed call. */
+  reason: string | null;
+  /** `null` for a refusal. */
+  authorization: "standing_allow" | "approval" | null;
+  /** A command call's program and arguments, from the session journal; escaped and bounded. */
+  program: string | null;
+  arguments: string[] | null;
+  argument_count: number | null;
+  /** Whether any text was shortened or dropped to a bound. */
+  text_truncated: boolean;
+}
+
+/** The open session's web fetches and later actions, newest first, at most 100. */
+export interface SessionWebAudit {
+  entries: WebAuditEntry[];
+  /** Whether older calls may exist that are not listed. */
+  truncated: boolean;
+}
+
 /** `HEAD`-to-index state of a changed path (ADR-0085). */
 export type GitIndexState = "added" | "modified" | "deleted" | "renamed" | "type_change";
 

@@ -105,6 +105,7 @@ mod settings_skills;
 mod settings_web_hosts;
 mod state;
 mod turns;
+mod web_audit;
 mod wire;
 mod workspace_entries;
 mod workspaces;
@@ -136,6 +137,9 @@ pub use self::settings_web_hosts::WebHostChangeRequest;
 use self::state::IndexState;
 pub use self::turns::ShutdownReport;
 use self::turns::TurnTable;
+pub use self::web_audit::{
+    SessionWebAudit, WebAuditAuthorization, WebAuditEntry, WebAuditOutcome, WebAuditTarget,
+};
 pub use self::wire::{
     ApiKeySetRequest, ApiKeyText, ApprovalDecideRequest, ApprovalDetail, ApprovalField,
     ApprovalList, ApprovalOperationDto, ApprovalRequest, ApprovalStateDto, ApprovalView,

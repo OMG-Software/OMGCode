@@ -65,4 +65,5 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_revoke_container_grant",
     "settings_add_web_fetch_host",
     "settings_remove_web_fetch_host",
+    "session_web_audit",
 ];

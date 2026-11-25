@@ -7,6 +7,7 @@ import {
   approvalEffect,
   approveGate,
   decisionArgs,
+  networkNotes,
   operationLabel,
   REVIEW_AGAIN_CODES,
   REVIEW_DELAY_MS,
@@ -222,6 +223,9 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
           statusChip(detail),
         ),
         explain === null ? null : el("p", { class: "banner", text: explain }),
+        ...networkNotes(detail).map((note) =>
+          el("p", { class: "banner network-note", text: note }),
+        ),
         exact && fields.childElementCount > 0 ? fields : null,
         ...(exact ? changeViews(split) : []),
         technical,

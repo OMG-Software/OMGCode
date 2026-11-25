@@ -9,8 +9,32 @@ const OPERATION_LABELS: Record<ApprovalOperation, string> = {
   file_read: "File read",
   file_write: "File change",
   git_push: "Git push",
-  network: "Network",
+  network: "Web fetch",
 };
+
+/** The fixed caution for a web fetch approval: what approving sends, and to whom. */
+export const NETWORK_CAUTION =
+  "Approving sends this exact URL, including its path and query, to that host.";
+/** Shown when the review says the host is not on the workspace allowlist now. */
+export const NOT_ON_ALLOWLIST_TEXT = "This host is not on the workspace allowlist.";
+/** The review field that says whether the host is on the allowlist now: "yes" or "no". */
+const ALLOWLIST_FIELD = "Host on the allowlist now";
+
+/**
+ * The lines shown above a pending, exactly bound web fetch review: the fixed caution, and a
+ * statement when the host is not on the workspace allowlist. None for any other request.
+ */
+export function networkNotes(detail: ApprovalDetail): string[] {
+  if (
+    detail.approval.operation !== "network" ||
+    detail.approval.state !== "pending" ||
+    detail.binding !== "exact"
+  ) {
+    return [];
+  }
+  const listed = detail.fields.find((field) => field.label === ALLOWLIST_FIELD)?.value;
+  return listed === "no" ? [NETWORK_CAUTION, NOT_ON_ALLOWLIST_TEXT] : [NETWORK_CAUTION];
+}
 
 export function operationLabel(operation: ApprovalOperation): string {
   return OPERATION_LABELS[operation];
