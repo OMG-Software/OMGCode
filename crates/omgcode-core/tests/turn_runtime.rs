@@ -832,11 +832,25 @@ fn revocation_during_model_io_takes_effect_at_the_next_broker_call() {
 }
 
 /// Calls with no usable shape or identifier leave nothing to answer, so they
-/// still end the turn before dispatch (ADR-0099).
+/// still end the turn before dispatch (ADR-0099). Arguments that are not a
+/// JSON string are a shape error, as the Responses adapter already treats
+/// them, whether or not the tool exists.
 #[test]
 fn calls_without_a_usable_shape_or_identifier_fail_the_turn_before_dispatch() {
     let cases = [
         (json!("not an object"), ToolCallError::NotObject),
+        (
+            json!({"id": "a", "type": "function", "function": {"name": "workspace_read_file", "arguments": {"path": "notes.txt"}}}),
+            ToolCallError::UnsupportedShape,
+        ),
+        (
+            json!({"id": "a", "type": "function", "function": {"name": "workspace_move_file", "arguments": null}}),
+            ToolCallError::UnsupportedShape,
+        ),
+        (
+            json!({"id": "a", "type": "function", "function": {"name": "workspace_list_directory", "arguments": 7}}),
+            ToolCallError::UnsupportedShape,
+        ),
         (
             json!({"id": "a", "type": "function"}),
             ToolCallError::UnsupportedShape,
@@ -5468,6 +5482,10 @@ fn a_forty_kib_create_call_is_answered_as_too_large_and_the_turn_continues_to_a_
     );
     assert!(message.contains("\"limit_bytes\":32768"), "{message}");
     assert!(
+        message.contains("add the rest with edit calls"),
+        "{message}"
+    );
+    assert!(
         message.contains(&format!("\"received_bytes\":{}", received.len())),
         "{message}"
     );
@@ -5539,6 +5557,39 @@ fn a_forty_kib_create_call_is_answered_as_too_large_and_the_turn_continues_to_a_
     );
 }
 
+/// ADR-0099: only the tools that write file text are told to split a large
+/// file. Any other tool is told to shorten its arguments.
+#[test]
+fn an_oversized_call_to_a_tool_that_writes_no_file_text_is_told_to_shorten_it() {
+    let mut fixture = Fixture::new();
+    let path = "a".repeat(5 * 1024);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "long-1",
+            "workspace_list_directory",
+            json!({"path": path}),
+        )]),
+        text_reply("done"),
+    ]);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn continues after an oversized call");
+
+    assert_eq!(report.reply, "done");
+    let message = fixture.last_tool_message();
+    assert!(
+        message.contains("\"error\":\"arguments_too_large\""),
+        "{message}"
+    );
+    assert!(message.contains("\"limit_bytes\":4096"), "{message}");
+    assert!(
+        message.contains("Shorten the arguments to fit the limit."),
+        "{message}"
+    );
+    assert!(!message.contains("edit calls"), "{message}");
+}
+
 /// Each of these has the supported shape and a usable identifier. None may
 /// end the turn, run anything, or store its received text.
 #[test]
@@ -5601,14 +5652,6 @@ fn unknown_tools_malformed_arguments_and_bad_paths_are_answered_and_the_turn_con
                 "workspace_read_file",
                 json!({"path": "notes.txt", "max_bytes": 1_000_000}),
             ),
-            "invalid_arguments",
-            "invalid_arguments",
-            "read_file",
-            "workspace_read_file",
-        ),
-        (
-            json!({"id": "object", "type": "function", "function": {
-                "name": "workspace_read_file", "arguments": {"path": "notes.txt"}}}),
             "invalid_arguments",
             "invalid_arguments",
             "read_file",
@@ -5884,6 +5927,12 @@ fn a_session_with_a_rejected_call_reopens_and_replays_the_pair_as_text_on_the_ne
     fixture
         .run(&mut model, TurnLimits::default())
         .expect("first turn");
+
+    // Reopen the journal, so the next turn's history is loaded from disk and
+    // not carried over in memory.
+    fixture.close_journal();
+    fixture.journal =
+        Some(SessionJournal::open(&fixture.journal_path).expect("reopen the session"));
 
     // A later turn replays the saved result as source-labelled text. The
     // live-turn call pairing is never replayed (ADR-0097).

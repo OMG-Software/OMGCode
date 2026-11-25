@@ -84,21 +84,26 @@ The causes are in the core:
   `unsupported_tool`, `arguments_too_large`, `invalid_arguments`, and
   `invalid_path`. The result is labelled core-observed text with the code, a
   fixed message, the received argument text's byte length and SHA-256, and
-  nothing else the model wrote. `arguments_too_large` adds the tool's limit
-  and advises creating a large file with its first part and extending it with
-  edit calls. `unsupported_tool` lists the offered tool names. A small result
-  limit keeps only the tool name and code. The call counts toward the
-  tool-call and tool-byte budgets, and each answer reserves the same prompt
-  and byte capacity as a dispatched call.
+  nothing else the model wrote. `arguments_too_large` adds the tool's limit.
+  For the create, edit, and multi-edit tools it advises creating a large file
+  with its first part and extending it with edit calls; any other tool is told
+  to shorten its arguments. `unsupported_tool` lists the offered tool names. A
+  small result limit keeps only the tool name and code. The call counts toward
+  the tool-call and tool-byte budgets, and each answer reserves the same
+  prompt and byte capacity as a dispatched call.
 - **Still ending the turn.** A response element that is not an object, has an
-  unsupported shape (including a non-string tool name), or has no usable call
-  identifier leaves no call to answer. A duplicate call identifier is
-  ambiguous. Each ends the turn with `invalid_tool_call` before any call is
-  recorded or dispatched, as before. A call to a tool the runtime has but the
-  workspace's live preferences do not offer reaches the dispatcher and is
-  still denied and ends the turn (`edit_disabled`, `command_disabled`,
-  `model_tools_disabled`), as before. The offered list is a snapshot, and
-  ADR-0063 keeps the live recheck terminal.
+  unsupported shape (including a non-string tool name or `arguments` value),
+  or has no usable call identifier leaves no call to answer. Both provider
+  APIs send the arguments as a JSON string, and the Responses adapter already
+  ends the turn for any other value as a malformed response, so the runtime
+  parser treats one from the buffered Chat Completions path as a shape error
+  too. A duplicate call identifier is ambiguous. Each ends the turn with
+  `invalid_tool_call` before any call is recorded or dispatched, as before. A
+  call to a tool the runtime has but the workspace's live preferences do not
+  offer reaches the dispatcher and is still denied and ends the turn
+  (`edit_disabled`, `command_disabled`, `model_tools_disabled`), as before.
+  The offered list is a snapshot, and ADR-0063 keeps the live recheck
+  terminal.
 - **Pairing and storage.** A rejected call is one `tool.requested`, one
   `tool.completed` (outcome `failed` with the code), and one tool message, in
   that order, like any call. The request records `{}` as its arguments. The
@@ -122,12 +127,14 @@ The causes are in the core:
   with `audit_unavailable`, as for any call.
 - **Compatibility.** A build before 0.63.0 refuses to open a session journal
   that holds a `tool.requested` event with more than 4 KiB of arguments or any
-  event over 64 KiB, as an invalid journal, and repairs nothing. It also
-  reads a model action journal that holds a new reason or `unrecognized` as
-  corrupt, and the core then refuses every model tool call with
-  `audit_unavailable` until the operator moves that file aside. These
+  event over 64 KiB, as an invalid journal, and repairs nothing. It also reads
+  a model action journal that holds a new reason or `unrecognized` as corrupt,
+  and the core then refuses every model tool call with `audit_unavailable`
+  until the operator moves that file and every
+  `model-actions-v1.<20-digit sequence>.jsonl` archive aside, because the
+  earlier build validates each archive when it opens the journal. These
   statements come from reading the earlier code and were not tried with an
-  older build. Journals that hold no such call or record open in both.
+  older build. Journals that hold no such call, event, or record open in both.
 
 ## Alternatives considered
 

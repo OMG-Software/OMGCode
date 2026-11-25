@@ -789,23 +789,15 @@ impl ToolCall {
             .get("name")
             .and_then(Value::as_str)
             .ok_or(ToolCallError::UnsupportedShape)?;
-        let name = match name {
-            "workspace_read_file" => ToolName::ReadFile,
-            "workspace_list_directory" => ToolName::ListDirectory,
-            "workspace_edit_file" => ToolName::EditFile,
-            "workspace_multi_edit_file" => ToolName::MultiEditFile,
-            "workspace_create_file" => ToolName::CreateFile,
-            "workspace_create_directory" => ToolName::CreateDirectory,
-            "workspace_rename_file" => ToolName::RenameFile,
-            "workspace_delete_file" => ToolName::DeleteFile,
-            "workspace_run_command" => ToolName::Command,
-            "web_fetch" => ToolName::WebFetch,
-            _ => return Err(ToolCallError::UnsupportedTool),
-        };
+        // Both provider APIs carry the arguments as a JSON string, and the
+        // Responses adapter refuses any other value as a malformed response.
+        // Another value is an unsupported shape here too, so every adapter
+        // ends the turn for it (ADR-0099).
         let arguments_json = function
             .get("arguments")
             .and_then(Value::as_str)
-            .ok_or(ToolCallError::InvalidArguments)?;
+            .ok_or(ToolCallError::UnsupportedShape)?;
+        let name = known_tool(name).ok_or(ToolCallError::UnsupportedTool)?;
         if arguments_json.is_empty() {
             return Err(ToolCallError::InvalidArguments);
         }
@@ -2380,10 +2372,7 @@ impl RejectedCall {
         let call_id = object.get("id")?.as_str()?;
         let function = object.get("function")?.as_object()?;
         let name = function.get("name")?.as_str()?;
-        let received = match function.get("arguments")? {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        };
+        let received = function.get("arguments")?.as_str()?;
         let tool = known_tool(name);
         let recorded_name = match tool {
             Some(tool) => tool.as_str().to_owned(),
@@ -2413,7 +2402,16 @@ impl RejectedCall {
                 if let Some(tool) = self.tool {
                     body.insert("limit_bytes".to_owned(), json!(tool.max_argument_bytes()));
                 }
-                "The arguments are longer than this tool allows. Nothing ran. To write a large file, create it with its first part, then add the rest with edit calls."
+                // Only the tools that write file text can split their work
+                // into a create and later edits.
+                if matches!(
+                    self.tool,
+                    Some(ToolName::CreateFile | ToolName::EditFile | ToolName::MultiEditFile)
+                ) {
+                    "The arguments are longer than this tool allows. Nothing ran. To write a large file, create it with its first part, then add the rest with edit calls."
+                } else {
+                    "The arguments are longer than this tool allows. Nothing ran. Shorten the arguments to fit the limit."
+                }
             }
             "unsupported_tool" => {
                 body.insert("offered_tools".to_owned(), json!(offered));
@@ -2455,7 +2453,8 @@ impl RejectedCall {
     }
 }
 
-/// The supported tool a wire name spells, if any.
+/// The supported tool a wire name spells, if any. `ToolCall::parse` and the
+/// rejection path both use this one table, so they agree on every name.
 fn known_tool(name: &str) -> Option<ToolName> {
     Some(match name {
         "workspace_read_file" => ToolName::ReadFile,

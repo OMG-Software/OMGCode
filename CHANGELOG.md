@@ -370,36 +370,40 @@ Changes are recorded here before a release version is assigned.
   tool's shape, or name an invalid path, is now answered with a recoverable
   result (`unsupported_tool`, `arguments_too_large`, `invalid_arguments`, or
   `invalid_path`) and the turn continues. The `arguments_too_large` result
-  gives the tool's limit, the received byte count, and the advice to create a
-  large file first and extend it with edits. The call counts toward the
-  tool-call and tool-byte budgets. It is stored in the session journal with
-  `{}` as its arguments, never the received text, and its result carries the
-  received text's byte length and SHA-256. It is recorded in the model action
-  journal as refused with a new reason, and a call to a tool the runtime does
-  not have is recorded with the new tool `unrecognized` and no name. A
-  response element with no supported shape or identifier, and a duplicate call
-  identifier, still end the turn. A call to a known tool that the workspace
-  does not offer is still denied and ends the turn. The session journal's
-  event bound rises from 64 KiB to 80 KiB, because the worst-case
-  `tool.requested` event with 32 KiB of arguments is 66,153 bytes, and its
-  argument bound rises to 32 KiB. A streamed Chat Completions reply may now
-  hold 8 MiB, as a Responses stream already could, because a 32 KiB argument
-  streamed in small pieces is several mebibytes. A build before 0.63.0
-  refuses to open a session journal that holds a call over 4 KiB or an event
-  over 64 KiB, and reports a model action journal that holds the new reasons
-  or tool as corrupt, which stops every model tool call with
-  `audit_unavailable` until the operator moves that file aside; neither was
-  repaired or tested with an older build. The plan route echoes each call of
-  the live turn, so large creates use the unchanged 256 KiB request limit
-  faster; see the next entry. Tests drive 5, 30, and 40 KiB calls,
-  an exact-boundary parse of each limit, malformed, unknown-field,
-  non-string, empty, unknown-tool, hostile-name, and bad-path calls, mixed
-  rounds, both budgets, a small result limit, the shape errors and duplicate
-  identifier that still end the turn, replay on the next turn, the paired
-  call and output items, the worst-case event, and an exact approval review
-  of a 30 KiB create. Before the change, the 5 KiB create test ended the turn
-  with `InvalidToolCall(InvalidArguments)`. No real model or plan-route call
-  of this size was made.
+  gives the tool's limit and the received byte count. For the create, edit,
+  and multi-edit tools it advises creating a large file first and extending it
+  with edits; any other tool is told to shorten its arguments. The call counts
+  toward the tool-call and tool-byte budgets. It is stored in the session
+  journal with `{}` as its arguments, never the received text, and its result
+  carries the received text's byte length and SHA-256. It is recorded in the
+  model action journal as refused with a new reason, and a call to a tool the
+  runtime does not have is recorded with the new tool `unrecognized` and no
+  name. A response element with no supported shape or identifier, and a
+  duplicate call identifier, still end the turn. An `arguments` value that is
+  not a string is an unsupported shape on every provider adapter. A call to a
+  known tool that the workspace does not offer is still denied and ends the
+  turn. The session journal's event bound rises from 64 KiB to 80 KiB, because
+  the worst-case `tool.requested` event with 32 KiB of arguments is 66,153
+  bytes, and its argument bound rises to 32 KiB. A streamed Chat Completions
+  reply may now hold 8 MiB, as a Responses stream already could, because a 32
+  KiB argument streamed in small pieces is several mebibytes. A build before
+  0.63.0 refuses to open a session journal that holds a call over 4 KiB or an
+  event over 64 KiB, and reports a model action journal that holds the new
+  reasons or tool as corrupt, which stops every model tool call with
+  `audit_unavailable` until the operator moves that file and every
+  `model-actions-v1.<20-digit sequence>.jsonl` archive aside. Nothing repairs
+  either journal, and neither behaviour was tested with an older build. The
+  plan route echoes each call of the live turn, so large creates would soon
+  have reached the previous 256 KiB request limit; the next entry raises it to
+  4 MiB. Tests drive 5, 30, and 40 KiB calls, an exact-boundary parse of each
+  limit, malformed, unknown-field, empty, unknown-tool, hostile-name, and
+  bad-path calls, mixed rounds, both budgets, a small result limit, the shape
+  errors (including non-string arguments on both adapters) and duplicate
+  identifier that still end the turn, replay after reopening the journal, the
+  paired call and output items, the worst-case event, and an exact approval
+  review of a 30 KiB create. Before the change, the 5 KiB create test ended
+  the turn with `InvalidToolCall(InvalidArguments)`. No real model or
+  plan-route call of this size was made.
 
 - Version 0.63.0: the encoded request cap and the assembled prompt cap rise
   from 256 KiB to 4 MiB (ADR-0099), so the configured context budget, not a

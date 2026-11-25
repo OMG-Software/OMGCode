@@ -495,7 +495,8 @@ record a call the runtime rejected and answered without running it
 have is recorded with the tool `unrecognized` and no name. A build before
 0.63.0 reads none of these four reasons or `unrecognized`: it reports the
 journal as corrupt, and each model tool call then ends the turn with
-`audit_unavailable` until the operator moves the file aside. A target is a
+`audit_unavailable` until the operator moves `model-actions-v1.jsonl` and
+every `model-actions-v1.<20-digit sequence>.jsonl` archive aside. A target is a
 validated workspace-relative path, or for `web_fetch`, recorded with the
 tool `network`, the normalised URL; a value that failed validation is stored
 only as its SHA-256 and byte length.
