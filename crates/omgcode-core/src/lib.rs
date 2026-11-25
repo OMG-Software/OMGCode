@@ -24,5 +24,6 @@ mod storage;
 #[cfg(test)]
 mod test_support;
 pub mod turn;
+pub mod web_fetch;
 mod workspace;
 pub mod workspace_entries;
