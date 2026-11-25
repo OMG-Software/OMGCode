@@ -1131,3 +1131,63 @@ fn unrelated_files_and_directory_look_alikes_are_not_archives() {
     );
     ActionJournal::open(directory.path()).expect("open");
 }
+
+/// A rejected call (ADR-0099) is refused with its own reason and the digest of
+/// the received arguments. A call to a tool the runtime does not have is
+/// recorded as `unrecognized`, with no target and no name.
+#[test]
+fn rejected_calls_are_recorded_with_their_reasons_and_an_unrecognized_tool() {
+    let directory = tempfile::tempdir().expect("directory");
+    let mut journal = ActionJournal::open(directory.path()).expect("open");
+    let cases = [
+        (ActionTool::CreateFile, RefusalReason::ArgumentsTooLarge),
+        (ActionTool::ReadFile, RefusalReason::InvalidArguments),
+        (ActionTool::ReadFile, RefusalReason::InvalidPath),
+        (ActionTool::Unrecognized, RefusalReason::UnsupportedTool),
+    ];
+    for (tool, reason) in cases {
+        let mut action = refused("rejected_1", reason);
+        action.tool = tool;
+        action.targets = &[];
+        action.request_sha256 = Some(DIGEST);
+        journal.record_refused(&action).expect("refuse");
+    }
+    drop(journal);
+
+    let lines = active_lines(directory.path());
+    let stored: Vec<(String, String)> = lines
+        .iter()
+        .map(|line| {
+            (
+                line["event"]["payload"]["tool"]
+                    .as_str()
+                    .expect("tool")
+                    .to_owned(),
+                line["event"]["payload"]["reason"]["type"]
+                    .as_str()
+                    .expect("reason")
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            ("create_file".to_owned(), "arguments_too_large".to_owned()),
+            ("read_file".to_owned(), "invalid_arguments".to_owned()),
+            ("read_file".to_owned(), "invalid_path".to_owned()),
+            ("unrecognized".to_owned(), "unsupported_tool".to_owned()),
+        ]
+    );
+    let records = ActionJournal::recent(directory.path(), 10).expect("recent");
+    assert_eq!(records.len(), 4);
+    assert_eq!(records[0].tool, ActionTool::Unrecognized);
+    assert!(records[0].targets.is_empty());
+    assert_eq!(records[0].request_sha256.as_deref(), Some(DIGEST));
+    assert!(matches!(
+        records[0].disposition,
+        ActionDisposition::Refused {
+            reason: RefusalReason::UnsupportedTool
+        }
+    ));
+}

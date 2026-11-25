@@ -109,7 +109,7 @@ pub enum TranscriptEntryKind {
         call_id: String,
         /// Requested tool name.
         tool: String,
-        /// Exact strict-JSON arguments string, at most 4 KiB.
+        /// Exact strict-JSON arguments string, at most 32 KiB.
         arguments: String,
     },
     /// Core recorded the outcome of a tool call. Schema version 2 and later.

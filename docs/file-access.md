@@ -558,7 +558,7 @@ record, and calls `apply_replacement` with the captured size and digest, like
 the single edit. One approval and one checkpoint cover the whole call.
 
 `workspace_create_file` takes a path and complete UTF-8 content (empty
-allowed), bounded by the 4 KiB argument limit. Before recording any approval, a
+allowed), bounded by the 32 KiB argument limit (ADR-0099). Before recording any approval, a
 live audited read must find the path absent (an existing entry returns
 `file_exists`) and a one-entry listing must find its parent directory (a missing
 parent returns `parent_not_found`, ADR-0079); nothing is recorded in either case. The digest,

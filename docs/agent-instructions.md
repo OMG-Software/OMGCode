@@ -49,7 +49,7 @@ and each runs only after a trusted approval.
 Otherwise chat sends no tool definitions and rejects any provider tool call.
 
 Prompt assembly limits custom instruction text and each history message to 16
-KiB, history to 640 messages, and the assembled UTF-8 text to 256 KiB. The
+KiB, history to 640 messages, and the assembled UTF-8 text to 4 MiB. The
 adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
 desktop shell's saved global and workspace instructions are the only saved

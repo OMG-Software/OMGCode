@@ -891,3 +891,95 @@ fn the_public_constructor_accepts_only_the_openai_endpoint() {
         );
     }
 }
+
+/// ADR-0099: a rejected call is echoed with `{}` and its recoverable result,
+/// so the route still sees each call item paired with an output item.
+#[test]
+fn a_rejected_calls_placeholder_arguments_and_result_are_sent_as_a_paired_call_and_output() {
+    let tools = tool_definitions();
+    let mut messages = messages();
+    messages.push(ModelMessage {
+        role: ModelRole::ToolResult(AnsweredCall::new("call_big_1", "workspace_create_file", "{}")),
+        content: "Tool error [call call_big_1; source core_observed; untrusted workspace data]:\n{\"error\":\"arguments_too_large\"}".to_owned(),
+    });
+    messages.push(ModelMessage {
+        role: ModelRole::ToolResult(AnsweredCall::new("call_odd_1", "unsupported_tool", "{}")),
+        content: "Tool error [call call_odd_1; source core_observed; untrusted workspace data]:\n{\"error\":\"unsupported_tool\"}".to_owned(),
+    });
+
+    let body = request_body("gpt-test", &messages, Some(&tools)).expect("body");
+
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    let items = value["input"].as_array().expect("input items");
+    let pairs: Vec<(&str, &str, &str)> = items
+        .iter()
+        .skip(2)
+        .map(|item| {
+            (
+                item["type"].as_str().expect("type"),
+                item["call_id"].as_str().expect("call id"),
+                item.get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(output)"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("function_call", "call_big_1", "{}"),
+            ("function_call_output", "call_big_1", "(output)"),
+            ("function_call", "call_odd_1", "{}"),
+            ("function_call_output", "call_odd_1", "(output)"),
+        ]
+    );
+    assert_eq!(items[2]["name"], "workspace_create_file");
+}
+
+/// ADR-0099: ten answered 30 KiB create calls are echoed in one plan-route
+/// request of about 600 KiB, which the context budget allows.
+#[test]
+fn a_plan_route_request_echoing_ten_large_calls_is_sent_when_the_context_budget_allows_it() {
+    let stream: String = [CREATED, CALL_DONE, COMPLETED]
+        .iter()
+        .map(|payload| event(payload))
+        .collect();
+    let (base, server) = serve_once("200 OK", Some("text/event-stream"), stream);
+    let client = LocalModelClient::responses_with_timeout(
+        LocalModelConfig {
+            base_url: base,
+            model: "gpt-test".to_owned(),
+            context_tokens: 1_000_000,
+            max_output_tokens: 1024,
+        },
+        token(Ok("t")),
+        Duration::from_secs(10),
+    )
+    .expect("client");
+    let mut messages = messages();
+    for index in 0..10 {
+        let arguments =
+            serde_json::json!({"path": format!("f{index}.rs"), "content": "a".repeat(30 * 1024)})
+                .to_string();
+        messages.push(ModelMessage {
+            role: ModelRole::ToolResult(AnsweredCall::new(
+                &format!("call_{index}"),
+                "workspace_create_file",
+                &arguments,
+            )),
+            content: format!("Tool result [call call_{index}]:\n{{\"status\":\"created\"}}"),
+        });
+    }
+
+    let reply = client
+        .complete_with_tools(&messages, &tool_definitions(), &CancelToken::new())
+        .expect("a request over the old 256 KiB cap is sent");
+
+    assert_eq!(reply.tool_calls.len(), 1);
+    let request = server.join().expect("server");
+    assert!(request.len() > 300 * 1024, "{} bytes", request.len());
+    assert_eq!(
+        request.matches("\"type\":\"function_call_output\"").count(),
+        10
+    );
+}

@@ -53,7 +53,12 @@ without a checkpoint. The delete tool removes one regular file of at most 1 MiB
 after a durable checkpoint of its bytes, which the trusted CLI can restore. The
 directory tool creates one directory whose parent exists, without a checkpoint
 ([ADR-0079](docs/adr/0079-add-a-model-tool-that-creates-one-directory.md)). All
-six need the operator's writers-stopped acknowledgement when approved. No model network,
+six need the operator's writers-stopped acknowledgement when approved. The
+create, edit, and multi-edit tools accept 32 KiB of argument JSON and every
+other tool 4 KiB. A call with a usable identifier whose tool is unknown or
+whose arguments are too large, malformed, or name an invalid path is answered
+with a recoverable result and recorded as refused, and the turn continues
+([ADR-0099](docs/adr/0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)). No model network,
 Git, or MCP tool exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. A model write or command
 runs without a per-call approval only where the operator set it to `allow`.

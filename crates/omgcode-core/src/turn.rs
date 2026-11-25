@@ -59,9 +59,10 @@ pub use review::{
 /// Version `0.3.0` added `workspace_edit_file`. Version `0.4.0` added
 /// `workspace_multi_edit_file` and `workspace_create_file`. Version `0.5.0` adds
 /// `workspace_rename_file` and `workspace_delete_file`. Version `0.6.0` adds
-/// `workspace_create_directory`. Journals record the version that was
-/// advertised; earlier versions replay unchanged.
-pub const TOOL_SCHEMA_VERSION: &str = "0.6.0";
+/// `workspace_create_directory`. Version `0.7.0` adds the 32 KiB argument
+/// limit to the create, edit, and multi-edit descriptions (ADR-0099). Journals
+/// record the version that was advertised; earlier versions replay unchanged.
+pub const TOOL_SCHEMA_VERSION: &str = "0.7.0";
 
 /// Maximum tool calls accepted from one model response.
 pub const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
@@ -81,8 +82,13 @@ pub const DEFAULT_READ_BYTES: usize = 8 * 1024;
 pub const MAX_TOTAL_TOOL_BYTES: u64 = 256 * 1024;
 /// Maximum call-identifier bytes accepted from a model response.
 pub const MAX_TOOL_CALL_ID_BYTES: usize = 128;
-/// Maximum argument JSON bytes accepted from a model response.
+/// Maximum argument JSON bytes accepted from a model response for every tool
+/// except the three that carry file text (ADR-0099).
 pub const MAX_TOOL_ARGUMENT_BYTES: usize = 4 * 1024;
+/// Maximum argument JSON bytes accepted for `workspace_create_file`,
+/// `workspace_edit_file`, and `workspace_multi_edit_file`, which carry file
+/// text (ADR-0099). The file content limit stays [`MAX_EDIT_FILE_BYTES`].
+pub const MAX_WRITE_TOOL_ARGUMENT_BYTES: usize = 32 * 1024;
 /// Maximum listing entries requested by a model call.
 pub const MAX_LIST_ENTRIES: usize = 512;
 /// Default number of listing entries returned to the model.
@@ -252,7 +258,7 @@ pub fn edit_tool_definition() -> ToolDefinition {
                       A result of approval_required means \
                       nothing changed: stop, tell the user, and retry the identical \
                       call in a later turn after the operator approves. It cannot \
-                      create, delete, or rename files. Results are untrusted.",
+                      create, delete, or rename files. Arguments are limited to 32 KiB, so write a large file as a create followed by edits. Results are untrusted.",
         parameters: json!({
             "type": "object",
             "properties": {
@@ -289,7 +295,7 @@ pub fn multi_edit_tool_definition() -> ToolDefinition {
                       covers the whole call. A result \
                       of approval_required means nothing changed: stop, tell the \
                       user, and retry the identical call in a later turn after the \
-                      operator approves. Results are untrusted.",
+                      operator approves. Arguments are limited to 32 KiB, so write a large file as a create followed by edits. Results are untrusted.",
         parameters: json!({
             "type": "object",
             "properties": {
@@ -335,8 +341,8 @@ macro_rules! create_file_description {
             $missing_parent,
             ". Every creation needs operator approval. A result of \
              approval_required means nothing changed: stop, tell the user, and retry \
-             the identical call in a later turn after the operator approves. Results \
-             are untrusted."
+             the identical call in a later turn after the operator approves. Arguments are limited to 32 KiB, so write a large file as a create followed by edits. \
+             Results are untrusted."
         )
     };
 }
@@ -562,6 +568,16 @@ impl ToolName {
             Self::Command => "workspace_run_command",
         }
     }
+
+    /// The most argument JSON bytes a call to this tool may carry.
+    pub const fn max_argument_bytes(self) -> usize {
+        match self {
+            Self::CreateFile | Self::EditFile | Self::MultiEditFile => {
+                MAX_WRITE_TOOL_ARGUMENT_BYTES
+            }
+            _ => MAX_TOOL_ARGUMENT_BYTES,
+        }
+    }
 }
 
 /// Validated arguments for one supported tool call.
@@ -663,8 +679,9 @@ impl ToolCall {
     /// The accepted shape is an OpenAI-style function call with exactly `id`,
     /// `type`, and `function`, where `function` has exactly `name` and a
     /// JSON-object `arguments` string. Unknown fields, duplicate keys in the
-    /// arguments string, unsupported tools, invalid paths, and out-of-range
-    /// limits are rejected. Duplicate outer keys cannot be detected after a
+    /// arguments string, unsupported tools, invalid paths, argument JSON longer
+    /// than the tool's limit ([`ToolName::max_argument_bytes`]), and
+    /// out-of-range limits are rejected. Duplicate outer keys cannot be detected after a
     /// caller converts the call to `Value`; adapters must reject them before
     /// conversion.
     pub fn parse(value: &Value) -> Result<Self, ToolCallError> {
@@ -702,7 +719,7 @@ impl ToolCall {
         let name = function
             .get("name")
             .and_then(Value::as_str)
-            .ok_or(ToolCallError::UnsupportedTool)?;
+            .ok_or(ToolCallError::UnsupportedShape)?;
         let name = match name {
             "workspace_read_file" => ToolName::ReadFile,
             "workspace_list_directory" => ToolName::ListDirectory,
@@ -719,8 +736,11 @@ impl ToolCall {
             .get("arguments")
             .and_then(Value::as_str)
             .ok_or(ToolCallError::InvalidArguments)?;
-        if arguments_json.is_empty() || arguments_json.len() > MAX_TOOL_ARGUMENT_BYTES {
+        if arguments_json.is_empty() {
             return Err(ToolCallError::InvalidArguments);
+        }
+        if arguments_json.len() > name.max_argument_bytes() {
+            return Err(ToolCallError::ArgumentsTooLarge);
         }
         let arguments_value = crate::storage::parse_strict_json(arguments_json.as_bytes())
             .map_err(|_| ToolCallError::InvalidArguments)?;
@@ -1051,6 +1071,9 @@ pub enum ToolCallError {
     /// The arguments are not a bounded strict JSON object.
     #[error("tool arguments are invalid")]
     InvalidArguments,
+    /// The argument JSON is longer than the tool's limit.
+    #[error("tool arguments are too large")]
+    ArgumentsTooLarge,
     /// The target path is absolute, empty where required, or contains a parent segment.
     #[error("tool path is invalid")]
     InvalidPath,
@@ -1495,6 +1518,7 @@ impl<'a> TurnRuntime<'a> {
                 skill_md_sha256: skill.skill_md_sha256.clone(),
             })
             .collect();
+        let offered: Vec<&'static str> = tools.iter().map(|definition| definition.name).collect();
         manifest.tool_schema_version = Some(TOOL_SCHEMA_VERSION.to_owned());
         manifest.tools = Some(
             tools
@@ -1645,17 +1669,24 @@ impl<'a> TurnRuntime<'a> {
 
             let mut calls = Vec::with_capacity(reply.tool_calls.len());
             for value in &reply.tool_calls {
+                // A call that has the supported shape and a usable
+                // identifier but a bad name, size, argument, or path is
+                // answered with a recoverable result (ADR-0099). Any other
+                // failure leaves no call to answer and ends the turn.
                 let call = match ToolCall::parse(value) {
-                    Ok(call) => call,
-                    Err(error) => {
-                        return Err(self.abort(
-                            request_id,
-                            "invalid_tool_call",
-                            TurnError::InvalidToolCall(error),
-                        ));
-                    }
+                    Ok(call) => PendingCall::Run(call),
+                    Err(error) => match RejectedCall::from_value(value, error) {
+                        Some(rejected) => PendingCall::Rejected(rejected),
+                        None => {
+                            return Err(self.abort(
+                                request_id,
+                                "invalid_tool_call",
+                                TurnError::InvalidToolCall(error),
+                            ));
+                        }
+                    },
                 };
-                if !turn_ids.insert(call.call_id.clone()) {
+                if !turn_ids.insert(call.call_id().to_owned()) {
                     return Err(self.abort(
                         request_id,
                         "invalid_tool_call",
@@ -1700,21 +1731,31 @@ impl<'a> TurnRuntime<'a> {
                 }
                 if let Err(error) = self.journal.record_tool_request(
                     request_id,
-                    &call.call_id,
-                    call.name.as_str(),
-                    call.arguments_json(),
+                    call.call_id(),
+                    call.recorded_name(),
+                    call.recorded_arguments(),
                 ) {
                     return Err(self.abort(request_id, "persistence", error.into()));
                 }
-                let mut execution = WorkspaceToolDispatcher {
+                let mut dispatcher = WorkspaceToolDispatcher {
                     data_directory: self.data_directory,
                     session_id: self.journal.snapshot().session_id,
                     workspace_id: self.workspace_id,
                     cancel: self.cancel.clone(),
                     skills: &self.skills,
                     approval_wait: self.approval_wait.as_ref(),
-                }
-                .dispatch(call, self.limits.max_result_bytes);
+                };
+                let mut execution = match call {
+                    PendingCall::Run(call) => {
+                        dispatcher.dispatch(call, self.limits.max_result_bytes)
+                    }
+                    PendingCall::Rejected(rejected) => {
+                        let limit = self.limits.max_result_bytes.min(MAX_MESSAGE_BYTES);
+                        let mut execution = rejected.execution(&offered, limit);
+                        dispatcher.audit_rejected(rejected, &mut execution);
+                        execution
+                    }
+                };
                 // Time spent waiting for the operator is not the turn's own.
                 deadline = deadline.checked_add(execution.waited).unwrap_or(deadline);
                 if let Some(filter) = self.tool_text_filter {
@@ -1732,7 +1773,7 @@ impl<'a> TurnRuntime<'a> {
                 let digest = sha256_hex(execution.text.as_bytes());
                 if let Err(error) = self.journal.record_tool_result(
                     request_id,
-                    &call.call_id,
+                    call.call_id(),
                     execution.outcome,
                     execution.code,
                     text_bytes,
@@ -1742,7 +1783,7 @@ impl<'a> TurnRuntime<'a> {
                 }
                 if let Err(error) = self
                     .journal
-                    .record_tool_message(&call.call_id, &execution.text)
+                    .record_tool_message(call.call_id(), &execution.text)
                 {
                     return Err(self.abort(request_id, "persistence", error.into()));
                 }
@@ -1751,9 +1792,9 @@ impl<'a> TurnRuntime<'a> {
                 // call parsed, recorded, and dispatched above is attached.
                 history.push(ConversationMessage {
                     role: ConversationRole::ToolResult(AnsweredCall::new(
-                        &call.call_id,
-                        call.name.as_str(),
-                        call.arguments_json(),
+                        call.call_id(),
+                        call.recorded_name(),
+                        call.recorded_arguments(),
                     )),
                     content: execution.text.clone(),
                 });
@@ -2032,6 +2073,21 @@ impl ReadRequest {
     }
 }
 
+/// The audit tool name of a supported tool.
+const fn action_tool_of(name: ToolName) -> ActionTool {
+    match name {
+        ToolName::ReadFile => ActionTool::ReadFile,
+        ToolName::ListDirectory => ActionTool::ListDirectory,
+        ToolName::EditFile => ActionTool::EditFile,
+        ToolName::MultiEditFile => ActionTool::MultiEditFile,
+        ToolName::CreateFile => ActionTool::CreateFile,
+        ToolName::CreateDirectory => ActionTool::CreateDirectory,
+        ToolName::RenameFile => ActionTool::RenameFile,
+        ToolName::DeleteFile => ActionTool::DeleteFile,
+        ToolName::Command => ActionTool::RunCommand,
+    }
+}
+
 /// The audit tool name of a call.
 const fn action_tool(arguments: &ToolArguments) -> ActionTool {
     match arguments {
@@ -2079,6 +2135,193 @@ fn refusal_reason(execution: &ToolExecution) -> RefusalReason {
         _ if execution.outcome == ToolOutcome::Denied => RefusalReason::AccessDenied,
         _ => RefusalReason::InvalidRequest,
     }
+}
+
+/// One call of a model response after parsing: a call to dispatch, or a call
+/// that has the supported shape and a usable identifier but is answered with
+/// a recoverable result instead (ADR-0099).
+enum PendingCall {
+    Run(ToolCall),
+    Rejected(RejectedCall),
+}
+
+impl PendingCall {
+    fn call_id(&self) -> &str {
+        match self {
+            Self::Run(call) => &call.call_id,
+            Self::Rejected(rejected) => &rejected.call_id,
+        }
+    }
+
+    /// The tool name stored with the call. A rejected call stores a bounded
+    /// plain spelling or a fixed placeholder, never other model text.
+    fn recorded_name(&self) -> &str {
+        match self {
+            Self::Run(call) => call.name.as_str(),
+            Self::Rejected(rejected) => &rejected.recorded_name,
+        }
+    }
+
+    /// The argument JSON stored with the call. A rejected call stores `{}`:
+    /// its received text is never kept, only its length and digest.
+    fn recorded_arguments(&self) -> &str {
+        match self {
+            Self::Run(call) => call.arguments_json(),
+            Self::Rejected(_) => REJECTED_ARGUMENTS,
+        }
+    }
+}
+
+/// The argument JSON recorded and echoed in place of a rejected call's own.
+const REJECTED_ARGUMENTS: &str = "{}";
+/// The tool name recorded for a call to a tool the runtime does not have,
+/// when the model's own name is not a short plain spelling.
+const UNSUPPORTED_TOOL_NAME: &str = "unsupported_tool";
+/// Longest model-chosen tool name that is recorded as the model wrote it.
+const MAX_RECORDED_TOOL_NAME_BYTES: usize = 64;
+
+/// A call the runtime answers with a recoverable result (ADR-0099).
+///
+/// It has the supported function-call shape and a usable call identifier. Its
+/// tool name is unknown, or its arguments are too large, not strict JSON of
+/// the tool's shape, or name an invalid path. Nothing runs. The received
+/// argument text is not kept: the call is stored with `{}` as its arguments,
+/// and the result carries the text's length and SHA-256.
+struct RejectedCall {
+    call_id: String,
+    /// The tool the call named, when the runtime has it.
+    tool: Option<ToolName>,
+    /// The name recorded and echoed to a provider that pairs calls with
+    /// results: a known tool's name, the model's own name when it is a short
+    /// plain spelling, or a fixed placeholder.
+    recorded_name: String,
+    code: &'static str,
+    reason: RefusalReason,
+    received_bytes: u64,
+    received_sha256: String,
+}
+
+impl RejectedCall {
+    /// Build the rejection for a call that `ToolCall::parse` refused with
+    /// `error`, or `None` when the failure leaves no call to answer.
+    fn from_value(value: &Value, error: ToolCallError) -> Option<Self> {
+        let (code, reason) = match error {
+            ToolCallError::UnsupportedTool => ("unsupported_tool", RefusalReason::UnsupportedTool),
+            ToolCallError::ArgumentsTooLarge => {
+                ("arguments_too_large", RefusalReason::ArgumentsTooLarge)
+            }
+            ToolCallError::InvalidArguments => {
+                ("invalid_arguments", RefusalReason::InvalidArguments)
+            }
+            ToolCallError::InvalidPath => ("invalid_path", RefusalReason::InvalidPath),
+            ToolCallError::NotObject
+            | ToolCallError::UnsupportedShape
+            | ToolCallError::InvalidCallId
+            | ToolCallError::DuplicateCallId => return None,
+        };
+        let object = value.as_object()?;
+        let call_id = object.get("id")?.as_str()?;
+        let function = object.get("function")?.as_object()?;
+        let name = function.get("name")?.as_str()?;
+        let received = match function.get("arguments")? {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        let tool = known_tool(name);
+        let recorded_name = match tool {
+            Some(tool) => tool.as_str().to_owned(),
+            None if is_plain_tool_name(name) => name.to_owned(),
+            None => UNSUPPORTED_TOOL_NAME.to_owned(),
+        };
+        Some(Self {
+            call_id: call_id.to_owned(),
+            tool,
+            recorded_name,
+            code,
+            reason,
+            received_bytes: u64::try_from(received.len()).ok()?,
+            received_sha256: sha256_hex(received.as_bytes()),
+        })
+    }
+
+    /// The recoverable result the model receives. It holds fixed text, the
+    /// tool's own limit, the received size, and the digest of the received
+    /// arguments, but none of the model's text.
+    fn execution(&self, offered: &[&'static str], limit: usize) -> ToolExecution {
+        let mut body = serde_json::Map::new();
+        body.insert("tool".to_owned(), json!(self.recorded_name));
+        body.insert("error".to_owned(), json!(self.code));
+        let message = match self.code {
+            "arguments_too_large" => {
+                if let Some(tool) = self.tool {
+                    body.insert("limit_bytes".to_owned(), json!(tool.max_argument_bytes()));
+                }
+                "The arguments are longer than this tool allows. Nothing ran. To write a large file, create it with its first part, then add the rest with edit calls."
+            }
+            "unsupported_tool" => {
+                body.insert("offered_tools".to_owned(), json!(offered));
+                "This tool does not exist. Nothing ran. Call one of the offered tools."
+            }
+            "invalid_path" => {
+                "A path must be relative to the workspace and have no parent segment. Nothing ran."
+            }
+            _ => {
+                "The arguments must be a strict JSON object of the tool's shape, with no unknown, missing, or repeated fields and values in range. Nothing ran."
+            }
+        };
+        body.insert("message".to_owned(), json!(message));
+        body.insert("received_bytes".to_owned(), json!(self.received_bytes));
+        body.insert("arguments_sha256".to_owned(), json!(self.received_sha256));
+        let mut text = format!(
+            "Tool error [call {}; source core_observed; untrusted workspace data]:\n{}",
+            self.call_id,
+            Value::Object(body)
+        );
+        if text.len() > limit {
+            // A small result limit keeps only the stable code.
+            text = format!(
+                "Tool error [call {}; source core_observed; untrusted workspace data]:\n{}",
+                self.call_id,
+                json!({"tool": self.recorded_name, "error": self.code})
+            );
+        }
+        ToolExecution {
+            outcome: ToolOutcome::Failed,
+            code: Some(self.code),
+            text,
+            terminal: None,
+            approval_id: None,
+            waited: Duration::ZERO,
+            operation_id: None,
+            audited: false,
+        }
+    }
+}
+
+/// The supported tool a wire name spells, if any.
+fn known_tool(name: &str) -> Option<ToolName> {
+    Some(match name {
+        "workspace_read_file" => ToolName::ReadFile,
+        "workspace_list_directory" => ToolName::ListDirectory,
+        "workspace_edit_file" => ToolName::EditFile,
+        "workspace_multi_edit_file" => ToolName::MultiEditFile,
+        "workspace_create_file" => ToolName::CreateFile,
+        "workspace_create_directory" => ToolName::CreateDirectory,
+        "workspace_rename_file" => ToolName::RenameFile,
+        "workspace_delete_file" => ToolName::DeleteFile,
+        "workspace_run_command" => ToolName::Command,
+        _ => return None,
+    })
+}
+
+/// Whether a model-chosen name is short and made only of the characters the
+/// session journal accepts in a tool name.
+fn is_plain_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_RECORDED_TOOL_NAME_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 }
 
 /// A terminal tool failure retained until its audit records are durable.
@@ -2384,6 +2627,33 @@ impl WorkspaceToolDispatcher<'_> {
             targets: &targets,
             request_sha256: None,
             reason: refusal_reason(execution),
+        };
+        let recorded = self
+            .open_action_journal()
+            .and_then(|mut journal| journal.record_refused(&refused));
+        execution.audited = true;
+        if let Err(error) = recorded
+            && execution.terminal.is_none()
+        {
+            execution.terminal = Some(TerminalToolError::Audit(error));
+        }
+    }
+
+    /// Record a rejected call as refused (ADR-0099). The record names the
+    /// known tool, or `unrecognized` for a tool the runtime does not have, no
+    /// target, and the digest of the received argument text. If it cannot be
+    /// written the turn stops with `audit_unavailable`.
+    fn audit_rejected(&self, rejected: &RejectedCall, execution: &mut ToolExecution) {
+        let refused = RefusedAction {
+            session_id: self.session_id,
+            workspace_id: self.workspace_id,
+            call_id: &rejected.call_id,
+            tool: rejected
+                .tool
+                .map_or(ActionTool::Unrecognized, action_tool_of),
+            targets: &[],
+            request_sha256: Some(rejected.received_sha256.as_str()),
+            reason: rejected.reason,
         };
         let recorded = self
             .open_action_journal()

@@ -548,6 +548,10 @@ const fn refusal_code(reason: RefusalReason) -> &'static str {
         RefusalReason::InvalidRequest => "invalid_request",
         RefusalReason::PolicyUnavailable => "policy_unavailable",
         RefusalReason::Cancelled => "cancelled",
+        RefusalReason::UnsupportedTool => "unsupported_tool",
+        RefusalReason::ArgumentsTooLarge => "arguments_too_large",
+        RefusalReason::InvalidArguments => "invalid_arguments",
+        RefusalReason::InvalidPath => "invalid_path",
     }
 }
 

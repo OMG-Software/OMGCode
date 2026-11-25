@@ -341,13 +341,11 @@ fn command_tool_arguments_are_strictly_validated() {
     }
 
     let too_many: Vec<String> = (0..=64).map(|_| "x".to_owned()).collect();
-    let oversized: Vec<String> = (0..17).map(|_| "x".repeat(1024)).collect();
     for arguments in [
         json!({"profile": "system", "program": "cargo", "unknown": true}),
         json!({"profile": "", "program": "cargo"}),
         json!({"profile": "system", "program": "bad\nprogram"}),
         json!({"profile": "system", "program": "cargo", "arguments": too_many}),
-        json!({"profile": "system", "program": "cargo", "arguments": oversized}),
     ] {
         assert!(
             matches!(
@@ -364,6 +362,17 @@ fn command_tool_arguments_are_strictly_validated() {
             json!({"profile": "system", "program": "cargo", "cwd": "../outside"})
         )),
         Err(ToolCallError::InvalidPath)
+    ));
+    // The command tool keeps the 4 KiB argument limit, so 17 KiB of command
+    // arguments are refused for their size before their content is read.
+    let oversized: Vec<String> = (0..17).map(|_| "x".repeat(1024)).collect();
+    assert!(matches!(
+        ToolCall::parse(&call(
+            "cmd-1",
+            "workspace_run_command",
+            json!({"profile": "system", "program": "cargo", "arguments": oversized})
+        )),
+        Err(ToolCallError::ArgumentsTooLarge)
     ));
 }
 
@@ -822,71 +831,64 @@ fn revocation_during_model_io_takes_effect_at_the_next_broker_call() {
     );
 }
 
+/// Calls with no usable shape or identifier leave nothing to answer, so they
+/// still end the turn before dispatch (ADR-0099).
 #[test]
-fn unknown_malformed_and_duplicate_calls_fail_before_dispatch() {
+fn calls_without_a_usable_shape_or_identifier_fail_the_turn_before_dispatch() {
     let cases = [
+        (json!("not an object"), ToolCallError::NotObject),
         (
-            call("unknown", "workspace_move_file", json!({})),
-            ToolCallError::UnsupportedTool,
+            json!({"id": "a", "type": "function"}),
+            ToolCallError::UnsupportedShape,
         ),
         (
-            raw_call("bad-json", "workspace_read_file", "{\"path\":"),
-            ToolCallError::InvalidArguments,
+            json!({"id": "a", "type": "function", "function": {"name": "workspace_list_directory", "arguments": "{}", "extra": 1}}),
+            ToolCallError::UnsupportedShape,
         ),
         (
-            call(
-                "root",
-                "workspace_read_file",
-                json!({"path": "/outside.txt"}),
-            ),
-            ToolCallError::InvalidPath,
+            json!({"id": "a", "type": "custom", "function": {"name": "workspace_list_directory", "arguments": "{}"}}),
+            ToolCallError::UnsupportedShape,
         ),
         (
-            call(
-                "parent",
-                "workspace_read_file",
-                json!({"path": "../outside.txt"}),
-            ),
-            ToolCallError::InvalidPath,
+            json!({"id": "a", "type": "function", "function": {"name": 7, "arguments": "{}"}}),
+            ToolCallError::UnsupportedShape,
         ),
         (
-            call(
-                "extra",
-                "workspace_list_directory",
-                json!({"path": "", "limit": 1}),
-            ),
-            ToolCallError::InvalidArguments,
+            json!({"id": "", "type": "function", "function": {"name": "workspace_list_directory", "arguments": "{}"}}),
+            ToolCallError::InvalidCallId,
         ),
         (
-            call(
-                "oversized",
-                "workspace_read_file",
-                json!({"path": "notes.txt", "max_bytes": 1_000_000}),
-            ),
-            ToolCallError::InvalidArguments,
+            json!({"id": "x".repeat(129), "type": "function", "function": {"name": "workspace_list_directory", "arguments": "{}"}}),
+            ToolCallError::InvalidCallId,
+        ),
+        (
+            json!({"id": 7, "type": "function", "function": {"name": "workspace_list_directory", "arguments": "{}"}}),
+            ToolCallError::InvalidCallId,
         ),
     ];
 
     for (value, expected) in cases {
         let mut fixture = Fixture::new();
-        fs::write(fixture.workspace.join("notes.txt"), "notes").expect("write file");
-        let mut model = ScriptedModel::new(vec![tool_reply(vec![value])]);
+        let mut model = ScriptedModel::new(vec![tool_reply(vec![value.clone()])]);
         let error = fixture
             .run(&mut model, TurnLimits::default())
-            .expect_err("invalid tool call must fail the turn");
+            .expect_err("a call with no usable shape must fail the turn");
         match error {
-            TurnError::InvalidToolCall(actual) => assert_eq!(actual, expected),
-            other => panic!("unexpected error: {other:?}"),
+            TurnError::InvalidToolCall(actual) => assert_eq!(actual, expected, "{value}"),
+            other => panic!("unexpected error for {value}: {other:?}"),
         }
         assert!(!fixture.audit_path().exists());
+        assert!(!fixture.data.join(ACTION_JOURNAL_NAME).exists());
         fixture.close_journal();
         assert_eq!(
             fixture.last_failure_code().as_deref(),
             Some("invalid_tool_call")
         );
     }
+}
 
-    // Duplicate identifiers in one response are rejected before dispatch.
+#[test]
+fn a_duplicate_call_identifier_in_one_response_still_fails_the_turn_before_dispatch() {
     let mut fixture = Fixture::new();
     let mut model = ScriptedModel::new(vec![tool_reply(vec![
         call("same", "workspace_list_directory", json!({"path": ""})),
@@ -900,6 +902,11 @@ fn unknown_malformed_and_duplicate_calls_fail_before_dispatch() {
         TurnError::InvalidToolCall(ToolCallError::DuplicateCallId)
     ));
     assert!(!fixture.audit_path().exists());
+    fixture.close_journal();
+    assert_eq!(
+        fixture.last_failure_code().as_deref(),
+        Some("invalid_tool_call")
+    );
 }
 
 #[test]
@@ -1156,7 +1163,7 @@ fn the_tool_history_reserve_counts_the_pending_request() {
 #[test]
 fn prompt_capacity_is_reserved_before_dispatch() {
     let mut fixture = Fixture::new();
-    for _ in 0..15 {
+    for _ in 0..255 {
         fixture
             .journal
             .as_mut()
@@ -2685,7 +2692,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
     assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.6.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.7.0");
 }
 
 /// A session whose earlier turn advertised tool schema 0.2.0 still replays and
@@ -2895,11 +2902,11 @@ fn multi_edit_tool_arguments_are_strictly_validated() {
             Err(ToolCallError::InvalidArguments)
         ));
     }
-    // The whole arguments stay within the 4 KiB bound.
-    let large = "x".repeat(4 * 1024);
+    // The whole arguments stay within the 32 KiB write-tool bound.
+    let large = "x".repeat(32 * 1024);
     assert!(matches!(
         ToolCall::parse(&multi_call("m-1", "a.txt", &[(&large, "y")])),
-        Err(ToolCallError::InvalidArguments)
+        Err(ToolCallError::ArgumentsTooLarge)
     ));
 }
 
@@ -2945,10 +2952,10 @@ fn create_tool_arguments_are_strictly_validated() {
         )),
         Err(ToolCallError::InvalidArguments)
     ));
-    let large = "x".repeat(4 * 1024);
+    let large = "x".repeat(32 * 1024);
     assert!(matches!(
         ToolCall::parse(&create_call("c-1", "a.txt", &large)),
-        Err(ToolCallError::InvalidArguments)
+        Err(ToolCallError::ArgumentsTooLarge)
     ));
 }
 
@@ -5192,4 +5199,763 @@ fn the_create_directory_tool_requires_live_read_and_write() {
         assert!(!fixture.workspace.join("made").exists());
         assert!(fixture.file_write_approvals().is_empty());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-argument limits and recoverable rejections (ADR-0099)
+// ---------------------------------------------------------------------------
+
+/// A source-file-like text of exactly `bytes` ASCII bytes with no character
+/// that JSON escapes, so its argument JSON is `bytes` plus a fixed overhead.
+fn file_text(bytes: usize) -> String {
+    let line = "pub fn generated_function_with_a_long_name() -> u64 { 42 } ";
+    let mut text = String::with_capacity(bytes + line.len());
+    while text.len() < bytes {
+        text.push_str(line);
+    }
+    text.truncate(bytes);
+    text
+}
+
+fn allow_all_file_tools(fixture: &mut Fixture) {
+    fixture.set_access(PermissionSet {
+        model_tools: true,
+        read: Access::Allow,
+        write: Access::Allow,
+        ..PermissionSet::default()
+    });
+}
+
+/// Regression for the observed failure: a create call whose argument JSON was a
+/// little over 4 KiB ended the whole turn with `invalid_tool_call`.
+#[test]
+fn a_create_call_with_five_kib_of_arguments_creates_the_file_and_the_turn_finishes() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let content = file_text(5 * 1024);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![create_call("c-1", "big.rs", &content)]),
+        text_reply("done"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("a 5 KiB create call is accepted and the turn finishes");
+    assert_eq!(report.reply, "done");
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("big.rs")).expect("created file"),
+        content
+    );
+}
+
+/// A create call whose argument JSON is exactly `bytes` long, with plain ASCII
+/// content that needs no JSON escape.
+fn create_call_of_argument_bytes(id: &str, path: &str, bytes: usize) -> Value {
+    let overhead = json!({"path": path, "content": ""}).to_string().len();
+    let content = file_text(bytes - overhead);
+    let value = create_call(id, path, &content);
+    let length = value["function"]["arguments"]
+        .as_str()
+        .expect("arguments")
+        .len();
+    assert_eq!(length, bytes, "the fixture builds exact-size arguments");
+    value
+}
+
+fn arguments_of(value: &Value) -> &str {
+    value["function"]["arguments"].as_str().expect("arguments")
+}
+
+fn the_refusals(fixture: &Fixture) -> Vec<Value> {
+    fixture
+        .actions()
+        .into_iter()
+        .filter(|record| record["type"] == "action_refused")
+        .map(|record| record["payload"].clone())
+        .collect()
+}
+
+#[test]
+fn a_thirty_kib_create_call_is_written_under_allow_and_recorded_with_its_full_arguments() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let value = create_call_of_argument_bytes("c-1", "src/big.rs", 30 * 1024);
+    let content = fixture_content(&value);
+    fs::create_dir(fixture.workspace.join("src")).expect("parent");
+    let mut model = ScriptedModel::new(vec![tool_reply(vec![value.clone()]), text_reply("done")]);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("a 30 KiB create call is accepted");
+
+    assert_eq!(report.tool_calls, 1);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("src").join("big.rs")).expect("created"),
+        content
+    );
+    fixture.close_journal();
+    let requested: Vec<Value> = fixture
+        .session_events()
+        .into_iter()
+        .filter(|event| event["type"] == "tool.requested")
+        .collect();
+    assert_eq!(requested.len(), 1);
+    assert_eq!(requested[0]["payload"]["arguments"], arguments_of(&value));
+    fixture.close_journal();
+    assert_eq!(fixture.tool_codes(), [None]);
+    let started = fixture
+        .actions()
+        .into_iter()
+        .find(|record| record["type"] == "action_started")
+        .expect("a start record");
+    assert_eq!(started["payload"]["tool"], "create_file");
+    assert_eq!(
+        started["payload"]["authorization"]["type"],
+        "standing_allow"
+    );
+}
+
+fn fixture_content(value: &Value) -> String {
+    let arguments: Value = serde_json::from_str(arguments_of(value)).expect("argument JSON");
+    arguments["content"].as_str().expect("content").to_owned()
+}
+
+#[test]
+fn a_thirty_kib_create_call_under_prompt_waits_for_an_approval_and_then_creates_the_file() {
+    let mut fixture = Fixture::new();
+    let value = create_call_of_argument_bytes("c-1", "big.rs", 30 * 1024);
+    let content = fixture_content(&value);
+
+    fixture.edit_turn(vec![value.clone()]);
+    assert!(!fixture.workspace.join("big.rs").exists());
+    let approvals = fixture.file_write_approvals();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].state, ApprovalState::Pending);
+    assert_eq!(
+        approvals[0].summary,
+        format!(
+            "create big.rs: {} bytes, sha256 {}",
+            content.len(),
+            &sha256(content.as_bytes())[..12]
+        )
+    );
+
+    let approval = fixture.approve_pending_edit();
+    let mut repeat = value;
+    repeat["id"] = json!("c-2");
+    fixture.edit_turn(vec![repeat]);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("big.rs")).expect("created"),
+        content
+    );
+    assert_eq!(fixture.approval_state(approval), ApprovalState::Consumed);
+}
+
+#[test]
+fn argument_limits_are_4_kib_for_most_tools_and_32_kib_for_the_three_file_text_tools() {
+    // Exactly at the limit parses; one byte more is too large.
+    let at_limit = create_call_of_argument_bytes("c-1", "a.rs", 32 * 1024);
+    assert!(ToolCall::parse(&at_limit).is_ok());
+    let over = create_call_of_argument_bytes("c-1", "a.rs", 32 * 1024 + 1);
+    assert_eq!(
+        ToolCall::parse(&over).expect_err("one byte over"),
+        ToolCallError::ArgumentsTooLarge
+    );
+
+    let edit = |bytes: usize| {
+        let overhead = json!({"path": "a.rs", "old_text": "x", "new_text": ""})
+            .to_string()
+            .len();
+        call(
+            "e-1",
+            "workspace_edit_file",
+            json!({"path": "a.rs", "old_text": "x", "new_text": file_text(bytes - overhead)}),
+        )
+    };
+    assert!(ToolCall::parse(&edit(32 * 1024)).is_ok());
+    assert_eq!(
+        ToolCall::parse(&edit(32 * 1024 + 1)).expect_err("edit over"),
+        ToolCallError::ArgumentsTooLarge
+    );
+    let multi = |bytes: usize| {
+        let overhead = json!({"path": "a.rs", "edits": [{"old_text": "x", "new_text": ""}]})
+            .to_string()
+            .len();
+        call(
+            "m-1",
+            "workspace_multi_edit_file",
+            json!({"path": "a.rs", "edits": [{"old_text": "x", "new_text": file_text(bytes - overhead)}]}),
+        )
+    };
+    assert!(ToolCall::parse(&multi(32 * 1024)).is_ok());
+    assert_eq!(
+        ToolCall::parse(&multi(32 * 1024 + 1)).expect_err("multi-edit over"),
+        ToolCallError::ArgumentsTooLarge
+    );
+
+    // Every other tool keeps 4 KiB.
+    let read = |bytes: usize| {
+        let overhead = json!({"path": ""}).to_string().len();
+        call(
+            "r-1",
+            "workspace_read_file",
+            json!({"path": "a".repeat(bytes - overhead)}),
+        )
+    };
+    assert!(ToolCall::parse(&read(4 * 1024)).is_ok());
+    assert_eq!(
+        ToolCall::parse(&read(4 * 1024 + 1)).expect_err("read over"),
+        ToolCallError::ArgumentsTooLarge
+    );
+    let rename = call(
+        "n-1",
+        "workspace_rename_file",
+        json!({"from": "a".repeat(2000), "to": "b".repeat(2200)}),
+    );
+    assert_eq!(
+        ToolCall::parse(&rename).expect_err("rename over"),
+        ToolCallError::ArgumentsTooLarge
+    );
+}
+
+#[test]
+fn a_forty_kib_create_call_is_answered_as_too_large_and_the_turn_continues_to_a_reply() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let value = create_call_of_argument_bytes("big-1", "big.rs", 40 * 1024);
+    let received = arguments_of(&value).to_owned();
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![value]),
+        text_reply("I will write it in parts."),
+    ]);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn continues after an oversized call");
+
+    assert_eq!(report.reply, "I will write it in parts.");
+    assert_eq!(report.tool_calls, 1);
+    assert_eq!(report.rounds, 2);
+    assert!(!fixture.workspace.join("big.rs").exists());
+    let message = fixture.last_tool_message();
+    assert_eq!(
+        u64::try_from(message.len()).expect("length"),
+        report.tool_bytes
+    );
+    assert!(message.contains("call big-1"), "{message}");
+    assert!(
+        message.contains("\"error\":\"arguments_too_large\""),
+        "{message}"
+    );
+    assert!(message.contains("\"limit_bytes\":32768"), "{message}");
+    assert!(
+        message.contains(&format!("\"received_bytes\":{}", received.len())),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "\"arguments_sha256\":\"{}\"",
+            sha256(received.as_bytes())
+        )),
+        "{message}"
+    );
+    assert!(
+        message.contains("create it with its first part"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("generated_function"),
+        "the result holds none of the rejected text"
+    );
+
+    // The session journal pairs the call with its result and keeps `{}`.
+    fixture.close_journal();
+    let events = fixture.session_events();
+    let requested = events
+        .iter()
+        .find(|event| event["type"] == "tool.requested")
+        .expect("a request event");
+    assert_eq!(requested["payload"]["call_id"], "big-1");
+    assert_eq!(requested["payload"]["tool"], "workspace_create_file");
+    assert_eq!(requested["payload"]["arguments"], "{}");
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "tool.completed")
+        .expect("a completion event");
+    assert_eq!(completed["payload"]["call_id"], "big-1");
+    assert_eq!(completed["payload"]["outcome"], "failed");
+    assert_eq!(completed["payload"]["code"], "arguments_too_large");
+    assert!(
+        !fs::read_to_string(&fixture.journal_path)
+            .expect("journal text")
+            .contains("generated_function"),
+        "the session journal holds none of the rejected text"
+    );
+
+    // The next request answers the exact call with the placeholder arguments.
+    assert_eq!(model.requests.len(), 2);
+    assert!(
+        model.requests[1].messages.iter().any(|message| answers(
+            message,
+            "big-1",
+            "workspace_create_file",
+            json!({})
+        )),
+        "the result is paired with its call"
+    );
+
+    // The refusal is audited with the digest of the received text.
+    let refusals = the_refusals(&fixture);
+    assert_eq!(refusals.len(), 1);
+    assert_eq!(refusals[0]["call_id"], "big-1");
+    assert_eq!(refusals[0]["tool"], "create_file");
+    assert_eq!(refusals[0]["reason"]["type"], "arguments_too_large");
+    assert_eq!(refusals[0]["request_sha256"], sha256(received.as_bytes()));
+    assert_eq!(refusals[0]["targets"], json!([]));
+    assert!(!fixture.audit_path().exists(), "nothing reached the broker");
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [Some("arguments_too_large".to_owned())]
+    );
+}
+
+/// Each of these has the supported shape and a usable identifier. None may
+/// end the turn, run anything, or store its received text.
+#[test]
+fn unknown_tools_malformed_arguments_and_bad_paths_are_answered_and_the_turn_continues() {
+    let hostile = "rm -rf / \u{202e}\n";
+    let cases: Vec<(Value, &str, &str, &str, &str)> = vec![
+        (
+            raw_call("bad-json", "workspace_read_file", "{\"path\":"),
+            "invalid_arguments",
+            "invalid_arguments",
+            "read_file",
+            "workspace_read_file",
+        ),
+        (
+            raw_call("empty", "workspace_read_file", ""),
+            "invalid_arguments",
+            "invalid_arguments",
+            "read_file",
+            "workspace_read_file",
+        ),
+        (
+            raw_call("array", "workspace_read_file", "[]"),
+            "invalid_arguments",
+            "invalid_arguments",
+            "read_file",
+            "workspace_read_file",
+        ),
+        (
+            raw_call(
+                "dup",
+                "workspace_create_file",
+                r#"{"path":"a.txt","content":"x","content":"y"}"#,
+            ),
+            "invalid_arguments",
+            "invalid_arguments",
+            "create_file",
+            "workspace_create_file",
+        ),
+        (
+            call(
+                "extra",
+                "workspace_list_directory",
+                json!({"path": "", "limit": 1}),
+            ),
+            "invalid_arguments",
+            "invalid_arguments",
+            "list_directory",
+            "workspace_list_directory",
+        ),
+        (
+            call("missing", "workspace_create_file", json!({"path": "a.txt"})),
+            "invalid_arguments",
+            "invalid_arguments",
+            "create_file",
+            "workspace_create_file",
+        ),
+        (
+            call(
+                "range",
+                "workspace_read_file",
+                json!({"path": "notes.txt", "max_bytes": 1_000_000}),
+            ),
+            "invalid_arguments",
+            "invalid_arguments",
+            "read_file",
+            "workspace_read_file",
+        ),
+        (
+            json!({"id": "object", "type": "function", "function": {
+                "name": "workspace_read_file", "arguments": {"path": "notes.txt"}}}),
+            "invalid_arguments",
+            "invalid_arguments",
+            "read_file",
+            "workspace_read_file",
+        ),
+        (
+            call(
+                "parent",
+                "workspace_read_file",
+                json!({"path": "../outside.txt"}),
+            ),
+            "invalid_path",
+            "invalid_path",
+            "read_file",
+            "workspace_read_file",
+        ),
+        (
+            call(
+                "empty-path",
+                "workspace_create_file",
+                json!({"path": "", "content": "x"}),
+            ),
+            "invalid_path",
+            "invalid_path",
+            "create_file",
+            "workspace_create_file",
+        ),
+        (
+            call("unknown", "workspace_move_file", json!({})),
+            "unsupported_tool",
+            "unsupported_tool",
+            "unrecognized",
+            "workspace_move_file",
+        ),
+        (
+            call("hostile", hostile, json!({"path": "notes.txt"})),
+            "unsupported_tool",
+            "unsupported_tool",
+            "unrecognized",
+            "unsupported_tool",
+        ),
+    ];
+
+    for (value, code, reason, tool, recorded_name) in cases {
+        let mut fixture = Fixture::new();
+        allow_all_file_tools(&mut fixture);
+        fs::write(fixture.workspace.join("notes.txt"), "notes").expect("write file");
+        let received = match &value["function"]["arguments"] {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        let call_id = value["id"].as_str().expect("call id").to_owned();
+        let mut model = ScriptedModel::new(vec![tool_reply(vec![value]), text_reply("recovered")]);
+
+        let report = fixture
+            .run(&mut model, TurnLimits::default())
+            .unwrap_or_else(|error| panic!("{call_id} must not end the turn: {error:?}"));
+
+        assert_eq!(report.reply, "recovered", "{call_id}");
+        assert_eq!(report.tool_calls, 1, "{call_id}");
+        let message = fixture.last_tool_message();
+        assert!(
+            message.contains(&format!("\"error\":\"{code}\"")),
+            "{call_id}: {message}"
+        );
+        assert!(
+            message.contains(&format!("\"received_bytes\":{}", received.len())),
+            "{call_id}: {message}"
+        );
+        assert!(
+            message.contains(&sha256(received.as_bytes())),
+            "{call_id}: {message}"
+        );
+        assert!(!message.contains(hostile), "{call_id}: {message}");
+        if code == "unsupported_tool" {
+            assert!(message.contains("workspace_read_file"), "{message}");
+        }
+        fixture.close_journal();
+        let events = fixture.session_events();
+        let requested = events
+            .iter()
+            .find(|event| event["type"] == "tool.requested")
+            .expect("a request event");
+        assert_eq!(requested["payload"]["call_id"], call_id.as_str());
+        assert_eq!(requested["payload"]["tool"], recorded_name, "{call_id}");
+        assert_eq!(requested["payload"]["arguments"], "{}", "{call_id}");
+        assert!(
+            model.requests[1].messages.iter().any(|message| answers(
+                message,
+                &call_id,
+                recorded_name,
+                json!({})
+            )),
+            "{call_id}: the result is paired with its call"
+        );
+        let refusals = the_refusals(&fixture);
+        assert_eq!(refusals.len(), 1, "{call_id}");
+        assert_eq!(refusals[0]["tool"], tool, "{call_id}");
+        assert_eq!(refusals[0]["reason"]["type"], reason, "{call_id}");
+        assert_eq!(refusals[0]["targets"], json!([]), "{call_id}");
+        assert_eq!(
+            refusals[0]["request_sha256"],
+            sha256(received.as_bytes()),
+            "{call_id}"
+        );
+        assert!(
+            !fixture.audit_path().exists(),
+            "{call_id}: nothing reached the broker"
+        );
+        assert!(
+            !fs::read_to_string(fixture.data.join(ACTION_JOURNAL_NAME))
+                .expect("action journal")
+                .contains("rm -rf"),
+            "{call_id}: the action journal holds no hostile text"
+        );
+    }
+}
+
+#[test]
+fn a_rejected_call_between_valid_calls_is_answered_in_order_and_the_valid_calls_still_run() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    fs::write(fixture.workspace.join("notes.txt"), "notes").expect("write file");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![
+            call("first", "workspace_read_file", json!({"path": "notes.txt"})),
+            create_call_of_argument_bytes("second", "big.rs", 40 * 1024),
+            call("third", "workspace_list_directory", json!({"path": ""})),
+        ]),
+        text_reply("done"),
+    ]);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn finishes");
+
+    assert_eq!(report.tool_calls, 3);
+    fixture.close_journal();
+    assert_eq!(
+        fixture.tool_codes(),
+        [None, Some("arguments_too_large".to_owned()), None]
+    );
+    let order: Vec<String> = fixture
+        .session_events()
+        .iter()
+        .filter(|event| event["type"] == "tool.requested")
+        .map(|event| event["payload"]["call_id"].as_str().expect("id").to_owned())
+        .collect();
+    assert_eq!(order, ["first", "second", "third"]);
+    let answered: Vec<&str> = model.requests[1]
+        .messages
+        .iter()
+        .filter_map(|message| match &message.role {
+            ModelRole::ToolResult(call) => Some(call.call_id()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered, ["first", "second", "third"]);
+    assert_eq!(the_refusals(&fixture).len(), 1);
+}
+
+#[test]
+fn rejected_calls_count_toward_the_tool_call_and_tool_byte_budgets() {
+    // The per-turn call budget: two rejected calls in separate rounds.
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call("a", "workspace_move_file", json!({}))]),
+        tool_reply(vec![call("b", "workspace_move_file", json!({}))]),
+        text_reply("unreached"),
+    ]);
+    let error = fixture
+        .run(
+            &mut model,
+            TurnLimits {
+                max_tool_calls: 1,
+                ..TurnLimits::default()
+            },
+        )
+        .expect_err("the second rejected call exceeds the budget");
+    assert!(
+        matches!(
+            error,
+            TurnError::Limit(TurnLimit::ToolCalls { limit: 1, .. })
+        ),
+        "{error:?}"
+    );
+
+    // The tool-byte budget: each answer reserves the largest possible result.
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call("a", "workspace_move_file", json!({}))]),
+        tool_reply(vec![call("b", "workspace_move_file", json!({}))]),
+        text_reply("unreached"),
+    ]);
+    let error = fixture
+        .run(
+            &mut model,
+            TurnLimits {
+                max_result_bytes: 1024,
+                max_total_tool_bytes: 1024,
+                ..TurnLimits::default()
+            },
+        )
+        .expect_err("the second rejected answer exceeds the byte budget");
+    assert!(matches!(error, TurnError::Limit(TurnLimit::TotalToolBytes)));
+}
+
+#[test]
+fn a_rejected_call_answer_fits_a_small_result_limit_by_keeping_only_its_code() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call("a", "workspace_move_file", json!({}))]),
+        text_reply("done"),
+    ]);
+    fixture
+        .run(
+            &mut model,
+            TurnLimits {
+                max_result_bytes: 200,
+                max_total_tool_bytes: 200,
+                ..TurnLimits::default()
+            },
+        )
+        .expect("the short form fits");
+    let message = fixture.last_tool_message();
+    assert!(message.len() <= 200, "{message}");
+    assert!(
+        message.contains("\"error\":\"unsupported_tool\""),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_rejected_call_and_a_valid_call_that_share_an_identifier_still_fail_the_turn() {
+    let mut fixture = Fixture::new();
+    let mut model = ScriptedModel::new(vec![tool_reply(vec![
+        call("same", "workspace_move_file", json!({})),
+        call("same", "workspace_list_directory", json!({"path": ""})),
+    ])]);
+    let error = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect_err("duplicate call IDs must fail");
+    assert!(matches!(
+        error,
+        TurnError::InvalidToolCall(ToolCallError::DuplicateCallId)
+    ));
+    assert!(!fixture.data.join(ACTION_JOURNAL_NAME).exists());
+    fixture.close_journal();
+    assert!(
+        !fixture
+            .session_events()
+            .iter()
+            .any(|event| event["type"] == "tool.requested"),
+        "nothing was recorded before the abort"
+    );
+}
+
+#[test]
+fn a_session_with_a_rejected_call_reopens_and_replays_the_pair_as_text_on_the_next_turn() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![create_call_of_argument_bytes(
+            "big-1",
+            "big.rs",
+            40 * 1024,
+        )]),
+        text_reply("first reply"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("first turn");
+
+    // A later turn replays the saved result as source-labelled text. The
+    // live-turn call pairing is never replayed (ADR-0097).
+    let mut next = ScriptedModel::new(vec![text_reply("second reply")]);
+    fixture
+        .run(&mut next, TurnLimits::default())
+        .expect("second turn");
+    let replayed: Vec<&ModelMessage> = next.requests[0]
+        .messages
+        .iter()
+        .filter(|message| message.content.contains("arguments_too_large"))
+        .collect();
+    assert_eq!(replayed.len(), 1, "the saved result is replayed once");
+    assert_eq!(replayed[0].role, ModelRole::User);
+    assert!(replayed[0].content.contains("call big-1"));
+    assert!(
+        next.requests[0]
+            .messages
+            .iter()
+            .all(|message| !matches!(message.role, ModelRole::ToolResult(_))),
+        "a replayed result has no call attached"
+    );
+
+    // The journal reopens and every request has exactly one completion and one
+    // tool message, in order.
+    fixture.close_journal();
+    let reopened = SessionJournal::open(&fixture.journal_path).expect("reopen the session");
+    assert_eq!(reopened.tool_requests().len(), 1);
+    assert_eq!(reopened.tool_requests()[0].call_id, "big-1");
+    assert_eq!(reopened.tool_requests()[0].arguments, "{}");
+    drop(reopened);
+    let kinds: Vec<(String, Option<String>)> = fixture
+        .session_events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("tool.requested" | "tool.completed")
+            ) || event["payload"]["call_id"] == "big-1"
+        })
+        .map(|event| {
+            (
+                event["type"].as_str().expect("type").to_owned(),
+                event["payload"]["call_id"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("tool.requested".to_owned(), Some("big-1".to_owned())),
+            ("tool.completed".to_owned(), Some("big-1".to_owned())),
+            ("message.recorded".to_owned(), Some("big-1".to_owned())),
+        ]
+    );
+}
+
+/// ADR-0099: ten large creates in one turn finish, and the request of the last
+/// round carries all ten answered calls that a plan-route request echoes.
+#[test]
+fn ten_thirty_kib_creates_in_one_turn_finish_and_every_file_exists() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let mut replies = Vec::new();
+    for index in 0..10 {
+        replies.push(tool_reply(vec![create_call_of_argument_bytes(
+            &format!("c-{index}"),
+            &format!("f{index}.rs"),
+            30 * 1024,
+        )]));
+    }
+    replies.push(text_reply("all written"));
+    let mut model = ScriptedModel::new(replies);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("ten large creates finish");
+
+    assert_eq!(report.reply, "all written");
+    assert_eq!(report.tool_calls, 10);
+    for index in 0..10 {
+        let text = fs::read_to_string(fixture.workspace.join(format!("f{index}.rs")))
+            .expect("created file");
+        assert!(text.len() > 29 * 1024);
+    }
+    let echoed: usize = model.requests[10]
+        .messages
+        .iter()
+        .filter_map(|message| match &message.role {
+            ModelRole::ToolResult(call) => Some(call.arguments().len()),
+            _ => None,
+        })
+        .sum();
+    assert!(echoed > 290 * 1024, "{echoed} bytes of echoed calls");
 }

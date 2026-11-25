@@ -443,12 +443,19 @@ lists every call with its authorisation.
 | --- | --- | --- |
 | `action_started` | Before the call acts; synced first | Session, workspace, call ID, tool, targets, request digest, and authorisation |
 | `action_finished` | After the call | Outcome (`succeeded`, `failed`, or `uncertain`), code, and the broker, checkpoint, or run record ID |
-| `action_refused` | Instead of a start | The reason |
+| `action_refused` | Instead of a start | The reason, and for a rejected call the SHA-256 of its received arguments |
 
 The authorisation is `standing_allow` with the settings revision that held
 `allow`, or `approval` with the consumed approval ID. A refusal reason is
 `access_denied`, `approval_required`, `approval_denied`, `approval_expired`,
-`invalid_request`, `policy_unavailable`, or `cancelled`. A target is a
+`invalid_request`, `policy_unavailable`, `cancelled`, `unsupported_tool`,
+`arguments_too_large`, `invalid_arguments`, or `invalid_path`. The last four
+record a call the runtime rejected and answered without running it
+(ADR-0099); they have no target, and a call to a tool the runtime does not
+have is recorded with the tool `unrecognized` and no name. A build before
+0.63.0 reads none of these four reasons or `unrecognized`: it reports the
+journal as corrupt, and each model tool call then ends the turn with
+`audit_unavailable` until the operator moves the file aside. A target is a
 validated workspace-relative path; a value that failed validation is stored
 only as its SHA-256 and byte length.
 
@@ -537,8 +544,9 @@ consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.6.0, which added `workspace_create_directory`;
-0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added
+The tool schema version is 0.7.0, which added the 32 KiB argument limit to the
+create, edit, and multi-edit descriptions (ADR-0099); 0.6.0 added
+`workspace_create_directory`; 0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added
 `workspace_multi_edit_file` and
 `workspace_create_file`, and 0.3.0 added `workspace_edit_file`. Each request
 manifest records the version it advertised, and sessions that recorded 0.2.0,

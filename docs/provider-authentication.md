@@ -703,8 +703,9 @@ unchanged and remain the default.
   Usage counters are present only when the server sends them.
 - **Stream rules.** The response is read as server-sent events. Any breach fails
   the request, and nothing is repaired. The status must be a success and the
-  content type `text/event-stream`. The existing 1 MiB response limit and the
-  thirty-second request deadline cover the whole stream. Lines end with LF or
+  content type `text/event-stream`. An 8 MiB limit (1 MiB before ADR-0099, because
+  a 32 KiB tool-call argument arrives in small pieces with a repeated
+  envelope) and the thirty-second request deadline cover the whole stream. Lines end with LF or
   CRLF. Empty lines, comment lines, and the `event`, `id`, and `retry` fields
   are ignored, and any other line that is not a `data` field is refused.
   `[DONE]` ends the stream, and nothing after it is read. A stream that ends
