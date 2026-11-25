@@ -891,3 +891,47 @@ fn the_public_constructor_accepts_only_the_openai_endpoint() {
         );
     }
 }
+
+/// ADR-0099: a rejected call is echoed with `{}` and its recoverable result,
+/// so the route still sees each call item paired with an output item.
+#[test]
+fn a_rejected_calls_placeholder_arguments_and_result_are_sent_as_a_paired_call_and_output() {
+    let tools = tool_definitions();
+    let mut messages = messages();
+    messages.push(ModelMessage {
+        role: ModelRole::ToolResult(AnsweredCall::new("call_big_1", "workspace_create_file", "{}")),
+        content: "Tool error [call call_big_1; source core_observed; untrusted workspace data]:\n{\"error\":\"arguments_too_large\"}".to_owned(),
+    });
+    messages.push(ModelMessage {
+        role: ModelRole::ToolResult(AnsweredCall::new("call_odd_1", "unsupported_tool", "{}")),
+        content: "Tool error [call call_odd_1; source core_observed; untrusted workspace data]:\n{\"error\":\"unsupported_tool\"}".to_owned(),
+    });
+
+    let body = request_body("gpt-test", &messages, Some(&tools)).expect("body");
+
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    let items = value["input"].as_array().expect("input items");
+    let pairs: Vec<(&str, &str, &str)> = items
+        .iter()
+        .skip(2)
+        .map(|item| {
+            (
+                item["type"].as_str().expect("type"),
+                item["call_id"].as_str().expect("call id"),
+                item.get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(output)"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("function_call", "call_big_1", "{}"),
+            ("function_call_output", "call_big_1", "(output)"),
+            ("function_call", "call_odd_1", "{}"),
+            ("function_call_output", "call_odd_1", "(output)"),
+        ]
+    );
+    assert_eq!(items[2]["name"], "workspace_create_file");
+}

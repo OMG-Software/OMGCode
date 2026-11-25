@@ -1,6 +1,6 @@
 # 0043: Gate the model file edit tool with approvals and checkpointed apply
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR-0099](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)
 - Date: 2026-11-16
 
 ## Context

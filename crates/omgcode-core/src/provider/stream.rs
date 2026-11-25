@@ -7,7 +7,7 @@
 //! from a payload that was itself refused (ADR-0049).
 
 use super::{
-    MAX_RESPONSE_BYTES, MAX_RESPONSE_TOOL_CALLS, ProviderError, Usage, parse_usage, reject_actions,
+    MAX_RESPONSE_TOOL_CALLS, MAX_STREAM_BYTES, ProviderError, Usage, parse_usage, reject_actions,
 };
 use crate::storage::parse_strict_json;
 use serde_json::{Map, Value};
@@ -51,7 +51,7 @@ pub(super) enum Flow {
 /// the same rules apply however the transport splits the bytes. It performs no
 /// I/O and never waits. `on_text` receives each non-empty piece of assistant
 /// text, in order, after the payload that carried it passed validation. The
-/// whole stream is bounded by the response byte limit. After an error the
+/// whole stream is bounded by [`MAX_STREAM_BYTES`]. After an error the
 /// parser must be discarded.
 pub(super) struct StreamParser {
     state: StreamState,
@@ -79,7 +79,7 @@ impl StreamParser {
     /// # Errors
     ///
     /// A line or payload that breaks the stream rules fails as in ADR-0049,
-    /// and more than the response byte limit is `ResponseTooLarge`.
+    /// and more than [`MAX_STREAM_BYTES`] is `ResponseTooLarge`.
     pub(super) fn push(
         &mut self,
         bytes: &[u8],
@@ -94,7 +94,7 @@ impl StreamParser {
             self.total = self
                 .total
                 .checked_add(1)
-                .filter(|total| *total <= MAX_RESPONSE_BYTES)
+                .filter(|total| *total <= MAX_STREAM_BYTES)
                 .ok_or(ProviderError::ResponseTooLarge)?;
             if byte != b'\n' {
                 self.line.push(byte);
@@ -642,9 +642,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_over_one_mebibyte_is_refused() {
+    fn a_stream_over_eight_mebibytes_is_refused() {
         let mut input = String::new();
-        while input.len() <= 1024 * 1024 {
+        while input.len() as u64 <= MAX_STREAM_BYTES {
             input.push_str(": padding padding padding padding padding padding padding\n");
         }
         let (result, _) = run(StreamMode::Text, input.as_bytes());
@@ -749,6 +749,37 @@ mod tests {
         assert!(crate::turn::ToolCall::parse(call).is_ok());
         assert_eq!(outcome.content, "");
         assert_eq!(outcome.finish_reason, "tool_calls");
+    }
+
+    /// ADR-0099: a 32 KiB write-tool argument, streamed in small pieces with a
+    /// repeated envelope, is several mebibytes of events.
+    #[test]
+    fn a_thirty_two_kib_argument_streamed_in_small_pieces_is_assembled() {
+        // Given a create call whose argument JSON arrives three bytes at a time.
+        let content = "x".repeat(32 * 1024 - 40);
+        let arguments = serde_json::json!({"path": "big.rs", "content": content}).to_string();
+        let mut parts = vec![call_payload(
+            r#"{"index":0,"id":"call_1","type":"function","function":{"name":"workspace_create_file","arguments":""}}"#,
+            None,
+        )];
+        for piece in arguments.as_bytes().chunks(3) {
+            let piece = std::str::from_utf8(piece).expect("ASCII");
+            let entry = serde_json::json!({"index": 0, "function": {"arguments": piece}});
+            parts.push(call_payload(&entry.to_string(), None));
+        }
+        let total: usize = parts.iter().map(String::len).sum();
+        assert!(
+            total > 1024 * 1024,
+            "the fixture exceeds the buffered limit"
+        );
+
+        // When the stream finishes with tool_calls.
+        let outcome = tool_run(&parts, "tool_calls").expect("valid tool stream");
+
+        // Then the whole argument text is one call that parses.
+        let call = outcome.tool_calls.first().expect("one call");
+        assert_eq!(call["function"]["arguments"], arguments.as_str());
+        assert!(crate::turn::ToolCall::parse(call).is_ok());
     }
 
     #[test]
@@ -953,7 +984,7 @@ mod tests {
         ]
         .concat();
         let mut over_limit = delta("start");
-        while over_limit.len() <= 1024 * 1024 {
+        while over_limit.len() as u64 <= MAX_STREAM_BYTES {
             over_limit.push_str(": padding padding padding padding padding\n");
         }
         vec![
@@ -1051,7 +1082,7 @@ mod tests {
     fn nothing_is_counted_or_read_after_done_in_any_chunking() {
         // Given a complete stream followed by more than the byte limit of text.
         let mut input = text_stream(&["a"]).into_bytes();
-        let padding = vec![b'x'; 2 * 1024 * 1024];
+        let padding = vec![b'x'; usize::try_from(MAX_STREAM_BYTES).expect("limit fits") + 1];
         input.extend_from_slice(&padding);
 
         // When it is pushed whole and in large pieces.

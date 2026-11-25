@@ -84,9 +84,24 @@ manifest metadata. A version-1 journal cannot contain any of these additions.
 
 | Event type | Payload in v2 | State rule |
 | --- | --- | --- |
-| `tool.requested` | `request_id`, `call_id`, `tool`, `arguments` | Requires an active turn. The call identifier is at most 128 bytes and unique within the turn. `arguments` is a strict JSON object of at most 4 KiB. It is untrusted model input, not a grant or execution result. |
+| `tool.requested` | `request_id`, `call_id`, `tool`, `arguments` | Requires an active turn. The call identifier is at most 128 bytes and unique within the turn. `arguments` is a strict JSON object of at most 32 KiB; the runtime accepts that much only for the create, edit, and multi-edit tools and 4 KiB for every other tool. It is untrusted model input, not a grant or execution result. A call the runtime rejected (ADR-0099) records `{}`. |
 | `tool.completed` | `request_id`, `call_id`, `outcome`, optional `code`, `output_bytes`, `output_sha256` | Requires a matching pending request. `outcome` is `succeeded`, `failed`, or `denied`; failed or denied results require a bounded code. The digest and size cover the exact source-labelled tool message. |
 | `message.recorded` role `tool` | `role`, `source` (`core_tool`), `text`, `call_id` | Requires a completed, unmessaged call. Text is the exact source-labelled untrusted content shown to the model, at most 16 KiB. A completed turn requires one tool message per completed call; a failed turn may leave an intent without a result. |
+
+**Rejected calls (ADR-0099).** A call the runtime answers without running
+(`unsupported_tool`, `arguments_too_large`, `invalid_arguments`, or
+`invalid_path`) is still one `tool.requested`, one `tool.completed` with
+outcome `failed` and that code, and one `tool` message, in that order, so
+every call stays paired with its result and replay is unchanged. The request
+records `{}` as its arguments, never the received text. A call to a tool the
+runtime does not have records its name only when the name is at most 64 bytes of
+letters, digits, `_`, `.`, and `-`, and otherwise `unsupported_tool`. The tool
+message holds the received argument text's byte length and SHA-256, and for
+`arguments_too_large` the tool's limit. No schema version changed. A build
+before 0.63.0 refuses to open a journal that holds a `tool.requested` event
+over 4 KiB of arguments or any event over 64 KiB, as an invalid journal;
+it does not repair it. A journal whose calls were all within 4 KiB opens in
+both.
 
 The version-2 `request.manifest` payload adds optional `tool_schema_version` and
 `tools` fields. They are present together only when the request advertised
@@ -140,8 +155,11 @@ plus approval-gated tools offered only under their live settings:
 `workspace_create_file` (ADR-0054), `workspace_rename_file` and
 `workspace_delete_file` (ADR-0055), `workspace_create_directory` (ADR-0079),
 and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function
-calls, rejects unknown tools, malformed or duplicate arguments, absolute or parent
-paths, and duplicate call identifiers before dispatch. For each operation it
+calls. A call with a usable, unique identifier whose tool is unknown, whose
+arguments are too large or malformed, or whose path is absolute or has a parent
+segment is answered with a recoverable result and the turn continues
+(ADR-0099). A response element with no supported shape or identifier, and a
+duplicate call identifier, end the turn before dispatch. For each operation it
 opens the control store, obtains a fresh session binding, releases the settings
 lock before the next model request, and never reconstructs authority from the
 journal. The runtime allows eight calls per response and 1 to 256 calls per
@@ -206,8 +224,8 @@ in this prototype. `chat --journal` does not resume an active turn; it requires
 an explicit interrupt first.
 
 Ordinary journals are limited to 8 MiB and 10,000 events. Each event is at most
-64 KiB, a message or tool message is at most 16 KiB, tool arguments are at most
-4 KiB, and a title is 1 to 256 UTF-8 bytes. Both decoded and encoded limits
+80 KiB, a message or tool message is at most 16 KiB, tool arguments are at most
+32 KiB, and a title is 1 to 256 UTF-8 bytes. Both decoded and encoded limits
 apply. Active turns reserve one terminal event and
 1 KiB for it. CLI chat preflights the encoded user message and manifest, plus
 capacity for the reply and termination, before recording the turn marker.

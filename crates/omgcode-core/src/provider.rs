@@ -32,6 +32,11 @@ use thiserror::Error;
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+/// The whole of one streamed reply may hold at most this many bytes, Chat
+/// Completions or Responses. Every token arrives in its own event with a
+/// repeated envelope, so a 32 KiB tool-call argument (ADR-0099) streamed in
+/// small pieces is several mebibytes; the buffered limit is too small.
+const MAX_STREAM_BYTES: u64 = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The deadline of one plan-route Responses request (ADR-0093). The route
 /// always streams, and reasoning models routinely take longer than the

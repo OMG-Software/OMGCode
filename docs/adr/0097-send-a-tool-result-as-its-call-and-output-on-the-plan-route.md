@@ -1,6 +1,6 @@
 # 0097: Send a tool result as its call and output on the plan route
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR-0099](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)
 - Date: 2026-11-24
 
 ## Context

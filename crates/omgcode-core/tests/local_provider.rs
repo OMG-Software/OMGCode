@@ -906,9 +906,9 @@ fn text_before_a_malformed_payload_stays_delivered_and_the_call_fails() {
 }
 
 #[test]
-fn a_streamed_reply_over_one_mebibyte_is_refused() {
+fn a_streamed_reply_over_eight_mebibytes_is_refused() {
     let mut body = text_event("start");
-    while body.len() <= 1024 * 1024 {
+    while body.len() <= 8 * 1024 * 1024 {
         body.push_str(": padding padding padding padding padding padding\n");
     }
     let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);

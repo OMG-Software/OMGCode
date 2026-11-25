@@ -100,6 +100,9 @@ pub enum ActionTool {
     RunCommand,
     /// A network action. Reserved: no model network tool exists yet.
     Network,
+    /// The model named a tool this runtime does not have (ADR-0099). The
+    /// name is hostile text and is not stored; the record holds no target.
+    Unrecognized,
 }
 
 /// The observed result of an executed action.
@@ -171,6 +174,19 @@ pub enum RefusalReason {
     PolicyUnavailable,
     /// The turn was cancelled before the action started.
     Cancelled,
+    /// The call named a tool this runtime does not have (ADR-0099). The
+    /// tool is recorded as [`ActionTool::Unrecognized`].
+    UnsupportedTool,
+    /// The call's argument JSON exceeded its tool's limit (ADR-0099). The
+    /// request digest is that of the received argument text.
+    ArgumentsTooLarge,
+    /// The call's arguments were not strict JSON of the tool's shape, or
+    /// held a value out of range (ADR-0099). The request digest is that of
+    /// the received argument text.
+    InvalidArguments,
+    /// The call named an absolute, empty, or parent-relative path
+    /// (ADR-0099). The request digest is that of the received argument text.
+    InvalidPath,
 }
 
 /// A target as stored: a validated path, or a digest of a value that failed

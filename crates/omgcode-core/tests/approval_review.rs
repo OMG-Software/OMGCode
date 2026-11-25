@@ -1465,3 +1465,54 @@ fn hostile_rename_and_delete_paths_are_escaped() {
     }
     assert_eq!(field(&request, "File").value, "a\\u{202e}b.txt");
 }
+
+/// Plain ASCII text of exactly `bytes` bytes that JSON does not escape.
+fn plain_text(bytes: usize) -> String {
+    let word = "let value = compute(42); ";
+    let mut text = word.repeat(bytes / word.len() + 1);
+    text.truncate(bytes);
+    text
+}
+
+/// ADR-0099: a create call whose argument JSON is about 30 KiB records an
+/// approval, and review reproduces its digest from the journaled request.
+#[test]
+fn a_thirty_kib_create_approval_is_reviewed_as_an_exact_match() {
+    let mut fixture = Fixture::new();
+    let content = plain_text(30 * 1024 - 64);
+    let value = create_call("create-1", "big.rs", &content);
+    assert!(
+        value["function"]["arguments"]
+            .as_str()
+            .expect("arguments")
+            .len()
+            > 30 * 1000
+    );
+    fixture.turn(vec![value]);
+    let approval = fixture.pending(ApprovalOperation::FileWrite);
+    let recorded = fixture.recorded();
+
+    let request = exact(fixture.review(&approval, &recorded));
+
+    assert_eq!(request.tool, CREATE_TOOL);
+    assert_eq!(field(&request, "File").value, "big.rs");
+    assert_eq!(field(&request, "SHA-256").value, sha256(content.as_bytes()));
+    assert_eq!(field(&request, "Content").value, content);
+    assert!(!fixture.workspace.join("big.rs").exists());
+}
+
+/// ADR-0099: a rejected call is journaled with `{}`, so it records no approval
+/// and can never be the request a later approval is matched to.
+#[test]
+fn an_oversized_create_call_records_no_approval_and_is_not_a_review_candidate() {
+    let mut fixture = Fixture::new();
+    let content = plain_text(40 * 1024);
+    fixture.turn(vec![create_call("create-1", "big.rs", &content)]);
+    let recorded = fixture.recorded();
+
+    assert!(fixture.approvals().is_empty());
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].tool, CREATE_TOOL);
+    assert_eq!(recorded[0].arguments, "{}");
+    assert!(!fixture.workspace.join("big.rs").exists());
+}

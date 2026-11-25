@@ -443,12 +443,19 @@ lists every call with its authorisation.
 | --- | --- | --- |
 | `action_started` | Before the call acts; synced first | Session, workspace, call ID, tool, targets, request digest, and authorisation |
 | `action_finished` | After the call | Outcome (`succeeded`, `failed`, or `uncertain`), code, and the broker, checkpoint, or run record ID |
-| `action_refused` | Instead of a start | The reason |
+| `action_refused` | Instead of a start | The reason, and for a rejected call the SHA-256 of its received arguments |
 
 The authorisation is `standing_allow` with the settings revision that held
 `allow`, or `approval` with the consumed approval ID. A refusal reason is
 `access_denied`, `approval_required`, `approval_denied`, `approval_expired`,
-`invalid_request`, `policy_unavailable`, or `cancelled`. A target is a
+`invalid_request`, `policy_unavailable`, `cancelled`, `unsupported_tool`,
+`arguments_too_large`, `invalid_arguments`, or `invalid_path`. The last four
+record a call the runtime rejected and answered without running it
+(ADR-0099); they have no target, and a call to a tool the runtime does not
+have is recorded with the tool `unrecognized` and no name. A build before
+0.63.0 reads none of these four reasons or `unrecognized`: it reports the
+journal as corrupt, and each model tool call then ends the turn with
+`audit_unavailable` until the operator moves the file aside. A target is a
 validated workspace-relative path; a value that failed validation is stored
 only as its SHA-256 and byte length.
 

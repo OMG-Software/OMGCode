@@ -643,3 +643,115 @@ fn given_a_version_2_journal_when_a_skill_manifest_is_recorded_or_replayed_then_
         .record_manifest(request_id, manifest)
         .expect("schema v3 accepts a skill manifest");
 }
+
+/// Argument JSON of exactly `bytes` bytes whose second JSON escaping inside the
+/// `tool.requested` event is as large as the strict-JSON grammar allows.
+fn worst_case_arguments(shape: &str, bytes: usize) -> String {
+    let arguments = match shape {
+        // Each backslash pair in the text becomes four bytes in the event.
+        "backslashes" => format!("{{\"a\":\"{}\"}}", "\\\\".repeat((bytes - 8) / 2)),
+        // Each escaped quote in the text becomes four bytes in the event.
+        "quotes" => format!("{{\"a\":\"{}\"}}", "\\\"".repeat((bytes - 8) / 2)),
+        // Whitespace between tokens is the only raw control character JSON
+        // allows; each newline becomes two bytes in the event.
+        "newlines" => format!("{{{}}}", "\n".repeat(bytes - 2)),
+        // A control character inside a string must be a six-byte escape in
+        // the text, which the event escapes again as seven bytes.
+        "control_escapes" => format!(
+            "{{\"a\":\"{}\"}}",
+            format!("{}u0001", '\\').repeat((bytes - 8) / 6)
+        ),
+        other => panic!("unknown shape {other}"),
+    };
+    assert!(arguments.len() <= bytes && arguments.len() + 6 > bytes);
+    arguments
+}
+
+#[test]
+fn the_worst_case_tool_requested_event_with_32_kib_of_arguments_fits_the_event_bound() {
+    let temporary = TempDir::new().expect("private temporary directory");
+    let data = temporary.path().join("application-data");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let mut journal = SessionJournal::create(&data, &workspace, "Bound").expect("create session");
+    let request_id = journal.start_turn().expect("start turn");
+    let shapes = ["backslashes", "quotes", "newlines", "control_escapes"];
+    for (index, shape) in shapes.into_iter().enumerate() {
+        // The longest identifier is all backslashes, which the event escapes.
+        let call_id = format!("{}{index}", "\\".repeat(127));
+        let tool = "w".repeat(64);
+        let arguments = worst_case_arguments(shape, 32 * 1024);
+        journal
+            .record_tool_request(request_id, &call_id, &tool, &arguments)
+            .unwrap_or_else(|error| panic!("{shape} arguments are recorded: {error:?}"));
+        let text = "Tool error [call x]:\n{}";
+        journal
+            .record_tool_result(
+                request_id,
+                &call_id,
+                ToolOutcome::Failed,
+                Some("arguments_too_large"),
+                u64::try_from(text.len()).expect("text length"),
+                &digest(text),
+            )
+            .expect("record result");
+        journal
+            .record_tool_message(&call_id, text)
+            .expect("record tool message");
+    }
+    journal
+        .record_message(MessageRole::Assistant, "done")
+        .expect("assistant message");
+    journal.complete_turn(request_id).expect("complete turn");
+    let path = journal.path().to_path_buf();
+    drop(journal);
+
+    let sizes: Vec<(&str, usize)> = fs::read(&path)
+        .expect("journal bytes")
+        .split(|byte| *byte == b'\n')
+        .filter(|line| contains(line, b"\"tool.requested\""))
+        .zip(shapes)
+        .map(|(line, shape)| (shape, line.len() + 1))
+        .collect();
+    assert_eq!(sizes.len(), 4);
+    for (shape, size) in &sizes {
+        assert!(*size <= 80 * 1024, "{shape} event is {size} bytes");
+    }
+    let largest = sizes.iter().map(|(_, size)| *size).max().expect("sizes");
+    assert!(
+        largest > 64 * 1024,
+        "the worst case ({largest} bytes) is why the old 64 KiB bound is not enough"
+    );
+    // The journal, with its large events, reads back.
+    let reopened = SessionJournal::open(&path).expect("reopen with 32 KiB requests");
+    assert_eq!(reopened.tool_requests().len(), 4);
+    assert!(
+        reopened
+            .tool_requests()
+            .iter()
+            .all(|request| request.arguments.len() > 32 * 1024 - 8)
+    );
+}
+
+#[test]
+fn an_intent_record_refuses_arguments_over_32_kib() {
+    let temporary = TempDir::new().expect("private temporary directory");
+    let data = temporary.path().join("application-data");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let mut journal = SessionJournal::create(&data, &workspace, "Bound").expect("create session");
+    let request_id = journal.start_turn().expect("start turn");
+    let arguments = worst_case_arguments("newlines", 32 * 1024 + 8);
+
+    let error = journal
+        .record_tool_request(request_id, "call-1", "workspace_create_file", &arguments)
+        .expect_err("33 KiB arguments are refused");
+
+    assert!(matches!(error, SessionError::InvalidValue(_)), "{error:?}");
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}

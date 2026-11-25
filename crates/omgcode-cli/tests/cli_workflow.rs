@@ -778,7 +778,7 @@ fn oversized_encoded_manifest_is_rejected_before_starting_a_turn() {
                 "131072",
                 "--instructions",
             ])
-            .arg("\u{0001}".repeat(12_000))
+            .arg("\u{0001}".repeat(14_000))
             .arg("request"),
     )
     .expect("CLI");
@@ -796,7 +796,7 @@ fn oversized_encoded_reply_fails_the_turn_without_leaving_it_active() {
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
     let path = create_journal(&temporary.path().join("data"), &workspace, "reply");
-    let server = MockServer::start(completion_response(&"\u{0001}".repeat(12_000)));
+    let server = MockServer::start(completion_response(&"\u{0001}".repeat(14_000)));
     let output = run_resumed_chat(&path, &server.endpoint, "request");
     server.finish();
     assert!(!output.status.success());
