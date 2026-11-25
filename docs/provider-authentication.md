@@ -8,9 +8,11 @@ does not meet this requirement.
 
 Subscription support is a product requirement, not a claim of implementation or
 provider approval. The prototype has a ChatGPT sign-in and a Responses adapter
-for the plan ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)), tested only
-against loopback mock servers: no real sign-in or plan-backed request was
-made, so plan usage is not verified and the requirement stays open. It has no
+for the plan ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)), tested
+against loopback mock servers. One real sign-in, model list, text turn, and
+two read and list tool turns were observed on 2026-11-24 (ADR-0096,
+ADR-0097). Other paths were not observed, so plan usage is not verified and
+the requirement stays open. It has no
 Claude sign-in and no account management. Any unresolved provider approval or technical restriction
 remains a release blocker for that feature; do not silently replace it with API
 billing or defer it.
@@ -18,7 +20,7 @@ billing or defer it.
 | Connection profile | Required authentication and usage path | Current design readiness |
 | --- | --- | --- |
 | OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0092); API key only; no request was verified with a real key |
-| ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Prototype ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)): browser sign-in with PKCE, state, nonce, and ID-token checks, tokens in protected OS storage, and chat through the Responses API, tested only against loopback mock servers; no real sign-in or plan-backed request was made, so plan usage is not verified and the requirement stays open |
+| ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Prototype ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)): browser sign-in with PKCE, state, nonce, and ID-token checks, tokens in protected OS storage, and chat through the Responses API, tested against loopback mock servers; one real sign-in, model list, text turn, and two read and list tool turns were observed (ADR-0096, ADR-0097), but other plan usage is not verified and the requirement stays open |
 | Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0092), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
 | Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
@@ -546,10 +548,26 @@ documented route for local and open-source apps
   turn timeout, so raise the turn timeout (`chat --turn-timeout-seconds`, or
   **Tool-enabled turn timeout (seconds)** in the `settings` window) for multi-step tool turns on a
   plan; OMGCode does not raise it for you. The ID-token key set is read
-  within 1 MiB.
-- **Not verified.** No test contacts OpenAI. No real sign-in, refresh,
-  revocation, model list, or Responses request was made, and a completed
-  sign-in is not evidence that a plan, model, or account may be used. The
+  within 1 MiB. The plan route streams with no `Content-Type` header, which
+  its head check accepts; a header naming another media type is refused
+  (ADR-0096). In a request with tools, each tool result of the live turn is
+  sent as a `function_call` item that repeats the model's own call in the
+  `omgcode` namespace, then a `function_call_output` item with the same
+  source-labelled, untrusted text. A request without tools, a replayed
+  earlier result, and every Chat Completions request still carry it as
+  user text (ADR-0097).
+- **Observed.** On 2026-11-24 one account signed in from the `settings`
+  window, the model box listed the plan's models, and `chat
+  --provider-profile` completed a text turn with `gpt-6.1-sol` after the
+  ADR-0096 fix. A tool turn then did not finish: the model repeated the
+  same call until the turn limit, because tool results reached it as user
+  text without its own call. After the ADR-0097 change, a non-streamed turn
+  with one directory listing and a streamed turn with a file read and a
+  listing in one response finished with correct answers.
+- **Not verified.** No test contacts OpenAI. No refresh, revocation, plan
+  failure code, compaction request, write or command tool call, or later
+  turn that replays tool results was observed, and a completed sign-in
+  is not evidence that a plan, model, or account may be used. The
   [acceptance evidence](#acceptance-evidence) below has not been gathered, so
   the ChatGPT subscription requirement remains open.
 

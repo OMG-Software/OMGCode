@@ -36,7 +36,11 @@ skill/tool/memory selections, or an account profile.
 
 The core turn/tool runtime records the exact tool schema version and tool names
 in a schema-version-2 request manifest. Its read/list results are appended as
-source-labelled user-level tool messages and are never system messages. Edit,
+source-labelled user-level tool messages and are never system messages. Chat
+Completions sends each as `user` text. Within a turn, the ChatGPT plan route
+sends each as a `function_call_output` item after the model's own validated
+call, with the same labelled text
+([ADR-0097](adr/0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md)). Edit,
 multi-edit, create, rename, delete, and command results follow the same rule
 and remain untrusted. Chat runs this runtime when the workspace enables
 `model_tools`; the edit, multi-edit, create, rename, and delete tools also need

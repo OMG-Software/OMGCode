@@ -1,6 +1,8 @@
 # 0093: Sign in with ChatGPT and use the plan through the Responses API
 
 - Status: Accepted, amended by [ADR-0094](0094-open-the-sign-in-page-through-the-shell-url-association.md)
+  [ADR-0096](0096-accept-a-plan-route-stream-without-a-content-type.md),
+  and [ADR-0097](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md)
 - Date: 2026-11-24
 
 ## Context

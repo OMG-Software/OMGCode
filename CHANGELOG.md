@@ -228,6 +228,28 @@ Changes are recorded here before a release version is assigned.
   still runs `/usr/bin/xdg-open`. The real browser launch was not exercised
   by an automated test.
 
+- Version 0.62.0: a ChatGPT connection no longer fails every turn with
+  `model_error` (ADR-0096). OpenAI's plan route streams its Responses reply with no
+  `Content-Type` header, and the shared streaming head check refused anything
+  but `text/event-stream`, so the reply was rejected as an invalid response
+  before it was read. The plan route now accepts an absent header and still
+  refuses one that names another media type; the strict event reader is
+  unchanged, and Chat Completions streams still require the header. A real
+  sign-in, model list, and text turn with `gpt-6.1-sol` were observed.
+  Refresh, sign-out, and plan failure codes were not observed.
+
+- Version 0.62.0: a tool turn on a ChatGPT connection no longer repeats the
+  same call until the turn limit (ADR-0097). The model received each tool result as user
+  text without its own call. A tool result in the live turn now carries the
+  exact call the core parsed, recorded, and dispatched. A plan-route request
+  with tools sends it as a `function_call` item in the `omgcode` namespace
+  followed by a `function_call_output` item holding the same source-labelled,
+  untrusted text. The plan route's context estimate counts the repeated call.
+  Chat Completions requests, replay, and compaction are unchanged, so a
+  replayed earlier result is still user text. A non-streamed one-call turn
+  and a streamed two-call turn with `gpt-6.1-sol` were observed to finish
+  with correct answers; write and command tools on the plan were not.
+
 - On Windows, a settings command that waits for a withdrawn run, such as
   `workspace profile-remove`, no longer fails with "run journal I/O failed"
   (`os error 32`) when the run ends at that moment. The run's supervisor

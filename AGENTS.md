@@ -96,9 +96,17 @@ profile with authentication `subscription` signs in with ChatGPT through
 OpenAI's documented browser flow (PKCE, state, nonce, ID-token and plan-scope
 checks) from the trusted CLI or the `settings` window, keeps rotating tokens
 in protected OS storage under a per-session lock, and chats through the
-Responses API; no real sign-in or plan-backed request was made, so plan usage
-is unverified
+Responses API
 ([ADR-0093](docs/adr/0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+One real sign-in, model list, and text turn were observed; the plan route
+streams with no `Content-Type`, which its head check accepts
+([ADR-0096](docs/adr/0096-accept-a-plan-route-stream-without-a-content-type.md)).
+In a request with tools, the plan route sends each tool result of the live
+turn as the model's own call and a `function_call_output` item; Chat
+Completions, replay, and compaction still send results as user text. Two
+read and list tool turns were observed to finish, and other plan usage is
+unverified
+([ADR-0097](docs/adr/0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md)).
 No native provider API, Claude subscription sign-in, or other login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes

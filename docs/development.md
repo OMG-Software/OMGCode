@@ -462,7 +462,10 @@ that could not be deleted is listed in `orphaned_credential_ids`.
 `provider-credential-remove` refuses a subscription profile, and
 `provider-profile-remove` refuses one that is signed in. See
 [provider authentication](provider-authentication.md#chatgpt-sign-in-adr-0093).
-No real sign-in was made with these commands.
+No real sign-in was made with these commands. On 2026-11-24 `chat
+--provider-profile` completed a real text turn for a profile signed in from
+the desktop (ADR-0096). A non-streamed one-call and a streamed two-call
+read and list tool turn then finished (ADR-0097).
 
 ## Trusted runs
 
@@ -694,7 +697,8 @@ that would exceed the cap is refused before any of its calls run. The `tool_limi
 error reports the configured cap, calls used, and calls requested. Start a new
 turn or raise the limit to continue. Each read/list call is
 rechecked against live settings and stays inside the workspace. Results return
-to the model as source-labelled user messages. The configured LM Studio token is removed from
+to the model as source-labelled user messages; on the ChatGPT plan route, a
+result in the live turn goes as a call and output item pair instead (ADR-0097). The configured LM Studio token is removed from
 each result before it is recorded or sent. A tool call that contains the token
 is refused with a `provider` error before it is recorded, because editing its
 arguments could change the requested path. Add

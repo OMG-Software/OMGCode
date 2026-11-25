@@ -66,7 +66,7 @@ pub fn compact_journal(
             let redacted: Vec<ConversationMessage> = history
                 .iter()
                 .map(|message| ConversationMessage {
-                    role: message.role,
+                    role: message.role.clone(),
                     content: redact_known_secret(&message.content, token),
                 })
                 .collect();

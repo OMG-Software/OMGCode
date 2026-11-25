@@ -913,7 +913,12 @@ impl LocalModelClient {
                 }
                 let tool_bytes =
                     serde_json::to_vec(tools).map_err(|_| ProviderError::RequestTooLarge)?;
-                u64::try_from(tool_bytes.len()).map_err(|_| ProviderError::RequestTooLarge)?
+                let tool_bytes =
+                    u64::try_from(tool_bytes.len()).map_err(|_| ProviderError::RequestTooLarge)?;
+                // Each tool result also repeats its call (ADR-0097).
+                tool_bytes
+                    .checked_add(responses::answered_call_bytes(messages)?)
+                    .ok_or(ProviderError::RequestTooLarge)?
             }
         };
         self.check_messages(messages, extra_bytes)?;
@@ -943,8 +948,10 @@ impl LocalModelClient {
     /// Post one plan-route request and feed its body to the stream reader.
     ///
     /// A non-success status reads at most 64 KiB of the body for a documented
-    /// error code and reports nothing else from it. Cancellation and the
-    /// deadline work as for [`Self::stream_exchange`].
+    /// error code and reports nothing else from it. A success head may omit
+    /// `Content-Type`, as the plan route does, but may not name another media
+    /// type ([`check_responses_head`]). Cancellation and the deadline work as
+    /// for [`Self::stream_exchange`].
     async fn responses_exchange(
         &self,
         body: Vec<u8>,
@@ -968,7 +975,7 @@ impl LocalModelClient {
                 ProviderError::ResponseFailed,
             ));
         }
-        check_streaming_head(status, response.headers())?;
+        check_responses_head(response.headers())?;
         let mut parser = responses::ResponsesParser::new(mode);
         loop {
             if cancel.is_cancelled() {
@@ -1340,16 +1347,42 @@ fn check_streaming_head(status: StatusCode, headers: &HeaderMap) -> Result<(), P
     if !status.is_success() {
         return Err(ProviderError::HttpStatus(status.as_u16()));
     }
-    let is_stream = headers
+    if headers
         .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"));
-    if is_stream {
+        .is_some_and(names_event_stream)
+    {
         Ok(())
     } else {
         Err(ProviderError::MalformedResponse)
     }
+}
+
+/// The plan route's head check (ADR-0096). Its caller has already turned a
+/// non-success status into an error.
+///
+/// OpenAI's plan route answers a streamed Responses request with no
+/// `Content-Type` header at all (observed on 2026-11-24), so an absent header
+/// is accepted. A header that names any other media type is still refused, as
+/// [`check_streaming_head`] refuses it. Accepting the absence repairs nothing:
+/// the body must still pass the strict event reader, which refuses any line
+/// outside the server-sent-event fields and any ending but
+/// `response.completed`.
+fn check_responses_head(headers: &HeaderMap) -> Result<(), ProviderError> {
+    match headers.get(reqwest::header::CONTENT_TYPE) {
+        None => Ok(()),
+        Some(value) if names_event_stream(value) => Ok(()),
+        Some(_) => Err(ProviderError::MalformedResponse),
+    }
+}
+
+/// Whether a `Content-Type` value names `text/event-stream`. Parameters such
+/// as `charset` are allowed and the media type is compared case-insensitively.
+fn names_event_stream(value: &HeaderValue) -> bool {
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
 }
 
 /// Parse one tool-capable reply strictly, leaving each call unvalidated.

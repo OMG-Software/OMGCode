@@ -305,7 +305,7 @@ data upstream; check the server's configuration before sending sensitive text.
 | Connection profile | Current state |
 | --- | --- |
 | OpenAI API | Prototype: Chat Completions at `https://api.openai.com/v1` with a stored API key (ADR-0092); not tested with a real key |
-| ChatGPT subscription | Prototype: Sign in with ChatGPT through OpenAI's documented browser flow and plan usage through the Responses API (ADR-0093); tested only against mock servers, no real sign-in or plan-backed request was made |
+| ChatGPT subscription | Prototype: Sign in with ChatGPT through OpenAI's documented browser flow and plan usage through the Responses API (ADR-0093); tested against mock servers, and one real sign-in, model list, and text turn were observed (ADR-0096), and two read and list tool turns finished after tool results were sent as call and output items (ADR-0097) |
 | Anthropic API | Prototype: Anthropic's OpenAI SDK compatibility layer with a stored API key (ADR-0092), documented by Anthropic for testing; the native Messages API is planned; not tested with a real key |
 | Claude subscription | Required; provider approval and route remain unresolved |
 | Ollama Local | Prototype: Ollama's OpenAI-compatible `/v1` API over literal loopback HTTP (ADR-0064) |

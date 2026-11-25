@@ -35,8 +35,8 @@ use crate::policy::{
     Access, DecisionReason, PermissionSet, SessionBinding, WorkspaceId, WriteTool,
 };
 use crate::prompt::{
-    self, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole, ModelMessage,
-    PromptError, SkillPrompt,
+    self, AnsweredCall, BASE_PROMPT, BASE_PROMPT_VERSION, ConversationMessage, ConversationRole,
+    ModelMessage, PromptError, SkillPrompt,
 };
 use crate::replacement::{CheckpointError, RecordedArtifact};
 use crate::session::{
@@ -1746,8 +1746,15 @@ impl<'a> TurnRuntime<'a> {
                 {
                     return Err(self.abort(request_id, "persistence", error.into()));
                 }
+                // The result carries the call it answers, so a provider that
+                // pairs calls with outputs can send both (ADR-0097). Only the
+                // call parsed, recorded, and dispatched above is attached.
                 history.push(ConversationMessage {
-                    role: ConversationRole::User,
+                    role: ConversationRole::ToolResult(AnsweredCall::new(
+                        &call.call_id,
+                        call.name.as_str(),
+                        call.arguments_json(),
+                    )),
                     content: execution.text.clone(),
                 });
                 tool_bytes = match tool_bytes.checked_add(text_bytes) {

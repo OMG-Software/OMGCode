@@ -153,7 +153,9 @@ impl ToolModel for RedactingModel<'_, '_> {
             .messages
             .iter()
             .map(|message| ModelMessage {
-                role: message.role,
+                // A tool result's call needs no redaction: a call that held
+                // the token was refused below before it could be dispatched.
+                role: message.role.clone(),
                 content: redact_known_secret(&message.content, self.token),
             })
             .collect();
