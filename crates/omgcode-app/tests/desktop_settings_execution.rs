@@ -18,7 +18,7 @@ use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
     Confirmation, ContainerGrantRequest, DesktopConfig, DesktopError, DesktopService,
     FolderPurpose, PackageProfileAddRequest, ProfileRemoveRequest, SettingsOverview,
-    SettingsPrompt, SettingsRevisionRequest, ToolchainProfileAddRequest,
+    SettingsPrompt, SettingsRevisionRequest, ToolchainProfileAddRequest, WebHostChangeRequest,
 };
 use omgcode_core::control::{ControlStore, PackageProfileDeclaration};
 use serde_json::json;
@@ -651,6 +651,247 @@ fn a_request_carries_no_path_and_refuses_unknown_fields() {
         "path": "C:\\x",
     }));
     assert!(grant_path.is_err());
+}
+
+fn host_change(revision: u64, workspace: Uuid, pattern: &str) -> WebHostChangeRequest {
+    wire(json!({ "revision": revision, "workspace_id": workspace, "pattern": pattern }))
+}
+
+fn hosts_of(overview: &SettingsOverview) -> Vec<&str> {
+    overview.workspaces[0]
+        .web_fetch_hosts
+        .iter()
+        .map(String::as_str)
+        .collect()
+}
+
+/// Add `pattern` through the service with a confirmed dialog.
+fn host_added(fixture: &Fixture, workspace: Uuid, pattern: &str) -> SettingsOverview {
+    let prompt = ScriptedPrompt::new().answer(true);
+    service(&fixture.data)
+        .settings_add_web_fetch_host(
+            host_change(current_revision(&fixture.data), workspace, pattern),
+            &prompt,
+        )
+        .expect("host added")
+}
+
+#[test]
+fn a_web_host_is_confirmed_with_the_canonical_pattern_and_the_folder() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    let before = current_revision(&fixture.data);
+    let prompt = ScriptedPrompt::new().answer(true);
+
+    let overview = service(&fixture.data)
+        .settings_add_web_fetch_host(host_change(before, workspace, "Docs.Example.COM."), &prompt)
+        .expect("host added");
+
+    assert_eq!(overview.revision, before + 1);
+    assert_eq!(hosts_of(&overview), ["docs.example.com"]);
+    let shown = prompt.confirmations();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].title, "Allow a web host");
+    assert!(shown[0].message.contains("docs.example.com"));
+    assert!(shown[0].message.contains("project"), "{}", shown[0].message);
+    assert!(!shown[0].message.contains("Docs.Example"));
+    assert!(!shown[0].message.contains("every subdomain"));
+    // The recorded list is what the store holds.
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("store");
+    assert_eq!(store.revision(), before + 1);
+}
+
+#[test]
+fn a_wildcard_host_confirmation_says_it_covers_every_subdomain() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    let prompt = ScriptedPrompt::new().answer(true);
+    let overview = service(&fixture.data)
+        .settings_add_web_fetch_host(
+            host_change(current_revision(&fixture.data), workspace, "*.example.com"),
+            &prompt,
+        )
+        .expect("wildcard added");
+    assert_eq!(hosts_of(&overview), ["*.example.com"]);
+    let shown = prompt.confirmations();
+    assert!(
+        shown[0].message.contains(
+            "*.example.com covers every subdomain of example.com, at any depth, but not example.com itself."
+        ),
+        "{}",
+        shown[0].message
+    );
+}
+
+#[test]
+fn removing_a_web_host_is_confirmed_and_applied() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    host_added(&fixture, workspace, "a.example.com");
+    let overview = host_added(&fixture, workspace, "b.example.com");
+    assert_eq!(hosts_of(&overview), ["a.example.com", "b.example.com"]);
+    let before = current_revision(&fixture.data);
+
+    let prompt = ScriptedPrompt::new().answer(true);
+    let overview = service(&fixture.data)
+        .settings_remove_web_fetch_host(host_change(before, workspace, "A.example.com"), &prompt)
+        .expect("host removed");
+
+    assert_eq!(hosts_of(&overview), ["b.example.com"]);
+    assert_eq!(overview.revision, before + 1);
+    let shown = prompt.confirmations();
+    assert_eq!(shown[0].title, "Stop allowing a web host");
+    assert!(shown[0].message.contains("a.example.com"));
+    assert!(shown[0].message.contains("project"), "{}", shown[0].message);
+}
+
+#[test]
+fn a_declined_web_host_change_records_nothing() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    host_added(&fixture, workspace, "keep.example.com");
+    let before = current_revision(&fixture.data);
+
+    let declined_add = ScriptedPrompt::new().answer(false);
+    let error = error_of(service(&fixture.data).settings_add_web_fetch_host(
+        host_change(before, workspace, "new.example.com"),
+        &declined_add,
+    ));
+    assert_eq!(error.code(), "cancelled");
+    let declined_remove = ScriptedPrompt::new().answer(false);
+    let error = error_of(service(&fixture.data).settings_remove_web_fetch_host(
+        host_change(before, workspace, "keep.example.com"),
+        &declined_remove,
+    ));
+    assert_eq!(error.code(), "cancelled");
+
+    assert_eq!(current_revision(&fixture.data), before);
+    let overview = service(&fixture.data)
+        .settings_overview()
+        .expect("overview");
+    assert_eq!(hosts_of(&overview), ["keep.example.com"]);
+}
+
+#[test]
+fn a_bad_web_host_request_is_refused_with_its_code_before_any_dialog() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    host_added(&fixture, workspace, "listed.example.com");
+    let before = current_revision(&fixture.data);
+    let long = "a".repeat(300);
+    let cases: [(&str, &str); 9] = [
+        ("", "web_host_empty"),
+        ("localhost", "web_host_reserved"),
+        ("10.0.0.1", "web_host_ip_literal"),
+        ("single", "web_host_too_few_labels"),
+        ("bad_host.example.com", "web_host_bad_character"),
+        ("-bad.example.com", "web_host_bad_label"),
+        ("caf\u{e9}.example.com", "web_host_not_ascii"),
+        (&long, "web_host_too_long"),
+        ("*.*.example.com", "web_host_bad_character"),
+    ];
+    for (pattern, code) in cases {
+        let silent = ScriptedPrompt::new();
+        let error = error_of(
+            service(&fixture.data)
+                .settings_add_web_fetch_host(host_change(before, workspace, pattern), &silent),
+        );
+        assert_eq!(error.code(), code, "add {pattern:?}: {error}");
+        assert!(silent.asked().is_empty(), "add {pattern:?}");
+        let error = error_of(
+            service(&fixture.data)
+                .settings_remove_web_fetch_host(host_change(before, workspace, pattern), &silent),
+        );
+        assert_eq!(error.code(), code, "remove {pattern:?}: {error}");
+        assert!(silent.asked().is_empty(), "remove {pattern:?}");
+    }
+
+    // A duplicate, an unlisted removal, and an unknown workspace.
+    let silent = ScriptedPrompt::new();
+    let error = error_of(service(&fixture.data).settings_add_web_fetch_host(
+        host_change(before, workspace, "LISTED.example.com"),
+        &silent,
+    ));
+    assert_eq!(error.code(), "web_host_duplicate");
+    let error = error_of(service(&fixture.data).settings_remove_web_fetch_host(
+        host_change(before, workspace, "other.example.com"),
+        &silent,
+    ));
+    assert_eq!(error.code(), "web_host_not_listed");
+    let error = error_of(service(&fixture.data).settings_add_web_fetch_host(
+        host_change(before, Uuid::new_v4(), "new.example.com"),
+        &silent,
+    ));
+    assert_eq!(error.code(), "unknown_workspace");
+    assert!(silent.asked().is_empty());
+    assert_eq!(current_revision(&fixture.data), before);
+}
+
+#[test]
+fn a_thirty_third_web_host_is_refused_before_any_dialog() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    for index in 0..32 {
+        host_added(&fixture, workspace, &format!("h{index}.example.com"));
+    }
+    let before = current_revision(&fixture.data);
+    let silent = ScriptedPrompt::new();
+    let error =
+        error_of(service(&fixture.data).settings_add_web_fetch_host(
+            host_change(before, workspace, "extra.example.com"),
+            &silent,
+        ));
+    assert_eq!(error.code(), "web_host_too_many");
+    assert!(silent.asked().is_empty());
+    assert_eq!(current_revision(&fixture.data), before);
+}
+
+#[test]
+fn a_stale_web_host_revision_is_refused_before_and_after_the_dialog() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    let before = current_revision(&fixture.data);
+
+    let silent = ScriptedPrompt::new();
+    let error =
+        error_of(service(&fixture.data).settings_add_web_fetch_host(
+            host_change(before + 1, workspace, "a.example.com"),
+            &silent,
+        ));
+    assert_eq!(error.code(), "stale_revision");
+    assert!(silent.asked().is_empty());
+
+    // A change made while the confirmation is open is not overwritten.
+    let data = fixture.data.clone();
+    let prompt = ScriptedPrompt::new().answer(true).meanwhile(move || {
+        let mut control = ControlStore::open(&data).expect("control");
+        let id = control.workspaces().next().expect("a workspace").id();
+        control
+            .add_web_fetch_host(id, "other.example.com", control.revision())
+            .expect("concurrent host");
+    });
+    let error = error_of(
+        service(&fixture.data)
+            .settings_add_web_fetch_host(host_change(before, workspace, "a.example.com"), &prompt),
+    );
+    assert_eq!(error.code(), "stale_revision");
+    let overview = service(&fixture.data)
+        .settings_overview()
+        .expect("overview");
+    assert_eq!(hosts_of(&overview), ["other.example.com"]);
+}
+
+#[test]
+fn a_web_host_request_refuses_unknown_fields() {
+    let with_path: Result<WebHostChangeRequest, _> = serde_json::from_value(json!({
+        "revision": 1,
+        "workspace_id": "6f1c1f0e-8f42-4c5b-9a55-0d2a3c4b5d6e",
+        "pattern": "a.example.com",
+        "folder": "C:\\x",
+    }));
+    assert!(with_path.is_err());
 }
 
 #[cfg(not(windows))]

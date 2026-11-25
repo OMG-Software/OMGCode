@@ -589,6 +589,7 @@ describe("mock backend", () => {
       execute: "prompt",
       task_network: "deny",
       host_services: "deny",
+      web_fetch: "deny",
       write_tools: {
         edit: "allow",
         multi_edit: "allow",
@@ -626,6 +627,62 @@ describe("mock backend", () => {
       })) as SettingsOverview;
       expect(cleared.workspaces[0]?.package_cache_root).toBeNull();
       expect(cleared.revision).toBe(start.revision + 4);
+    });
+
+    it("keeps a web host allowlist like core: canonical, unique, validated, revisioned", async () => {
+      const { invoke } = createMockBackend();
+      const hosts = async (): Promise<[number, string[]]> => {
+        const overview = (await invoke("settings_overview", {})) as SettingsOverview;
+        const found = overview.workspaces.find((w) => w.workspace_id === WORKSPACE);
+        return [overview.revision, found?.web_fetch_hosts ?? []];
+      };
+      const [start, before] = await hosts();
+      const added = (await invoke("settings_add_web_fetch_host", {
+        workspace_id: WORKSPACE,
+        revision: start,
+        pattern: "New.Example.COM.",
+      })) as SettingsOverview;
+      expect(added.revision).toBe(start + 1);
+      expect(added.workspaces[0]?.web_fetch_hosts).toEqual([...before, "new.example.com"]);
+      const refused: Array<[string, string]> = [
+        ["", "web_host_empty"],
+        ["localhost", "web_host_reserved"],
+        ["10.0.0.1", "web_host_ip_literal"],
+        ["single", "web_host_too_few_labels"],
+        ["bad_host.example.com", "web_host_bad_character"],
+        ["-a.example.com", "web_host_bad_label"],
+        ["café.example.com", "web_host_not_ascii"],
+        ["NEW.example.com", "web_host_duplicate"],
+      ];
+      for (const [pattern, code] of refused) {
+        await expect(
+          invoke("settings_add_web_fetch_host", {
+            workspace_id: WORKSPACE,
+            revision: added.revision,
+            pattern,
+          }),
+        ).rejects.toMatchObject({ code });
+      }
+      await expect(
+        invoke("settings_remove_web_fetch_host", {
+          workspace_id: WORKSPACE,
+          revision: added.revision,
+          pattern: "absent.example.com",
+        }),
+      ).rejects.toMatchObject({ code: "web_host_not_listed" });
+      await expect(
+        invoke("settings_remove_web_fetch_host", {
+          workspace_id: WORKSPACE,
+          revision: added.revision - 1,
+          pattern: "new.example.com",
+        }),
+      ).rejects.toMatchObject({ code: "stale_revision" });
+      const removed = (await invoke("settings_remove_web_fetch_host", {
+        workspace_id: WORKSPACE,
+        revision: added.revision,
+        pattern: "NEW.example.com",
+      })) as SettingsOverview;
+      expect(removed.workspaces[0]?.web_fetch_hosts).toEqual(before);
     });
 
     it("unregisters a workspace like core: revisioned, and the sessions stay", async () => {

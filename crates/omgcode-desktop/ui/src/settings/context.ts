@@ -70,6 +70,10 @@ export interface Actions {
   /** Records a package-network profile, which is configuration only. */
   addPackageProfile(name: string, origins: string[]): Change;
   removePackageProfile(name: string): Change;
+  /** Adds one host pattern to a workspace's `web_fetch` allowlist; Rust confirms natively. */
+  addWebFetchHost(workspaceId: string, pattern: string): Change;
+  /** Removes one host pattern from a workspace's allowlist; Rust confirms natively. */
+  removeWebFetchHost(workspaceId: string, pattern: string): Change;
   /** Windows only. Rust opens the folder dialog. */
   grantContainerFolder(workspaceId: string, access: ContainerAccess): Change;
   revokeContainerGrant(grantId: string): Change;
@@ -109,6 +113,8 @@ export interface ViewState {
   chatDraft: ChatDraft | null;
   /** Typed but unsaved workspace instructions, by workspace identifier. */
   instructionDrafts: Map<string, string>;
+  /** Typed but unadded web host patterns, by workspace identifier. */
+  webHostDrafts: Map<string, string>;
   /** The Advanced section's three add forms, kept until an add succeeds (ADR-0088). */
   executionForms: ExecutionForms;
 }

@@ -122,10 +122,15 @@ fn for_workspace(workspace_id: uuid::Uuid, value: u64) -> WorkspaceRevisionReque
     wire(json!({ "workspace_id": workspace_id, "revision": value }))
 }
 
-fn permissions(
+fn permissions(workspace_id: uuid::Uuid, value: u64, flags: [bool; 4]) -> PermissionsChangeRequest {
+    permissions_with_web_fetch(workspace_id, value, flags, "deny")
+}
+
+fn permissions_with_web_fetch(
     workspace_id: uuid::Uuid,
     value: u64,
     [model_tools, read, write, execute]: [bool; 4],
+    web_fetch: &str,
 ) -> PermissionsChangeRequest {
     wire(json!({
         "workspace_id": workspace_id,
@@ -137,6 +142,7 @@ fn permissions(
             "execute": if execute { "prompt" } else { "deny" },
             "task_network": "deny",
             "host_services": "deny",
+            "web_fetch": web_fetch,
             "write_tools": {
                 "edit": "allow",
                 "multi_edit": "allow",
@@ -447,10 +453,10 @@ fn turning_preferences_off_applies_without_a_dialog() {
     );
 }
 
-/// The wire flags carry no `web_fetch` yet, so a desktop permission change
-/// keeps the stored state and the workspace's host allowlist untouched.
+/// `web_fetch` is an explicit wire flag: a desktop permission change sets it,
+/// and the workspace's host allowlist is untouched by it.
 #[test]
-fn a_desktop_permission_change_keeps_the_stored_web_fetch_state_and_hosts() {
+fn a_desktop_permission_change_sets_web_fetch_and_keeps_the_hosts() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace(
         "project",
@@ -473,26 +479,134 @@ fn a_desktop_permission_change_keeps_the_stored_web_fetch_state_and_hosts() {
     let start = current_revision(&fixture.data);
     let prompt = ScriptedPrompt::new();
 
+    // Allow to deny narrows: no dialog, and the flag is the one sent.
     let overview = service(&fixture.data)
         .settings_set_permissions(
-            permissions(workspace.id, start, [false, false, false, false]),
+            permissions_with_web_fetch(workspace.id, start, [false, false, false, false], "deny"),
             &prompt,
         )
         .expect("narrowed");
 
     assert!(prompt.asked().is_empty());
     assert!(!overview.workspaces[0].model_tools);
+    assert_eq!(overview.workspaces[0].web_fetch, Access::Deny);
+    assert_eq!(overview.workspaces[0].web_fetch_hosts, ["docs.example.com"]);
     let store = ControlStore::open_existing(&fixture.data)
         .expect("open")
         .expect("store exists");
     let registered = store
         .registered_workspace(workspace.id)
         .expect("registered");
-    assert_eq!(registered.permissions().web_fetch, Access::Allow);
-    assert!(!registered.permissions().model_tools);
+    assert_eq!(registered.permissions().web_fetch, Access::Deny);
     let hosts = store.web_fetch_hosts(registered.id());
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].as_str(), "docs.example.com");
+}
+
+#[test]
+fn raising_web_fetch_is_confirmed_and_names_what_it_permits() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let service = service(&fixture.data);
+    let flags = [true, true, false, false];
+
+    // Deny to prompt, then prompt to allow, each raises and is confirmed.
+    for (wanted, was) in [("prompt", "deny"), ("allow", "prompt")] {
+        let start = current_revision(&fixture.data);
+        let declined = ScriptedPrompt::new().answer(false);
+        assert_eq!(
+            code(service.settings_set_permissions(
+                permissions_with_web_fetch(workspace.id, start, flags, wanted),
+                &declined,
+            )),
+            "cancelled"
+        );
+        assert_eq!(current_revision(&fixture.data), start);
+
+        let confirmed = ScriptedPrompt::new().answer(true);
+        let overview = service
+            .settings_set_permissions(
+                permissions_with_web_fetch(workspace.id, start, flags, wanted),
+                &confirmed,
+            )
+            .expect("web fetch raised");
+        assert_eq!(overview.revision, start + 1);
+        let shown = confirmed.confirmations();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title, "Allow more access");
+        assert!(
+            shown[0]
+                .message
+                .starts_with("Widen web fetch for this workspace?"),
+            "{}",
+            shown[0].message
+        );
+        assert!(
+            shown[0].message.contains(&format!(
+                "- web fetch: {was} to {wanted}. the model may fetch public HTTPS pages; under prompt each fetch asks you, and under allow pages on this workspace's allowed hosts are fetched without asking while other hosts still ask."
+            )),
+            "{}",
+            shown[0].message
+        );
+    }
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("store exists");
+    assert_eq!(
+        store
+            .registered_workspace(workspace.id)
+            .expect("registered")
+            .permissions()
+            .web_fetch,
+        Access::Allow
+    );
+}
+
+#[test]
+fn raising_web_fetch_straight_from_deny_to_allow_is_confirmed() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", read_tools());
+    let start = current_revision(&fixture.data);
+    let confirmed = ScriptedPrompt::new().answer(true);
+
+    service(&fixture.data)
+        .settings_set_permissions(
+            permissions_with_web_fetch(workspace.id, start, [true, true, false, false], "allow"),
+            &confirmed,
+        )
+        .expect("deny to allow");
+
+    let shown = confirmed.confirmations();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        shown[0].message.contains("- web fetch: deny to allow."),
+        "{}",
+        shown[0].message
+    );
+}
+
+#[test]
+fn narrowing_web_fetch_needs_no_dialog() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace(
+        "project",
+        PermissionSet {
+            web_fetch: Access::Allow,
+            ..read_tools()
+        },
+    );
+    let start = current_revision(&fixture.data);
+    let prompt = ScriptedPrompt::new();
+
+    let overview = service(&fixture.data)
+        .settings_set_permissions(
+            permissions_with_web_fetch(workspace.id, start, [true, true, false, false], "prompt"),
+            &prompt,
+        )
+        .expect("narrowed");
+
+    assert!(prompt.asked().is_empty());
+    assert_eq!(overview.workspaces[0].web_fetch, Access::Prompt);
 }
 
 /// A run journal that cannot be read never keeps access in place: the

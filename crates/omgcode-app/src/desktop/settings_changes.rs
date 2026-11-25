@@ -153,7 +153,7 @@ struct Preference {
 }
 
 /// Every preference in display order, including the per-tool write limits.
-fn preferences_of(set: &PermissionSet) -> [Preference; 12] {
+fn preferences_of(set: &PermissionSet) -> [Preference; 13] {
     let tool = |name, effect, tool| Preference {
         name,
         effect,
@@ -193,6 +193,11 @@ fn preferences_of(set: &PermissionSet) -> [Preference; 12] {
             name: "host services",
             effect: "a trusted run may select host-service socket access (Linux)",
             state: set.host_services,
+        },
+        Preference {
+            name: "web fetch",
+            effect: "the model may fetch public HTTPS pages; under prompt each fetch asks you, and under allow pages on this workspace's allowed hosts are fetched without asking while other hosts still ask",
+            state: set.web_fetch,
         },
         tool(
             "edit tool",
@@ -236,10 +241,8 @@ const fn widened_meaning(state: Access) -> &'static str {
     }
 }
 
-/// The preference set a window asked for. `web_fetch` is not in the wire
-/// flags yet, so the stored state carries over unchanged; the revision check
-/// in the change keeps it from being applied over a newer one.
-const fn permission_set(flags: PermissionFlags, stored: &PermissionSet) -> PermissionSet {
+/// The preference set a window asked for.
+const fn permission_set(flags: PermissionFlags) -> PermissionSet {
     PermissionSet {
         read: flags.read,
         write: flags.write,
@@ -247,7 +250,7 @@ const fn permission_set(flags: PermissionFlags, stored: &PermissionSet) -> Permi
         task_network: flags.task_network,
         model_tools: flags.model_tools,
         host_services: flags.host_services,
-        web_fetch: stored.web_fetch,
+        web_fetch: flags.web_fetch,
         write_tools: flags.write_tools,
     }
 }
@@ -283,7 +286,9 @@ fn raise_confirmation(
             now.effect
         ));
         let meaning = widened_meaning(now.state);
-        if now.name != "model tools" && !meaning.is_empty() {
+        // `model tools` has no per-call meaning, and `web fetch` states its own
+        // (allowlisted hosts skip approval; other hosts still ask).
+        if now.name != "model tools" && now.name != "web fetch" && !meaning.is_empty() {
             message.push_str(&format!("; {meaning}"));
         }
         message.push('.');
@@ -669,7 +674,7 @@ impl DesktopService {
                 .registered_workspace(request.workspace_id)
                 .ok_or_else(DesktopError::unknown_workspace)?;
             let folder = folder_of_directory(workspace.directory_path());
-            let wanted = permission_set(request.permissions, &workspace.permissions());
+            let wanted = permission_set(request.permissions);
             (
                 workspace.id(),
                 wanted,

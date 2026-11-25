@@ -6,16 +6,30 @@ import type {
   WorkspaceSettingsView,
   WriteToolAccess,
 } from "../src/ipc/types";
-import { type SettingsApp, startSettings } from "../src/settings/app";
+import { NOTHING_CHANGED, type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
 import { NO_ENDPOINT_NOTE, UNSUPPORTED_AUTH_NOTE } from "../src/settings/model_section";
-import { ALL_TOOLS_LABEL, PACKAGE_CACHE_HELP } from "../src/settings/workspaces_section";
 import {
+  ADD_HOST_LABEL,
+  HOST_INPUT_LABEL,
+  HOSTS_FULL,
+  WEB_HOSTS_EMPTY,
+  WEB_HOSTS_HELP,
+  webHostMessage,
+} from "../src/settings/web_hosts";
+import {
+  ALL_TOOLS_LABEL,
+  PACKAGE_CACHE_HELP,
+  PERMISSION_LABELS,
+} from "../src/settings/workspaces_section";
+import {
+  buttonByLabel,
   buttonByText,
   chatDefaultsView,
   type FakeIpc,
   installFakeIpc,
   mountRoot,
+  rejection,
   settle,
 } from "./helpers";
 
@@ -40,6 +54,8 @@ function workspace(id: string, folder: string, extra: Partial<WorkspaceSettingsV
     execute: "deny",
     task_network: "deny",
     host_services: "deny",
+    web_fetch: "deny",
+    web_fetch_hosts: [],
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
     instructions: "",
@@ -434,6 +450,7 @@ describe("permission controls", () => {
         execute: "deny",
         task_network: "prompt",
         host_services: "deny",
+        web_fetch: "deny",
         write_tools: ALL_TOOLS,
       },
     });
@@ -554,6 +571,7 @@ describe("permission controls", () => {
         execute: "deny",
         task_network: "deny",
         host_services: "deny",
+        web_fetch: "deny",
         write_tools: {
           edit: "deny",
           multi_edit: "deny",
@@ -1110,5 +1128,194 @@ describe("chat defaults and custom instructions (ADR-0080)", () => {
     expect(root.querySelector(".workspace-instructions")?.textContent).toContain(
       "could not be read",
     );
+  });
+});
+
+describe("web fetch", () => {
+  const pattern = (value: string) => ({ workspace_id: A, revision: 3, pattern: value });
+
+  function hostInput(): HTMLInputElement {
+    const found = root.querySelector<HTMLInputElement>(`input[aria-label="${HOST_INPUT_LABEL}"]`);
+    if (found === null) {
+      throw new Error("No host field");
+    }
+    return found;
+  }
+
+  function type(value: string): void {
+    const input = hostInput();
+    input.value = value;
+    input.dispatchEvent(new Event("input"));
+  }
+
+  function listed(): string[] {
+    return Array.from(root.querySelectorAll(".web-host .root")).map((n) => n.textContent ?? "");
+  }
+
+  it("shows a Web fetch selector beside the other preferences, with its help text", async () => {
+    await start(() =>
+      overview({ workspaces: [workspace(A, "/home/dev/a", { web_fetch: "prompt" })] }),
+    );
+    expect(PERMISSION_LABELS.map(([, label]) => label)).toContain("Web fetch");
+    expect(root.querySelector('[role=radiogroup][aria-label="Web fetch"]')).not.toBeNull();
+    expect(root.textContent).toContain(
+      "Fetch public HTTPS pages for the model. Under Allow, hosts on the list below skip approval; other hosts still ask.",
+    );
+    expect(root.textContent).not.toContain("No model tool uses it");
+    const checked = root.querySelector(
+      '[role=radiogroup][aria-label="Web fetch"] [aria-checked="true"]',
+    );
+    expect(checked?.getAttribute("data-value")).toBe("prompt");
+  });
+
+  it("sends web_fetch with the whole preference set", async () => {
+    await start(() => overview(), { settings_set_permissions: () => overview({ revision: 4 }) });
+    choose("Web fetch", "allow");
+    await settle();
+    expect(ipc.callsTo("settings_set_permissions")[0]?.args).toEqual({
+      workspace_id: A,
+      revision: 3,
+      permissions: {
+        model_tools: true,
+        read: "allow",
+        write: "prompt",
+        execute: "deny",
+        task_network: "deny",
+        host_services: "deny",
+        web_fetch: "allow",
+        write_tools: ALL_TOOLS,
+      },
+    });
+  });
+
+  it("lists each host with a remove button named for it and shows the limit", async () => {
+    await start(() =>
+      overview({
+        workspaces: [
+          workspace(A, "/home/dev/a", { web_fetch_hosts: ["docs.example.com", "*.example.org"] }),
+        ],
+      }),
+    );
+    expect(listed()).toEqual(["docs.example.com", "*.example.org"]);
+    expect(root.querySelector(".web-host-count")?.textContent).toBe("2 of 32");
+    const remove = buttonByLabel(root, "Remove *.example.org");
+    expect(remove.title).toBe("Remove *.example.org");
+    expect(root.textContent).toContain(WEB_HOSTS_HELP);
+  });
+
+  it("says every fetch asks while no host is listed", async () => {
+    await start(() => overview());
+    expect(listed()).toEqual([]);
+    expect(root.textContent).toContain(WEB_HOSTS_EMPTY);
+    expect(root.querySelector(".web-host-count")?.textContent).toBe("0 of 32");
+  });
+
+  it("adds the typed pattern with the revision, then clears the field", async () => {
+    await start(() => overview(), {
+      settings_add_web_fetch_host: () =>
+        overview({
+          revision: 4,
+          workspaces: [workspace(A, "/home/dev/a", { web_fetch_hosts: ["docs.example.com"] })],
+        }),
+    });
+    type("  Docs.Example.com ");
+    buttonByText(root, ADD_HOST_LABEL).click();
+    await settle();
+    expect(ipc.callsTo("settings_add_web_fetch_host")[0]?.args).toEqual(
+      pattern("Docs.Example.com"),
+    );
+    expect(listed()).toEqual(["docs.example.com"]);
+    expect(hostInput().value).toBe("");
+  });
+
+  it("adds on Enter", async () => {
+    await start(() => overview(), { settings_add_web_fetch_host: () => overview({ revision: 4 }) });
+    type("a.example.com");
+    hostInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true }));
+    await settle();
+    expect(ipc.callsTo("settings_add_web_fetch_host")).toHaveLength(1);
+  });
+
+  it("removes the named pattern", async () => {
+    await start(
+      () =>
+        overview({
+          workspaces: [workspace(A, "/home/dev/a", { web_fetch_hosts: ["docs.example.com"] })],
+        }),
+      { settings_remove_web_fetch_host: () => overview({ revision: 4 }) },
+    );
+    buttonByLabel(root, "Remove docs.example.com").click();
+    await settle();
+    expect(ipc.callsTo("settings_remove_web_fetch_host")[0]?.args).toEqual(
+      pattern("docs.example.com"),
+    );
+    expect(listed()).toEqual([]);
+  });
+
+  it("shows a refusal code as a readable sentence and keeps what was typed", async () => {
+    await start(() => overview(), {
+      settings_add_web_fetch_host: () =>
+        rejection("web_host_reserved", "local and private names are not allowed"),
+    });
+    type("localhost");
+    buttonByText(root, ADD_HOST_LABEL).click();
+    await settle();
+    const alert = root.querySelector<HTMLElement>(".change-error");
+    expect(alert?.textContent).toBe(
+      "Local and private names, such as localhost, cannot be allowed. (web_host_reserved)",
+    );
+    expect(alert?.hidden).toBe(false);
+    expect(hostInput().value).toBe("localhost");
+  });
+
+  it("maps every web_host code to a sentence and leaves other codes alone", () => {
+    for (const code of [
+      "web_host_empty",
+      "web_host_not_ascii",
+      "web_host_too_long",
+      "web_host_bad_label",
+      "web_host_bad_character",
+      "web_host_ip_literal",
+      "web_host_reserved",
+      "web_host_too_few_labels",
+      "web_host_not_canonical",
+      "web_host_duplicate",
+      "web_host_not_listed",
+      "web_host_too_many",
+    ]) {
+      expect(webHostMessage(code), code).toMatch(/\.$/);
+    }
+    expect(webHostMessage("stale_revision")).toBeNull();
+    expect(webHostMessage("toString")).toBeNull();
+  });
+
+  it("shows a cancelled confirmation as no change", async () => {
+    await start(() => overview(), {
+      settings_add_web_fetch_host: () => rejection("cancelled", "Cancelled."),
+    });
+    type("a.example.com");
+    buttonByText(root, ADD_HOST_LABEL).click();
+    await settle();
+    expect(root.querySelector(".notice[role=status]")?.textContent).toBe(NOTHING_CHANGED);
+  });
+
+  it("disables adding at 32 hosts and says why", async () => {
+    const full = Array.from({ length: 32 }, (_, index) => `h${index}.example.com`);
+    await start(() =>
+      overview({ workspaces: [workspace(A, "/home/dev/a", { web_fetch_hosts: full })] }),
+    );
+    expect(root.querySelector(".web-host-count")?.textContent).toBe("32 of 32");
+    expect(hostInput().disabled).toBe(true);
+    expect(buttonByText(root, ADD_HOST_LABEL).disabled).toBe(true);
+    expect(root.textContent).toContain(HOSTS_FULL);
+  });
+
+  it("renders a hostile pattern as text only", async () => {
+    const hostile = "<img src=x onerror=alert(1)>.example.com";
+    await start(() =>
+      overview({ workspaces: [workspace(A, "/home/dev/a", { web_fetch_hosts: [hostile] })] }),
+    );
+    expect(root.querySelector(".web-host img")).toBeNull();
+    expect(listed()).toEqual([hostile]);
   });
 });
