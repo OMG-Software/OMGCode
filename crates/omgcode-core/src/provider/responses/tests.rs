@@ -474,6 +474,37 @@ fn without_tools_a_tool_result_stays_a_labelled_user_message() {
 }
 
 #[test]
+fn a_tool_results_size_estimate_covers_its_encoded_items() {
+    // The encoder sends `call_id` in both items and escapes the argument
+    // JSON again, so quotes, backslashes, and newlines double in the body.
+    let tools = tool_definitions();
+    let arguments = serde_json::json!({
+        "path": "notes.txt",
+        "old_text": "\"quoted\"\n".repeat(500),
+        "new_text": "\\".repeat(2_000),
+    })
+    .to_string();
+    let content = "Tool result [call call_list_1]:\nok";
+    let with = tool_turn_messages(&arguments, content);
+    let without = messages();
+    let added_body = request_body("gpt-test", &with, Some(&tools))
+        .expect("body")
+        .len()
+        - request_body("gpt-test", &without, Some(&tools))
+            .expect("body")
+            .len();
+    let shared = |messages: &[ModelMessage]| {
+        crate::provider::estimate_serialized_request_size(messages, "gpt-test").expect("estimate")
+    };
+    let added_estimate =
+        shared(&with) - shared(&without) + answered_call_bytes(&with).expect("call bytes");
+    assert!(
+        added_estimate >= u64::try_from(added_body).expect("size"),
+        "estimated {added_estimate} bytes for {added_body} encoded"
+    );
+}
+
+#[test]
 fn a_tool_results_call_counts_against_the_context_estimate() {
     // The result text fits; the echoed arguments push the request past the
     // context. No token is asked for and nothing is sent.

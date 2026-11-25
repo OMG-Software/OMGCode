@@ -107,14 +107,6 @@ impl AnsweredCall {
     pub fn arguments(&self) -> &str {
         &self.arguments
     }
-
-    /// The bytes these three strings add to a request that sends the call.
-    pub(crate) fn byte_len(&self) -> usize {
-        self.call_id
-            .len()
-            .saturating_add(self.name.len())
-            .saturating_add(self.arguments.len())
-    }
 }
 
 /// A role in the persisted conversation history.

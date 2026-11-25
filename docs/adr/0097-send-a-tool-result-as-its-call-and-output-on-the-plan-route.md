@@ -43,8 +43,11 @@ the call that a result answers is known exactly.
   text. A withheld result is still the fixed withheld text, and the
   summarizer still reads replayed text.
 - The plan route's context and request-size estimates count each answered
-  call's three strings plus a fixed item overhead. The encoded body is still
-  checked against the request byte limit before any token is read.
+  call as it is encoded: its strings with JSON escaping, the call identifier
+  once for each item, and a fixed allowance for the items' punctuation. The
+  argument JSON is escaped again inside the request, so its quotes count
+  double. The encoded body is still checked against the request byte limit
+  before any token is read.
 
 ## Observed on 2026-11-24
 
@@ -91,8 +94,9 @@ read and list tools:
   `gpt-6.1-sol`.
 - Tests cover the call and output items with tools, the `user` item without
   tools, the unchanged Chat Completions wire, refusal of every role spelling
-  as input text, the runtime attaching the exact call, and an answered call
-  counted against the context estimate. Before the change, the item test sent
+  as input text, the runtime attaching the exact call, an answered call
+  counted against the context estimate, and a size estimate that covers the
+  bytes a heavily escaped call adds to the encoded body. Before the change, the item test sent
   `user` text, the runtime test found no attached call, and the estimate test
   sent the request and failed with `Transport`.
 

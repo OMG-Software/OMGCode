@@ -7,7 +7,7 @@
 //! from the finished output items once `response.completed` arrives, and
 //! every other ending fails the request.
 
-use super::{MAX_RESPONSE_TOOL_CALLS, ProviderError, Usage};
+use super::{MAX_RESPONSE_TOOL_CALLS, ProviderError, Usage, json_string_len};
 use crate::prompt::{ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
 use crate::turn::ToolDefinition;
@@ -106,7 +106,9 @@ pub(super) fn failure_in_error_body(bytes: &[u8]) -> Option<ResponseFailure> {
     ResponseFailure::from_code(code)
 }
 
-/// The bytes one answered call's item adds beyond its three strings.
+/// The punctuation and field names of one answered call's two items, beyond
+/// their strings: the call item's envelope and the output item's `call_id`
+/// key. The output item's own envelope replaces a message envelope.
 const CALL_ITEM_OVERHEAD: u64 = 128;
 
 #[derive(Serialize)]
@@ -241,21 +243,33 @@ pub(super) fn request_body(
 }
 
 /// The bytes that answered calls add to a request with tools, beyond the
-/// message text the shared estimates already count.
+/// output text and message envelope the shared estimates already count.
+///
+/// Each call is counted as it is encoded: every string escaped, as
+/// `json_string_len` counts it, and the `call_id` twice, because both the
+/// call item and the output item carry it. The argument JSON is escaped a
+/// second time inside the request, so its quotes and backslashes count
+/// double. Nothing is allocated. The context estimate uses the same sum,
+/// which overstates the tokens slightly.
 pub(super) fn answered_call_bytes(messages: &[ModelMessage]) -> Result<u64, ProviderError> {
-    messages
-        .iter()
-        .filter_map(|message| match &message.role {
-            ModelRole::ToolResult(call) => Some(call.byte_len()),
-            _ => None,
-        })
-        .try_fold(0_u64, |total, bytes| {
-            u64::try_from(bytes)
-                .ok()
-                .and_then(|bytes| bytes.checked_add(CALL_ITEM_OVERHEAD))
-                .and_then(|bytes| total.checked_add(bytes))
-                .ok_or(ProviderError::RequestTooLarge)
-        })
+    let namespace = json_string_len(TOOL_NAMESPACE)?;
+    messages.iter().try_fold(0_u64, |total, message| {
+        let ModelRole::ToolResult(call) = &message.role else {
+            return Ok(total);
+        };
+        let call_id = json_string_len(call.call_id())?;
+        [
+            call_id,
+            json_string_len(call.name())?,
+            json_string_len(call.arguments())?,
+            namespace,
+            CALL_ITEM_OVERHEAD,
+        ]
+        .into_iter()
+        .try_fold(call_id, u64::checked_add)
+        .and_then(|bytes| total.checked_add(bytes))
+        .ok_or(ProviderError::RequestTooLarge)
+    })
 }
 
 /// Whether the request advertised tools.
