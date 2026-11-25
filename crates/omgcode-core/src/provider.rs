@@ -30,7 +30,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
-const MAX_REQUEST_BYTES: usize = 256 * 1024;
+/// Largest encoded request body. The configured context budget, not this
+/// cap, is meant to bound a request: 4 MiB holds a 1M-token window of text
+/// (ADR-0099). A plan-route turn echoes each answered call, so 32 KiB write
+/// arguments make requests grow past the old 256 KiB.
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 /// The whole of one streamed reply may hold at most this many bytes, Chat
 /// Completions or Responses. Every token arrives in its own event with a
@@ -307,7 +311,7 @@ pub enum ProviderError {
     #[error("invalid local model token")]
     InvalidToken,
     /// The serialized request exceeds the wire byte limit.
-    #[error("local model request exceeds 256 KiB")]
+    #[error("local model request exceeds 4 MiB")]
     RequestTooLarge,
     /// The conservative request estimate exceeds the configured context budget.
     #[error("local model request exceeds the configured context budget")]
@@ -1968,7 +1972,7 @@ mod tests {
         let mut buffer = [0_u8; 8192];
         loop {
             assert!(
-                bytes.len() <= 256 * 1024 && Instant::now() < end,
+                bytes.len() <= MAX_REQUEST_BYTES && Instant::now() < end,
                 "bounded request"
             );
             if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -1981,7 +1985,7 @@ mod tests {
                             .then(|| value.trim().parse::<usize>().expect("body length"))
                     })
                     .expect("Content-Length");
-                assert!(length <= 256 * 1024, "bounded declared request");
+                assert!(length <= MAX_REQUEST_BYTES, "bounded declared request");
                 if bytes.len() >= header_end + 4 + length {
                     break;
                 }

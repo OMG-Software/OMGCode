@@ -947,7 +947,7 @@ can archive, restore, and interrupt a session; see the
 | Custom instructions | 16 KiB of UTF-8 text |
 | Each user/assistant message | 16 KiB of UTF-8 text |
 | History in one request | 640 messages |
-| Assembled text / encoded request | 256 KiB each, checked separately |
+| Assembled text / encoded request | 4 MiB each, checked separately (ADR-0099); the configured context budget normally binds first |
 | Encoded provider response | 1 MiB |
 | Streamed provider response (Chat Completions and Responses) | 8 MiB |
 | Encoded journal event, including LF | 80 KiB |

@@ -1163,7 +1163,7 @@ fn the_tool_history_reserve_counts_the_pending_request() {
 #[test]
 fn prompt_capacity_is_reserved_before_dispatch() {
     let mut fixture = Fixture::new();
-    for _ in 0..15 {
+    for _ in 0..255 {
         fixture
             .journal
             .as_mut()
@@ -2692,7 +2692,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
     assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.6.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.7.0");
 }
 
 /// A session whose earlier turn advertised tool schema 0.2.0 still replays and
@@ -5919,4 +5919,43 @@ fn a_session_with_a_rejected_call_reopens_and_replays_the_pair_as_text_on_the_ne
             ("message.recorded".to_owned(), Some("big-1".to_owned())),
         ]
     );
+}
+
+/// ADR-0099: ten large creates in one turn finish, and the request of the last
+/// round carries all ten answered calls that a plan-route request echoes.
+#[test]
+fn ten_thirty_kib_creates_in_one_turn_finish_and_every_file_exists() {
+    let mut fixture = Fixture::new();
+    allow_all_file_tools(&mut fixture);
+    let mut replies = Vec::new();
+    for index in 0..10 {
+        replies.push(tool_reply(vec![create_call_of_argument_bytes(
+            &format!("c-{index}"),
+            &format!("f{index}.rs"),
+            30 * 1024,
+        )]));
+    }
+    replies.push(text_reply("all written"));
+    let mut model = ScriptedModel::new(replies);
+
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("ten large creates finish");
+
+    assert_eq!(report.reply, "all written");
+    assert_eq!(report.tool_calls, 10);
+    for index in 0..10 {
+        let text = fs::read_to_string(fixture.workspace.join(format!("f{index}.rs")))
+            .expect("created file");
+        assert!(text.len() > 29 * 1024);
+    }
+    let echoed: usize = model.requests[10]
+        .messages
+        .iter()
+        .filter_map(|message| match &message.role {
+            ModelRole::ToolResult(call) => Some(call.arguments().len()),
+            _ => None,
+        })
+        .sum();
+    assert!(echoed > 290 * 1024, "{echoed} bytes of echoed calls");
 }

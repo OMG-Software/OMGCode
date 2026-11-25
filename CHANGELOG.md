@@ -339,7 +339,7 @@ Changes are recorded here before a release version is assigned.
   `audit_unavailable` until the operator moves that file aside; neither was
   repaired or tested with an older build. The plan route echoes each call of
   the live turn, so large creates use the unchanged 256 KiB request limit
-  faster; that was not measured. Tests drive 5, 30, and 40 KiB calls,
+  faster; see the next entry. Tests drive 5, 30, and 40 KiB calls,
   an exact-boundary parse of each limit, malformed, unknown-field,
   non-string, empty, unknown-tool, hostile-name, and bad-path calls, mixed
   rounds, both budgets, a small result limit, the shape errors and duplicate
@@ -348,6 +348,21 @@ Changes are recorded here before a release version is assigned.
   of a 30 KiB create. Before the change, the 5 KiB create test ended the turn
   with `InvalidToolCall(InvalidArguments)`. No real model or plan-route call
   of this size was made.
+
+- Version 0.63.0: the encoded request cap and the assembled prompt cap rise
+  from 256 KiB to 4 MiB (ADR-0099), so the configured context budget, not a
+  byte cap, bounds a request. The plan route echoes each answered call, so
+  with 32 KiB write arguments about seven large creates in one turn would have
+  ended it with `request_too_large`. Auto-compaction is still decided only
+  before a turn; a long tool turn meets the per-request context-limit check,
+  which estimates one token per byte and so still stops a 256K-token window
+  at about 256 KiB of estimated text.
+  The create, edit, and multi-edit tool descriptions now state the 32 KiB
+  argument limit and advise a create followed by edits, so the tool schema
+  version is 0.7.0 (the nine definitions serialize to 7,425 bytes, inside the
+  8 KiB estimate). A scripted turn of ten 30 KiB creates finishes with every
+  file present, and a plan-route request echoing them and a Chat Completions
+  request over 256 KiB are sent to mock servers; no real route was tried.
 
 ### Changed
 

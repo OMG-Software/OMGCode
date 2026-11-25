@@ -544,8 +544,9 @@ consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.6.0, which added `workspace_create_directory`;
-0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added
+The tool schema version is 0.7.0, which added the 32 KiB argument limit to the
+create, edit, and multi-edit descriptions (ADR-0099); 0.6.0 added
+`workspace_create_directory`; 0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added
 `workspace_multi_edit_file` and
 `workspace_create_file`, and 0.3.0 added `workspace_edit_file`. Each request
 manifest records the version it advertised, and sessions that recorded 0.2.0,

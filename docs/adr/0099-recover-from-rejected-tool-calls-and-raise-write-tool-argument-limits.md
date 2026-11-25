@@ -53,6 +53,29 @@ The causes are in the core:
     requests, not bytes, and a rejected call is not a candidate. The
     approval records, summaries, and desktop approval fields hold no
     argument text.
+- **Request and prompt caps.** The encoded request cap (`MAX_REQUEST_BYTES`,
+  every route) and the assembled prompt text cap rise from 256 KiB to 4 MiB,
+  enough for a 1M-token window of text. The plan route echoes each answered
+  call of the live turn (ADR-0097), so about seven 30 KiB creates passed the
+  old request cap and ended the turn with `request_too_large`. The assembled
+  cap counts history message text, which holds no call arguments. The
+  provider's context check estimates one token per byte of message text, plus
+  the echoed calls on the plan route, and refuses a request over
+  `context_tokens` with `ContextLimit`. It therefore binds at about
+  `context_tokens` bytes, before either byte cap for any window up to 4M
+  tokens. For a 256K-token window that is about 256 KiB of estimated text, so
+  with echoed calls this check, not the byte cap, ends a long scaffold turn;
+  real code is about three to four bytes per token, so the estimate is
+  conservative. The estimate is unchanged here. Auto-compaction is decided only before a turn
+  starts, from the estimate of the saved history plus the new message against
+  `min(threshold, safe input budget)`; nothing compacts inside a turn, so a
+  long tool turn meets the per-request context-limit check, not compaction.
+  The tool-text budget (256 KiB per turn), the 16 KiB message cap, and the
+  summarizer chunk cap (128 KiB) are unchanged.
+- **Tool descriptions.** The create, edit, and multi-edit descriptions say
+  that arguments are limited to 32 KiB and that a large file is a create
+  followed by edits. `TOOL_SCHEMA_VERSION` is 0.7.0. The nine definitions
+  serialize to 7,425 bytes, inside the app's 8 KiB estimate.
 - **Recoverable rejection.** A response element with the supported
   function-call shape and a valid, unique call identifier whose tool name is
   not one the runtime has, or whose arguments are too large, not strict JSON,
@@ -137,10 +160,14 @@ The causes are in the core:
   file takes a create and edits.
 - One malformed, oversized, or misnamed call no longer ends the turn or
   disappears from the audit trail.
-- The plan route echoes each answered call of the live turn (ADR-0097), so a
-  turn with several large creates uses the unchanged 256 KiB request limit
-  faster. A request over it fails with `request_too_large`. That was not
-  measured with a real route.
+- With a 256K-token window the byte-based context estimate still stops a turn
+  whose echoed calls and history estimate to more than about 256 KiB. Making
+  that estimate less conservative is separate work.
+- A request can now reach 4 MiB. The 4 MiB body is built in memory once per
+  request; the stream and response bounds are unchanged. Ten 30 KiB creates
+  in one turn finish in a scripted turn, and a plan-route request echoing
+  them (about 600 KiB) and a Chat Completions request over 256 KiB are sent
+  to mock servers. A real route was not tried.
 - Not verified: a real model or the real plan route with a call of this
   size, and a real Chat Completions server streaming one.
 - Tests cover the boundary of each limit; 5, 30, and 40 KiB create calls

@@ -17,7 +17,8 @@ const MAX_HISTORY_MESSAGE_BYTES: usize = 16 * 1024;
 /// Allow 128 messages up to the user request and a full turn of tool results
 /// and interim assistant replies. The assembled byte limit applies separately.
 const MAX_HISTORY_MESSAGES: usize = 128 + 2 * crate::turn::MAX_TOOL_CALLS;
-const MAX_ASSEMBLED_BYTES: usize = 256 * 1024;
+/// Largest assembled prompt text. 4 MiB leaves a 1M-token window (ADR-0099).
+const MAX_ASSEMBLED_BYTES: usize = 4 * 1024 * 1024;
 const CUSTOM_INSTRUCTIONS_LABEL: &str = "Saved user preferences:\n";
 
 /// Most skill body bytes one request carries across all selected skills.
@@ -189,7 +190,7 @@ pub enum PromptError {
     #[error("a conversation message exceeds 16 KiB")]
     HistoryMessageTooLarge,
     /// The complete prompt exceeds its byte limit.
-    #[error("assembled prompt exceeds 256 KiB")]
+    #[error("assembled prompt exceeds 4 MiB")]
     AssembledPromptTooLarge,
     /// More than four skills were selected for one request.
     #[error("more than 4 skills selected")]
@@ -205,7 +206,7 @@ pub enum PromptError {
 /// Assemble the compiled base, optional saved preferences, and recent history.
 ///
 /// All limits use UTF-8 byte counts. The compiled prompt, preference label and
-/// text, and history contents count toward the 256 KiB total. Custom text always
+/// text, and history contents count toward the 4 MiB total. Custom text always
 /// remains a user message; role labels or JSON inside it are plain text.
 ///
 /// # Errors
@@ -241,7 +242,7 @@ pub fn check_tool_turn_history_capacity(
 /// Each skill becomes one user message placed after the base prompt and the
 /// saved-preferences message and before history. At most four skills, each
 /// body at most 32 KiB and all bodies at most 64 KiB; the labelled messages
-/// also count toward the 256 KiB total. Skill text is untrusted and is never
+/// also count toward the 4 MiB total. Skill text is untrusted and is never
 /// part of `history`.
 ///
 /// # Errors
@@ -467,7 +468,7 @@ mod tests {
                 role: ConversationRole::User,
                 content: "x".repeat(MAX_HISTORY_MESSAGE_BYTES),
             };
-            16
+            256
         ];
 
         assert_eq!(
@@ -572,8 +573,8 @@ mod tests {
                 role: ConversationRole::User,
                 content: "x".repeat(MAX_HISTORY_MESSAGE_BYTES),
             };
-            // 14 * 16 KiB + 64 KiB + base exceeds 256 KiB; without skills it fits.
-            14
+            // 255 * 16 KiB + 64 KiB + base exceeds 4 MiB; without skills it fits.
+            255
         ];
 
         assert_eq!(

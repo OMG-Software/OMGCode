@@ -935,3 +935,51 @@ fn a_rejected_calls_placeholder_arguments_and_result_are_sent_as_a_paired_call_a
     );
     assert_eq!(items[2]["name"], "workspace_create_file");
 }
+
+/// ADR-0099: ten answered 30 KiB create calls are echoed in one plan-route
+/// request of about 600 KiB, which the context budget allows.
+#[test]
+fn a_plan_route_request_echoing_ten_large_calls_is_sent_when_the_context_budget_allows_it() {
+    let stream: String = [CREATED, CALL_DONE, COMPLETED]
+        .iter()
+        .map(|payload| event(payload))
+        .collect();
+    let (base, server) = serve_once("200 OK", Some("text/event-stream"), stream);
+    let client = LocalModelClient::responses_with_timeout(
+        LocalModelConfig {
+            base_url: base,
+            model: "gpt-test".to_owned(),
+            context_tokens: 1_000_000,
+            max_output_tokens: 1024,
+        },
+        token(Ok("t")),
+        Duration::from_secs(10),
+    )
+    .expect("client");
+    let mut messages = messages();
+    for index in 0..10 {
+        let arguments =
+            serde_json::json!({"path": format!("f{index}.rs"), "content": "a".repeat(30 * 1024)})
+                .to_string();
+        messages.push(ModelMessage {
+            role: ModelRole::ToolResult(AnsweredCall::new(
+                &format!("call_{index}"),
+                "workspace_create_file",
+                &arguments,
+            )),
+            content: format!("Tool result [call call_{index}]:\n{{\"status\":\"created\"}}"),
+        });
+    }
+
+    let reply = client
+        .complete_with_tools(&messages, &tool_definitions(), &CancelToken::new())
+        .expect("a request over the old 256 KiB cap is sent");
+
+    assert_eq!(reply.tool_calls.len(), 1);
+    let request = server.join().expect("server");
+    assert!(request.len() > 300 * 1024, "{} bytes", request.len());
+    assert_eq!(
+        request.matches("\"type\":\"function_call_output\"").count(),
+        10
+    );
+}
