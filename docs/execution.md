@@ -777,6 +777,55 @@ tools (0.36.0, ADR-0054) and the `workspace_rename_file` and
 `workspace_create_directory` tool (0.55.0, ADR-0079) use the same `file_write`
 records, each under its own digest domain, and start no process either.
 
+### Model web fetch
+
+Version 0.64.0 adds the `web_fetch` model tool
+([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+It starts no process and does not use `task_network` or a trusted run. The
+OMGCode process sends one HTTPS `GET` itself, behind the `web_fetch`
+preference and host allowlist described in
+[workspace permissions](workspace-permissions.md#web-fetch-adr-0098). The
+model passes `url`, an optional `offset` into the page text, and an optional
+`max_bytes` (default 12 KiB, at most 15 KiB); a longer page is read with
+further calls, each of which fetches the page again.
+
+The network policy is fixed:
+
+- The URL uses `https` on port 443, has no user name or password, is at most
+  2048 bytes, and names a DNS host. IP literals, `localhost`, single-label
+  names, and local-use suffixes such as `.local` and `.internal` are refused,
+  and the fragment is dropped. A refused URL is answered with `url_refused`
+  before any approval.
+- Every address the name resolves to must be global unicast, or the fetch is
+  refused with `blocked_address`. The client connects only to the checked
+  addresses, so a later DNS answer cannot move the connection to a private
+  one.
+- The client uses no proxy, cookies, or credentials, sends no `Referer`, and
+  sends a fixed `OMGCode/<version> web_fetch` user agent and
+  `Accept-Encoding: identity`. It verifies certificates against the system
+  store, requires TLS 1.2 or later, and allows 10 seconds to connect and 30
+  seconds for the whole fetch. Cancelling the turn stops the fetch.
+- A redirect to the same host is followed at most five times, each hop
+  checked again. A redirect to another host is reported with its target and
+  not followed, so the model must request the target and pass the gate again.
+- Only a `2xx` response with an HTML, plain-text, Markdown, CSV, XML, JSON, or
+  YAML type returns text; other statuses return their code and no body. At
+  most 2 MiB of the body is read. HTML is converted to text in process,
+  without scripts, styles, frames, embedded objects, or elements hidden by
+  `hidden`, `aria-hidden="true"`, or an inline style. Control, zero-width, and
+  bidirectional formatting characters are removed, and the text is capped at
+  1 MiB.
+- The settings lock is released before the request starts, so a fetch never
+  blocks a settings change. A change applies from the next call; it does not
+  stop a fetch in flight.
+
+The result is labelled `source web_fetched; untrusted web content from
+<host>`. It is evidence, never instructions, and grants no permission. Every
+call is recorded in the model action journal as `network` with the URL as
+its target, and every later action in the same session carries
+`after_web_content` (see the
+[model action journal](workspace-permissions.md#model-action-journal)).
+
 ### Toolchain profiles
 
 Profiles are declared by the operator. Nothing is discovered automatically.
@@ -1108,6 +1157,14 @@ These remain true after C6:
   both hosts; it needs a delegated cgroup on Linux and a workspace container
   grant on Windows. Confinement correctness remains the platform suites'
   responsibility.
+- **Model web fetch limits.** A fetched URL can carry workspace data to an
+  allowlisted host under `allow`, or to any host whose URL the operator
+  approves. Hiding detection covers attributes and inline styles only: text
+  hidden by a stylesheet class or placed off screen reaches the model, and no
+  script runs, so a page built by JavaScript returns little text. A network
+  that requires a proxy cannot be used. Tests use a loopback server under a
+  test-only policy; no real site was fetched in the automated suites, and no
+  test makes a TLS handshake fail.
 - **Network coverage.** Network access was tested on Windows 11 build 26300
   and WSL 6.6 (Landlock ABI 3) only, including a TLS fetch with the system
   `curl` on both. The ABI 4 TCP-bind denial has not run on a live kernel.
@@ -1169,10 +1226,11 @@ These remain true after C6:
 | C18 (0.36.0) | Approval-gated model multi-edit and create tools | Done: see the [model multi-edit and create routes](file-access.md#model-multi-edit-and-create-routes-adr-0054) and ADR-0054. They start no process; multi-edit writes through the checkpointed apply and create through the broker's exclusive create, each after a writers-stopped approval. |
 | C19 (0.38.0) | Approval-gated model rename and delete tools | Done: see the [model rename and delete routes](file-access.md#model-rename-and-delete-routes-adr-0055) and ADR-0055. They start no process; delete writes through a checkpointed removal and rename through a no-replace rename, each after a writers-stopped approval. |
 | C20 (0.37.0) | Registry credentials for the trusted fetch | Done: see [registry credentials](#registry-credentials) and ADR-0056. One bound secret per declared origin; no run receives it. |
+| C21 (0.64.0) | Model web fetch behind `web_fetch` and a host allowlist | Done: see [model web fetch](#model-web-fetch) and ADR-0098. It starts no process; the OMGCode process fetches one public HTTPS page per call. |
 
 Later work needs its own decisions:
 
 - development-server networking;
-- model network, Git, and MCP tools;
+- model Git and MCP tools, and any model network tool other than `web_fetch`;
 
 Live qualification on each supported OS remains a separate gate.

@@ -11,7 +11,9 @@ file only through checkpointed apply after an approved, writers-stopped
 decision; the create tool makes one new file through the exclusive create,
 without a checkpoint; the rename tool moves one file to a name that does not
 exist, without a checkpoint; and the delete tool removes one file after a
-checkpoint of its bytes. Model network, Git, and MCP tools are not
+checkpoint of its bytes. A `web_fetch` tool, behind its own preference and a
+host allowlist, reads one public HTTPS page per call as untrusted web
+content. Other model network tools, and Git and MCP tools, are not
 implemented. The
 trusted CLI `run` command runs one program under Linux Landlock or Windows
 AppContainer confinement with an operator-declared toolchain profile. A model

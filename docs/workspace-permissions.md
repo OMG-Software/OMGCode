@@ -367,6 +367,43 @@ log. Host-service access exposes every Unix socket the user can reach,
 including the Docker daemon; see
 [Unix-domain sockets](execution.md#unix-domain-sockets).
 
+## Web fetch (ADR-0098)
+
+`workspace permissions <id> --revision <n> --web-fetch deny|prompt|allow`
+sets whether chat offers the model `web_fetch` tool, which sends one HTTPS
+`GET` to a public host from the OMGCode process and returns a slice of the
+page text. It is separate from `task_network`, which no model tool uses. It
+defaults to `deny`, needs `model_tools`, and does not depend on `read`,
+`write`, or `execute`. Stored settings omit it while it is `deny`, so they
+keep their bytes; a build before 0.64.0 refuses a settings log that holds
+another state.
+
+Each workspace also has a host allowlist of at most 32 patterns.
+`workspace web-host-add <id> <pattern> --revision <n>` adds one,
+`workspace web-host-remove <id> <pattern> --revision <n>` removes one, and
+`workspace web-host-list <id>` prints the preference and the list. A pattern
+is an ASCII DNS name, which matches that host only, or `*.` followed by a
+name, which matches its proper subdomains and not the name itself. IP
+addresses, local names, and non-ASCII names are refused; use punycode. Each
+change appends an event and increments the revision, so any pending fetch
+approval becomes stale. The desktop `settings` window edits both after a
+native confirmation.
+
+| State | Allowlisted host | Any other public host |
+| --- | --- | --- |
+| `deny` | Tool not offered; a call is refused | Tool not offered; a call is refused |
+| `prompt` | Each fetch needs a `network` approval | Each fetch needs a `network` approval |
+| `allow` | Runs without an approval | Each fetch needs a `network` approval |
+
+A URL that the network policy refuses, such as `http`, an IP literal, or
+`localhost`, is answered with `url_refused` and recorded as refused; it
+records no approval and is never fetched. An approval binds the exact
+normalised URL, offset, and size, needs no writers-stopped acknowledgement,
+and shows the URL, its host, and whether the host is allowlisted now. The
+[execution guide](execution.md#model-web-fetch) describes the network
+policy, and [ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)
+records the design.
+
 ## Deny, prompt, or allow (ADR-0063)
 
 Since 0.43.0, `read`, `write`, `execute`, `task_network`, and `host_services`
@@ -408,6 +445,9 @@ denied. Otherwise:
 - `workspace_run_command` uses the most restrictive of `execute`, `read`, and
   `write`. The per-tool limits do not reach it: a permitted command can still
   create, change, or delete any file in the workspace.
+
+- `web_fetch` uses its own preference and the workspace host allowlist; see
+  [web fetch](#web-fetch-adr-0098).
 
 `task_network` and `host_services` have no model tool. For them `prompt` and
 `allow` mean the same today; `prompt` keeps any future model tool for them
@@ -456,8 +496,25 @@ have is recorded with the tool `unrecognized` and no name. A build before
 0.63.0 reads none of these four reasons or `unrecognized`: it reports the
 journal as corrupt, and each model tool call then ends the turn with
 `audit_unavailable` until the operator moves the file aside. A target is a
-validated workspace-relative path; a value that failed validation is stored
+validated workspace-relative path, or for `web_fetch`, recorded with the
+tool `network`, the normalised URL; a value that failed validation is stored
 only as its SHA-256 and byte length.
+
+**After web content (ADR-0098).** Every model action that a session records
+after its first successful `web_fetch` carries `after_web_content: true`,
+whatever its tool or outcome, including refused and rejected calls. The
+runtime finds a session's first fetched content again from its journal at
+the start of each turn, so the marker survives a restart and compaction;
+other sessions are unaffected. The record names the tool and its targets.
+A `workspace_run_command` record has no target: its request digest binds the
+program and arguments, which the session and run journals hold, and nothing
+names the files the program touched. The desktop's right-hand panel shows a
+command's program and arguments from the session journal. The field is omitted while it is `false`, so earlier
+records keep their bytes; a build before 0.64.0 reports a journal that holds
+it as corrupt. `omgcode actions list --after-web-content [--session <id>]`
+lists only these records, newest first, and prints `after_web_content` on
+every record; the filters search the 1,000 newest records, so an older call
+of a busy journal is not listed.
 
 If the start cannot be recorded, the call does not run and the turn ends with
 `audit_unavailable`. An approval consumed just before that failure is spent.
@@ -467,7 +524,7 @@ has an unknown outcome, not a failed one.
 
 The journal rotates at 4 MiB or 16,384 events and keeps at most four
 archives; a record is at most 32 KiB. `omgcode actions list [--limit N]` lists
-the most recent calls, oldest first, from 1 to 1,000. Like the other journals
+the most recent calls, newest first, from 1 to 1,000. Like the other journals
 it is private data: targets and codes can reveal workspace names. It is not
 tamper-evident against another process running as the same user.
 

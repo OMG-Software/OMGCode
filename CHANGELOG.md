@@ -6,6 +6,58 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.64.0 adds the `web_fetch` model tool (ADR-0098), so a model on
+  any provider can read public documentation. The OMGCode process sends one
+  HTTPS `GET` and returns one slice of the page text (`offset`, and
+  `max_bytes` of at most 15 KiB, default 12 KiB); a longer page is read with
+  further calls. A new workspace preference, `web_fetch`, is `deny` by
+  default and needs `model_tools`; `workspace permissions --web-fetch` sets
+  it. Each workspace has a host allowlist of at most 32 patterns, an exact
+  DNS name or `*.` and a name for its proper subdomains, changed with
+  `workspace web-host-add` and `web-host-remove` and printed by
+  `web-host-list`, or in the desktop `settings` window after a native
+  confirmation (`settings_add_web_fetch_host` and
+  `settings_remove_web_fetch_host`). Under `prompt` every fetch needs a
+  `network` approval for the exact URL, offset, and size; under `allow` only
+  an allowlisted host runs without one. The URL must be `https` on port 443
+  with a DNS host and no user information; IP literals, `localhost`, and local
+  names are answered with `url_refused` before any approval. Every resolved
+  address must be global unicast and the connection is pinned to the checked
+  addresses. Same-host redirects are re-checked, at most five; a cross-host
+  redirect is reported, not followed. No proxy, cookies, credentials, or
+  `Referer` are used, only identity encoding is accepted, TLS 1.2 is the
+  minimum, and the fetch has 10 seconds to connect and 30 in all. At most
+  2 MiB of a text response is read, HTML is converted to text in process
+  without scripts, styles, or attribute- or inline-style-hidden elements,
+  and control, zero-width, and bidirectional characters are removed. The
+  settings lock is released before the request. A result is labelled
+  `untrusted web content from <host>`. The model action journal records each
+  call as `network` with its URL (a refused URL as `invalid_request`, its
+  target withheld by digest), and marks every later action of the same
+  session `after_web_content`, found again from the session journal at each
+  turn start, so it survives restarts and compaction. A cancelled fetch ends
+  the turn as cancelled and records the action as `failed`. `actions list`
+  gains `--session <id>` and `--after-web-content`, prints
+  `after_web_content` on every record, and its help now says newest first,
+  which it always was. The desktop `main` window's right-hand panel gains a
+  read-only **Web** tab, through the new `session_web_audit` command, that
+  lists the open session's fetches and every action marked
+  `after_web_content`, newest first, at most 100, with a command's program
+  and arguments from the session journal; it never polls. The approvals
+  window labels a `network` approval **Web fetch**, shows its URL, host,
+  whether the host is allowlisted now, offset, and size, warns that approving
+  sends the exact URL to that host, and asks for no writers-stopped
+  acknowledgement. The desktop shell has 62 commands: 30 in `main`, 3 in
+  `approvals`, and 29 in `settings`. The tool schema version is 0.8.0, a request and a
+  session journal may carry ten tool definitions, and the context estimate's
+  tool allowance rises from 8 KiB to 9 KiB (the ten definitions measure
+  8,322 bytes). A build before 0.64.0 refuses a
+  settings log that holds a `web_fetch` state or a host pattern, an action
+  journal that holds `after_web_content`, and a session journal that
+  advertised ten tools. No new dependency. Tests use a loopback server under
+  a test-only policy; no real site was fetched, and no test makes a TLS
+  handshake fail.
+
 - Version 0.60.0 adds Sign in with ChatGPT (ADR-0093). An `openai` profile
   with authentication `subscription` and OpenAI's fixed endpoint signs in
   through `omgcode workspace provider-signin <name> --revision <n>` or **Sign

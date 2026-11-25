@@ -77,7 +77,7 @@ meaningful alternative does not need an ADR.
 | [0060: Change workspace settings from the desktop with native dialogs](0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md) | Accepted, amended by ADR-0081 and ADR-0088 | 2026-11-19 |
 | [0061: Check every recorded settings state in run watchers](0061-check-every-recorded-settings-state-in-run-watchers.md) | Accepted | 2026-11-19 |
 | [0062: Send the desktop message on Enter as a saved chat preference](0062-send-the-desktop-message-on-enter-as-a-saved-chat-preference.md) | Accepted | 2026-11-19 |
-| [0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions](0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md) | Accepted; amended by ADR-0099 | 2026-11-19 |
+| [0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions](0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md) | Accepted; amended by ADR-0098 and ADR-0099 | 2026-11-19 |
 | [0064: Choose the model connection in settings and add Ollama Local](0064-choose-the-model-connection-in-settings-and-add-ollama-local.md) | Accepted, amended by ADR-0084 | 2026-11-19 |
 | [0065: Redesign the desktop windows with one dark theme and split layouts](0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md) | Accepted; amended by ADR-0095 | 2026-11-19 |
 | [0066: Choose the chat model from the local server's model list](0066-choose-the-chat-model-from-the-local-servers-model-list.md) | Accepted | 2026-11-19 |
@@ -112,4 +112,5 @@ meaningful alternative does not need an ADR.
 | [0095: Use the OMG Software palette and OMGCode icons in the desktop](0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0096: Accept a plan-route stream without a Content-Type](0096-accept-a-plan-route-stream-without-a-content-type.md) | Accepted; amended by ADR-0097 | 2026-11-24 |
 | [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted; amended by ADR-0099 | 2026-11-24 |
+| [0098: Add a model web fetch tool behind a host allowlist](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) | Accepted | 2026-11-25 |
 | [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |

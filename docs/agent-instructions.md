@@ -45,7 +45,10 @@ multi-edit, create, rename, delete, and command results follow the same rule
 and remain untrusted. Chat runs this runtime when the workspace enables
 `model_tools`; the edit, multi-edit, create, rename, and delete tools also need
 `read` and `write`, the command tool also needs `execute`, `read`, and `write`,
-and each runs only after a trusted approval.
+and each runs only after a trusted approval. `web_fetch` needs only its own
+`web_fetch` preference, and its result is labelled as untrusted web content
+from the fetched host rather than workspace data
+([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
 Otherwise chat sends no tool definitions and rejects any provider tool call.
 
 Prompt assembly limits custom instruction text and each history message to 16
@@ -56,10 +59,11 @@ desktop shell's saved global and workspace instructions are the only saved
 instruction scopes; they have no revision history, and the CLI has no
 preference store. The prototype has no session preference store, preview
 UI, exact token-count display, memories, model
-network, Git, or MCP tools, or provider-specific subscription routes.
+Git or MCP tools, or provider-specific subscription routes.
 Its only model tools are read, list, the approval-gated exact edit,
-multi-edit, create, rename, and delete tools, and the approval-gated command
-tool. The current
+multi-edit, create, rename, and delete tools, the approval-gated command
+tool, and `web_fetch`, which reads one public HTTPS page per call behind its
+own preference and a host allowlist (ADR-0098). The current
 `--instructions` value is
 per invocation, not a saved preference with scope or revision history.
 
