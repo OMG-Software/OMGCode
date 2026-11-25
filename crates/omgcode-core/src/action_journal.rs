@@ -43,8 +43,10 @@
 //! it is `false`, so earlier records keep their bytes. It marks every tool and
 //! every outcome, including refused and rejected calls, so an operator can
 //! review exactly what the model did after reading untrusted web text. A
-//! record names the tool and its targets. For `run_command` it names the
-//! program, not the files the program touched.
+//! record names the tool and its targets. A `run_command` record has no
+//! target: its request digest binds the program and arguments, which the
+//! session and run journals hold, and no record names the files the program
+//! touched.
 //!
 //! # Failure behaviour
 //!
@@ -367,9 +369,9 @@ pub struct ActionRecord {
     /// Whether the session had already fetched web content when the call was
     /// made (ADR-0098). A record written before this field existed is `false`.
     ///
-    /// The record names the tool and its targets. For `run_command` it names
-    /// the program, not the files the program touched, so review such a record
-    /// with the run journal.
+    /// The record names the tool and its targets. A `run_command` record has
+    /// no target, so review it with the session journal's request and the run
+    /// journal; neither names the files the program touched.
     pub after_web_content: bool,
     /// Executed or refused.
     pub disposition: ActionDisposition,

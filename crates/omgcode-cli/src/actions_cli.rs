@@ -22,7 +22,7 @@ pub(crate) enum ActionsCommand {
     /// with the reason. An executed call with no finish has an unknown outcome.
     /// `after_web_content` is true for every call a session made after its
     /// first successful `web_fetch`, whatever the tool or outcome. A
-    /// `run_command` entry names the program, not the files it touched.
+    /// `run_command` entry has no target: the run journal names its program.
     List {
         /// How many of the most recent matching calls to list (1 to 1000).
         #[arg(long, default_value_t = 100)]
