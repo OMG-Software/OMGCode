@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.65.0 adds **Generate toolchain profiles from local packages** to
+- Version 0.66.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window
   (ADR-0103). A new core service, `toolchain_discovery`, holds one detector
   per family: Rust (rustup toolchains), C and C++ (MSVC with the Windows SDK,
@@ -454,6 +454,24 @@ Changes are recorded here before a release version is assigned.
   8 KiB estimate). A scripted turn of ten 30 KiB creates finishes with every
   file present, and a plan-route request echoing them and a Chat Completions
   request over 256 KiB are sent to mock servers; no real route was tried.
+
+- Version 0.65.0: the model no longer has to guess a toolchain profile name,
+  and the operator is no longer asked to approve a command that cannot start
+  (ADR-0100). In the session from ADR-0099, `workspace_run_command` named the
+  profile `rust`, which nobody had recorded. The operator approved it, and the
+  run then failed with `toolchain profile is not recorded`. The `profile`
+  parameter now lists, as an `enum`, the profiles recorded for the running
+  platform, read from the snapshot that selects the tools. The command tool is
+  withheld while none is recorded. A call that names any other profile is
+  answered with `profile_not_recorded` and the recorded names before an
+  approval is requested or consumed; with none recorded for the platform, the
+  result says no command can run. It is recorded as refused
+  (`invalid_request`), and the turn continues. The runner still checks the
+  profile under its own lock. The tool schema version is 0.9.0. The desktop
+  tool-schema estimate rises from 9 KiB to 11 KiB: the ten definitions, with
+  32 profiles of 64-character names, serialize to 10,543 bytes. Before the
+  change, the new regression test got `approval_required` for the unrecorded
+  profile. No real model call was made.
 
 ### Changed
 

@@ -112,7 +112,7 @@ merged to `main` at the time of writing):
   workspace, manages skills, and adds and removes toolchain profiles,
   package-network profiles, and, on Windows, container grants. See
   [settings window](#settings-window).
-- Since version 0.65.0 (ADR-0103), the **Toolchain profiles** group generates
+- Since version 0.66.0 (ADR-0103), the **Toolchain profiles** group generates
   profile proposals from the toolchains installed on this computer, and on
   Windows grants the folders a selected workspace's container needs, after
   one native confirmation per batch. Discovery runs no program.
