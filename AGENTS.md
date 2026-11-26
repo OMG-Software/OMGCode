@@ -67,7 +67,9 @@ tool: the OMGCode process sends one HTTPS `GET` to a public DNS host and
 returns a slice of the page text, labelled as untrusted web content. URLs
 with another scheme or port, IP literals, and local names are refused, every
 resolved address must be global unicast, the connection is pinned to the
-checked addresses, and a redirect to another host is not followed. Under
+checked addresses, and a redirect to another host is not followed. A
+refused URL is answered with a recoverable `url_refused` result and recorded
+as refused with the URL withheld by its digest, and the turn continues. Under
 `prompt` every fetch needs an approval; under `allow` only a host on the
 workspace's allowlist of at most 32 patterns runs without one. The settings
 lock is released before the request
