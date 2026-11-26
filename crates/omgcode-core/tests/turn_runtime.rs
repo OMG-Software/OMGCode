@@ -5462,9 +5462,12 @@ fn a_forty_kib_create_call_is_answered_as_too_large_and_the_turn_continues_to_a_
     );
     assert!(message.contains("\"limit_bytes\":32768"), "{message}");
     assert!(
-        message.contains("add the rest with edit calls"),
+        message.contains(
+            "To write a large file, create it with its first part, then add the rest with edit calls."
+        ),
         "{message}"
     );
+    assert!(!message.contains("Shorten the arguments"), "{message}");
     assert!(
         message.contains(&format!("\"received_bytes\":{}", received.len())),
         "{message}"
@@ -5474,10 +5477,6 @@ fn a_forty_kib_create_call_is_answered_as_too_large_and_the_turn_continues_to_a_
             "\"arguments_sha256\":\"{}\"",
             sha256(received.as_bytes())
         )),
-        "{message}"
-    );
-    assert!(
-        message.contains("create it with its first part"),
         "{message}"
     );
     assert!(
