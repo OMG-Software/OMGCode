@@ -57,7 +57,7 @@ meaningful alternative does not need an ADR.
 | [0040: Gate the model command tool with approvals and the trusted runner](0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md) | Accepted | 2026-11-14 |
 | [0041: Compact active context with readable summaries](0041-compact-active-context-with-readable-summaries.md) | Accepted | 2026-11-15 |
 | [0042: Store provider credentials in protected OS storage](0042-store-provider-credentials-in-protected-os-storage.md) | Accepted | 2026-11-15 |
-| [0043: Gate the model file edit tool with approvals and checkpointed apply](0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md) | Accepted | 2026-11-16 |
+| [0043: Gate the model file edit tool with approvals and checkpointed apply](0043-gate-the-model-file-edit-tool-with-approvals-and-checkpointed-apply.md) | Accepted; amended by ADR-0099 | 2026-11-16 |
 | [0044: Observe journals without the writer lock and index them in SQLite](0044-observe-journals-without-the-writer-lock-and-index-them-in-sqlite.md) | Accepted | 2026-11-16 |
 | [0045: Build the desktop shell on Tauri with a narrow command surface](0045-build-the-desktop-shell-on-tauri-with-a-narrow-command-surface.md) | Accepted | 2026-11-16 |
 | [0046: Decide model tool approvals in an isolated desktop window](0046-decide-model-tool-approvals-in-an-isolated-desktop-window.md) | Accepted | 2026-11-16 |
@@ -68,7 +68,7 @@ meaningful alternative does not need an ADR.
 | [0051: Cancel every model request and let an interrupt cancel a CLI turn](0051-cancel-every-model-request-and-interrupt-cli-turns.md) | Accepted | 2026-11-17 |
 | [0052: Publish rolling testing builds from main](0052-publish-rolling-testing-builds-from-main.md) | Accepted; amended by ADR-0058 | 2026-11-17 |
 | [0053: Compact the checkpoint ledger in place](0053-compact-the-checkpoint-ledger-in-place.md) | Accepted; amended by ADR-0070 | 2026-11-17 |
-| [0054: Add multi-edit and create model file tools](0054-add-multi-edit-and-create-model-file-tools.md) | Accepted, amended by ADR-0079 | 2026-11-17 |
+| [0054: Add multi-edit and create model file tools](0054-add-multi-edit-and-create-model-file-tools.md) | Accepted, amended by ADR-0079 and ADR-0099 | 2026-11-17 |
 | [0055: Add checkpointed delete and no-replace rename model tools](0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md) | Accepted | 2026-11-17 |
 | [0056: Send registry credentials to one declared origin](0056-send-registry-credentials-to-one-declared-origin.md) | Accepted | 2026-11-17 |
 | [0057: Import skills into a private registry and load them on explicit selection](0057-import-skills-into-a-private-registry-and-load-them-on-explicit-selection.md) | Accepted, amended by ADR-0082 | 2026-11-18 |
@@ -77,7 +77,7 @@ meaningful alternative does not need an ADR.
 | [0060: Change workspace settings from the desktop with native dialogs](0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md) | Accepted, amended by ADR-0081 and ADR-0088 | 2026-11-19 |
 | [0061: Check every recorded settings state in run watchers](0061-check-every-recorded-settings-state-in-run-watchers.md) | Accepted | 2026-11-19 |
 | [0062: Send the desktop message on Enter as a saved chat preference](0062-send-the-desktop-message-on-enter-as-a-saved-chat-preference.md) | Accepted | 2026-11-19 |
-| [0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions](0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md) | Accepted | 2026-11-19 |
+| [0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions](0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md) | Accepted; amended by ADR-0099 | 2026-11-19 |
 | [0064: Choose the model connection in settings and add Ollama Local](0064-choose-the-model-connection-in-settings-and-add-ollama-local.md) | Accepted, amended by ADR-0084 | 2026-11-19 |
 | [0065: Redesign the desktop windows with one dark theme and split layouts](0065-redesign-the-desktop-windows-with-one-dark-theme-and-split-layouts.md) | Accepted; amended by ADR-0095 | 2026-11-19 |
 | [0066: Choose the chat model from the local server's model list](0066-choose-the-chat-model-from-the-local-servers-model-list.md) | Accepted | 2026-11-19 |
@@ -111,4 +111,5 @@ meaningful alternative does not need an ADR.
 | [0094: Open the sign-in page through the shell URL association](0094-open-the-sign-in-page-through-the-shell-url-association.md) | Accepted | 2026-11-24 |
 | [0095: Use the OMG Software palette and OMGCode icons in the desktop](0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0096: Accept a plan-route stream without a Content-Type](0096-accept-a-plan-route-stream-without-a-content-type.md) | Accepted; amended by ADR-0097 | 2026-11-24 |
-| [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted | 2026-11-24 |
+| [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted; amended by ADR-0099 | 2026-11-24 |
+| [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |

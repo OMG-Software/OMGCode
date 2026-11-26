@@ -2,7 +2,7 @@ use omgcode_core::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use omgcode_core::provider::{
     LocalModelClient, LocalModelConfig, ModelReply, ProviderError, Usage,
 };
-use omgcode_core::turn::{CancelToken, ToolCall, ToolModelReply, tool_definitions};
+use omgcode_core::turn::{CancelToken, ToolCall, ToolCallError, ToolModelReply, tool_definitions};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 const SUCCESS: &str = r#"{"choices":[{"message":{"role":"assistant","content":"A plain reply."},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}"#;
 const MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
-const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 5 * 1024 * 1024;
 
 struct Fixture {
     address: String,
@@ -556,7 +556,7 @@ fn wire_size_limit_fails_before_network_request() {
         LocalModelConfig {
             base_url: address,
             model: "model".to_owned(),
-            context_tokens: 2_000_000,
+            context_tokens: 20_000_000,
             max_output_tokens: 1,
         },
         None,
@@ -569,7 +569,7 @@ fn wire_size_limit_fails_before_network_request() {
         },
         ModelMessage {
             role: ModelRole::User,
-            content: "x".repeat(300 * 1024),
+            content: "x".repeat(4 * 1024 * 1024 + 1),
         },
     ];
 
@@ -662,6 +662,26 @@ fn tool_requests_advertise_exact_function_tools_and_return_raw_calls() {
     // The adapter returns calls unvalidated; the runtime parses them strictly.
     assert_eq!(reply.tool_calls[0]["id"], "call-1");
     assert!(ToolCall::parse(&reply.tool_calls[0]).is_ok());
+}
+
+/// ADR-0099: an object in place of the arguments string is a shape error on
+/// every adapter. The buffered adapter returns the call unvalidated, and the
+/// runtime parser refuses it as `UnsupportedShape`, which ends the turn, as
+/// the Responses adapter's `MalformedResponse` does.
+#[test]
+fn object_valued_arguments_reach_the_runtime_as_an_unsupported_shape() {
+    let (reply, _) = tool_exchange(
+        r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"workspace_read_file","arguments":{"path":"notes.txt"}}}]},"finish_reason":"tool_calls"}]}"#,
+    );
+    let reply = reply.expect("the adapter returns calls unvalidated");
+    assert_eq!(
+        reply.tool_calls[0]["function"]["arguments"],
+        serde_json::json!({"path": "notes.txt"})
+    );
+    assert_eq!(
+        ToolCall::parse(&reply.tool_calls[0]).err(),
+        Some(ToolCallError::UnsupportedShape)
+    );
 }
 
 #[test]
@@ -906,9 +926,9 @@ fn text_before_a_malformed_payload_stays_delivered_and_the_call_fails() {
 }
 
 #[test]
-fn a_streamed_reply_over_one_mebibyte_is_refused() {
+fn a_streamed_reply_over_eight_mebibytes_is_refused() {
     let mut body = text_event("start");
-    while body.len() <= 1024 * 1024 {
+    while body.len() <= 8 * 1024 * 1024 {
         body.push_str(": padding padding padding padding padding padding\n");
     }
     let exchange = stream_exchange("200 OK", &body, EVENT_STREAM);
@@ -1488,4 +1508,38 @@ fn a_token_that_is_never_cancelled_does_not_disturb_a_slow_non_streamed_reply() 
     let reply = result.expect("a complete reply");
     assert_eq!(reply.content, "A plain reply.");
     assert_eq!(reply.finish_reason, "stop");
+}
+
+/// ADR-0099: the context budget, not a 256 KiB byte cap, bounds a request.
+#[test]
+fn a_chat_completions_request_over_256_kib_is_sent_when_the_context_budget_allows_it() {
+    let fixture = Fixture::start("200 OK", SUCCESS.as_bytes(), "");
+    let model = LocalModelClient::new(
+        LocalModelConfig {
+            base_url: fixture.address.clone(),
+            model: "already-loaded-model".to_owned(),
+            context_tokens: 1_000_000,
+            max_output_tokens: 512,
+        },
+        None,
+    )
+    .expect("client");
+    let mut conversation = vec![ModelMessage {
+        role: ModelRole::System,
+        content: BASE_PROMPT.to_owned(),
+    }];
+    for _ in 0..20 {
+        conversation.push(ModelMessage {
+            role: ModelRole::User,
+            content: "a".repeat(16 * 1024),
+        });
+    }
+
+    let reply = model
+        .complete(&conversation, &CancelToken::new())
+        .expect("a 320 KiB request is within the budget");
+
+    assert_eq!(reply.content, "A plain reply.");
+    let (_, request) = fixture.finish();
+    assert!(request.len() > 256 * 1024, "{} bytes", request.len());
 }

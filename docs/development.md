@@ -612,8 +612,14 @@ trusted application-data directory, and the workspace ID. The runtime:
   `workspace_multi_edit_file`, `workspace_create_file`,
   `workspace_rename_file`, `workspace_delete_file`,
   `workspace_create_directory`, and `workspace_run_command`;
-- rejects unknown tools, malformed or duplicate arguments, absolute or parent
-  paths, and duplicate call identifiers before dispatch;
+- answers a call that has the supported shape and a usable, unique call
+  identifier but names an unknown tool, carries arguments over the tool's
+  limit, malformed or unknown-field arguments, or an absolute or parent path,
+  with a recoverable `unsupported_tool`, `arguments_too_large`,
+  `invalid_arguments`, or `invalid_path` result and continues the turn
+  ([ADR-0099](adr/0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md));
+  a response element with no supported shape or no usable identifier, and a
+  duplicate call identifier, still end the turn before any dispatch;
 - opens the control store for each broker call, obtains a fresh session binding,
   and releases the settings lock before the next model request;
 - reserves assembled-prompt capacity and enforces the selected per-message limit
@@ -718,8 +724,13 @@ runner; an edit calls the checkpointed apply, as the
 [model edit workflow](#model-edit-workflow) shows.
 The output reports `model_tools.mode` as `enabled`, with the workspace ID,
 rounds, call count, tool bytes, and withheld count. `reply.finish_reason` is `length` when the token
-limit cut the final reply short; the turn is still recorded as complete. A refused or invalid call ends the turn with a `permission`,
-`tool_call`, or `tool_limit` error, recorded in the journal.
+limit cut the final reply short; the turn is still recorded as complete. A call
+that is denied by a preference ends the turn with a `permission` error, which
+the session journal records as `tool_denied`. A response with no supported
+call shape, or a duplicate call identifier, ends it with a `tool_call` error,
+recorded as `invalid_tool_call`. A spent turn budget ends it with
+`tool_limit`, recorded under the same code. A call rejected for its tool name,
+argument size, arguments, or path does not end the turn (ADR-0099).
 
 ```text
 omgcode --data-dir C:\omgcode-data chat --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Summarise README.md."
@@ -783,8 +794,8 @@ an explicitly selected service configured for it.
 ### Model edit workflow
 
 `workspace_edit_file` takes a workspace-relative `path`, a non-empty
-`old_text` that must occur exactly once, and a `new_text`, all within the 4 KiB
-argument limit. It edits only an existing UTF-8 regular file of at most 1 MiB,
+`old_text` that must occur exactly once, and a `new_text`, all within the 32 KiB
+argument limit of the three file-text tools (ADR-0099). It edits only an existing UTF-8 regular file of at most 1 MiB,
 before and after the edit. A missing, repeated, or unchanged `old_text`
 returns the recoverable `edit_no_match`, `edit_ambiguous`, or `edit_unchanged`
 result. The tool description asks the model to read the file if the current text
@@ -822,7 +833,7 @@ concurrent writer; the acknowledgement records the operating assumption only.
 Restore and checkpoint management stay trusted `file` commands.
 
 `workspace_multi_edit_file` takes a `path` and one to 16 `edits`, each with a
-non-empty `old_text` and a `new_text`, all within the 4 KiB argument limit.
+non-empty `old_text` and a `new_text`, all within the 32 KiB argument limit.
 Every `old_text` must occur exactly once in the original file, so no
 replacement can see another's output. The matches must not overlap
 (`edit_overlap`); touching matches are allowed. A missing or repeated
@@ -836,7 +847,9 @@ a multi-edit. Review shows each
 there is no atomicity across files.
 
 `workspace_create_file` takes a `path` and `content` (possibly empty) within the
-same 4 KiB limit, which also bounds the new file. Before recording an approval
+same 32 KiB argument limit, which also bounds the new file to a little under
+32 KiB. A larger file is written as a create followed by edits; a call over the
+limit returns `arguments_too_large` with the limit and the received size. Before recording an approval
 it reads the path through the audited broker and lists its parent: an existing
 file returns `file_exists`, and a missing parent returns `parent_not_found`,
 and neither records an approval. After approval, the approval is consumed and the
@@ -936,11 +949,14 @@ can archive, restore, and interrupt a session; see the
 | Custom instructions | 16 KiB of UTF-8 text |
 | Each user/assistant message | 16 KiB of UTF-8 text |
 | History in one request | 640 messages |
-| Assembled text / encoded request | 256 KiB each, checked separately |
+| Assembled text / encoded request | 4 MiB each, checked separately (ADR-0099); the configured context budget normally binds first |
 | Encoded provider response | 1 MiB |
-| Encoded journal event, including LF | 64 KiB |
+| Streamed provider response (Chat Completions and Responses) | 8 MiB |
+| Encoded journal event, including LF | 80 KiB |
 | Journal | 8 MiB and 10,000 events |
-| Tool call arguments in a session event | 4 KiB |
+| Tool call arguments, create, edit, and multi-edit tools | 32 KiB |
+| Tool call arguments, every other tool | 4 KiB |
+| Tool call arguments in a session event | 32 KiB |
 | Model edit and multi-edit file size, before and after | 1 MiB |
 | Model rename and delete source size | 1 MiB |
 | Model multi-edit replacements per call | 16 |

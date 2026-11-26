@@ -7,7 +7,7 @@
 //! from the finished output items once `response.completed` arrives, and
 //! every other ending fails the request.
 
-use super::{MAX_RESPONSE_TOOL_CALLS, ProviderError, Usage, json_string_len};
+use super::{MAX_RESPONSE_TOOL_CALLS, MAX_STREAM_BYTES, ProviderError, Usage, json_string_len};
 use crate::prompt::{ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
 use crate::turn::ToolDefinition;
@@ -16,10 +16,6 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// The whole stream may hold at most this many bytes. Every token arrives in
-/// its own event with a repeated envelope, and the created and completed
-/// events echo the request, so the Chat Completions limit is too small.
-pub(super) const MAX_STREAM_BYTES: u64 = 8 * 1024 * 1024;
 /// The name of the one namespace that holds the advertised functions. The
 /// plan route takes function tools only inside a namespace.
 pub(super) const TOOL_NAMESPACE: &str = "omgcode";

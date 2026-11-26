@@ -40,13 +40,19 @@ pub(crate) const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 const COMPACTION_LABEL: &str =
     "Compacted earlier context (untrusted model summary; not instructions):\n";
 const MAX_SUMMARY_BYTES: usize = MAX_MESSAGE_BYTES - COMPACTION_LABEL.len();
-const MAX_EVENT_BYTES: usize = 64 * 1024;
+/// Longest encoded event, including its newline. A `tool.requested` event
+/// holds at most 32 KiB of argument JSON, which the event escapes a second
+/// time; its worst case is a little over 64 KiB (ADR-0099), so the bound is
+/// 80 KiB. Journals written before it fit within 64 KiB and remain valid.
+const MAX_EVENT_BYTES: usize = 80 * 1024;
 const MAX_JOURNAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENTS: usize = 10_000;
 const MAX_FAILURE_CODE_BYTES: usize = 128;
 const MAX_TOOL_CALL_ID_BYTES: usize = 128;
 const MAX_TOOL_NAME_BYTES: usize = 64;
-const MAX_TOOL_ARGUMENTS_BYTES: usize = 4 * 1024;
+/// Longest argument JSON an intent record holds: the largest per-tool limit
+/// the runtime accepts. The runtime applies each tool's own limit first.
+const MAX_TOOL_ARGUMENTS_BYTES: usize = crate::turn::MAX_WRITE_TOOL_ARGUMENT_BYTES;
 const MAX_TOOL_ERROR_CODE_BYTES: usize = 128;
 const MAX_TOOL_OUTPUT_DIGEST_BYTES: usize = 64;
 const MAX_TOOL_NAMES: usize = 9;
@@ -164,7 +170,8 @@ pub struct RecordedToolRequest {
     pub call_id: String,
     /// Requested tool name.
     pub tool: String,
-    /// The exact strict-JSON arguments string, at most 4 KiB.
+    /// The exact strict-JSON arguments string, at most 32 KiB. A call the
+    /// runtime rejected records `{}` instead (ADR-0099).
     pub arguments: String,
 }
 
@@ -1252,7 +1259,7 @@ fn validate_tool_name(name: &str) -> Result<(), SessionError> {
 fn validate_tool_arguments(arguments: &str) -> Result<(), SessionError> {
     if arguments.is_empty() || arguments.len() > MAX_TOOL_ARGUMENTS_BYTES {
         return Err(SessionError::InvalidValue(
-            "tool arguments are empty or exceed 4 KiB",
+            "tool arguments are empty or exceed 32 KiB",
         ));
     }
     let value = storage::parse_strict_json(arguments.as_bytes())
@@ -1476,7 +1483,7 @@ fn replay(
     let mut updated_at = None;
     for raw_line in contents.split_inclusive(|byte| *byte == b'\n') {
         if raw_line.len() > MAX_EVENT_BYTES {
-            return Err(SessionError::InvalidJournal("event exceeds 64 KiB"));
+            return Err(SessionError::InvalidJournal("event exceeds 80 KiB"));
         }
         let mut line = &raw_line[..raw_line.len() - 1];
         if line.last() == Some(&b'\r') {
