@@ -66,6 +66,21 @@ const MAX_TOOL_DEFINITIONS: usize = 10;
 /// Upper bound on the encoded bytes of the effort field, either shape: the
 /// longest is `,"reasoning":{"effort":"minimal"}` (33 bytes).
 const EFFORT_FIELD_BYTES: u64 = 48;
+
+/// The encoded bytes the effort field adds to one request: a fixed upper bound
+/// when an effort is chosen, and zero when none is sent (ADR-0102).
+///
+/// The client counts it in its own size and context checks; a caller that
+/// estimates a request before it is built adds the same figure, so the two
+/// estimates agree.
+pub const fn effort_field_bytes(effort: Option<ReasoningEffort>) -> u64 {
+    if effort.is_some() {
+        EFFORT_FIELD_BYTES
+    } else {
+        0
+    }
+}
+
 /// Upper bound on raw tool calls accepted from one response before validation.
 /// The turn runtime applies its own, smaller per-round limit.
 const MAX_RESPONSE_TOOL_CALLS: usize = 64;
@@ -577,11 +592,7 @@ impl LocalModelClient {
     /// The encoded bytes the effort field adds to a request, counted in the
     /// size and context estimates.
     const fn effort_bytes(&self) -> u64 {
-        if self.reasoning_effort.is_some() {
-            EFFORT_FIELD_BYTES
-        } else {
-            0
-        }
+        effort_field_bytes(self.reasoning_effort)
     }
 
     /// Send one bounded, non-streaming Chat Completions request.

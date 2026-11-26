@@ -458,7 +458,12 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   endpoints. The fixed `anthropic`, `deepseek`, `tencent`, `meta`, and
   `thinking_machines` endpoints refuse one as an invalid configuration before
   any request: Anthropic documents the field as ignored and DeepSeek as
-  overridden. Values are not adjusted per model, and each provider's model
+  overridden. The endpoint text decides, not the profile kind: a typed
+  `openai_compatible` address that is exactly one of the fixed endpoints (one
+  trailing `/` allowed) takes that endpoint's rule, so one typed as the
+  Anthropic or DeepSeek endpoint refuses an effort too. The field's bytes
+  count in the pre-turn context estimate. Values are not adjusted per model,
+  and each provider's model
   decides which it accepts; a refused value arrives as that provider's HTTP
   error. No request with an effort was made to any provider.
 - **Not covered.** Native provider APIs (for example Anthropic Messages),

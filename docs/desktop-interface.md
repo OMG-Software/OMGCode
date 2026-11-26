@@ -824,7 +824,9 @@ untouched controls take the returned values.
   OpenAI, Google, Moonshot, MiniMax, OpenRouter, Z.ai, and xAI endpoints take
   all seven; the fixed Anthropic, DeepSeek, Tencent, Meta, and Thinking
   Machines Lab endpoints take none, and there the dropdown is disabled with
-  the note "This connection does not take an effort setting." Choosing an
+  the note "This connection does not take an effort setting." The endpoint
+  decides, not the kind: an `openai_compatible` address typed as exactly one
+  of the fixed endpoints takes that endpoint's rule. Choosing an
   effort calls `session_effort_select`, which shows no dialog and shares the
   model choice's serialized writes. A provider choice clears the effort with
   the model; a model choice keeps it. It is disabled with the other dropdowns
@@ -993,7 +995,8 @@ changes while it is shown, and again when a turn settles; see
   resolves everything from trusted state by session id: the journal through the
   index, the saved chat budgets and global instructions, the session
   workspace's saved instructions (read under the preferences lock, as
-  `chat_send` reads them), and live settings for the tool decision. It
+  `chat_send` reads them), the session's recorded reasoning effort, and live
+  settings for the tool decision. It
   sends nothing to a model, appends nothing to any journal, and returns no
   instruction or message text, only numbers and fixed codes. It runs on a
   blocking task.
@@ -1003,8 +1006,10 @@ changes while it is shown, and again when a turn settles; see
   the conversation history after the compaction boundary (with its message
   count; the boundary is named only when a summary is sent), selected skills,
   and message framing. Framing is the fixed overhead
-  no part owns (the instructions label and the instruction message's
-  overhead), reported as its own part so the parts add up to the estimate.
+  no part owns (the instructions label, the instruction message's
+  overhead, and the reasoning effort field when the session records an
+  effort, ADR-0102), reported as its own part so the parts add up to the
+  estimate.
   Tool definitions count only when live settings would offer tools (the same
   rule a turn applies); otherwise the part is not included and carries a fixed
   reason such as `preference_disabled`. Skills are loaded only when selected

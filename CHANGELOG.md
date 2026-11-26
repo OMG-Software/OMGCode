@@ -18,13 +18,15 @@ Changes are recorded here before a release version is assigned.
   `chat_send` takes `reasoning_effort` in its settings. The CLI adds
   `chat --reasoning-effort`. Chat Completions requests carry it as
   `reasoning_effort`, and the ChatGPT plan route as
-  `"reasoning": {"effort": ...}`; the field's bytes count in the context
-  estimate, and compaction summary requests send none. Core allows it only
-  for loopback endpoints, a typed `openai_compatible` address, and the fixed
+  `"reasoning": {"effort": ...}`; the field's bytes count in the client's
+  checks, the pre-turn compaction trigger, and the **Context** tab's framing
+  part, and compaction summary requests send none. Core allows it only for
+  loopback endpoints, a typed `openai_compatible` address, and the fixed
   Ollama Cloud, OpenAI, Google, Moonshot, MiniMax, OpenRouter, Z.ai, and xAI
   endpoints; Anthropic, DeepSeek, Tencent, Meta, and Thinking Machines Lab
   refuse it before any request, and the dropdown is disabled there with a
-  note. A version-3 `request.manifest` records the effort that was sent as an
+  note. The endpoint decides, not the profile kind, so a typed address that
+  is exactly one of those refusing endpoints refuses it too. A version-3 `request.manifest` records the effort that was sent as an
   optional `reasoning_effort`; 0.64.0 and earlier refuse a journal that has
   it, and a version 1 or 2 session refuses an effort before anything is
   recorded. Values are not adjusted per model, so a model that refuses one

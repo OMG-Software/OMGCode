@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatDefaults, ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
-import { createMockBackend, isCustomEndpoint, isLocalEndpoint } from "../src/mock/backend";
+import {
+  createMockBackend,
+  endpointTakesEffort,
+  isCustomEndpoint,
+  isLocalEndpoint,
+} from "../src/mock/backend";
 import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 
 interface Detail {
@@ -260,6 +265,27 @@ describe("mock backend", () => {
     await expect(
       invoke("session_effort_select", { session_id: id, reasoning_effort: null }),
     ).resolves.toMatchObject({ reasoning_effort: null });
+
+    // The endpoint decides, not the kind: a typed address that is exactly the Anthropic endpoint
+    // takes the Anthropic rule, and any other typed address takes an effort.
+    for (const [name, endpoint, takes] of [
+      ["typed-anthropic", "https://api.anthropic.com/v1", false],
+      ["typed-other", "https://llm.example.com/v1", true],
+    ] as const) {
+      const current = (await invoke("settings_overview", {})) as SettingsOverview;
+      await invoke("settings_add_connection", {
+        revision: current.revision,
+        name,
+        kind: "openai_compatible",
+        endpoint,
+        api_key: "test-key-not-real",
+      });
+      const typed = (await invoke("connection_select", {
+        session_id: id,
+        profile: name,
+      })) as Status;
+      expect(typed.reasoning_efforts.length > 0, endpoint).toBe(takes);
+    }
   });
 
   // The cases core's `validate_base_url` decides (crates/omgcode-core/src/provider.rs tests).
@@ -334,6 +360,33 @@ describe("mock backend", () => {
     [`https://example.org/${"a".repeat(250)}`, false],
   ])("decides the typed endpoint %s as core does", (endpoint, accepted) => {
     expect(isCustomEndpoint(endpoint)).toBe(accepted);
+  });
+
+  // Core's `EFFORT_ENDPOINTS` and parse order (ADR-0102): an allowlist, so an endpoint core does
+  // not name, or cannot parse, takes none.
+  it.each([
+    ["http://127.0.0.1:1234/v1", true],
+    ["https://ollama.com/v1", true],
+    ["https://api.openai.com/v1", true],
+    ["https://api.openai.com/v1/", true],
+    ["https://generativelanguage.googleapis.com/v1beta/openai", true],
+    ["https://api.moonshot.ai/v1", true],
+    ["https://api.minimax.io/v1", true],
+    ["https://openrouter.ai/api/v1", true],
+    ["https://api.z.ai/api/paas/v4", true],
+    ["https://api.x.ai/v1", true],
+    ["https://llm.example.com/v1", true],
+    ["https://api.anthropic.com/v1", false],
+    ["https://api.anthropic.com/v1/", false],
+    ["https://api.deepseek.com", false],
+    ["https://api.hunyuan.cloud.tencent.com/v1", false],
+    ["https://api.llama.com/compat/v1", false],
+    ["https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1", false],
+    ["http://llm.example.com/v1", false],
+    ["not an endpoint", false],
+    ["", false],
+  ])("decides whether %s takes a reasoning effort as core does", (endpoint, takes) => {
+    expect(endpointTakesEffort(endpoint)).toBe(takes);
   });
 
   it("records an IPv6 loopback connection and refuses port 0", async () => {

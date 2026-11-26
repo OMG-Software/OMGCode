@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-11-26
-- Amends: [ADR-0089](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) decision 1, for the box's contents only
+- Amends: [ADR-0089](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) decision 1, for the box's contents only;
+  [ADR-0087](0087-show-a-per-part-context-estimate-for-the-open-session.md) decision 3, for what framing counts
 
 ## Context
 
@@ -56,15 +57,22 @@ No provider's effort handling was exercised with a real request.
    field (Ollama Cloud, OpenAI, Google, Moonshot, MiniMax, OpenRouter, Z.ai,
    and xAI). Anthropic, DeepSeek, Tencent, Meta, and Tinker do not. The list
    is an allowlist, so a provider added later takes no effort until its
-   documentation is checked.
+   documentation is checked. The endpoint text decides, not the profile
+   kind: `ModelEndpoint::parse` matches the fixed table first, so an
+   `openai_compatible` address typed as exactly a fixed endpoint (one
+   trailing `/` allowed) takes that endpoint's rule. One typed as the
+   Anthropic or DeepSeek endpoint therefore takes no effort either.
 3. **The client sends the effort only when one is chosen.**
    `LocalModelClient::with_reasoning_effort` sets it after construction and
    refuses an effort for an endpoint that does not take one with
    `InvalidConfiguration`, before anything is sent. A Chat Completions request
    then carries `"reasoning_effort": "<value>"`; a plan-route Responses
    request carries `"reasoning": {"effort": "<value>"}`. With no effort,
-   both bodies are byte-for-byte as before. The field's bytes count in the
-   request size and context estimates.
+   both bodies are byte-for-byte as before. The field's bytes (a fixed upper
+   bound, `effort_field_bytes`) count in the client's request size and
+   context checks, in the turn's pre-turn compaction trigger, and in the
+   desktop **Context** tab, where they are part of framing (amending ADR-0087
+   decision 3), so the parts still add up to the trigger's estimate.
 4. **The value is not adjusted to the model.** Accepted values depend on the
    model, which core cannot know. The server decides, and a refusal is the
    existing `provider` failure with its HTTP status. No value is rewritten,

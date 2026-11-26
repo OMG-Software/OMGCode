@@ -101,7 +101,7 @@ meaningful alternative does not need an ADR.
 | [0084: Drop the status bar connection choice](0084-drop-the-status-bar-connection-choice.md) | Accepted, amended by ADR-0089 | 2026-11-23 |
 | [0085: Read Git status with gix without running programs](0085-read-git-status-with-gix-without-running-programs.md) | Accepted | 2026-11-24 |
 | [0086: Show the session's subprocesses in the main window](0086-show-the-sessions-subprocesses-in-the-main-window.md) | Accepted | 2026-11-24 |
-| [0087: Show a per-part context estimate for the open session](0087-show-a-per-part-context-estimate-for-the-open-session.md) | Accepted | 2026-11-24 |
+| [0087: Show a per-part context estimate for the open session](0087-show-a-per-part-context-estimate-for-the-open-session.md) | Accepted; amended by ADR-0102 | 2026-11-24 |
 | [0088: Change execution settings in the settings window](0088-change-execution-settings-in-the-settings-window.md) | Accepted | 2026-11-24 |
 | [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted; amended by ADR-0102 | 2026-11-24 |
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |

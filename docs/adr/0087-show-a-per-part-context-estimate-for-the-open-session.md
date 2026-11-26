@@ -1,6 +1,6 @@
 # 0087: Show a per-part context estimate for the open session
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR-0102](0102-choose-a-reasoning-effort-per-session.md)
 - Date: 2026-11-24
 - Implemented: the command, and the view as the right-hand panel's
   **Context** tab

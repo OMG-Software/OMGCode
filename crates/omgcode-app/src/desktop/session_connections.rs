@@ -640,8 +640,15 @@ mod tests {
             reasoning_efforts("https://api.openai.com/v1"),
             ReasoningEffort::ALL.to_vec()
         );
+        // A typed `openai_compatible` address takes one, unless its text is a
+        // named provider's fixed endpoint: that rule wins (ADR-0102).
+        assert_eq!(
+            reasoning_efforts("https://llm.example.com/v1"),
+            ReasoningEffort::ALL.to_vec()
+        );
         for endpoint in [
             "https://api.anthropic.com/v1",
+            "https://api.anthropic.com/v1/",
             "https://api.deepseek.com",
             "not an endpoint",
             "",

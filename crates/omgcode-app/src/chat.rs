@@ -371,14 +371,19 @@ pub fn run_chat_turn_with_clients(
     turn.skills = &loaded_skills;
     let tools_enabled = matches!(mode, ToolMode::Enabled { .. });
     let skill_extra = skills::context_bytes(&loaded_skills);
-    let tool_extra = skill_extra
-        + if tools_enabled {
+    // The effort field is sent with every request of the turn, so the trigger
+    // counts it as the client's own checks do (ADR-0102).
+    let fixed_extra = skill_extra
+        .saturating_add(if tools_enabled {
             TOOL_SCHEMA_ESTIMATE_BYTES
         } else {
             0
-        };
+        })
+        .saturating_add(preflight::effort_extra_bytes(
+            clients.chat.reasoning_effort(),
+        ));
     let meter =
-        preflight::preflight_context(journal, &turn, &clients.summary, tool_extra, tools_enabled)?;
+        preflight::preflight_context(journal, &turn, &clients.summary, fixed_extra, tools_enabled)?;
     // Compaction requests can take long; a selection withdrawn meanwhile
     // stops the turn before its first request.
     skills::recheck(data_root, journal, &loaded_skills)?;

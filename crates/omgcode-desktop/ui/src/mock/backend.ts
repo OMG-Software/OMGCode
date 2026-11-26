@@ -17,6 +17,7 @@ import type {
   ContextBreakdown,
   ContextPart,
   ContextPartId,
+  FixedHostedKind,
   PermissionFlags,
   ProcessEntry,
   ReasoningEffort,
@@ -66,13 +67,16 @@ const REASONING_EFFORTS: readonly ReasoningEffort[] = [
   "xhigh",
   "max",
 ];
-/** The fixed hosted kinds whose documented endpoint takes no `reasoning_effort` (ADR-0102). */
-const NO_EFFORT_KINDS: ReadonlySet<string> = new Set([
-  "anthropic",
-  "deepseek",
-  "tencent",
-  "meta",
-  "thinking_machines",
+/** The fixed hosted kinds whose documented endpoint takes `reasoning_effort`: core's `EFFORT_ENDPOINTS` (ADR-0102). */
+const EFFORT_KINDS: ReadonlySet<FixedHostedKind> = new Set<FixedHostedKind>([
+  "ollama_cloud",
+  "openai",
+  "google",
+  "moonshot",
+  "minimax",
+  "open_router",
+  "z_ai",
+  "xai",
 ]);
 
 interface Fail {
@@ -1689,10 +1693,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
-  /** The efforts a session's connection takes: all, or none for the kinds ADR-0102 names. */
+  /** The efforts a session's connection takes: all, or none where core's endpoint rule takes none. */
   function acceptedEfforts(sessionId: string | null): ReasoningEffort[] {
-    const kind = effectiveConnection(sessionId).kind;
-    return kind !== null && NO_EFFORT_KINDS.has(kind) ? [] : [...REASONING_EFFORTS];
+    return endpointTakesEffort(effectiveConnection(sessionId).endpoint)
+      ? [...REASONING_EFFORTS]
+      : [];
   }
 
   /** What the composer reads for a session (ADR-0071). */
@@ -1871,6 +1876,22 @@ const MAX_ENDPOINT_BYTES = 256;
  */
 export function isLocalEndpoint(endpoint: string): boolean {
   return isLocalEndpointText(endpoint);
+}
+
+/**
+ * The mock's copy of core's effort rule (`ModelEndpoint::takes_reasoning_effort`, ADR-0102), in
+ * core's parse order. The endpoint decides, not the profile kind: a fixed endpoint, with or without
+ * one trailing `/`, takes an effort only where its provider documents one, even when typed as an
+ * `openai_compatible` address; any other typed address and a loopback endpoint take one; anything
+ * else takes none.
+ */
+export function endpointTakesEffort(endpoint: string): boolean {
+  for (const [kind, fixed] of Object.entries(FIXED_ENDPOINTS) as [FixedHostedKind, string][]) {
+    if (endpoint === fixed || endpoint === `${fixed}/`) {
+      return EFFORT_KINDS.has(kind);
+    }
+  }
+  return isCustomEndpoint(endpoint) || isLocalEndpoint(endpoint);
 }
 
 /**
