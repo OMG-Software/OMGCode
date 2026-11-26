@@ -120,8 +120,10 @@ merged to `main` at the time of writing):
   [settings window](#settings-window).
 - Since version 0.67.0 (ADR-0103), the **Toolchain profiles** group generates
   profile proposals from the toolchains installed on this computer, and on
-  Windows grants the folders a selected workspace's container needs, after
-  one native confirmation per batch. Discovery runs no program.
+  Windows grants a selected workspace's container the folders it needs that
+  this account can change, after one native confirmation per batch; folders
+  that need an administrator, or whose access-control list could not be
+  read, are named and skipped. Discovery runs no program.
 
 Not implemented:
 

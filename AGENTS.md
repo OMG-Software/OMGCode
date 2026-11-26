@@ -222,8 +222,8 @@ reads install folders, the operator's `PATH`, and installer-written files,
 runs no program, and never reads repository configuration such as
 `rust-toolchain.toml`. The operator selects
 proposals, and one native confirmation per batch records them through the
-core add call or, on Windows, grants the folders a workspace's container
-needs; discovery grants nothing
+core add call or, on Windows, grants a workspace's container the folders it
+needs that this account can change; discovery grants nothing
 ([ADR-0103](docs/adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 Other credentials, apart from ChatGPT sign-in and sign-out, still change, and packages are fetched and programs run,
 only through the trusted CLI. The desktop shell has no working terminal, diff
