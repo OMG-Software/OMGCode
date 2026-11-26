@@ -1,6 +1,7 @@
 # 0072: Resize and collapse the main window panels and follow the transcript end
 
-- Status: Accepted
+- Status: Accepted, amended by ADR-0083 and
+  [ADR-0101](0101-make-every-section-divider-movable.md)
 - Date: 2026-11-20
 - Implemented: version 0.51.0
 

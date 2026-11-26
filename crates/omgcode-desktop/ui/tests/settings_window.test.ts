@@ -15,6 +15,7 @@ import {
   DEFAULT_ENDPOINTS,
   FOLDER_REPAIRED,
   MODEL_HELP,
+  NAV_WIDTH,
   NOTHING_CHANGED,
   PERMISSION_LABELS,
   REPAIR_FOLDER_LABEL,
@@ -675,6 +676,26 @@ describe("settings window", () => {
     await settle();
     expect(root.textContent).toContain("A chat turn is running in a session of this workspace.");
     expect(workspaceCard().textContent).toContain("/home/dev/project");
+  });
+
+  it("resizes the section list with a splitter, hidden with the list (ADR-0101)", async () => {
+    await startOverview(() => overview());
+    const nav = root.querySelector(".settings-nav") as HTMLElement;
+    const splitter = root.querySelector('[role="separator"]') as HTMLElement;
+    expect(nav.nextElementSibling).toBe(splitter);
+    expect(splitter.nextElementSibling?.classList.contains("settings-content")).toBe(true);
+    expect(splitter.getAttribute("aria-label")).toBe("Resize the settings sections");
+    expect(splitter.getAttribute("aria-controls")).toBe(nav.id);
+    expect(nav.style.getPropertyValue("--nav-width")).toBe(`${NAV_WIDTH.initial}px`);
+    splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(nav.style.getPropertyValue("--nav-width")).toBe(`${(NAV_WIDTH.initial ?? 0) + 16}px`);
+    expect(splitter.hidden).toBe(false);
+    app?.dispose();
+    setInvoker(null);
+    await start(() => overview({ scope: { workspace_id: WORKSPACE } }));
+    const scopedNav = root.querySelector(".settings-nav") as HTMLElement;
+    expect(scopedNav.hidden).toBe(true);
+    expect((root.querySelector('[role="separator"]') as HTMLElement).hidden).toBe(true);
   });
 
   it("offers no removal in the view scoped to one session's workspace", async () => {

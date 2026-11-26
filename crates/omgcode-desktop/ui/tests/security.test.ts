@@ -78,7 +78,7 @@ describe("source scan", () => {
     expect(offenders, name).toEqual([]);
   });
 
-  it("sets inline style only for the two panel widths, in src/main/layout.ts (ADR-0072)", () => {
+  it("sets inline style only for section sizes, in src/ui/size_property.ts (ADR-0072, ADR-0101)", () => {
     // A write: a call on `.style`, an assignment to `.style` or one of its properties, or another
     // way to add style rules. Reading a computed style, as capture.ts does, is not one.
     const write =
@@ -86,14 +86,29 @@ describe("source scan", () => {
     const styled = Object.entries(sources)
       .filter(([, text]) => write.test(text))
       .map(([key]) => relative(key));
-    expect(styled).toEqual(["src/main/layout.ts"]);
-    const layout = sources["../src/main/layout.ts"] ?? "";
-    const writes = layout.match(/\.style\.[A-Za-z]+\([^)]*\)/g) ?? [];
-    expect(writes).toHaveLength(1);
-    // The property name is one of two sides and the value a computed whole number of pixels.
-    expect(writes[0]).toMatch(
-      /^\.style\.setProperty\(`--\$\{state\.side\}-width`, `\$\{state\.width\}px`\)$/,
+    expect(styled).toEqual(["src/ui/size_property.ts"]);
+    const sizes = sources["../src/ui/size_property.ts"] ?? "";
+    const writes = sizes.match(/\.style\.[A-Za-z]+\([^)]*\)/g) ?? [];
+    // One write of a checked name and a whole number of pixels, and one removal of a checked name.
+    expect(writes).toEqual([
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the expected source text, not a template.
+      ".style.setProperty(name, `${pixels}px`)",
+      ".style.removeProperty(name)",
+    ]);
+    expect(sizes).toMatch(/if \(!SIZE_PROPERTIES\.includes\(name\)\) \{\s*throw/);
+    expect(sizes).toMatch(
+      /if \(!Number\.isSafeInteger\(pixels\) \|\| pixels < 0 \|\| pixels > MAX_SECTION_SIZE\) \{\s*throw/,
     );
+    // Every listed property is a size custom property.
+    const listed = /SIZE_PROPERTIES = \[([^\]]*)\]/.exec(sizes)?.[1] ?? "";
+    const names = [...listed.matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(name).toMatch(/^--[a-z]+(-[a-z]+)*-(width|height)$/);
+    }
+    // The main window's columns still pass a clamped width for one of two sides.
+    const layout = sources["../src/main/layout.ts"] ?? "";
+    expect(layout).toMatch(/setSizeProperty\(element, `--\$\{state\.side\}-width`, state\.width\)/);
     expect(layout).toMatch(/type Side = "left" \| "right";/);
     expect(layout).toMatch(/state\.width = clamp\(Math\.round\(requested\)/);
   });

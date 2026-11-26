@@ -103,6 +103,12 @@ merged to `main` at the time of writing):
   The approvals window reviews a `network` approval as **Web fetch**, and
   the `settings` window sets each workspace's `web_fetch` preference and
   edits its host allowlist. See [Web tab](#web-tab).
+- Since version 0.65.0 (ADR-0101), every section divider moves: the
+  `approvals` queue's, the `settings` section list's, the line above the
+  `main` window's composer, which sets the message box's height, and the
+  line above the right-hand panel's footer. Each is a window splitter like
+  the column separators, without collapse. No command, IPC shape, or
+  permission changed. See [section dividers](#section-dividers).
 - Since version 0.56.0 (ADR-0089, ADR-0084), the provider and model choice
   moved from the composer to a box in the right-hand panel's fixed footer,
   with a **Model** rail icon when the panel is collapsed, and the status bar
@@ -376,8 +382,9 @@ system's theme.
   combination.
 - **Shared components.** `ui/src/ui/` holds a segmented control (radio-group
   semantics: one tab stop, arrow keys move, Space or Enter chooses), a tab
-  strip (tablist semantics: arrow keys select), and a `<details>` popover that
-  closes on Escape or a click outside it. They import no IPC code, so every
+  strip (tablist semantics: arrow keys select), a `<details>` popover that
+  closes on Escape or a click outside it, and a splitter (see
+  [section dividers](#section-dividers)). They import no IPC code, so every
   bundle can use them. The segmented control never changes itself; its window
   draws it again from the state the core returns.
 - **Window sizes.** `main` opens at 1200 by 800 pixels with a minimum of 800
@@ -401,7 +408,8 @@ The `main` window is laid out as follows.
   rail (on narrowing, the terminal panel first) and stays collapsed until the
   operator expands it. Widths and collapsed
   states last until the window closes. The shell's two width properties are
-  the frontend's only inline style.
+  written through `ui/src/ui/size_property.ts`, the frontend's only style
+  write (ADR-0101).
 - **Conversation header.** The title clamps to two lines and the workspace
   folder to one. Each carries its full text, neutralised, as a `title`
   tooltip; there is no separate disclosure that repeats them.
@@ -467,7 +475,9 @@ The `main` window is laid out as follows.
   manifest, and archive or restore notes are thin divider lines. A tool
   request and its result stay separate rows, because paging can put them on
   different pages.
-- **Composer.** The message box, then one toolbar on the right. Left to
+- **Composer.** A movable top line that sets the message box's height
+  (see [section dividers](#section-dividers)), the message box, then one
+  toolbar on the right. Left to
   right it holds the byte counter, the running label, a **Skills** icon button
   (a puzzle piece) that opens the skills menu, hidden when no skill is
   enabled, a **Chat settings** icon button (a gear) that opens the chat
@@ -489,6 +499,48 @@ The `main` window is laid out as follows.
   carry no such signal, and the approval detail is not available to its
   bundle. It therefore shows only the advisory count.
 
+### Section dividers
+
+Since 0.65.0
+([ADR-0101](adr/0101-make-every-section-divider-movable.md)) every line
+between two sections of content moves. The `main` window's columns use the
+separators described above, which also collapse. Every other divider is built
+by `ui/src/ui/splitter.ts`, sizes one section against one neighbour, and
+never collapses either:
+
+| Window | Section | Neighbour | Pixels | Starts at | Neighbour keeps |
+| --- | --- | --- | --- | --- | --- |
+| `approvals` | Queue width | Review pane | 200 to 640 | 300 | 280 |
+| `approvals`, under 720 wide | Queue height | Review pane | 96 to 640 | 240 | 160 |
+| `settings` | Section list width | Content | 150 to 420 | 190 | 320 |
+| `main` | Message box height | Transcript | 64 to 1200 | three rows | 120 |
+| `main` | Right-hand panel footer height | Tab content | 48 to 720 | its content | 96 |
+
+- **Use.** Drag the line, or focus it and use the arrow keys along its
+  movement (16 pixels, 64 with Shift), Home for the section's minimum, and End
+  for the largest size its neighbour allows. A double click restores the
+  starting size, or the stylesheet's own size for the message box and the
+  footer. Enter does nothing. Each line is a focusable `separator` with an
+  accessible name ("Resize the approval list", "Resize the settings
+  sections", "Resize the message box", "Resize the side panel footer"),
+  `aria-controls`, `aria-orientation`, and its current, least, and greatest
+  values.
+- **Giving way.** The neighbour shrinks as the section grows, down to the
+  size it keeps. When the window or the neighbour shrinks, the section
+  narrows to the room left and does not grow back by itself. A hidden
+  section, such as the footer of a collapsed panel, keeps its size.
+- **Orientation.** Below 720 pixels wide the `approvals` panes stack and the
+  queue's divider turns horizontal; each orientation keeps its own size.
+- **Where the lines are.** The message box's divider is the composer's top
+  line, and it replaces the box's own resize grip. The footer's divider sits
+  between the tab content and the model box; a footer shorter than the box
+  scrolls. The `settings` divider hides with the section list when the
+  window is scoped to one workspace.
+- **Not dividers.** Headers, tab strips, toolbars, the status bar, the
+  sidebar's two-button footer, and the review pane's sticky decision row hold
+  fixed controls and do not move.
+- **Not kept.** Sizes last until the window closes.
+
 ### Right-hand panel
 
 The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
@@ -507,7 +559,9 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
 - **A scrolling content area** with the selected tab's content.
 - **A fixed footer** under the content area, outside its scrolling and shown
   on every tab. The panel's API exposes it as `footer`. It holds the model
-  box (ADR-0089).
+  box (ADR-0089). Since 0.65.0 the line above it moves, so the footer can be
+  taller or shorter than the box, which then scrolls
+  (see [section dividers](#section-dividers)).
 - **The model box** (`ui/src/main/model_box.ts`, ADR-0089): a "Model" heading,
   the **Provider** dropdown, the **Model** dropdown with its **Refresh**
   button, and the status notes (list status, off-machine warning, connection
@@ -1145,7 +1199,9 @@ no settings store exists, that call creates an empty one, as the CLI's
 store exists from the first launch.
 
 Since 0.45.0 (ADR-0065) a sidebar chooses one of three sections: **Model**,
-**Workspaces** (shown first), and **Advanced**. **Refresh** and the settings
+**Workspaces** (shown first), and **Advanced**. Since 0.65.0 (ADR-0101) the
+line beside the sidebar moves, so a long workspace path can be read in full
+(see [section dividers](#section-dividers)). **Refresh** and the settings
 revision sit at the bottom of the sidebar, and errors and notices at the top
 of the section. **Workspaces** is a collapsible group: a chevron button
 beside it (`aria-expanded`, named "Workspaces list") opens or closes a list
@@ -1686,7 +1742,9 @@ The flow:
 3. The operator opens the `approvals` window. It polls `approvals_list` every 3
    seconds. Polling stops while a window is hidden. Since 0.45.0 (ADR-0065)
    the window shows a queue beside a review pane; each column scrolls on its
-   own, and below 720 pixels wide they stack. The queue has two tabs:
+   own, and below 720 pixels wide they stack. Since 0.65.0 (ADR-0101) the
+   line between them moves, to widen the queue or, stacked, make it taller
+   (see [section dividers](#section-dividers)). The queue has two tabs:
    **Pending (n)**, the pending records soonest-expiring first as selectable
    rows with a countdown, and **History (n)**, the 50 most recent decided
    records as rows with a state chip and no control. Decided records
@@ -1869,10 +1927,13 @@ What the design does:
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
   permission. Adding one needs an ADR.
-- **One inline style.** `ui/src/main/layout.ts` sets the shell's
-  `--left-width` and `--right-width` through the CSSOM, each a whole number
-  of pixels it computes and clamps (ADR-0072). No other frontend code sets a
-  style, and no text reaches one; `tests/security.test.ts` checks both.
+- **One style write.** `ui/src/ui/size_property.ts` sets one of a fixed list
+  of size custom properties to a whole number of pixels from 0 to 16 384, or
+  removes one, through the CSSOM, and throws for any other name or value
+  (ADR-0072, ADR-0101). `ui/src/main/layout.ts` passes the column widths and
+  `ui/src/ui/splitter.ts` the section sizes, each computed and clamped. No
+  other frontend code sets a style, and no text reaches one;
+  `tests/security.test.ts` checks both.
 - **A names-only file view.** `workspace_entries` lets the `main` webview learn
   the file and folder names of the open session's registered workspace without
   the `read` preference (ADR-0083). It returns no content, size, or date,
@@ -2193,8 +2254,21 @@ ACLs the private store refuses, see the notes in
   send made while its page loads. `ui/tests/transcript_layout.test.ts`
   checks the cascade that centres operator messages and live and recorded
   replies at 96% width with left-aligned text. jsdom reads the properties
-  that decide the layout. The security scan keeps
-  inline style to the two width properties in `src/main/layout.ts`.
+  that decide the layout. The security scan keeps every style write in
+  `src/ui/size_property.ts`, checks its two writes and its checks, checks
+  that every listed name is a width or height property, and that
+  `src/main/layout.ts` still passes a clamped width for one of two sides.
+  Since ADR-0101: `ui/tests/splitter.test.ts` covers the splitter's
+  attributes, keys in both orientations and placements, Shift steps, the
+  limits, a drag that leaves the line, the primary button only, the
+  stylesheet's size until a move and its restoration, the neighbour's least
+  size, narrowing when the neighbour shrinks, a size per orientation,
+  disposal, and the size property's refusals.
+  `ui/tests/approvals_flow.test.ts`, `ui/tests/settings_window.test.ts`, and
+  `ui/tests/layout.test.ts` cover each window's divider: its place, name,
+  control, and property, the stacked `approvals` orientation through a stubbed
+  `matchMedia`, the media query matching `approvals.css`, and the `settings`
+  divider hiding in a scoped window.
   Vitest processes CSS, so the stylesheet scans read the real source and
   assert it is non-empty.
 - **Shell (no webview).** The policy table; the capability files against the

@@ -43,7 +43,9 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
 
 - `index.html` is the main window: session tree, search, transcript, composer, and a tabbed
   right-hand panel (a Terminal tab that holds no terminal, and a names-only Files tab, ADR-0083).
-  Both side panels resize and collapse (ADR-0072).
+  Both side panels resize and collapse (ADR-0072). Every section divider in the three windows
+  moves through `src/ui/splitter.ts`, and `src/ui/size_property.ts` is the only code that writes a
+  style (ADR-0101).
 - `approvals.html` is the approvals window. Only this entry imports
   `src/ipc/approvals_client.ts`, so the main bundle never contains `approval_decide` or
   `approval_detail`. It renders no transcript text.
@@ -59,8 +61,9 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
 `src/styles/tokens.css` holds the one dark theme every window imports (ADR-0065). Keep each
 colour token a six-digit hex value on its own line: `tests/tokens.test.ts` reads them and
 checks their contrast. Window stylesheets use the tokens and add no colours of their own.
-`src/ui/` holds DOM-only components shared by the windows: `segmented.ts`, `tabs.ts`, and
-`popover.ts`. They import no IPC code, so any bundle may use them.
+`src/ui/` holds DOM-only components shared by the windows: `segmented.ts`, `tabs.ts`,
+`popover.ts`, `splitter.ts`, and `size_property.ts`. They import no IPC code, so any bundle may
+use them.
 
 ## Rules
 

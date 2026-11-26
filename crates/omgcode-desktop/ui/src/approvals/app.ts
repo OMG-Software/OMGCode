@@ -5,12 +5,39 @@ import { toIpcError } from "../ipc/errors";
 import type { ApprovalList, ApprovalView } from "../ipc/types";
 import { createPoller } from "../poll";
 import { brandMark } from "../ui/icons";
+import { createSplitter, type SplitAxis, type SplitOrientation } from "../ui/splitter";
 import { createTabs, tabIdFor } from "../ui/tabs";
 import { operationLabel, orderApprovals, remainingSeconds } from "./model";
 import { createReviewPanel, type ShowOptions } from "./review";
 
 export const LIST_POLL_MS = 3000;
 const COUNTDOWN_MS = 1000;
+
+/** Matches the `@media` rule in approvals.css that stacks the queue above the review pane. */
+export const STACKED_QUERY = "(max-width: 720px)";
+/** The queue beside the review pane (ADR-0101). */
+export const QUEUE_WIDTH: SplitAxis = {
+  property: "--queue-width",
+  min: 200,
+  max: 640,
+  initial: 300,
+  neighbourMin: 280,
+};
+/** The queue above the review pane, in a narrow window. */
+export const QUEUE_HEIGHT: SplitAxis = {
+  property: "--queue-height",
+  min: 96,
+  max: 640,
+  initial: 240,
+  neighbourMin: 160,
+};
+
+/** The queue's splitter is vertical unless the window is narrow enough to stack the panes. */
+function queueOrientation(): SplitOrientation {
+  const stacked =
+    typeof window.matchMedia === "function" && window.matchMedia(STACKED_QUERY).matches;
+  return stacked ? "horizontal" : "vertical";
+}
 
 export interface ApprovalsApp {
   dispose(): void;
@@ -115,7 +142,7 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   );
   const queue = el(
     "aside",
-    { class: "queue", attrs: { tabindex: "-1", "aria-label": "Queue" } },
+    { class: "queue", attrs: { id: "approval-queue", tabindex: "-1", "aria-label": "Queue" } },
     tabs.element,
     pendingPanel,
     historyPanel,
@@ -130,6 +157,15 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
       decidedId = view.id;
       void poller.tick();
     },
+  });
+  const queueSplitter = createSplitter({
+    label: "approval list",
+    section: queue,
+    neighbour: review.element,
+    placement: "after",
+    vertical: QUEUE_WIDTH,
+    horizontal: QUEUE_HEIGHT,
+    orientation: queueOrientation,
   });
 
   replaceChildren(
@@ -149,7 +185,7 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
       ),
       errorLine,
       noticeLine,
-      el("div", { class: "approvals-body" }, queue, review.element),
+      el("div", { class: "approvals-body" }, queue, queueSplitter.element, review.element),
     ),
   );
 
@@ -420,6 +456,7 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
     dispose() {
       poller.stop();
       clearInterval(countdownTimer);
+      queueSplitter.dispose();
       review.dispose();
     },
   };
