@@ -1,6 +1,7 @@
 # OMGCode implementation plan
 
-Last verified: 2026-11-18.
+Last verified: 2026-11-26 (status lines checked against the code at version
+0.69.0; the verification history below is unchanged).
 
 This guide is part of `main` after PR #9. Read it before selecting the next
 increment. Checkpoint preparation does not mean native replacement exists.
@@ -123,21 +124,32 @@ This is a resume guide, not a replacement for the owning contracts in
     `packages fetch` (ADR-0056).
   - **Phase C19**, version **0.38.0**, the rename and delete model file tools
     (ADR-0055).
-- **Phase F1**, version **0.39.0**, on branch `codex/runtime-skills`, not
-  merged: skill import into private storage, a registry with application and
+- **Phase F1**, version **0.39.0**, from branch `codex/runtime-skills`, merged
+  to `main` (the trusted `skills` commands exist in the CLI): skill import into private storage, a registry with application and
   workspace enablement, and explicit `chat --skill` loading (ADR-0057).
 - **Phase S1**, version **0.40.0**: the isolated desktop `settings` window
   with a read-only configuration view, saved chat preferences, and per-turn
   skill selection in `main` (ADR-0059).
-- **Phase S2**, version **0.41.0**, on branch `codex/desktop-settings-s2`,
-  not merged: the `settings` window changes the development root, workspace
+- **Phase S2**, version **0.41.0**, from branch `codex/desktop-settings-s2`,
+  merged to `main`: the `settings` window changes the development root, workspace
   registrations, all six workspace preferences, and package cache roots
   through native dialogs, and creates the settings store on first use
   (ADR-0060).
-- Version **0.43.0**, on branch `codex/permission-modes`, not merged: each
+- Version **0.43.0**, from branch `codex/permission-modes`, merged to `main`: each
   preference is deny, prompt, or allow, with per-tool write limits; desktop
   turns wait for approvals and complete the approved call; every model tool
   call is recorded in the model action journal (ADR-0063).
+- Merged on 2026-11-25 and 2026-11-26 (PRs #69 to #76, workspace version
+  **0.69.0**): ChatGPT plan tool turns (ADR-0097); a model `web_fetch` tool
+  behind a host allowlist (ADR-0098); recoverable rejected tool calls and
+  32 KiB write-tool argument limits (ADR-0099); the command tool listing
+  recorded toolchain profiles (ADR-0100); movable section dividers
+  (ADR-0101); a per-session reasoning effort (ADR-0102); toolchain profile
+  discovery (ADR-0103) and a workspace folder read-write grant without a
+  folder dialog (ADR-0104); and the approvals window shown when a turn starts
+  waiting (ADR-0105). Earlier merges after PR #40, including hosted providers
+  (ADR-0092) and ChatGPT sign-in (ADR-0093), are not itemized here. The ADR
+  [register](docs/adr/index.md) lists them.
 
 Implemented today:
 
@@ -155,10 +167,13 @@ Implemented today:
 - Conservative context accounting, manual `session compact`, and pre-turn
   auto-compaction for the local LM Studio route. Summaries are labelled
   untrusted evidence and follow the live tool-result replay rule (ADR-0041).
-- Core turn/tool runtime for read/list, the approval-gated exact edit,
-  multi-edit, create, rename, and delete, and the approval-gated command through a caller-supplied model interface. It has strict tool-call parsing, round/call/byte/prompt limits,
+- Core turn/tool runtime for read/list, the exact edit,
+  multi-edit, create, rename, delete, and directory-creation tools, the command
+  tool, and the gated `web_fetch` tool through a caller-supplied model
+  interface. Writes and commands are approval-gated unless set to `allow`
+  (ADR-0063). It has strict tool-call parsing, round/call/byte/prompt limits,
   cooperative cancellation, source-labelled messages, and fresh per-operation
-  policy bindings. Chat dispatches it through the LM Studio adapter for a
+  policy bindings. Chat dispatches it through the selected provider adapter for a
   workspace that enables `model_tools`.
 - Read-only `file diff`: trusted CLI preview of a broker-read file against
   complete proposed UTF-8 content. Exact digests, bounded one-hunk diff, no
@@ -167,8 +182,8 @@ Implemented today:
   `chat --stream` and the desktop shell stream the reply as provisional text
   (ADR-0049). It is text-only
   unless the session's workspace enables `model_tools`; then it offers the read
-  and list tools, the approval-gated edit, multi-edit, create, rename, and
-  delete tools when `read` and `write` also allow it, and the approval-gated
+  and list tools, the edit, multi-edit, create, rename, delete, and
+  directory-creation tools when `read` and `write` also allow it, and the
   command tool when
   `execute`, `read`, and
   `write` also allow it. See
@@ -234,20 +249,24 @@ Implemented today:
 - Provider profiles record connection shapes without credentials or adapters
   (ADR-0038). Trusted approval records bind a future model-tool call to a
   session, workspace, operation, request digest, and settings revision, expire,
-  and are consumed once (ADR-0039). Provider profiles enable no connection; the
-  command, edit, multi-edit, create, rename, and delete tools are the only model
-  tools that consume an approval record.
+  and are consumed once (ADR-0039). The command, file-write, and `web_fetch`
+  tools consume an approval record under a `prompt` preference, and so do the
+  read and list tools under a `prompt` read preference (ADR-0063). Under
+  `allow`, `web_fetch` still needs one for a host that is not on the
+  workspace's allowlist (ADR-0098).
 - Provider credentials in protected OS storage (ADR-0042): DPAPI files with
   verified private DACLs on Windows and Secret Service items in the default
   collection on Linux, with no plaintext fallback. Trusted
   `workspace provider-credential-set` reads an API key from standard input and
   binds a new opaque identifier to an `api_key` profile in the control
   journal; `provider-credential-remove` and `provider-profile-remove` unbind
-  and then delete the native item. Only the local LM Studio adapter reads a
+  and then delete the native item. The local LM Studio adapter first read a
   stored credential, through a selected `lm_studio` profile (ADR-0047). An
   `lm_studio` profile can record one endpoint, fixed for its life, and a
-  selected profile supplies both the endpoint and the token (ADR-0048). No
-  cloud adapter exists.
+  selected profile supplies both the endpoint and the token (ADR-0048). The
+  same client later gained hosted OpenAI-compatible profiles (ADR-0092), none
+  tested with a real key, and a ChatGPT sign-in whose tokens are kept in
+  protected storage (ADR-0093). No native provider API exists.
 - The `workspace_run_command` model tool (ADR-0040) is offered only with live
   `model_tools`, `execute`, `read`, and `write`. Its first call records a
   pending approval and starts nothing; an approved exact call consumes the
@@ -300,21 +319,23 @@ Not implemented:
   cancellation of any request against a live provider. A read, list, or edit
   tool call in progress cannot be interrupted, and a CLI interrupt has not been
   delivered on Windows.
-- A run network destination allowlist, most of the skills manager (see
-  Phase F), memories, mid-turn and
+- A run network destination allowlist, skill scripts and automatic skill
+  selection (see Phase F), memories, mid-turn and
   provider-native compaction, and caches. Nothing calls the unconfined process
   runner.
-- Desktop development panels (terminal tabs, task logs, and diffs), a settings
-  interface, a recovery interface, signed packages and installers, and a
+- Desktop development panels (a working terminal, task logs, and diffs), a
+  recovery interface, signed packages and installers, and a
   Linux run of the desktop shell's windows. The prototype shell, session tree,
-  search, chat, and approvals window are on `main`. The only packaging is the
+  search, chat, approvals window, and `settings` window are on `main`. The only packaging is the
   unsigned rolling testing archives (ADR-0052).
-- Cloud provider adapters and subscription/API-key login. Only the local LM
-  Studio adapter reads a stored credential, and only at the loopback endpoint
-  recorded with its profile. No endpoint rule exists for a non-loopback
-  provider, HTTPS, or certificates.
-- Subscription token storage, token refresh, account lifecycle, and a
-  memory-only session credential.
+- Release-qualified cloud provider connections, a native provider API, and
+  Claude subscription sign-in. Hosted OpenAI-compatible profiles with a stored
+  API key (ADR-0092) and a ChatGPT sign-in (ADR-0093) exist as prototypes;
+  hosted chat, stream, and tool-call shapes were not verified with a real key,
+  and ChatGPT plan use beyond one sign-in, model list, text turn, and two
+  read and list tool turns is unverified.
+- Account lifecycle beyond ChatGPT sign-in and sign-out, and a memory-only
+  session credential.
 
 ## Resume steps
 
@@ -331,12 +352,12 @@ Not implemented:
    ```
 
 2. Verify that the preceding phase's PR is merged. Every phase listed in the
-   current baseline is merged as of PR #40, except Phase F1. Preserve a feature branch while its
+   current baseline is merged to `main`. Preserve a feature branch while its
    PR is under review.
    Do not merge a PR without the user's authorization.
 3. Re-read the owning contracts for the selected phase. Do not infer authority
    from this plan, prompts, journals, or model output.
-4. Create a `codex/<phase>` branch from a clean, updated `main`.
+4. Create a `dev/<phase>` branch from a clean, updated `main`.
 5. Run the verification baseline before changing code.
 6. Carry one bounded phase through implementation, tests, docs, changelog, and
    an ADR when the decision is lasting. Open a PR; do not merge it yourself.
@@ -1071,10 +1092,9 @@ on Windows, and trusted CLI commands as the first caller. See
 
 Next decisions, not yet scheduled:
 
-- cloud provider adapters, subscription/API-key login, token refresh, and
-  endpoint rules for non-loopback providers, HTTPS, and certificates (one
-  adapter, the local LM Studio route, now reads a stored credential, only at
-  its profile's loopback endpoint);
+- qualifying the prototype hosted and ChatGPT connections against live
+  providers (ADR-0092, ADR-0093), a native provider API, and Claude
+  subscription sign-in;
 - model Git and MCP tools, and model network tools other than the gated
   `web_fetch` (ADR-0098);
 - development-server networking.
@@ -1194,9 +1214,9 @@ login or entitlement route.
   non-streamed turn and a pre-turn compaction with no command change. Checked
   against local fixtures; the CLI interrupt was delivered on Linux only.
 
-Still open in Phase D: cloud provider adapters, subscription and API-key
-login, token refresh, account lifecycle, a memory-only session credential,
-endpoint rules for non-loopback providers, HTTPS, and certificates,
+Still open in Phase D: live qualification of the hosted (ADR-0092) and ChatGPT
+(ADR-0093) prototypes, a native provider API, Claude subscription sign-in, a
+memory-only session credential,
 qualification of the stream rules and of cancellation against a live LM Studio
 server, an interrupt delivered to the CLI on Windows, interrupting a read,
 list, or edit tool call in progress, and a longer deadline for long
@@ -1264,23 +1284,26 @@ merged to `main` in PR #33 with Phases D2 to D6.
   development root, registrations, the six workspace preferences, and
   package cache roots. Rust opens native folder dialogs and confirmations
   through `rfd`, with no Tauri plugin. `settings_overview` creates an empty
-  settings store when none exists: 28 commands. Phases S3 to S5 (key entry,
-  the active connection, execution setup, and skills) are not implemented.
+  settings store when none exists: 28 commands. Later phases added key entry,
+  the active connection, execution setup, and skills to the `settings` window
+  (ADR-0082, ADR-0088), and the shell now has 66 commands (31 in `main`, 3 in
+  `approvals`, and 32 in `settings`).
 
 Still open for the desktop:
 
 - opening the shell's windows on Linux. It builds and its tests pass there,
   including the Unix-only inspection and index branches, but its webview, IPC,
   capability enforcement, and navigation guard have not run on Linux;
-- development panels (terminal tabs, task logs, and diffs), and changing
-  connections, credentials, execution setup, and skills from the `settings`
-  window (ADR-0059 phases S3 to S5);
+- development panels (a working terminal, task logs, and diffs); the
+  `settings` window changes connections, execution setup, and skills, but
+  credentials other than API keys and ChatGPT sign-in still change only through
+  the trusted CLI;
 - push for approvals and the session tree, which still poll or refresh on
   request, and a run of the event channel on Linux, where no window has been
   opened;
 - a recovery interface for an incomplete tail or a damaged journal, plus
   `session.archive_requested` stop-and-archive and storage-use display;
-- Git, MCP, and memory interfaces, and skill management;
+- Git, MCP, and memory interfaces;
 - a native confirmation dialog for approvals, which would remove the webview
   from the final decision;
 - signing and installers (Phase G); the unsigned testing archives of
@@ -1300,7 +1323,7 @@ Version 0.26.0 implements the first compaction increment: conservative
 accounting, a visible meter, manual `session compact`, and pre-turn
 auto-compaction for the local LM Studio route.
 
-- **F1 (version 0.39.0, branch `codex/runtime-skills`, not merged):** the first
+- **F1 (version 0.39.0, branch `codex/runtime-skills`, merged):** the first
   skills increment (ADR-0057). The user chose import, the registry, and
   explicit chat loading; a maintained YAML parser (`saphyr-parser`, events
   only) with OMGCode validation; and copying every package file while never
@@ -1336,8 +1359,9 @@ auto-compaction for the local LM Studio route.
 Mid-turn compaction after tool results, persisted settings, provider-native
 compaction, caches, MCP, and memories remain open. For skills, Git sources,
 versioned updates, session overrides, agent selection, resource loading,
-script execution, desktop controls, and showing a request's skills in the
-desktop transcript remain open.
+script execution, and showing a request's skills in the desktop transcript
+remain open. The desktop `settings` window imports, enables, and removes
+skills (ADR-0082).
 
 ### Phase G: Git, platform qualification, packaging, and release
 
@@ -1405,8 +1429,6 @@ release readiness remain open.
   commit, and time its workload outside OMGCode.
 - `.serena/` is untracked and unrelated. Do not commit or delete it without
   deciding what it is.
-- The turn runtime is library/test infrastructure until a provider adapter and
-  an explicit tool-dispatch decision exist.
 - The edit preview is a snapshot, not a lock or an apply token. A later
   replacement must recheck content identity.
 - Native containment, Windows ACL hardening, directory power-loss durability,

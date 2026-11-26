@@ -67,10 +67,11 @@ enum Command {
         #[command(subcommand)]
         action: file_cli::FileCommand,
     },
-    /// Send one turn to an explicitly selected local LM Studio or Ollama model.
+    /// Send one turn to an explicitly selected model: a local LM Studio or
+    /// Ollama server, or a recorded hosted or ChatGPT provider profile.
     Chat(ChatArgs),
-    /// List the models the local LM Studio or Ollama server reports, so one
-    /// can be passed to `chat --model` (ADR-0066). Reads no session.
+    /// List the models the selected connection's server reports, so one can
+    /// be passed to `chat --model` (ADR-0066). Reads no session.
     Models(ModelsArgs),
     /// Run one program in a workspace under native confinement, using a
     /// recorded toolchain profile. Needs the workspace `execute` preference.
@@ -128,7 +129,7 @@ enum SessionCommand {
         #[command(flatten)]
         locator: JournalArgs,
     },
-    /// Summarize older messages with the selected local model.
+    /// Summarize older messages with the selected model connection.
     Compact {
         #[command(flatten)]
         locator: JournalArgs,
@@ -147,9 +148,11 @@ enum SessionCommand {
         #[arg(long, default_value_t = 2048)]
         summary_tokens: u32,
         /// Use this recorded provider profile's endpoint, and its stored
-        /// credential, if any, instead of OMGCODE_LM_TOKEN. A hosted profile
-        /// needs a stored credential (`provider-credential-set NAME`) before a
-        /// request can use it.
+        /// credential, if any, instead of OMGCODE_LM_TOKEN. A hosted
+        /// `api_key` profile needs a stored credential (`omgcode workspace
+        /// provider-credential-set NAME --revision N`), and an `openai`
+        /// subscription profile a ChatGPT sign-in (`omgcode workspace
+        /// provider-signin NAME --revision N`), before a request can use it.
         #[arg(long, value_parser = non_empty_name)]
         provider_profile: Option<String>,
     },
@@ -214,8 +217,10 @@ struct ChatArgs {
     auto_compact: bool,
     /// Use this recorded provider profile's endpoint, and its stored
     /// credential, if any, instead of OMGCODE_LM_TOKEN. The variable is then
-    /// not read. A hosted profile needs a stored credential
-    /// (`provider-credential-set NAME`) before a request can use it.
+    /// not read. A hosted `api_key` profile needs a stored credential
+    /// (`omgcode workspace provider-credential-set NAME --revision N`), and an
+    /// `openai` subscription profile a ChatGPT sign-in (`omgcode workspace
+    /// provider-signin NAME --revision N`), before a request can use it.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
     /// Stream the model's text to standard error as it arrives. The text is
@@ -244,8 +249,10 @@ struct ModelsArgs {
     endpoint: String,
     /// Use this recorded provider profile's endpoint, and its stored
     /// credential, if any, instead of OMGCODE_LM_TOKEN, exactly as `chat`
-    /// does. A hosted profile needs a stored credential
-    /// (`provider-credential-set NAME`) before a request can use it.
+    /// does. A hosted `api_key` profile needs a stored credential
+    /// (`omgcode workspace provider-credential-set NAME --revision N`), and an
+    /// `openai` subscription profile a ChatGPT sign-in (`omgcode workspace
+    /// provider-signin NAME --revision N`), before a request can use it.
     #[arg(long, value_parser = non_empty_name)]
     provider_profile: Option<String>,
 }

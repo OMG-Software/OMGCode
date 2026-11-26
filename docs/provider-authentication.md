@@ -935,8 +935,10 @@ verifier values in the trusted authentication service. Store durable credentials
 in protected OS storage. Do not silently fall back to plaintext when that store
 is unavailable; offer an explicit memory-only session if appropriate. Version
 0.27.0 implements that protected store for API keys (ADR-0042); since 0.30.0
-only the local LM Studio adapter reads it (ADR-0047), and since 0.31.0 only
-at the endpoint recorded with its profile (ADR-0048). The prototype's
+the local LM Studio adapter reads it (ADR-0047), and since 0.31.0 only at the
+endpoint recorded with its profile (ADR-0048). Ollama Cloud (ADR-0071) and
+every hosted kind (ADR-0092) read it the same way, and a ChatGPT sign-in keeps
+its own token record (ADR-0093). The prototype's
 `OMGCODE_LM_TOKEN` process-environment input does
 not meet this credential-service requirement and must not be treated as its
 replacement.

@@ -183,8 +183,8 @@ pub(crate) enum WorkspaceCommand {
     ///
     /// The secret is read from standard input only, up to 16 KiB; one
     /// trailing newline is removed. A previously bound credential is deleted
-    /// after the new binding is recorded. The local adapter reads it for a
-    /// selected lm_studio profile.
+    /// after the new binding is recorded. The chat client reads it for a
+    /// selected lm_studio or hosted `api_key` profile.
     ProviderCredentialSet {
         name: String,
         #[arg(long)]
@@ -377,7 +377,7 @@ pub(crate) struct PermissionsArgs {
     /// `deny`, `prompt`, or `allow`. No model tool uses it.
     #[arg(long = "task-network", value_parser = parse_access)]
     task_network: Option<Access>,
-    /// Let chat offer the local model workspace tools at all.
+    /// Let chat offer the model workspace tools at all.
     #[arg(long = "model-tools")]
     model_tools: Option<bool>,
     /// Let a trusted `run` select host-service Unix-socket access when it

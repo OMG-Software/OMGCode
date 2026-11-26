@@ -153,8 +153,9 @@ Not implemented:
   window manages skills (ADR-0082). Skill updates, Git sources, and the
   per-skill description and body view are not implemented.
 - A recovery interface for damaged journals or an incomplete tail.
-- A provider API other than OpenAI-compatible Chat Completions, such as
-  Anthropic's native Messages API, and subscription sign-in. Stored API keys
+- A provider API other than OpenAI-compatible Chat Completions and the
+  ChatGPT plan's Responses route (ADR-0093), such as Anthropic's native
+  Messages API, and any subscription sign-in other than ChatGPT. Stored API keys
   are used only for an LM Studio server's token and a hosted connection's key.
   The `main` window shows nothing about the credential source beyond the
   endpoint text and the hosted label. A model the server does not list, such
@@ -167,8 +168,10 @@ the whole workspace, including this crate, compiled against WebKitGTK and
 passed formatting, Clippy, and every test on the same day. The Linux binary was
 started only far enough to check its launch arguments: no window has been
 opened on Linux, so the webview, IPC, capability enforcement, and navigation
-guard are unverified there. The CI workflow changes have not run yet. See
-[platform support](platform-support.md).
+guard are unverified there. The CI workflows now build and test this crate on
+Ubuntu and Windows Server 2025; that compiles and tests it but opens no
+window ([repository checks](repository-checks.md#rust-and-frontend-workflows)).
+See [platform support](platform-support.md).
 
 ## Architecture
 
@@ -785,7 +788,8 @@ calls used, and calls requested. Calls from that batch are skipped.
 **Tool-enabled turn timeout (seconds)**, beside it, defaults to 120 and
 accepts whole numbers from 1 to 3600.
 The runtime checks the deadline between operations and excludes approval waits.
-Each model request still has a 30-second timeout of its own.
+Each model request still has a 30-second timeout of its own (120 seconds on
+the ChatGPT plan route, ADR-0093).
 The settings window gets the maximum output reserve (4,294,967,295, the
 largest 32-bit count the request holds), tool-call, and timeout values from
 the overview's `chat` block, and refuses a value outside them before sending.
@@ -1570,7 +1574,7 @@ The five change commands call the same `ControlStore` functions as the CLI's
 `clear-package-cache`. They use the same expected-revision check, validation,
 and audit events. Each takes only identifiers, the revision the window last
 read, and for `settings_set_permissions` the complete preference set:
-`model_tools`, the five three-state preferences, and `write_tools`. None
+`model_tools`, the six three-state preferences, and `write_tools`. None
 takes a path. Each returns the new overview.
 
 - **Folders come from a native dialog.** Rust opens the operating system's
@@ -1812,12 +1816,15 @@ revision check and validation (ADR-0064, ADR-0071).
 ## Approvals
 
 A model tool call needs a trusted single-use approval when its effective
-state is Prompt: the file-write tools (edit, multi-edit, create, rename, and
-delete) and the command tool under the default `write` and `execute` state,
-and, since 0.43.0, the read and list tools when `read` is Prompt
+state is Prompt: the file-write tools (edit, multi-edit, create, rename,
+delete, and create directory) and the command tool under the default `write`
+and `execute` state, and, since 0.43.0, the read and list tools when `read` is
+Prompt
 ([agent instructions](agent-instructions.md#approval-records),
 [deny, prompt, or allow](workspace-permissions.md#deny-prompt-or-allow-adr-0063)).
-A call whose state is Allow needs none. The CLI
+Since 0.64.0 (ADR-0098) the `web_fetch` tool needs one under Prompt, and under
+Allow for a host that is not on the workspace's allowlist. A call whose state
+is Allow needs none otherwise. The CLI
 commands `approvals list`, `show`, `approve`, and `deny` still work and remain
 the surface for headless use. The approvals window is a second surface for the
 same records. It adds no authority. Core still enforces single decisions,
@@ -1924,6 +1931,7 @@ Reviewed fields:
   an edit distance of at most 2,000; past either bound it shows the two blocks
   and "Too large to compare line by line.". A create shows its content as
   added lines, or one block past 2,000 lines.
+- **Create directory:** Directory (ADR-0079).
 - **Rename:** From, To, Size, and SHA-256 of the source. The review is stale
   once the source changed or the destination exists.
 - **Delete:** File, Size, and SHA-256. The review is stale once the file
@@ -2029,8 +2037,8 @@ What the design does:
 
 - **Two enforcement layers.** Every command is declared to the Tauri build, so
   each needs an explicit permission in a capability file. The `main` file does
-  not grant the three approval commands or any of the twenty-four settings-window
-  commands. The `settings` file grants only those twenty-four. Every handler also calls the Rust
+  not grant the three approval commands or any of the thirty-two settings-window
+  commands. The `settings` file grants only those thirty-two. Every handler also calls the Rust
   window policy as its first statement. A capability file edited by mistake
   does not expose a decision to `main`.
 - **No `core:` permissions.** Neither window is granted any Tauri core
@@ -2145,7 +2153,7 @@ What the design does:
   `src/ipc/chat_events.ts`, which only the main bundle imports, and a bundle
   test checks that no approvals asset contains it.
 - **The configuration view and changes only in `settings`.** The settings
-  window loads its own bundle. The twenty-four settings-window command names appear
+  window loads its own bundle. The thirty-two settings-window command names appear
   only in `src/ipc/settings_client.ts`. Bundle tests check that no main or
   approvals asset contains any of them, and that no settings asset contains
   `approval_decide`, `approval_detail`, or `chat_subscribe`.
@@ -2223,7 +2231,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 56 |
+| Commands | 66 |
 | Git status changed paths | 1,000, and a 10-second deadline |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
@@ -2241,7 +2249,7 @@ What it does not do:
 | Message and instructions prefilter | 64 KiB each |
 | Skills selected per turn | 4 |
 | Saved model name | 256 bytes, no control characters |
-| Listed models | 512 ids of at most 256 bytes, a 1 MiB body, a 10-second deadline |
+| Listed models | 2,048 ids of at most 256 bytes, a 4 MiB body, a 10-second deadline |
 | Saved instructions | 64 KiB |
 | Chat preferences file | 512 KiB |
 | Review token lifetime | 120 seconds, single use |
@@ -2422,9 +2430,12 @@ ACLs the private store refuses, see the notes in
 
 ## Known limits
 
-- Only `lm_studio` profiles can record an endpoint, and the only rule is for
-  a literal loopback address over plain HTTP. No rule exists for a
-  non-loopback provider, HTTPS, or certificates, and no cloud adapter exists.
+- A local profile (`lm_studio` or `ollama_local`) records only a literal
+  loopback address over plain HTTP. A hosted profile uses its kind's one fixed
+  HTTPS endpoint, or, for `openai_compatible`, a typed HTTPS address, and
+  needs a stored API key; an `openai` profile with `subscription` uses a
+  ChatGPT sign-in instead (ADR-0093). No hosted provider's chat, stream, or
+  tool-call shapes were verified with a real key.
   A profile recorded before 0.31.0 has no endpoint and cannot be selected until
   it is removed and added again with `--endpoint`. Any process running as the
   same user can read the stored credential. The Phase D2 and D3
@@ -2442,7 +2453,8 @@ ACLs the private store refuses, see the notes in
 - Not exercised: a live call that reaches the Rust `authorize` check. The
   real shell's windows were not driven again for 0.34.0; the service tests
   cover cancelling a non-streamed turn.
-- The CI workflow changes for the shell have not run.
+- The CI workflows build and test the shell on Ubuntu and Windows Server
+  2025 but open no window there.
 - Phase S1 (0.40.0): the `settings` window, saved preferences, and skill
   selection were checked by unit, service, and bundle tests and in the Vite
   development server against the mock backend. The real shell's windows were
@@ -2496,8 +2508,8 @@ ACLs the private store refuses, see the notes in
   unless the server sends them. Cancellation interrupts every model and
   compaction request but not a read, list, or edit tool call in progress, and
   the cancel path was checked against local fixtures only, with no live
-  server. The thirty-second request deadline
-  covers the whole response, so a long generation fails as before. While a turn runs, the transcript is not
+  server. The thirty-second request deadline (120 seconds on the ChatGPT plan
+  route) covers the whole response, so a long generation fails as before. While a turn runs, the transcript is not
   reloaded, so the message just sent is not shown above the live entry until
   the turn settles.
 - Opening a very large first index can take seconds, because each journal

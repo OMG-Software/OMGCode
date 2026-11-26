@@ -73,6 +73,11 @@ tool definitions, compaction summary, retained history, and fixed framing) from
 the same arithmetic as the pre-turn trigger, without a model request or a
 journal write. The view is the right-hand panel's **Context** tab
 ([ADR-0087](adr/0087-show-a-per-part-context-estimate-for-the-open-session.md)).
+When the session records a reasoning effort, the fixed framing part and the
+pre-turn estimate also count the bytes of the effort field the request will
+send
+([ADR-0102](adr/0102-choose-a-reasoning-effort-per-session.md)). Compaction
+summary requests send no effort.
 
 ## Settings and accounting
 

@@ -24,10 +24,15 @@ Version 0.17.0 limits each run's memory, live processes, and CPU time; raise
 the [tree limits](execution.md#tree-limits) for large builds. On Linux the
 process limit counts threads, so a parallel compiler needs a higher limit
 than its process count. Version 0.19.0 adds a sampled limit on net disk growth
-for the writable roots; it is not a filesystem quota. No
-model tool runs project tools. A model command tool can request one only
-through the trusted `run` path and a consumed approval. Tool support must be
-qualified on the actual
+for the writable roots; it is not a filesystem quota. The only model tool that
+runs project tools is the command tool. It starts one only through the trusted
+runner, under a recorded profile and with a consumed approval, or without one
+where the operator set the workspace `execute` preference to `allow`. It is
+offered only when a profile is recorded for the running platform, and it lists
+those profile names; a call naming another profile is answered with
+`profile_not_recorded` before any approval is requested
+([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+Tool support must be qualified on the actual
 platform; the [execution guide](execution.md#known-limits) lists the
 toolchains and versions that passed acceptance.
 

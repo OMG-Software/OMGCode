@@ -42,8 +42,10 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
 ## Windows
 
 - `index.html` is the main window: session tree, search, transcript, composer, and a tabbed
-  right-hand panel (a Terminal tab that holds no terminal, and a names-only Files tab, ADR-0083).
-  Both side panels resize and collapse through the column separators in `src/main/layout.ts`
+  right-hand panel: a Terminal tab that holds no terminal, a names-only Files tab (ADR-0083),
+  and Git, Processes, Web, and Context tabs that read the open session only while visible
+  (ADR-0085 to ADR-0087, ADR-0098). The panel's footer holds the session's provider, model, and
+  reasoning effort choice (ADR-0089, ADR-0102). Both side panels resize and collapse through the column separators in `src/main/layout.ts`
   (ADR-0072). Every other section divider in the three windows moves through
   `src/ui/splitter.ts`. `src/ui/size_property.ts` is the only code that writes a style, for both
   (ADR-0101).
@@ -52,19 +54,24 @@ npm run tauri -- dev -- -- --data-dir <an empty scratch directory>
   `approval_detail`. It renders no transcript text.
 - `settings.html` is the settings window: the trusted configuration, and controls that change
   the development root, workspaces, their preferences, and package cache roots (ADR-0059,
-  ADR-0060). Rust opens every folder dialog and confirmation; the window sends only identifiers
+  ADR-0060). Its **Model**, **Workspaces**, and **Advanced** sections also hold the model
+  connections, chat budgets and custom instructions, each workspace's web fetch hosts, toolchain
+  and package-network profiles with toolchain discovery, Windows container grants, and skills
+  (ADR-0064, ADR-0080, ADR-0082, ADR-0088, ADR-0098, ADR-0103). Rust opens every folder dialog and
+  confirmation; the window sends only identifiers
   and the revision. Only this entry imports `src/ipc/settings_client.ts`, so no other bundle
   contains a settings-window command. It renders no transcript text, tool output, or skill text,
   and it imports no main, approvals, or chat code.
 
 ## Theme and shared components
 
-`src/styles/tokens.css` holds the one dark theme every window imports (ADR-0065). Keep each
+`src/styles/tokens.css` holds the one dark theme every window imports (ADR-0065), in the OMG
+Software palette (ADR-0095). Keep each
 colour token a six-digit hex value on its own line: `tests/tokens.test.ts` reads them and
 checks their contrast. Window stylesheets use the tokens and add no colours of their own.
-`src/ui/` holds DOM-only components shared by the windows: `segmented.ts`, `tabs.ts`,
-`popover.ts`, `splitter.ts`, and `size_property.ts`. They import no IPC code, so any bundle may
-use them.
+`src/ui/` holds DOM-only components shared by the windows: `icons.ts`, `segmented.ts`,
+`tabs.ts`, `popover.ts`, `splitter.ts`, and `size_property.ts`. They import no IPC code, so any
+bundle may use them.
 
 ## Rules
 
@@ -90,8 +97,10 @@ use them.
 - All IPC goes through `src/ipc/client.ts`, the only file that imports `@tauri-apps/api`.
   Core error messages are shown as text. Client-side limits are usability only; the core
   validates everything.
-- The model endpoint is fixed when the desktop process starts. The composer shows the value
-  from `chat_defaults` as read-only text and sends back exactly that value.
+- The provider, endpoint, and model belong to the open session (ADR-0071). The composer shows
+  the session's endpoint from the shared connection as read-only text, falling back to the
+  launch default from `chat_defaults` until the connection arrives, and sends back exactly that
+  value. Rust re-checks the session's recorded endpoint on every turn.
 - The main window subscribes once with `chat_subscribe`, a Tauri channel. It reads
   `chat_status` once when a `finished` event arrives and keeps a five-second reconcile check
   while a turn runs, in case an event is lost. If subscribing fails, it polls `chat_status`

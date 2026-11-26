@@ -39,7 +39,7 @@ and a per-part estimate of the next turn's context
 A reply is labelled with the model from its turn's request manifest and can be
 copied as Markdown, as plain text, or as a PNG repainted on a canvas, through
 the clipboard only, with icon buttons named in their tooltips
-([ADR-0069](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
+([ADR-0068](docs/adr/0068-name-replies-by-model-and-copy-them-as-markdown-text-or-image.md)).
 Chat offers the session's model read and list tools; when the workspace
 also enables `read` and `write`, six file-write tools (exact edit, multi-edit,
 create, rename, delete, and directory creation); and, when it also enables `execute`, `read`, and
@@ -225,6 +225,9 @@ The `settings` window imports, enables, and removes skills
 and removes toolchain profiles, package-network profiles, and, on Windows,
 container grants, after native confirmations; none can be edited
 ([ADR-0088](docs/adr/0088-change-execution-settings-in-the-settings-window.md)).
+A read-write container grant uses the workspace's recorded folder and opens
+no folder dialog; core still checks that folder's identity
+([ADR-0104](docs/adr/0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)).
 It also proposes toolchain profiles for the installed Rust, C and C++, Java,
 Python, Perl, Go, Node.js, .NET, and Ruby toolchains from a core service that
 reads install folders, the operator's `PATH`, and installer-written files,
@@ -297,7 +300,7 @@ the user's explicit authorization.
 - Inspect the current branch and local changes before editing. Preserve existing
   work and avoid unrelated changes.
 - Work on a feature or bug branch, never directly on `main`. Use the
-  `codex/` prefix for agent-created branches. Update a clean `main` from
+  `dev/` prefix for agent-created branches. Update a clean `main` from
   `origin` before creating a new branch from it. Preserve an in-progress
   feature branch rather than switching away from its work.
 - Main is protected by an active PR-only rule with no bypass actors. Publish
