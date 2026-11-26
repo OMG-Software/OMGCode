@@ -48,8 +48,11 @@ denies, and **Approve** is armed only one second after a review renders.
 3. **The shell shows the approvals window from Rust.** At startup the shell
    registers an observer that calls `present_approvals`, which posts one
    closure to the event loop. There, where window calls take effect at once,
-   the shell checks the foreground and acts, so the operator cannot switch
-   applications between the check and the activation. When this process
+   the shell checks the foreground and acts, so only a few window calls on
+   one thread separate the check from the activation, not a queued message.
+   Another application can still take the foreground in that gap, so the
+   activation checks ownership again (below) rather than relying on the
+   callback to make the check and the activation atomic. When this process
    owns the foreground window, the approvals window is unminimized, shown,
    and activated. Otherwise it is shown and its taskbar button flashes
    until the operator comes to it (`UserAttentionType::Critical`), and

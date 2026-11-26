@@ -167,9 +167,10 @@ pub fn bring_to_front(window: &WebviewWindow) -> tauri::Result<()> {
 pub fn present_approvals(app: &AppHandle) {
     let handle = app.clone();
     // The foreground check and the activation run in one event-loop callback,
-    // where window calls take effect at once: checking on the turn's thread
-    // left a gap in which the operator could switch applications before the
-    // focus request ran.
+    // where window calls take effect at once, which narrows the gap that a
+    // check on the turn's thread left before the queued focus request ran.
+    // It does not close it: `activate_if_foreground_owner` checks ownership
+    // again, and the window flashes if another application took over.
     if app
         .run_on_main_thread(move || present_on_event_loop(&handle))
         .is_err()
