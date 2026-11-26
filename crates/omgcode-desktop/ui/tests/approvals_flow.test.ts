@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type ApprovalsApp, startApprovals } from "../src/approvals/app";
+import {
+  type ApprovalsApp,
+  QUEUE_HEIGHT,
+  QUEUE_WIDTH,
+  STACKED_QUERY,
+  startApprovals,
+} from "../src/approvals/app";
 import { setInvoker } from "../src/ipc/client";
 import type { ApprovalDetail, ApprovalView } from "../src/ipc/types";
 import {
@@ -106,18 +112,70 @@ describe("approvals window flow", () => {
   });
 
   describe("layout", () => {
-    it("puts the queue before the review and shows counts", async () => {
+    it("puts the queue, a splitter, and the review in order and shows counts", async () => {
       approvals = [...approvals, view({ id: "d1", state: "denied" })];
       await start();
       const body = root.querySelector(".approvals-body") as HTMLElement;
       expect(body.children[0]?.classList.contains("queue")).toBe(true);
-      expect(body.children[1]?.classList.contains("review-pane")).toBe(true);
+      expect(body.children[1]?.getAttribute("role")).toBe("separator");
+      expect(body.children[2]?.classList.contains("review-pane")).toBe(true);
       expect(root.querySelector('[data-tab="pending"]')?.textContent).toBe("Pending (3)");
       expect(root.querySelector('[data-tab="history"]')?.textContent).toBe("History (1)");
       const badge = root.querySelector(".badge") as HTMLElement;
       expect(badge.textContent).toBe("3");
       expect(badge.hidden).toBe(false);
       expect(root.querySelector("h1")?.textContent).toBe("Approvals");
+    });
+
+    it("resizes the queue beside the review with its splitter (ADR-0101)", async () => {
+      await start();
+      const queue = root.querySelector(".queue") as HTMLElement;
+      const splitter = root.querySelector('[role="separator"]') as HTMLElement;
+      expect(splitter.getAttribute("aria-label")).toBe("Resize the approval list");
+      expect(splitter.getAttribute("aria-controls")).toBe(queue.id);
+      expect(splitter.getAttribute("aria-orientation")).toBe("vertical");
+      expect(queue.style.getPropertyValue("--queue-width")).toBe(`${QUEUE_WIDTH.initial}px`);
+      splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(queue.style.getPropertyValue("--queue-width")).toBe(
+        `${(QUEUE_WIDTH.initial ?? 0) + 16}px`,
+      );
+      splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+      expect(queue.style.getPropertyValue("--queue-width")).toBe(`${QUEUE_WIDTH.max}px`);
+      splitter.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      expect(queue.style.getPropertyValue("--queue-width")).toBe(`${QUEUE_WIDTH.initial}px`);
+    });
+
+    it("turns the splitter horizontal and sets the height when the panes stack", async () => {
+      const query = vi.fn((text: string) => ({ matches: text === STACKED_QUERY }));
+      vi.stubGlobal("matchMedia", query);
+      try {
+        await start();
+        const queue = root.querySelector(".queue") as HTMLElement;
+        const splitter = root.querySelector('[role="separator"]') as HTMLElement;
+        expect(splitter.getAttribute("aria-orientation")).toBe("horizontal");
+        splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+        expect(queue.style.getPropertyValue("--queue-height")).toBe(
+          `${(QUEUE_HEIGHT.initial ?? 0) + 16}px`,
+        );
+        // Left and right do nothing to a horizontal splitter.
+        splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+        expect(queue.style.getPropertyValue("--queue-height")).toBe(
+          `${(QUEUE_HEIGHT.initial ?? 0) + 16}px`,
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("stacks at the same width that approvals.css names", () => {
+      const css = Object.values(
+        import.meta.glob<string>("../src/styles/approvals.css", {
+          query: "?raw",
+          import: "default",
+          eager: true,
+        }),
+      )[0];
+      expect(css).toContain(`@media ${STACKED_QUERY}`);
     });
 
     it("shows empty states and hides the badge when nothing is pending", async () => {

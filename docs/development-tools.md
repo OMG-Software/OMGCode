@@ -45,7 +45,7 @@ executable-path grant is often insufficient.
 
 Profiles are declared by the operator; see
 [ADR-0030](adr/0030-run-trusted-commands-through-recorded-toolchain-profiles.md).
-Since version 0.66.0 the `settings` window can generate proposals from the
+Since version 0.67.0 the `settings` window can generate proposals from the
 installed toolchains through a trusted host-side service in core
 ([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 It reads install folders, the operator's `PATH` and a few toolchain

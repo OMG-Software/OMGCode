@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.66.0 adds **Generate toolchain profiles from local packages** to
+- Version 0.67.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window
   (ADR-0103). A new core service, `toolchain_discovery`, holds one detector
   per family: Rust (rustup toolchains), C and C++ (MSVC with the Windows SDK,
@@ -54,6 +54,23 @@ Changes are recorded here before a release version is assigned.
   keep no network, a 20-second deadline, and 1 GiB of memory, so a `cargo`
   build that needs crates.io dependencies still fails offline.
 
+- Version 0.66.0 makes every section divider in the desktop windows movable
+  (ADR-0101). The `approvals` queue, 300 pixels wide, now widens or narrows
+  from 200 to 640 beside the review pane, and below 720 pixels wide, where
+  the panes stack, its height moves from 96 to 640. The `settings` section
+  list moves from 150 to 420 pixels. In the `main` window the composer's top
+  line sets the message box's height, from 64 pixels to whatever leaves the
+  transcript 120, replacing the box's own resize grip and its 40% cap, and
+  the line above the right-hand panel's footer sets the footer's height from
+  48 to 720 pixels, scrolling its contents when shorter. Each divider is a
+  focusable window splitter built by `ui/src/ui/splitter.ts`: drag it, or use
+  the arrow keys (16 pixels, 64 with Shift), Home, and End; a double click
+  restores its starting size. None collapses, the neighbour never goes below
+  its least size, and sizes last until the window closes. The main window's
+  column separators are unchanged. `ui/src/ui/size_property.ts` is now the
+  frontend's only style write: a listed size custom property set to a whole
+  number of pixels, or removed. No command, IPC shape, permission, or Rust
+  code changed.
 - Version 0.64.0 adds the `web_fetch` model tool (ADR-0098), so a model on
   any provider can read public documentation. The OMGCode process sends one
   HTTPS `GET` and returns one slice of the page text (`offset`, and

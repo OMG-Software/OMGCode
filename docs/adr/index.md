@@ -86,7 +86,7 @@ meaningful alternative does not need an ADR.
 | [0069: Allow ReFS, btrfs, XFS, tmpfs, and ZFS for trusted apply](0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md) | Accepted | 2026-11-20 |
 | [0070: Keep checkpoints in a protected per-workspace `.OMGCode` folder](0070-keep-checkpoints-in-a-protected-per-workspace-omgcode-folder.md) | Accepted | 2026-11-20 |
 | [0071: Choose the provider and model per session and add Ollama Cloud](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) | Accepted, amended by ADR-0080, ADR-0084, ADR-0089, and ADR-0092 | 2026-11-20 |
-| [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted, amended by ADR-0083 | 2026-11-20 |
+| [0072: Resize and collapse the main window panels and follow the transcript end](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md) | Accepted, amended by ADR-0083 and ADR-0101 | 2026-11-20 |
 | [0073: Remove extra data folder grants after operator confirmation](0073-remove-extra-data-folder-grants-after-operator-confirmation.md) | Accepted | 2026-11-20 |
 | [0074: Give chat bubbles a shared width](0074-give-chat-bubbles-a-shared-width.md) | Accepted | 2026-11-23 |
 | [0075: Budget model requests for sequential tool calls](0075-budget-model-requests-for-sequential-tool-calls.md) | Accepted, amended by ADR-0076 and ADR-0077 | 2026-11-23 |
@@ -115,4 +115,5 @@ meaningful alternative does not need an ADR.
 | [0098: Add a model web fetch tool behind a host allowlist](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) | Accepted | 2026-11-25 |
 | [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |
 | [0100: List the recorded toolchain profiles in the command tool](0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md) | Accepted | 2026-11-26 |
+| [0101: Make every section divider movable](0101-make-every-section-divider-movable.md) | Accepted | 2026-11-26 |
 | [0103: Generate toolchain profiles from installed toolchains](0103-generate-toolchain-profiles-from-installed-toolchains.md) | Accepted | 2026-11-26 |

@@ -78,6 +78,8 @@ export interface ComposerHandlers {
 
 export interface Composer {
   element: HTMLElement;
+  /** The message box, whose height the conversation's splitter sets (ADR-0101). */
+  readonly messageBox: HTMLTextAreaElement;
   /** `running` shows the Running state and Cancel button. */
   update(state: ComposerState, running: boolean): void;
   /** Names the open session for the Workspace settings button; `null` disables it. */
@@ -119,7 +121,12 @@ export function createComposer(
 ): Composer {
   const box = el("textarea", {
     class: "message-box",
-    attrs: { rows: "3", "aria-label": "Message", placeholder: PLACEHOLDER_ENTER },
+    attrs: {
+      id: "message-box",
+      rows: "3",
+      "aria-label": "Message",
+      placeholder: PLACEHOLDER_ENTER,
+    },
   });
   const counter = el("span", { class: "counter" });
   counter.hidden = true;
@@ -581,6 +588,7 @@ export function createComposer(
 
   return {
     element,
+    messageBox: box,
     update(next, isRunning) {
       state = next;
       running = isRunning;

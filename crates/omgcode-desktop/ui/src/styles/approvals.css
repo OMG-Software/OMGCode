@@ -54,14 +54,13 @@ body {
   min-height: 0;
 }
 
-/* Queue column. */
+/* Queue column. Its width is set by its splitter (ADR-0101), which is the line beside it. */
 .queue {
   display: flex;
-  flex: 0 0 300px;
+  flex: 0 0 var(--queue-width, 300px);
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
 }
 
 .queue-panel {
@@ -363,21 +362,14 @@ body {
   display: none;
 }
 
+/* `STACKED_QUERY` in src/approvals/app.ts names the same width: the splitter turns horizontal
+   and sets the queue's height instead. */
 @media (max-width: 720px) {
   .approvals-body {
     flex-direction: column;
   }
 
   .queue {
-    flex: 0 1 auto;
-    max-height: 40vh;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  /* The stacked queue has only a maximum height, so a zero flex basis would collapse the list
-     to nothing; size it by its content and let it shrink and scroll inside the maximum. */
-  .queue-panel {
-    flex: 0 1 auto;
+    flex: 0 0 var(--queue-height, 240px);
   }
 }

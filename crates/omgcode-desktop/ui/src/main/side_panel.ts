@@ -1,6 +1,19 @@
 import { el } from "../dom";
 import { type IconName, iconButton } from "../ui/icons";
+import { createSplitter, type SplitAxis } from "../ui/splitter";
 import { createTabs, tabIdFor } from "../ui/tabs";
+
+/**
+ * The fixed footer's height (ADR-0101). It starts at its content's height; its splitter makes it
+ * taller or shorter, and a shorter footer scrolls.
+ */
+export const FOOTER_HEIGHT: SplitAxis = {
+  property: "--side-footer-height",
+  min: 48,
+  max: 720,
+  initial: null,
+  neighbourMin: 96,
+};
 
 /** One tab of the right-hand panel: add an entry to the list `createSidePanel` receives. */
 export interface SideTab {
@@ -47,13 +60,15 @@ export interface SidePanel {
   select(id: string): void;
   /** The selected tab's id. */
   current(): string;
+  dispose(): void;
 }
 
 /**
  * Builds the right-hand panel: a tab strip with a collapse button, the selected tab's content in a
- * scrolling area, and a fixed footer. Collapsed, it is a rail with one icon per tab; an icon
- * expands the panel on its tab. The selection lasts until the window closes. Keys follow the ARIA
- * tabs pattern through `createTabs`. A tab's content must be built from `el` and text nodes.
+ * scrolling area, a splitter, and a fixed footer. Collapsed, it is a rail with one icon per tab;
+ * an icon expands the panel on its tab. The selection lasts until the window closes. Keys follow
+ * the ARIA tabs pattern through `createTabs`. A tab's content must be built from `el` and text
+ * nodes.
  */
 export function createSidePanel(
   specs: readonly SideTab[],
@@ -110,7 +125,15 @@ export function createSidePanel(
     syncVisibility();
   }
 
-  const footer = el("div", { class: "side-footer" });
+  const footer = el("div", { class: "side-footer", attrs: { id: "side-footer" } });
+  const paneArea = el("div", { class: "side-panes" }, ...panes.values());
+  const footerSplitter = createSplitter({
+    label: "side panel footer",
+    section: footer,
+    neighbour: paneArea,
+    placement: "before",
+    horizontal: FOOTER_HEIGHT,
+  });
   const full = el(
     "div",
     { class: "terminal-full" },
@@ -120,7 +143,8 @@ export function createSidePanel(
       tabs.element,
       iconButton("panelRight", "Collapse side panel", handlers.onCollapse),
     ),
-    el("div", { class: "side-panes" }, ...panes.values()),
+    paneArea,
+    footerSplitter.element,
     footer,
   );
 
@@ -177,6 +201,9 @@ export function createSidePanel(
           : full.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
         target?.focus();
       }
+    },
+    dispose() {
+      footerSplitter.dispose();
     },
   };
 }

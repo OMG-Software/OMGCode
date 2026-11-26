@@ -10,6 +10,7 @@ import {
 } from "../ipc/errors";
 import { settingsApi } from "../ipc/settings_client";
 import type { SettingsOverview } from "../ipc/types";
+import { createSplitter, type SplitAxis } from "../ui/splitter";
 import { renderAdvanced } from "./advanced_section";
 import {
   type Actions,
@@ -45,6 +46,15 @@ export interface SettingsApp {
 
 /** Shown when the operator closed a dialog or declined. */
 export const NOTHING_CHANGED = "No change was made.";
+
+/** The section list beside the content, resized by its splitter (ADR-0101). */
+export const NAV_WIDTH: SplitAxis = {
+  property: "--nav-width",
+  min: 150,
+  max: 420,
+  initial: 190,
+  neighbourMin: 320,
+};
 
 /** Offered with `credential_storage_not_private`; Rust explains and confirms natively (ADR-0073). */
 export const REPAIR_FOLDER_LABEL = "Remove extra permissions…";
@@ -237,7 +247,20 @@ export function startSettings(root: HTMLElement): SettingsApp {
     },
     onRefresh: () => void refresh(),
   });
-  const windowElement = el("main", { class: "settings-window" }, nav.element, content);
+  const navSplitter = createSplitter({
+    label: "settings sections",
+    section: nav.element,
+    neighbour: content,
+    placement: "after",
+    vertical: NAV_WIDTH,
+  });
+  const windowElement = el(
+    "main",
+    { class: "settings-window" },
+    nav.element,
+    navSplitter.element,
+    content,
+  );
   let current: SettingsOverview | null = null;
   let working = false;
   /**
@@ -289,6 +312,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     const scoped = scopedWorkspace(current) !== null;
     // A scoped window shows one workspace and no section list; All settings restores both.
     nav.element.hidden = scoped;
+    navSplitter.element.hidden = scoped;
     scopeBar.hidden = !scoped;
     windowElement.classList.toggle("scoped", scoped);
     // Drawing replaces every control. A focused control with an id gets focus back on its
@@ -543,6 +567,7 @@ export function startSettings(root: HTMLElement): SettingsApp {
     dispose() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
+      navSplitter.dispose();
     },
   };
 }

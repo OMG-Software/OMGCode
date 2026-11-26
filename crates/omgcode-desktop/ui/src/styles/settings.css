@@ -16,15 +16,11 @@
   margin: 40px 16px;
 }
 
-/* Two columns that fill the window: the navigation, then a content area that scrolls alone. */
+/* Two columns that fill the window: the navigation, its splitter (ADR-0101), then a content area
+   that scrolls alone. A scoped window hides the navigation and the splitter. */
 .settings-window {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  display: flex;
   height: 100vh;
-}
-
-.settings-window.scoped {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .scope-bar {
@@ -33,12 +29,14 @@
 
 .settings-nav {
   display: flex;
+  flex: 0 0 var(--nav-width, 190px);
   flex-direction: column;
   gap: 12px;
   padding: 16px 12px;
   background: var(--surface);
-  border-right: 1px solid var(--border);
+  min-width: 0;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .settings-nav h1 {
@@ -119,6 +117,7 @@
 }
 
 .settings-content {
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;

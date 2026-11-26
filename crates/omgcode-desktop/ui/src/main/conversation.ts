@@ -15,6 +15,7 @@ import type {
   TranscriptPage,
 } from "../ipc/types";
 import { iconButton } from "../ui/icons";
+import { createSplitter, type SplitAxis } from "../ui/splitter";
 import { type ChatPreview, createChatRunner } from "./chat_runner";
 import { createComposer } from "./composer";
 import type { ConnectionModel } from "./connection_state";
@@ -31,6 +32,18 @@ import { createLiveEntry, entryContexts, type LiveEntry, renderEntry } from "./t
 
 const MAX_PAGES_PER_LOAD = 50;
 const SCROLL_END_SLACK_PX = 8;
+
+/**
+ * The message box's height (ADR-0101). It starts at its three rows; the splitter on the composer's
+ * top edge makes it taller, down to the transcript's least height, or shorter.
+ */
+export const MESSAGE_HEIGHT: SplitAxis = {
+  property: "--message-height",
+  min: 64,
+  max: 1200,
+  initial: null,
+  neighbourMin: 120,
+};
 
 export interface ConversationDeps {
   /** Called when the session list should be reloaded (status, title or archive changes). */
@@ -94,6 +107,16 @@ export function createConversation(deps: ConversationDeps): Conversation {
 
   const header = el("header", { class: "pane-header" });
   const transcript = el("div", { class: "transcript", attrs: { tabindex: "-1" } });
+  // The composer's top edge moves: it sets the message box's height, which the transcript gives
+  // up (ADR-0101). It sits inside the composer, so it hides with it.
+  const messageSplitter = createSplitter({
+    label: "message box",
+    section: composer.messageBox,
+    neighbour: transcript,
+    placement: "before",
+    horizontal: MESSAGE_HEIGHT,
+  });
+  composer.element.prepend(messageSplitter.element);
   const noticeLine = el("p", { class: "notice", attrs: { role: "status" } });
   const empty = el(
     "div",
@@ -579,6 +602,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
       }
       frame = null;
       resizeObserver?.disconnect();
+      messageSplitter.dispose();
       runner.dispose();
       composer.dispose();
     },
