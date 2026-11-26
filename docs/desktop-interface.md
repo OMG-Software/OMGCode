@@ -1313,8 +1313,10 @@ waits. The window shows:
   with its checkbox disabled. A line says how many installations the list
   left out when a bound was reached. On Windows a **Show container access
   for** choice names a workspace, and each root then says whether that
-  workspace's container can read it, needs a grant, or needs an
-  administrator to grant; changing the choice generates a list on screen
+  workspace's container can read it, needs a grant, needs an
+  administrator to grant, or could not have its access-control list read;
+  the grant names and skips a folder in either of the last two states.
+  Changing the choice generates a list on screen
   again, keeping the selection. A line says when the workspace lacks the
   active read-write grant on its own folder. **Add selected profiles…** sends
   the revision and the digests of 1 to 8 selected proposals; Rust discovers

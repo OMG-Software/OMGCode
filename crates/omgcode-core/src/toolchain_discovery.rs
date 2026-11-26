@@ -970,8 +970,9 @@ fn listed_directories(path: &Path, prefix: Option<&str>) -> Vec<PathBuf> {
 
 /// The text of a small installer-written file, at most 64 KiB of it, when it
 /// is UTF-8. The type is checked before the file is opened, so a FIFO or
-/// device at an installer's path is never opened and cannot block discovery;
-/// the open handle is checked again.
+/// device already at an installer's path is never opened. One swapped in
+/// between the check and the open can still block that open (ADR-0103
+/// records this). The open handle is checked again.
 fn read_text(path: &Path) -> Option<String> {
     if !is_file(path) {
         return None;

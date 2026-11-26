@@ -23,11 +23,14 @@
 //!   of them, and none is a secret. Each is cut to a bounded length.
 //! - On Windows the proposals say, for one selected workspace, which roots
 //!   its container can already read, which need a read-execute grant, and
-//!   which need administrator rights to grant. Only grants this account can
-//!   apply are offered, so a refused access-list change does not leave a
-//!   `pending` grant that blocks the workspace's runs. A folder whose
-//!   access-control list cannot be read is named and skipped, and every
-//!   folder to grant is checked with core's grant rules
+//!   which need administrator rights to grant. Only folders whose
+//!   access-control list this account can change are offered, so a folder
+//!   only an administrator can change is never recorded as a grant. A
+//!   recorded grant can still stay `pending` when its access list cannot be
+//!   changed afterwards; the command then reports `container_access_failed`,
+//!   and the operator revokes the grant. A folder whose access-control list
+//!   cannot be read is named and skipped, and every folder to grant is
+//!   checked with core's grant rules
 //!   ([`ControlStore::check_container_grants`]) before the dialog.
 //! - Access-control lists are read while the settings store is closed.
 //!
@@ -707,9 +710,10 @@ impl DesktopService {
             Some(_) => resolve(&store)?,
             None => None,
         };
-        // Core records a read-write grant only on the workspace's own folder,
-        // both when it is granted and on replay, so an active read-write
-        // grant of this workspace is the one on its folder.
+        // Core records a read-write grant only on the workspace's own folder
+        // (`ControlStore::check_grant_scope` when it is granted, and the
+        // replay `apply` in `omgcode_core::control::container`), so an active
+        // read-write grant of this workspace is the one on its folder.
         let workspace_grant_active =
             workspace
                 .filter(|_| CONTAINER_GRANTS_SUPPORTED)

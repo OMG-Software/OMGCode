@@ -38,8 +38,9 @@ Changes are recorded here before a release version is assigned.
   and variable with its value, and records each profile with `add_profile`
   or, on Windows, grants read-execute access with `grant_container_access`,
   from the confirmed revision. On Windows each root says whether the selected
-  workspace's container can read it, needs a grant, or needs an
-  administrator, read while the settings store is closed, and choosing
+  workspace's container can read it, needs a grant, needs an
+  administrator, or could not have its access-control list read, read while
+  the settings store is closed, and choosing
   another workspace generates the list again. Only folders this account can
   change are granted; folders whose access-control list could not be read
   are named and skipped. Core gains `ControlStore::check_profile`, which

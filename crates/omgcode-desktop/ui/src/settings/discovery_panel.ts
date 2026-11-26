@@ -16,10 +16,11 @@ export const GRANT_SELECTED_LABEL = "Grant folders for selected…";
 export const MAX_SELECTED = 8;
 
 export const DISCOVERY_HELP =
-  "OMGCode can look for installed toolchains (Rust, C and C++, Java, Python, Perl, Go, Node.js, .NET, and Ruby) in their standard install folders and on your PATH, and propose a profile for each. It only reads folders and small files the installers wrote. It runs no program and never reads a project's configuration, such as rust-toolchain.toml. Nothing is recorded until you select proposals and confirm them in a system dialog.";
+  "OMGCode can look for installed toolchains (Rust, C and C++, Java, Python, Perl, Go, Node.js, .NET, and Ruby) in their standard install folders, on your PATH, and in the folders JAVA_HOME, GOROOT, and RUSTUP_HOME name, and propose a profile for each. It only reads folders and small files the installers wrote. It runs no program and never reads a project's configuration, such as rust-toolchain.toml. Nothing is recorded until you select proposals and confirm them in a system dialog.";
 export const DISCOVERY_GRANT_HELP =
   "On Windows a run can read a root only when the workspace's container can. Choose a workspace to see which roots need a read-execute grant; a list already shown is generated again for it. A folder only an administrator can change is named, not granted.";
-export const NOTHING_FOUND = "No toolchain was found in the standard install folders or on PATH.";
+export const NOTHING_FOUND =
+  "No toolchain was found in the standard install folders, on PATH, or in the folders JAVA_HOME, GOROOT, and RUSTUP_HOME name.";
 export const SELECTION_LIMIT = "Select at most 8 proposals at a time.";
 export const WORKSPACE_GRANT_MISSING =
   "This workspace has no active read-write grant on its own folder, which every run in it needs. Grant it under Container grants.";

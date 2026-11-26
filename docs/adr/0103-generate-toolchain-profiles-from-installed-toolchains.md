@@ -45,8 +45,10 @@ confirmed settings revision.
    those variables names is read like any install folder, installer files
    included, even inside the development root; core refuses it as a root
    before any confirmation, and the list shows why. A file is checked to be
-   a regular file before it is opened, so a FIFO at an installer's path
-   cannot block discovery. A listing examines at most 16,384 entries per
+   a regular file before it is opened, and the open handle is checked again,
+   so a FIFO already at an installer's path is never opened; one swapped in
+   between the check and the open can still block discovery (see
+   Consequences). A listing examines at most 16,384 entries per
    folder and keeps the first 512 directories by name, filtered and sorted
    before the cut so the result does not depend on listing order; at most
    256 `PATH` entries are followed.
@@ -130,9 +132,13 @@ confirmed settings revision.
    folder in one native confirmation, lists the folders it skips (those that
    need an administrator and those whose access-control list could not be
    read), and calls `grant_container_access` for each with the confirmed,
-   advancing revision. Folders a grant would fail on are never offered, so
-   no refused access-list change leaves a `pending` grant that blocks the
-   workspace's runs. The list also says whether the workspace has the active
+   advancing revision. Folders whose access-control list this account
+   cannot change are never offered, so a folder only an administrator can
+   change does not become a `pending` grant that blocks the workspace's
+   runs. A recorded grant can still stay `pending` when its access list
+   cannot be changed afterwards, for example when the container identity
+   cannot be resolved; the command reports `container_access_failed`, and
+   the operator revokes the grant. The list also says whether the workspace has the active
    read-write grant on its own folder that every run needs; core records a
    read-write grant only on that folder. Choosing another workspace in the
    window generates a list on screen again, so its access states never

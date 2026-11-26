@@ -194,6 +194,10 @@ describe("generating toolchain profiles", () => {
     expect(group().textContent).toContain(DISCOVERY_HELP);
     expect(DISCOVERY_HELP).toContain("runs no program");
     expect(DISCOVERY_HELP).toContain("rust-toolchain.toml");
+    // The help names every input discovery reads, not just PATH.
+    for (const variable of ["JAVA_HOME", "GOROOT", "RUSTUP_HOME"]) {
+      expect(DISCOVERY_HELP).toContain(variable);
+    }
     // Nothing is listed until the operator asks.
     expect(boxes()).toHaveLength(0);
     expect(ipc.callsTo("settings_discover_toolchains")).toHaveLength(0);
