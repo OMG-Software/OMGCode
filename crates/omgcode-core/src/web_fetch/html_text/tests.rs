@@ -245,6 +245,15 @@ fn links_with_long_targets_empty_text_or_parentheses_are_handled() {
 }
 
 #[test]
+fn an_empty_link_keeps_the_space_or_break_inside_it() {
+    // A browser shows the space or break inside an empty link, so only the
+    // brackets go.
+    assert_eq!(convert("<p>x<a href=\"/y\"> </a>z</p>"), "x z");
+    assert_eq!(convert("<p>x <a href=\"/y\"> </a> z</p>"), "x z");
+    assert_eq!(convert("<p>x<a href=\"/y\"><br></a>z</p>"), "x\nz");
+}
+
+#[test]
 fn an_unclosed_link_is_closed_by_the_next_link() {
     assert_eq!(
         convert("<a href=/a>one <a href=/b>two"),

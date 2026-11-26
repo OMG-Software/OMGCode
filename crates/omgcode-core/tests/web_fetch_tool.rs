@@ -1199,6 +1199,56 @@ fn a_non_page_outcome_is_a_successful_labelled_result() {
     assert_eq!(fixture.tool_codes(), [None], "a redirect result succeeded");
 }
 
+#[test]
+fn a_status_or_redirect_report_marks_later_actions() {
+    // The model then holds text the server chose, such as a redirect target
+    // (ADR-0098).
+    let url = || FetchUrl::parse(URL).expect("url");
+    let outcomes = [
+        FetchOutcome::HttpStatus {
+            url: url(),
+            status: 404,
+        },
+        FetchOutcome::CrossHostRedirect {
+            url: url(),
+            status: 302,
+            target: FetchUrl::parse("https://www.example.org/next").expect("target"),
+        },
+    ];
+    for outcome in outcomes {
+        let mut fixture = Fixture::new();
+        fs::write(fixture.workspace.join("notes.txt"), "notes").expect("file");
+        fixture.set(PermissionSet {
+            read: Access::Allow,
+            ..fetching(Access::Allow)
+        });
+        fixture.add_host(HOST);
+        let fetcher = FakeFetcher::scripted(vec![Ok(outcome)]);
+        let mut model = ScriptedModel::new(vec![
+            tool_reply(vec![
+                fetch_call("fetch-1", URL),
+                call(
+                    "read-after",
+                    "workspace_read_file",
+                    &json!({"path": "notes.txt"}),
+                ),
+            ]),
+            text_reply("done"),
+        ]);
+        fixture.run(&fetcher, &mut model).expect("turn completes");
+        fixture.close_journal();
+        let records = fixture.actions();
+        let flag = |id: &str| {
+            records
+                .iter()
+                .find(|record| record.call_id == id)
+                .map(|record| record.after_web_content)
+        };
+        assert_eq!(flag("fetch-1"), Some(false), "{:?}", flags(&records));
+        assert_eq!(flag("read-after"), Some(true), "{:?}", flags(&records));
+    }
+}
+
 // ------------------------------------------------------------ fetch failures
 
 #[test]

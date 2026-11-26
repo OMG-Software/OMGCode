@@ -79,8 +79,10 @@ function clone<T>(value: T): T {
 const MOCK_PATH_DEPTH_MAX = 32;
 const MOCK_COMPONENT_CHARS_MAX = 255;
 
-/** Rust's bound on a workspace's host allowlist and its reserved names (ADR-0098). */
+/** Rust's bound on the patterns in a workspace's host allowlist (ADR-0098). */
 const MOCK_WEB_HOSTS_MAX = 32;
+
+/** Like core: suffixes that never name a public host, refused as a name or beneath one. */
 const MOCK_WEB_HOST_RESERVED = [
   "localhost",
   "local",
