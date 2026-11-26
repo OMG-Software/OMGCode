@@ -14,7 +14,7 @@ use super::instructions;
 use super::preferences::{
     self, COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN, COMPACT_THRESHOLD_STEP,
 };
-use super::session_connections::SessionConnection;
+use super::session_connections::{SessionConnection, reasoning_efforts};
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
     ChatDefaults, ChatModels, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
@@ -66,6 +66,8 @@ impl DesktopService {
                 instructions: preferences.instructions,
                 compact_threshold: preferences.compact_threshold,
                 auto_compact: preferences.auto_compact,
+                // The effort is a per-session choice, never a saved default.
+                reasoning_effort: None,
             },
             tool_call_limit_max: MAX_TOOL_CALLS,
             turn_timeout_seconds_max: MAX_TURN_DEADLINE.as_secs(),
@@ -264,6 +266,17 @@ impl DesktopService {
         if connection.endpoint != turn_settings.endpoint {
             return Err(DesktopError::connection_changed());
         }
+        // An effort the resolved connection does not take is refused here,
+        // with a message, rather than as the client's configuration error
+        // (ADR-0102).
+        if turn_settings
+            .reasoning_effort
+            .is_some_and(|effort| !reasoning_efforts(&connection.endpoint).contains(&effort))
+        {
+            return Err(DesktopError::invalid_request(
+                "This connection does not take a reasoning effort.",
+            ));
+        }
         let settings = chat_settings(turn_settings, connection.endpoint.clone());
         let clients = ChatClients::for_connection(&settings, &connection)
             .map_err(|error| DesktopError::from_app(&error))?;
@@ -433,6 +446,7 @@ fn chat_settings(settings: ChatSettingsDto, endpoint: String) -> ChatSettings {
         instructions: settings.instructions,
         compact_threshold: settings.compact_threshold,
         auto_compact: settings.auto_compact,
+        reasoning_effort: settings.reasoning_effort,
     }
 }
 

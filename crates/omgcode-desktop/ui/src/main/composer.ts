@@ -270,6 +270,7 @@ export function createComposer(
     return {
       endpoint: fixedEndpoint,
       model: modelBox.model(),
+      reasoning_effort: modelBox.effort(),
       context_tokens: budgets?.context_tokens ?? 0,
       max_output_tokens: budgets?.max_output_tokens ?? 0,
       max_tool_calls: budgets?.max_tool_calls ?? 0,

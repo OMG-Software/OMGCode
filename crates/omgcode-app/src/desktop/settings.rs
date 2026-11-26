@@ -30,7 +30,7 @@ use omgcode_core::turn::display_safe_line;
 use super::error::DesktopError;
 use super::instructions;
 use super::preferences;
-use super::session_connections::{ChosenConnection, recorded_endpoint};
+use super::session_connections::{ChosenConnection, reasoning_efforts, recorded_endpoint};
 use super::settings_chat::{
     chat_defaults_view, global_for_room, longest_for_room, workspace_instructions_view,
 };
@@ -437,10 +437,15 @@ impl DesktopService {
             _ => Vec::new(),
         };
         drop(store);
+        // The efforts of the connection shown; a turn re-checks its own
+        // resolved endpoint (ADR-0102).
+        let reasoning_efforts = reasoning_efforts(&connection.endpoint);
         Ok(ConnectionStatus {
             connection,
             origin,
             model,
+            reasoning_effort: record.and_then(|record| record.reasoning_effort),
+            reasoning_efforts,
             stale,
             session_choices_unreadable: unreadable,
             choices,

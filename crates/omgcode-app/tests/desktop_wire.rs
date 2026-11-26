@@ -9,11 +9,11 @@ use omgcode_app::desktop::{
     ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
     ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatEvent,
     ChatOutcome, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto,
-    Decision, DesktopError, EntryKind, MessageRoleDto, SearchHit, SearchRequest, SearchResult,
-    SearchRoleDto, SessionCreateRequest, SessionRequest, SessionStatus, SessionSummary,
-    SessionTree, SnippetPart, ToolOutcomeDto, ToolsMode, TranscriptEntry, TranscriptPage,
-    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
-    WorkspaceList,
+    Decision, DesktopError, EntryKind, MessageRoleDto, ReasoningEffort, SearchHit, SearchRequest,
+    SearchResult, SearchRoleDto, SessionCreateRequest, SessionRequest, SessionStatus,
+    SessionSummary, SessionTree, SnippetPart, ToolOutcomeDto, ToolsMode, TranscriptEntry,
+    TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice,
+    WorkspaceGroup, WorkspaceList,
 };
 use omgcode_core::policy::Access;
 use serde_json::{Value, json};
@@ -658,6 +658,9 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
         instructions: String::new(),
         compact_threshold: 1,
         auto_compact: false,
+        // An effort is omitted when none is chosen (ADR-0102); a chosen one
+        // shows the optional key `types.ts` declares.
+        reasoning_effort: Some(ReasoningEffort::High),
     });
     let workspaces = json_of(&WorkspaceList {
         development_root_set: false,
@@ -735,6 +738,10 @@ fn closed_unions_serialize_to_the_values_types_ts_declares() {
             .map(|value| value.as_str().expect("string").to_owned())
             .collect()
     };
+    assert_eq!(
+        union("ReasoningEffort"),
+        strings(ReasoningEffort::ALL.iter().map(json_of).collect())
+    );
     assert_eq!(
         union("SessionStatus"),
         strings(

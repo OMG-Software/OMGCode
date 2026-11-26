@@ -8,6 +8,7 @@ use std::path::Path;
 use omgcode_app::create_session;
 use omgcode_app::desktop::{ContextBreakdown, ContextPartDto, ContextPartId, DesktopService};
 use omgcode_core::control::ControlStore;
+use omgcode_core::provider::{ReasoningEffort, effort_field_bytes};
 use omgcode_core::session::{CompactionRecord, MessageRole, SessionJournal};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -356,4 +357,49 @@ fn an_unknown_session_is_a_controlled_error() {
         .session_context_breakdown(wire(session_request(Uuid::new_v4())))
         .expect_err("unknown session");
     assert_eq!(error.code(), "not_found");
+}
+
+/// The effort a session records is sent with its next turn, so its field is
+/// counted under framing and in the total, as the turn's own trigger counts
+/// it (ADR-0102). Clearing the effort removes it again.
+#[test]
+fn a_recorded_effort_is_counted_as_framing() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("plain", text_only());
+    let (id, journal) = session(&fixture.data, &workspace.path, false);
+    drop(journal);
+    let service = fixture.service(NO_ENDPOINT);
+    let choose = |effort: Option<&str>| {
+        service
+            .session_effort_select(wire(
+                json!({ "session_id": id, "reasoning_effort": effort }),
+            ))
+            .expect("effort recorded");
+    };
+    let without = breakdown(&service, id);
+
+    choose(Some("high"));
+    let with = breakdown(&service, id);
+
+    let field = effort_field_bytes(Some(ReasoningEffort::High));
+    assert!(field > 0);
+    assert_eq!(sum(&with), with.estimated_input_tokens);
+    assert_eq!(
+        with.estimated_input_tokens,
+        without.estimated_input_tokens + field
+    );
+    assert_eq!(
+        part(&with, ContextPartId::Framing).tokens,
+        part(&without, ContextPartId::Framing).tokens + field
+    );
+    assert_eq!(
+        part(&with, ContextPartId::Tools).tokens,
+        part(&without, ContextPartId::Tools).tokens
+    );
+
+    choose(None);
+    assert_eq!(
+        breakdown(&service, id).estimated_input_tokens,
+        without.estimated_input_tokens
+    );
 }

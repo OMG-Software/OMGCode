@@ -22,7 +22,7 @@ use omgcode_app::{
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::control::ProviderKind;
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
-use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig};
+use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig, ReasoningEffort};
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -191,6 +191,12 @@ struct ChatArgs {
     context_tokens: u64,
     #[arg(long, default_value_t = 1024)]
     max_output_tokens: u32,
+    /// Ask the model for this reasoning effort: none, minimal, low, medium,
+    /// high, xhigh, or max (ADR-0102). Without it no effort field is sent and
+    /// the provider's default applies. The model decides which values it
+    /// accepts; a connection that takes no effort refuses the flag.
+    #[arg(long, value_parser = reasoning_effort)]
+    reasoning_effort: Option<ReasoningEffort>,
     /// Maximum tool calls per turn (1–256).
     #[arg(long, default_value_t = DEFAULT_MAX_TOOL_CALLS)]
     max_tool_calls: usize,
@@ -273,6 +279,13 @@ fn non_empty_name(value: &str) -> Result<String, String> {
     } else {
         Ok(value.to_owned())
     }
+}
+
+/// Parse `--reasoning-effort` through core's closed list of names (ADR-0102).
+fn reasoning_effort(value: &str) -> Result<ReasoningEffort, String> {
+    ReasoningEffort::parse(value).ok_or_else(|| {
+        "the reasoning effort must be none, minimal, low, medium, high, xhigh, or max".to_owned()
+    })
 }
 
 #[derive(Serialize)]
@@ -514,6 +527,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         instructions: args.instructions,
         compact_threshold: args.compact_threshold,
         auto_compact: args.auto_compact,
+        reasoning_effort: args.reasoning_effort,
     };
     let clients = ChatClients::for_connection(&settings, &connection)?;
     let title = redact_known_secret(&args.title, token_text);

@@ -891,7 +891,7 @@ For example, a distribution Node reads `/etc/ssl`.
 
 #### Generated profiles
 
-Version 0.67.0 adds **Generate toolchain profiles from local packages** to the
+Version 0.68.0 adds **Generate toolchain profiles from local packages** to the
 **Toolchain profiles** group of the `settings` window
 ([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 Core's trusted discovery service proposes profiles; it records and grants

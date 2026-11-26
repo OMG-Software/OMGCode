@@ -6,7 +6,7 @@ use omgcode_core::context::{
     ContextBudget, MESSAGE_OVERHEAD, estimate_history_input_tokens, estimate_history_parts,
 };
 use omgcode_core::prompt::{self, BASE_PROMPT, ConversationMessage, ConversationRole, PromptError};
-use omgcode_core::provider::LocalModelClient;
+use omgcode_core::provider::{LocalModelClient, ReasoningEffort, effort_field_bytes};
 use omgcode_core::session::SessionJournal;
 use omgcode_core::turn::replay_active;
 
@@ -142,8 +142,9 @@ pub(crate) fn active_history(
 /// Every field is in estimated tokens and the fields add up to the estimate
 /// that [`preflight_context`] computes for the same state without the turn's
 /// new user message (`total`, from the same core arithmetic). The message
-/// overhead of the system and instruction messages, and the instructions
-/// label, belong to no part, so they are reported as `framing`.
+/// overhead of the system and instruction messages, the instructions label,
+/// and the reasoning effort field belong to no part, so they are reported as
+/// `framing`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NextTurnParts {
     /// The compiled base prompt and its message overhead.
@@ -162,7 +163,8 @@ pub(crate) struct NextTurnParts {
     pub history_messages: u64,
     /// Their content and message overhead.
     pub history: u64,
-    /// The instructions label and the instruction message's overhead.
+    /// The instructions label, the instruction message's overhead, and the
+    /// reasoning effort field when an effort is chosen (ADR-0102).
     pub framing: u64,
     /// The estimate: the sum of the parts above.
     pub total: u64,
@@ -173,7 +175,9 @@ pub(crate) struct NextTurnParts {
 /// `instructions` is the composed custom instruction text a turn would send
 /// and `global_bytes` the bytes of it that belong to the global part, never
 /// more than `instructions.len()`. `tools_enabled` is whether the turn would
-/// offer the workspace tools. Skills are loaded per turn and are not counted.
+/// offer the workspace tools, and `reasoning_effort` the effort the turn
+/// would send, whose field counts as framing. Skills are loaded per turn and
+/// are not counted.
 ///
 /// # Errors
 ///
@@ -184,15 +188,24 @@ pub(crate) fn estimate_next_turn_parts(
     instructions: &str,
     global_bytes: usize,
     tools_enabled: bool,
+    reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<NextTurnParts, AppError> {
     let history = active_history(journal, data_root, tools_enabled);
-    let extra = if tools_enabled {
+    let tools = if tools_enabled {
         TOOL_SCHEMA_ESTIMATE_BYTES
     } else {
         0
     };
-    let parts = estimate_history_parts(BASE_PROMPT.len(), instructions, &history, extra)
-        .map_err(|error| AppError::new(ErrorKind::Context, error.to_string()))?;
+    // Both are fixed extra bytes to core, so the total is the trigger's own
+    // sum; the effort is then reported under framing, not tools.
+    let parts = estimate_history_parts(
+        BASE_PROMPT.len(),
+        instructions,
+        &history,
+        tools.saturating_add(effort_extra_bytes(reasoning_effort)),
+    )
+    .map_err(|error| AppError::new(ErrorKind::Context, error.to_string()))?;
+    let effort = effort_field_bytes(reasoning_effort);
     let total = parts
         .total()
         .map_err(|error| AppError::new(ErrorKind::Context, error.to_string()))?;
@@ -214,16 +227,26 @@ pub(crate) fn estimate_next_turn_parts(
         system: parts.base_prompt.saturating_add(overhead),
         global_instructions: global,
         workspace_instructions: parts.custom_instructions - global,
-        tools: parts.fixed_extra,
+        tools: parts.fixed_extra.saturating_sub(effort),
         summary: has_summary.then(|| summary_bytes.saturating_add(overhead)),
         history_messages: kept,
         history: parts
             .history_content
             .saturating_sub(summary_bytes)
             .saturating_add(kept.saturating_mul(overhead)),
-        framing: parts.instructions_label.saturating_add(overhead),
+        framing: parts
+            .instructions_label
+            .saturating_add(overhead)
+            .saturating_add(effort),
         total,
     })
+}
+
+/// The bytes the reasoning effort field adds to the next request, as fixed
+/// extra bytes for the estimate (ADR-0102). The client counts the same figure
+/// in its own checks.
+pub(crate) fn effort_extra_bytes(effort: Option<ReasoningEffort>) -> usize {
+    usize::try_from(effort_field_bytes(effort)).unwrap_or(usize::MAX)
 }
 
 /// The input-only estimate and any assembly limit that compaction can relieve.
@@ -319,7 +342,12 @@ mod tests {
 
     /// The parts add up to the trigger's own estimate, once the new message
     /// the trigger counts is added (its content and one message overhead).
-    fn assert_parts_match_preflight(compacted: bool, tools_enabled: bool) {
+    /// The trigger's fixed extra bytes are those `run_turn` passes.
+    fn assert_parts_match_preflight(
+        compacted: bool,
+        tools_enabled: bool,
+        effort: Option<ReasoningEffort>,
+    ) -> NextTurnParts {
         let directory = tempfile::tempdir().expect("data root");
         let journal = journal(directory.path(), compacted);
         let instructions = "Global instructions:\nbe brief\n\nWorkspace instructions:\nuse tabs";
@@ -335,11 +363,12 @@ mod tests {
             cancel: &cancel,
             skills: &[],
         };
-        let extra = if tools_enabled {
+        let tools = if tools_enabled {
             TOOL_SCHEMA_ESTIMATE_BYTES
         } else {
             0
         };
+        let extra = tools + effort_extra_bytes(effort);
         let (preflight, _) =
             estimate_with_user(&journal, &turn, extra, tools_enabled).expect("preflight");
 
@@ -350,6 +379,7 @@ mod tests {
             instructions,
             global,
             tools_enabled,
+            effort,
         )
         .expect("parts");
 
@@ -371,22 +401,40 @@ mod tests {
             parts.global_instructions + parts.workspace_instructions,
             u64::try_from(instructions.len()).expect("length")
         );
+        parts
     }
 
     #[test]
     fn the_parts_sum_to_the_preflight_estimate_without_a_compaction() {
-        assert_parts_match_preflight(false, false);
+        assert_parts_match_preflight(false, false, None);
     }
 
     #[test]
     fn the_parts_sum_to_the_preflight_estimate_with_a_compaction_summary() {
-        assert_parts_match_preflight(true, false);
+        assert_parts_match_preflight(true, false, None);
     }
 
     #[test]
     fn the_tool_definitions_are_a_part_only_when_tools_are_offered() {
-        assert_parts_match_preflight(false, true);
-        assert_parts_match_preflight(true, true);
+        assert_parts_match_preflight(false, true, None);
+        assert_parts_match_preflight(true, true, None);
+    }
+
+    /// A chosen effort adds its field's fixed bytes to the trigger's estimate
+    /// and to the parts, under framing; the tools part is unchanged.
+    #[test]
+    fn a_chosen_effort_counts_as_framing_in_the_trigger_estimate() {
+        let field = effort_field_bytes(Some(ReasoningEffort::High));
+        assert!(field > 0);
+        assert_eq!(effort_extra_bytes(None), 0);
+        for tools_enabled in [false, true] {
+            let without = assert_parts_match_preflight(false, tools_enabled, None);
+            let with =
+                assert_parts_match_preflight(false, tools_enabled, Some(ReasoningEffort::High));
+            assert_eq!(with.total, without.total + field);
+            assert_eq!(with.framing, without.framing + field);
+            assert_eq!(with.tools, without.tools);
+        }
     }
 
     /// Without live tool authority a summary built over tool results is sent
@@ -397,8 +445,8 @@ mod tests {
     fn a_withheld_summary_is_counted_as_its_notice_and_keeps_every_retained_message() {
         let directory = tempfile::tempdir().expect("data root");
         let journal = journal_with(directory.path(), true, true);
-        let parts =
-            estimate_next_turn_parts(&journal, directory.path(), "", 0, false).expect("parts");
+        let parts = estimate_next_turn_parts(&journal, directory.path(), "", 0, false, None)
+            .expect("parts");
         let overhead = u64::try_from(MESSAGE_OVERHEAD).expect("overhead");
         let notice =
             u64::try_from(omgcode_core::turn::WITHHELD_COMPACTION_SUMMARY.len()).expect("length");

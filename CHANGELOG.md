@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.67.0 adds **Generate toolchain profiles from local packages** to
+- Version 0.68.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window: it
   generates toolchain profiles from installed toolchains (ADR-0103). A new
   core service, `toolchain_discovery`, holds one detector
@@ -55,6 +55,35 @@ Changes are recorded here before a release version is assigned.
   keep no network, a 20-second deadline, and 1 GiB of memory, so a `cargo`
   build that needs crates.io dependencies still fails offline.
 
+- Version 0.67.0 adds a per-session reasoning effort (ADR-0102). The desktop
+  model box has an **Effort** dropdown under **Model** with "Default", which
+  sends nothing, and None, Minimal, Low, Medium, High, Extra high, and Max. It
+  is recorded per session by the new `main` command `session_effort_select`,
+  without a dialog but as one settings change (`settings_change_running`
+  while another runs), as an optional `reasoning_effort` in
+  `session-connections.json` (still version 1); a provider choice clears it
+  and a model choice keeps it. The desktop shell has 63 commands: 31 in
+  `main`, 3 in `approvals`, and 29 in `settings`. `connection_status`
+  reports the session's effort and `reasoning_efforts`, the values its
+  connection takes, and
+  `chat_send` takes `reasoning_effort` in its settings. The CLI adds
+  `chat --reasoning-effort`. Chat Completions requests carry it as
+  `reasoning_effort`, and the ChatGPT plan route as
+  `"reasoning": {"effort": ...}`; the field's bytes count in the client's
+  checks, the pre-turn compaction trigger, and the **Context** tab's framing
+  part, and compaction summary requests send none. Core allows it only for
+  loopback endpoints, a typed `openai_compatible` address, and the fixed
+  Ollama Cloud, OpenAI, Google, Moonshot, MiniMax, OpenRouter, Z.ai, and xAI
+  endpoints; Anthropic, DeepSeek, Tencent, Meta, and Thinking Machines Lab
+  refuse it before any request, and the dropdown is disabled there with a
+  note. The endpoint decides, not the profile kind, so a typed address that
+  is exactly one of those refusing endpoints refuses it too. A version-3
+  `request.manifest` records the effort that was sent as an optional
+  `reasoning_effort`; 0.66.0 and earlier refuse a journal that has
+  it, and a version 1 or 2 session refuses an effort before anything is
+  recorded. Values are not adjusted per model, so a model that refuses one
+  answers with its provider's HTTP error. No request with an effort was made
+  to a real provider.
 - Version 0.66.0 makes every section divider in the desktop windows movable
   (ADR-0101). The `approvals` queue, 300 pixels wide, now widens or narrows
   from 200 to 640 beside the review pane, and below 720 pixels wide, where
@@ -334,6 +363,12 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- The CLI test `a_filtered_listing_is_truncated_when_newer_calls_fill_the_search_window`
+  no longer fails now and then on Linux with `action journal: Busy`. It
+  dropped the seeded action journal's writer and opened it again, and a
+  sibling test's CLI child, between fork and exec, could still share the
+  descriptor and its `flock`. The test now appends with the seeding writer.
+  Tests only; no application code changed.
 - Version 0.61.0 opens the ChatGPT sign-in page in the default browser on
   Windows (ADR-0094). Sign-in ran `explorer.exe` with the authorization
   address, which opened a File Explorer window instead of a browser. A new

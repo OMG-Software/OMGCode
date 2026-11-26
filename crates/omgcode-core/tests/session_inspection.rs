@@ -40,6 +40,7 @@ fn manifest() -> RequestManifest {
         tool_schema_version: Some("1".into()),
         tools: Some(vec!["workspace_read_file".into(), "workspace_list".into()]),
         skills: Vec::new(),
+        reasoning_effort: None,
     }
 }
 

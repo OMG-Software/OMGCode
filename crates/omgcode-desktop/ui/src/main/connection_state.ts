@@ -1,6 +1,6 @@
 import { api } from "../ipc/client";
 import { CANCELLED_CODE, toIpcError } from "../ipc/errors";
-import type { ConnectionStatus } from "../ipc/types";
+import type { ConnectionStatus, ReasoningEffort } from "../ipc/types";
 
 /** Shown when the operator closes the confirmation or answers No. */
 export const CONNECTION_UNCHANGED = "The model provider was not changed.";
@@ -8,10 +8,17 @@ export const CONNECTION_UNCHANGED = "The model provider was not changed.";
 /**
  * Why the connection state changed. `opening` means a different session was named and its
  * status has not arrived; `read` is a status read; `selected` is a confirmed provider choice
- * (Rust cleared the session's model); `model` is a model choice, or its failure; `busy` and
- * `message` change only what the dropdowns show.
+ * (Rust cleared the session's model and effort); `model` is a model choice and `effort` an
+ * effort choice (ADR-0102); `busy` and `message` change only what the dropdowns show.
  */
-export type ConnectionChange = "opening" | "read" | "selected" | "model" | "busy" | "message";
+export type ConnectionChange =
+  | "opening"
+  | "read"
+  | "selected"
+  | "model"
+  | "effort"
+  | "busy"
+  | "message";
 
 export interface ConnectionModel {
   /** The open session, or `null` when none is open. */
@@ -35,6 +42,8 @@ export interface ConnectionModel {
   select(profile: string | null): Promise<void>;
   /** Records the model for the open session. */
   chooseModel(model: string): Promise<void>;
+  /** Records the reasoning effort for the open session, or none for `null` (ADR-0102). */
+  chooseEffort(effort: ReasoningEffort | null): Promise<void>;
   dispose(): void;
 }
 
@@ -51,19 +60,22 @@ export function createConnectionModel(): ConnectionModel {
   let note = "";
   /** Counts reads; an answer is used only when no later read or choice began. */
   let generation = 0;
-  /** Counts model choices; only the latest one's answer is used, so the operator's last pick wins. */
-  let modelCalls = 0;
-  /** Counts accepted provider choices; a model answer from before one is stale. */
+  /**
+   * Counts model and effort choices together; only the latest one's answer is used, so the
+   * operator's last pick wins. Writes run in order, so the latest answer holds every earlier one.
+   */
+  let saveCalls = 0;
+  /** Counts accepted provider choices; a model or effort answer from before one is stale. */
   let providerCalls = 0;
   /**
-   * Model saves not yet answered, by session. While one is pending a status read could still
-   * hold the old model, so its answer is dropped: the save's own answer is the newer truth.
+   * Model and effort saves not yet answered, by session. While one is pending a status read could
+   * still hold the old choice, so its answer is dropped: the save's own answer is the newer truth.
    */
-  const pendingModels = new Map<string, number>();
+  const pendingSaves = new Map<string, number>();
   /**
-   * Sessions whose status read was dropped for a pending model save. The read is repeated once
-   * the last save settles, even when that save's own answer is discarded, so the session never
-   * stays without a status.
+   * Sessions whose status read was dropped for a pending save. The read is repeated once the
+   * last save settles, even when that save's own answer is discarded, so the session never stays
+   * without a status.
    */
   const droppedReads = new Set<string>();
   /**
@@ -94,18 +106,18 @@ export function createConnectionModel(): ConnectionModel {
     return run;
   }
 
-  function modelSavePending(id: string | null): boolean {
-    return id !== null && (pendingModels.get(id) ?? 0) > 0;
+  function savePending(id: string | null): boolean {
+    return id !== null && (pendingSaves.get(id) ?? 0) > 0;
   }
 
-  /** Settles one model save; true when it was the session's last and a read was dropped. */
-  function settleModelSave(id: string): boolean {
-    const left = (pendingModels.get(id) ?? 1) - 1;
+  /** Settles one save; true when it was the session's last and a read was dropped. */
+  function settleSave(id: string): boolean {
+    const left = (pendingSaves.get(id) ?? 1) - 1;
     if (left > 0) {
-      pendingModels.set(id, left);
+      pendingSaves.set(id, left);
       return false;
     }
-    pendingModels.delete(id);
+    pendingSaves.delete(id);
     return droppedReads.delete(id);
   }
 
@@ -118,7 +130,7 @@ export function createConnectionModel(): ConnectionModel {
       if (disposed || mine !== generation || session !== id) {
         return;
       }
-      if (id !== null && modelSavePending(id)) {
+      if (id !== null && savePending(id)) {
         droppedReads.add(id);
         return;
       }
@@ -172,6 +184,55 @@ export function createConnectionModel(): ConnectionModel {
     emit("selected");
   }
 
+  /**
+   * Records a model or effort choice for the open session without a dialog. `write` is the IPC
+   * call; `change` is emitted with its answer.
+   */
+  async function saveChoice(
+    write: (id: string) => Promise<ConnectionStatus>,
+    change: "model" | "effort",
+  ): Promise<void> {
+    const id = session;
+    if (id === null) {
+      return;
+    }
+    saveCalls += 1;
+    const mine = saveCalls;
+    const provider = providerCalls;
+    const stale = (): boolean =>
+      disposed || session !== id || mine !== saveCalls || provider !== providerCalls;
+    note = "";
+    // A status read already in flight may hold the old choice; it must not undo this one.
+    generation += 1;
+    pendingSaves.set(id, (pendingSaves.get(id) ?? 0) + 1);
+    let status: ConnectionStatus | null = null;
+    let failure: unknown = null;
+    try {
+      status = await enqueue(() => write(id));
+    } catch (reason) {
+      failure = reason;
+    }
+    const repeatRead = settleSave(id);
+    if (stale()) {
+      // This answer is discarded, but a read dropped while it was pending must still happen,
+      // or a reopened session would stay without a status.
+      if (repeatRead && !disposed && session === id) {
+        await read();
+      }
+      return;
+    }
+    if (status !== null) {
+      current = status;
+      generation += 1;
+      emit(change);
+      return;
+    }
+    note = describe(failure);
+    emit("message");
+    // The recorded choice decides what the dropdown shows after a failure.
+    await read();
+  }
+
   return {
     sessionId: () => session,
     status: () => current,
@@ -200,47 +261,8 @@ export function createConnectionModel(): ConnectionModel {
       }
     },
     select: chooseProvider,
-    async chooseModel(model) {
-      const id = session;
-      if (id === null) {
-        return;
-      }
-      modelCalls += 1;
-      const mine = modelCalls;
-      const provider = providerCalls;
-      const stale = (): boolean =>
-        disposed || session !== id || mine !== modelCalls || provider !== providerCalls;
-      note = "";
-      // A status read already in flight may hold the old model; it must not undo this choice.
-      generation += 1;
-      pendingModels.set(id, (pendingModels.get(id) ?? 0) + 1);
-      let status: ConnectionStatus | null = null;
-      let failure: unknown = null;
-      try {
-        status = await enqueue(() => api.sessionModelSelect(id, model));
-      } catch (reason) {
-        failure = reason;
-      }
-      const repeatRead = settleModelSave(id);
-      if (stale()) {
-        // This answer is discarded, but a read dropped while it was pending must still happen,
-        // or a reopened session would stay without a status.
-        if (repeatRead && !disposed && session === id) {
-          await read();
-        }
-        return;
-      }
-      if (status !== null) {
-        current = status;
-        generation += 1;
-        emit("model");
-        return;
-      }
-      note = describe(failure);
-      emit("message");
-      // The recorded model decides what the dropdown shows after a failure.
-      await read();
-    },
+    chooseModel: (model) => saveChoice((id) => api.sessionModelSelect(id, model), "model"),
+    chooseEffort: (effort) => saveChoice((id) => api.sessionEffortSelect(id, effort), "effort"),
     dispose() {
       disposed = true;
       listeners.clear();

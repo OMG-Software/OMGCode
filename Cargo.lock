@@ -3622,7 +3622,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-app"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "directories",
  "omgcode-core",
@@ -3638,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-cli"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "clap",
  "omgcode-app",
@@ -3651,7 +3651,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-core"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3675,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-desktop"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "omgcode-app",
  "rfd",
@@ -3688,7 +3688,7 @@ dependencies = [
 
 [[package]]
 name = "omgcode-platform"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "libc",
  "rustix",

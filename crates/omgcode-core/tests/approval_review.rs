@@ -245,6 +245,7 @@ fn manifest() -> RequestManifest {
         tool_schema_version: None,
         tools: None,
         skills: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
