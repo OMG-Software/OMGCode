@@ -1,16 +1,17 @@
 //! The connection and model chosen for each session (ADR-0071).
 //!
 //! The file is `<data_root>/desktop-v1/session-connections.json`. It maps a
-//! session identifier to the provider the operator chose for that session and
-//! the model chosen for it. It holds no secret, no credential, and no
-//! permission: a profile name, the endpoint the operator confirmed, and a
-//! model name.
+//! session identifier to the provider the operator chose for that session, the
+//! model chosen for it, and the reasoning effort chosen for it (ADR-0102). It
+//! holds no secret, no credential, and no permission: a profile name, the
+//! endpoint the operator confirmed, a model name, and an effort name.
 //!
 //! # Trust
 //!
 //! Only this process writes the file, and only after a native confirmation of
-//! the provider (`connection_select`) or for a model name that grants nothing
-//! (`session_model_select`). The file is **not tamper-evident**: a process
+//! the provider (`connection_select`) or for a model name or effort that
+//! grants nothing (`session_model_select`, `session_effort_select`). The file
+//! is **not tamper-evident**: a process
 //! running as the same user can edit it, as it can edit the settings journal.
 //! The edit cannot widen what a turn reaches, because every turn resolves the
 //! session's profile through core again and refuses the turn with
@@ -46,7 +47,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use omgcode_core::control::{ControlStore, ProviderKind};
-use omgcode_core::provider::ModelEndpoint;
+use omgcode_core::provider::{ModelEndpoint, ReasoningEffort};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -103,6 +104,22 @@ pub(super) struct SessionRecord {
     pub(super) connection: ChosenConnection,
     /// The model; empty when none is chosen.
     pub(super) model: String,
+    /// The reasoning effort; `None` sends none (ADR-0102). Omitted from the
+    /// file when none is chosen, so a file without efforts keeps the version
+    /// 1 shape that earlier builds read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// The reasoning efforts a request to `endpoint` may carry (ADR-0102): every
+/// documented value, or none when the endpoint takes no effort or is not a
+/// valid endpoint. The server still decides which values its model accepts.
+pub(super) fn reasoning_efforts(endpoint: &str) -> Vec<ReasoningEffort> {
+    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.takes_reasoning_effort()) {
+        ReasoningEffort::ALL.to_vec()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Every recorded choice, by session.
@@ -539,6 +556,7 @@ mod tests {
                 endpoint: "https://ollama.com/v1".to_owned(),
             },
             model: model.to_owned(),
+            reasoning_effort: None,
         }
     }
 
@@ -554,6 +572,7 @@ mod tests {
                     endpoint: "http://127.0.0.1:1234/v1".to_owned(),
                 },
                 model: String::new(),
+                reasoning_effort: None,
             },
         );
         records.insert(
@@ -561,12 +580,74 @@ mod tests {
             SessionRecord {
                 connection: ChosenConnection::Follow {},
                 model: "qwen".to_owned(),
+                reasoning_effort: Some(ReasoningEffort::XHigh),
             },
         );
         assert_eq!(load(&root), Ok(None));
         save(&root, &records).expect("save");
         assert_eq!(load(&root), Ok(Some(records)));
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn an_effort_is_omitted_when_none_and_a_file_without_one_still_loads() {
+        // ADR-0102: a record without an effort keeps the shape earlier builds
+        // wrote and read, and a file they wrote loads with no effort.
+        let root = scratch("effort-shape");
+        let mut records = Records::new();
+        records.insert(Uuid::from_u128(1), profile_record("m"));
+        save(&root, &records).expect("save");
+        let text = fs::read_to_string(file_path(&root)).expect("read");
+        assert!(!text.contains("reasoning_effort"), "{text}");
+        fs::write(
+            file_path(&root),
+            r#"{"version":1,"sessions":{"00000000-0000-0000-0000-000000000002":{"connection":{"kind":"follow"},"model":"qwen"}}}"#,
+        )
+        .expect("write an earlier build's file");
+        let loaded = load(&root).expect("load").expect("records");
+        assert_eq!(
+            loaded
+                .get(&Uuid::from_u128(2))
+                .map(|record| record.reasoning_effort),
+            Some(None)
+        );
+        // A recorded effort is its wire name; any other name makes the file
+        // unreadable, never partly applied.
+        let mut records = Records::new();
+        records.insert(
+            Uuid::from_u128(3),
+            SessionRecord {
+                reasoning_effort: Some(ReasoningEffort::Max),
+                ..profile_record("m")
+            },
+        );
+        save(&root, &records).expect("save");
+        let text = fs::read_to_string(file_path(&root)).expect("read");
+        assert!(text.contains(r#""reasoning_effort": "max""#), "{text}");
+        fs::write(file_path(&root), text.replace(r#""max""#, r#""maximum""#))
+            .expect("write an unknown effort");
+        assert_eq!(load(&root), Err(LoadError::Format));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn only_endpoints_that_take_an_effort_offer_one() {
+        assert_eq!(
+            reasoning_efforts("http://127.0.0.1:1234/v1"),
+            ReasoningEffort::ALL.to_vec()
+        );
+        assert_eq!(
+            reasoning_efforts("https://api.openai.com/v1"),
+            ReasoningEffort::ALL.to_vec()
+        );
+        for endpoint in [
+            "https://api.anthropic.com/v1",
+            "https://api.deepseek.com",
+            "not an endpoint",
+            "",
+        ] {
+            assert!(reasoning_efforts(endpoint).is_empty(), "{endpoint}");
+        }
     }
 
     #[test]

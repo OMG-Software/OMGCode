@@ -355,7 +355,7 @@ fn a_stream_over_the_byte_limit_is_refused() {
 #[test]
 fn the_request_body_uses_instructions_input_items_and_one_namespace() {
     let tools = tool_definitions();
-    let body = request_body("gpt-test", &messages(), Some(&tools)).expect("body");
+    let body = request_body("gpt-test", None, &messages(), Some(&tools)).expect("body");
     let value: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["model"], "gpt-test");
     assert_eq!(value["instructions"], BASE_PROMPT);
@@ -393,7 +393,7 @@ fn the_request_body_uses_instructions_input_items_and_one_namespace() {
         assert!(value.get(field).is_none(), "{field}");
     }
 
-    let text = request_body("gpt-test", &messages(), None).expect("text body");
+    let text = request_body("gpt-test", None, &messages(), None).expect("text body");
     let value: Value = serde_json::from_slice(&text).expect("json");
     assert!(value.get("tools").is_none());
     assert!(value.get("tool_choice").is_none());
@@ -404,9 +404,35 @@ fn the_request_body_uses_instructions_input_items_and_one_namespace() {
         content: "late".to_owned(),
     });
     assert_eq!(
-        request_body("gpt-test", &second_system, None),
+        request_body("gpt-test", None, &second_system, None),
         Err(ProviderError::InvalidConfiguration)
     );
+}
+
+#[test]
+fn a_chosen_effort_is_sent_as_reasoning_effort_and_nothing_else_changes() {
+    // ADR-0102: the effort is the only reasoning option sent; with none, the
+    // body is exactly as before.
+    let tools = tool_definitions();
+    for effort in ReasoningEffort::ALL {
+        for tools in [None, Some(tools.as_slice())] {
+            let with: Value = serde_json::from_slice(
+                &request_body("gpt-test", Some(effort), &messages(), tools).expect("body"),
+            )
+            .expect("json");
+            assert_eq!(
+                with["reasoning"],
+                serde_json::json!({ "effort": effort.as_str() })
+            );
+            let mut without: Value = serde_json::from_slice(
+                &request_body("gpt-test", None, &messages(), tools).expect("body"),
+            )
+            .expect("json");
+            assert!(without.get("reasoning").is_none());
+            without["reasoning"] = with["reasoning"].clone();
+            assert_eq!(with, without);
+        }
+    }
 }
 
 /// A tool turn after one call: the request, the model's interim text, and the
@@ -429,6 +455,7 @@ fn with_tools_a_tool_result_is_sent_as_its_call_and_output_items() {
     let tools = tool_definitions();
     let body = request_body(
         "gpt-test",
+        None,
         &tool_turn_messages("{\"path\":\".\"}", "Tool result [call call_list_1]:\n[]"),
         Some(&tools),
     )
@@ -460,6 +487,7 @@ fn without_tools_a_tool_result_stays_a_labelled_user_message() {
     // No call item may name a function the request does not advertise.
     let body = request_body(
         "gpt-test",
+        None,
         &tool_turn_messages("{\"path\":\".\"}", "Tool result [call call_list_1]:\n[]"),
         None,
     )
@@ -490,10 +518,10 @@ fn a_tool_results_size_estimate_covers_its_encoded_items() {
     let content = "Tool result [call call_list_1]:\nok";
     let with = tool_turn_messages(&arguments, content);
     let without = messages();
-    let added_body = request_body("gpt-test", &with, Some(&tools))
+    let added_body = request_body("gpt-test", None, &with, Some(&tools))
         .expect("body")
         .len()
-        - request_body("gpt-test", &without, Some(&tools))
+        - request_body("gpt-test", None, &without, Some(&tools))
             .expect("body")
             .len();
     let shared = |messages: &[ModelMessage]| {
@@ -910,7 +938,7 @@ fn a_rejected_calls_placeholder_arguments_and_result_are_sent_as_a_paired_call_a
         content: "Tool error [call call_odd_1; source core_observed; untrusted workspace data]:\n{\"error\":\"unsupported_tool\"}".to_owned(),
     });
 
-    let body = request_body("gpt-test", &messages, Some(&tools)).expect("body");
+    let body = request_body("gpt-test", None, &messages, Some(&tools)).expect("body");
 
     let value: Value = serde_json::from_slice(&body).expect("json");
     let items = value["input"].as_array().expect("input items");
@@ -1006,7 +1034,7 @@ fn ten_tool_definitions() -> Vec<crate::turn::ToolDefinition> {
 fn ten_tool_definitions_build_one_namespace_and_an_eleventh_is_refused_before_a_token_is_read() {
     let tools = ten_tool_definitions();
     assert_eq!(tools.len(), 10);
-    let body = request_body("gpt-test", &messages(), Some(&tools)).expect("body");
+    let body = request_body("gpt-test", None, &messages(), Some(&tools)).expect("body");
     let value: Value = serde_json::from_slice(&body).expect("json");
     let functions = value["tools"][0]["tools"].as_array().expect("functions");
     assert_eq!(functions.len(), 10);

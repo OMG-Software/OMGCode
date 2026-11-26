@@ -1,6 +1,6 @@
 # 0089: Choose the provider and model in the side panel footer
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR-0102](0102-choose-a-reasoning-effort-per-session.md)
 - Date: 2026-11-24
 - Amends: [ADR-0071](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md) decisions 6 to 11, for the placement only
 

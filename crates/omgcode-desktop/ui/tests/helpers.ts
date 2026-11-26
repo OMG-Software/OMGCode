@@ -4,6 +4,7 @@ import type {
   ChatDefaultsView,
   ChatSettings,
   ConnectionStatus,
+  ReasoningEffort,
   SessionSummary,
   SessionTree,
   TranscriptEntry,
@@ -100,12 +101,26 @@ export function connectionStatus(overrides: Partial<ConnectionStatus> = {}): Con
     },
     origin: "default",
     model: SETTINGS.model,
+    // A loopback connection takes every effort core accepts (ADR-0102); none is chosen.
+    reasoning_effort: null,
+    reasoning_efforts: [...ALL_EFFORTS],
     stale: false,
     session_choices_unreadable: false,
     choices: [],
     ...overrides,
   };
 }
+
+/** Every reasoning effort core accepts, in its order (ADR-0102). */
+export const ALL_EFFORTS: readonly ReasoningEffort[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
 
 /** Handlers every main-window test needs. */
 export function mainHandlers(overrides: Record<string, Handler> = {}): Record<string, Handler> {
@@ -133,6 +148,8 @@ export function mainHandlers(overrides: Record<string, Handler> = {}): Record<st
     connection_status: () => connectionStatus(),
     // Records nothing; the status read back keeps the fixture model.
     session_model_select: (args) => connectionStatus({ model: args.model as string }),
+    session_effort_select: (args) =>
+      connectionStatus({ reasoning_effort: args.reasoning_effort as ReasoningEffort | null }),
     session_context: () => ({
       workspace_registered: true,
       branch: { state: "branch", name: "main", note: null },

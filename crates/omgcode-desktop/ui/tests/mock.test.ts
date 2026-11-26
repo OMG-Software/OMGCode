@@ -204,6 +204,64 @@ describe("mock backend", () => {
     });
   });
 
+  it("records a session's reasoning effort only where its connection takes one, like core", async () => {
+    const { invoke } = createMockBackend();
+    const id = "00000000-0000-4000-8000-000000000001";
+    type Status = {
+      model: string;
+      reasoning_effort: string | null;
+      reasoning_efforts: string[];
+    };
+    const before = (await invoke("connection_status", { session_id: id })) as Status;
+    expect(before.reasoning_effort).toBeNull();
+    expect(before.reasoning_efforts).toEqual([
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+
+    // An effort alone keeps the session following the default, with its model.
+    const chosen = (await invoke("session_effort_select", {
+      session_id: id,
+      reasoning_effort: "xhigh",
+    })) as Status;
+    expect(chosen.reasoning_effort).toBe("xhigh");
+    expect(chosen.model).toBe(before.model);
+    // A model choice keeps it; only the seven names are accepted.
+    await expect(
+      invoke("session_model_select", { session_id: id, model: "other" }),
+    ).resolves.toMatchObject({ reasoning_effort: "xhigh" });
+    await expect(
+      invoke("session_effort_select", { session_id: id, reasoning_effort: "extreme" }),
+    ).rejects.toMatchObject({ code: "invalid_argument" });
+
+    // An Anthropic connection takes none, and choosing it clears the session's effort.
+    const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    await invoke("settings_add_connection", {
+      revision,
+      name: "claude",
+      kind: "anthropic",
+      endpoint: null,
+      api_key: "test-key-not-real",
+    });
+    const switched = (await invoke("connection_select", {
+      session_id: id,
+      profile: "claude",
+    })) as Status;
+    expect(switched.reasoning_effort).toBeNull();
+    expect(switched.reasoning_efforts).toEqual([]);
+    await expect(
+      invoke("session_effort_select", { session_id: id, reasoning_effort: "low" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      invoke("session_effort_select", { session_id: id, reasoning_effort: null }),
+    ).resolves.toMatchObject({ reasoning_effort: null });
+  });
+
   // The cases core's `validate_base_url` decides (crates/omgcode-core/src/provider.rs tests).
   it.each([
     ["http://127.0.0.1:1234/v1", true],

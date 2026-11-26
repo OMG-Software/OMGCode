@@ -228,6 +228,7 @@ fn manifest() -> RequestManifest {
         tool_schema_version: None,
         tools: None,
         skills: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
@@ -2681,6 +2682,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
                     tool_schema_version: Some(version.into()),
                     tools: Some(tools.iter().map(|name| (*name).to_owned()).collect()),
                     skills: Vec::new(),
+                    reasoning_effort: None,
                     ..manifest()
                 },
             )

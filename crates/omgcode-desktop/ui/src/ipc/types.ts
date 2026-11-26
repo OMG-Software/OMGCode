@@ -114,7 +114,15 @@ export interface ChatSettings {
   instructions: string;
   compact_threshold: number;
   auto_compact: boolean;
+  /** The reasoning effort the turn sends; `null` or absent sends none (ADR-0102). */
+  reasoning_effort?: ReasoningEffort | null;
 }
+
+/**
+ * A documented reasoning effort (ADR-0102), from the least reasoning to the most. Rust refuses
+ * any other name. "No effort" is `null`, which is not the provider's own `none`.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ContextMeter {
   estimated_tokens: number;
@@ -384,6 +392,10 @@ export interface ConnectionStatus {
   origin: ConnectionOrigin;
   /** The model chosen for the session, or the saved chat preference's model when it has none. */
   model: string;
+  /** The reasoning effort chosen for the session, or `null` for none (ADR-0102). */
+  reasoning_effort: ReasoningEffort | null;
+  /** The efforts the connection takes; empty when it takes none (ADR-0102). */
+  reasoning_efforts: ReasoningEffort[];
   /** The recorded choice no longer holds; the next turn is refused until the operator chooses again. */
   stale: boolean;
   /** The per-session choices file could not be read and is treated as empty. */

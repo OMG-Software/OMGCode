@@ -103,7 +103,7 @@ meaningful alternative does not need an ADR.
 | [0086: Show the session's subprocesses in the main window](0086-show-the-sessions-subprocesses-in-the-main-window.md) | Accepted | 2026-11-24 |
 | [0087: Show a per-part context estimate for the open session](0087-show-a-per-part-context-estimate-for-the-open-session.md) | Accepted | 2026-11-24 |
 | [0088: Change execution settings in the settings window](0088-change-execution-settings-in-the-settings-window.md) | Accepted | 2026-11-24 |
-| [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted | 2026-11-24 |
+| [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted; amended by ADR-0102 | 2026-11-24 |
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Compact automatically at 400K by default in the desktop](0091-compact-automatically-at-400k-by-default-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0092: Add hosted providers and an OpenAI-compatible connection](0092-add-hosted-providers-and-an-openai-compatible-connection.md) | Accepted | 2026-11-24 |
@@ -114,3 +114,4 @@ meaningful alternative does not need an ADR.
 | [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted; amended by ADR-0099 | 2026-11-24 |
 | [0098: Add a model web fetch tool behind a host allowlist](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) | Accepted | 2026-11-25 |
 | [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |
+| [0102: Choose a reasoning effort per session](0102-choose-a-reasoning-effort-per-session.md) | Accepted | 2026-11-26 |

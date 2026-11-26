@@ -268,7 +268,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 62 commands (30 in `main`, 3 in `approvals`, and 29 in `settings`). No other command exists.
+The shell has three webview windows and 63 commands (31 in `main`, 3 in `approvals`, and 29 in `settings`). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -293,9 +293,10 @@ their registered identifier, and approvals by identifier.
 | `session_processes` | main | List a session's model command-tool calls, newest first, at most 100, read-only (ADR-0086) |
 | `session_web_audit` | main | List a session's `web_fetch` calls and every model action marked `after_web_content`, newest first, at most 100, read-only (ADR-0098) |
 | `workspace_git_status` | main | Report the Git branch and a bounded list of changed paths for a session's registered workspace, read in process by `gix` with no program run (ADR-0085); takes the session id |
-| `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
+| `connection_status` | main | Return a session's connection, where it comes from, its model, its reasoning effort and the efforts its connection takes, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
+| `session_effort_select` | main | Record the reasoning effort chosen for one session, or none for `null`; no dialog; refused when the session's connection takes none (ADR-0102) |
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
@@ -510,8 +511,10 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
   box (ADR-0089).
 - **The model box** (`ui/src/main/model_box.ts`, ADR-0089): a "Model" heading,
   the **Provider** dropdown, the **Model** dropdown with its **Refresh**
-  button, and the status notes (list status, off-machine warning, connection
-  message, unreadable saved choices), stacked vertically. It does not scroll
+  button, the **Effort** dropdown (`ui/src/main/effort_select.ts`,
+  ADR-0102), and the status notes (list status, off-machine warning, no
+  effort setting, connection message, unreadable saved choices), stacked
+  vertically. It does not scroll
   with the tab content and stays when the tab changes. A collapsed panel
   hides it, so the rail's **Model** icon button (named and tooltipped
   "Model") expands the panel. The controls are the ones ADR-0071 placed in
@@ -813,6 +816,24 @@ untouched controls take the returned values.
   at launch", and the model is still chosen from that connection's list. `chat_send` keeps
   sending the endpoint of the shared connection and the model the model box shows; Send is disabled without a model
   and while the session's provider is being read or has gone stale.
+- **Reasoning effort per session** (ADR-0102). Under **Model**, the
+  **Effort** dropdown offers "Default", which sends no effort field, and the
+  efforts `connection_status` reports in `reasoning_efforts`: None, Minimal,
+  Low, Medium, High, Extra high (`xhigh`), and Max. Loopback connections, an
+  operator-typed `openai_compatible` address, and the fixed Ollama Cloud,
+  OpenAI, Google, Moonshot, MiniMax, OpenRouter, Z.ai, and xAI endpoints take
+  all seven; the fixed Anthropic, DeepSeek, Tencent, Meta, and Thinking
+  Machines Lab endpoints take none, and there the dropdown is disabled with
+  the note "This connection does not take an effort setting." Choosing an
+  effort calls `session_effort_select`, which shows no dialog and shares the
+  model choice's serialized writes. A provider choice clears the effort with
+  the model; a model choice keeps it. It is disabled with the other dropdowns
+  (no session that accepts a message, a turn running, or a provider choice in
+  flight), but not by a launch argument that fixes the connection.
+  `chat_send` sends the effort the box shows in its settings as
+  `reasoning_effort`, and Rust refuses one the turn's connection does not
+  take. The server still decides whether its model accepts the value; a
+  refusal arrives as the provider's error.
 - **Saved preferences.** Two windows save one file, each its own fields,
   under one service lock, so neither overwrites the other's (ADR-0080). The
   composer's **Save as defaults** sends the compaction threshold, the
@@ -1495,6 +1516,12 @@ applies the rule `chat_send` applies (at most 256 bytes, no control
 character; an empty id clears the choice). A session with no record gets one
 that follows the default connection, so choosing a model never pins a
 provider the operator did not confirm.
+`session_effort_select` records a session's reasoning effort the same way,
+with no dialog (ADR-0102). It deserializes only the seven names and `null`,
+refuses any effort with `invalid_request` when the session's connection
+takes none, and keeps the session's model. The per-session record stores it as
+an optional `reasoning_effort`, omitted when none is chosen, so
+`session-connections.json` keeps version 1. `connection_select` clears it.
 The `settings` window's `settings_select_connection` keeps choosing the
 **global default**, which sessions without their own choice follow; it uses
 the same checks and dialog. The `settings` connection commands call

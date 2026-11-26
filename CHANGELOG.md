@@ -6,6 +6,30 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.65.0 adds a per-session reasoning effort (ADR-0102). The desktop
+  model box has an **Effort** dropdown under **Model** with "Default", which
+  sends nothing, and None, Minimal, Low, Medium, High, Extra high, and Max. It
+  is recorded per session by the new `main` command `session_effort_select`,
+  without a dialog, as an optional `reasoning_effort` in
+  `session-connections.json` (still version 1); a provider choice clears it
+  and a model choice keeps it. The desktop shell has 63 commands: 31 in
+  `main`, 3 in `approvals`, and 29 in `settings`. `connection_status` reports the session's
+  effort and `reasoning_efforts`, the values its connection takes, and
+  `chat_send` takes `reasoning_effort` in its settings. The CLI adds
+  `chat --reasoning-effort`. Chat Completions requests carry it as
+  `reasoning_effort`, and the ChatGPT plan route as
+  `"reasoning": {"effort": ...}`; the field's bytes count in the context
+  estimate, and compaction summary requests send none. Core allows it only
+  for loopback endpoints, a typed `openai_compatible` address, and the fixed
+  Ollama Cloud, OpenAI, Google, Moonshot, MiniMax, OpenRouter, Z.ai, and xAI
+  endpoints; Anthropic, DeepSeek, Tencent, Meta, and Thinking Machines Lab
+  refuse it before any request, and the dropdown is disabled there with a
+  note. A version-3 `request.manifest` records the effort that was sent as an
+  optional `reasoning_effort`; 0.64.0 and earlier refuse a journal that has
+  it, and a version 1 or 2 session refuses an effort before anything is
+  recorded. Values are not adjusted per model, so a model that refuses one
+  answers with its provider's HTTP error. No request with an effort was made
+  to a real provider.
 - Version 0.64.0 adds the `web_fetch` model tool (ADR-0098), so a model on
   any provider can read public documentation. The OMGCode process sends one
   HTTPS `GET` and returns one slice of the page text (`offset`, and

@@ -1,15 +1,19 @@
 pub mod chatgpt;
+mod effort;
 mod hosted;
 mod models;
 mod responses;
 mod stream;
 
+pub use effort::ReasoningEffort;
 pub use hosted::{
     ANTHROPIC_ENDPOINT, DEEPSEEK_ENDPOINT, GOOGLE_ENDPOINT, META_ENDPOINT, MINIMAX_ENDPOINT,
     MOONSHOT_ENDPOINT, OLLAMA_CLOUD_ENDPOINT, OPENAI_ENDPOINT, OPENROUTER_ENDPOINT,
     OutputLimitField, TENCENT_ENDPOINT, THINKING_MACHINES_ENDPOINT, XAI_ENDPOINT, Z_AI_ENDPOINT,
 };
-pub(crate) use hosted::{disables_thinking, fixed_endpoint, matches_fixed, validate_custom_url};
+pub(crate) use hosted::{
+    disables_thinking, fixed_endpoint, fixed_takes_effort, matches_fixed, validate_custom_url,
+};
 pub use models::{ListedModel, MAX_LISTED_MODELS, list_local_models, list_subscription_models};
 pub use responses::ResponseFailure;
 
@@ -59,6 +63,9 @@ const MESSAGE_OVERHEAD_ESTIMATE: u64 = 256;
 const PROMPT_HEADROOM_ESTIMATE: u64 = 512;
 /// Upper bound on advertised tool definitions in one request.
 const MAX_TOOL_DEFINITIONS: usize = 10;
+/// Upper bound on the encoded bytes of the effort field, either shape: the
+/// longest is `,"reasoning":{"effort":"minimal"}` (33 bytes).
+const EFFORT_FIELD_BYTES: u64 = 48;
 /// Upper bound on raw tool calls accepted from one response before validation.
 /// The turn runtime applies its own, smaller per-round limit.
 const MAX_RESPONSE_TOOL_CALLS: usize = 64;
@@ -87,11 +94,13 @@ enum EndpointRule {
     Loopback(Url),
     /// An HTTPS base URL: a fixed provider endpoint, or one that passed the
     /// operator-typed rule. `field` names the output budget field it takes,
-    /// and `thinking_off` whether requests switch the provider's thinking off.
+    /// `thinking_off` whether requests switch the provider's thinking off, and
+    /// `effort` whether a request may carry a reasoning effort (ADR-0102).
     Hosted {
         url: Url,
         field: OutputLimitField,
         thinking_off: bool,
+        effort: bool,
     },
 }
 
@@ -109,6 +118,7 @@ impl ModelEndpoint {
                 url,
                 field,
                 thinking_off: disables_thinking(text),
+                effort: fixed_takes_effort(text),
             }));
         }
         if text.starts_with("https://") {
@@ -117,6 +127,9 @@ impl ModelEndpoint {
                     url,
                     field: OutputLimitField::MaxTokens,
                     thinking_off: false,
+                    // The operator's own server; its documentation cannot be
+                    // checked here, and the server decides (ADR-0102).
+                    effort: true,
                 })
             });
         }
@@ -168,6 +181,16 @@ impl ModelEndpoint {
         match self.0 {
             EndpointRule::Loopback(_) => false,
             EndpointRule::Hosted { thinking_off, .. } => thinking_off,
+        }
+    }
+
+    /// Whether a request to this endpoint may carry a reasoning effort
+    /// (ADR-0102): every loopback server and operator-typed endpoint, and the
+    /// fixed endpoints whose provider documents the field.
+    pub const fn takes_reasoning_effort(&self) -> bool {
+        match self.0 {
+            EndpointRule::Loopback(_) => true,
+            EndpointRule::Hosted { effort, .. } => effort,
         }
     }
 
@@ -223,6 +246,10 @@ pub struct LocalModelClient {
     https_only: bool,
     output_field: OutputLimitField,
     thinking: Option<Thinking>,
+    /// Whether the endpoint takes a reasoning effort (ADR-0102).
+    takes_effort: bool,
+    /// The effort every request sends; `None` sends no field.
+    reasoning_effort: Option<ReasoningEffort>,
     model: String,
     context_tokens: u64,
     max_output_tokens: u32,
@@ -361,6 +388,9 @@ struct ChatRequest<'a> {
     limit: OutputLimit,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<Thinking>,
+    /// Sent only when the operator chose an effort (ADR-0102).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// The text request plus the advertised function tools.
@@ -373,6 +403,8 @@ struct ToolChatRequest<'a> {
     limit: OutputLimit,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<Thinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
     tools: &'a [WireTool<'a>],
     tool_choice: &'static str,
 }
@@ -441,6 +473,8 @@ impl LocalModelClient {
             thinking: model_endpoint
                 .disables_thinking()
                 .then_some(Thinking { kind: "disabled" }),
+            takes_effort: model_endpoint.takes_reasoning_effort(),
+            reasoning_effort: None,
             model: config.model,
             context_tokens: config.context_tokens,
             max_output_tokens: config.max_output_tokens,
@@ -498,6 +532,9 @@ impl LocalModelClient {
             authorization: None,
             // A Chat Completions switch (ADR-0092); the Responses body has no such field.
             thinking: None,
+            // The Responses API takes `reasoning.effort` (ADR-0102).
+            takes_effort: model_endpoint.takes_reasoning_effort(),
+            reasoning_effort: None,
             request_timeout,
             protocol: Protocol::Responses(tokens),
         })
@@ -511,6 +548,40 @@ impl LocalModelClient {
     /// The selected model identifier. This is descriptive, not an entitlement.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Send `effort` with every request of this client, or no effort field
+    /// for `None` (ADR-0102). The value is not checked against the model:
+    /// the server decides, and refuses a value its model does not take.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidConfiguration` for an effort on an endpoint that takes none.
+    /// Nothing is sent.
+    pub fn with_reasoning_effort(
+        mut self,
+        effort: Option<ReasoningEffort>,
+    ) -> Result<Self, ProviderError> {
+        if effort.is_some() && !self.takes_effort {
+            return Err(ProviderError::InvalidConfiguration);
+        }
+        self.reasoning_effort = effort;
+        Ok(self)
+    }
+
+    /// The effort every request sends, or `None` when no field is sent.
+    pub const fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
+    }
+
+    /// The encoded bytes the effort field adds to a request, counted in the
+    /// size and context estimates.
+    const fn effort_bytes(&self) -> u64 {
+        if self.reasoning_effort.is_some() {
+            EFFORT_FIELD_BYTES
+        } else {
+            0
+        }
     }
 
     /// Send one bounded, non-streaming Chat Completions request.
@@ -620,13 +691,14 @@ impl LocalModelClient {
         messages: &[ModelMessage],
         streaming: bool,
     ) -> Result<Vec<u8>, ProviderError> {
-        self.check_messages(messages, 0)?;
+        self.check_messages(messages, self.effort_bytes())?;
         serde_json::to_vec(&ChatRequest {
             model: &self.model,
             messages,
             stream: streaming,
             limit: self.output_limit(),
             thinking: self.thinking,
+            reasoning_effort: self.reasoning_effort,
         })
         .map_err(|_| ProviderError::MalformedResponse)
     }
@@ -717,7 +789,10 @@ impl LocalModelClient {
         let tool_bytes = serde_json::to_vec(&tools).map_err(|_| ProviderError::RequestTooLarge)?;
         self.check_messages(
             messages,
-            u64::try_from(tool_bytes.len()).map_err(|_| ProviderError::RequestTooLarge)?,
+            u64::try_from(tool_bytes.len())
+                .map_err(|_| ProviderError::RequestTooLarge)?
+                .checked_add(self.effort_bytes())
+                .ok_or(ProviderError::RequestTooLarge)?,
         )?;
         serde_json::to_vec(&ToolChatRequest {
             model: &self.model,
@@ -725,6 +800,7 @@ impl LocalModelClient {
             stream: streaming,
             limit: self.output_limit(),
             thinking: self.thinking,
+            reasoning_effort: self.reasoning_effort,
             tools: &tools,
             tool_choice: "auto",
         })
@@ -914,7 +990,7 @@ impl LocalModelClient {
         on_text: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<responses::ResponsesOutcome, ProviderError> {
-        let extra_bytes = match tools {
+        let tool_bytes = match tools {
             None => 0,
             Some(tools) => {
                 if tools.is_empty() || tools.len() > MAX_TOOL_DEFINITIONS {
@@ -930,8 +1006,11 @@ impl LocalModelClient {
                     .ok_or(ProviderError::RequestTooLarge)?
             }
         };
+        let extra_bytes = tool_bytes
+            .checked_add(self.effort_bytes())
+            .ok_or(ProviderError::RequestTooLarge)?;
         self.check_messages(messages, extra_bytes)?;
-        let body = responses::request_body(&self.model, messages, tools)?;
+        let body = responses::request_body(&self.model, self.reasoning_effort, messages, tools)?;
         if body.len() > MAX_REQUEST_BYTES {
             return Err(ProviderError::RequestTooLarge);
         }
@@ -1877,6 +1956,164 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The endpoints that take an effort (ADR-0102): every loopback and
+    /// operator-typed endpoint, and only the fixed ones whose provider
+    /// documents `reasoning_effort`.
+    #[test]
+    fn only_documented_endpoints_take_a_reasoning_effort() {
+        for (base, takes) in [
+            ("http://127.0.0.1:1234/v1", true),
+            ("http://127.0.0.1:11434/v1", true),
+            ("https://provider-api.example.org/v1", true),
+            (OLLAMA_CLOUD_ENDPOINT, true),
+            (OPENAI_ENDPOINT, true),
+            ("https://api.openai.com/v1/", true),
+            (GOOGLE_ENDPOINT, true),
+            (MOONSHOT_ENDPOINT, true),
+            (MINIMAX_ENDPOINT, true),
+            (OPENROUTER_ENDPOINT, true),
+            (Z_AI_ENDPOINT, true),
+            (XAI_ENDPOINT, true),
+            (ANTHROPIC_ENDPOINT, false),
+            (DEEPSEEK_ENDPOINT, false),
+            (TENCENT_ENDPOINT, false),
+            (META_ENDPOINT, false),
+            (THINKING_MACHINES_ENDPOINT, false),
+        ] {
+            let endpoint = ModelEndpoint::parse(base).expect(base);
+            assert_eq!(endpoint.takes_reasoning_effort(), takes, "{base}");
+            let client = LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: base.to_owned(),
+                    ..cloud_config()
+                },
+                Some("not-a-real-key".to_owned()),
+            )
+            .unwrap_or_else(|error| panic!("{base}: {error}"));
+            let result = client.with_reasoning_effort(Some(ReasoningEffort::High));
+            if takes {
+                assert_eq!(
+                    result.expect(base).reasoning_effort(),
+                    Some(ReasoningEffort::High)
+                );
+            } else {
+                assert_eq!(result.err(), Some(ProviderError::InvalidConfiguration));
+            }
+        }
+        // No effort is always accepted, including where none can be sent.
+        let client = LocalModelClient::new(
+            LocalModelConfig {
+                base_url: DEEPSEEK_ENDPOINT.to_owned(),
+                ..cloud_config()
+            },
+            Some("not-a-real-key".to_owned()),
+        )
+        .expect("deepseek client")
+        .with_reasoning_effort(None)
+        .expect("no effort");
+        assert_eq!(client.reasoning_effort(), None);
+    }
+
+    /// A chosen effort is one top-level `reasoning_effort` field on every
+    /// Chat Completions body; without one the body is exactly as before.
+    #[test]
+    fn a_chosen_effort_is_sent_as_reasoning_effort_on_chat_completions() {
+        let history = [
+            ModelMessage {
+                role: ModelRole::System,
+                content: BASE_PROMPT.to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "hello".to_owned(),
+            },
+        ];
+        let tools = crate::turn::tool_definitions();
+        for base in [
+            "http://127.0.0.1:1234/v1",
+            OPENAI_ENDPOINT,
+            "https://provider-api.example.org/v1",
+        ] {
+            let plain = LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: base.to_owned(),
+                    ..cloud_config()
+                },
+                Some("not-a-real-key".to_owned()),
+            )
+            .expect(base);
+            for effort in ReasoningEffort::ALL {
+                let chosen = LocalModelClient::new(
+                    LocalModelConfig {
+                        base_url: base.to_owned(),
+                        ..cloud_config()
+                    },
+                    Some("not-a-real-key".to_owned()),
+                )
+                .and_then(|client| client.with_reasoning_effort(Some(effort)))
+                .expect(base);
+                for streaming in [false, true] {
+                    let pairs = [
+                        (
+                            chosen.text_body(&history, streaming).expect("text"),
+                            plain.text_body(&history, streaming).expect("text"),
+                        ),
+                        (
+                            chosen
+                                .tool_body(&history, &tools, streaming)
+                                .expect("tools"),
+                            plain.tool_body(&history, &tools, streaming).expect("tools"),
+                        ),
+                    ];
+                    for (with, without) in pairs {
+                        let with: Value = serde_json::from_slice(&with).expect("json");
+                        let mut without: Value = serde_json::from_slice(&without).expect("json");
+                        assert_eq!(with["reasoning_effort"], effort.as_str(), "{base}");
+                        assert!(with.get("reasoning").is_none(), "{base}");
+                        assert!(without.get("reasoning_effort").is_none(), "{base}");
+                        without["reasoning_effort"] = with["reasoning_effort"].clone();
+                        assert_eq!(with, without, "{base}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The effort field counts in the context estimate, so a request that
+    /// fits exactly without one is refused with one rather than sent over
+    /// the budget.
+    #[test]
+    fn the_effort_field_counts_in_the_context_estimate() {
+        let history = [
+            ModelMessage {
+                role: ModelRole::System,
+                content: BASE_PROMPT.to_owned(),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: "hello".to_owned(),
+            },
+        ];
+        let exact = estimate_context(&history, 64).expect("estimate");
+        let client = |effort| {
+            LocalModelClient::new(
+                LocalModelConfig {
+                    base_url: "http://127.0.0.1:1234/v1".to_owned(),
+                    context_tokens: exact,
+                    ..cloud_config()
+                },
+                None,
+            )
+            .and_then(|client| client.with_reasoning_effort(effort))
+            .expect("client")
+        };
+        assert!(client(None).text_body(&history, false).is_ok());
+        assert_eq!(
+            client(Some(ReasoningEffort::Low)).text_body(&history, false),
+            Err(ProviderError::ContextLimit)
+        );
     }
 
     use std::net::TcpListener;

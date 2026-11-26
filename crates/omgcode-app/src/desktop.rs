@@ -153,12 +153,13 @@ pub use self::wire::{
     EntryKind, GitIndexState, GitPathView, GitStatusState, GitStatusView, GitWorktreeState,
     MessageRoleDto, ModelChoice, NewConnectionKind, PackageProfileView, PermissionFlags,
     PermissionsChangeRequest, PreferencesSource, ProviderProfileView, SearchHit, SearchRequest,
-    SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest, SessionModelSelectRequest,
-    SessionRequest, SessionSkills, SessionStatus, SessionSummary, SessionTree, SettingsOverview,
-    SettingsRevisionRequest, SettingsScope, SkillOverrideView, SkillSettingView, SnippetPart,
-    ToolOutcomeDto, ToolchainProfileView, ToolsMode, TranscriptEntry, TranscriptPage,
-    TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice, WorkspaceGroup,
-    WorkspaceInstructionsRequest, WorkspaceList, WorkspaceRevisionRequest, WorkspaceSettingsView,
+    SearchResult, SearchRoleDto, SessionContext, SessionCreateRequest, SessionEffortSelectRequest,
+    SessionModelSelectRequest, SessionRequest, SessionSkills, SessionStatus, SessionSummary,
+    SessionTree, SettingsOverview, SettingsRevisionRequest, SettingsScope, SkillOverrideView,
+    SkillSettingView, SnippetPart, ToolOutcomeDto, ToolchainProfileView, ToolsMode,
+    TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
+    WorkspaceChoice, WorkspaceGroup, WorkspaceInstructionsRequest, WorkspaceList,
+    WorkspaceRevisionRequest, WorkspaceSettingsView,
 };
 pub use self::workspace_entries::WorkspaceEntriesRequest;
 use crate::credential_source::resolve_connection_and_kind;
@@ -166,6 +167,9 @@ use crate::{
     AppError, ErrorKind, LmToken, LocalConnection, LocalEndpoint, TokenSource,
     resolve_local_endpoint,
 };
+/// The reasoning effort the wire types carry (ADR-0102), for the shell's
+/// command arguments.
+pub use omgcode_core::provider::ReasoningEffort;
 pub use omgcode_core::workspace_entries::{EntryClass, WorkspaceEntry, WorkspaceListing};
 
 /// Fixed settings of one desktop process.

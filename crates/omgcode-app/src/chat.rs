@@ -17,7 +17,7 @@ use std::path::Path;
 
 use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, SkillPrompt};
-use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
+use omgcode_core::provider::{LocalModelClient, LocalModelConfig, ReasoningEffort};
 use omgcode_core::session::{ManifestSkill, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
 use omgcode_core::turn::{
@@ -67,6 +67,10 @@ pub struct ChatSettings {
     pub compact_threshold: u64,
     /// Whether to compact at the effective trigger before a turn.
     pub auto_compact: bool,
+    /// The reasoning effort every chat request of the turn sends, or `None`
+    /// for none (ADR-0102). Compaction requests never send one. A connection
+    /// that takes no effort refuses a turn that names one before any request.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl ChatSettings {
@@ -82,6 +86,7 @@ impl ChatSettings {
             instructions: String::new(),
             compact_threshold: DEFAULT_COMPACT_THRESHOLD,
             auto_compact: false,
+            reasoning_effort: None,
         }
     }
 }
@@ -193,9 +198,12 @@ pub struct ChatClients {
 impl ChatClients {
     /// Validate `settings` and build the chat client and the summary client.
     ///
+    /// Only the chat client sends the settings' reasoning effort; the summary
+    /// client sends none (ADR-0102).
+    ///
     /// Returns `configuration` for an out-of-range turn budget and
-    /// `provider` for an unusable endpoint, model budget, or token. No network
-    /// request is made.
+    /// `provider` for an unusable endpoint, model budget, or token, or for an
+    /// effort the endpoint does not take. No network request is made.
     pub fn new(settings: &ChatSettings, token: Option<&str>) -> Result<Self, AppError> {
         validate_turn_budgets(settings.max_tool_calls, settings.turn_timeout_seconds)
             .map_err(|message| AppError::new(ErrorKind::Configuration, message))?;
@@ -209,6 +217,7 @@ impl ChatClients {
             // The client owns its header; the caller keeps one copy for redaction.
             token.map(str::to_owned),
         )
+        .and_then(|client| client.with_reasoning_effort(settings.reasoning_effort))
         .map_err(AppError::provider)?;
         let summary = LocalModelClient::new(
             LocalModelConfig {
@@ -240,7 +249,7 @@ impl ChatClients {
         };
         validate_turn_budgets(settings.max_tool_calls, settings.turn_timeout_seconds)
             .map_err(|message| AppError::new(ErrorKind::Configuration, message))?;
-        let build = |max_output_tokens| {
+        let build = |max_output_tokens, reasoning_effort| {
             LocalModelClient::chatgpt(
                 LocalModelConfig {
                     base_url: settings.endpoint.clone(),
@@ -250,11 +259,13 @@ impl ChatClients {
                 },
                 plan.tokens(),
             )
+            .and_then(|client| client.with_reasoning_effort(reasoning_effort))
             .map_err(AppError::provider)
         };
         Ok(Self {
-            chat: build(settings.max_output_tokens)?,
-            summary: build(summary_output_tokens(settings.context_tokens))?,
+            chat: build(settings.max_output_tokens, settings.reasoning_effort)?,
+            // Compaction sends no effort (ADR-0102 decision 6).
+            summary: build(summary_output_tokens(settings.context_tokens), None)?,
         })
     }
 }
@@ -340,6 +351,14 @@ pub fn run_chat_turn_with_clients(
             tools::ACTIVE_TURN_MESSAGE,
         ));
     }
+    // An older journal cannot record an effort in its manifest (ADR-0102), so
+    // a turn that would send one is refused before anything is recorded.
+    if clients.chat.reasoning_effort().is_some() && !journal.supports_reasoning_effort() {
+        return Err(AppError::new(
+            ErrorKind::Session,
+            "A reasoning effort can be chosen only in a version 3 session",
+        ));
+    }
     // The front end can cancel from here on, which covers the compaction
     // requests below as well as the turn's own requests.
     if let Some(hook) = hooks.on_cancel_token.as_deref_mut() {
@@ -382,6 +401,8 @@ pub fn run_chat_turn_with_clients(
                 skill_md_sha256: skill.skill_md_sha256.clone(),
             })
             .collect(),
+        // What the chat client sends, not what was asked for.
+        reasoning_effort: clients.chat.reasoning_effort(),
     };
     // Live settings decide whether this turn offers the workspace tools.
     match mode {
