@@ -12,9 +12,11 @@ or multi-edit of an existing file, the creation of a new file, the rename of a
 file, the deletion of a file after a checkpoint, or the creation of one
 directory whose parent exists, and with `execute`, `read`, and `write` enabled
 it can request a command once a toolchain profile is recorded for the running
-platform. Each write or command needs an
-approval under `prompt` and none under `allow`
+platform. Each write or command needs an approval under `prompt` and none
+under `allow`
 ([ADR-0063](adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
+With a `web_fetch` preference of `prompt` or `allow`, it can also fetch one
+public HTTPS page per call (ADR-0098).
 Trusted CLI apply can
 replace an existing file on Linux ext4, btrfs, XFS, tmpfs, or ZFS or on Windows
 NTFS or ReFS ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Trusted restore puts a
@@ -564,7 +566,8 @@ selection. Chat advertises the read/list tools when the session's workspace
 enables `model_tools`, the edit, multi-edit, create, rename, delete, and
 directory-creation tools when `read` and `write` are also enabled, and the
 command tool when `execute`, `read`, and `write` are also enabled and a
-toolchain profile is recorded for the running platform; see
+toolchain profile is recorded for the running platform, and `web_fetch` when
+the `web_fetch` preference is `prompt` or `allow`; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 
 Capability JSON separates implementation from availability. On Linux and
