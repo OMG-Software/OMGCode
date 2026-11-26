@@ -54,7 +54,7 @@ use crate::web_fetch::{
 mod approval_wait;
 mod review;
 
-pub use approval_wait::{ApprovalWaitSlot, AwaitedCall};
+pub use approval_wait::{ApprovalWaitSlot, AwaitedCall, WaitObserver};
 
 pub use review::{
     ApprovalReview, DisplaySafeStream, ReviewCandidate, ReviewError, ReviewField, ReviewedRequest,

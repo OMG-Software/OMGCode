@@ -35,6 +35,7 @@
 //! | `reviews` | outstanding single-use approval review tokens |
 //! | `events` | the one chat event subscriber and the running turns' previews |
 //! | `pending_cache` | an atomic copy of the last pending-approval count read |
+//! | `approval_wait_observer` | the shell's one approval-wait observer (ADR-0105) |
 //! | `session_choices` | the read-modify-write of `session-connections.json` (ADR-0071) |
 //!
 //! **Lock order** when two are ever needed: `turns`, then `index`, then
@@ -42,7 +43,9 @@
 //! together with the `turns` lock (where both are needed, `turns` is taken and
 //! released first) and never while `index` or `reviews` is taken. It is held
 //! while a subscriber sink runs, so a sink must not block or call the service
-//! (see [`ChatEventSink`]). No service lock and no open
+//! (see [`ChatEventSink`]). The `approval_wait_observer` lock is held only to
+//! clone or replace the observer, with no other lock, and never while the
+//! observer runs. No service lock and no open
 //! control store is held across provider I/O, a chat turn, a journal
 //! inspection, a thread join, or a sleep. The one deliberate exception is the
 //! `index` lock during a refresh: a refresh needs `&mut SessionIndex`, so it
@@ -320,6 +323,14 @@ struct Inner {
     /// The last pending-approval count read, served when the settings store is
     /// busy. Advisory only; it authorizes nothing.
     pending_cache: AtomicU64,
+    /// Called on a turn's thread each time the turn starts waiting for an
+    /// approval decision, so the shell can show its approvals window
+    /// (ADR-0105). It decides nothing. Each turn copies the observer when it
+    /// starts. Owners: this field and the slots of turns started while it was
+    /// set. A shell observer may own a handle that reaches this service, which
+    /// is a cycle; [`DesktopService::shutdown`] clears the field to end it,
+    /// and a turn that outlives shutdown keeps its copy until it ends.
+    approval_wait_observer: Mutex<Option<omgcode_core::turn::WaitObserver>>,
     /// Set while one settings change waits for the operator or applies, so
     /// a second change is refused rather than opening a second dialog.
     settings_change: AtomicBool,
@@ -391,6 +402,7 @@ impl DesktopService {
                 reviews: Mutex::new(ReviewTokens::default()),
                 events: Mutex::new(EventHub::default()),
                 pending_cache: AtomicU64::new(0),
+                approval_wait_observer: Mutex::new(None),
                 settings_change: AtomicBool::new(false),
                 settings_scope: Mutex::new(None),
                 session_choices: Mutex::new(()),

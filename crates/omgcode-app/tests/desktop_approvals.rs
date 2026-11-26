@@ -421,6 +421,62 @@ fn a_command_approval_is_decided_while_the_turn_waits() {
     assert_eq!(setup.server.finish(), 2);
 }
 
+#[test]
+fn a_turn_that_starts_waiting_tells_the_observer_once_and_the_wait_still_needs_a_decision() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let setup = setup(vec![
+        Step::reply(tool_call("cmd-1", COMMAND_TOOL, &command_args())),
+        Step::reply(text("denied")),
+    ]);
+    let told = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&told);
+    setup
+        .service
+        .set_approval_wait_observer(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }))
+        .expect("observer");
+    let session = setup.session("Observed");
+    setup.start(session, "say hello");
+    let id = setup.await_pending(session);
+
+    // The record exists before the turn publishes its call and starts
+    // waiting, so the observer may run just after the record appears.
+    let deadline = Instant::now() + PENDING_DEADLINE;
+    while told.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the observer was not called");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Telling the observer decided nothing: the turn still waits.
+    assert!(setup.detail(id).waiting);
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+
+    setup.deny_and_finish(id, session);
+    assert_eq!(told.load(Ordering::SeqCst), 1);
+    assert_eq!(setup.server.finish(), 2);
+}
+
+#[test]
+fn shutdown_drops_the_approval_wait_observer() {
+    use std::sync::Arc;
+
+    let setup = setup(Vec::new());
+    let observer: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+    let watch = Arc::downgrade(&observer);
+    setup
+        .service
+        .set_approval_wait_observer(observer)
+        .expect("observer");
+    assert!(watch.upgrade().is_some(), "the service keeps the observer");
+    let report = setup.service.shutdown(Duration::from_millis(100));
+    assert_eq!(report.still_running, 0);
+    // No turn ran, so the service held the only owner.
+    assert!(watch.upgrade().is_none(), "shutdown drops the observer");
+    assert_eq!(setup.server.finish(), 0);
+}
+
 /// Two sessions, each with a turn waiting on one pending edit approval for
 /// its own file. Each turn needs one more model reply once it is decided.
 fn two_pending() -> (Setup, [(Uuid, Uuid); 2]) {

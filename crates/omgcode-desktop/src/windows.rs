@@ -1,4 +1,5 @@
-//! Window creation, the navigation guard, and close behaviour.
+//! Window creation, the navigation guard, close behaviour, and bringing a
+//! window to the front.
 //!
 //! Every window is created in Rust so that the navigation and new-window
 //! hooks are attached before the first page loads. No window may leave
@@ -7,7 +8,10 @@
 
 use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
-use tauri::{App, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    App, AppHandle, Manager, Url, UserAttentionType, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
+};
 
 use crate::policy::WindowLabel;
 use crate::shutdown;
@@ -130,6 +134,66 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
     .build()?;
     hide_on_close(&settings);
     Ok(())
+}
+
+/// Unminimize, show, and focus `window`.
+///
+/// Used when the operator asks for a window from `main`, and when a turn
+/// starts waiting for an approval while the operator works in this
+/// application. Both cases leave this process in the foreground, so focusing
+/// needs no workaround.
+///
+/// # Errors
+///
+/// The runtime's error when a step cannot be sent to the event loop.
+pub fn bring_to_front(window: &WebviewWindow) -> tauri::Result<()> {
+    window.unminimize()?;
+    window.show()?;
+    window.set_focus()
+}
+
+/// Show the `approvals` window because a chat turn started waiting for a
+/// decision (ADR-0105).
+///
+/// When the operator is working in this application, the window is brought to
+/// the front. Otherwise it is shown and its taskbar button flashes until the
+/// operator comes to it, and focus stays with the other application: on
+/// Windows, taking the foreground from another application sends that
+/// application a simulated key press. Neither path approves anything: the
+/// window never focuses **Approve**, no key decides, and **Approve** is armed
+/// only one second after a review renders.
+///
+/// Runs on the turn's thread before the wait starts. The window steps are
+/// messages to the event loop. A failure is reported on standard error and
+/// the turn waits either way.
+pub fn present_approvals(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(WindowLabel::Approvals.as_str()) else {
+        eprintln!("omgcode-desktop: the approvals window is missing");
+        return;
+    };
+    let shown = if operator_is_here(app) {
+        bring_to_front(&window)
+    } else {
+        window
+            .show()
+            .and_then(|()| window.request_user_attention(Some(UserAttentionType::Critical)))
+    };
+    if shown.is_err() {
+        eprintln!("omgcode-desktop: could not show the approvals window");
+    }
+}
+
+/// Whether the operator is working in this application now. On Windows the
+/// foreground window's owner decides, because a window's own focus flag is
+/// clear while its webview holds the keyboard focus. Elsewhere a window of
+/// this application must report focus; that query waits for the event loop.
+fn operator_is_here(app: &AppHandle) -> bool {
+    omgcode_platform::foreground::this_process_owns_foreground().unwrap_or_else(|| {
+        WindowLabel::ALL.iter().any(|label| {
+            app.get_webview_window(label.as_str())
+                .is_some_and(|window| window.is_focused().unwrap_or(false))
+        })
+    })
 }
 
 /// Closing a secondary window hides it, so its state and the process survive.

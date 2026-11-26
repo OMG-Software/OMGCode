@@ -172,16 +172,7 @@ fn show_window(webview: &Webview, label: WindowLabel) -> Result<(), CommandError
         .app_handle()
         .get_webview_window(label.as_str())
         .ok_or_else(CommandError::window_unavailable)?;
-    window
-        .unminimize()
-        .map_err(|_| CommandError::window_unavailable())?;
-    window
-        .show()
-        .map_err(|_| CommandError::window_unavailable())?;
-    window
-        .set_focus()
-        .map_err(|_| CommandError::window_unavailable())?;
-    Ok(())
+    crate::windows::bring_to_front(&window).map_err(|_| CommandError::window_unavailable())
 }
 
 #[cfg(test)]

@@ -454,7 +454,8 @@ The `main` window is laid out as follows.
   It has no model or provider control and shows no connection message
   (ADR-0084). The segment reads "N approvals waiting" with a
   **Review** button while the advisory count is above zero, and is hidden at
-  zero. **Review** and the sidebar row only call `approvals_show_window`. The
+  zero. **Review** and the sidebar row only call `approvals_show_window`;
+  Rust also shows the window when a turn starts waiting (ADR-0105). The
   notice line above the status bar now only reports a failure to open a
   window, with **Dismiss**; the earlier "An approval is waiting." banner is
   gone.
@@ -1829,8 +1830,22 @@ The flow:
    exact call it waits on so that the approvals window can review it.
 2. The `main` window polls `approvals_summary` every 3 seconds and shows the
    pending count. It can show the approvals window and nothing more.
-3. The operator opens the `approvals` window. It polls `approvals_list` every 3
-   seconds. Polling stops while a window is hidden. Since 0.45.0 (ADR-0065)
+   Since 0.69.0 (ADR-0105) Rust also shows the approvals window as soon as a
+   desktop turn starts waiting, before the wait begins, through an observer
+   the shell registers with the service at startup. When OMGCode owns the
+   foreground window (on Windows, read with `GetForegroundWindow`), the window
+   is unminimized, shown, and focused, as **Review** does. When another
+   application owns it, the window is shown and its taskbar button flashes
+   until the operator comes to it, and the foreground is not taken: on
+   Windows that would send the other application a simulated key press. No
+   webview can trigger this, and the window decides as below. An approval
+   recorded by a CLI turn shows only in the count.
+3. The operator opens the `approvals` window, or it opens itself (step 2).
+   It polls `approvals_list` every 3
+   seconds. Polling stops while a window is hidden. Since 0.69.0 (ADR-0105)
+   it also lists again when the window gains focus, so a request that
+   brought it forward is listed without waiting for the next poll; a new
+   request never replaces the one under review. Since 0.45.0 (ADR-0065)
    the window shows a queue beside a review pane; each column scrolls on its
    own, and below 720 pixels wide they stack. Since 0.66.0 (ADR-0101) the
    line between them moves, to widen the queue or, stacked, make it taller

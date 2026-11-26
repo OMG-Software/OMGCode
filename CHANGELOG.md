@@ -566,6 +566,37 @@ Changes are recorded here before a release version is assigned.
   folder access to itself. No test applies a real grant, and the native
   dialogs were not driven by automation.
 
+- Version 0.69.0 also shows the desktop approvals window as soon as a chat
+  turn starts waiting for an approval (ADR-0105), instead of only counting
+  it in the `main` window. Core's `ApprovalWaitSlot` can carry a `WaitObserver`
+  that the turn calls on its own thread, with no lock held, each time it
+  publishes the call it waits on; the observer receives nothing and decides
+  nothing. `DesktopService::set_approval_wait_observer` holds one, each turn
+  copies it when it starts, and `DesktopService::shutdown` drops it. The
+  shell registers an observer at startup. When OMGCode owns the foreground
+  window, read on Windows with `GetForegroundWindow` and
+  `GetWindowThreadProcessId` in a new `omgcode-platform` function
+  (`foreground::this_process_owns_foreground`), the approvals window is
+  unminimized, shown, and focused. Otherwise it is shown and its taskbar
+  button flashes, and the foreground is not taken, because on Windows that
+  sends the other application a simulated key press. No command, event, or
+  capability is added, and the approvals window still never focuses
+  **Approve**, decides on no key, and arms **Approve** one second after a
+  review renders. The approvals window also lists again when it gains focus,
+  so a request that brought it forward appears without waiting up to 3
+  seconds for the next poll; a new request still never replaces the one
+  under review. An approval recorded by a CLI turn still shows only in the
+  count. The `settings` and `approvals` show commands now share one helper
+  and behave as before; the operator saw the settings window open in front
+  every time in their latest testing, and no cause of an earlier, occasional
+  open behind `main` was found. `omgcode-desktop` now depends on the
+  workspace crate `omgcode-platform`. Tests cover the observer, a real
+  desktop turn telling it once while still waiting for a decision, shutdown
+  dropping it, and the focus refresh keeping the review; which window ends
+  up in front, the taskbar flash, and whether WebView2 delivers the focus
+  event were not driven by automation. The approvals tests now dispose a
+  window before starting another in the same test.
+
 - Version 0.61.0 restyles the desktop windows in the OMG Software
   outlined-toggle palette (ADR-0095). The theme uses neutral greys around
   charcoal `#151515`, switch orange `#ff761f` as the accent, and charcoal

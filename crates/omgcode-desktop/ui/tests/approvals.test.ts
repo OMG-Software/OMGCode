@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type ApprovalsApp, startApprovals } from "../src/approvals/app";
+import { type ApprovalsApp, LIST_POLL_MS, startApprovals } from "../src/approvals/app";
 import {
   approvalEffect,
   approveGate,
@@ -123,6 +123,8 @@ describe("approvals window", () => {
   let current: ApprovalDetail;
 
   async function start(): Promise<void> {
+    // A second start in one test would otherwise leave the first window's listeners live.
+    app?.dispose();
     ipc = installFakeIpc({
       approvals_list: () => ({ now_unix: 1000, approvals }),
       approval_detail: () => current,
@@ -666,6 +668,33 @@ describe("approvals window", () => {
       await start();
       expect(root.querySelector(".who")?.classList.contains("clamp-1")).toBe(true);
       expect(root.querySelector(".summary")?.classList.contains("clamp-1")).toBe(true);
+    });
+
+    it("lists a new request when the window gains focus and keeps the review", async () => {
+      approvals = [view({ id: "a1", expires_unix: 2000 })];
+      await start();
+      rowFor("a1").click();
+      await settle();
+      const review = root.querySelector(".review") as HTMLElement;
+      const listCalls = ipc.callsTo("approvals_list").length;
+      approvals = [view({ id: "a1", expires_unix: 2000 }), view({ id: "a2", expires_unix: 1500 })];
+      window.dispatchEvent(new Event("focus"));
+      await settle();
+      expect(ipc.callsTo("approvals_list")).toHaveLength(listCalls + 1);
+      expect(rowIds()).toEqual(["a2", "a1"]);
+      expect(rowFor("a1").getAttribute("aria-pressed")).toBe("true");
+      expect(rowFor("a2").getAttribute("aria-pressed")).toBe("false");
+      expect(root.querySelector(".review")).toBe(review);
+    });
+
+    it("stops refreshing on window focus once disposed", async () => {
+      await start();
+      app?.dispose();
+      app = null;
+      const listCalls = ipc.callsTo("approvals_list").length;
+      window.dispatchEvent(new Event("focus"));
+      await settle(LIST_POLL_MS);
+      expect(ipc.callsTo("approvals_list")).toHaveLength(listCalls);
     });
   });
 });
