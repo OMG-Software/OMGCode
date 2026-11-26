@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use omgcode_core::control::{
-    ApprovalOperation, ApprovalState, ControlStore, ProfileDeclaration, SkillScope, SkillSetting,
-    now_unix,
+    ApprovalOperation, ApprovalState, ControlStore, ProfileDeclaration, ProfilePlatform,
+    SkillScope, SkillSetting, now_unix,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::prompt::{
@@ -179,6 +179,34 @@ impl Fixture {
                 control.revision(),
             )
             .expect("toolchain profile");
+    }
+
+    /// Rewrite a recorded profile as declared on the other platform, as a
+    /// settings journal carried from a host of that platform would hold it.
+    /// `add_profile` stamps only the running platform.
+    fn move_profile_to_other_platform(&mut self, name: &str) {
+        let (current, other) = if cfg!(windows) {
+            ("windows", "linux")
+        } else {
+            ("linux", "windows")
+        };
+        self.release_control();
+        let path = self.data.join("control-v1.jsonl");
+        let text = fs::read_to_string(&path).expect("read control journal");
+        let recorded = format!(r#""name":"{name}","platform":"{current}""#);
+        assert_eq!(
+            text.matches(&recorded).count(),
+            1,
+            "one profile named {name}"
+        );
+        let moved = format!(r#""name":"{name}","platform":"{other}""#);
+        fs::write(&path, text.replacen(&recorded, &moved, 1)).expect("write control journal");
+        let control = ControlStore::open_existing(&self.data)
+            .expect("reopen control")
+            .expect("control store");
+        let profile = control.profile(name).expect("profile").profile();
+        assert_ne!(Some(profile.platform()), ProfilePlatform::current());
+        self.control = Some(control);
     }
 }
 
@@ -681,6 +709,89 @@ fn a_command_naming_an_unrecorded_profile_is_refused_before_an_approval() {
     assert_eq!(
         refused["event"]["payload"]["reason"]["type"],
         "invalid_request"
+    );
+}
+
+/// A profile declared on the other platform can never run here, so alone it
+/// does not make the command tool appear. A call that names it anyway is
+/// told that no profile exists, not asked to pick from an empty list.
+#[test]
+fn a_profile_declared_on_the_other_platform_is_not_offered() {
+    let mut fixture = Fixture::new();
+    fixture.enable_commands();
+    fixture.declare_profile("elsewhere");
+    fixture.move_profile_to_other_platform("elsewhere");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "cmd-1",
+            "workspace_run_command",
+            json!({"profile": "elsewhere", "program": "cargo", "arguments": ["fmt"]}),
+        )]),
+        text_reply("nothing can run"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn continues after the refusal");
+    assert!(
+        !model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_run_command"),
+        "the command tool was advertised for another platform's profile"
+    );
+    let result = fixture
+        .snapshot()
+        .messages
+        .iter()
+        .find(|message| message.text.contains("profile_not_recorded"))
+        .map(|message| message.text.clone())
+        .expect("the result names the refusal");
+    assert!(result.contains(r#""profiles":[]"#), "{result}");
+    assert!(result.contains("so no command can run"), "{result}");
+    assert!(!result.contains("Name one of the listed"), "{result}");
+}
+
+/// Beside a profile of this platform, the other platform's profile is left
+/// out of the advertised names, and a call naming it is refused before an
+/// approval with only this platform's names.
+#[test]
+fn a_command_naming_the_other_platforms_profile_is_refused() {
+    let mut fixture = Fixture::new();
+    fixture.enable_commands();
+    fixture.declare_profile("elsewhere");
+    fixture.move_profile_to_other_platform("elsewhere");
+    fixture.declare_profile("rust");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "cmd-1",
+            "workspace_run_command",
+            json!({"profile": "elsewhere", "program": "cargo", "arguments": ["fmt"]}),
+        )]),
+        text_reply("use rust"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn continues after the refusal");
+    assert_eq!(
+        model.requests[0].command_profiles.as_deref(),
+        Some(["rust".to_owned()].as_slice())
+    );
+    let result = fixture
+        .snapshot()
+        .messages
+        .iter()
+        .find(|message| message.text.contains("profile_not_recorded"))
+        .map(|message| message.text.clone())
+        .expect("the result names the refusal");
+    assert!(result.contains(r#""profiles":["rust"]"#), "{result}");
+    assert!(result.contains("Name one of the listed"), "{result}");
+    fixture.close_journal();
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    assert!(
+        control.approval_statuses(now_unix()).is_empty(),
+        "an approval was requested for another platform's profile"
     );
 }
 

@@ -432,7 +432,8 @@ Changes are recorded here before a release version is assigned.
   platform, read from the snapshot that selects the tools. The command tool is
   withheld while none is recorded. A call that names any other profile is
   answered with `profile_not_recorded` and the recorded names before an
-  approval is requested or consumed. It is recorded as refused
+  approval is requested or consumed; with none recorded for the platform, the
+  result says no command can run. It is recorded as refused
   (`invalid_request`), and the turn continues. The runner still checks the
   profile under its own lock. The tool schema version is 0.9.0. The desktop
   tool-schema estimate rises from 9 KiB to 11 KiB: the ten definitions, with

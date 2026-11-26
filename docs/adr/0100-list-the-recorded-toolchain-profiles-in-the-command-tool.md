@@ -41,6 +41,9 @@ The causes are in the core:
   consumed and before a standing-allow run, a profile that is not recorded
   for this platform is answered with `profile_not_recorded` and the recorded
   names. Names are compared case-insensitively, as the runner compares them.
+  When no profile is recorded for this platform, which a call can still
+  reach from an earlier turn's tool list, the result says that no command can
+  run and does not ask the model to name one.
   Nothing runs and no approval is recorded. The model action journal records
   the call as refused with reason `invalid_request`, so its schema does not
   change. The turn continues. The runner still looks the profile up under its

@@ -3849,17 +3849,24 @@ impl WorkspaceToolDispatcher<'_> {
             .any(|name| name.eq_ignore_ascii_case(profile))
         {
             drop(control);
+            // The tool is withheld while no profile is recorded, but a call
+            // can still arrive: from an earlier turn's tool list, or after
+            // the last profile was removed. Naming another profile cannot
+            // help then, so the message does not ask for one.
+            let message = if recorded.is_empty() {
+                "No toolchain profile is recorded for this platform, so no command can \
+                 run. Nothing ran and no approval was requested. Do not retry; tell the \
+                 user that the operator must add a toolchain profile."
+            } else {
+                "No toolchain profile with this name is recorded for this platform. \
+                 Nothing ran and no approval was requested. Name one of the listed \
+                 profiles; if none fits, tell the user that the operator must add one."
+            };
             return status_result(
                 call,
                 ToolOutcome::Failed,
                 "profile_not_recorded",
-                json!({
-                    "message": "No toolchain profile with this name is recorded for this \
-                                platform. Nothing ran and no approval was requested. Name \
-                                one of the listed profiles; if none fits, tell the user that \
-                                the operator must add one.",
-                    "profiles": recorded,
-                }),
+                json!({"message": message, "profiles": recorded}),
                 max_result_bytes,
             );
         }

@@ -754,7 +754,8 @@ they were added; the list is read from the same settings snapshot that
 selects the tools. A name grants nothing. A call that names a profile not
 recorded for this platform, compared case-insensitively under the lock that
 admits the call, is answered with `profile_not_recorded` and the recorded
-names. Nothing runs, no approval is requested or consumed, the model action
+names. With no profile recorded for this platform, the result says that no
+command can run instead of asking for a listed name. Nothing runs, no approval is requested or consumed, the model action
 journal records the call as refused (`invalid_request`), and the turn
 continues. The runner still looks the profile up under its own lock, so a
 profile removed after that check still refuses the run.
