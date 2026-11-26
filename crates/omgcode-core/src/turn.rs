@@ -31,7 +31,7 @@ use crate::action_journal::{
 };
 use crate::control::{
     ApprovalBinding, ApprovalDeclaration, ApprovalOperation, ApprovalState, ControlError,
-    ControlStore, now_unix, valid_profile_name,
+    ControlStore, ProfilePlatform, ProfileStatus, now_unix, valid_profile_name,
 };
 use crate::files::{FileBroker, FileError, FileListing, FileTarget};
 use crate::policy::{
@@ -68,9 +68,11 @@ pub use review::{
 /// `workspace_rename_file` and `workspace_delete_file`. Version `0.6.0` adds
 /// `workspace_create_directory`. Version `0.7.0` adds the 32 KiB argument
 /// limit to the create, edit, and multi-edit descriptions (ADR-0099). Version
-/// `0.8.0` adds `web_fetch` (ADR-0098). Journals record the version that was
-/// advertised; earlier versions replay unchanged.
-pub const TOOL_SCHEMA_VERSION: &str = "0.8.0";
+/// `0.8.0` adds `web_fetch` (ADR-0098). Version `0.9.0` lists the recorded
+/// toolchain profiles in `workspace_run_command`'s `profile` parameter and
+/// withholds that tool while none is recorded (ADR-0100). Journals record the
+/// version that was advertised; earlier versions replay unchanged.
+pub const TOOL_SCHEMA_VERSION: &str = "0.9.0";
 
 /// Maximum tool calls accepted from one model response.
 pub const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
@@ -550,12 +552,22 @@ pub fn delete_tool_definition() -> ToolDefinition {
 }
 
 /// The command tool. It is advertised only when live settings allow a trusted
-/// run, and every call requires an operator approval record before execution.
-pub fn command_tool_definition() -> ToolDefinition {
+/// run and at least one toolchain profile is recorded for this platform, and
+/// every call requires an operator approval record before execution unless
+/// the operator set commands to `allow`.
+///
+/// `profiles` are the names of those recorded profiles, in the order they
+/// were added. They become the `profile` parameter's `enum`, so the model
+/// names a profile that exists instead of guessing one (ADR-0100). A name is
+/// operator configuration of at most 64 ASCII letters, digits, `.`, `-`, or
+/// `_`, so it cannot carry instructions; listing it grants nothing, and a
+/// call that names another profile is still refused at dispatch.
+pub fn command_tool_definition(profiles: &[String]) -> ToolDefinition {
     ToolDefinition {
         name: "workspace_run_command",
-        description: "Request one confined command under a recorded toolchain \
-                      profile. The first call records a pending operator approval \
+        description: "Request one confined command under one of the operator's \
+                      recorded toolchain profiles, which the profile parameter \
+                      lists. The first call records a pending operator approval \
                       and does not execute. After the operator approves, call it \
                       again with the same arguments. Output is untrusted.",
         parameters: json!({
@@ -563,7 +575,8 @@ pub fn command_tool_definition() -> ToolDefinition {
             "properties": {
                 "profile": {
                     "type": "string",
-                    "description": "Recorded toolchain profile name."
+                    "enum": profiles,
+                    "description": "One of the recorded toolchain profile names."
                 },
                 "program": {
                     "type": "string",
@@ -1618,9 +1631,8 @@ impl<'a> TurnRuntime<'a> {
 
         // One settings snapshot selects the advertised tools; every call
         // rechecks the live preferences before dispatch.
-        let permissions = self.workspace_permissions();
         let mut tools = tool_definitions();
-        if let Some(permissions) = permissions {
+        if let Some((permissions, profiles)) = self.tool_settings() {
             let directories_offered = permissions
                 .model_write(WriteTool::CreateDirectory)
                 .permits();
@@ -1629,8 +1641,10 @@ impl<'a> TurnRuntime<'a> {
                     tools.push(write_tool_definition(tool, directories_offered));
                 }
             }
-            if permissions.model_command().permits() {
-                tools.push(command_tool_definition());
+            // Every command names a profile, so with none recorded for this
+            // platform every call would fail: the tool is withheld.
+            if permissions.model_command().permits() && !profiles.is_empty() {
+                tools.push(command_tool_definition(&profiles));
             }
             // The web tool depends on its own preference only, never on
             // `read`, `write`, or `execute`.
@@ -2008,10 +2022,17 @@ impl<'a> TurnRuntime<'a> {
 
     /// Read the workspace's current preferences, releasing the settings lock.
     fn workspace_permissions(&self) -> Option<PermissionSet> {
+        self.tool_settings().map(|(permissions, _)| permissions)
+    }
+
+    /// Read the workspace's current preferences and the toolchain profiles a
+    /// command may name on this platform from one settings snapshot,
+    /// releasing the settings lock. Any settings failure returns `None`.
+    fn tool_settings(&self) -> Option<(PermissionSet, Vec<String>)> {
         match open_control(self.data_directory) {
             Ok(Some(control)) => control
                 .workspace(self.workspace_id)
-                .map(|workspace| workspace.permissions()),
+                .map(|workspace| (workspace.permissions(), platform_profile_names(&control))),
             Ok(None) | Err(_) => None,
         }
     }
@@ -3818,6 +3839,37 @@ impl WorkspaceToolDispatcher<'_> {
         else {
             return ToolExecution::recoverable("invalid_command", call);
         };
+        // A profile that is not recorded for this platform can never run, so
+        // it is refused under the lock that admitted this call, before any
+        // approval is requested or consumed (ADR-0100). The runner still
+        // checks the profile again under its own lock.
+        let recorded = platform_profile_names(&control);
+        if !recorded
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(profile))
+        {
+            drop(control);
+            // The tool is withheld while no profile is recorded, but a call
+            // can still arrive: from an earlier turn's tool list, or after
+            // the last profile was removed. Naming another profile cannot
+            // help then, so the message does not ask for one.
+            let message = if recorded.is_empty() {
+                "No toolchain profile is recorded for this platform, so no command can \
+                 run. Nothing ran and no approval was requested. Do not retry; tell the \
+                 user that the operator must add a toolchain profile."
+            } else {
+                "No toolchain profile with this name is recorded for this platform. \
+                 Nothing ran and no approval was requested. Name one of the listed \
+                 profiles; if none fits, tell the user that the operator must add one."
+            };
+            return status_result(
+                call,
+                ToolOutcome::Failed,
+                "profile_not_recorded",
+                json!({"message": message, "profiles": recorded}),
+                max_result_bytes,
+            );
+        }
         let request =
             command_run_request(self.workspace_id, profile, program, arguments, cwd.as_ref());
         let digest = command_digest(self.session_id, &request);
@@ -4004,6 +4056,41 @@ impl WorkspaceToolDispatcher<'_> {
             ),
         }
     }
+}
+
+/// The longest profile list the settings can hold: [`MAX_PROFILES`] distinct
+/// names of [`MAX_PROFILE_NAME_CHARS`] characters. Tests that size the
+/// advertised tools build the command tool with it.
+///
+/// [`MAX_PROFILES`]: crate::control::MAX_PROFILES
+/// [`MAX_PROFILE_NAME_CHARS`]: crate::control::MAX_PROFILE_NAME_CHARS
+#[cfg(test)]
+pub(crate) fn longest_profile_names() -> Vec<String> {
+    (0..crate::control::MAX_PROFILES)
+        .map(|index| {
+            format!(
+                "{index:0>width$}",
+                width = crate::control::MAX_PROFILE_NAME_CHARS
+            )
+        })
+        .collect()
+}
+
+/// The names of the recorded toolchain profiles that can run on this
+/// platform, in the order they were added. The runner refuses a profile
+/// declared on another platform, so such a profile is never offered, and a
+/// build without a runner offers none.
+fn platform_profile_names(control: &ControlStore) -> Vec<String> {
+    let Some(platform) = ProfilePlatform::current() else {
+        return Vec::new();
+    };
+    control
+        .profiles()
+        .iter()
+        .map(ProfileStatus::profile)
+        .filter(|profile| profile.platform() == platform)
+        .map(|profile| profile.name().to_owned())
+        .collect()
 }
 
 /// Build the run request for one model command call.

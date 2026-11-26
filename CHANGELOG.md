@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.65.0 makes every section divider in the desktop windows movable
+- Version 0.66.0 makes every section divider in the desktop windows movable
   (ADR-0101). The `approvals` queue, 300 pixels wide, now widens or narrows
   from 200 to 640 beside the review pane, and below 720 pixels wide, where
   the panes stack, its height moves from 96 to 640. The `settings` section
@@ -439,6 +439,24 @@ Changes are recorded here before a release version is assigned.
   8 KiB estimate). A scripted turn of ten 30 KiB creates finishes with every
   file present, and a plan-route request echoing them and a Chat Completions
   request over 256 KiB are sent to mock servers; no real route was tried.
+
+- Version 0.65.0: the model no longer has to guess a toolchain profile name,
+  and the operator is no longer asked to approve a command that cannot start
+  (ADR-0100). In the session from ADR-0099, `workspace_run_command` named the
+  profile `rust`, which nobody had recorded. The operator approved it, and the
+  run then failed with `toolchain profile is not recorded`. The `profile`
+  parameter now lists, as an `enum`, the profiles recorded for the running
+  platform, read from the snapshot that selects the tools. The command tool is
+  withheld while none is recorded. A call that names any other profile is
+  answered with `profile_not_recorded` and the recorded names before an
+  approval is requested or consumed; with none recorded for the platform, the
+  result says no command can run. It is recorded as refused
+  (`invalid_request`), and the turn continues. The runner still checks the
+  profile under its own lock. The tool schema version is 0.9.0. The desktop
+  tool-schema estimate rises from 9 KiB to 11 KiB: the ten definitions, with
+  32 profiles of 64-character names, serialize to 10,543 bytes. Before the
+  change, the new regression test got `approval_required` for the unrecorded
+  profile. No real model call was made.
 
 ### Changed
 

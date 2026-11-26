@@ -22,9 +22,10 @@ pub const MODEL_TOOLS_SUPPORTED: bool = cfg!(any(target_os = "linux", target_os 
 /// Conservative byte allowance for the advertised tool definitions.
 ///
 /// The largest set (read, list, edit, multi-edit, create, create directory,
-/// rename, delete, command, and web fetch) serializes to 8,322 bytes in the
-/// adapter's wire shape; a unit test keeps this allowance above it.
-pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 9 * 1024;
+/// rename, delete, command, and web fetch), with the command tool listing 32
+/// profiles of 64-character names (ADR-0100), serializes to 10,543 bytes in
+/// the adapter's wire shape; a unit test keeps this allowance above it.
+pub(crate) const TOOL_SCHEMA_ESTIMATE_BYTES: usize = 11 * 1024;
 
 /// Whether this chat turn offers the model the workspace tools.
 #[derive(Debug)]
@@ -116,6 +117,7 @@ pub fn tool_replay_allowed(
 
 #[cfg(test)]
 mod tests {
+    use omgcode_core::control::{MAX_PROFILE_NAME_CHARS, MAX_PROFILES};
     use omgcode_core::turn::{
         command_tool_definition, create_directory_tool_definition, create_tool_definition,
         delete_tool_definition, edit_tool_definition, multi_edit_tool_definition,
@@ -126,9 +128,13 @@ mod tests {
     use super::TOOL_SCHEMA_ESTIMATE_BYTES;
 
     /// The estimate must cover the largest advertised tool set in the exact
-    /// OpenAI-compatible wire shape the adapter sends.
+    /// OpenAI-compatible wire shape the adapter sends, with the command tool
+    /// listing as many profiles of the longest name as settings can hold.
     #[test]
     fn the_schema_estimate_covers_every_advertised_tool_definition() {
+        let profiles: Vec<String> = (0..MAX_PROFILES)
+            .map(|index| format!("{index:0>MAX_PROFILE_NAME_CHARS$}"))
+            .collect();
         let mut definitions = tool_definitions();
         definitions.push(edit_tool_definition());
         definitions.push(multi_edit_tool_definition());
@@ -136,7 +142,7 @@ mod tests {
         definitions.push(rename_tool_definition());
         definitions.push(delete_tool_definition());
         definitions.push(create_directory_tool_definition());
-        definitions.push(command_tool_definition());
+        definitions.push(command_tool_definition(&profiles));
         definitions.push(web_fetch_tool_definition());
         assert_eq!(definitions.len(), 10, "the ten-tool cap is fully used");
         let wire: Vec<Value> = definitions

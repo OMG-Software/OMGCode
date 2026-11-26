@@ -103,7 +103,7 @@ merged to `main` at the time of writing):
   The approvals window reviews a `network` approval as **Web fetch**, and
   the `settings` window sets each workspace's `web_fetch` preference and
   edits its host allowlist. See [Web tab](#web-tab).
-- Since version 0.65.0 (ADR-0101), every section divider moves: the
+- Since version 0.66.0 (ADR-0101), every section divider moves: the
   `approvals` queue's, the `settings` section list's, the line above the
   `main` window's composer, which sets the message box's height, and the
   line above the right-hand panel's footer. Each is a window splitter like
@@ -501,7 +501,7 @@ The `main` window is laid out as follows.
 
 ### Section dividers
 
-Since 0.65.0
+Since 0.66.0
 ([ADR-0101](adr/0101-make-every-section-divider-movable.md)) every line
 between two sections of content moves. The `main` window's columns use the
 separators described above, which also collapse. Every other divider is built
@@ -564,7 +564,7 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
 - **A scrolling content area** with the selected tab's content.
 - **A fixed footer** under the content area, outside its scrolling and shown
   on every tab. The panel's API exposes it as `footer`. It holds the model
-  box (ADR-0089). Since 0.65.0 the line above it moves, so the footer can be
+  box (ADR-0089). Since 0.66.0 the line above it moves, so the footer can be
   taller or shorter than the box, which then scrolls
   (see [section dividers](#section-dividers)).
 - **The model box** (`ui/src/main/model_box.ts`, ADR-0089): a "Model" heading,
@@ -1204,7 +1204,7 @@ no settings store exists, that call creates an empty one, as the CLI's
 store exists from the first launch.
 
 Since 0.45.0 (ADR-0065) a sidebar chooses one of three sections: **Model**,
-**Workspaces** (shown first), and **Advanced**. Since 0.65.0 (ADR-0101) the
+**Workspaces** (shown first), and **Advanced**. Since 0.66.0 (ADR-0101) the
 line beside the sidebar moves, so a long workspace path can be read in full
 (see [section dividers](#section-dividers)). **Refresh** and the settings
 revision sit at the bottom of the sidebar, and errors and notices at the top
@@ -1747,7 +1747,7 @@ The flow:
 3. The operator opens the `approvals` window. It polls `approvals_list` every 3
    seconds. Polling stops while a window is hidden. Since 0.45.0 (ADR-0065)
    the window shows a queue beside a review pane; each column scrolls on its
-   own, and below 720 pixels wide they stack. Since 0.65.0 (ADR-0101) the
+   own, and below 720 pixels wide they stack. Since 0.66.0 (ADR-0101) the
    line between them moves, to widen the queue or, stacked, make it taller
    (see [section dividers](#section-dividers)). The queue has two tabs:
    **Pending (n)**, the pending records soonest-expiring first as selectable

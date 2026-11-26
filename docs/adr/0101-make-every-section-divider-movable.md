@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-26
-- Implemented: version 0.65.0
+- Implemented: version 0.66.0
 - Amends: [ADR-0072](0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md)
   decision 6, for where the one inline style is written
 

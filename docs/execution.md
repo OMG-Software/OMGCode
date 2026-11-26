@@ -721,7 +721,10 @@ cgroup.
 
 Version 0.25.0 adds `workspace_run_command` to the core turn runtime. The
 runtime advertises it only when the session workspace's live `model_tools`,
-`execute`, `read`, and `write` preferences are enabled. Each call rechecks
+`execute`, `read`, and `write` preferences are enabled and, since 0.65.0, at
+least one toolchain profile is recorded for the running platform
+([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+Each call rechecks
 them, and the trusted run checks them again. Since 0.43.0 (ADR-0063) its
 effective state is the most restrictive of the three. At `prompt` each call
 needs an approval, as described below; at `allow` it starts the trusted run
@@ -744,6 +747,18 @@ program the approved profile exposes, including an interpreter such as `sh` or
 approves. The tool fixes its limits: a 20-second deadline, 4 KiB retained from each
 output stream, 1 GiB memory, 64 processes, 20 seconds of CPU, and 256 MiB of
 disk growth. It selects no network or host services.
+
+Since 0.65.0 (tool schema 0.9.0) the `profile` parameter lists, as an `enum`,
+the names of the profiles recorded for the running platform, in the order
+they were added; the list is read from the same settings snapshot that
+selects the tools. A name grants nothing. A call that names a profile not
+recorded for this platform, compared case-insensitively under the lock that
+admits the call, is answered with `profile_not_recorded` and the recorded
+names. With no profile recorded for this platform, the result says that no
+command can run instead of asking for a listed name. Nothing runs, no approval is requested or consumed, the model action
+journal records the call as refused (`invalid_request`), and the turn
+continues. The runner still looks the profile up under its own lock, so a
+profile removed after that check still refuses the run.
 
 The first call matches no approval, records a pending approval with a bounded
 summary that contains no argument text, and returns `approval_required` with
@@ -829,6 +844,10 @@ its target, and every later action in the same session carries
 ### Toolchain profiles
 
 Profiles are declared by the operator. Nothing is discovered automatically.
+Every run names one, whether the trusted CLI or the model command tool starts
+it, and there is no fallback to an unconfined run. The model command tool is
+offered only while at least one profile is recorded for the running platform,
+and it lists their names (ADR-0100).
 
 | Command | Effect |
 | --- | --- |

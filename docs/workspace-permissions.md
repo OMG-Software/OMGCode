@@ -596,14 +596,21 @@ No dedicated model tool removes a directory; a command can, when its approved
 profile exposes a program that does. See
 [ADR-0079](adr/0079-add-a-model-tool-that-creates-one-directory.md).
 
-When `model_tools`, `execute`, `read`, and `write` are all enabled, the runtime
-also offers `workspace_run_command`. Its first call records a pending approval
+When `model_tools`, `execute`, `read`, and `write` are all enabled and at
+least one toolchain profile is recorded for the running platform, the runtime
+also offers `workspace_run_command`. Its `profile` parameter lists those
+profiles, and a call that names another one is answered with
+`profile_not_recorded` before any approval is requested
+([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+Its first call records a pending approval
 and does not run; after `approvals approve <id>`, a second identical call
 consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.7.0, which added the 32 KiB argument limit to the
+The tool schema version is 0.9.0, which lists the recorded toolchain profiles
+in `workspace_run_command` (ADR-0100); 0.8.0 added `web_fetch` (ADR-0098);
+0.7.0 added the 32 KiB argument limit to the
 create, edit, and multi-edit descriptions (ADR-0099); 0.6.0 added
 `workspace_create_directory`; 0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added
 `workspace_multi_edit_file` and
