@@ -416,7 +416,11 @@ fn windows_runs_need_the_workspace_grant() {
     let scene = Scene::build(true, false);
     assert_success(&scene.add_profile("system", &[]));
     let output = scene.run("system", &[], &shell("echo ungranted"));
-    assert!(error_message(&output).contains("grant the workspace directory"));
+    let message = error_message(&output);
+    assert!(
+        message.contains("the workspace's sandbox has no read-write grant on the workspace folder"),
+        "{message}"
+    );
     assert_no_runs(&scene);
     scene.close();
 }
