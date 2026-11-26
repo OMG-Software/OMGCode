@@ -371,7 +371,10 @@ Changes are recorded here before a release version is assigned.
   comments.
   - CLI help: `chat`, `models`, and `session compact` no longer say they
     reach only a local LM Studio or Ollama model, each `--provider-profile`
-    says an `openai` subscription profile needs `provider-signin` first, and
+    names the full `omgcode workspace provider-credential-set NAME --revision
+    N` command and says an `openai` subscription profile needs `omgcode
+    workspace provider-signin NAME --revision N` first, `provider-credential-set`
+    says hosted `api_key` profiles read its credential too, and
     `--model-tools` no longer says "local model". Two `omgcode-app` doc
     comments drop "local" the same way. `--endpoint` stays loopback-only
     help, because a hosted address there is refused as `cloud_needs_profile`.

@@ -183,8 +183,8 @@ pub(crate) enum WorkspaceCommand {
     ///
     /// The secret is read from standard input only, up to 16 KiB; one
     /// trailing newline is removed. A previously bound credential is deleted
-    /// after the new binding is recorded. The local adapter reads it for a
-    /// selected lm_studio profile.
+    /// after the new binding is recorded. The chat client reads it for a
+    /// selected lm_studio or hosted `api_key` profile.
     ProviderCredentialSet {
         name: String,
         #[arg(long)]
