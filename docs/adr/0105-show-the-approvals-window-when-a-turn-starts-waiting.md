@@ -127,18 +127,28 @@ denies, and **Approve** is armed only one second after a review renders.
   the wait; the shell's observer only posts one closure to the event loop.
 - Showing a hidden window still goes through tao's `show`, which calls
   `ShowWindow` with `SW_SHOW`, and unminimizing calls it with
-  `SW_RESTORE`; both flags request activation. When another application
-  owns the foreground, Windows' foreground restrictions should refuse that
-  activation, and no input is sent either way. The taskbar flash comes
-  from the shell's own `request_user_attention` call with
-  `UserAttentionType::Critical`, not from the refusal. A
-  non-activating show is not available through tao once a window exists:
-  its `MARKER_DONT_FOCUS` flag applies only at creation. A direct
-  `ShowWindow` with `SW_SHOWNOACTIVATE` would leave tao's visibility flag
-  clear, and tao skips a change that matches its flag, so a later `hide`,
-  such as closing the window, would do nothing. Where the shown window
-  lands in the stacking order while another application owns the
-  foreground was not checked on a Windows desktop.
+  `SW_RESTORE`; both flags request activation, and no input is sent
+  either way. Microsoft documents that activating a window does not bring
+  it to the foreground when its application is in the background
+  (`SetActiveWindow`), and that a process that may not set the foreground
+  gets its taskbar button flashed instead (`SetForegroundWindow`). The
+  ownership recheck before `SetForegroundWindow` reads the system's
+  foreground window with `GetForegroundWindow`, not the thread's active
+  window, so an activation refused this way does not satisfy it. The
+  `ShowWindow` page does not restate these rules, and `SetForegroundWindow`
+  lists cases in which any process may set the foreground, such as an
+  expired foreground lock time-out or no foreground window at all; in
+  those cases Windows, not this code, may let the shown window come
+  forward. Windows may flash the button on a refusal, and the shell also
+  calls `request_user_attention` with `UserAttentionType::Critical`, so it
+  flashes until the operator comes to it either way. A non-activating show
+  is not available through tao once a window exists: its
+  `MARKER_DONT_FOCUS` flag applies only at creation. A direct `ShowWindow`
+  with `SW_SHOWNOACTIVATE` would leave tao's visibility flag clear, and tao
+  skips a change that matches its flag, so a later `hide`, such as closing
+  the window, would do nothing. Which window ends up in front, and where
+  the shown window lands in the stacking order, while another application
+  owns the foreground were not checked on a Windows desktop.
 - `omgcode-desktop` now depends on the workspace crate `omgcode-platform`.
   `omgcode-platform` gains two Windows-only functions with four `unsafe`
   calls; no third-party code is added.
@@ -160,5 +170,7 @@ denies, and **Approve** is armed only one second after a review renders.
 - [docs/desktop-interface.md](../desktop-interface.md#approvals)
 - [ADR-0063](0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md),
   [ADR-0059](0059-configure-trusted-settings-in-an-isolated-desktop-settings-window.md)
-- Microsoft, [`SetForegroundWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)
+- Microsoft, [`SetForegroundWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow),
+  [`SetActiveWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setactivewindow),
+  [`ShowWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow),
   and [`GetWindowThreadProcessId`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid)
