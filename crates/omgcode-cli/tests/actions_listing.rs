@@ -58,6 +58,16 @@ fn start(
 }
 
 fn seeded() -> Seeded {
+    let (seeded, journal) = seeded_open();
+    drop(journal);
+    seeded
+}
+
+/// The seeded journal with its writer still open, for a test that appends
+/// more. Dropping the writer and opening it again is racy on Linux: a sibling
+/// test's CLI child, between fork and exec, briefly shares the descriptor and
+/// so its `flock`, and the reopen then fails with `Busy`.
+fn seeded_open() -> (Seeded, ActionJournal) {
     let fixture = Fixture::new(b"note");
     let workspace = fixture.workspace_id;
     let fetching = Uuid::new_v4();
@@ -131,12 +141,12 @@ fn seeded() -> Seeded {
         &[""],
         false,
     );
-    drop(journal);
-    Seeded {
+    let seeded = Seeded {
         fixture,
         fetching,
         quiet,
-    }
+    };
+    (seeded, journal)
 }
 
 fn list(seeded: &Seeded, extra: &[&str]) -> Vec<Value> {
@@ -263,8 +273,7 @@ fn a_filtered_listing_reports_whether_it_may_be_incomplete() {
 /// and the listing says so instead of looking complete.
 #[test]
 fn a_filtered_listing_is_truncated_when_newer_calls_fill_the_search_window() {
-    let seeded = seeded();
-    let mut journal = ActionJournal::open(&seeded.fixture.data).expect("action journal");
+    let (seeded, mut journal) = seeded_open();
     for index in 0..1000 {
         let call_id = format!("later-{index}");
         journal

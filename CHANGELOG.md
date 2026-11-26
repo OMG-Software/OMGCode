@@ -314,6 +314,12 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- The CLI test `a_filtered_listing_is_truncated_when_newer_calls_fill_the_search_window`
+  no longer fails now and then on Linux with `action journal: Busy`. It
+  dropped the seeded action journal's writer and opened it again, and a
+  sibling test's CLI child, between fork and exec, could still share the
+  descriptor and its `flock`. The test now appends with the seeding writer.
+  Tests only; no application code changed.
 - Version 0.61.0 opens the ChatGPT sign-in page in the default browser on
   Windows (ADR-0094). Sign-in ran `explorer.exe` with the authorization
   address, which opened a File Explorer window instead of a browser. A new
