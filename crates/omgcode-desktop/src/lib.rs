@@ -205,7 +205,10 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_add_package_profile,
             commands::settings::settings_remove_package_profile,
             commands::settings::settings_grant_container_folder,
-            commands::settings::settings_revoke_container_grant
+            commands::settings::settings_revoke_container_grant,
+            commands::settings::settings_add_web_fetch_host,
+            commands::settings::settings_remove_web_fetch_host,
+            commands::sessions::session_web_audit
         ])
         .build(tauri::generate_context!());
     match built {

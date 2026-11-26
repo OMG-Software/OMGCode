@@ -50,6 +50,7 @@ impl Fixture {
                         task_network: Access::Deny,
                         model_tools: false,
                         host_services: Access::Deny,
+                        web_fetch: Access::Deny,
                         write_tools: WriteToolAccess::default(),
                     },
                     control.revision(),

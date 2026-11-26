@@ -10,6 +10,7 @@ import { segmented } from "../ui/segmented";
 import { workspaceInstructionsBlock } from "./chat_section";
 import { type SectionContext, scopedWorkspace } from "./context";
 import { emptyLine, facts, sectionHead } from "./parts";
+import { webHostsBlock } from "./web_hosts";
 
 export const WORKSPACES_HELP =
   "Workspaces are folders inside the development root. Tools reach only registered workspaces.";
@@ -24,14 +25,18 @@ export const PERMISSION_LABELS: ReadonlyArray<[AccessKey, string]> = [
   ["execute", "Execute"],
   ["task_network", "Task network"],
   ["host_services", "Host services"],
+  ["web_fetch", "Web fetch"],
 ];
 
 const PERMISSION_HELP: Readonly<Record<AccessKey, string>> = {
   read: "Read and list files in the workspace.",
   write: "Change files in the workspace.",
   execute: "Run commands through the trusted runner.",
-  task_network: "Network access for a trusted run started with --network. No model tool uses it.",
-  host_services: "Host services a trusted run selects. No model tool uses it.",
+  task_network:
+    "Network access for a trusted run started with --network or a trusted package fetch. Web fetch is set separately.",
+  host_services: "Host services a trusted run selects. Web fetch is set separately.",
+  web_fetch:
+    "Fetch public HTTPS pages for the model. Under Allow, hosts on the list below skip approval; other hosts still ask.",
 };
 
 /** The per-tool write limits in the order they are shown, with their labels. */
@@ -83,6 +88,7 @@ function flagsOf(workspace: WorkspaceSettingsView): PermissionFlags {
     execute: workspace.execute,
     task_network: workspace.task_network,
     host_services: workspace.host_services,
+    web_fetch: workspace.web_fetch,
     write_tools: { ...workspace.write_tools },
   };
 }
@@ -304,7 +310,10 @@ function workspaceBlock(
     modelToolsToggle(workspace, ctx),
     ...PERMISSION_LABELS.flatMap(([key, label]) => {
       const row = permissionRow(workspace, key, label, ctx);
-      return key === "write" ? [row, toolLimits(workspace, ctx)] : [row];
+      if (key === "write") {
+        return [row, toolLimits(workspace, ctx)];
+      }
+      return key === "web_fetch" ? [row, webHostsBlock(workspace, ctx)] : [row];
     }),
     el(
       "div",

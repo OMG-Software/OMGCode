@@ -15,6 +15,7 @@ import { createSidePanel } from "./side_panel";
 import { createSidebar } from "./sidebar";
 import { createStatusFooter } from "./status_footer";
 import { terminalTab } from "./terminal_panel";
+import { createWebTab } from "./web_tab";
 
 export const APPROVALS_POLL_MS = 3000;
 
@@ -94,12 +95,13 @@ export function startMain(root: HTMLElement): MainApp {
     onCollapse: () => layout.left.setCollapsed(true),
     onExpand: () => layout.left.setCollapsed(false),
   });
-  // The right-hand panel's tabs (ADR-0072, ADR-0083, ADR-0085 to ADR-0087). One entry adds one
+  // The right-hand panel's tabs (ADR-0072, ADR-0083, ADR-0085 to ADR-0087, ADR-0098). One entry adds one
   // tab. The session views read only while their tab is visible.
   const files = createFilesTab();
   const sessionTabs = [
     panelTab({ id: "git", label: "Git", icon: "gitStatus" }, createGitTab()),
     panelTab({ id: "processes", label: "Processes", icon: "processes" }, createProcessesTab()),
+    panelTab({ id: "web", label: "Web", icon: "web" }, createWebTab()),
     panelTab({ id: "context", label: "Context", icon: "context" }, createContextTab()),
   ];
   function showSession(sessionId: string): void {

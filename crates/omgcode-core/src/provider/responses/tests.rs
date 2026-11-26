@@ -986,3 +986,52 @@ fn a_plan_route_request_echoing_ten_large_calls_is_sent_when_the_context_budget_
         10
     );
 }
+
+/// The ten tools the runtime can advertise: the two read tools, the six
+/// file-write tools, the command tool, and `web_fetch` (ADR-0098).
+fn ten_tool_definitions() -> Vec<crate::turn::ToolDefinition> {
+    let mut definitions = tool_definitions();
+    definitions.push(crate::turn::edit_tool_definition());
+    definitions.push(crate::turn::multi_edit_tool_definition());
+    definitions.push(crate::turn::create_tool_definition());
+    definitions.push(crate::turn::rename_tool_definition());
+    definitions.push(crate::turn::delete_tool_definition());
+    definitions.push(crate::turn::create_directory_tool_definition());
+    definitions.push(crate::turn::command_tool_definition());
+    definitions.push(crate::turn::web_fetch_tool_definition());
+    definitions
+}
+
+#[test]
+fn ten_tool_definitions_build_one_namespace_and_an_eleventh_is_refused_before_a_token_is_read() {
+    let tools = ten_tool_definitions();
+    assert_eq!(tools.len(), 10);
+    let body = request_body("gpt-test", &messages(), Some(&tools)).expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    let functions = value["tools"][0]["tools"].as_array().expect("functions");
+    assert_eq!(functions.len(), 10);
+    assert_eq!(functions[9]["name"], "web_fetch");
+
+    // No server listens here. The token source fails, so a request that passes
+    // the tool-count check ends with the token's own error and never connects.
+    let base = "http://127.0.0.1:9/v1";
+    let tokens = token(Err(ProviderError::SignInRequired));
+    let accepted = client(base, Arc::clone(&tokens)).complete_with_tools(
+        &messages(),
+        &tools,
+        &CancelToken::new(),
+    );
+    assert_eq!(accepted.err(), Some(ProviderError::SignInRequired));
+    assert_eq!(tokens.calls.load(Ordering::SeqCst), 1);
+
+    let mut eleven = tools;
+    eleven.push(crate::turn::web_fetch_tool_definition());
+    let tokens = token(Err(ProviderError::SignInRequired));
+    let refused = client(base, Arc::clone(&tokens)).complete_with_tools(
+        &messages(),
+        &eleven,
+        &CancelToken::new(),
+    );
+    assert_eq!(refused.err(), Some(ProviderError::InvalidConfiguration));
+    assert_eq!(tokens.calls.load(Ordering::SeqCst), 0);
+}

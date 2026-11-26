@@ -11,7 +11,9 @@ file only through checkpointed apply after an approved, writers-stopped
 decision; the create tool makes one new file through the exclusive create,
 without a checkpoint; the rename tool moves one file to a name that does not
 exist, without a checkpoint; and the delete tool removes one file after a
-checkpoint of its bytes. Model network, Git, and MCP tools are not
+checkpoint of its bytes. A `web_fetch` tool, behind its own preference and a
+host allowlist, reads one public HTTPS page per call as untrusted web
+content. Other model network tools, and Git and MCP tools, are not
 implemented. The
 trusted CLI `run` command runs one program under Linux Landlock or Windows
 AppContainer confinement with an operator-declared toolchain profile. A model
@@ -113,10 +115,15 @@ adapter reads a stored credential, through an operator-selected profile that
 supplies both the endpoint and the token (ADR-0047, ADR-0048); no cloud adapter
 or login exists. That adapter can stream a reply (ADR-0049): the text is
 provisional, and the journals record only the validated reply. Approval records authorize one exact
-model-tool call, and the file-write and command tools are their only consumers. Chat
-dispatches the read/list tools and, with the required live permissions, the
-approval-gated edit, multi-edit, create, rename, delete, and command tools, only
-for a workspace that enables `model_tools`. The edit and multi-edit tools write
+model-tool call, and the read, list, file-write, command, and web fetch tools
+are their only consumers; the read and list tools need one only under a
+`prompt` read preference (ADR-0063). Chat dispatches the read/list tools and,
+with the required live permissions, the approval-gated edit, multi-edit,
+create, rename, delete, and command tools, and the `web_fetch` tool behind
+the live `web_fetch` preference, which needs an approval unless that
+preference is `allow` and the host is on the workspace's allowlist
+(ADR-0098), only for a workspace that enables `model_tools`. The edit and
+multi-edit tools write
 only through checkpointed apply after an approved, writers-stopped decision, the
 create tool only through the exclusive create, the rename tool only through the
 no-replace rename, and the delete tool only through a checkpointed removal, each

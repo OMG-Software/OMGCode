@@ -1113,7 +1113,7 @@ fn the_preflight_estimate_counts_a_withheld_tool_result_as_withheld() {
 
     // Without `read`, chat replaces the saved 7 KB result with a short
     // notice. Fixed overhead (base prompt, tool schemas, message framing)
-    // is about 10,400 tokens, so only the withheld form fits 15,000.
+    // is about 11,400 tokens, so only the withheld form fits 16,000.
     fixture.set("--read", false);
     let server = SequenceServer::start(vec![text("text reply")]);
     let output = run_cli(
@@ -1131,7 +1131,7 @@ fn the_preflight_estimate_counts_a_withheld_tool_result_as_withheld() {
             "--max-output-tokens",
             "64",
             "--compact-threshold",
-            "15000",
+            "16000",
             "next request",
         ],
     );
@@ -1169,10 +1169,10 @@ fn the_post_compaction_estimate_rereads_replay_authority() {
     assert_success(&fixture.chat(&journal, &server.endpoint, "latest request"));
     server.finish();
 
-    // The saved note triggers auto-compaction at 15,000. `read` is revoked
+    // The saved note triggers auto-compaction at 16,000. `read` is revoked
     // while the summarizer request is in flight, so the compaction keeps the
     // tool-derived summary but the turn must send the short withheld notice.
-    // Fixed overhead is about 10,200 tokens: only the withheld form fits.
+    // Fixed overhead is about 11,200 tokens: only the withheld form fits.
     let data = fixture.data.clone();
     let workspace_id = fixture.workspace_id.to_string();
     let server = SequenceServer::start_with(
@@ -1198,7 +1198,7 @@ fn the_post_compaction_estimate_rereads_replay_authority() {
             "64",
             "--auto-compact",
             "--compact-threshold",
-            "15000",
+            "16000",
             "third request",
         ],
     );

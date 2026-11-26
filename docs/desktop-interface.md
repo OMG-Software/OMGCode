@@ -97,6 +97,12 @@ merged to `main` at the time of writing):
   command-tool calls through `session_processes`; and **Context** estimates
   the next turn by part through `session_context_breakdown`. A fixed footer
   sits under every tab. See [right-hand panel](#right-hand-panel).
+- Since version 0.64.0 (ADR-0098), the right-hand panel has a **Web** tab
+  that lists the open session's `web_fetch` calls and every model action
+  made after its first fetched web content, through `session_web_audit`.
+  The approvals window reviews a `network` approval as **Web fetch**, and
+  the `settings` window sets each workspace's `web_fetch` preference and
+  edits its host allowlist. See [Web tab](#web-tab).
 - Since version 0.56.0 (ADR-0089, ADR-0084), the provider and model choice
   moved from the composer to a box in the right-hand panel's fixed footer,
   with a **Model** rail icon when the panel is collapsed, and the status bar
@@ -262,7 +268,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 59 commands (27 in the `settings` window). No other command exists.
+The shell has three webview windows and 62 commands (30 in `main`, 3 in `approvals`, and 29 in `settings`). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -285,6 +291,7 @@ their registered identifier, and approvals by identifier.
 | `session_context` | main | Report whether a session's workspace is registered and the Git branch it has checked out, for display |
 | `workspace_entries` | main | List the names and kinds in one directory of a session's registered workspace, for the Files tab; takes the session id and relative name components (ADR-0083) |
 | `session_processes` | main | List a session's model command-tool calls, newest first, at most 100, read-only (ADR-0086) |
+| `session_web_audit` | main | List a session's `web_fetch` calls and every model action marked `after_web_content`, newest first, at most 100, read-only (ADR-0098) |
 | `workspace_git_status` | main | Report the Git branch and a bounded list of changed paths for a session's registered workspace, read in process by `gix` with no program run (ADR-0085); takes the session id |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
@@ -308,6 +315,8 @@ their registered identifier, and approvals by identifier.
 | `settings_set_permissions` | settings | Set one workspace's preferences and per-tool write limits; widening any needs a native confirmation |
 | `settings_choose_package_cache` | settings | Choose one workspace's package cache root in a native dialog, after a native confirmation |
 | `settings_clear_package_cache` | settings | Clear one workspace's package cache root; files stay in place |
+| `settings_add_web_fetch_host` | settings | Add one host pattern to a workspace's `web_fetch` allowlist after a native confirmation that names the folder and the canonical pattern (ADR-0098) |
+| `settings_remove_web_fetch_host` | settings | Remove one host pattern from a workspace's `web_fetch` allowlist after a native confirmation (ADR-0098) |
 | `settings_unregister_workspace` | settings | Remove one workspace's registration after a native confirmation that names its folder; its settings and instructions file go, its files and sessions stay (ADR-0081) |
 | `settings_select_connection` | settings | Choose the default or a recorded profile with an endpoint (a hosted one also needs a bound credential) as the model connection, after a native confirmation |
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0092) |
@@ -490,7 +499,7 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
   pattern through `ui/src/ui/tabs.ts`: arrow keys move focus and select, and
   each tab controls a `tabpanel`. The selected tab is remembered until the
   window closes; no storage is used. The tabs are **Terminal**, **Files**,
-  **Git**, **Processes**, and **Context**. A new tab is one entry in the list `app.ts` gives
+  **Git**, **Processes**, **Web**, and **Context**. A new tab is one entry in the list `app.ts` gives
   `createSidePanel`: an id, a label, a rail icon, its content, and an optional
   callback that says when it becomes visible or hidden.
 - **A rail.** Collapsed, the panel shows one icon button per tab. A click
@@ -512,16 +521,16 @@ The right-hand column (ADR-0072, ADR-0083) is one panel with tabs built by
 
 **Terminal tab.** The note from ADR-0072; no command is called.
 
-**Git, Processes, and Context tabs.** Each wraps one session view
-(`createGitTab`, `createProcessesTab`, `createContextTab`) through
+**Git, Processes, Web, and Context tabs.** Each wraps one session view
+(`createGitTab`, `createProcessesTab`, `createWebTab`, `createContextTab`) through
 `ui/src/main/panel_tab.ts`, which reads only while the tab is visible: a
 hidden or collapsed tab is cleared, so it reads nothing, polls nothing, and
 keeps no stale data, and showing it again reads the open session afresh.
 Opening a session passes it to every tab; a visible tab reads it at once.
 When a turn settles, or the session tree changes after an action, the visible
 tab reads again. The Processes tab's own two-second poll therefore runs only
-while it is visible. See [Git status tab](#git-status-tab),
-[Processes tab](#processes-tab), and [Context tab](#context-tab).
+while it is visible; the Web tab does not poll. See [Git status tab](#git-status-tab),
+[Processes tab](#processes-tab), [Web tab](#web-tab), and [Context tab](#context-tab).
 
 **Files tab.** A lazily expanded tree of the open session's workspace. It
 loads nothing while the tab is hidden or collapsed. Opening a session clears
@@ -1085,6 +1094,46 @@ again every two seconds, through the shared poller, which also pauses while the
 page is hidden; it stops when nothing runs, on `showSession(null)`, and on
 `dispose()`. An answer for a session that is no longer shown is dropped.
 
+## Web tab
+
+The **Web** tab of the right-hand panel shows `createWebTab()`
+([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+The operator chose to keep `allow` unchanged after a fetch and to review
+what the model did instead, so this tab lists, for the open session, each
+`web_fetch` call and every model action recorded with `after_web_content`,
+newest first. It reads only while it is visible, on **Refresh**, and when a
+turn ends; it never polls, so a fetch in progress shows as unfinished until
+the next read. See [right-hand panel](#right-hand-panel).
+
+`session_web_audit { session_id }` reads the 1,000 newest records of the
+model action journal, keeps the session's records whose tool is `network`
+or that carry `after_web_content`, and returns at most 100, with
+`truncated` set when more matched or the window was full. It creates no
+file, takes no settings lock, runs nothing, and fails with the same
+`not_found`, `busy`, `invalid_journal`, and `internal` errors as
+`session_processes`. Each entry returns only the call identifier, the time,
+the tool's journal name, whether it is a fetch, whether it carries
+`after_web_content`, its targets, its outcome (`succeeded`, `failed`,
+`uncertain`, `unfinished`, or `refused`), the refusal reason or finish code,
+and whether it ran under the settings (`standing_allow`) or an approval. A
+target is a validated workspace path or fetch URL as text, up to 4,096
+characters, or a withheld value shown only as withheld with its byte
+length; no digest is sent. A `run_command` record has no target, so its
+program and arguments come from the session journal under the Processes
+tab's bounds and pairing, and are absent when that journal cannot be read.
+No entry names the files a command touched.
+
+Each row shows the time since the call, the tool, its whole target as
+inert, wrapping text (never a link), the outcome, and how it was
+authorised. Fetch rows have an accent edge and a filled chip, so they stand
+apart from the actions after them. The tab says "This session has not
+fetched web content." when nothing matches, notes truncation, keeps the
+list with a note when the journal is busy, and clears it with an error when
+the journal fails validation. The trusted CLI's
+`omgcode actions list --after-web-content --session <id>` lists the same
+records, with `truncated` true when its 1,000-record search window was full
+or more calls matched than `--limit`.
+
 ## Settings window
 
 **Settings** in the session sidebar calls `settings_show_window`, which shows
@@ -1149,8 +1198,14 @@ waits. The window shows:
   sends nothing, and the window shows the first workspace when the chosen one
   is gone, or the overview when none is left. The shown workspace has its folder, a **Model tools** checkbox for
   `model_tools`, and one row each for `read`, `write`, `execute`,
-  `task_network`, and `host_services`, each with a short description and a
-  Deny, Prompt, or Allow segmented control. Under Write, the disclosure
+  `task_network`, `host_services`, and, since 0.64.0 (ADR-0098), `web_fetch`,
+  each with a short description and a Deny, Prompt, or Allow segmented
+  control. Under Web fetch, **Allowed web hosts** lists the workspace's host
+  patterns, each with a remove button, and a field and **Add** button add one,
+  up to 32. Rust checks the pattern before any dialog, then adds or removes it
+  through `settings_add_web_fetch_host` or `settings_remove_web_fetch_host`
+  after a native confirmation, with the revision the window read. With no
+  pattern it says that every fetch asks first. Under Write, the disclosure
   **File-write tool limits** holds a row for each model file-write tool's limit
   (edit, multi-edit, create, rename, and delete since 0.43.0, ADR-0063; create
   directory since 0.55.0, ADR-0079). A tool whose limit is wider than `write`
@@ -1709,10 +1764,17 @@ Reviewed fields:
   changed or is gone.
 - **Read:** Action (`Read a file` or `List a directory`), Path, and `Most bytes` or
   `Most entries`. Reviewing it reads no file.
+- **Web fetch** (since 0.64.0, ADR-0098): URL, Host, Host on the allowlist
+  now (`yes` or `no`), Offset, and Maximum bytes. The URL is shown whole,
+  escaped to one line. An exact pending review adds "Approving sends this
+  exact URL, including its path and query, to that host.", and, when the
+  host is not listed, "This host is not on the workspace allowlist." A web
+  fetch needs no writers-stopped checkbox, and its decision sends
+  `writers_stopped: false`. Reviewing it fetches nothing and reads no file.
 
 Review reads only what the approval needs:
 
-- Only `command`, `file_read`, and `file_write` approvals can be reviewed.
+- Only `command`, `file_read`, `file_write`, and `network` approvals can be reviewed.
 - Opening a command approval changes nothing.
 - Opening a file-write approval makes one audited broker read of the target
   file (two for a rename, which also reads the destination), under the same
@@ -2026,6 +2088,7 @@ What it does not do:
 | Model request cancel check interval | 25 ms |
 | Approve button delay | 1 second |
 | Processes listed | 100 calls; 32 arguments and 256 characters per item, 2,048 characters per call; 100 run journal events read; polled every 2 seconds only while a call runs (ADR-0086) |
+| Web audit listed | 100 calls from the 1,000 newest action records; 4,096 characters per target; command text under the Processes bounds; never polled (ADR-0098) |
 | Poll and check intervals | chat reconcile 5 seconds, chat fallback poll 750 ms, approvals 3 seconds |
 
 ## Development

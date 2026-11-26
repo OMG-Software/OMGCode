@@ -19,12 +19,13 @@ use super::{
     PreparedEdit, ReadRequest, TextEdit, ToolArguments, ToolCall, ToolName, artifact,
     command_digest, command_run_request, create_digest, create_directory_digest, delete_digest,
     edit_digest, edit_target, is_hidden_format, list_parent, multi_edit_digest, normalized_path,
-    prepare_edit, prepare_multi_edit, read_edit_source, rename_digest,
+    prepare_edit, prepare_multi_edit, read_edit_source, rename_digest, web_fetch_digest,
 };
 use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
 use crate::file_audit::FileAuditError;
 use crate::files::FileError;
 use crate::replacement::CheckpointError;
+use crate::web_fetch::FetchUrl;
 
 /// Most distinct file-write requests (edit, multi-edit, create, create
 /// directory, rename, and delete together) evaluated for one review.
@@ -117,15 +118,19 @@ pub enum ReviewError {
 /// from another session or workspace can match only by reproducing the digest
 /// of the approval's own session and workspace.
 ///
-/// 1. Only [`ApprovalOperation::Command`] and [`ApprovalOperation::FileWrite`]
-///    are reviewable. Others give [`ApprovalReview::NotFound`].
+/// 1. Only the command, file-write, file-read, and network operations are
+///    reviewable. Others give [`ApprovalReview::NotFound`].
 /// 2. The existing settings store is opened once, without retries. A missing
 ///    store or unregistered workspace gives `NotFound`, a busy store gives
 ///    [`ReviewError::Busy`], and a settings revision that differs from the
 ///    approval's gives `Stale(SettingsChanged)`.
 /// 3. Only candidates whose tool belongs to the operation are considered: the
-///    command tool for `Command`, and the edit, multi-edit, create, rename, and
-///    delete tools for `FileWrite`; with none, the result is `NotFound`.
+///    command tool for `Command`, the read and list tools for `FileRead`, the
+///    `web_fetch` tool for `Network`, and the edit, multi-edit, create,
+///    directory, rename, and delete tools for `FileWrite`; with none, the
+///    result is `NotFound`. A network candidate is reviewed without any
+///    network access: its URL is parsed under the fetch policy, the digest is
+///    recomputed, and the workspace host allowlist is read as it stands now.
 /// 4. They are tried newest first, each parsed by [`ToolCall::parse`]. A
 ///    candidate that fails to parse is skipped. A command candidate is built
 ///    into a run request by the dispatcher's own constructor. A file-write
@@ -176,7 +181,8 @@ pub fn review_approval(
         ApprovalOperation::Command => &[ToolName::Command],
         ApprovalOperation::FileWrite => &FILE_WRITE_TOOLS,
         ApprovalOperation::FileRead => &[ToolName::ReadFile, ToolName::ListDirectory],
-        ApprovalOperation::GitPush | ApprovalOperation::Network => {
+        ApprovalOperation::Network => &[ToolName::WebFetch],
+        ApprovalOperation::GitPush => {
             return Ok(ApprovalReview::NotFound);
         }
     };
@@ -208,6 +214,11 @@ pub fn review_approval(
         ApprovalOperation::FileRead => {
             drop(control);
             review_file_read(approval, relevant)
+        }
+        ApprovalOperation::Network => {
+            let found = review_web_fetch(&control, approval, relevant);
+            drop(control);
+            found
         }
         _ => review_file_write(control, approval, relevant)?,
     };
@@ -287,6 +298,55 @@ fn review_file_read<'a>(
             return Some(ReviewedRequest {
                 tool: call.name.as_str().to_owned(),
                 fields: read_fields(&read),
+            });
+        }
+    }
+    None
+}
+
+/// Find the newest `web_fetch` candidate that reproduces the approval's
+/// digest (ADR-0098). The digest binds the session, workspace, tool,
+/// normalised URL, offset, and size, so nothing is fetched or read from the
+/// workspace. The allowlist is read from the live settings, so the field shows
+/// whether a fetch to this host would run without approval now.
+fn review_web_fetch<'a>(
+    control: &ControlStore,
+    approval: &ApprovalStatus,
+    candidates: impl Iterator<Item = &'a ReviewCandidate<'a>>,
+) -> Option<ReviewedRequest> {
+    for candidate in candidates {
+        let Some(call) = parse_candidate(candidate, ToolName::WebFetch) else {
+            continue;
+        };
+        let ToolArguments::WebFetch {
+            url,
+            offset,
+            max_bytes,
+        } = &call.arguments
+        else {
+            continue;
+        };
+        let Ok(fetch_url) = FetchUrl::parse(url) else {
+            continue;
+        };
+        let digest = web_fetch_digest(
+            approval.session_id,
+            approval.workspace_id,
+            fetch_url.as_str(),
+            *offset,
+            *max_bytes,
+        );
+        if digest == approval.request_sha256 {
+            let listed = control.web_fetch_host_allowed(approval.workspace_id, fetch_url.host());
+            return Some(ReviewedRequest {
+                tool: ToolName::WebFetch.as_str().to_owned(),
+                fields: vec![
+                    single("URL", display_safe_line(fetch_url.as_str())),
+                    single("Host", display_safe_line(fetch_url.host())),
+                    single("Host on the allowlist now", yes_no(listed)),
+                    single("Offset", offset.to_string()),
+                    single("Maximum bytes", max_bytes.to_string()),
+                ],
             });
         }
     }
@@ -726,6 +786,10 @@ fn single(label: &'static str, value: String) -> ReviewField {
         value,
         multiline: false,
     }
+}
+
+fn yes_no(flag: bool) -> String {
+    String::from(if flag { "yes" } else { "no" })
 }
 
 fn on_off(enabled: bool) -> String {

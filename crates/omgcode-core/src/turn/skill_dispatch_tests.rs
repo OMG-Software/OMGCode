@@ -100,6 +100,8 @@ fn dispatch(scene: &Scene, skills: &[SkillPrompt]) -> ToolExecution {
         cancel: CancelToken::default(),
         approval_wait: None,
         skills,
+        fetcher: &HttpsFetcher::new(),
+        web_content: &Cell::new(false),
     }
     .dispatch(&call, 64 * 1024)
 }

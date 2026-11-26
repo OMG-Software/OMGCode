@@ -17,8 +17,8 @@ mod common;
 use common::{Fixture, json_of, read_tools, session_request, text_of, text_only, wire};
 
 const NO_ENDPOINT: &str = "http://127.0.0.1:1/v1";
-/// The allowance for the tool definitions, in estimated tokens (8 KiB).
-const TOOL_ALLOWANCE: u64 = 8 * 1024;
+/// The allowance for the tool definitions, in estimated tokens (9 KiB).
+const TOOL_ALLOWANCE: u64 = 9 * 1024;
 /// The overhead of one message in the estimate.
 const MESSAGE_OVERHEAD: u64 = 256;
 const SUMMARY: &str = "Earlier the user asked about parsing.";

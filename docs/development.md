@@ -26,8 +26,11 @@ delete workspace files, and the CLI cannot use Git or connect to MCP servers.
 When a workspace enables `model_tools`, chat lets the local model read and list
 files in that workspace, request an approval-gated exact edit, multi-edit, file
 creation, rename, or checkpointed deletion with read/write, and request an
-approval-gated command with execute/read/write. Model network, Git, and MCP
-tools are not implemented. Trusted commands record and apply the Windows container
+approval-gated command with execute/read/write. A separate `web_fetch`
+preference lets it fetch one public HTTPS page per call, with an approval
+for each fetch under `prompt` and for each host off the workspace allowlist
+under `allow` (ADR-0098). Other model network tools, and Git and MCP tools,
+are not implemented. Trusted commands record and apply the Windows container
 grants; see [command execution](execution.md).
 
 Version 0.29.0 also adds a prototype Tauri desktop shell,
@@ -647,7 +650,9 @@ trusted application-data directory, and the workspace ID. The runtime:
   without one under `allow`;
 - reports the final reply's provider `finish_reason`.
 
-The runtime has no Git, MCP, or network tool. Its only writes are the exact
+The runtime has no Git or MCP tool, and its only network tool is `web_fetch`,
+which sends one HTTPS `GET` from the OMGCode process and writes nothing
+(ADR-0098). Its only writes are the exact
 edit and multi-edit through checkpointed apply, the creation of one new file
 through the exclusive create, the rename through the no-replace rename, the
 deletion through the checkpointed removal, and the creation of one directory

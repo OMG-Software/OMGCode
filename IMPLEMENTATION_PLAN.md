@@ -293,7 +293,8 @@ Not implemented:
 
 - Apply or restore on other filesystems, standalone CLI checkpoint
   preparation, and a trusted CLI workspace-file delete.
-- Model network, Git, and MCP tools;
+- Model Git and MCP tools, and model network tools other than the gated
+  `web_fetch` (ADR-0098);
   concurrent-writer detection for any apply route; live provider tool-call
   qualification; and streaming against a live server, discovery, and
   cancellation of any request against a live provider. A read, list, or edit
@@ -1074,7 +1075,8 @@ Next decisions, not yet scheduled:
   endpoint rules for non-loopback providers, HTTPS, and certificates (one
   adapter, the local LM Studio route, now reads a stored credential, only at
   its profile's loopback endpoint);
-- model network, Git, and MCP tools;
+- model Git and MCP tools, and model network tools other than the gated
+  `web_fetch` (ADR-0098);
 - development-server networking.
 
 ### Phase D: additional providers, streaming, and account lifecycle

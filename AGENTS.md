@@ -29,6 +29,8 @@ no repository configuration and runs no program or hook
 ([ADR-0085](docs/adr/0085-read-git-status-with-gix-without-running-programs.md));
 the session's model command-tool calls, read-only
 ([ADR-0086](docs/adr/0086-show-the-sessions-subprocesses-in-the-main-window.md));
+the session's web fetches and every model action after its first fetched web
+content, read-only (ADR-0098);
 and a per-part estimate of the next turn's context
 ([ADR-0087](docs/adr/0087-show-a-per-part-context-estimate-for-the-open-session.md)).
 A reply is labelled with the model from its turn's request manifest and can be
@@ -59,13 +61,27 @@ other tool 4 KiB. A call with the supported shape and a usable, unique
 identifier whose tool is unknown or whose arguments are too large, malformed,
 or name an invalid path is answered with a recoverable result and recorded as
 refused, and the turn continues
-([ADR-0099](docs/adr/0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)). No model network,
-Git, or MCP tool exists. Chat offers tools only for a
+([ADR-0099](docs/adr/0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)).
+A separate `web_fetch` preference, `deny` by default, offers one web fetch
+tool: the OMGCode process sends one HTTPS `GET` to a public DNS host and
+returns a slice of the page text, labelled as untrusted web content. URLs
+with another scheme or port, IP literals, and local names are refused, every
+resolved address must be global unicast, the connection is pinned to the
+checked addresses, and a redirect to another host is not followed. A
+refused URL is answered with a recoverable `url_refused` result and recorded
+as refused with the URL withheld by its digest, and the turn continues. Under
+`prompt` every fetch needs an approval; under `allow` only a host on the
+workspace's allowlist of at most 32 patterns runs without one. The settings
+lock is released before the request
+([ADR-0098](docs/adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+No other model network tool, and no Git or MCP tool, exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. A model write or command
 runs without a per-call approval only where the operator set it to `allow`.
 There are no other provider adapters. Every model tool call, executed or
 refused, is recorded in the model action journal, which the trusted
-`actions list` command shows. The
+`actions list` command shows; each call a session makes after its first
+fetched web content is marked `after_web_content`, and
+`actions list --after-web-content` lists only those. The
 trusted CLI `run` command starts one program for a workspace whose `execute`
 preference is enabled. It uses an operator-declared toolchain profile, records
 intent and outcome in a run journal, and applies Landlock and a seccomp socket

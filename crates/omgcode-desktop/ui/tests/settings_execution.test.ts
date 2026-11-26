@@ -40,6 +40,8 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
         execute: "deny",
         task_network: "deny",
         host_services: "deny",
+        web_fetch: "deny",
+        web_fetch_hosts: [],
         write_tools: {
           edit: "allow",
           multi_edit: "allow",

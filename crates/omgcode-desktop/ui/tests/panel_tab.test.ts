@@ -105,6 +105,7 @@ describe("the session tabs in the main window", () => {
         truncated: false,
       }),
       session_processes: () => ({ entries: [], truncated: false, run_details: "available" }),
+      session_web_audit: () => ({ entries: [], truncated: false }),
       session_context_breakdown: (args) => ({
         session_id: args.session_id as string,
         parts: [],
@@ -122,7 +123,7 @@ describe("the session tabs in the main window", () => {
     return root.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement;
   }
 
-  it("offers Terminal, Files, Git, Processes, and Context, each with a rail icon", async () => {
+  it("offers Terminal, Files, Git, Processes, Web, and Context, each with a rail icon", async () => {
     ipc = installFakeIpc(handlers());
     const root = mountRoot();
     app = startMain(root);
@@ -130,8 +131,8 @@ describe("the session tabs in the main window", () => {
     const labels = Array.from(root.querySelectorAll(".side-tabs [role='tab']")).map(
       (tab) => tab.textContent,
     );
-    expect(labels).toEqual(["Terminal", "Files", "Git", "Processes", "Context"]);
-    for (const name of ["git", "processes", "context"]) {
+    expect(labels).toEqual(["Terminal", "Files", "Git", "Processes", "Web", "Context"]);
+    for (const name of ["git", "processes", "web", "context"]) {
       expect(railButton(root, `Show ${name} panel`)).not.toBeNull();
     }
   });
@@ -146,6 +147,7 @@ describe("the session tabs in the main window", () => {
     for (const command of [
       "workspace_git_status",
       "session_processes",
+      "session_web_audit",
       "session_context_breakdown",
     ]) {
       expect(ipc.callsTo(command)).toHaveLength(0);
@@ -158,6 +160,7 @@ describe("the session tabs in the main window", () => {
       { session_id: "s-one" },
     ]);
     expect(ipc.callsTo("session_processes")).toHaveLength(0);
+    expect(ipc.callsTo("session_web_audit")).toHaveLength(0);
 
     (root.querySelector('.side-tabs [role="tab"][data-tab="context"]') as HTMLElement).click();
     await settle();

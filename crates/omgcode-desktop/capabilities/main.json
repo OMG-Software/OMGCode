@@ -35,6 +35,7 @@
     "allow-session-model-select",
     "allow-chat-models",
     "allow-session-context-breakdown",
-    "allow-session-processes"
+    "allow-session-processes",
+    "allow-session-web-audit"
   ]
 }

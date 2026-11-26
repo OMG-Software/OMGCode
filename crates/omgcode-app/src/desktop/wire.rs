@@ -600,7 +600,7 @@ pub enum ApprovalOperationDto {
     FileRead,
     /// A Git operation with remote access.
     GitPush,
-    /// A destination-scoped network operation.
+    /// One model `web_fetch` of an exact URL (ADR-0098).
     Network,
 }
 
@@ -921,6 +921,12 @@ pub struct WorkspaceSettingsView {
     pub task_network: Access,
     /// The host-services preference.
     pub host_services: Access,
+    /// The `web_fetch` preference.
+    pub web_fetch: Access,
+    /// The workspace's `web_fetch` host allowlist, canonical pattern text in
+    /// the order added. Configuration only: it grants nothing while
+    /// `web_fetch` is `deny`.
+    pub web_fetch_hosts: Vec<String>,
     /// Per-tool limits on the five model file-write tools.
     pub write_tools: WriteToolAccess,
     /// Display-safe text of the selected package cache root, if any.
@@ -975,6 +981,8 @@ pub struct PermissionFlags {
     pub task_network: Access,
     /// How host-service Unix-socket access for a trusted `run` is treated.
     pub host_services: Access,
+    /// How the model `web_fetch` tool is treated.
+    pub web_fetch: Access,
     /// Per-tool limits that can only narrow `write`.
     pub write_tools: WriteToolAccess,
 }

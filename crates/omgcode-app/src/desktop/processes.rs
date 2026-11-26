@@ -46,21 +46,21 @@ use super::state::windows_display_path;
 use super::wire::SessionRequest;
 
 /// Most calls one reply lists.
-const MAX_ENTRIES: usize = 100;
+pub(super) const MAX_ENTRIES: usize = 100;
 /// Most run journal events one read inspects.
 const RUN_EVENTS: usize = 100;
 /// Most characters of the program or of one argument.
-const MAX_ITEM_CHARS: usize = 256;
+pub(super) const MAX_ITEM_CHARS: usize = 256;
 /// Most arguments one entry lists.
-const MAX_ARGUMENTS: usize = 32;
+pub(super) const MAX_ARGUMENTS: usize = 32;
 /// Most characters of the program and arguments of one entry together.
-const MAX_TOTAL_CHARS: usize = 2048;
+pub(super) const MAX_TOTAL_CHARS: usize = 2048;
 /// Longest a read waits for a writer that holds the action journal. Well under
 /// the view's two-second poll, so a poll never queues behind a writer.
 const BUSY_WAIT: Duration = Duration::from_millis(250);
 const BUSY_POLL: Duration = Duration::from_millis(10);
 /// The recorded name of the command tool (`ToolName::Command`).
-const COMMAND_TOOL: &str = "workspace_run_command";
+pub(super) const COMMAND_TOOL: &str = "workspace_run_command";
 /// Text for a recorded program path another operating system wrote.
 const PATH_NOT_REPRESENTABLE: &str = "(path not representable on this system)";
 const ELLIPSIS: char = '\u{2026}';
@@ -196,9 +196,9 @@ pub struct SessionProcesses {
 }
 
 /// One recorded command request of the session, in journal order.
-struct CommandRequest {
-    call_id: String,
-    arguments: String,
+pub(super) struct CommandRequest {
+    pub(super) call_id: String,
+    pub(super) arguments: String,
 }
 
 /// Run journal records by run identifier.
@@ -210,10 +210,18 @@ struct RunIndex {
 
 /// The model's recorded command arguments, parsed.
 #[derive(Deserialize)]
-struct RecordedCommand {
-    profile: Option<String>,
-    program: Option<String>,
-    arguments: Option<Vec<String>>,
+pub(super) struct RecordedCommand {
+    pub(super) profile: Option<String>,
+    pub(super) program: Option<String>,
+    pub(super) arguments: Option<Vec<String>>,
+}
+
+impl RecordedCommand {
+    /// Parse a recorded request's argument JSON. `None` when it is not the
+    /// command tool's shape; the text is never guessed at.
+    pub(super) fn parse(request: &CommandRequest) -> Option<Self> {
+        serde_json::from_str(&request.arguments).ok()
+    }
 }
 
 impl DesktopService {
@@ -268,7 +276,10 @@ impl DesktopService {
 }
 
 /// The newest action records, waiting at most a quarter second for a writer.
-fn recent_actions(data_root: &std::path::Path) -> Result<Vec<ActionRecord>, DesktopError> {
+/// Shared with the web audit view (ADR-0098).
+pub(super) fn recent_actions(
+    data_root: &std::path::Path,
+) -> Result<Vec<ActionRecord>, DesktopError> {
     let started = Instant::now();
     loop {
         match ActionJournal::recent(data_root, MAX_RECENT_RECORDS) {
@@ -289,7 +300,7 @@ fn recent_actions(data_root: &std::path::Path) -> Result<Vec<ActionRecord>, Desk
 
 /// The session's recorded command requests, oldest first, or `None` when the
 /// session journal cannot be read (for example while a turn holds it).
-fn command_requests(path: &std::path::Path) -> Option<Vec<CommandRequest>> {
+pub(super) fn command_requests(path: &std::path::Path) -> Option<Vec<CommandRequest>> {
     let inspection = SessionInspection::inspect(path).ok()?;
     Some(
         inspection
@@ -364,35 +375,14 @@ fn build(
         .collect();
     let truncated = window_full || mine.len() > MAX_ENTRIES;
 
-    let mut by_call: HashMap<&str, Vec<&CommandRequest>> = HashMap::new();
-    for request in requests.iter().flatten() {
-        by_call.entry(&request.call_id).or_default().push(request);
-    }
-    let mut record_counts: HashMap<&str, usize> = HashMap::new();
-    for record in &mine {
-        *record_counts.entry(&record.call_id).or_default() += 1;
-    }
-
-    // Pair the k-th record of a call identifier with the request at the same
-    // position counted from the newest end.
-    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let paired = pair_requests(&mine, requests.as_deref());
     let (run_details, runs) = match runs {
         RunLookup::Index(index) => (RunDetails::Available, index),
         RunLookup::Unavailable => (RunDetails::Unavailable, RunIndex::default()),
         RunLookup::Busy => (RunDetails::Busy, RunIndex::default()),
     };
     let mut entries: Vec<ProcessEntry> = Vec::with_capacity(mine.len().min(MAX_ENTRIES));
-    for record in &mine {
-        let position = seen.entry(&record.call_id).or_default();
-        let request = by_call.get(record.call_id.as_str()).and_then(|list| {
-            let records_total = record_counts.get(record.call_id.as_str()).copied()?;
-            // A record with no request at its position (fewer requests than
-            // records, for example after a rotation) stays unmatched.
-            (list.len() + *position)
-                .checked_sub(records_total)
-                .and_then(|index| list.get(index).copied())
-        });
-        *position += 1;
+    for (record, request) in mine.iter().zip(paired) {
         entries.push(entry_of(record, request, &runs, session_running));
     }
     entries.reverse();
@@ -402,6 +392,43 @@ fn build(
         truncated,
         run_details,
     }
+}
+
+/// Pair each of the session's command-tool records with its recorded request.
+///
+/// `records` are the session's command-tool records, oldest first. The model's
+/// call identifier is unique within one turn only, so the records and requests
+/// that share an identifier are paired in order, aligned at the newest end. A
+/// record with no request at its position (fewer requests than records, for
+/// example after a rotation) stays unmatched, as does every record when the
+/// session journal could not be read.
+pub(super) fn pair_requests<'a>(
+    records: &[&ActionRecord],
+    requests: Option<&'a [CommandRequest]>,
+) -> Vec<Option<&'a CommandRequest>> {
+    let mut by_call: HashMap<&str, Vec<&CommandRequest>> = HashMap::new();
+    for request in requests.into_iter().flatten() {
+        by_call.entry(&request.call_id).or_default().push(request);
+    }
+    let mut record_counts: HashMap<&str, usize> = HashMap::new();
+    for record in records {
+        *record_counts.entry(&record.call_id).or_default() += 1;
+    }
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    records
+        .iter()
+        .map(|record| {
+            let position = seen.entry(&record.call_id).or_default();
+            let found = by_call.get(record.call_id.as_str()).and_then(|list| {
+                let records_total = record_counts.get(record.call_id.as_str()).copied()?;
+                (list.len() + *position)
+                    .checked_sub(records_total)
+                    .and_then(|index| list.get(index).copied())
+            });
+            *position += 1;
+            found
+        })
+        .collect()
 }
 
 /// One listed call.
@@ -426,8 +453,7 @@ fn entry_of(
         limit: None,
         reason: None,
     };
-    let recorded = request
-        .and_then(|request| serde_json::from_str::<RecordedCommand>(&request.arguments).ok());
+    let recorded = request.and_then(RecordedCommand::parse);
     let mut run_start: Option<&RunStart> = None;
     match &record.disposition {
         ActionDisposition::Refused { reason } => {
@@ -501,21 +527,33 @@ fn fill_command(
     }
     if let Some(arguments) = recorded.and_then(|command| command.arguments.as_ref()) {
         entry.argument_count = Some(arguments.len());
-        let mut shown = Vec::new();
-        for argument in arguments {
-            if shown.len() >= MAX_ARGUMENTS || budget == 0 {
-                entry.text_truncated = true;
-                break;
-            }
-            let (text, cut) = bounded(argument, MAX_ITEM_CHARS.min(budget));
-            budget = budget.saturating_sub(text.chars().count());
-            entry.text_truncated |= cut;
-            shown.push(text);
-        }
+        let shown = bound_arguments(arguments, &mut budget, &mut entry.text_truncated);
         entry.arguments = Some(shown);
     } else {
         entry.argument_count = run_start.map(|start| start.argument_count);
     }
+}
+
+/// Escape and bound the model's arguments to the per-item, per-count, and
+/// remaining-text limits, charging `budget`. Sets `truncated` when an argument
+/// was cut or dropped.
+pub(super) fn bound_arguments(
+    arguments: &[String],
+    budget: &mut usize,
+    truncated: &mut bool,
+) -> Vec<String> {
+    let mut shown = Vec::new();
+    for argument in arguments {
+        if shown.len() >= MAX_ARGUMENTS || *budget == 0 {
+            *truncated = true;
+            break;
+        }
+        let (text, cut) = bounded(argument, MAX_ITEM_CHARS.min(*budget));
+        *budget = budget.saturating_sub(text.chars().count());
+        *truncated |= cut;
+        shown.push(text);
+    }
+    shown
 }
 
 /// A recorded native path as lossy display text.
@@ -528,7 +566,7 @@ fn native_text(path: &omgcode_core::session::NativePath) -> String {
 
 /// Escape `text` to one safe line and keep at most `max` characters, marking a
 /// cut with an ellipsis. Returns whether it was cut.
-fn bounded(text: &str, max: usize) -> (String, bool) {
+pub(super) fn bounded(text: &str, max: usize) -> (String, bool) {
     let safe = display_safe_line(text);
     if safe.chars().count() <= max {
         return (safe, false);
@@ -539,7 +577,7 @@ fn bounded(text: &str, max: usize) -> (String, bool) {
     (cut, true)
 }
 
-const fn refusal_code(reason: RefusalReason) -> &'static str {
+pub(super) const fn refusal_code(reason: RefusalReason) -> &'static str {
     match reason {
         RefusalReason::AccessDenied => "access_denied",
         RefusalReason::ApprovalRequired { .. } => "approval_required",

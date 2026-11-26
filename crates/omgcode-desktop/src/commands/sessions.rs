@@ -3,8 +3,8 @@
 
 use omgcode_app::desktop::{
     SearchRequest, SearchResult, SessionCreateRequest, SessionProcesses, SessionRequest,
-    SessionSummary, SessionTree, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort,
-    TreeView, WorkspaceEntriesRequest, WorkspaceList, WorkspaceListing,
+    SessionSummary, SessionTree, SessionWebAudit, TranscriptPage, TranscriptRequest, TreeRequest,
+    TreeSort, TreeView, WorkspaceEntriesRequest, WorkspaceList, WorkspaceListing,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -197,4 +197,24 @@ pub async fn session_processes(
     authorize(Command::SessionProcesses, webview.label())?;
     let request = SessionRequest { session_id };
     blocking(&state, move |service| service.session_processes(request)).await
+}
+
+/// `main` only. Lists the session's web fetches and the actions made after
+/// the first successful fetch, newest first, from the model action journal and
+/// the session journal. Read-only: it creates no file, takes no settings lock,
+/// and runs nothing, and it returns no fetched body or credential (ADR-0098).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`not_found` for an unknown
+/// session).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn session_web_audit(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+) -> Result<SessionWebAudit, CommandError> {
+    authorize(Command::SessionWebAudit, webview.label())?;
+    let request = SessionRequest { session_id };
+    blocking(&state, move |service| service.session_web_audit(request)).await
 }

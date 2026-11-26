@@ -37,8 +37,9 @@ directory grants.
 > a checkpoint of its bytes. Each records a pending approval and acts only after
 > the operator approves that exact call and acknowledges that other writers are
 > stopped; edits and deletions are applied through a checkpoint, and creation
-> and renaming are not checkpointed. It has no model network, Git, or MCP
-> tools.
+> and renaming are not checkpointed. A `web_fetch` tool, off by default, reads
+> one public HTTPS page per call behind its own preference and a per-workspace
+> host allowlist. It has no other model network tool and no Git or MCP tools.
 > The trusted
 > CLI can replace or restore one existing file through a checkpoint on Linux
 > ext4, btrfs, XFS, tmpfs, or ZFS, or on Windows NTFS or ReFS, and can permanently delete one resolved checkpoint.
@@ -134,7 +135,7 @@ source-labelled messages. The edit and command tools additionally require a
 consumed approval; an edit also needs the operator's writers-stopped
 acknowledgement and writes only through checkpointed apply. `chat` runs it
 with the local LM Studio adapter for a workspace that enables `model_tools`.
-It has no Git, MCP, or network tool.
+It has no Git or MCP tool; its only network tool is the gated `web_fetch`.
 New sessions use schema version 3; version 1 and 2 journals remain readable
 and writable with their original subsets.
 

@@ -95,6 +95,12 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                 execute: permissions.execute,
                 task_network: permissions.task_network,
                 host_services: permissions.host_services,
+                web_fetch: permissions.web_fetch,
+                web_fetch_hosts: store
+                    .web_fetch_hosts(workspace.id())
+                    .iter()
+                    .map(|pattern| display_safe_line(pattern.as_str()))
+                    .collect(),
                 write_tools: permissions.write_tools,
                 package_cache_root: store.package_cache_root_display(workspace.id()),
                 instructions: workspace_instructions_view(

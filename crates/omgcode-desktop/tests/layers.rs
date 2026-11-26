@@ -164,6 +164,7 @@ fn settings_window_is_granted_only_its_own_commands() {
             "allow-settings-add-connection",
             "allow-settings-add-package-profile",
             "allow-settings-add-toolchain-profile",
+            "allow-settings-add-web-fetch-host",
             "allow-settings-cancel-chatgpt-sign-in",
             "allow-settings-choose-package-cache",
             "allow-settings-choose-root",
@@ -177,6 +178,7 @@ fn settings_window_is_granted_only_its_own_commands() {
             "allow-settings-remove-package-profile",
             "allow-settings-remove-skill",
             "allow-settings-remove-toolchain-profile",
+            "allow-settings-remove-web-fetch-host",
             "allow-settings-repair-data-folder",
             "allow-settings-revoke-container-grant",
             "allow-settings-save-chat-defaults",
@@ -246,15 +248,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 59 unique policy names.
+    // And the shared list holds the 62 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 59);
-    assert_eq!(unique.len(), 59);
+    assert_eq!(listed.len(), 62);
+    assert_eq!(unique.len(), 62);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -342,13 +344,13 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
     );
     let main_calls: BTreeSet<String> = main_calls.union(&channel_calls).cloned().collect();
 
-    // Then the main side uses a subset of the main commands (all 29 today)...
+    // Then the main side uses a subset of the main commands (all 30 today)...
     let main_commands: BTreeSet<String> = commands_for(WindowLabel::Main)
         .into_iter()
         .map(str::to_owned)
         .collect();
     assert!(main_calls.is_subset(&main_commands), "{main_calls:?}");
-    assert_eq!(main_calls.len(), 29);
+    assert_eq!(main_calls.len(), 30);
     assert_eq!(main_calls, main_commands);
 
     // ...the approvals client uses exactly the three approval commands...
@@ -365,7 +367,7 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(settings_calls, settings_commands);
 
-    // ...and together they cover all 59 policy commands.
+    // ...and together they cover all 62 policy commands.
     let union: BTreeSet<String> = main_calls
         .union(&approval_calls)
         .cloned()
@@ -623,10 +625,10 @@ fn generate_handler_registers_exactly_the_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 59 shared names, once each.
+    // Then they are the 62 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 59);
-    assert_eq!(unique.len(), 59);
+    assert_eq!(registered.len(), 62);
+    assert_eq!(unique.len(), 62);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -643,7 +645,7 @@ fn generate_handler_registers_exactly_the_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 59);
+    assert_eq!(handlers.len(), 62);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -777,7 +779,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     }
     assert_eq!(
         expected.len(),
-        59,
+        62,
         "all commands are called by the frontend"
     );
 

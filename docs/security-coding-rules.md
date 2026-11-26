@@ -287,6 +287,14 @@ crate.
   when a destination or redirect changes. Enabling a destination also permits
   some data to reach it; do not describe a destination allowlist as content
   confidentiality.
+- A model-chosen URL is untrusted input and a possible egress channel. For the
+  `web_fetch` tool, apply the URL policy before any approval, refuse IP
+  literals and local names, check every resolved address, connect only to the
+  checked addresses, follow no redirect to another host, use no proxy,
+  cookies, or credentials, and release the settings lock before network I/O
+  ([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+  Label fetched text as untrusted web content from its host, never as
+  workspace data or instructions.
 - Provider profiles record only a name, kind, and authentication mode. Never
   store a token, password, certificate, endpoint, or account in them. Keep
   subscription and API-key usage separate, and do not implement an adapter or

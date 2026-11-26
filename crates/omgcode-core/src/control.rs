@@ -31,6 +31,7 @@ mod provider;
 mod skill;
 mod skill_package;
 mod subscription;
+mod web_hosts;
 
 pub use approval::{
     ApprovalBinding, ApprovalDecision, ApprovalDeclaration, ApprovalOperation, ApprovalRequest,
@@ -73,6 +74,8 @@ pub use provider::{
     MAX_PROVIDER_ENDPOINT_BYTES, MAX_PROVIDER_PROFILES, ProviderAuth, ProviderEndpoint,
     ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
 };
+
+pub use web_hosts::{MAX_WEB_FETCH_HOSTS, MAX_WEB_HOST_BYTES, WebHostPattern, WebHostRefusal};
 
 pub use subscription::{SubscriptionConnection, SubscriptionRegistration, SubscriptionSignOut};
 
@@ -119,6 +122,10 @@ pub enum ControlError {
     /// A requested workspace is not registered.
     #[error("workspace is not registered")]
     UnknownWorkspace,
+    /// A `web_fetch` host pattern or allowlist change was refused. See
+    /// [`WebHostRefusal::as_str`].
+    #[error("web fetch host refused: {0}")]
+    WebHost(WebHostRefusal),
     /// The selected directory is unavailable, replaced, or outside the root.
     #[error("workspace directory is unavailable or outside the configured root")]
     DirectoryChanged,
@@ -199,6 +206,10 @@ pub struct WorkspaceRegistration {
     id: WorkspaceId,
     directory: DirectoryRecord,
     permissions: PermissionSet,
+    /// The `web_fetch` host allowlist. Derived from `WebFetchHost*` events on
+    /// replay, so a registration event neither writes nor reads it.
+    #[serde(skip)]
+    web_fetch_hosts: Vec<WebHostPattern>,
 }
 
 impl WorkspaceRegistration {
@@ -329,19 +340,21 @@ pub struct PackageCacheRootStatus {
 struct WorkspaceView<'a> {
     id: WorkspaceId,
     directory: &'a DirectoryRecord,
-    permissions: PermissionView,
+    permissions: PermissionView<'a>,
 }
 
 /// Every preference, including denied optional ones and unrestricted
 /// per-tool write limits.
 #[derive(Serialize)]
-struct PermissionView {
+struct PermissionView<'a> {
     read: Access,
     write: Access,
     execute: Access,
     task_network: Access,
     model_tools: bool,
     host_services: Access,
+    web_fetch: Access,
+    web_fetch_hosts: &'a [WebHostPattern],
     write_tools: WriteToolAccess,
 }
 
@@ -361,6 +374,8 @@ fn serialize_workspace_views<S: serde::Serializer>(
                 task_network: permissions.task_network,
                 model_tools: permissions.model_tools,
                 host_services: permissions.host_services,
+                web_fetch: permissions.web_fetch,
+                web_fetch_hosts: &workspace.web_fetch_hosts,
                 write_tools: permissions.write_tools,
             },
         }
@@ -392,6 +407,18 @@ enum Action {
         #[serde(deserialize_with = "deserialize_workspace_id")]
         workspace_id: WorkspaceId,
         permissions: PermissionSet,
+    },
+    /// One host pattern joined a workspace's `web_fetch` allowlist.
+    WebFetchHostAdded {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
+        pattern: WebHostPattern,
+    },
+    /// One host pattern left a workspace's `web_fetch` allowlist.
+    WebFetchHostRemoved {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
+        pattern: WebHostPattern,
     },
     PolicyChecked {
         binding_store_id: Uuid,
@@ -1130,6 +1157,7 @@ impl ControlStore {
             id: WorkspaceId::fresh(),
             directory,
             permissions: PermissionSet::default(),
+            web_fetch_hosts: Vec::new(),
         };
         self.append(
             Action::WorkspaceRegistered {
@@ -1142,8 +1170,8 @@ impl ControlStore {
 
     /// Remove one registration and every setting that names it (ADR-0081).
     ///
-    /// The event drops the workspace's preferences, its package cache root
-    /// selection, its skill workspace overrides, and its bound checkpoint
+    /// The event drops the workspace's preferences, its `web_fetch` host
+    /// allowlist, its package cache root selection, its skill workspace overrides, and its bound checkpoint
     /// folder record. The workspace directory and its `.OMGCode` folder are
     /// never touched, and sessions recorded in the workspace stay in the
     /// journals. Approval, package-fetch, and policy records stay as history;
@@ -1648,6 +1676,9 @@ impl ControlStore {
             | Action::ContainerGrantRevoked { .. } => container::apply(state, &entry.action)?,
             Action::ProfileAdded { .. } | Action::ProfileRemoved { .. } => {
                 profile::apply(state, &entry.action, revision)?;
+            }
+            Action::WebFetchHostAdded { .. } | Action::WebFetchHostRemoved { .. } => {
+                web_hosts::apply(state, &entry.action)?;
             }
             Action::PackageProfileAdded { .. }
             | Action::PackageProfileRemoved { .. }

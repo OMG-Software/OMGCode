@@ -55,7 +55,7 @@ const MAX_TOOL_NAME_BYTES: usize = 64;
 const MAX_TOOL_ARGUMENTS_BYTES: usize = crate::turn::MAX_WRITE_TOOL_ARGUMENT_BYTES;
 const MAX_TOOL_ERROR_CODE_BYTES: usize = 128;
 const MAX_TOOL_OUTPUT_DIGEST_BYTES: usize = 64;
-const MAX_TOOL_NAMES: usize = 9;
+const MAX_TOOL_NAMES: usize = 10;
 const MAX_TOOL_SCHEMA_VERSION_BYTES: usize = 32;
 // A terminal envelope plus the most-escaped allowed failure code fits in 1 KiB.
 const TERMINAL_RESERVE_BYTES: usize = 1024;
@@ -272,6 +272,9 @@ pub struct SessionJournal {
     tool_state: ToolState,
     /// Recorded tool requests in append order, bounded by the journal size.
     tool_requests: Vec<RecordedToolRequest>,
+    /// Whether any `web_fetch` call completed as succeeded in this journal,
+    /// derived from the recorded events (ADR-0098).
+    web_content_fetched: bool,
     bytes: u64,
     next_seq: u64,
     poisoned: bool,
@@ -371,6 +374,7 @@ impl SessionJournal {
             schema_version: SCHEMA_VERSION,
             tool_state: ToolState::default(),
             tool_requests: Vec::new(),
+            web_content_fetched: false,
             bytes: u64::try_from(bytes.len()).map_err(|_| SessionError::LimitReached)?,
             next_seq: 1,
             poisoned: false,
@@ -402,6 +406,7 @@ impl SessionJournal {
             snapshot,
             tool_state,
             tool_requests,
+            web_content_fetched,
             ..
         } = replay(&contents, filename_id, None)?;
         let bytes = u64::try_from(contents.len()).map_err(|_| SessionError::LimitReached)?;
@@ -414,6 +419,7 @@ impl SessionJournal {
             schema_version,
             tool_state,
             tool_requests,
+            web_content_fetched,
             bytes,
             next_seq,
             poisoned: false,
@@ -448,6 +454,18 @@ impl SessionJournal {
     /// The arguments are untrusted model data, and nothing here dispatches.
     pub fn tool_requests(&self) -> &[RecordedToolRequest] {
         &self.tool_requests
+    }
+
+    /// Whether this session has fetched web content: a `web_fetch` call
+    /// completed as succeeded in any turn (ADR-0098).
+    ///
+    /// The answer is derived from the recorded `tool.requested` and
+    /// `tool.completed` events when the journal is opened and updated as
+    /// results are recorded. Compaction never removes those events, so a
+    /// compacted session still answers `true`. The trusted action journal
+    /// uses it to mark every later model action.
+    pub const fn web_content_fetched(&self) -> bool {
+        self.web_content_fetched
     }
 
     /// The active conversation after compaction: a labelled summary followed by
@@ -675,6 +693,11 @@ impl SessionJournal {
         self.tool_state
             .outputs
             .insert(call_id.to_owned(), (output_bytes, output_sha256.to_owned()));
+        if outcome == ToolOutcome::Succeeded
+            && is_web_fetch_request(&self.tool_requests, request_id, call_id)
+        {
+            self.web_content_fetched = true;
+        }
         self.commit_accounting(bytes)
     }
 
@@ -1428,6 +1451,8 @@ struct Replayed {
     snapshot: SessionSnapshot,
     tool_state: ToolState,
     tool_requests: Vec<RecordedToolRequest>,
+    /// A `web_fetch` call completed as succeeded somewhere in the journal.
+    web_content_fetched: bool,
     /// Timestamp of the `session.started` event.
     created_at: OffsetDateTime,
     /// Timestamp of the last replayed event.
@@ -1476,6 +1501,7 @@ fn replay(
     let mut snapshot: Option<SessionSnapshot> = None;
     let mut tool_state = ToolState::default();
     let mut tool_requests = Vec::new();
+    let mut web_content_fetched = false;
     let mut expected_seq = 0_u64;
     let mut total_events = 0_usize;
     let mut consumed_bytes = 0_usize;
@@ -1752,6 +1778,11 @@ fn replay(
                 validate_tool_output(payload.output_bytes, &payload.output_sha256).map_err(
                     |_| SessionError::InvalidJournal("tool result output metadata is invalid"),
                 )?;
+                if payload.outcome == ToolOutcome::Succeeded
+                    && is_web_fetch_request(&tool_requests, payload.request_id, &payload.call_id)
+                {
+                    web_content_fetched = true;
+                }
                 tool_state.pending.remove(&payload.call_id);
                 tool_state.completed.insert(payload.call_id.clone());
                 note_entry(&mut entries, seq, at, || {
@@ -1926,9 +1957,20 @@ fn replay(
         snapshot,
         tool_state,
         tool_requests,
+        web_content_fetched,
         created_at,
         updated_at,
     })
+}
+
+/// Whether the call `(request_id, call_id)` was requested as `web_fetch`.
+/// Call identifiers are unique only within one turn, so both must match.
+fn is_web_fetch_request(requests: &[RecordedToolRequest], request_id: Uuid, call_id: &str) -> bool {
+    requests
+        .iter()
+        .rev()
+        .find(|request| request.request_id == request_id && request.call_id == call_id)
+        .is_some_and(|request| request.tool == crate::turn::ToolName::WebFetch.as_str())
 }
 
 /// Reject transcript changes while replay says the session is archived.

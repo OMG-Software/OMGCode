@@ -1,6 +1,6 @@
 # 0063: Deny, prompt, or allow each preference, wait for approvals in the turn, and journal model actions
 
-- Status: Accepted; amended by [ADR-0099](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)
+- Status: Accepted; amended by [ADR-0098](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) and [ADR-0099](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)
 - Date: 2026-11-19
 
 ## Context

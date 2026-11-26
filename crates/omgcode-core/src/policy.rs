@@ -105,7 +105,7 @@ pub struct PermissionSet {
     /// How policy treats process execution.
     #[serde(with = "access::legacy_prompt")]
     pub execute: Access,
-    /// How policy treats task network access. No model tool uses it yet.
+    /// How policy treats task network access. No model tool uses it.
     #[serde(with = "access::legacy_prompt")]
     pub task_network: Access,
     /// Whether chat may offer the model workspace tools at all.
@@ -126,6 +126,18 @@ pub struct PermissionSet {
         with = "access::legacy_prompt"
     )]
     pub host_services: Access,
+    /// How policy treats the model `web_fetch` tool: one HTTPS GET of a public
+    /// web page.
+    ///
+    /// Stored by name and omitted while `Deny`, so settings that never set it
+    /// keep their bytes. Hosts on the workspace allowlist matter only under
+    /// `Allow`; see [`PermissionSet::model_web_fetch`].
+    #[serde(
+        default = "deny",
+        skip_serializing_if = "is_deny",
+        deserialize_with = "named_non_deny"
+    )]
+    pub web_fetch: Access,
     /// Per-tool limits that can only narrow `write` for model file tools.
     #[serde(default, skip_serializing_if = "WriteToolAccess::is_unrestricted")]
     pub write_tools: WriteToolAccess,
@@ -141,6 +153,17 @@ const fn is_false(value: &bool) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes the field by reference.
 const fn is_deny(value: &Access) -> bool {
     matches!(value, Access::Deny)
+}
+
+/// Read a stored state name, refusing `deny`: it is the omitted default, so a
+/// recorded one would be a second stored form.
+fn named_non_deny<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Access, D::Error> {
+    match Access::deserialize(deserializer)? {
+        Access::Deny => Err(serde::de::Error::custom(
+            "a denied preference is stored by omission",
+        )),
+        state => Ok(state),
+    }
 }
 
 /// The default for an optional preference that was never recorded.
@@ -160,6 +183,7 @@ impl Default for PermissionSet {
             task_network: Access::Deny,
             model_tools: false,
             host_services: Access::Deny,
+            web_fetch: Access::Deny,
             write_tools: WriteToolAccess::default(),
         }
     }
@@ -202,6 +226,19 @@ impl PermissionSet {
     pub const fn model_write(self, tool: WriteTool) -> Access {
         if self.model_tools && self.read.permits() {
             self.write.most_restrictive(self.write_tools.get(tool))
+        } else {
+            Access::Deny
+        }
+    }
+
+    /// The effective state of the model `web_fetch` tool.
+    ///
+    /// `Deny` unless `model_tools` is enabled; otherwise the `web_fetch` state.
+    /// Under `Allow`, only a host on the workspace allowlist skips the
+    /// per-call approval; the caller applies that rule.
+    pub const fn model_web_fetch(self) -> Access {
+        if self.model_tools {
+            self.web_fetch
         } else {
             Access::Deny
         }
@@ -477,6 +514,7 @@ mod tests {
                     task_network: Access::Deny,
                     model_tools: false,
                     host_services: Access::Deny,
+                    web_fetch: Access::Deny,
                     write_tools: WriteToolAccess::default(),
                 },
             ),
@@ -490,6 +528,7 @@ mod tests {
                     task_network: Access::Deny,
                     model_tools: false,
                     host_services: Access::Deny,
+                    web_fetch: Access::Deny,
                     write_tools: WriteToolAccess::default(),
                 },
             ),
@@ -503,6 +542,7 @@ mod tests {
                     task_network: Access::Deny,
                     model_tools: false,
                     host_services: Access::Deny,
+                    web_fetch: Access::Deny,
                     write_tools: WriteToolAccess::default(),
                 },
             ),
@@ -516,6 +556,7 @@ mod tests {
                     task_network: Access::Prompt,
                     model_tools: false,
                     host_services: Access::Deny,
+                    web_fetch: Access::Deny,
                     write_tools: WriteToolAccess::default(),
                 },
             ),
@@ -797,6 +838,76 @@ mod tests {
                 enabled.allows(operation),
                 PermissionSet::default().allows(operation)
             );
+        }
+    }
+
+    /// `web_fetch` is stored by name only while it is `prompt` or `allow`, so
+    /// every earlier settings record keeps its bytes.
+    #[test]
+    fn web_fetch_is_absent_while_denied_and_named_when_set() {
+        let legacy = json!({
+            "read": true,
+            "write": true,
+            "execute": false,
+            "task_network": false,
+            "host_services": true,
+            "model_tools": true
+        });
+        let parsed = serde_json::from_value::<PermissionSet>(legacy.clone()).expect("older record");
+        assert_eq!(parsed.web_fetch, Access::Deny);
+        assert_eq!(serde_json::to_value(parsed).expect("re-encode"), legacy);
+        assert!(
+            serde_json::to_value(PermissionSet::default())
+                .expect("encode default")
+                .get("web_fetch")
+                .is_none()
+        );
+        for (state, name) in [(Access::Prompt, "prompt"), (Access::Allow, "allow")] {
+            let set = PermissionSet {
+                web_fetch: state,
+                ..PermissionSet::default()
+            };
+            let encoded = serde_json::to_value(set).expect("encode");
+            assert_eq!(encoded["web_fetch"], name);
+            assert_eq!(
+                serde_json::from_value::<PermissionSet>(encoded).expect("decode"),
+                set
+            );
+        }
+        for value in [json!("deny"), json!(true), json!(false), json!("ask")] {
+            let mut stored =
+                json!({"read": true, "write": true, "execute": false, "task_network": false});
+            stored["web_fetch"] = value;
+            assert!(serde_json::from_value::<PermissionSet>(stored).is_err());
+        }
+    }
+
+    /// The effective model state is `deny` whenever `model_tools` is off and
+    /// is the stored state otherwise. It never changes another operation.
+    #[test]
+    fn model_web_fetch_needs_model_tools() {
+        for state in Access::ALL {
+            let off = PermissionSet {
+                web_fetch: state,
+                ..PermissionSet::default()
+            };
+            assert_eq!(off.model_web_fetch(), Access::Deny);
+            let on = PermissionSet {
+                model_tools: true,
+                ..off
+            };
+            assert_eq!(on.model_web_fetch(), state);
+            for operation in [
+                Operation::Read,
+                Operation::Write,
+                Operation::Execute,
+                Operation::TaskNetwork,
+            ] {
+                assert_eq!(
+                    on.allows(operation),
+                    PermissionSet::default().allows(operation)
+                );
+            }
         }
     }
 

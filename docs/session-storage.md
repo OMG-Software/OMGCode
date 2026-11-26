@@ -109,6 +109,20 @@ opens in both only when every call is within 4 KiB and every event within
 escape. A 16 KiB message of them would exceed this build's 80 KiB event bound
 and cannot be recorded.
 
+**Web fetch calls (ADR-0098).** A `web_fetch` call is recorded like any
+other call: one `tool.requested`, one `tool.completed`, and one `tool`
+message with source `core_tool`. The message text is labelled `source
+web_fetched; untrusted web content from <host>` instead of workspace data. A
+URL the fetch policy refuses completes as `failed` with code `url_refused`.
+Once a session holds a `web_fetch` call completed as `succeeded`, the
+runtime treats it as having fetched web content: it derives this when the
+journal is opened, so the session's later model actions are marked
+`after_web_content` in the model action journal across turns, restarts, and
+compaction, which keeps these events. Saved fetch results replay under the
+same live `model_tools` and `read` rule as other tool results. A request
+manifest may list ten tool names, with tool schema `0.8.0`; a build before
+0.64.0 refuses a journal whose manifest lists ten.
+
 The version-2 `request.manifest` payload adds optional `tool_schema_version` and
 `tools` fields. They are present together only when the request advertised
 tools. Version-1 manifests omit both fields.

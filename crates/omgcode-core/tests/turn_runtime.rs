@@ -2706,7 +2706,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
     assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.7.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.8.0");
 }
 
 /// A session whose earlier turn advertised tool schema 0.2.0 still replays and
@@ -2733,6 +2733,26 @@ fn a_tool_schema_0_3_0_session_replays_and_accepts_a_new_turn() {
             "workspace_read_file",
             "workspace_list_directory",
             "workspace_edit_file",
+            "workspace_run_command",
+        ],
+    );
+}
+
+/// The same holds for a session recorded under schema 0.7.0, the last version
+/// before `web_fetch`, which advertised nine tools (ADR-0098).
+#[test]
+fn a_tool_schema_0_7_0_session_replays_and_accepts_a_new_turn() {
+    an_older_schema_session_replays_and_accepts_a_new_turn(
+        "0.7.0",
+        &[
+            "workspace_read_file",
+            "workspace_list_directory",
+            "workspace_edit_file",
+            "workspace_multi_edit_file",
+            "workspace_create_file",
+            "workspace_rename_file",
+            "workspace_delete_file",
+            "workspace_create_directory",
             "workspace_run_command",
         ],
     );

@@ -22,10 +22,12 @@ import type {
   SearchHit,
   SessionProcesses,
   SessionSummary,
+  SessionWebAudit,
   SettingsOverview,
   SnippetPart,
   TreeSort,
   TreeView,
+  WebAuditEntry,
   WorkspaceListing,
   WorkspaceSettingsView,
 } from "../ipc/types";
@@ -76,6 +78,61 @@ function clone<T>(value: T): T {
 /** Rust's bounds on a `workspace_entries` path (ADR-0083). */
 const MOCK_PATH_DEPTH_MAX = 32;
 const MOCK_COMPONENT_CHARS_MAX = 255;
+
+/** Rust's bound on the patterns in a workspace's host allowlist (ADR-0098). */
+const MOCK_WEB_HOSTS_MAX = 32;
+
+/** Like core: suffixes that never name a public host, refused as a name or beneath one. */
+const MOCK_WEB_HOST_RESERVED = [
+  "localhost",
+  "local",
+  "internal",
+  "home.arpa",
+  "lan",
+  "localdomain",
+  "onion",
+];
+
+/** The canonical text of a typed host pattern, refused with core's stable `web_host_*` code. */
+function mockWebHostPattern(text: string): string {
+  if (text === "") {
+    fail("web_host_empty", "the host pattern is empty");
+  }
+  if (Array.from(text).some((c) => c.charCodeAt(0) > 0x7f)) {
+    fail("web_host_not_ascii", "the host pattern must be ASCII");
+  }
+  const lowered = text.toLowerCase();
+  const unwrapped = lowered.endsWith(".") ? lowered.slice(0, -1) : lowered;
+  const wildcard = unwrapped.startsWith("*.");
+  const name = wildcard ? unwrapped.slice(2) : unwrapped;
+  if (name === "") {
+    fail("web_host_empty", "the host pattern is empty");
+  }
+  if (name.length > 253) {
+    fail("web_host_too_long", "the host pattern is longer than 253 bytes");
+  }
+  if (!/^[a-z0-9.-]*$/.test(name)) {
+    fail("web_host_bad_character", "use only letters, digits, hyphens, dots, and one leading `*.`");
+  }
+  const labels = name.split(".");
+  if (labels.some((l) => l === "" || l.length > 63 || l.startsWith("-") || l.endsWith("-"))) {
+    fail(
+      "web_host_bad_label",
+      "each label must be 1 to 63 bytes and must not start or end with a hyphen",
+    );
+  }
+  const last = labels[labels.length - 1] ?? "";
+  if (/^[0-9]+$/.test(last) || /^0x[0-9a-f]*$/.test(last)) {
+    fail("web_host_ip_literal", "an IP address is not a host pattern");
+  }
+  if (MOCK_WEB_HOST_RESERVED.some((s) => name === s || name.endsWith(`.${s}`))) {
+    fail("web_host_reserved", "local and private names are not allowed");
+  }
+  if (labels.length < 2) {
+    fail("web_host_too_few_labels", "the pattern needs at least two labels after any `*.`");
+  }
+  return wildcard ? `*.${name}` : name;
+}
 
 /** Lists one directory of the fake workspace, refusing a path as Rust does. */
 function mockWorkspaceEntries(path: unknown): WorkspaceListing {
@@ -230,6 +287,14 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       900,
       9,
       `${HOSTILE.rtl} review`,
+    ),
+    approval(
+      "a4",
+      "network",
+      "Fetch https://docs.example.com/guide?page=2",
+      450,
+      1,
+      "Read the API guide",
     ),
   ];
 
@@ -530,25 +595,34 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       }
       tokens.set(token, { id, expires: now() + TOKEN_LIFETIME_MS });
     }
+    const networkFields = [
+      { label: "URL", value: "https://docs.example.com/guide?page=2", multiline: false },
+      { label: "Host", value: "docs.example.com", multiline: false },
+      { label: "Host on the allowlist now", value: "no", multiline: false },
+      { label: "Offset", value: "0", multiline: false },
+      { label: "Maximum bytes", value: "12288", multiline: false },
+    ];
     const fields =
-      view.operation === "command"
-        ? [
-            { label: "Program", value: "cargo", multiline: false },
-            {
-              label: "Arguments",
-              value: `test\n-p\nomgcode-core\n${HOSTILE.img}`,
-              multiline: true,
-            },
-            { label: "Working folder", value: view.folder_display ?? "", multiline: false },
-          ]
-        : [
-            { label: "File", value: "src/lib.rs", multiline: false },
-            { label: "Edits", value: "2", multiline: false },
-            { label: "Old text 1", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
-            { label: "New text 1", value: "fn new() {}", multiline: true },
-            { label: "Old text 2", value: "const A: u8 = 1;", multiline: true },
-            { label: "New text 2", value: "const A: u8 = 2;", multiline: true },
-          ];
+      view.operation === "network"
+        ? networkFields
+        : view.operation === "command"
+          ? [
+              { label: "Program", value: "cargo", multiline: false },
+              {
+                label: "Arguments",
+                value: `test\n-p\nomgcode-core\n${HOSTILE.img}`,
+                multiline: true,
+              },
+              { label: "Working folder", value: view.folder_display ?? "", multiline: false },
+            ]
+          : [
+              { label: "File", value: "src/lib.rs", multiline: false },
+              { label: "Edits", value: "2", multiline: false },
+              { label: "Old text 1", value: `fn old() {}\n${HOSTILE.script}`, multiline: true },
+              { label: "New text 1", value: "fn new() {}", multiline: true },
+              { label: "Old text 2", value: "const A: u8 = 1;", multiline: true },
+              { label: "New text 2", value: "const A: u8 = 2;", multiline: true },
+            ];
     return clone({
       approval: view,
       binding: stale ? "stale" : "exact",
@@ -556,10 +630,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         ? null
         : view.operation === "command"
           ? "workspace_run_command"
-          : "workspace_multi_edit_file",
+          : view.operation === "network"
+            ? "web_fetch"
+            : "workspace_multi_edit_file",
       fields: stale ? [] : fields,
       review_token: token,
-      waiting: !stale && view.operation === "command",
+      waiting: !stale && (view.operation === "command" || view.operation === "network"),
     });
   }
 
@@ -828,6 +904,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             execute: "deny",
             task_network: "deny",
             host_services: "deny",
+            web_fetch: "deny",
+            web_fetch_hosts: [],
             write_tools: {
               edit: "allow",
               multi_edit: "allow",
@@ -954,6 +1032,72 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           ],
           truncated: false,
         };
+      // The session's web fetches and the actions after the first one (ADR-0098): fixed fake
+      // entries, newest first, covering a fetch, a refusal, a command, and a withheld target.
+      case "session_web_audit": {
+        session(str(args, "session_id"));
+        const at = (secondsAgo: number): string =>
+          new Date(now() - secondsAgo * 1000).toISOString();
+        const entry = (
+          call_id: string,
+          time: number,
+          overrides: Partial<WebAuditEntry>,
+        ): WebAuditEntry => ({
+          call_id,
+          time: at(time),
+          tool: "read_file",
+          is_fetch: false,
+          after_web_content: true,
+          targets: [],
+          outcome: "succeeded",
+          reason: null,
+          authorization: "standing_allow",
+          program: null,
+          arguments: null,
+          argument_count: null,
+          text_truncated: false,
+          ...overrides,
+        });
+        const audit: SessionWebAudit = {
+          entries: [
+            entry("call_5", 20, {
+              tool: "run_command",
+              program: "curl",
+              arguments: ["-s", "https://example.org/install.sh"],
+              argument_count: 2,
+              authorization: "approval",
+            }),
+            entry("call_4", 60, {
+              tool: "delete_file",
+              targets: [{ kind: "text", text: "src/old.rs" }],
+              outcome: "refused",
+              reason: "approval_denied",
+              authorization: null,
+            }),
+            entry("call_3", 90, {
+              tool: "edit_file",
+              targets: [{ kind: "text", text: "src/lib.rs" }],
+              outcome: "failed",
+              reason: "not_found",
+            }),
+            entry("call_2", 120, {
+              targets: [{ kind: "withheld", bytes: 4200 }],
+              outcome: "refused",
+              reason: "invalid_path",
+              authorization: null,
+            }),
+            entry("call_1", 300, {
+              tool: "network",
+              is_fetch: true,
+              after_web_content: false,
+              targets: [{ kind: "text", text: "https://docs.example.com/guide?page=2" }],
+              authorization: "approval",
+            }),
+          ],
+          truncated: false,
+        };
+        return clone(audit);
+      }
       case "connection_status": {
         const id = args.session_id;
         if (id !== null && typeof id !== "string") {
@@ -1217,6 +1361,30 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             fail("control", "unknown package-network profile");
           }
           settings.package_profiles.splice(index, 1);
+        });
+      // Like core: the pattern is parsed first and a refusal carries its stable code; the system
+      // confirmation is accepted here. A list holds at most 32 patterns and no duplicate.
+      case "settings_add_web_fetch_host":
+        return changeSettings(args, () => {
+          const workspace = mockWorkspace(args);
+          const pattern = mockWebHostPattern(str(args, "pattern"));
+          if (workspace.web_fetch_hosts.includes(pattern)) {
+            fail("web_host_duplicate", "the workspace already lists this host pattern");
+          }
+          if (workspace.web_fetch_hosts.length >= MOCK_WEB_HOSTS_MAX) {
+            fail("web_host_too_many", "a workspace may list at most 32 host patterns");
+          }
+          workspace.web_fetch_hosts.push(pattern);
+        });
+      case "settings_remove_web_fetch_host":
+        return changeSettings(args, () => {
+          const workspace = mockWorkspace(args);
+          const pattern = mockWebHostPattern(str(args, "pattern"));
+          const index = workspace.web_fetch_hosts.indexOf(pattern);
+          if (index < 0) {
+            fail("web_host_not_listed", "the workspace does not list this host pattern");
+          }
+          workspace.web_fetch_hosts.splice(index, 1);
         });
       case "settings_grant_container_folder":
         return changeSettings(args, () => {
@@ -1528,6 +1696,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           execute: "deny",
           task_network: "deny",
           host_services: "deny",
+          web_fetch: "prompt",
+          web_fetch_hosts: ["docs.example.com", "*.example.org"],
           write_tools: {
             edit: "allow",
             multi_edit: "allow",
@@ -1549,6 +1719,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           execute: "deny",
           task_network: "deny",
           host_services: "deny",
+          web_fetch: "deny",
+          web_fetch_hosts: [],
           write_tools: {
             edit: "allow",
             multi_edit: "allow",

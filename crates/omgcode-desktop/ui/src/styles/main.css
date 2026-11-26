@@ -1487,6 +1487,97 @@ mark {
 }
 
 /*
+ * Web tab (ADR-0098): the session's web fetches and the actions after them. A fetch is set apart
+ * by an accent edge and a filled tool chip; URLs and paths wrap in full and are never links.
+ */
+.web-tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.web-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px var(--gap);
+  border-bottom: 1px solid var(--border);
+}
+
+.web-status,
+.web-note,
+.web-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.web-intro {
+  padding: 6px var(--gap) 0;
+}
+
+.web-notes {
+  padding: 0 var(--gap);
+}
+
+.web-notes .error {
+  margin: 6px 0 0;
+}
+
+.web-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.web-entry {
+  display: grid;
+  gap: 4px;
+  padding: 8px var(--gap);
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+}
+
+.web-entry-fetch {
+  border-left-color: var(--accent-fg);
+}
+
+.web-tool-fetch {
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+
+.web-target {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.web-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.web-outcome-failed,
+.web-outcome-refused {
+  color: var(--danger);
+}
+
+.web-outcome-uncertain,
+.web-outcome-unfinished {
+  color: var(--warn);
+}
+
+/*
  * The Git status tab (ADR-0085). It uses only tokens.css values.
  * Nothing here sets `display` on an element that is hidden by the `hidden` attribute.
  */

@@ -382,3 +382,37 @@
 .byte-counter.over {
   color: var(--danger);
 }
+
+/* The allowed web hosts of a workspace: one bordered row per pattern, a remove icon, and a field
+   with an Add button. */
+.web-hosts {
+  margin: 4px 0 8px;
+  padding-left: 12px;
+}
+
+.web-host {
+  padding: 4px 2px;
+}
+
+.web-host .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.web-host .icon-button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.web-hosts input[type="text"] {
+  flex: 1;
+  min-width: 12ch;
+  font-family: var(--mono);
+}

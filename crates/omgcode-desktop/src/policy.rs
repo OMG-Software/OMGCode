@@ -98,11 +98,14 @@ pub enum Command {
     SettingsRemovePackageProfile,
     SettingsGrantContainerFolder,
     SettingsRevokeContainerGrant,
+    SettingsAddWebFetchHost,
+    SettingsRemoveWebFetchHost,
+    SessionWebAudit,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 62] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -162,6 +165,9 @@ impl Command {
         Self::SettingsRemovePackageProfile,
         Self::SettingsGrantContainerFolder,
         Self::SettingsRevokeContainerGrant,
+        Self::SettingsAddWebFetchHost,
+        Self::SettingsRemoveWebFetchHost,
+        Self::SessionWebAudit,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -227,6 +233,9 @@ impl Command {
             Self::SettingsRemovePackageProfile => "settings_remove_package_profile",
             Self::SettingsGrantContainerFolder => "settings_grant_container_folder",
             Self::SettingsRevokeContainerGrant => "settings_revoke_container_grant",
+            Self::SettingsAddWebFetchHost => "settings_add_web_fetch_host",
+            Self::SettingsRemoveWebFetchHost => "settings_remove_web_fetch_host",
+            Self::SessionWebAudit => "session_web_audit",
         }
     }
 
@@ -263,7 +272,9 @@ impl Command {
             | Self::SettingsAddPackageProfile
             | Self::SettingsRemovePackageProfile
             | Self::SettingsGrantContainerFolder
-            | Self::SettingsRevokeContainerGrant => WindowLabel::Settings,
+            | Self::SettingsRevokeContainerGrant
+            | Self::SettingsAddWebFetchHost
+            | Self::SettingsRemoveWebFetchHost => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -292,7 +303,8 @@ impl Command {
             | Self::SessionModelSelect
             | Self::ChatModels
             | Self::SessionContextBreakdown
-            | Self::SessionProcesses => WindowLabel::Main,
+            | Self::SessionProcesses
+            | Self::SessionWebAudit => WindowLabel::Main,
         }
     }
 }
@@ -330,10 +342,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 59);
-        assert_eq!(with_window(WindowLabel::Main).len(), 29);
+        assert_eq!(Command::ALL.len(), 62);
+        assert_eq!(with_window(WindowLabel::Main).len(), 30);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 27);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 29);
     }
 
     #[test]
@@ -395,6 +407,25 @@ mod tests {
     }
 
     #[test]
+    fn web_fetch_host_commands_are_refused_for_main_and_approvals() {
+        for command in [
+            Command::SettingsAddWebFetchHost,
+            Command::SettingsRemoveWebFetchHost,
+        ] {
+            assert_eq!(command.window(), WindowLabel::Settings);
+            assert_eq!(authorize(command, "settings"), Ok(()));
+            for label in ["main", "approvals"] {
+                assert_eq!(
+                    authorize(command, label),
+                    Err(CommandError::forbidden_window()),
+                    "{} must be refused for {label:?}",
+                    command.name()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn window_labels_are_distinct() {
         let labels: BTreeSet<&str> = WindowLabel::ALL.iter().map(|w| w.as_str()).collect();
         assert_eq!(labels.len(), WindowLabel::ALL.len());
@@ -418,8 +449,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 59);
-        assert_eq!(shared.len(), 59);
+        assert_eq!(COMMAND_NAMES.len(), 62);
+        assert_eq!(shared.len(), 62);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

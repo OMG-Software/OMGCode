@@ -63,4 +63,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_remove_package_profile",
     "settings_grant_container_folder",
     "settings_revoke_container_grant",
+    "settings_add_web_fetch_host",
+    "settings_remove_web_fetch_host",
+    "session_web_audit",
 ];

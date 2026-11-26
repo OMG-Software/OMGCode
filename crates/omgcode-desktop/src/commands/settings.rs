@@ -15,7 +15,7 @@ use omgcode_app::desktop::{
     ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
     NewConnectionKind, PackageProfileAddRequest, PermissionFlags, PermissionsChangeRequest,
     ProfileRemoveRequest, SettingsOverview, SettingsRevisionRequest, SkillChoice,
-    SkillRemoveRequest, SkillStateRequest, ToolchainProfileAddRequest,
+    SkillRemoveRequest, SkillStateRequest, ToolchainProfileAddRequest, WebHostChangeRequest,
     WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
 };
 use tauri::Webview;
@@ -713,6 +713,66 @@ pub async fn settings_revoke_container_grant(
     let request = ContainerRevokeRequest { revision, grant_id };
     blocking(&state, move |service| {
         service.settings_revoke_container_grant(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the workspace
+/// folder and the canonical host pattern (and, for a wildcard, says it covers
+/// every subdomain), adds one pattern to the workspace's `web_fetch`
+/// allowlist. The pattern is parsed first; an invalid one is refused without
+/// a dialog.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (a `web_host_*` code,
+/// `unknown_workspace`, `cancelled`, `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_add_web_fetch_host(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    workspace_id: Uuid,
+    pattern: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsAddWebFetchHost, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = WebHostChangeRequest {
+        revision,
+        workspace_id,
+        pattern,
+    };
+    blocking(&state, move |service| {
+        service.settings_add_web_fetch_host(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation that names the workspace
+/// folder and the canonical host pattern, removes one pattern from the
+/// workspace's `web_fetch` allowlist.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (a `web_host_*` code,
+/// `unknown_workspace`, `cancelled`, `stale_revision`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_remove_web_fetch_host(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    workspace_id: Uuid,
+    pattern: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRemoveWebFetchHost, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = WebHostChangeRequest {
+        revision,
+        workspace_id,
+        pattern,
+    };
+    blocking(&state, move |service| {
+        service.settings_remove_web_fetch_host(request, &prompt)
     })
     .await
 }
