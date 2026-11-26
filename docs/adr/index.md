@@ -114,3 +114,4 @@ meaningful alternative does not need an ADR.
 | [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted; amended by ADR-0099 | 2026-11-24 |
 | [0098: Add a model web fetch tool behind a host allowlist](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) | Accepted | 2026-11-25 |
 | [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |
+| [0100: List the recorded toolchain profiles in the command tool](0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md) | Accepted | 2026-11-26 |
