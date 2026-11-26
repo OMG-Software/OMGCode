@@ -5,20 +5,22 @@ bounded native workspace file broker, and a prototype Tauri desktop shell with a
 session tree, search, chat, and an isolated approvals window. The shell is
 without an installer and has run only on Windows. The broker is available only through
 trusted operator commands and, when a workspace enables `model_tools`, to the
-local model's read, list, approval-gated edit, multi-edit, create, rename,
-delete, and command tools. The edit and multi-edit tools change one existing
+selected model's read, list, edit, multi-edit, create, rename, delete,
+directory-creation, and command tools. A write or command needs an approval
+unless the operator sets its preference to `allow`. The edit and multi-edit
+tools change one existing
 file only through checkpointed apply after an approved, writers-stopped
 decision; the create tool makes one new file through the exclusive create,
 without a checkpoint; the rename tool moves one file to a name that does not
-exist, without a checkpoint; and the delete tool removes one file after a
-checkpoint of its bytes. A `web_fetch` tool, behind its own preference and a
+exist, without a checkpoint; the delete tool removes one file after a
+checkpoint of its bytes; and the directory tool creates one directory whose
+parent exists, without a checkpoint. A `web_fetch` tool, behind its own preference and a
 host allowlist, reads one public HTTPS page per call as untrusted web
 content. Other model network tools, and Git and MCP tools, are not
 implemented. The
 trusted CLI `run` command runs one program under Linux Landlock or Windows
 AppContainer confinement with an operator-declared toolchain profile. A model
-tool starts a process only through the approval-gated command tool and the
-trusted runner. The guides distinguish implemented behaviour from the
+tool starts a process only through the command tool and the trusted runner. The guides distinguish implemented behaviour from the
 remaining product contracts.
 
 ## Start here
@@ -98,9 +100,10 @@ Repository review and analysis are configured in the repository-checks guide.
 The Rust workflow adds formatting, strict Clippy, unit/integration tests, and
 separate documentation tests on Windows and Linux. The development guide owns
 the current commands and limits. The desktop frontend (`crates/omgcode-desktop/ui`)
-has its own Frontend workflow with strict type checks, Biome, and Vitest; that
-workflow and the Rust workflow's frontend build step have not run on GitHub
-yet. The trusted `run`
+has its own Frontend workflow with strict type checks, Biome, and Vitest. That
+workflow and the Rust workflow, with its frontend build step, have run on
+GitHub; the [repository-checks guide](repository-checks.md#rust-and-frontend-workflows)
+records the runs. The trusted `run`
 command uses native confinement that was tested on one Windows build and one
 Linux kernel only. Every trusted run has memory, process-count, CPU-time, and
 sampled net disk-growth limits; the disk limit is not a filesystem quota.
@@ -110,16 +113,18 @@ uses them, and network access remains all-or-nothing. The trusted
 cache. A selected root is exposed read-only on Linux and Windows; Windows
 needs a read-execute grant, and Linux falls back to application storage.
 Provider profiles record connection shapes without credentials, and an
-`lm_studio` profile can record a loopback endpoint. Only the local LM Studio
-adapter reads a stored credential, through an operator-selected profile that
-supplies both the endpoint and the token (ADR-0047, ADR-0048); no cloud adapter
-or login exists. That adapter can stream a reply (ADR-0049): the text is
-provisional, and the journals record only the validated reply. Approval records authorize one exact
+`lm_studio` profile can record a loopback endpoint. The chat client reads a
+stored credential through an operator-selected profile that supplies both the
+endpoint and the token (ADR-0047, ADR-0048). Hosted OpenAI-compatible
+connections (ADR-0092) were not tested with a real key, and a ChatGPT sign-in
+(ADR-0093) was observed with one real account; no native provider API or
+Claude subscription login exists. The client can stream a reply (ADR-0049):
+the text is provisional, and the journals record only the validated reply. Approval records authorize one exact
 model-tool call, and the read, list, file-write, command, and web fetch tools
 are their only consumers; the read and list tools need one only under a
 `prompt` read preference (ADR-0063). Chat dispatches the read/list tools and,
-with the required live permissions, the approval-gated edit, multi-edit,
-create, rename, delete, and command tools, and the `web_fetch` tool behind
+with the required live permissions, the edit, multi-edit, create, rename,
+delete, directory-creation, and command tools, and the `web_fetch` tool behind
 the live `web_fetch` preference, which needs an approval unless that
 preference is `allow` and the host is on the workspace's allowlist
 (ADR-0098), only for a workspace that enables `model_tools`. The edit and

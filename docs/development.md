@@ -1,6 +1,6 @@
 # Build and run the core prototype
 
-OMGCode 0.34.0 is a developer CLI prototype with workspace permission
+OMGCode 0.69.0 is a developer CLI prototype with workspace permission
 settings and bounded native file operations through trusted operator commands.
 It can send a text conversation to an explicitly selected local LM Studio model
 and save that conversation. It can read/list files, exclusively create new
@@ -26,7 +26,10 @@ delete workspace files, and the CLI cannot use Git or connect to MCP servers.
 When a workspace enables `model_tools`, chat lets the local model read and list
 files in that workspace, request an approval-gated exact edit, multi-edit, file
 creation, rename, or checkpointed deletion with read/write, and request an
-approval-gated command with execute/read/write. A separate `web_fetch`
+approval-gated command with execute/read/write once a toolchain profile is
+recorded for the running platform
+([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+A separate `web_fetch`
 preference lets it fetch one public HTTPS page per call, with an approval
 for each fetch under `prompt` and for each host off the workspace allowlist
 under `allow` (ADR-0098). Other model network tools, and Git and MCP tools,
@@ -141,7 +144,7 @@ omgcode --data-dir /private/omgcode-data file forget-checkpoint-store \
 ```
 
 The folder is left in place. Move, delete, or empty it before the next
-write. See the [workspace checkpoint folder](file-access.md#workspace-checkpoint-folder-adr-0069).
+write. See the [workspace checkpoint folder](file-access.md#workspace-checkpoint-folder-adr-0070).
 
 ## Build
 
@@ -249,16 +252,27 @@ omgcode --data-dir C:\omgcode-data workspace unregister WORKSPACE_ID --revision 
 require existing state. `unregister` removes a registration and its settings,
 deletes its saved desktop instructions, and touches no file in the folder; a
 container grant refuses it until it is revoked
-([ADR-0081](adr/0081-unregister-a-workspace.md)). Flags take explicit `true` or `false` values. Read/write
-default to enabled; execute, task-network, host-services, and model-tools
-default to disabled. All decisions still report `execution_allowed: false`;
-only the trusted `run` command starts a process, and the model command tool
-reaches it only after consuming an approval. Settings commands do not dispatch
+([ADR-0081](adr/0081-unregister-a-workspace.md)). The `--read`, `--write`,
+`--execute`, `--task-network`, `--host-services`, and `--web-fetch` flags take
+`deny`, `prompt`, or `allow`; `true` and `false` still work for the first five
+(`true` means `prompt`, except for `--read`, where it means `allow`). The six
+per-tool flags (`--edit-tool`, `--multi-edit-tool`, `--create-tool`,
+`--rename-tool`, `--delete-tool`, `--create-directory-tool`) take only those
+three words and can only narrow `--write`. `--model-tools` takes `true` or
+`false`. New workspaces allow `read`, prompt for `write`, and deny `execute`,
+`task-network`, `host-services`, `web-fetch`, and `model-tools`. All decisions
+still report `execution_allowed: false`; only the trusted `run` command starts
+a process, and the model command tool reaches it after a consumed approval
+under `prompt`, or without one under `allow`. Settings commands do not dispatch
 tools. `--model-tools true` lets chat offer the model read/list tools, with
-read/write the approval-gated edit, multi-edit, and create tools, and with
-execute/read/write the
-approval-gated command tool; see
-[model tools](workspace-permissions.md#model-readlist-and-command-tools).
+read/write the approval-gated edit, multi-edit, create, rename, delete, and
+create-directory tools, with execute/read/write the command tool when a
+toolchain profile is recorded for the platform, and with `--web-fetch` other
+than `deny` the `web_fetch` tool. `web-host-add`, `web-host-remove`, and
+`web-host-list` manage the workspace's allowlist of at most 32 host patterns,
+which lets `--web-fetch allow` skip the approval for those hosts
+([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+See [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 See the [workspace contract](workspace-permissions.md) for limits and failures.
 `container-grant` and `container-revoke` work on Windows only. They change ACLs
 for the workspace's AppContainer and record each change; see
@@ -614,7 +628,7 @@ trusted application-data directory, and the workspace ID. The runtime:
   `workspace_list_directory`, `workspace_edit_file`,
   `workspace_multi_edit_file`, `workspace_create_file`,
   `workspace_rename_file`, `workspace_delete_file`,
-  `workspace_create_directory`, and `workspace_run_command`;
+  `workspace_create_directory`, `workspace_run_command`, and `web_fetch`;
 - answers a call that has the supported shape and a usable, unique call
   identifier but names an unknown tool, carries arguments over the tool's
   limit, malformed or unknown-field arguments, or an absolute or parent path,
@@ -644,10 +658,14 @@ trusted application-data directory, and the workspace ID. The runtime:
 - offers `workspace_edit_file`, `workspace_multi_edit_file`,
   `workspace_create_file`, `workspace_rename_file`, `workspace_delete_file`,
   and `workspace_create_directory` only under live `model_tools`, `read`, and
-  `write`, and `workspace_run_command` only when `execute` is also enabled;
+  `write`, and `workspace_run_command` only when `execute` is also enabled and
+  at least one toolchain profile is recorded for the running platform, with
+  those profile names listed in its `profile` parameter (ADR-0100);
   every edit, multi-edit, creation, rename, deletion, or command first needs a
   trusted single-use approval while its preference is `prompt`, and runs
   without one under `allow`;
+- offers `web_fetch` under live `model_tools` and a `web_fetch` preference
+  other than `deny`, whatever `read`, `write`, and `execute` say (ADR-0098);
 - reports the final reply's provider `finish_reason`.
 
 The runtime has no Git or MCP tool, and its only network tool is `web_fetch`,
@@ -658,7 +676,10 @@ through the exclusive create, the rename through the no-replace rename, the
 deletion through the checkpointed removal, and the creation of one directory
 whose parent exists. Its only process execution is the command through the
 trusted runner. Each needs an approval under `prompt` and runs without one
-under `allow`.
+under `allow`. Every call, executed or refused, is recorded in the model action
+journal. `omgcode actions list` shows the newest records, with `--limit`
+(1 to 1000, default 100), `--session`, and `--after-web-content` to select
+calls made after the session's first fetched web content.
 `LocalToolModel` adapts the LM Studio client to its model interface. The adapter
 sends the tool definitions in the OpenAI-compatible `tools` field, parses the
 response with the strict duplicate-key-rejecting parser, and returns each call
@@ -702,7 +723,11 @@ the approval-gated `workspace_edit_file`, `workspace_multi_edit_file`,
 `workspace_create_file`, `workspace_rename_file`, `workspace_delete_file`, and
 `workspace_create_directory`.
 When `execute`, `read`, and `write`
-also allow it, it offers the approval-gated `workspace_run_command`. Set
+also allow it and a toolchain profile is recorded for the running platform, it
+offers the approval-gated `workspace_run_command`, whose `profile` parameter
+lists those profiles; a call naming another profile gets `profile_not_recorded`
+before any approval is requested (ADR-0100). When the workspace's `web_fetch`
+preference is `prompt` or `allow`, it offers `web_fetch` (ADR-0098). Set
 `--max-tool-calls <1–256>` to override the default of 128 for this turn. A batch
 that would exceed the cap is refused before any of its calls run. The `tool_limit`
 error reports the configured cap, calls used, and calls requested. Start a new
@@ -801,9 +826,11 @@ keys exists (see [provider credentials](#provider-credentials)). With
 `--provider-profile <name>` the adapter reads the token from a stored
 credential, and the endpoint from the same profile, and never reads the
 variable; the provider clients still
-hold an unzeroed header copy. No cloud adapter and no account/settings
-interface exists. Use the no-token profile only for
-an explicitly selected service configured for it.
+hold an unzeroed header copy. Hosted providers are reached only through
+recorded profiles (ADR-0092), and ChatGPT sign-in is the only account login
+(ADR-0093); no hosted provider's request shapes were verified with a real key.
+Use the no-token profile only for an explicitly selected service configured for
+it.
 
 ### Model edit workflow
 
@@ -997,8 +1024,9 @@ further ordinary events require a new session. No history is removed to make roo
 The context guard estimates input from UTF-8 bytes plus fixed message overhead,
 then reserves the configured output tokens and headroom. This is a conservative
 heuristic, not a tokenizer or a guarantee for every chat template. The operator
-must supply a validated loaded-model capacity. Compaction and automatic history
-selection are not implemented: requests over a limit fail before inference.
+must supply a validated loaded-model capacity. Without `--auto-compact` or
+`session compact`, no history is dropped or selected: a request over a limit
+fails before inference.
 Provider-reported usage and finish reason appear in the reply JSON. Durable
 usage events and large-output artifacts remain planned. Streamed chunks are
 not stored.
@@ -1007,11 +1035,11 @@ not stored.
 
 | Crate | Responsibility |
 | --- | --- |
-| omgcode-core | Compiled prompt, bounded model adapter, session/control/file-operation/run journals, lock-free journal inspection and discovery, the derived SQLite session index, approval review, workspace policy and toolchain profiles, broker orchestration, trusted runs, bounded turn/tool lifecycle, and non-destructive edit previews |
+| omgcode-core | Compiled prompt, bounded model adapter, session/control/file-operation/run journals, lock-free journal inspection and discovery, the derived SQLite session index, approval review, workspace policy and toolchain profiles, discovery of installed toolchains for profile proposals (`toolchain_discovery`, ADR-0103), broker orchestration, trusted runs, bounded turn/tool lifecycle, and non-destructive edit previews |
 | omgcode-cli | Trusted operator input as a thin adapter over `omgcode-app`, bounded file and preview commands, trusted `run`, approvals, JSON output |
-| omgcode-app | Front-end-neutral chat turn with optional read/list and approval-gated edit and command tools, session creation, compaction, the data-root resolver, token redaction, and `DesktopService`. It grants no authority |
+| omgcode-app | Front-end-neutral chat turn with the model read/list, write, command, and `web_fetch` tools under their preferences, session creation, compaction, the data-root resolver, token redaction, and `DesktopService`. It grants no authority |
 | omgcode-desktop | The Tauri shell: windows, per-window capability files, the Rust window policy, command handlers, and the navigation guard. The TypeScript frontend is in `ui/` |
-| omgcode-platform | Native journal validation, directory identity, opening an `https` sign-in address in the default browser (ADR-0094), handle-relative workspace file operations, Windows AppContainer grants, interrupt-to-cancel handling, and a process-tree runner with Linux Landlock/seccomp and Windows AppContainer confinement |
+| omgcode-platform | Native journal validation, directory identity, opening an `https` sign-in address in the default browser (ADR-0094), handle-relative workspace file operations, Windows AppContainer grants, interrupt-to-cancel handling, a Windows foreground-window ownership check for the approvals window (ADR-0105), and a process-tree runner with Linux Landlock/seccomp and Windows AppContainer confinement |
 
 Core, CLI, application, and desktop crates forbid unsafe code through the
 workspace lint. Their dependencies, such as Tauri and SQLite, use it. The platform crate denies unsafe code except
@@ -1062,10 +1090,15 @@ Direct dependencies have specific purposes:
 | time | UTC date layout and RFC 3339 formatting/parsing |
 | sha2 | Standard SHA-256 prompt digest; no custom cryptography |
 | thiserror | Typed component errors; derive macro runs during compilation |
-| reqwest | Blocking HTTP client; default features disabled, no TLS backend or hosted execution used in this loopback-only increment |
+| reqwest | HTTP client; default features disabled, with `json` and `native-tls` (the platform TLS stack). Used for loopback local models, hosted provider endpoints, ChatGPT sign-in, `packages fetch`, and `web_fetch` |
+| tokio | `rt`, `time`, `net`, `fs`, and `io-util` only; the async runtime behind the HTTP client and its connection sockets |
+| rsa, base64, getrandom, bytes | ChatGPT sign-in (ADR-0093): RS256 ID-token verification with a public key, base64url decoding, random state, nonce, and PKCE values, and a zeroed buffer for outgoing token forms. Default features disabled |
+| saphyr-parser | Event-level YAML parser for skill frontmatter (ADR-0057); builds no value tree |
+| zbus (Linux only) | Pinned to `=5.19.0`, the version `secret-service` uses, for raw Secret Service calls that refuse prompts (ADR-0042) |
+| rfd (`omgcode-desktop`) | 0.17.2 with `gtk3` and default features disabled; native folder and confirmation dialogs that Rust opens for the `settings` window (ADR-0060). Adds no IPC command |
 | clap | CLI parsing and help; derive macro runs during compilation |
 | directories | Platform application-data location selection |
-| windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, DPAPI (`Win32_Security_Cryptography`), I/O handles, processes and jobs, and console control events |
+| windows-sys | Maintained Windows API bindings behind narrow reviewed wrappers for Win32/WDK Foundation and Storage/FileSystem, Security, DPAPI (`Win32_Security_Cryptography`), I/O handles, processes and jobs, and console control events; the full feature list is in `crates/omgcode-platform/Cargo.toml` and includes window-message calls for the foreground-ownership check (ADR-0105) |
 | zeroize | Zeroes owned secret buffers on drop; `alloc` only, no derive macro |
 | secret-service (Linux only) | Freedesktop Secret Service client over pure-Rust zbus, with the tokio runtime and Rust AES/DH session crypto (`rt-tokio-crypto-rust`); its blocking API runs an internal tokio runtime |
 | rusqlite | 0.43.0 with `default-features = false` and `bundled`; SQLite 3.54.1 with FTS5 for the derived session index. MIT. Compiles SQLite's C amalgamation through `cc` at build time, so a C compiler is required. Uses `unsafe` internally; core uses only its safe API. Adds `libsqlite3-sys`, `fallible-iterator`, and `fallible-streaming-iterator` |
@@ -1120,7 +1153,7 @@ cargo test -p omgcode-cli --test toolchain_acceptance --locked -- --ignored
 Do not infer whole-user/process containment, Git safety, same-user credential
 isolation, release filesystem support, or full coding-agent support from these tests. The
 broker supports bounded file operations through trusted CLI input and the core
-turn runtime, which chat drives for read/list and an approval-gated command when
-a workspace enables `model_tools`. Live provider tool-call compatibility and
+turn runtime, which chat drives for the model's read/list, write, command, and
+`web_fetch` tools when a workspace enables `model_tools`. Live provider tool-call compatibility and
 process containment
 remain separate boundaries.

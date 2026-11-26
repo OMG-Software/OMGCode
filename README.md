@@ -5,12 +5,14 @@
 OMGCode aims to connect language models to controlled development tools.
 The current code is an early Rust core and command-line prototype. A bounded
 native workspace file broker is available through trusted CLI commands. A core
-turn/tool runtime and schema-v2 session format let chat offer the local LM Studio
-model read, list, approval-gated edit, multi-edit, create, rename, delete, and
-command tools, only for a workspace that enables `model_tools` and each tool's
-own preferences. Git workflows remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
-frontend) browses and searches sessions, runs chat, and decides model-tool
-approvals in a separate window; it has no installer and has run only on Windows.
+turn/tool runtime and schema-v3 session format let chat offer the selected
+model read, list, edit, multi-edit, create, rename, delete, directory-creation,
+command, and `web_fetch` tools, only for a workspace that enables `model_tools`
+and each tool's own preferences. Writes and commands need an approval unless the
+operator sets them to `allow`. Git workflows remain planned. A prototype desktop shell (Tauri, with a strict TypeScript
+frontend) browses and searches sessions, runs chat, changes trusted settings in
+a separate window, and decides model-tool approvals in another; it has no
+installer and has run only on Windows.
 The trusted CLI `run` command starts one program for a workspace whose
 `execute` preference is enabled. It uses an operator-declared toolchain
 profile, records each run in a run journal, and confines the process tree with
@@ -23,20 +25,24 @@ directory grants.
 > workspace permission preferences, perform bounded workspace reads/listings,
 > create new files/directories through the trusted CLI, preview bounded diffs
 > against trusted proposed content, and send a chat request to
-> an explicitly selected local LM Studio or Ollama model. `omgcode chat --stream` streams
+> an explicitly selected model connection: a local LM Studio or Ollama server, a
+> hosted provider with a stored API key, or a ChatGPT sign-in. `omgcode chat --stream` streams
 > that model's reply to standard error as provisional text.
-> When a workspace enables the `model_tools` preference, chat lets the local
+> When a workspace enables the `model_tools` preference, chat lets the
 > model read and list files inside that workspace through a bounded runtime.
-> When `execute`, `read`, and `write` are also enabled, it offers a confined
-> command tool that records a pending approval and runs only after the operator
-> approves that exact call. When `read` and `write` are enabled, it offers an
+> When `execute`, `read`, and `write` are also enabled and a toolchain profile
+> is recorded for the platform, it offers a confined command tool. When `read`
+> and `write` are enabled, it offers an
 > edit tool that replaces one exact text occurrence in an existing file, a
 > multi-edit tool that replaces up to 16 exact occurrences in one existing
 > file, a create tool that makes one new file, a rename tool that moves one file
-> to a name that does not exist, and a delete tool that removes one file after
-> a checkpoint of its bytes. Each records a pending approval and acts only after
-> the operator approves that exact call and acknowledges that other writers are
-> stopped; edits and deletions are applied through a checkpoint, and creation
+> to a name that does not exist, a delete tool that removes one file after
+> a checkpoint of its bytes, and a directory tool that creates one directory
+> whose parent exists. A write or command whose preference is `prompt` records
+> a pending approval and acts only after the operator approves that exact call
+> (a write also needs the acknowledgement that other writers are
+> stopped); one whose preference is `allow` runs without one. Edits and
+> deletions are applied through a checkpoint, and creation, directory creation,
 > and renaming are not checkpointed. A `web_fetch` tool, off by default, reads
 > one public HTTPS page per call behind its own preference and a per-workspace
 > host allowlist. It has no other model network tool and no Git or MCP tools.
@@ -59,15 +65,16 @@ directory grants.
 > declared origins into a private per-workspace cache. A selected cache root
 > is exposed read-only on Linux and Windows; Windows needs a read-execute
 > container grant, and Linux falls back to application storage when no root is
-> selected. Provider profiles record connection shapes and enable no cloud
-> adapter or login. Trusted single-use approval records authorize one exact
+> selected. Provider profiles record connection shapes; hosted
+> connections are prototypes that were not tested with a real key. Trusted
+> single-use approval records authorize one exact
 > model-tool call; the trusted CLI or the desktop approvals window can decide
 > them. API keys can be stored in protected OS storage (DPAPI on Windows, the
-> Secret Service on Linux) and bound to a profile. Only the local adapter
-> reads one, through an operator-selected `lm_studio` profile
-> (`--provider-profile`) that also supplies the endpoint; an `ollama_local`
-> profile records an endpoint without a credential. The desktop `settings`
-> window chooses between them from a dropdown. Runs have memory,
+> Secret Service on Linux) and bound to a profile. The chat client reads one
+> through an operator-selected profile (`--provider-profile`) that also
+> supplies the endpoint; an `ollama_local` profile records an endpoint without
+> a credential. The desktop `settings` window chooses the connection from a
+> dropdown. Runs have memory,
 > process-count, CPU-time, and sampled disk-growth limits; the disk limit is
 > not a filesystem quota. See [command execution](docs/execution.md#tree-limits).
 
@@ -110,13 +117,20 @@ frontend in `crates/omgcode-desktop/ui`. The CLI provides:
 - `session`: create, inspect, archive, restore, compact older active context,
   and explicitly interrupt an abandoned turn in a JSONL journal.
 - `chat`: send one user turn to an already-running LM Studio or Ollama server
-  at a literal loopback HTTP endpoint. It does not discover, start, or download models, and it
+  at a literal loopback HTTP endpoint, or through a selected hosted or ChatGPT
+  provider profile. It does not start or download models, and it
   rejects model tool requests unless the session's workspace enables
   `model_tools`. Then it offers read/list tools; when `read` and `write` are
-  also enabled, the approval-gated edit, multi-edit, create, rename, and delete
-  tools; and when `execute`, `read`, and
-  `write` are all enabled, the approval-gated command tool. Each is rechecked
-  against live settings before every call.
+  also enabled, the edit, multi-edit, create, rename, delete, and
+  directory-creation tools; and when `execute`, `read`, and
+  `write` are all enabled, the command tool. Writes and commands need an
+  approval unless set to `allow`. Each is rechecked against live settings
+  before every call. `--reasoning-effort` sets a reasoning effort for the session.
+- `models`: list the models the selected server reports.
+- `approvals` and `actions`: decide trusted per-call approvals, and list the
+  model action journal.
+- `skills`: import, enable, inspect, and remove skills; `chat --skill` loads
+  one into a turn.
 
 Prompt assembly sends the compiled base in the system role. Optional user
 preferences and conversation history remain user or assistant messages. The
@@ -129,12 +143,13 @@ The core also implements a session-owned turn/tool runtime and JSONL schema
 version 3. Schema version 3 adds readable, bounded context compaction; the
 original journal messages are retained, and the summary is labelled untrusted
 user-level evidence. That runtime accepts a caller-supplied model interface, validates
-strict read/list/edit/command tool calls, creates a fresh workspace binding
+strict tool calls, creates a fresh workspace binding
 before every file operation, and records tool intents, results, and
-source-labelled messages. The edit and command tools additionally require a
-consumed approval; an edit also needs the operator's writers-stopped
-acknowledgement and writes only through checkpointed apply. `chat` runs it
-with the local LM Studio adapter for a workspace that enables `model_tools`.
+source-labelled messages. A write or command tool whose preference is `prompt`
+additionally requires a consumed approval; a write also needs the operator's
+writers-stopped acknowledgement, and an edit writes only through checkpointed
+apply. `chat` runs it with the selected provider adapter for a workspace that
+enables `model_tools`.
 It has no Git or MCP tool; its only network tool is the gated `web_fetch`.
 New sessions use schema version 3; version 1 and 2 journals remain readable
 and writable with their original subsets.
@@ -145,9 +160,10 @@ chat that runs the same turn as `omgcode chat`, and an approvals window that
 shows an exact reviewed request before it lets the operator decide. The webview
 gets no authority: the Rust side authorizes every command, and no command
 accepts a host path. The webview is still not a trusted computing base. It has
-no installer, development panels, or recovery interface, and it has not
-been run on Linux. A separate `settings` window shows the trusted
-configuration read-only; settings still change through the trusted CLI. Chat streams the local model's
+no installer, working terminal, diff view, or recovery interface, and it has not
+been run on Linux. A separate `settings` window shows and changes the trusted
+configuration through native dialogs and confirmations; packages are fetched and
+trusted runs start only through the CLI. Chat streams the local model's
 reply into the window by default (`--stream off` at launch disables it). The
 text is provisional, and the journal records only the validated reply. The
 shell pushes chat events to the main window through one caller-scoped channel
@@ -182,17 +198,20 @@ checkpointed removal; and the rename tool uses a no-replace rename without a
 checkpoint. None detects a concurrent writer, and none is power-loss
 qualified. A deleted file is restored with trusted `file restore --removed`,
 which does not restore its mode or access list.
-Model-dispatched process execution, Git, MCP, and memories remain planned. See the
+Git, MCP, and memories remain planned. See the
 [workspace settings contract](docs/workspace-permissions.md), the
 [workspace file-access guide](docs/file-access.md), and the [development
 guide](docs/development.md) for limits and command details.
 
 The CLI stores provider API keys in operating-system protected storage through
 trusted `workspace provider-credential-set` and `provider-credential-remove`
-commands (ADR-0042). Only the local LM Studio adapter reads one: with
+commands (ADR-0042). The chat client reads one for a selected `lm_studio` or
+hosted profile (ADR-0092), and a ChatGPT sign-in keeps its own tokens
+(ADR-0093). With
 `--provider-profile <name>`, `chat` and `session compact` (and the desktop
 shell, at launch) take the server token from the stored credential of that
-`lm_studio` profile and do not read `OMGCODE_LM_TOKEN` (ADR-0047). A
+profile and do not read
+`OMGCODE_LM_TOKEN` (ADR-0047). A
 credential that cannot be read stops the turn. An `lm_studio` profile can
 record one loopback endpoint with `provider-profile-add --endpoint`, and a
 selected profile supplies both its endpoint and its token, so the stored token
@@ -231,8 +250,8 @@ sends only the supplied message and saved chat history, not workspace files;
 earlier tool results are replaced by a withheld notice. If `model_tools` is
 enabled for `.`, the model can call the read and list tools. With `read` and
 `write` also enabled, which is the default, it can request an exact file edit;
-with `execute` enabled as well it can request the command tool. Each edit or
-command needs an operator approval. The file
+with `execute` enabled as well it can request the command tool. Each write or
+command needs an operator approval unless its preference is `allow`. The file
 contents it reads are sent to the local model.
 For Ollama, record a profile once and name it on each turn. Set the server's
 context length in Ollama (for example `OLLAMA_CONTEXT_LENGTH`), because this
@@ -266,9 +285,10 @@ data upstream; check the server's configuration before sending sensitive text.
   host development data. Sessions will normally have read and write access to
   their active workspace within that root. Other host folders will be denied
   by default.
-- **Sandboxed tools:** Extend the current bounded trusted-CLI file broker with
-  model-authorized file tools, terminals, and background tasks governed by the
-  same permission policy and enforced with operating-system controls.
+- **Sandboxed tools:** Extend the current bounded trusted-CLI file broker and
+  approval-gated model file and command tools with terminals and background
+  tasks governed by the same permission policy and enforced with
+  operating-system controls.
 - **Git workflows:** Status, diffs, staging, commits, branches, worktrees, fetch,
   pull, and push, with controlled remote access and credential handling.
 - **Development panels:** Terminal tabs, background task status and logs, and
@@ -294,7 +314,8 @@ data upstream; check the server's configuration before sending sensitive text.
   with scoped storage, invalidation, usage reporting, and clear controls.
 - **Skills settings:** Add, remove, enable, and disable versioned skill packages.
   Skills use the same permission policy and controlled tools as other work.
-  Trusted CLI commands do this today; the settings page is not implemented.
+  Trusted CLI commands and the desktop `settings` window import, enable,
+  disable, and remove skills today ([ADR-0082](docs/adr/0082-manage-skills-in-the-settings-window.md)).
 - **Project and global memories:** Save reusable facts or preferences with an
   explicit This project or Global choice. Review, edit, delete, or disable
   entries and control their use in each session. See [memories](docs/memories.md).
@@ -343,7 +364,7 @@ explicit rather than being assumed to work identically across providers.
 - **Credential handling:** Operating-system credential storage, accessed through
   narrow services in the Rust core.
 
-The desktop prototype uses a limited command interface to the Rust core: 19
+The desktop prototype uses a limited command interface to the Rust core: 66
 commands, no host paths, and per-window permissions checked in Rust. Provider
 keys will stay out of frontend state, repository files, and task environments.
 
@@ -353,7 +374,9 @@ OMGCode must work with projects in multiple languages. It will support
 user-selected installed tools and managed toolchain environments through a
 generic sandboxed runner. Tool profiles will include the required executable,
 runtime, library, and SDK resources, plus scoped writable build outputs, caches,
-and temporary space. Version 0.16.0 profiles are declared by the operator. In
+and temporary space. Profiles are declared by the operator, who can also select
+proposals that the desktop `settings` window generates from installed
+toolchains ([ADR-0103](docs/adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)). In
 acceptance tests, Rust, Python, Node, C/C++, and Go workflows ran confined on
 Windows and Linux; Java has not run yet.
 
@@ -407,8 +430,8 @@ cannot grant permissions. See [context management](docs/context-management.md) a
 3. Prove Windows/Linux isolation, representative toolchains, and process cleanup.
 4. Extend the Rust core and build the desktop interface, session tree, and
    remaining persistence and recovery workflows. The first desktop prototype
-   (session tree, search, chat, and approvals) is implemented; recovery,
-   settings, development panels, and packaging remain. Streaming of the local
+   (session tree, search, chat, approvals, and a settings window) is implemented;
+   recovery, development panels, and packaging remain. Streaming of the local
    model's reply is implemented for that adapter only (ADR-0049).
 5. Expand provider adapters and add core-authorized tool workflows.
 6. Add visible instructions, token accounting, compaction, safe caching, skills,
@@ -423,9 +446,10 @@ cannot grant permissions. See [context management](docs/context-management.md) a
 Start with the [documentation index](docs/README.md). Contributors and coding
 agents must follow the [coding rules](docs/coding-rules.md) before code or test
 work. The [bundled skill source catalog](skills/README.md) contains source
-packages. Version 0.39.0 can import a skill folder, enable it per application
-or workspace, and load it into one chat turn with `chat --skill`; there is no
-settings page, script execution, or automatic selection. See [skills](docs/skills.md).
+packages. A skill folder can be imported, enabled per application or
+workspace, and loaded into one chat turn with `chat --skill` or the desktop
+`main` window; the `settings` window imports, enables, and removes skills.
+There is no script execution or automatic selection. See [skills](docs/skills.md).
 
 ## Contributing
 

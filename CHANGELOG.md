@@ -365,6 +365,42 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- The guides now match the code at version 0.69.0. PRs #69 to #76 merged
+  in parallel, so statements one change made were left stale by another.
+  Documentation only; no code or version changed.
+  - Model tools: guides that said no model network tool exists, that every
+    write or command needs an approval, or that only read, list, edit, and
+    command tools exist now name the directory tool (ADR-0079), `web_fetch`
+    (ADR-0098), the `allow` state (ADR-0063), read and list approvals under
+    `prompt`, the recorded-profile condition and `profile_not_recorded`
+    answer of the command tool (ADR-0100), the 32 KiB argument limit of the
+    edit and multi-edit tools, and recoverable refused calls (ADR-0099).
+    Chat advertises at most ten tool names, not eight.
+  - Providers: statements that no cloud adapter or login exists and that
+    only the local LM Studio adapter reads a stored credential now cover
+    hosted connections (ADR-0092) and ChatGPT sign-in (ADR-0093). The
+    desktop guide gives the 120-second plan-route timeout and the 2,048-model,
+    4 MiB model-list limits.
+  - Desktop: the guide counts 66 commands and 32 `settings` commands, lists
+    the create-directory review field and the six three-state preferences,
+    and no longer says the CI desktop build has not run. The frontend README
+    lists the Git, Processes, Web, and Context tabs, the footer's
+    provider, model, and effort choice, and the per-session endpoint, and the
+    root and documentation READMEs describe the `settings` window as
+    changing settings rather than read-only.
+  - CLI: the development guide describes the three-state `workspace
+    permissions` flags, their defaults and legacy `true`, the `web-host-*`
+    commands, `actions list`, and the current dependencies; the README lists
+    `models`, `approvals`, `actions`, `skills`, and `chat --reasoning-effort`.
+  - Journals: the control-journal action table lists all 37 actions, and
+    the session and context guides record `web_fetch`, `context.compacted`,
+    and the reasoning effort's place in the context estimate (ADR-0102).
+  - `IMPLEMENTATION_PLAN.md` marks Phases F1 and S2 and version 0.43.0 as
+    merged and records PRs #69 to #76. `AGENTS.md` names the `dev/` branch
+    prefix used since PR #72, links ADR-0068 under its own number, and
+    summarizes ADR-0104. A link to the checkpoint-folder section now uses
+    its ADR-0070 anchor.
+
 - The CLI test `a_filtered_listing_is_truncated_when_newer_calls_fill_the_search_window`
   no longer fails now and then on Linux with `action journal: Busy`. It
   dropped the seeded action journal's writer and opened it again, and a

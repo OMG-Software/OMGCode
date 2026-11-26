@@ -27,8 +27,11 @@ the [replacement contract](#replacement-contract). Trusted restore writes a
 retained checkpoint's original bytes back through that same apply path, and
 trusted checkpoint deletion removes one resolved private entry; see
 [Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). A create
-operation still refuses every existing entry. Workspace file deletion,
-restore-as-create, recursive directory creation, and action replay are
+operation still refuses every existing entry. Workspace file deletion exists
+only as the checkpointed model delete tool
+([ADR-0055](adr/0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md)),
+whose retained original the trusted `file restore --removed` writes back.
+Restore-as-create, recursive directory creation, and action replay are
 unavailable. A content check followed by rename cannot guarantee no
 lost updates against independent writers. See
 [ADR-0013](adr/0013-enforce-file-access-with-native-handles-and-exclusive-creation.md).
@@ -504,7 +507,8 @@ fresh binding, and reads the current file through the audited broker read,
 bounded to 1 MiB. Missing, repeated (counting overlaps), or unchanged
 `old_text` returns a recoverable `edit_no_match`, `edit_ambiguous`, or
 `edit_unchanged` result; a non-UTF-8 file returns `non_utf8`, and a result over
-1 MiB returns `edit_too_large`. The handler then computes the proposed bytes
+1 MiB returns `edit_too_large`. The call's argument JSON is at most 32 KiB
+(ADR-0099). The handler then computes the proposed bytes
 and an approval digest under the domain tag `omgcode-file-edit-v1`. The digest
 covers length-prefixed fields for the session, the workspace, the normalized
 path, and the size and SHA-256 of both the current and the proposed bytes.
@@ -545,7 +549,8 @@ so a record for one tool, including `workspace_edit_file`, can never be
 consumed by another.
 
 `workspace_multi_edit_file` takes a path and one to 16 `old_text`/`new_text`
-pairs. It reads the live file through the audited broker (at most 1 MiB, UTF-8)
+pairs, bounded by the same 32 KiB argument limit. It reads the live file
+through the audited broker (at most 1 MiB, UTF-8)
 and matches every `old_text` against that original content: each must occur
 exactly once (`edit_no_match`, `edit_ambiguous`, naming the 1-based edit index),
 and the matched ranges must not overlap (`edit_overlap`). It applies the
@@ -582,10 +587,10 @@ becomes stale once its path exists.
 
 Both tools are advertised and dispatched only under the same live
 `model_tools`, `read`, and `write` preferences as `workspace_edit_file`, with
-the same per-call recheck and `edit_disabled` denial, in the order read, list,
-edit, multi-edit, create, rename, delete, command (eight names, the existing
-cap). Both use `file_write` approvals with the 900-second lifetime and the
-writers-stopped acknowledgement, and the same lookup filters. Each has its own
+the same per-call recheck and `edit_disabled` denial. Chat advertises at most
+ten tool names: read, list, the six file-write tools, `web_fetch`, and the
+command tool. Both use `file_write` approvals with the 900-second lifetime and
+the writers-stopped acknowledgement, and the same lookup filters. Each has its own
 digest domain tag (`omgcode-file-rename-v1`, `omgcode-file-delete-v1`), so a
 record for one tool, including the three earlier file-write tools, can never be
 consumed by another. Both read the live source through the audited broker

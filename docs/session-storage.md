@@ -175,8 +175,8 @@ not rewritten. See [workspace settings](workspace-permissions.md).
 ### Core turn/tool lifecycle
 
 The `omgcode-core` `turn` module runs one bounded model/tool turn through a
-caller-supplied model interface. `chat` runs it with the local LM Studio
-adapter when the session's workspace enables `model_tools`; otherwise chat
+caller-supplied model interface. `chat` runs it with the session's model
+connection when the session's workspace enables `model_tools`; otherwise chat
 advertises no tools and rejects tool calls. A caller must provide an open schema-version-2-or-later
 journal, the current control-store writer, and the workspace ID from trusted
 settings. The journal's recorded workspace ID is only a coherence check.
@@ -186,8 +186,10 @@ plus approval-gated tools offered only under their live settings:
 `workspace_edit_file` (ADR-0043), `workspace_multi_edit_file` and
 `workspace_create_file` (ADR-0054), `workspace_rename_file` and
 `workspace_delete_file` (ADR-0055), `workspace_create_directory` (ADR-0079),
-and `workspace_run_command` (ADR-0040). It parses strict OpenAI-style function
-calls. A call with a usable, unique identifier whose tool is unknown, whose
+`workspace_run_command` (ADR-0040), and `web_fetch` (ADR-0098), which a
+separate `web_fetch` preference offers; under `allow` only a host on the
+workspace's allowlist runs without an approval. It parses strict OpenAI-style
+function calls. A call with a usable, unique identifier whose tool is unknown, whose
 arguments are too large or malformed, or whose path is absolute or has a parent
 segment is answered with a recoverable result and the turn continues
 (ADR-0099). A response element with no supported shape or identifier, and a
@@ -228,10 +230,12 @@ Every tool result is recorded first as `tool.requested`, then
 `tool.completed`, then a `message.recorded` entry with role `tool` and source
 `core_tool`. The tool text starts with a source label and remains user-level,
 untrusted content when the next request is assembled. Model-requested text
-cannot become a system message. Read and list run directly. An edit, a
-multi-edit, a create, a rename, a delete, or a command runs only after a
-matching single-use record that the operator approved; there are no general
-file write tools, and Git, MCP, and network access remain unavailable. The separate
+cannot become a system message. A call whose preference state is `allow` runs
+without an approval; under `prompt` a read, a list, an edit, a multi-edit, a
+create, a rename, a delete, a directory, a command, or a web fetch runs only
+after a matching single-use record that the operator approved (ADR-0063);
+there are no general file write tools, and Git and MCP access remain unavailable. The one network
+tool is `web_fetch` (ADR-0098, above). The separate
 [file-operation journal](file-access.md) remains the broker's operation ledger.
 
 The runtime does not redact by itself. The caller must redact user text and
@@ -288,7 +292,9 @@ The request manifest does not include usage, `finish_reason`, or tool-round
 counts. The CLI returns provider usage and finish reason in its JSON output, but
 does not append them to the journal. Schema version 2 records the exact tool
 schema version and tool names advertised by the core turn runtime. The prototype
-has no streaming, artifact, index, compaction, migration, or memory events.
+has no streaming, artifact, migration, or memory events. Its only compaction
+event is `context.compacted`, and the derived index (below) is not a journal
+event.
 Streamed model text (ADR-0049) is provisional and is never written to the
 journal: the recorded reply is the validated whole reply, redacted as a whole,
 and the journal does not say whether a reply was streamed. A turn cancelled

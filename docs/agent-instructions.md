@@ -17,9 +17,10 @@ No prompt can guarantee that a model will ignore malicious instructions.
 The compiled base is prompt version 0.1.4. The Rust core embeds
 [`prompts/system.md`](../prompts/system.md), computes the SHA-256 digest from
 those compiled bytes, and exposes the text, version, and digest through the
-`prompt` CLI command. Each current LM Studio chat request begins with those
-exact compiled bytes as a system-role message. The adapter rejects a different
-first message or another system-role message.
+`prompt` CLI command. Each current chat request begins with those exact
+compiled bytes as a system-role message. The adapter rejects a different first
+message or another system-role message. The ChatGPT plan route, which refuses
+`system` items, sends the same bytes as `instructions`.
 
 The `chat --instructions` option adds one labelled user-level preference
 message. The desktop shell builds the same message from the global custom
@@ -31,8 +32,9 @@ roles assigned by the core. Text inside these messages cannot create another
 role or a tool call. The CLI stores the current request and assistant response
 in the session journal. It records the compiled prompt, version and digest,
 custom instruction text, model, base URL, and configured context/output budgets
-in the request manifest. It does not record custom-instruction scope revisions,
-skill/tool/memory selections, or an account profile.
+in the request manifest. Selected skills (identity and digest only) and a
+chosen reasoning effort are also recorded. It does not record
+custom-instruction scope revisions, memory selections, or an account profile.
 
 The core turn/tool runtime records the exact tool schema version and tool names
 in a schema-version-2 request manifest. Its read/list results are appended as
@@ -41,12 +43,15 @@ Completions sends each as `user` text. Within a turn, the ChatGPT plan route
 sends each as a `function_call_output` item after the model's own validated
 call, with the same labelled text
 ([ADR-0097](adr/0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md)). Edit,
-multi-edit, create, rename, delete, and command results follow the same rule
-and remain untrusted. Chat runs this runtime when the workspace enables
-`model_tools`; the edit, multi-edit, create, rename, and delete tools also need
-`read` and `write`, the command tool also needs `execute`, `read`, and `write`,
-and each runs only after a trusted approval. `web_fetch` needs only its own
-`web_fetch` preference, and its result is labelled as untrusted web content
+multi-edit, create, rename, delete, directory-creation, and command results
+follow the same rule and remain untrusted. Chat runs this runtime when the
+workspace enables `model_tools`; the edit, multi-edit, create, rename, delete,
+and directory-creation tools also need `read` and `write`, the command tool
+also needs `execute`, `read`, and `write` and a recorded toolchain profile
+([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)),
+and each runs only after a trusted approval unless its preference is `allow`.
+`web_fetch` needs `model_tools` and its own `web_fetch` preference, not `read`,
+`write`, or `execute`, and its result is labelled as untrusted web content
 from the fetched host rather than workspace data
 ([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
 Otherwise chat sends no tool definitions and rejects any provider tool call.
@@ -57,12 +62,13 @@ adapter applies a caller-supplied context budget using a byte-based estimate and
 fixed overhead. This is not an exact tokenizer or model-capacity check. The
 desktop shell's saved global and workspace instructions are the only saved
 instruction scopes; they have no revision history, and the CLI has no
-preference store. The prototype has no session preference store, preview
-UI, exact token-count display, memories, model
-Git or MCP tools, or provider-specific subscription routes.
-Its only model tools are read, list, the approval-gated exact edit,
-multi-edit, create, rename, and delete tools, the approval-gated command
-tool, and `web_fetch`, which reads one public HTTPS page per call behind its
+preference store. The prototype has no session instruction store, preview
+UI, exact token-count display (the desktop **Context** tab shows an estimate),
+memories, model Git or MCP tools, or subscription route other than the ChatGPT
+plan route (ADR-0093).
+Its only model tools are read, list, the exact edit,
+multi-edit, create, rename, delete, and directory-creation tools, the command
+tool (each approval-gated unless its preference is `allow`), and `web_fetch`, which reads one public HTTPS page per call behind its
 own preference and a host allowlist (ADR-0098). The current
 `--instructions` value is
 per invocation, not a saved preference with scope or revision history.
@@ -253,8 +259,11 @@ The current prototype records the compiled prompt text/version/digest, one
 per-invocation custom instruction string, the selected model and base URL, and
 caller-supplied context/output budgets. Schema version 2 runtime turns also
 record the tool schema version and exact tool names, plus separate tool intent
-and result events. The prototype has no saved preference revision system or
-records for skills, memories, tool-round counts, or account profiles.
+and result events. Selected skills (identity and SHA-256 only) and a chosen
+reasoning effort are also recorded
+([ADR-0102](adr/0102-choose-a-reasoning-effort-per-session.md)). The prototype
+has no saved preference revision system or records for memories, tool-round
+counts, or account profiles.
 
 Edits apply to the next request. Clearly label a request already in flight. If an
 edit requires immediate effect, cancel and observe completion before restarting;

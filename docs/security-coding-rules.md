@@ -3,9 +3,11 @@
 These rules define requirements for each implemented boundary. The CLI prototype
 has bounded prompt/provider/journal checks. It has trusted workspace settings
 and a bounded native file broker for manual commands. The core has a bounded
-turn/tool runtime for read and list. Chat runs it with the local LM Studio
-adapter only for a workspace whose `model_tools` preference is enabled;
-otherwise chat rejects model-requested tools. A prototype desktop shell
+turn/tool runtime for read and list, the write and command tools (approval-gated
+unless the operator sets `allow`), and `web_fetch`. Chat runs it with the selected provider adapter only
+for a workspace whose `model_tools` preference is enabled (`web_fetch` has its
+own preference); otherwise chat rejects model-requested tools. A prototype
+desktop shell
 (see the [desktop interface guide](desktop-interface.md)) renders session
 content in a webview, decides approvals in a separate window, and shows a
 read-only configuration view in a third; the rules below apply to it. Native confinement exists only for the trusted `run` command
@@ -54,7 +56,8 @@ authorization. See
   endpoint; Rust records it only after a native confirmation that names the
   provider and endpoint, and a launch argument fixes it instead. The `settings` window may
   supply a loopback endpoint for a new local profile without a credential,
-  and core validates it. Refuse a `main` request whose endpoint differs from
+  or an HTTPS endpoint for an `openai_compatible` profile with a write-only
+  API key (ADR-0092), and core validates it. Refuse a `main` request whose endpoint differs from
   the one resolved for the turn (ADR-0064).
 - Show the trusted configuration view only in the `settings` window, which
   renders no transcript text, tool output, or skill description or body, and
@@ -183,18 +186,20 @@ authorization. See
 
 The v0.3.0 native file broker currently exposes bounded read, list,
 exclusive-create, and single-directory creation through trusted CLI commands.
-The v0.4.0 core turn runtime exposes only read and list to its caller-supplied
-model interface. It validates strict tool schemas and limits, opens the control
+The v0.4.0 core turn runtime exposed only read and list to its caller-supplied
+model interface; later versions add the tools named below. It validates strict tool schemas and limits, opens the control
 store for each call, obtains a fresh binding, releases the settings lock before
 the next model request, and records tool intents and results as untrusted
 evidence.
 Its checks do not isolate hostile same-user processes or provide process
 containment. Since 0.12.0, chat drives this runtime when the session's
 workspace enables `model_tools`. Since 0.28.0 the model writes only through
-approval-gated tools: the exact edit (ADR-0043), since 0.36.0 the multi-edit
-and create tools (ADR-0054), and since 0.38.0 the rename and delete tools
-(ADR-0055). General file tools remain disabled; capability output keeps
-`workspace_file_tools` false. For model tools:
+tools that need a trusted approval unless the operator set the preference to
+`allow` (ADR-0063): the exact edit (ADR-0043), since 0.36.0 the multi-edit
+and create tools (ADR-0054), since 0.38.0 the rename and delete tools
+(ADR-0055), and the directory tool (ADR-0079). `web_fetch` (ADR-0098) is a
+network tool under its own preference. General file tools remain disabled;
+capability output keeps `workspace_file_tools` false. For model tools:
 
 - Check the live `model_tools` preference before each call, then let the broker
   check the operation preference. A journal only selects a registration; never
@@ -359,8 +364,11 @@ crate.
   and uses only the broker's single-directory create after consuming it: no
   recursive creation, no replacement, and no retry. See ADR-0079.
 - The `workspace_run_command` model tool may be advertised only under live
-  `model_tools`, `execute`, `read`, and `write`. Its first call records a
-  pending approval and starts nothing; only a later exact call may consume an
+  `model_tools`, `execute`, `read`, and `write` and a recorded toolchain
+  profile for the platform; a call that names another profile is refused
+  before any approval (ADR-0100). Under `prompt` its first call records a
+  pending approval and starts nothing; only a later exact call (in the desktop
+  shell, the same call after the turn waits for the decision) may consume an
   approved record and call the trusted runner. The model cannot approve,
   select limits, select network or host services, or reuse an approval. It
   cannot ask the tool to compose or re-parse a shell command line; it may
@@ -392,6 +400,9 @@ crate.
   Validate names, arguments, limits, session scope, and provider call identity.
   A provider adapter must parse provider JSON strictly; the core runtime then
   revalidates names, argument shape, paths, and bounds before any broker call.
+  A call with a usable identifier that fails this check is answered with a
+  recoverable result and recorded as refused; it dispatches nothing
+  ([ADR-0099](adr/0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md)).
 - Deduplicate calls within the correct request/session scope. After an ambiguous
   result, reconcile the operation instead of automatically executing it again.
 - Parse malformed, oversized, interrupted, and unsupported provider responses as
@@ -469,6 +480,11 @@ crate.
 - Apply containment to build scripts, package hooks, test programs, code
   generators, language servers, and all descendants. Tool registration is not
   permission to run commands outside confinement.
+- Toolchain profile discovery only proposes profiles. It runs no program,
+  reads no repository configuration such as `rust-toolchain.toml`, and grants
+  nothing; the operator selects proposals and confirms a native dialog before
+  core records them
+  ([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 - Separate toolchain installation/updates and package networking from ordinary
   execution. Do not make a host installation writable to an untrusted task.
 

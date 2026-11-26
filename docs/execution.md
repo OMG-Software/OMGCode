@@ -27,8 +27,10 @@ program through `run_confined` under a recorded
 [toolchain profile](#toolchain-profiles), behind the workspace `execute`
 preference, and records it in the [run journal](#run-journal). It is a
 trusted operator command. A model command tool can request one, but only a
-trusted approval record lets it call the same runner; no model tool starts a
-process without that record, and nothing calls the unconfined `run`. Settings
+trusted approval record, or, since 0.43.0, the operator's `allow` state for
+`execute`, `read`, and `write` (ADR-0063), lets it call the same runner; no
+other model tool starts a process, and nothing calls the unconfined `run`.
+Settings
 diagnostics keep `execution_allowed: false`, because a diagnostic never
 authorizes a run. Do not describe either confinement as qualified beyond the
 tested kernel and Windows build.
@@ -775,7 +777,9 @@ The runtime checks the exact digest, session, workspace, operation, and
 settings revision, consumes the approval once, drops the settings lock, and
 calls the trusted `run` path. A denial returns `approval_denied` and is not
 re-requested. An expired or consumed record causes a new pending request. A
-run that fails after consumption uses the approval.
+run that fails after consumption uses the approval. In the desktop shell the
+turn instead waits for the decision, and an approved call runs in the same
+turn (ADR-0063).
 
 Output is untrusted and bounded. The session journal records the tool intent
 and result; the run journal records the run. No replay executes a recorded
@@ -1246,8 +1250,9 @@ These remain true after C6:
   configuring a toolchain to use the directory is operator work.
 - **Model command limits.** The model command tool accepts no model-selected
   limits, network, or host services. It uses a 20-second deadline and 4 KiB
-  per output stream. The operator flow spans two turns, and the operator
-  decides in the CLI or in the desktop approvals window. A denied exact request stays denied for the current settings
+  per output stream. On the CLI the operator flow spans two turns; in the
+  desktop shell the turn waits. The operator decides in the CLI or in the
+  desktop approvals window. A denied exact request stays denied for the current settings
   revision; a failed run consumes the approval. A CLI acceptance test runs one
   approved command through the real chat process and the trusted runner on
   both hosts; it needs a delegated cgroup on Linux and a workspace container

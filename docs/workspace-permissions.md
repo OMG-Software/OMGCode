@@ -64,7 +64,8 @@ checked before the overlap check. Stale data-directory identity fails closed.
 These metadata checks detect ordinary replacement and configuration mistakes.
 They do not prevent path-swap races, hostile mount changes, file ID reuse with
 forged metadata, or a malicious process running as the same user. File access
-will need a reviewed object-relative broker. No such broker exists yet.
+goes through the bounded native broker described in the
+[file access contract](file-access.md); its limits are stated there.
 
 ## Revisions and bindings
 
@@ -101,10 +102,10 @@ state since it last read them, so turning the preference back on before it
 reads does not keep the run going (ADR-0061). The `permissions` command reports success only after the runs it
 affects have stopped; see [settings changes during a
 run](execution.md#settings-changes-during-a-run). Per-target grants remain
-required. Single-use approvals now exist for the model edit, multi-edit, create,
-rename, delete, and command tools:
+required. Single-use approvals now exist for the model read, list, edit,
+multi-edit, create, rename, delete, directory, command, and `web_fetch` tools:
 the trusted CLI and the desktop approvals window decide them. The desktop
-`settings` window changes the development root, registrations, the six
+`settings` window changes the development root, registrations, the workspace
 preferences, and package cache roots through the same store calls, and creates
 an empty store on first use (ADR-0059 phase S2, ADR-0060).
 
@@ -125,19 +126,36 @@ zero-based sequence, UTC timestamp, global revision, and tagged `action`:
 | `created` | Initial store identity, sequence and revision zero |
 | `root_set` | Selected directory identity; increment revision |
 | `workspace_registered` | New ID, directory identity, default preferences; increment revision |
+| `workspace_unregistered` | Remove one registration and the settings that name it; nothing on disk changes (ADR-0081); increment revision |
 | `permissions_changed` | Existing ID and complete preference set; increment revision |
+| `web_fetch_host_added` | Add one host pattern to a workspace's `web_fetch` allowlist (ADR-0098); increment revision |
+| `web_fetch_host_removed` | Remove one host pattern from that allowlist; increment revision |
 | `policy_checked` | Explicit diagnostic binding/request check and decision; preserve revision |
+| `container_grant_requested` | Windows container grant intent; increment revision |
+| `container_grant_applied` | Grant applied to the access list; preserve revision |
+| `container_revoke_requested` | Revocation intent for a grant; preserve revision |
+| `container_grant_revoked` | Grant removed from the access list; preserve revision |
 | `profile_added` | New toolchain profile; increment revision |
 | `profile_removed` | Remove a toolchain profile; increment revision |
 | `package_profile_added` | New package-network profile; increment revision |
-| `package_profile_removed` | Remove a package-network profile; increment revision |
+| `package_profile_removed` | Remove a package-network profile and any credential bindings it ends; increment revision |
+| `package_credential_bound` | Bind a stored credential to a package-network profile; increment revision |
+| `package_credential_removed` | End that binding; increment revision |
 | `package_fetch_started` | Trusted package-fetch intent; preserve revision |
 | `package_fetch_finished` | Trusted package-fetch outcome; preserve revision |
 | `package_cache_root_set` | Select one workspace's package cache root; increment revision |
 | `package_cache_root_cleared` | Clear one workspace's package cache root; increment revision |
+| `workspace_store_bound` | Create or adopt a workspace's `.OMGCode` checkpoint folder (ADR-0070); preserve revision |
+| `workspace_store_forgotten` | Abandon that folder, which is left in place; preserve revision |
 | `provider_profile_added` | New provider profile; increment revision |
-| `provider_profile_removed` | Remove a provider profile, and clear the active connection if it was that profile; increment revision |
+| `provider_profile_removed` | Remove a provider profile and any credential binding it ends, and clear the active connection if it was that profile; increment revision |
 | `active_provider_selected` | Choose a local provider profile, or none for the default, as the desktop's active connection; increment revision |
+| `provider_credential_bound` | Bind a stored API key to a provider profile; increment revision |
+| `provider_credential_removed` | End a provider credential binding, including a ChatGPT sign-out; increment revision |
+| `provider_subscription_bound` | Record a completed ChatGPT sign-in (ADR-0093); increment revision |
+| `skill_added` | Import a skill into the private registry, disabled (ADR-0057); increment revision |
+| `skill_removed` | Remove a skill; increment revision |
+| `skill_enablement_set` | Enable or disable a skill for the application or one workspace; increment revision |
 | `approval_requested` | Trusted approval request; preserve revision |
 | `approval_decided` | Approval granted or denied; preserve revision |
 | `approval_consumed` | Approval used once; preserve revision |
@@ -632,7 +650,7 @@ Before each turn, `chat` reads current settings and offers the tools only when:
 - a control store exists;
 - the session's recorded workspace UUID matches a registered workspace;
 - that workspace's `model_tools` preference is enabled;
-- the session journal uses schema version 2.
+- the session journal uses schema version 2 or later.
 
 Otherwise chat stays text only and reports `model_tools.mode` as `disabled` with
 a `reason`: `platform_unsupported`, `settings_absent`,
