@@ -180,12 +180,12 @@
   display: none;
 }
 
+/* The footer keeps its content's height until its splitter sets one (ADR-0101); a shorter
+   footer scrolls. The splitter is the line above it. */
 .side-footer {
-  flex: none;
-}
-
-.side-footer:not(:empty) {
-  border-top: 1px solid var(--border);
+  flex: 0 0 var(--side-footer-height, auto);
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Files tab. */
@@ -872,13 +872,18 @@ mark {
   overflow-wrap: anywhere;
 }
 
-/* Composer: the message box, then one toolbar row. */
+/* Composer: a splitter on its top edge, the message box, then one toolbar row. */
 .composer {
   display: grid;
   gap: 8px;
   padding: var(--gap);
-  border-top: 1px solid var(--border);
   background: var(--surface);
+}
+
+/* The splitter is the composer's top line (ADR-0101): it spans the padding and leaves the box
+   one gap below it. */
+.composer > .splitter {
+  margin: calc(-1 * var(--gap)) calc(-1 * var(--gap)) calc(var(--gap) - 8px);
 }
 
 .composer[hidden],
@@ -886,11 +891,13 @@ mark {
   display: none;
 }
 
+/* Three rows until the splitter above the composer sets a height (ADR-0101). The splitter
+   replaces the box's own resize grip, which would set an inline height the splitter cannot see. */
 .message-box {
   width: 100%;
-  resize: vertical;
+  resize: none;
   min-height: 64px;
-  max-height: 40vh;
+  height: var(--message-height, auto);
 }
 
 .composer-row {

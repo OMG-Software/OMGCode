@@ -20,6 +20,9 @@ Its sessions panel and a right-hand panel resize and collapse to rails of
 icons, and the transcript follows its end after a send until the operator
 scrolls up
 ([ADR-0072](docs/adr/0072-resize-and-collapse-the-main-window-panels-and-follow-the-transcript-end.md)).
+Every other section divider in the three windows moves without collapsing,
+and one module writes the frontend's only style, a listed size property
+([ADR-0101](docs/adr/0101-make-every-section-divider-movable.md)).
 Session rows are one line with the time since the last update. The right-hand
 panel's tabs read only while visible: a Terminal note that starts no shell and
 runs no command; a Files tree of names and kinds only

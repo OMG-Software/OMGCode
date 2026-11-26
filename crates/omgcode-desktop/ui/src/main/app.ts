@@ -150,6 +150,7 @@ export function startMain(root: HTMLElement): MainApp {
     dispose() {
       approvalsPoller.stop();
       layout.dispose();
+      sidePanel.dispose();
       conversation.dispose();
       modelBox.dispose();
       for (const tab of sessionTabs) {

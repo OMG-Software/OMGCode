@@ -66,7 +66,7 @@ export function createNav(handlers: NavHandlers): Nav {
   const revision = el("span", { class: "revision" });
   const element = el(
     "nav",
-    { class: "settings-nav", attrs: { "aria-label": "Settings sections" } },
+    { class: "settings-nav", attrs: { id: "settings-nav", "aria-label": "Settings sections" } },
     el("h1", { class: "brand-title" }, brandMark(), "Settings"),
     list,
     el("div", { class: "nav-foot" }, refresh, revision),
