@@ -150,8 +150,11 @@ denies, and **Approve** is armed only one second after a review renders.
   the shown window lands in the stacking order, while another application
   owns the foreground were not checked on a Windows desktop.
 - `omgcode-desktop` now depends on the workspace crate `omgcode-platform`.
-  `omgcode-platform` gains two Windows-only functions with four `unsafe`
-  calls; no third-party code is added.
+  `omgcode-platform` gains `foreground::this_process_owns_foreground`, on
+  every platform, which answers only on Windows and returns `None`
+  elsewhere, and the Windows-only
+  `foreground::activate_if_foreground_owner`. Their Windows code makes four
+  `unsafe` calls; no third-party code is added.
 - Every time the operator switches to the approvals window it makes one
   extra `approvals_list` call, which reads the approval store as each poll
   does.
