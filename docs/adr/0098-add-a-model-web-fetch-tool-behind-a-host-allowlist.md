@@ -113,8 +113,9 @@ program and arguments, which the session and run journals hold, and nothing
 names the files the program touched. A session's first fetched content is found again from its journal at
 the start of each turn, so the marker survives a restart and compaction. The
 trusted `actions list --after-web-content` command shows only these records,
-optionally for one `--session`, and the desktop's right-hand panel lists them
-for the open session.
+optionally for one `--session`, and prints `truncated` when its 1,000-record
+search window was full or more calls matched than `--limit`. The desktop's
+right-hand panel lists them for the open session.
 
 ## Alternatives considered
 

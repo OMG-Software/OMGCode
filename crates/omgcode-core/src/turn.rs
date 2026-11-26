@@ -2773,14 +2773,33 @@ impl WorkspaceToolDispatcher<'_> {
     /// operator. If the record cannot be written, the start stays unfinished
     /// in the journal and the turn stops with `audit_unavailable` after the
     /// result is recorded in the session journal.
-    fn audit_finish(&self, action_id: Uuid, mut execution: ToolExecution) -> ToolExecution {
+    fn audit_finish(&self, action_id: Uuid, execution: ToolExecution) -> ToolExecution {
         let outcome = match (&execution.outcome, &execution.terminal) {
             (ToolOutcome::Succeeded, _) => ActionOutcome::Succeeded,
-            // A cancelled fetch left nothing changed, so it is a plain failure.
-            (_, Some(TerminalToolError::Cancelled)) => ActionOutcome::Failed,
+            // A call that ended the turn may have changed something first.
             (_, Some(_)) => ActionOutcome::Uncertain,
             _ => ActionOutcome::Failed,
         };
+        self.record_finish(action_id, outcome, execution)
+    }
+
+    /// Record the finish of a web fetch. A fetch changes nothing in the
+    /// workspace, so one stopped by the turn's cancellation is a plain
+    /// failure, not uncertain.
+    fn audit_fetch_finish(&self, action_id: Uuid, execution: ToolExecution) -> ToolExecution {
+        if matches!(execution.terminal, Some(TerminalToolError::Cancelled)) {
+            self.record_finish(action_id, ActionOutcome::Failed, execution)
+        } else {
+            self.audit_finish(action_id, execution)
+        }
+    }
+
+    fn record_finish(
+        &self,
+        action_id: Uuid,
+        outcome: ActionOutcome,
+        mut execution: ToolExecution,
+    ) -> ToolExecution {
         let recorded = self.open_action_journal().and_then(|mut journal| {
             journal.record_finished(action_id, outcome, execution.code, execution.operation_id)
         });
@@ -3654,7 +3673,7 @@ impl WorkspaceToolDispatcher<'_> {
             }
             Err(error) => web_fetch_failure(call, &host, error, self.cancel.is_cancelled()),
         };
-        self.audit_finish(action, execution)
+        self.audit_fetch_finish(action, execution)
     }
 
     /// The approval flow shared by every model file-write tool.

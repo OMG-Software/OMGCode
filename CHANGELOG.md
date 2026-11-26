@@ -36,10 +36,13 @@ Changes are recorded here before a release version is assigned.
   target withheld by digest), and marks every later action of the same
   session `after_web_content`, found again from the session journal at each
   turn start, so it survives restarts and compaction. A cancelled fetch ends
-  the turn as cancelled and records the action as `failed`. `actions list`
-  gains `--session <id>` and `--after-web-content`, prints
-  `after_web_content` on every record, and its help now says newest first,
-  which it always was. The desktop `main` window's right-hand panel gains a
+  the turn as cancelled and records the action as `failed`; another tool's
+  call that ends the turn is still `uncertain`. `actions list` gains
+  `--session <id>` and `--after-web-content`, prints `after_web_content` on
+  every record, and its help now says newest first, which it always was. A
+  filtered listing searches the 1,000 newest records and prints `truncated`,
+  true when that window was full or more calls matched than `--limit`. The
+  desktop `main` window's right-hand panel gains a
   read-only **Web** tab, through the new `session_web_audit` command, that
   lists the open session's fetches and every action marked
   `after_web_content`, newest first, at most 100, with a command's program

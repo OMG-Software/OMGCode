@@ -1131,7 +1131,8 @@ fetched web content." when nothing matches, notes truncation, keeps the
 list with a note when the journal is busy, and clears it with an error when
 the journal fails validation. The trusted CLI's
 `omgcode actions list --after-web-content --session <id>` lists the same
-records.
+records, with `truncated` true when its 1,000-record search window was full
+or more calls matched than `--limit`.
 
 ## Settings window
 

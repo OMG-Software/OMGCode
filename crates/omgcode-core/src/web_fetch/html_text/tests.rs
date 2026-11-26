@@ -21,6 +21,17 @@ fn scripts_styles_and_markup_without_text_are_dropped() {
 }
 
 #[test]
+fn a_link_or_code_span_closes_right_after_its_text() {
+    // A block that ends inside the link puts its break after the link.
+    assert_eq!(
+        convert("<a href=\"/x\">t<div>d</div></a><p>next</p>"),
+        "[t\nd](https://example.com/x)\n\nnext"
+    );
+    // A space that ends a code span separates it from the next word.
+    assert_eq!(convert("<p><code>a </code>b</p>"), "`a` b");
+}
+
+#[test]
 fn a_script_ends_only_at_its_own_end_tag() {
     let html = "<script>var s = '<div hidden>';</SCRIPT ><p>after</p>";
     assert_eq!(convert(html), "after");

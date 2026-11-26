@@ -188,6 +188,22 @@ fn pinning_returns_only_a_validated_answer() {
 }
 
 #[test]
+fn pinning_checks_the_whole_answer_before_cutting_it() {
+    let public: Vec<SocketAddr> = (1..=40)
+        .map(|n| socket(&format!("93.184.216.{n}")))
+        .collect();
+    let mut late_private = public.clone();
+    late_private[33] = socket("10.0.0.1");
+    assert_eq!(
+        block_on(pin_addresses(async { Ok(late_private) })),
+        Err(ResolveError::Blocked),
+        "a private address past the cut still refuses the answer"
+    );
+    let kept = block_on(pin_addresses(async { Ok(public.clone()) })).expect("public answer");
+    assert_eq!(kept, public[..MAX_RESOLVED_ADDRESSES]);
+}
+
+#[test]
 fn pinning_refuses_a_mixed_answer_as_blocked() {
     let mixed = vec![socket("8.8.8.8"), socket("192.168.1.1")];
     assert_eq!(

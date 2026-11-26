@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
-/// The most addresses taken from one lookup. A larger answer is cut, and only
-/// the addresses kept are checked and returned.
+/// The most addresses returned from one lookup. The whole answer is checked
+/// first, and a larger answer that passes is then cut to this many.
 const MAX_RESOLVED_ADDRESSES: usize = 32;
 
 /// IPv4 ranges that are not global unicast: network address and prefix length.
@@ -166,17 +166,22 @@ impl ResolveState {
     }
 }
 
-/// Validate the answer of a name lookup.
+/// Validate the whole answer of a name lookup, then keep at most
+/// [`MAX_RESOLVED_ADDRESSES`] of it.
 ///
 /// `lookup` is the name lookup. It is a parameter so the policy path can be
-/// tested without the network.
+/// tested without the network. The system resolver's answer is bounded by
+/// the DNS message size, so the whole answer can be held and checked.
 pub(super) async fn pin_addresses<F>(lookup: F) -> Result<Vec<SocketAddr>, ResolveError>
 where
     F: Future<Output = io::Result<Vec<SocketAddr>>>,
 {
-    let addresses = lookup.await.map_err(|_| ResolveError::Lookup)?;
+    let mut addresses = lookup.await.map_err(|_| ResolveError::Lookup)?;
     match check_addresses(&addresses) {
-        Ok(()) => Ok(addresses),
+        Ok(()) => {
+            addresses.truncate(MAX_RESOLVED_ADDRESSES);
+            Ok(addresses)
+        }
         Err(AddressRefusal::Empty) => Err(ResolveError::Lookup),
         Err(AddressRefusal::NotGlobalUnicast) => Err(ResolveError::Blocked),
     }
@@ -209,7 +214,7 @@ impl Resolve for PinningResolver {
             let lookup = async {
                 tokio::net::lookup_host((host.as_str(), 0_u16))
                     .await
-                    .map(|found| found.take(MAX_RESOLVED_ADDRESSES).collect::<Vec<_>>())
+                    .map(|found| found.collect::<Vec<_>>())
             };
             match pin_addresses(lookup).await {
                 Ok(addresses) => {

@@ -312,11 +312,21 @@ impl Out {
         start
     }
 
-    /// Write text with no space before it, such as a closing backtick.
+    /// Write text with no space before it, such as a table cell separator.
     fn tight(&mut self, text: &str) {
         self.pending_space = false;
         self.flush();
         self.push_str(text);
+    }
+
+    /// Write a closing marker, such as a backtick or `](`, directly after the
+    /// text it closes. A waiting break or space is kept for the text after it.
+    fn close_inline(&mut self, text: &str) {
+        let breaks = std::mem::take(&mut self.pending_breaks);
+        let space = std::mem::take(&mut self.pending_space);
+        self.push_str(text);
+        self.pending_breaks = breaks;
+        self.pending_space = space;
     }
 
     /// Write a list or heading prefix, remembering it so an empty one can go.
@@ -722,7 +732,7 @@ impl<'a> Converter<'a> {
                 self.out.close_fence();
                 self.out.breaks(2);
             }
-            Kind::Code if entry.tick => self.out.tight("`"),
+            Kind::Code if entry.tick => self.out.close_inline("`"),
             Kind::Anchor if entry.link => self.close_link(),
             _ => {}
         }
@@ -739,12 +749,10 @@ impl<'a> Converter<'a> {
             // No text: remove the opening bracket too.
             self.out.buf.truncate(link.start.saturating_sub(1));
         } else {
-            // Space that followed the text still separates the next word.
-            let space = self.out.pending_space;
-            self.out.tight("](");
+            // A break or space that followed the text comes after the link.
+            self.out.close_inline("](");
             self.out.push_str(&link.url);
             self.out.push_str(")");
-            self.out.pending_space = space;
         }
     }
 

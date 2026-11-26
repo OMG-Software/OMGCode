@@ -23,6 +23,9 @@ pub(crate) enum ActionsCommand {
     /// `after_web_content` is true for every call a session made after its
     /// first successful `web_fetch`, whatever the tool or outcome. A
     /// `run_command` entry has no target: the run journal names its program.
+    /// With `--session` or `--after-web-content`, the 1000 newest calls are
+    /// searched, and `truncated` is true when that window was full or more
+    /// calls matched than `--limit`.
     List {
         /// How many of the most recent matching calls to list (1 to 1000).
         #[arg(long, default_value_t = 100)]
@@ -48,29 +51,36 @@ pub(crate) fn run(action: ActionsCommand, data_root: &Path) -> Result<(), CliErr
             session,
             after_web_content,
         } => {
-            let records = if session.is_some() || after_web_content {
-                filtered(data_root, limit, session, after_web_content)?
+            if session.is_some() || after_web_content {
+                let (records, truncated) = filtered(data_root, limit, session, after_web_content)?;
+                print_json(&json!({
+                    "actions": records.iter().map(record_json).collect::<Vec<Value>>(),
+                    "truncated": truncated,
+                }))
             } else {
-                recent(data_root, limit)?
-            };
-            print_json(&json!({
-                "actions": records.iter().map(record_json).collect::<Vec<Value>>(),
-            }))
+                let records = recent(data_root, limit)?;
+                print_json(&json!({
+                    "actions": records.iter().map(record_json).collect::<Vec<Value>>(),
+                }))
+            }
         }
     }
 }
 
-/// The newest `limit` calls that match every filter.
+/// The newest `limit` calls that match every filter, and whether the listing
+/// may be incomplete.
 ///
 /// The filters apply before the limit, so a filtered listing is not emptied by
-/// newer calls that do not match. The journal keeps and lists at most
-/// [`MAX_RECENT_RECORDS`] calls at a time, which bounds the search.
+/// newer calls that do not match. The journal lists at most
+/// [`MAX_RECENT_RECORDS`] calls at a time, which bounds the search. The
+/// listing is reported as truncated when that window was full, so older calls
+/// were not searched, or when more calls matched than `limit`.
 fn filtered(
     data_root: &Path,
     limit: usize,
     session: Option<Uuid>,
     after_web_content: bool,
-) -> Result<Vec<ActionRecord>, CliError> {
+) -> Result<(Vec<ActionRecord>, bool), CliError> {
     if !(1..=MAX_RECENT_RECORDS).contains(&limit) {
         return Err(CliError::new(
             "configuration",
@@ -78,12 +88,14 @@ fn filtered(
         ));
     }
     let mut records = recent(data_root, MAX_RECENT_RECORDS)?;
+    let window_full = records.len() >= MAX_RECENT_RECORDS;
     records.retain(|record| {
         session.is_none_or(|session| record.session_id == session)
             && (!after_web_content || record.after_web_content)
     });
+    let truncated = window_full || records.len() > limit;
     records.truncate(limit);
-    Ok(records)
+    Ok((records, truncated))
 }
 
 /// Read the journal, waiting while a writer holds its lock.

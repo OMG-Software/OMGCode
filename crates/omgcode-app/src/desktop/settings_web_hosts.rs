@@ -33,10 +33,10 @@ use super::settings_changes::{ChangeGuard, Confirmation, SettingsPrompt, check_r
 use super::state::folder_of_directory;
 use super::wire::SettingsOverview;
 
-/// Longest typed pattern examined, in bytes. Core's limit is the 253-byte
-/// name plus a two-byte `*.` prefix; a longer text is refused as too long
-/// without being parsed.
-const MAX_TYPED_PATTERN_BYTES: usize = MAX_WEB_HOST_BYTES + 2;
+/// Longest typed pattern examined, in bytes. Core accepts the 253-byte name
+/// with a two-byte `*.` prefix and one trailing dot; a longer text is refused
+/// as too long without being parsed.
+const MAX_TYPED_PATTERN_BYTES: usize = MAX_WEB_HOST_BYTES + 3;
 
 /// Arguments of `settings_add_web_fetch_host` and
 /// `settings_remove_web_fetch_host`.
@@ -238,6 +238,22 @@ mod tests {
             "web_host_reserved"
         );
         assert!(parse_pattern("Example.com").is_ok());
+    }
+
+    #[test]
+    fn a_maximal_wildcard_pattern_with_a_trailing_dot_is_parsed() {
+        let name = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        assert_eq!(name.len(), MAX_WEB_HOST_BYTES);
+        let typed = format!("*.{name}.");
+        assert_eq!(typed.len(), MAX_TYPED_PATTERN_BYTES);
+        let parsed = parse_pattern(&typed).expect("core accepts the pattern");
+        assert_eq!(parsed.as_str(), format!("*.{name}"));
     }
 
     #[test]

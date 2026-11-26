@@ -360,7 +360,21 @@ describe("the web tab", () => {
     expect(tab.element.textContent).toContain(WEB_EMPTY);
   });
 
-  it("clears when the session is cleared and ignores a late answer after dispose", async () => {
+  it("clears the list when the session is cleared", async () => {
+    const { tab, ipc } = mount(() => audit([fetchEntry()]));
+    tab.showSession(SESSION);
+    await settle();
+    expect(tab.element.querySelectorAll(".web-entry")).toHaveLength(1);
+
+    tab.showSession(null);
+    await settle();
+
+    expect(tab.element.querySelectorAll(".web-entry")).toHaveLength(0);
+    expect(tab.element.textContent).toContain(WEB_NO_SESSION);
+    expect(ipc.callsTo("session_web_audit")).toHaveLength(1);
+  });
+
+  it("ignores a late answer after dispose", async () => {
     let release: (value: SessionWebAudit) => void = () => undefined;
     const { tab } = mount(
       () =>

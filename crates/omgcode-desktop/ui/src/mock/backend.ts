@@ -79,7 +79,7 @@ function clone<T>(value: T): T {
 const MOCK_PATH_DEPTH_MAX = 32;
 const MOCK_COMPONENT_CHARS_MAX = 255;
 
-/** Lists one directory of the fake workspace, refusing a path as Rust does. */
+/** Rust's bound on a workspace's host allowlist and its reserved names (ADR-0098). */
 const MOCK_WEB_HOSTS_MAX = 32;
 const MOCK_WEB_HOST_RESERVED = [
   "localhost",
@@ -132,6 +132,7 @@ function mockWebHostPattern(text: string): string {
   return wildcard ? `*.${name}` : name;
 }
 
+/** Lists one directory of the fake workspace, refusing a path as Rust does. */
 function mockWorkspaceEntries(path: unknown): WorkspaceListing {
   if (!Array.isArray(path) || path.length > MOCK_PATH_DEPTH_MAX) {
     fail("invalid_request", "The folder path is not acceptable.");

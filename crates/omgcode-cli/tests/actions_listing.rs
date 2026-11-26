@@ -150,6 +150,15 @@ fn list(seeded: &Seeded, extra: &[&str]) -> Vec<Value> {
         .clone()
 }
 
+/// The whole JSON reply of a listing.
+fn listing(seeded: &Seeded, extra: &[&str]) -> Value {
+    let mut args = vec!["actions", "list"];
+    args.extend_from_slice(extra);
+    let output = run_cli(&seeded.fixture.data, &args);
+    assert_success(&output);
+    json_output(&output)
+}
+
 fn calls(actions: &[Value]) -> Vec<&str> {
     actions
         .iter()
@@ -230,6 +239,55 @@ fn the_limit_applies_after_the_filters_so_newer_unmarked_records_do_not_hide_the
     assert_eq!(calls(&newest), ["quiet-list", "quiet-read"]);
     let marked = list(&seeded, &["--after-web-content", "--limit", "2"]);
     assert_eq!(calls(&marked), ["list-after", "command-after"]);
+}
+
+#[test]
+fn a_filtered_listing_reports_whether_it_may_be_incomplete() {
+    let seeded = seeded();
+    assert_eq!(
+        listing(&seeded, &["--after-web-content"])["truncated"],
+        false
+    );
+    let quiet = seeded.quiet.to_string();
+    let limited = listing(&seeded, &["--session", &quiet, "--limit", "1"]);
+    assert_eq!(
+        calls(limited["actions"].as_array().expect("actions")),
+        ["quiet-list"]
+    );
+    assert_eq!(limited["truncated"], true, "a second call matched");
+    // An unfiltered listing keeps its shape.
+    assert!(listing(&seeded, &[]).get("truncated").is_none());
+}
+
+/// More than 1000 newer calls push the marked calls out of the search window,
+/// and the listing says so instead of looking complete.
+#[test]
+fn a_filtered_listing_is_truncated_when_newer_calls_fill_the_search_window() {
+    let seeded = seeded();
+    let mut journal = ActionJournal::open(&seeded.fixture.data).expect("action journal");
+    for index in 0..1000 {
+        let call_id = format!("later-{index}");
+        journal
+            .record_refused(&RefusedAction {
+                session_id: seeded.quiet,
+                workspace_id: seeded.fixture.workspace_id,
+                call_id: &call_id,
+                tool: ActionTool::RunCommand,
+                targets: &[],
+                request_sha256: None,
+                reason: RefusalReason::AccessDenied,
+                after_web_content: false,
+            })
+            .expect("refusal");
+    }
+    drop(journal);
+    let reply = listing(&seeded, &["--after-web-content"]);
+    assert_eq!(
+        reply["actions"],
+        Value::Array(Vec::new()),
+        "the marked calls are older than the window"
+    );
+    assert_eq!(reply["truncated"], true);
 }
 
 #[test]

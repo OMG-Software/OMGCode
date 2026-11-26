@@ -515,7 +515,8 @@ records keep their bytes; a build before 0.64.0 reports a journal that holds
 it as corrupt. `omgcode actions list --after-web-content [--session <id>]`
 lists only these records, newest first, and prints `after_web_content` on
 every record; the filters search the 1,000 newest records, so an older call
-of a busy journal is not listed.
+of a busy journal is not listed. A filtered listing prints `truncated`, true
+when that window was full or more calls matched than `--limit`.
 
 If the start cannot be recorded, the call does not run and the turn ends with
 `audit_unavailable`. An approval consumed just before that failure is spent.
