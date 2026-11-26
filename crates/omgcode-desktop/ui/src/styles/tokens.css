@@ -442,3 +442,60 @@ pre {
   color: var(--muted);
   text-align: center;
 }
+
+/* A movable divider between two sections (src/ui/splitter.ts, ADR-0101): a one-pixel line with
+   a wider grip on each side, like the main window's column separators. */
+.splitter {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  background: var(--border);
+  touch-action: none;
+}
+
+.splitter-vertical {
+  width: 1px;
+  cursor: col-resize;
+}
+
+.splitter-horizontal {
+  height: 1px;
+  cursor: row-resize;
+}
+
+.splitter::after {
+  content: "";
+  position: absolute;
+}
+
+.splitter-vertical::after {
+  inset: 0 -3px;
+}
+
+.splitter-horizontal::after {
+  inset: -3px 0;
+}
+
+.splitter:hover,
+.splitter:focus-visible,
+.splitter.dragging {
+  background: var(--accent);
+  outline: none;
+}
+
+.splitter[hidden] {
+  display: none;
+}
+
+/* While a splitter is dragged, the whole window keeps its cursor and selects no text. */
+.resizing-columns,
+.resizing-columns * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.resizing-rows,
+.resizing-rows * {
+  cursor: row-resize;
+  user-select: none;
+}

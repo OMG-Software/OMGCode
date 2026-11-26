@@ -769,7 +769,7 @@ the command with the code `interrupt` before any model request.
 omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --model google/gemma-4-e4b --context-tokens 131072 "Summarise README.md."
 ```
 
-Since 0.66.0 `chat --reasoning-effort <none|minimal|low|medium|high|xhigh|max>`
+Since 0.67.0 `chat --reasoning-effort <none|minimal|low|medium|high|xhigh|max>`
 sends that reasoning effort with every chat request of the turn (compaction
 summary requests send none) and records it in the turn's request manifest
 (ADR-0102). Without the flag nothing is sent and

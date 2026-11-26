@@ -6,7 +6,7 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
-- Version 0.66.0 adds a per-session reasoning effort (ADR-0102). The desktop
+- Version 0.67.0 adds a per-session reasoning effort (ADR-0102). The desktop
   model box has an **Effort** dropdown under **Model** with "Default", which
   sends nothing, and None, Minimal, Low, Medium, High, Extra high, and Max. It
   is recorded per session by the new `main` command `session_effort_select`,
@@ -14,8 +14,9 @@ Changes are recorded here before a release version is assigned.
   while another runs), as an optional `reasoning_effort` in
   `session-connections.json` (still version 1); a provider choice clears it
   and a model choice keeps it. The desktop shell has 63 commands: 31 in
-  `main`, 3 in `approvals`, and 29 in `settings`. `connection_status` reports the session's
-  effort and `reasoning_efforts`, the values its connection takes, and
+  `main`, 3 in `approvals`, and 29 in `settings`. `connection_status`
+  reports the session's effort and `reasoning_efforts`, the values its
+  connection takes, and
   `chat_send` takes `reasoning_effort` in its settings. The CLI adds
   `chat --reasoning-effort`. Chat Completions requests carry it as
   `reasoning_effort`, and the ChatGPT plan route as
@@ -27,12 +28,30 @@ Changes are recorded here before a release version is assigned.
   endpoints; Anthropic, DeepSeek, Tencent, Meta, and Thinking Machines Lab
   refuse it before any request, and the dropdown is disabled there with a
   note. The endpoint decides, not the profile kind, so a typed address that
-  is exactly one of those refusing endpoints refuses it too. A version-3 `request.manifest` records the effort that was sent as an
-  optional `reasoning_effort`; 0.65.0 and earlier refuse a journal that has
+  is exactly one of those refusing endpoints refuses it too. A version-3
+  `request.manifest` records the effort that was sent as an optional
+  `reasoning_effort`; 0.66.0 and earlier refuse a journal that has
   it, and a version 1 or 2 session refuses an effort before anything is
   recorded. Values are not adjusted per model, so a model that refuses one
   answers with its provider's HTTP error. No request with an effort was made
   to a real provider.
+- Version 0.66.0 makes every section divider in the desktop windows movable
+  (ADR-0101). The `approvals` queue, 300 pixels wide, now widens or narrows
+  from 200 to 640 beside the review pane, and below 720 pixels wide, where
+  the panes stack, its height moves from 96 to 640. The `settings` section
+  list moves from 150 to 420 pixels. In the `main` window the composer's top
+  line sets the message box's height, from 64 pixels to whatever leaves the
+  transcript 120, replacing the box's own resize grip and its 40% cap, and
+  the line above the right-hand panel's footer sets the footer's height from
+  48 to 720 pixels, scrolling its contents when shorter. Each divider is a
+  focusable window splitter built by `ui/src/ui/splitter.ts`: drag it, or use
+  the arrow keys (16 pixels, 64 with Shift), Home, and End; a double click
+  restores its starting size. None collapses, the neighbour never goes below
+  its least size, and sizes last until the window closes. The main window's
+  column separators are unchanged. `ui/src/ui/size_property.ts` is now the
+  frontend's only style write: a listed size custom property set to a whole
+  number of pixels, or removed. No command, IPC shape, permission, or Rust
+  code changed.
 - Version 0.64.0 adds the `web_fetch` model tool (ADR-0098), so a model on
   any provider can read public documentation. The OMGCode process sends one
   HTTPS `GET` and returns one slice of the page text (`offset`, and

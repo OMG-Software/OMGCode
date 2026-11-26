@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setInvoker } from "../src/ipc/client";
 import type { SessionSummary } from "../src/ipc/types";
 import { type MainApp, startMain } from "../src/main/app";
+import { MESSAGE_HEIGHT } from "../src/main/conversation";
 import {
   CENTER_MIN_WIDTH,
   COLLAPSE_SNAP,
@@ -13,6 +14,7 @@ import {
   RIGHT_PANEL,
   SEPARATOR_WIDTH,
 } from "../src/main/layout";
+import { FOOTER_HEIGHT } from "../src/main/side_panel";
 import { TERMINAL_UNAVAILABLE } from "../src/main/terminal_panel";
 import {
   type FakeIpc,
@@ -126,6 +128,39 @@ describe("the main window's columns", () => {
     const right = separator("right");
     expect(right.getAttribute("aria-controls")).toBe("terminal-panel");
     expect(right.getAttribute("aria-valuetext")).toBe("Collapsed");
+  });
+});
+
+describe("the dividers inside the columns (ADR-0101)", () => {
+  it("resizes the message box from the composer's top edge", async () => {
+    await start();
+    const composer = root.querySelector(".composer") as HTMLElement;
+    const box = root.querySelector(".message-box") as HTMLTextAreaElement;
+    const splitter = composer.firstElementChild as HTMLElement;
+    expect(splitter.getAttribute("role")).toBe("separator");
+    expect(splitter.getAttribute("aria-orientation")).toBe("horizontal");
+    expect(splitter.getAttribute("aria-label")).toBe("Resize the message box");
+    expect(splitter.getAttribute("aria-controls")).toBe(box.id);
+    // Three rows until it moves, then the transcript gives way as the box grows upwards.
+    expect(box.style.getPropertyValue("--message-height")).toBe("");
+    key(splitter, "ArrowUp");
+    expect(box.style.getPropertyValue("--message-height")).toBe(
+      `${MESSAGE_HEIGHT.min + KEY_STEP}px`,
+    );
+    splitter.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(box.style.getPropertyValue("--message-height")).toBe("");
+  });
+
+  it("resizes the side panel's footer, which holds the model box", async () => {
+    await start();
+    const footer = root.querySelector(".side-footer") as HTMLElement;
+    const splitter = footer.previousElementSibling as HTMLElement;
+    expect(splitter.previousElementSibling?.classList.contains("side-panes")).toBe(true);
+    expect(splitter.getAttribute("aria-label")).toBe("Resize the side panel footer");
+    expect(splitter.getAttribute("aria-controls")).toBe(footer.id);
+    expect(footer.querySelector(".model-box")).not.toBeNull();
+    key(splitter, "Home");
+    expect(footer.style.getPropertyValue("--side-footer-height")).toBe(`${FOOTER_HEIGHT.min}px`);
   });
 });
 

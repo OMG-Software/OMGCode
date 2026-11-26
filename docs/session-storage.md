@@ -143,10 +143,10 @@ selection in such a session with `skill_session_version` before any request.
 Skill messages are never recorded, so replay and compaction never see them.
 A recorded assistant reply can still repeat skill text.
 
-Since 0.66.0 a version-3 `request.manifest` may also carry `reasoning_effort`:
+Since 0.67.0 a version-3 `request.manifest` may also carry `reasoning_effort`:
 one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, the
 effort the chat client sent with the turn's requests (ADR-0102). It is written
-only when an effort was sent, so other journals keep their bytes, and 0.65.0
+only when an effort was sent, so other journals keep their bytes, and 0.66.0
 and earlier refuse a journal that has it; the schema version did not change.
 A version-1 or version-2 journal refuses the field, and chat refuses an effort
 in such a session with `session` before anything is recorded. Compaction

@@ -3,10 +3,16 @@
  * a separator between each pair (ADR-0072). A separator follows the WAI-ARIA window splitter
  * pattern: drag it, or focus it and use the arrow keys, Home, End, and Enter.
  *
- * The only inline style the frontend sets is here: each panel's width, a whole number of pixels
- * this module computes and clamps, written through the CSSOM as a custom property on the shell.
- * No other value reaches a style. Widths last until the window closes; nothing stores them.
+ * Each panel's width is a whole number of pixels this module computes and clamps, written as a
+ * custom property on the shell through `setSizeProperty`, the frontend's one style write
+ * (ADR-0101). Widths last until the window closes; nothing stores them. The other windows'
+ * dividers, which never collapse a section, use `createSplitter` with the same keys.
  */
+
+import { setSizeProperty } from "../ui/size_property";
+import { KEY_STEP, LARGE_KEY_STEP } from "../ui/splitter";
+
+export { KEY_STEP, LARGE_KEY_STEP };
 
 export interface PanelLimits {
   readonly min: number;
@@ -24,8 +30,6 @@ export const CENTER_MIN_WIDTH = 360;
 export const RAIL_WIDTH = 44;
 /** Matches `--separator-width` in main.css. */
 export const SEPARATOR_WIDTH = 1;
-export const KEY_STEP = 16;
-export const LARGE_KEY_STEP = 64;
 /** Dragging a panel this far below its minimum collapses it. */
 export const COLLAPSE_SNAP = 80;
 
@@ -149,8 +153,8 @@ export function createShellLayout(parts: {
   }
 
   function setWidthProperty(state: PanelState): void {
-    // The one inline style in the frontend: a clamped whole number of pixels (see above).
-    element.style.setProperty(`--${state.side}-width`, `${state.width}px`);
+    // A clamped whole number of pixels (see above), through the frontend's one style write.
+    setSizeProperty(element, `--${state.side}-width`, state.width);
   }
 
   function render(state: PanelState): void {
