@@ -278,7 +278,8 @@ describe("effort dropdown", () => {
   it("loads the model list when an effort save settles after the session was reopened", async () => {
     const handlers = backend({ "s-a": { profile: "lms", effort: null } });
     const record = handlers.session_effort_select;
-    let answer: (() => void) | null = null;
+    // A no-op until the held save replaces it, so its type stays a function for the checker.
+    let answer: () => void = () => undefined;
     await start({
       ...handlers,
       session_effort_select: (args) =>
@@ -294,8 +295,9 @@ describe("effort dropdown", () => {
     const loads = (): number =>
       ipc.callsTo("chat_models").filter((call) => call.args.session_id === "s-a").length;
     const before = loads();
+    expect(ipc.callsTo("session_effort_select")).toHaveLength(1);
 
-    answer?.();
+    answer();
     await settle();
 
     expect(loads()).toBe(before + 1);

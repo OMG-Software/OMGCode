@@ -770,8 +770,9 @@ omgcode --data-dir C:\omgcode-data chat --stream --journal <journal-path> --mode
 ```
 
 Since 0.66.0 `chat --reasoning-effort <none|minimal|low|medium|high|xhigh|max>`
-sends that reasoning effort with every request of the turn and records it in
-the turn's request manifest (ADR-0102). Without the flag nothing is sent and
+sends that reasoning effort with every chat request of the turn (compaction
+summary requests send none) and records it in the turn's request manifest
+(ADR-0102). Without the flag nothing is sent and
 the provider's default applies. A connection whose provider documents no
 effort field refuses the flag with the code `provider` before any request,
 and a version 1 or 2 session refuses it with `session`. See
