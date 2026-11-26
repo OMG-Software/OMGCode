@@ -377,7 +377,7 @@ pub(crate) struct PermissionsArgs {
     /// `deny`, `prompt`, or `allow`. No model tool uses it.
     #[arg(long = "task-network", value_parser = parse_access)]
     task_network: Option<Access>,
-    /// Let chat offer the local model workspace tools at all.
+    /// Let chat offer the model workspace tools at all.
     #[arg(long = "model-tools")]
     model_tools: Option<bool>,
     /// Let a trusted `run` select host-service Unix-socket access when it

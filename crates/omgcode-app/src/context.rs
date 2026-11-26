@@ -30,7 +30,7 @@ pub fn summary_output_tokens(context_tokens: u64) -> u32 {
     u32::try_from((context_tokens / 4).clamp(1, MAX_SUMMARY_OUTPUT_TOKENS)).unwrap_or(1)
 }
 
-/// Compact the active context with the selected local model.
+/// Compact the active context with the selected model connection.
 ///
 /// `summary_budget` sizes the summarizer chunks; its `max_output_tokens` must
 /// be the summary client's output reserve. Live `model_tools` and `read`

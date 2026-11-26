@@ -1,4 +1,4 @@
-//! One chat turn against the selected local model, without any front end.
+//! One chat turn against the selected model connection, without any front end.
 //!
 //! This module performs no printing, no environment reads, no argument
 //! parsing, and never exits the process. Whether the turn offers workspace

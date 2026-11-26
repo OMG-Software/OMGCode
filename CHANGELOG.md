@@ -367,7 +367,14 @@ Changes are recorded here before a release version is assigned.
 
 - The guides now match the code at version 0.69.0. PRs #69 to #76 merged
   in parallel, so statements one change made were left stale by another.
-  Documentation only; no code or version changed.
+  No behaviour or version changed; the only code changes are help text and
+  comments.
+  - CLI help: `chat`, `models`, and `session compact` no longer say they
+    reach only a local LM Studio or Ollama model, each `--provider-profile`
+    says an `openai` subscription profile needs `provider-signin` first, and
+    `--model-tools` no longer says "local model". Two `omgcode-app` doc
+    comments drop "local" the same way. `--endpoint` stays loopback-only
+    help, because a hosted address there is refused as `cloud_needs_profile`.
   - Model tools: guides that said no model network tool exists, that every
     write or command needs an approval, or that only read, list, edit, and
     command tools exist now name the directory tool (ADR-0079), `web_fetch`
@@ -392,7 +399,7 @@ Changes are recorded here before a release version is assigned.
     permissions` flags, their defaults and legacy `true`, the `web-host-*`
     commands, `actions list`, and the current dependencies; the README lists
     `models`, `approvals`, `actions`, `skills`, and `chat --reasoning-effort`.
-  - Journals: the control-journal action table lists all 37 actions, and
+  - Journals: the control-journal action table lists all 36 actions, and
     the session and context guides record `web_fetch`, `context.compacted`,
     and the reasoning effort's place in the context estimate (ADR-0102).
   - `IMPLEMENTATION_PLAN.md` marks Phases F1 and S2 and version 0.43.0 as
