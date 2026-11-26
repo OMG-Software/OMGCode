@@ -126,8 +126,10 @@ denies, and **Approve** is armed only one second after a review renders.
 - Showing a hidden window still goes through tao's `show`, which calls
   `ShowWindow` with `SW_SHOW`, and unminimizing calls it with
   `SW_RESTORE`; both flags request activation. When another application
-  owns the foreground, Windows' foreground lock refuses that activation
-  and flashes the taskbar button instead, and no input is sent. A
+  owns the foreground, Windows' foreground restrictions should refuse that
+  activation, and no input is sent either way. The taskbar flash comes
+  from the shell's own `request_user_attention` call with
+  `UserAttentionType::Critical`, not from the refusal. A
   non-activating show is not available through tao once a window exists:
   its `MARKER_DONT_FOCUS` flag applies only at creation. A direct
   `ShowWindow` with `SW_SHOWNOACTIVATE` would leave tao's visibility flag
