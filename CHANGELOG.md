@@ -10,7 +10,8 @@ Changes are recorded here before a release version is assigned.
   model box has an **Effort** dropdown under **Model** with "Default", which
   sends nothing, and None, Minimal, Low, Medium, High, Extra high, and Max. It
   is recorded per session by the new `main` command `session_effort_select`,
-  without a dialog, as an optional `reasoning_effort` in
+  without a dialog but as one settings change (`settings_change_running`
+  while another runs), as an optional `reasoning_effort` in
   `session-connections.json` (still version 1); a provider choice clears it
   and a model choice keeps it. The desktop shell has 63 commands: 31 in
   `main`, 3 in `approvals`, and 29 in `settings`. `connection_status` reports the session's

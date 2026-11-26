@@ -85,13 +85,9 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
       loadedKey = null;
       picker.reset();
       picker.setHosted(false);
-    } else if (
-      status !== null &&
-      id !== null &&
-      change !== "busy" &&
-      change !== "message" &&
-      change !== "effort"
-    ) {
+    } else if (status !== null && id !== null && change !== "busy" && change !== "message") {
+      // An effort answer can be a reopened session's first status (its read was dropped while
+      // the save was pending), so it loads the list like a read; the key stops a needless reload.
       picker.setHosted(isHostedKind(status.connection.kind));
       const key = [
         id,

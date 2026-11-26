@@ -94,7 +94,10 @@ No provider's effort handling was exercised with a real request.
    as ADR-0071 decision 6 already requires. The new `main` command
    `session_effort_select` records it without a dialog, like
    `session_model_select`: an effort grants nothing. It is refused with
-   `invalid_request` when the session's connection takes no effort. Choosing
+   `invalid_request` when the session's connection takes no effort. It holds
+   the one-change-at-a-time guard that a provider choice holds, so the
+   connection it checks is the one the record keeps, and it is refused with
+   `settings_change_running` while another settings change runs. Choosing
    another provider clears it with the model, because accepted values depend
    on the provider and model.
 8. **Rust tells the window what to offer.** `connection_status` returns the

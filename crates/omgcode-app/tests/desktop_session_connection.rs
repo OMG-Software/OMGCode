@@ -97,7 +97,7 @@ fn choose(
     service: &DesktopService,
     session: Uuid,
     profile: Option<&str>,
-    prompt: &Answers,
+    prompt: &dyn SettingsPrompt,
 ) -> Result<ConnectionStatus, DesktopError> {
     service.connection_select(
         wire(json!({ "session_id": session, "profile": profile })),
@@ -779,6 +779,60 @@ fn a_connection_without_effort_refuses_one_and_a_provider_change_clears_it() {
         None,
         "a refused send records nothing"
     );
+    default.assert_untouched();
+}
+
+/// Answers Yes, but first tries an effort choice for the same session while
+/// the provider confirmation is open, and keeps what that returned.
+struct EffortDuringConfirmation<'a> {
+    service: &'a DesktopService,
+    session: Uuid,
+    refused: RefCell<Option<&'static str>>,
+}
+
+impl SettingsPrompt for EffortDuringConfirmation<'_> {
+    fn pick_folder(
+        &self,
+        _purpose: FolderPurpose,
+        _start: Option<&std::path::Path>,
+    ) -> Option<PathBuf> {
+        panic!("no folder dialog is expected");
+    }
+
+    fn confirm(&self, _confirmation: &Confirmation) -> bool {
+        let attempt = effort(self.service, self.session, Some("high"));
+        self.refused.replace(Some(code(attempt)));
+        true
+    }
+}
+
+/// An effort choice runs as one settings change, as a provider choice does,
+/// so a provider choice cannot land between its check and its save: while a
+/// confirmation is open it is refused with `settings_change_running`, and it
+/// works again once the provider choice ends (ADR-0102).
+#[test]
+fn an_effort_choice_is_refused_while_a_provider_choice_runs() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let default = NoCallServer::start();
+    let service = active(&fixture, &default.endpoint);
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile_at("deep", "deepseek", "api_key", "https://api.deepseek.com");
+    vault.bind("deep", b"fake-deepseek-key-for-the-test");
+    let id = session(&service, workspace.id);
+
+    let prompt = EffortDuringConfirmation {
+        service: &service,
+        session: id,
+        refused: RefCell::new(None),
+    };
+    let chosen = choose(&service, id, Some("deep"), &prompt).expect("choose deepseek");
+    assert_eq!(prompt.refused.take(), Some("settings_change_running"));
+    assert_eq!(chosen.reasoning_effort, None);
+    assert!(chosen.reasoning_efforts.is_empty());
+    // The guard is released: the next choice is checked against DeepSeek.
+    assert_eq!(code(effort(&service, id, Some("high"))), "invalid_request");
+    assert_eq!(status(&service, Some(id)).reasoning_effort, None);
     default.assert_untouched();
 }
 

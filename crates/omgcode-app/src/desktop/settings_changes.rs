@@ -1000,15 +1000,22 @@ impl DesktopService {
     /// status showed (the saved preference's), so the model shown does not
     /// change.
     ///
+    /// It holds the one-change-at-a-time guard, as a provider choice does,
+    /// so the connection it checks the effort against is the one the record
+    /// keeps: a provider choice cannot land between the check and the save.
+    ///
     /// # Errors
     ///
     /// `invalid_request` for an effort the session's connection does not
-    /// take; `not_found`; `busy`, `control`, or `internal` while reading the
-    /// connection; `session_choices` when the choice cannot be saved.
+    /// take; `settings_change_running` while another settings change, such
+    /// as a provider choice awaiting its confirmation, runs; `not_found`;
+    /// `busy`, `control`, or `internal` while reading the connection;
+    /// `session_choices` when the choice cannot be saved.
     pub fn session_effort_select(
         &self,
         request: SessionEffortSelectRequest,
     ) -> Result<ConnectionStatus, DesktopError> {
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
         let session_id = request.session_id;
         let status = self.connection_status(ConnectionStatusRequest {
             session_id: Some(session_id),

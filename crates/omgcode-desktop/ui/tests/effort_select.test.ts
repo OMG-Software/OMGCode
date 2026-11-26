@@ -39,6 +39,8 @@ let ipc: FakeIpc;
 interface Choice {
   profile: string | null;
   effort: ReasoningEffort | null;
+  /** A record that still follows the default connection, as an effort alone creates. */
+  follow?: boolean;
 }
 
 const PROFILES = [
@@ -61,7 +63,8 @@ function backend(initial: Record<string, Choice> = {}, selectable = true): Recor
         kind: profile?.kind ?? null,
         selectable,
       },
-      origin: !selectable ? "launch" : choices.has(id) ? "session" : "default",
+      // Like Rust, a record that follows the default reports the default origin.
+      origin: !selectable ? "launch" : choices.has(id) && !choice.follow ? "session" : "default",
       reasoning_effort: choice.effort,
       reasoning_efforts: profile?.kind === "anthropic" ? [] : [...ALL_EFFORTS],
       choices: selectable
@@ -79,9 +82,11 @@ function backend(initial: Record<string, Choice> = {}, selectable = true): Recor
       choices.set(id, { profile: args.profile as string | null, effort: null });
       return status(id);
     },
+    // Like Rust, an effort alone creates a record that follows the default connection.
     session_effort_select: (args) => {
       const id = args.session_id as string;
-      choices.set(id, { ...find(id), effort: args.reasoning_effort as ReasoningEffort | null });
+      const existing = choices.get(id) ?? { profile: null, effort: null, follow: true };
+      choices.set(id, { ...existing, effort: args.reasoning_effort as ReasoningEffort | null });
       return status(id);
     },
     chat_send: () => ({ session_id: "s-a", state: "running", outcome: null, error: null }),
@@ -266,6 +271,38 @@ describe("effort dropdown", () => {
     await open("s-a");
     expect(boxProvider().disabled).toBe(true);
     expect(effortSelect().disabled).toBe(false);
+  });
+
+  // Reopening resets the model list, and the reopened session's status read is dropped while the
+  // save is pending; the save's own answer must then load the list.
+  it("loads the model list when an effort save settles after the session was reopened", async () => {
+    const handlers = backend({ "s-a": { profile: "lms", effort: null } });
+    const record = handlers.session_effort_select;
+    let answer: (() => void) | null = null;
+    await start({
+      ...handlers,
+      session_effort_select: (args) =>
+        new Promise((resolve) => {
+          answer = () => resolve(record?.(args));
+        }),
+    });
+    await open("s-a");
+    choose(effortSelect(), "high");
+    await settle();
+    await open("s-b");
+    await open("s-a");
+    const loads = (): number =>
+      ipc.callsTo("chat_models").filter((call) => call.args.session_id === "s-a").length;
+    const before = loads();
+
+    answer?.();
+    await settle();
+
+    expect(loads()).toBe(before + 1);
+    expect(Array.from(modelSelect(root).options).map((option) => option.value)).toContain(
+      SETTINGS.model,
+    );
+    expect(effortSelect().value).toBe("high");
   });
 
   it("shows a refused save and returns to the recorded effort", async () => {

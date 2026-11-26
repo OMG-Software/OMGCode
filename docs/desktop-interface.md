@@ -1524,7 +1524,10 @@ provider the operator did not confirm.
 `session_effort_select` records a session's reasoning effort the same way,
 with no dialog (ADR-0102). It deserializes only the seven names and `null`,
 refuses any effort with `invalid_request` when the session's connection
-takes none, and keeps the session's model. The per-session record stores it as
+takes none, and keeps the session's model. It runs as one settings change, so
+a provider choice cannot land between its check and its save; while another
+change runs, such as a provider choice awaiting its confirmation, it is
+refused with `settings_change_running`. The per-session record stores it as
 an optional `reasoning_effort`, omitted when none is chosen, so
 `session-connections.json` keeps version 1. `connection_select` clears it.
 The `settings` window's `settings_select_connection` keeps choosing the
