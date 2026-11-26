@@ -9,6 +9,10 @@ import {
   ADD_TOOLCHAIN_LABEL,
   ENVIRONMENT_WARNING,
   GRANT_FOLDER_LABEL,
+  GRANT_HELP,
+  GRANT_READ_EXECUTE_HINT,
+  GRANT_READ_WRITE_HINT,
+  GRANT_WORKSPACE_FOLDER_LABEL,
   GRANTS_UNSUPPORTED,
   PACKAGE_HELP,
   parseEnvironment,
@@ -322,7 +326,7 @@ describe("container grants", () => {
     }
     access.value = "read_write";
     access.dispatchEvent(new Event("change"));
-    buttonByText(root, GRANT_FOLDER_LABEL).click();
+    buttonByText(root, GRANT_WORKSPACE_FOLDER_LABEL).click();
     await settle();
     expect(ipc.callsTo("settings_grant_container_folder")[0]?.args).toEqual({
       revision: 5,
@@ -330,6 +334,32 @@ describe("container grants", () => {
       access: "read_write",
     });
     expect(block("Container grants").textContent).toContain("C:\\dev\\a\\vendor");
+  });
+
+  it("says the sandbox gets the access and that read and write opens no folder dialog", async () => {
+    await start(() => overview());
+    const group = block("Container grants");
+    expect(group.textContent).toContain(GRANT_HELP);
+    expect(group.textContent).toContain("Workspace whose commands get access");
+    const hint = group.querySelector("#new-grant-hint");
+    const access = group.querySelector<HTMLSelectElement>("#new-grant-access");
+    if (hint === null || access === null) {
+      throw new Error("no hint or access select");
+    }
+    // Read and execute is the default: a folder dialog follows the button.
+    expect(hint.textContent).toBe(GRANT_READ_EXECUTE_HINT);
+    expect(buttonByText(group, GRANT_FOLDER_LABEL)).toBeTruthy();
+
+    access.value = "read_write";
+    access.dispatchEvent(new Event("change"));
+    expect(hint.textContent).toBe(GRANT_READ_WRITE_HINT);
+    expect(buttonByText(group, GRANT_WORKSPACE_FOLDER_LABEL)).toBeTruthy();
+    expect(group.textContent).not.toContain(GRANT_FOLDER_LABEL);
+
+    access.value = "read_execute";
+    access.dispatchEvent(new Event("change"));
+    expect(hint.textContent).toBe(GRANT_READ_EXECUTE_HINT);
+    expect(buttonByText(group, GRANT_FOLDER_LABEL)).toBeTruthy();
   });
 
   it("shows a pending grant with its state and a Revoke button", async () => {
@@ -447,5 +477,21 @@ describe("mock execution commands", () => {
       grant_id: granted.container_grants[0]?.grant_id,
     })) as SettingsOverview;
     expect(revoked.container_grants).toEqual([]);
+  });
+
+  it("grants read and write on the workspace's own folder, as Rust does", async () => {
+    const { invoke } = createMockBackend();
+    const before = await overviewOf(invoke);
+    const workspace = before.workspaces[0];
+    if (workspace === undefined) {
+      throw new Error("the mock has a workspace");
+    }
+    const granted = (await invoke("settings_grant_container_folder", {
+      revision: before.revision,
+      workspace_id: workspace.workspace_id,
+      access: "read_write",
+    })) as SettingsOverview;
+    expect(granted.container_grants[0]?.directory).toBe(workspace.folder_display);
+    expect(granted.container_grants[0]?.access).toBe("read_write");
   });
 });

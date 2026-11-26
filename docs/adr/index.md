@@ -102,7 +102,7 @@ meaningful alternative does not need an ADR.
 | [0085: Read Git status with gix without running programs](0085-read-git-status-with-gix-without-running-programs.md) | Accepted | 2026-11-24 |
 | [0086: Show the session's subprocesses in the main window](0086-show-the-sessions-subprocesses-in-the-main-window.md) | Accepted | 2026-11-24 |
 | [0087: Show a per-part context estimate for the open session](0087-show-a-per-part-context-estimate-for-the-open-session.md) | Accepted; amended by ADR-0102 | 2026-11-24 |
-| [0088: Change execution settings in the settings window](0088-change-execution-settings-in-the-settings-window.md) | Accepted | 2026-11-24 |
+| [0088: Change execution settings in the settings window](0088-change-execution-settings-in-the-settings-window.md) | Accepted, amended by ADR-0104 | 2026-11-24 |
 | [0089: Choose the provider and model in the side panel footer](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) | Accepted; amended by ADR-0102 | 2026-11-24 |
 | [0090: Set every file-write tool limit at once](0090-set-every-file-write-tool-limit-at-once.md) | Accepted | 2026-11-24 |
 | [0091: Compact automatically at 400K by default in the desktop](0091-compact-automatically-at-400k-by-default-in-the-desktop.md) | Accepted | 2026-11-24 |
@@ -118,3 +118,4 @@ meaningful alternative does not need an ADR.
 | [0101: Make every section divider movable](0101-make-every-section-divider-movable.md) | Accepted | 2026-11-26 |
 | [0102: Choose a reasoning effort per session](0102-choose-a-reasoning-effort-per-session.md) | Accepted | 2026-11-26 |
 | [0103: Generate toolchain profiles from installed toolchains](0103-generate-toolchain-profiles-from-installed-toolchains.md) | Accepted | 2026-11-26 |
+| [0104: Grant the workspace folder read-write without a folder dialog](0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md) | Accepted | 2026-11-26 |

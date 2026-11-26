@@ -7,9 +7,11 @@
 //! same expected-revision check and validation, and records the same events.
 //! The window adds no second rule and names no path:
 //!
-//! - Every folder (a toolchain root, a `PATH` entry, a granted folder) comes
-//!   only from [`SettingsPrompt::pick_folder`], one dialog per folder. The
-//!   request carries how many of each, never a path.
+//! - Every folder (a toolchain root, a `PATH` entry, a folder granted read
+//!   and execute) comes only from [`SettingsPrompt::pick_folder`], one dialog
+//!   per folder. The request carries how many of each, never a path. A
+//!   read-write grant opens no dialog: core accepts it only on the
+//!   workspace's own directory, so its folder is the recorded one (ADR-0104).
 //! - Adding a toolchain profile widens what a run can see, adding a package
 //!   profile records origins, and a grant changes a folder's access-control
 //!   list on disk. Each is applied only after a native confirmation that this
@@ -260,22 +262,34 @@ fn toolchain_add_confirmation(
     }
 }
 
-/// The native confirmation for a container grant.
-fn grant_confirmation(
-    workspace_folder: &str,
-    access: ContainerGrantAccess,
-    folder: &str,
-) -> Confirmation {
+/// The native confirmation for the read-write grant on the workspace's own
+/// folder. It says who gets the access (the workspace's sandbox) because the
+/// workspace and the folder are the same path (ADR-0104).
+fn workspace_folder_grant_confirmation(workspace_folder: &str) -> Confirmation {
     Confirmation {
-        title: "Grant a folder to a workspace",
+        title: "Let a workspace's commands use its folder",
         message: format!(
-            "Give the workspace
+            "Let the commands OMGCode runs for the workspace
 {workspace_folder}
-{} access to the folder
-{folder}?
+read and write that folder and everything beneath it?
 
-This changes the folder's access-control list on disk for that workspace's AppContainer, and it stays until you revoke it. Runs in the workspace can then use the folder, including everything beneath it.",
-            access_text(access),
+OMGCode runs each of the workspace's commands in the workspace's own AppContainer, a Windows sandbox that starts with no access to your files; registering the folder gave it none. This adds the sandbox to the folder's access-control list on disk, and it stays until you revoke it. Every run in the workspace needs it."
+        ),
+    }
+}
+
+/// The native confirmation for a read-and-execute grant on a chosen folder.
+fn read_execute_grant_confirmation(workspace_folder: &str, folder: &str) -> Confirmation {
+    Confirmation {
+        title: "Let a workspace's commands read a folder",
+        message: format!(
+            "Let the commands OMGCode runs for the workspace
+{workspace_folder}
+read and execute the folder
+{folder}
+and everything beneath it?
+
+This adds the workspace's AppContainer, the Windows sandbox its commands run in, to the folder's access-control list on disk, and it stays until you revoke it."
         ),
     }
 }
@@ -289,12 +303,12 @@ fn revoke_confirmation(
     Confirmation {
         title: "Revoke a container grant",
         message: format!(
-            "Revoke the {} grant on
-{directory}
-for the workspace
-{workspace}?
+            "Revoke the {} access of the commands OMGCode runs for the workspace
+{workspace}
+to the folder
+{directory}?
 
-This removes the entry from the folder's access-control list on disk. Runs of that workspace that started before are stopped.",
+This removes the workspace's AppContainer, the Windows sandbox those commands run in, from the folder's access-control list on disk. Runs of that workspace that started before are stopped.",
             access_text(access),
         ),
     }
@@ -577,19 +591,26 @@ impl DesktopService {
         })
     }
 
-    /// `settings` only. Windows only. Ask the operator for a folder and,
-    /// after a native confirmation that names the workspace, the folder and
-    /// the access and says the folder's access-control list changes on disk,
-    /// grant it to the workspace's container as `omgcode workspace
-    /// container-grant` does.
+    /// `settings` only. Windows only. Grant a folder to the workspace's
+    /// container as `omgcode workspace container-grant` does, after a native
+    /// confirmation that names the workspace, the folder and the access and
+    /// says the folder's access-control list changes on disk.
+    ///
+    /// For read and execute, the operator chooses the folder in a native
+    /// dialog. For read and write, no dialog opens: core accepts that access
+    /// only on the workspace's own directory, so the folder is the recorded
+    /// one, and core still checks that the directory at that path is the
+    /// recorded directory before it records anything (ADR-0104).
     ///
     /// # Errors
     ///
     /// `unsupported_platform` outside Windows; `unknown_workspace`;
-    /// `cancelled`; `stale_revision`; `settings_change_running`; `busy`;
-    /// `control` with core's reason (a scope or overlap refusal, an existing
-    /// grant); `container_access_failed` when the grant was recorded but the
-    /// list could not be changed (it stays `pending`; revoke it).
+    /// `invalid_request` when the recorded workspace path cannot be used on
+    /// this system; `cancelled`; `stale_revision`; `settings_change_running`;
+    /// `busy`; `control` with core's reason (a scope or overlap refusal, an
+    /// existing grant, a workspace folder that was moved or replaced);
+    /// `container_access_failed` when the grant was recorded but the list
+    /// could not be changed (it stays `pending`; revoke it).
     pub fn settings_grant_container_folder(
         &self,
         request: ContainerGrantRequest,
@@ -599,25 +620,38 @@ impl DesktopService {
             return Err(DesktopError::unsupported_platform());
         }
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        let (workspace_id, workspace_folder) = {
+        let (workspace_id, workspace_path) = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let workspace = store
                 .registered_workspace(request.workspace_id)
                 .ok_or_else(DesktopError::unknown_workspace)?;
-            (
-                workspace.id(),
-                folder_of_directory(workspace.directory_path()),
-            )
+            (workspace.id(), workspace.directory_path())
         };
-        let folder = prompt
-            .pick_folder(FolderPurpose::ContainerGrant, None)
-            .ok_or_else(DesktopError::cancelled)?;
+        let workspace_folder = folder_of_directory(workspace_path.clone());
+        let (folder, confirmation) = match request.access {
+            ContainerAccessChoice::ReadWrite => {
+                let folder = workspace_path.ok_or_else(|| {
+                    DesktopError::execution_request(
+                        "The workspace path is not usable on this system.",
+                    )
+                })?;
+                (
+                    folder,
+                    workspace_folder_grant_confirmation(&workspace_folder),
+                )
+            }
+            ContainerAccessChoice::ReadExecute => {
+                let folder = prompt
+                    .pick_folder(FolderPurpose::ContainerGrant, None)
+                    .ok_or_else(DesktopError::cancelled)?;
+                let confirmation =
+                    read_execute_grant_confirmation(&workspace_folder, &shown(&folder));
+                (folder, confirmation)
+            }
+        };
         let access = ContainerGrantAccess::from(request.access);
-        confirm(
-            prompt,
-            &grant_confirmation(&workspace_folder, access, &shown(&folder)),
-        )?;
+        confirm(prompt, &confirmation)?;
         let mut store = self.inner.open_or_create_control()?;
         let outcome = store.grant_container_access(workspace_id, &folder, access, request.revision);
         match outcome {
@@ -701,13 +735,14 @@ mod tests {
 
     #[test]
     fn the_grant_and_revoke_confirmations_name_everything_they_change() {
-        let grant = grant_confirmation("/dev/a", ContainerGrantAccess::ReadWrite, "/dev/b");
+        let grant = read_execute_grant_confirmation("/dev/a", "/tools");
         for expected in [
             "/dev/a",
-            "/dev/b",
-            "read and write",
+            "/tools",
+            "read and execute",
             "access-control list",
             "AppContainer",
+            "sandbox",
         ] {
             assert!(
                 grant.message.contains(expected),
@@ -721,6 +756,7 @@ mod tests {
             "/dev/a",
             "read and execute",
             "access-control list",
+            "AppContainer",
             "stopped",
         ] {
             assert!(
@@ -728,6 +764,31 @@ mod tests {
                 "{expected}: {}",
                 revoke.message
             );
+        }
+    }
+
+    #[test]
+    fn the_workspace_folder_confirmation_says_the_sandbox_gets_the_access() {
+        let grant = workspace_folder_grant_confirmation("O:\\ShippingQuotes");
+        let message = &grant.message;
+        // The folder is named once, as the workspace's: the operator is not
+        // asked to give a folder access to itself.
+        assert_eq!(
+            message.matches("O:\\ShippingQuotes").count(),
+            1,
+            "{message}"
+        );
+        for expected in [
+            "commands OMGCode runs for the workspace",
+            "read and write that folder",
+            "AppContainer",
+            "Windows sandbox",
+            "registering the folder gave it none",
+            "access-control list",
+            "until you revoke it",
+            "Every run in the workspace needs it",
+        ] {
+            assert!(message.contains(expected), "{expected}: {message}");
         }
     }
 

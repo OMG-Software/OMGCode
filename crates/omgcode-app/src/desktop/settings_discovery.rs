@@ -458,7 +458,7 @@ fn grants_confirmation(
     Confirmation {
         title: "Grant toolchain folders to a workspace",
         message: format!(
-            "Give the workspace\n{workspace}\nread and execute access to these folders?\n{}\n\nThis changes each folder's access-control list on disk for that workspace's AppContainer, and each grant stays until you revoke it. Runs in the workspace can then read and execute everything beneath them.{skipped}",
+            "Let the commands OMGCode runs for the workspace\n{workspace}\nread and execute these folders and everything beneath them?\n{}\n\nThis adds the workspace's AppContainer, the Windows sandbox its commands run in, to each folder's access-control list on disk, and each grant stays until you revoke it.{skipped}",
             list(folders)
         ),
     }

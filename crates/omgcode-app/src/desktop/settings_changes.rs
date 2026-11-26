@@ -82,7 +82,8 @@ pub enum FolderPurpose {
     ToolchainRoot,
     /// A `PATH` entry of a toolchain profile, inside one of its roots.
     ToolchainPathEntry,
-    /// A folder to grant to a workspace's container.
+    /// A folder to grant read and execute to a workspace's container. A
+    /// read-write grant opens no dialog (ADR-0104).
     ContainerGrant,
 }
 
@@ -97,7 +98,7 @@ impl FolderPurpose {
             Self::Skill => "Choose a skill folder",
             Self::ToolchainRoot => "Choose a read-only root for the toolchain profile",
             Self::ToolchainPathEntry => "Choose a PATH entry inside a root of the profile",
-            Self::ContainerGrant => "Choose a folder to grant to the workspace's container",
+            Self::ContainerGrant => "Choose a folder the workspace's commands may read and execute",
         }
     }
 }
