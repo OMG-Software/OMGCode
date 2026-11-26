@@ -23,6 +23,7 @@ pub mod skills;
 mod storage;
 #[cfg(test)]
 mod test_support;
+pub mod toolchain_discovery;
 pub mod turn;
 pub mod web_fetch;
 mod workspace;

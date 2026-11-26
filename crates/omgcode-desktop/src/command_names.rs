@@ -67,4 +67,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_add_web_fetch_host",
     "settings_remove_web_fetch_host",
     "session_web_audit",
+    "settings_discover_toolchains",
+    "settings_add_discovered_profiles",
+    "settings_grant_discovered_roots",
 ];

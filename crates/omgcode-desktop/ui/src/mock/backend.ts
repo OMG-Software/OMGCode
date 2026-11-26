@@ -21,12 +21,15 @@ import type {
   PermissionFlags,
   ProcessEntry,
   ReasoningEffort,
+  RootGrantNeed,
   SearchHit,
   SessionProcesses,
   SessionSummary,
   SessionWebAudit,
   SettingsOverview,
   SnippetPart,
+  ToolchainDiscovery,
+  ToolchainProposalView,
   TreeSort,
   TreeView,
   WebAuditEntry,
@@ -263,6 +266,77 @@ const BUILT_IN_PREFERENCES: MockPreferences = {
   auto_compact: true,
   enter_to_send: true,
 };
+
+/** A sample toolchain proposal of the mock's discovery (ADR-0103). */
+interface MockProposal {
+  family: ToolchainProposalView["family"];
+  family_label: string;
+  name: string;
+  version: string | null;
+  roots: string[];
+  path_entries: string[];
+  environment: Array<{ name: string; value: string }>;
+  notes: string[];
+}
+
+const MOCK_OFFLINE_NOTE =
+  "Runs are offline unless the trusted CLI passes --network, and model runs never are. Dependencies that are not already in the workspace, such as crates from crates.io, fail to download.";
+
+const MOCK_PROPOSALS: readonly MockProposal[] = [
+  {
+    family: "rust",
+    family_label: "Rust",
+    name: "rust",
+    version: "stable-x86_64-unknown-linux-gnu",
+    roots: ["/home/dev/.rustup/toolchains/stable-x86_64-unknown-linux-gnu", "/usr"],
+    path_entries: ["/home/dev/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin", "/usr/bin"],
+    environment: [],
+    notes: [MOCK_OFFLINE_NOTE],
+  },
+  {
+    family: "go",
+    family_label: "Go",
+    name: "go",
+    version: "1.23.4",
+    roots: ["/usr/local/go", "/usr"],
+    path_entries: ["/usr/local/go/bin", "/usr/bin"],
+    environment: [
+      { name: "GOROOT", value: "/usr/local/go" },
+      { name: "GOTOOLCHAIN", value: "local" },
+      { name: "GOENV", value: "off" },
+      { name: "GOFLAGS", value: "-buildvcs=false" },
+    ],
+    notes: [MOCK_OFFLINE_NOTE],
+  },
+  {
+    family: "python",
+    family_label: "Python",
+    name: "python",
+    version: "3.12",
+    roots: ["/usr"],
+    path_entries: ["/usr/bin"],
+    environment: [],
+    notes: [],
+  },
+  {
+    family: "java",
+    family_label: "Java",
+    name: "java",
+    version: "21.0.2",
+    roots: ["/usr/lib/jvm/java-21-openjdk-amd64", "/usr"],
+    path_entries: ["/usr/lib/jvm/java-21-openjdk-amd64/bin", "/usr/bin"],
+    environment: [{ name: "JAVA_HOME", value: "/usr/lib/jvm/java-21-openjdk-amd64" }],
+    notes: [
+      "This is a Java runtime without javac; it runs Java programs but cannot compile them.",
+      "Not acceptance-tested: OMGCode has not run this family's build inside the confined runner.",
+    ],
+  },
+];
+
+/** A stable sample digest: 64 copies of one hex digit. */
+function mockDigest(index: number): string {
+  return ((index % 15) + 1).toString(16).repeat(64);
+}
 
 /** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
 export function createMockBackend(now: () => number = Date.now): { invoke: Invoker } {
@@ -1470,6 +1544,65 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           settings.container_grants.splice(index, 1);
         });
+      // The mock stands in for toolchain discovery (ADR-0103): a fixed list of sample proposals,
+      // checked against the recorded names. Every confirmation is accepted.
+      case "settings_discover_toolchains":
+        return mockDiscovery(optionalWorkspace(args));
+      case "settings_add_discovered_profiles": {
+        const chosen = mockSelection(args);
+        const workspaceId = optionalWorkspace(args);
+        if (args.revision !== settings.revision) {
+          fail("stale_revision", "The settings changed since this window read them.");
+        }
+        for (const proposal of chosen) {
+          if (mockRecorded(proposal.name)) {
+            fail("control", `${proposal.name}: a profile with this name already exists`);
+          }
+        }
+        for (const proposal of chosen) {
+          settings.toolchain_profiles.push({
+            name: proposal.name,
+            platform: "linux",
+            read_only_roots: [...proposal.roots],
+            path_entries: [...proposal.path_entries],
+            environment_names: proposal.environment.map((variable) => variable.name),
+          });
+          settings.revision += 1;
+        }
+        return mockDiscovery(workspaceId);
+      }
+      case "settings_grant_discovered_roots": {
+        if (!settings.container_grants_supported) {
+          fail("unsupported_platform", "Container grants exist only on Windows.");
+        }
+        const chosen = mockSelection(args);
+        const workspaceId = str(args, "workspace_id");
+        mockWorkspace({ workspace_id: workspaceId });
+        if (args.revision !== settings.revision) {
+          fail("stale_revision", "The settings changed since this window read them.");
+        }
+        const folders = [
+          ...new Set(
+            chosen
+              .flatMap((proposal) => proposal.roots)
+              .filter((root) => mockGrantNeed(workspaceId, root) === "needs_grant"),
+          ),
+        ];
+        if (folders.length === 0) {
+          fail("nothing_to_grant", "No folder can be granted from this account.");
+        }
+        for (const directory of folders) {
+          settings.container_grants.push({
+            grant_id: `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`,
+            workspace_id: workspaceId,
+            directory,
+            access: "read_execute",
+            state: "active",
+          });
+          settings.revision += 1;
+        }
+        return mockDiscovery(workspaceId);
+      }
       // The mock stands in for the browser step: a sign-in succeeds at once (ADR-0093).
       case "settings_sign_in_chatgpt":
         return changeSettings(args, () => {
@@ -1737,6 +1870,94 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     change();
     settings.revision += 1;
     return overviewView();
+  }
+
+  /** The optional `workspace_id` of a discovery request; a registered one or `null`. */
+  function optionalWorkspace(args: Record<string, unknown>): string | null {
+    if (args.workspace_id === null || args.workspace_id === undefined) {
+      return null;
+    }
+    return mockWorkspace(args).workspace_id;
+  }
+
+  function mockRecorded(name: string): boolean {
+    return settings.toolchain_profiles.some((p) => p.name.toLowerCase() === name.toLowerCase());
+  }
+
+  /** Home folders need a grant; `/usr/local` needs an administrator; the rest is readable. */
+  function mockGrantNeed(workspaceId: string | null, folder: string): RootGrantNeed {
+    if (workspaceId === null || !settings.container_grants_supported) {
+      return "not_applicable";
+    }
+    if (
+      settings.container_grants.some(
+        (grant) => grant.workspace_id === workspaceId && folder.startsWith(grant.directory),
+      )
+    ) {
+      return "readable";
+    }
+    if (folder.startsWith("/home/")) {
+      return "needs_grant";
+    }
+    return folder.startsWith("/usr/local/") ? "needs_administrator" : "readable";
+  }
+
+  function mockDiscovery(workspaceId: string | null): ToolchainDiscovery {
+    const proposals: ToolchainProposalView[] = MOCK_PROPOSALS.map((sample, index) => {
+      const recorded = mockRecorded(sample.name);
+      return {
+        digest: mockDigest(index),
+        family: sample.family,
+        family_label: sample.family_label,
+        name: sample.name,
+        version: sample.version,
+        read_only_roots: sample.roots.map((folder) => ({
+          folder,
+          grant: mockGrantNeed(workspaceId, folder),
+        })),
+        path_entries: [...sample.path_entries],
+        environment: sample.environment.map((variable) => ({ ...variable })),
+        notes: [...sample.notes],
+        refusal: recorded ? "a profile with this name already exists; remove it first" : null,
+        recorded,
+      };
+    });
+    const active =
+      workspaceId === null || !settings.container_grants_supported
+        ? null
+        : settings.container_grants.some(
+            (grant) =>
+              grant.workspace_id === workspaceId &&
+              grant.access === "read_write" &&
+              grant.state === "active",
+          );
+    return {
+      overview: overviewView(),
+      workspace_id: workspaceId,
+      workspace_grant_active: active,
+      proposals,
+      omitted: 0,
+    };
+  }
+
+  /** The sample proposals a request selects, as Rust checks a selection: 1 to 8 known digests. */
+  function mockSelection(args: Record<string, unknown>): MockProposal[] {
+    const digests = Array.isArray(args.digests) ? args.digests.map(String) : [];
+    if (
+      digests.length < 1 ||
+      digests.length > 8 ||
+      new Set(digests).size !== digests.length ||
+      !digests.every((digest) => /^[0-9a-f]{64}$/.test(digest))
+    ) {
+      fail("invalid_request", "Select 1 to 8 proposals at a time.");
+    }
+    return digests.map((digest) => {
+      const found = MOCK_PROPOSALS.find((_, at) => mockDigest(at) === digest);
+      if (found === undefined) {
+        fail("discovery_changed", "The installed toolchains or the proposals changed.");
+      }
+      return found;
+    });
   }
 
   function mockWorkspace(args: Record<string, unknown>): WorkspaceSettingsView {

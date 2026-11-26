@@ -3,6 +3,8 @@ import type {
   NewConnectionKind,
   PermissionFlags,
   SettingsOverview,
+  ToolchainDiscovery,
+  ToolchainProposalView,
   WorkspaceSettingsView,
 } from "../ipc/types";
 
@@ -11,6 +13,12 @@ export type Change = (revision: number) => Promise<SettingsOverview>;
 
 /** Runs one change, or ignores it while another waits. */
 export type Submit = (change: Change) => void;
+
+/**
+ * A toolchain discovery read or change (ADR-0103): it returns the proposals with the overview.
+ * The read ignores the revision.
+ */
+export type DiscoveryChange = (revision: number) => Promise<ToolchainDiscovery>;
 
 /**
  * The changes a control can ask for. Only the window shell reaches the command client; each
@@ -77,6 +85,15 @@ export interface Actions {
   /** Windows only. Rust opens the folder dialog. */
   grantContainerFolder(workspaceId: string, access: ContainerAccess): Change;
   revokeContainerGrant(grantId: string): Change;
+  /**
+   * Asks Rust to propose toolchain profiles from installed toolchains (ADR-0103). With a
+   * workspace, on Windows, each root says what its container needs. Records nothing.
+   */
+  discoverToolchains(workspaceId: string | null): DiscoveryChange;
+  /** Records the proposals with these digests after one system confirmation. */
+  addDiscoveredProfiles(digests: string[], workspaceId: string | null): DiscoveryChange;
+  /** Windows only. Grants the roots these proposals need after one system confirmation. */
+  grantDiscoveredRoots(workspaceId: string, digests: string[]): DiscoveryChange;
 }
 
 /**
@@ -159,6 +176,25 @@ export interface ExecutionForms {
   package: { name: string; origins: string };
   grantOpen: boolean;
   grant: { workspaceId: string; access: ContainerAccess };
+  discovery: DiscoveryState;
+}
+
+/**
+ * The last toolchain proposals Rust returned and which the operator selected (ADR-0103). The
+ * proposals are display text; a change sends only the selected digests.
+ */
+export interface DiscoveryState {
+  /** `null` until the operator first generates the list. */
+  proposals: ToolchainProposalView[] | null;
+  /** The workspace the list reports container access for, or `null`. */
+  workspaceId: string | null;
+  workspaceGrantActive: boolean | null;
+  /** Installations the list leaves out because a bound was reached. */
+  omitted: number;
+  /** The selected proposals, by digest. */
+  selected: Set<string>;
+  /** The workspace chosen for the next list and grants; `""` for none. */
+  chosenWorkspace: string;
 }
 
 /** The forms' starting values. */
@@ -170,5 +206,13 @@ export function newExecutionForms(): ExecutionForms {
     package: { name: "", origins: "" },
     grantOpen: false,
     grant: { workspaceId: "", access: "read_execute" },
+    discovery: {
+      proposals: null,
+      workspaceId: null,
+      workspaceGrantActive: null,
+      omitted: 0,
+      selected: new Set(),
+      chosenWorkspace: "",
+    },
   };
 }

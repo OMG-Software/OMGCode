@@ -5,6 +5,7 @@ import type {
   NewConnectionKind,
   PermissionFlags,
   SettingsOverview,
+  ToolchainDiscovery,
 } from "./types";
 
 /**
@@ -194,5 +195,35 @@ export const settingsApi = {
     invokeCommand<SettingsOverview>("settings_revoke_container_grant", {
       revision,
       grant_id: grantId,
+    }),
+  /**
+   * Asks Rust to read this computer's install folders and `PATH` and propose toolchain profiles
+   * (ADR-0103). Nothing runs and nothing is recorded. With a workspace, on Windows, each root
+   * says what that workspace's container needs to read it.
+   */
+  discoverToolchains: (workspaceId: string | null) =>
+    invokeCommand<ToolchainDiscovery>("settings_discover_toolchains", {
+      workspace_id: workspaceId,
+    }),
+  /**
+   * Records the selected proposals after one system confirmation that lists everything they
+   * hold. Sends their digests, never a path; Rust discovers again and refuses a selection that
+   * no longer matches.
+   */
+  addDiscoveredProfiles: (revision: number, digests: string[], workspaceId: string | null) =>
+    invokeCommand<ToolchainDiscovery>("settings_add_discovered_profiles", {
+      revision,
+      digests,
+      workspace_id: workspaceId,
+    }),
+  /**
+   * Windows only. Grants the workspace's container read-execute access to the selected
+   * proposals' roots it cannot read, after one system confirmation that names every folder.
+   */
+  grantDiscoveredRoots: (revision: number, workspaceId: string, digests: string[]) =>
+    invokeCommand<ToolchainDiscovery>("settings_grant_discovered_roots", {
+      revision,
+      workspace_id: workspaceId,
+      digests,
     }),
 };

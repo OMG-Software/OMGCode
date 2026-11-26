@@ -12,7 +12,7 @@
 //! `omgcode_platform::process::run_confined` runs a program in the container.
 //! See `docs/execution.md` and ADR-0029.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use omgcode_platform::container::{
     self as platform, CONTAINER_GRANTS_SUPPORTED, ContainerAccess, ContainerName,
@@ -36,6 +36,52 @@ pub(super) const GRANT_EVENT_RESERVE_BYTES: usize = 512;
 /// Longest accepted string SID. Container SIDs are about 90 characters.
 const MAX_SID_CHARS: usize = 184;
 const CONTAINER_PREFIX: &str = "OMGCode.Workspace.";
+
+/// What a workspace's container needs before a run can read a toolchain
+/// root, as the `settings` window's toolchain discovery shows it (ADR-0103).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootGrantNeed {
+    /// Not Windows: there are no container grants, and the Linux runner
+    /// exposes profile roots itself.
+    NotApplicable,
+    /// The container can already read and execute it, because every
+    /// application package can or a grant covers it.
+    Readable,
+    /// A read-execute grant is needed, and this account can change the
+    /// folder's access-control list.
+    NeedsGrant,
+    /// A grant is needed, but this account cannot change the folder's
+    /// access-control list. An administrator can, or a user-owned copy of the
+    /// toolchain can be granted instead.
+    NeedsAdministrator,
+    /// The access-control list could not be read, for example because the
+    /// folder is a link.
+    Unknown,
+}
+
+/// Whether the container of `workspace_id` can read `path` now and, when it
+/// cannot, whether this account could grant it. This only reads access-control
+/// lists and opens the folder for the access a grant uses; nothing is changed
+/// or recorded. The answer can change before a grant is attempted.
+#[must_use]
+pub fn root_grant_need(workspace_id: WorkspaceId, path: &Path) -> RootGrantNeed {
+    if !CONTAINER_GRANTS_SUPPORTED {
+        return RootGrantNeed::NotApplicable;
+    }
+    let Ok(name) = container_name(workspace_id) else {
+        return RootGrantNeed::Unknown;
+    };
+    match platform::granted_access(path, &name) {
+        Ok(Some(_)) => RootGrantNeed::Readable,
+        Ok(None) => match platform::can_change_access(path) {
+            Ok(true) => RootGrantNeed::NeedsGrant,
+            Ok(false) => RootGrantNeed::NeedsAdministrator,
+            Err(_) => RootGrantNeed::Unknown,
+        },
+        Err(_) => RootGrantNeed::Unknown,
+    }
+}
 
 /// Access recorded for one grant.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -234,28 +280,7 @@ impl ControlStore {
         expected_revision: u64,
     ) -> Result<ContainerGrant, ControlError> {
         self.check_revision(expected_revision)?;
-        if !CONTAINER_GRANTS_SUPPORTED {
-            return Err(ControlError::Container(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "container grants exist only on Windows",
-            )));
-        }
-        let workspace = self
-            .workspace(workspace_id)
-            .ok_or(ControlError::UnknownWorkspace)?
-            .clone();
-        self.check_directory_scope(&workspace.directory)?;
-        let directory = DirectoryRecord::capture(path)?;
-        self.check_storage_overlap(&directory)?;
-        self.check_grant_scope(&workspace.directory, &directory, access)?;
-        if self.snapshot.container_grants.iter().any(|status| {
-            status.grant.workspace_id == workspace_id
-                && status.grant.directory.same_directory(&directory)
-        }) {
-            return Err(ControlError::GrantRefused(
-                "this directory already has a grant for the workspace; revoke it first",
-            ));
-        }
+        let directory = self.prepare_grant(workspace_id, path, access, &[])?;
         let name = container_name(workspace_id)?;
         let grant = ContainerGrant {
             id: Uuid::new_v4(),
@@ -284,6 +309,90 @@ impl ControlStore {
             self.revision(),
         )?;
         Ok(grant)
+    }
+
+    /// Apply the rules [`Self::grant_container_access`] checks before it
+    /// records anything to granting each of `paths`, in order, to
+    /// `workspace_id` with `access`, and record and change nothing: the
+    /// workspace, each folder's storage and development-root scope, an
+    /// existing grant on the same folder or an earlier one in the batch, and
+    /// the grant limits counting the whole batch. The revision is not checked,
+    /// and the answer can change before a grant is made.
+    ///
+    /// # Errors
+    ///
+    /// The index of the first folder core would refuse, with core's reason.
+    pub fn check_container_grants(
+        &self,
+        workspace_id: WorkspaceId,
+        paths: &[PathBuf],
+        access: ContainerGrantAccess,
+    ) -> Result<(), (usize, ControlError)> {
+        let mut batch: Vec<DirectoryRecord> = Vec::with_capacity(paths.len());
+        for (index, path) in paths.iter().enumerate() {
+            let directory = self
+                .prepare_grant(workspace_id, path, access, &batch)
+                .map_err(|error| (index, error))?;
+            batch.push(directory);
+        }
+        Ok(())
+    }
+
+    /// Every check a grant passes before its intent is recorded. `batch` is
+    /// the folders that earlier grants of the same batch would record first.
+    fn prepare_grant(
+        &self,
+        workspace_id: WorkspaceId,
+        path: &Path,
+        access: ContainerGrantAccess,
+        batch: &[DirectoryRecord],
+    ) -> Result<DirectoryRecord, ControlError> {
+        if !CONTAINER_GRANTS_SUPPORTED {
+            return Err(ControlError::Container(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "container grants exist only on Windows",
+            )));
+        }
+        let workspace = self
+            .workspace(workspace_id)
+            .ok_or(ControlError::UnknownWorkspace)?;
+        self.check_directory_scope(&workspace.directory)?;
+        let directory = DirectoryRecord::capture(path)?;
+        self.check_storage_overlap(&directory)?;
+        self.check_grant_scope(&workspace.directory, &directory, access)?;
+        if self.snapshot.container_grants.iter().any(|status| {
+            status.grant.workspace_id == workspace_id
+                && status.grant.directory.same_directory(&directory)
+        }) {
+            return Err(ControlError::GrantRefused(
+                "this directory already has a grant for the workspace; revoke it first",
+            ));
+        }
+        if batch
+            .iter()
+            .any(|earlier| earlier.same_directory(&directory))
+        {
+            return Err(ControlError::GrantRefused(
+                "this directory is granted twice in one batch",
+            ));
+        }
+        let held = self
+            .snapshot
+            .container_grants
+            .iter()
+            .filter(|status| status.grant.workspace_id == workspace_id)
+            .count();
+        if held + batch.len() >= MAX_GRANTS_PER_WORKSPACE {
+            return Err(ControlError::GrantRefused(
+                "a workspace container can hold at most 32 grants; revoke one first",
+            ));
+        }
+        if self.snapshot.container_grants.len() + batch.len() >= MAX_GRANTS {
+            return Err(ControlError::GrantRefused(
+                "at most 256 container grants can be recorded; revoke one first",
+            ));
+        }
+        Ok(directory)
     }
 
     /// Remove a recorded grant from its directory and record the outcome.

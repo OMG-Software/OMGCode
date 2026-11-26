@@ -117,3 +117,4 @@ meaningful alternative does not need an ADR.
 | [0100: List the recorded toolchain profiles in the command tool](0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md) | Accepted | 2026-11-26 |
 | [0101: Make every section divider movable](0101-make-every-section-divider-movable.md) | Accepted | 2026-11-26 |
 | [0102: Choose a reasoning effort per session](0102-choose-a-reasoning-effort-per-session.md) | Accepted | 2026-11-26 |
+| [0103: Generate toolchain profiles from installed toolchains](0103-generate-toolchain-profiles-from-installed-toolchains.md) | Accepted | 2026-11-26 |

@@ -221,6 +221,16 @@ The `settings` window imports, enables, and removes skills
 and removes toolchain profiles, package-network profiles, and, on Windows,
 container grants, after native confirmations; none can be edited
 ([ADR-0088](docs/adr/0088-change-execution-settings-in-the-settings-window.md)).
+It also proposes toolchain profiles for the installed Rust, C and C++, Java,
+Python, Perl, Go, Node.js, .NET, and Ruby toolchains from a core service that
+reads install folders, the operator's `PATH`, and installer-written files,
+runs no program, and never reads repository configuration such as
+`rust-toolchain.toml`. The operator selects
+proposals, and one native confirmation per batch records them through the
+core add call on every platform. On Windows a separate command, after its
+own confirmation, grants a workspace's container the folders it needs that
+this account can change; discovery grants nothing
+([ADR-0103](docs/adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 Other credentials, apart from ChatGPT sign-in and sign-out, still change, and packages are fetched and programs run,
 only through the trusted CLI. The desktop shell has no working terminal, diff
 view, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to

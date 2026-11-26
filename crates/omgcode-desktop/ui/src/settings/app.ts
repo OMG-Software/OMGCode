@@ -142,6 +142,12 @@ const ACTIONS: Omit<Actions, "signInChatGpt" | "signOutChatGpt"> = {
     settingsApi.grantContainerFolder(revision, workspaceId, access),
   revokeContainerGrant: (grantId) => (revision) =>
     settingsApi.revokeContainerGrant(revision, grantId),
+  // A read: it records nothing, so it names no revision.
+  discoverToolchains: (workspaceId) => () => settingsApi.discoverToolchains(workspaceId),
+  addDiscoveredProfiles: (digests, workspaceId) => (revision) =>
+    settingsApi.addDiscoveredProfiles(revision, digests, workspaceId),
+  grantDiscoveredRoots: (workspaceId, digests) => (revision) =>
+    settingsApi.grantDiscoveredRoots(revision, workspaceId, digests),
 };
 
 /**

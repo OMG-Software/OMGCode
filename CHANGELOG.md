@@ -6,6 +6,57 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.68.0 adds **Generate toolchain profiles from local packages** to
+  the **Toolchain profiles** group of the desktop `settings` window. The
+  local packages are the toolchains installed on this computer, and it
+  generates toolchain profiles from those installed toolchains (ADR-0103).
+  A new
+  core service, `toolchain_discovery`, holds one detector
+  per family: Rust (rustup toolchains), C and C++ (MSVC with the Windows SDK,
+  Clang, and MinGW GCC on Windows; GCC and Clang on Linux), Java, Python,
+  Perl, Go, Node.js, .NET, and Ruby. It reads the standard install folders,
+  the operator's `PATH`, `JAVA_HOME`, `GOROOT`, and `RUSTUP_HOME`, and small
+  installer-written files, each checked to be a regular file before it is
+  opened; it runs no program, reads no registry key, and never reads
+  repository configuration such as `rust-toolchain.toml`. A folder that
+  `PATH` or one of those variables names is read like any install folder,
+  even inside the development root, and core refuses it as a root before
+  any confirmation. Each
+  proposal lists its roots, `PATH` entries, and derived non-secret variables
+  (such as `JAVA_HOME`, `GOROOT`, `DOTNET_ROOT`, and MSVC's `INCLUDE` and
+  `LIB`), plus the system part every profile needs, and notes when its family
+  has not passed the confined acceptance runs. No root is a filesystem or
+  drive root, the home folder or its ancestor, or itself a link (core
+  records a root's resolved location), and no reserved variable is
+  proposed. Past 32 proposals every base name keeps its first installation
+  first, and the list says how many installations it left out; a folder
+  listing keeps the first 512 directories by name. A Rust proposal is one
+  toolchain directory, without the rustup proxies or `~/.cargo`. Three
+  `settings`-only commands
+  (`settings_discover_toolchains`, `settings_add_discovered_profiles`, and
+  `settings_grant_discovered_roots`) carry only the revision, a workspace
+  identifier, and the digests of 1 to 8 selected proposals. Rust discovers
+  again and refuses a list that no longer matches as `discovery_changed`,
+  shows one native confirmation per batch that lists every root, `PATH` entry,
+  and variable with its value, and records each profile with `add_profile`
+  or, on Windows, grants read-execute access with `grant_container_access`,
+  from the confirmed revision. On Windows each root says whether the selected
+  workspace's container can read it, needs a grant, needs an
+  administrator, or could not have its access-control list read, read while
+  the settings store is closed, and choosing
+  another workspace generates the list again. Only folders this account can
+  change are granted; folders whose access-control list could not be read
+  are named and skipped. Core gains `ControlStore::check_profile`, which
+  applies every `add_profile` rule and records nothing, so each proposal
+  shows why core would refuse it, and `add_profile` now refuses a 33rd
+  profile with its own reason. `ControlStore::check_container_grants` does
+  the same for a batch of grants, counting the batch against the grant
+  limits, and the grant command runs it before its dialog;
+  `grant_container_access` uses the same checks and names both limits. A
+  workspace named in an add is checked before its dialog. Model runs
+  keep no network, a 20-second deadline, and 1 GiB of memory, so a `cargo`
+  build that needs crates.io dependencies still fails offline.
+
 - Version 0.67.0 adds a per-session reasoning effort (ADR-0102). The desktop
   model box has an **Effort** dropdown under **Model** with "Default", which
   sends nothing, and None, Minimal, Low, Medium, High, Extra high, and Max. It

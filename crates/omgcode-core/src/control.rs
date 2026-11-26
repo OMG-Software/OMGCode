@@ -41,7 +41,7 @@ pub use approval::{
 
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
-    ContainerRevocation, container_name,
+    ContainerRevocation, RootGrantNeed, container_name, root_grant_need,
 };
 pub use credential::{
     CredentialBackend, CredentialBinding, CredentialError, CredentialId, CredentialStore,

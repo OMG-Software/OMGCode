@@ -100,6 +100,7 @@ mod settings;
 mod settings_changes;
 mod settings_chat;
 mod settings_chatgpt;
+mod settings_discovery;
 mod settings_execution;
 mod settings_skills;
 mod settings_web_hosts;
@@ -128,6 +129,11 @@ pub use self::processes::{
 };
 use self::review_tokens::ReviewTokens;
 pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
+pub use self::settings_discovery::{
+    DiscoveredGrantsRequest, DiscoveredProfilesRequest, MAX_SELECTED_PROPOSALS, ProposedRootView,
+    ProposedVariableView, ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProposalView,
+    discovery_host,
+};
 pub use self::settings_execution::{
     ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
     PackageProfileAddRequest, ProfileRemoveRequest, ToolchainProfileAddRequest,
