@@ -120,6 +120,18 @@ denies, and **Approve** is armed only one second after a review renders.
   makes its audited broker read, now without a click.
 - The observer runs before the wait starts, so a slow observer would delay
   the wait; the shell's observer only posts one closure to the event loop.
+- Showing a hidden window still goes through tao's `show`, which calls
+  `ShowWindow` with `SW_SHOW`, and unminimizing calls it with
+  `SW_RESTORE`; both flags request activation. When another application
+  owns the foreground, Windows' foreground lock refuses that activation
+  and flashes the taskbar button instead, and no input is sent. A
+  non-activating show is not available through tao once a window exists:
+  its `MARKER_DONT_FOCUS` flag applies only at creation. A direct
+  `ShowWindow` with `SW_SHOWNOACTIVATE` would leave tao's visibility flag
+  clear, and tao skips a change that matches its flag, so a later `hide`,
+  such as closing the window, would do nothing. Where the shown window
+  lands in the stacking order while another application owns the
+  foreground was not checked on a Windows desktop.
 - `omgcode-desktop` now depends on the workspace crate `omgcode-platform`.
   `omgcode-platform` gains two Windows-only functions with four `unsafe`
   calls; no third-party code is added.
