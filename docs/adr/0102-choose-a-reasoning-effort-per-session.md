@@ -93,8 +93,10 @@ No provider's effort handling was exercised with a real request.
    that holds an effort as unreadable, reports it, and treats it as empty,
    as ADR-0071 decision 6 already requires. The new `main` command
    `session_effort_select` records it without a dialog, like
-   `session_model_select`: an effort grants nothing. It is refused with
-   `invalid_request` when the session's connection takes no effort. It holds
+   `session_model_select`: an effort grants nothing. An effort the
+   session's connection does not take is refused with `invalid_request`;
+   `null`, which records no effort ("Default"), is accepted on any
+   connection, including one that takes none. It holds
    the one-change-at-a-time guard that a provider choice holds, so the
    connection it checks is the one the record keeps, and it is refused with
    `settings_change_running` while another settings change runs. Choosing

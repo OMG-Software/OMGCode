@@ -296,7 +296,7 @@ their registered identifier, and approvals by identifier.
 | `connection_status` | main | Return a session's connection, where it comes from, its model, its reasoning effort and the efforts its connection takes, and the connections that may be chosen; takes the session id or `null` |
 | `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
-| `session_effort_select` | main | Record the reasoning effort chosen for one session, or none for `null`; no dialog; refused when the session's connection takes none (ADR-0102) |
+| `session_effort_select` | main | Record the reasoning effort chosen for one session, or none for `null`; no dialog; an effort the session's connection does not take is refused; `null` is accepted on any connection (ADR-0102) |
 | `chat_send` | main | Start one chat turn on a supervised thread |
 | `chat_status` | main | Report the state and outcome of a session's turn |
 | `chat_cancel` | main | Request cooperative cancellation of a running turn |
@@ -1523,8 +1523,9 @@ that follows the default connection, so choosing a model never pins a
 provider the operator did not confirm.
 `session_effort_select` records a session's reasoning effort the same way,
 with no dialog (ADR-0102). It deserializes only the seven names and `null`,
-refuses any effort with `invalid_request` when the session's connection
-takes none, and keeps the session's model. It runs as one settings change, so
+refuses an effort the session's connection does not take with
+`invalid_request` (`null`, which records none, is accepted on any
+connection), and keeps the session's model. It runs as one settings change, so
 a provider choice cannot land between its check and its save; while another
 change runs, such as a provider choice awaiting its confirmation, it is
 refused with `settings_change_running`. The per-session record stores it as
