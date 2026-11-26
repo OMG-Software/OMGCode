@@ -235,16 +235,27 @@ fn discovery_proposes_installed_toolchains_and_records_nothing() {
     assert_eq!(newest.digest.len(), 64);
     assert_eq!(newest.refusal, None);
     assert!(!newest.recorded);
-    // The installation and the system part, which every proposal lists.
-    assert_eq!(newest.read_only_roots.len(), 2);
+    // The installation and the system part, which every proposal lists. On
+    // Linux `usr/local/go` sits inside the system part's `usr`, so core drops
+    // the nested root and `usr` alone covers the installation.
     let installation = host.newest.display().to_string();
-    assert!(
-        newest
-            .read_only_roots
-            .iter()
-            .any(|root| root.folder == installation),
-        "{newest:?}"
-    );
+    let roots: Vec<&str> = newest
+        .read_only_roots
+        .iter()
+        .map(|root| root.folder.as_str())
+        .collect();
+    let expected = match platform() {
+        ProfilePlatform::Windows => vec![
+            installation.clone(),
+            host.base
+                .join("Windows")
+                .join("System32")
+                .display()
+                .to_string(),
+        ],
+        ProfilePlatform::Linux => vec![host.base.join("usr").display().to_string()],
+    };
+    assert_eq!(roots, expected, "{newest:?}");
     let variables: Vec<(&str, &str)> = newest
         .environment
         .iter()
