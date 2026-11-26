@@ -121,7 +121,10 @@ journal is opened, so the session's later model actions are marked
 compaction, which keeps these events. Saved fetch results replay under the
 same live `model_tools` and `read` rule as other tool results. A request
 manifest may list ten tool names, with tool schema `0.8.0`; a build before
-0.64.0 refuses a journal whose manifest lists ten.
+0.64.0 refuses a journal whose manifest lists ten. Since 0.65.0 the schema is
+`0.9.0`, whose command tool lists the recorded toolchain profiles
+(ADR-0100); the manifest still records only tool names, and earlier versions
+replay unchanged.
 
 The version-2 `request.manifest` payload adds optional `tool_schema_version` and
 `tools` fields. They are present together only when the request advertised

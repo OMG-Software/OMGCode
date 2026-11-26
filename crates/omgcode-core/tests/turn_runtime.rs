@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use omgcode_core::control::{
-    ApprovalOperation, ApprovalState, ControlStore, SkillScope, SkillSetting, now_unix,
+    ApprovalOperation, ApprovalState, ControlStore, ProfileDeclaration, SkillScope, SkillSetting,
+    now_unix,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::prompt::{
@@ -142,6 +143,43 @@ impl Fixture {
             .find(|event| event["type"] == "turn.failed")
             .and_then(|event| event["payload"]["code"].as_str().map(str::to_owned))
     }
+
+    /// Enable the preferences under which the command tool can be offered.
+    fn enable_commands(&mut self) {
+        let workspace_id = self.workspace_id;
+        let control = self.control_mut();
+        control
+            .set_permissions(
+                workspace_id,
+                PermissionSet {
+                    model_tools: true,
+                    execute: Access::Prompt,
+                    read: Access::Allow,
+                    write: Access::Prompt,
+                    ..PermissionSet::default()
+                },
+                control.revision(),
+            )
+            .expect("enable command tools");
+    }
+
+    /// Record a toolchain profile whose only root is a new empty directory.
+    fn declare_profile(&mut self, name: &str) {
+        let root = self._temporary.path().join(format!("tools-{name}"));
+        fs::create_dir(&root).expect("toolchain root");
+        let control = self.control_mut();
+        control
+            .add_profile(
+                &ProfileDeclaration {
+                    name: name.into(),
+                    read_only_roots: vec![root],
+                    path_entries: Vec::new(),
+                    environment: Vec::new(),
+                },
+                control.revision(),
+            )
+            .expect("toolchain profile");
+    }
 }
 
 /// Gives the data root a protected DACL for the current user only, as the
@@ -173,6 +211,8 @@ fn make_private_root(data: &Path) {
 struct SeenRequest {
     messages: Vec<ModelMessage>,
     tools: Vec<String>,
+    /// The `profile` values the command tool listed, when it was offered.
+    command_profiles: Option<Vec<String>>,
 }
 
 struct ScriptedModel {
@@ -204,6 +244,22 @@ impl ToolModel for ScriptedModel {
                 .iter()
                 .map(|definition| definition.name.to_owned())
                 .collect(),
+            command_profiles: request
+                .tools
+                .iter()
+                .find(|definition| definition.name == "workspace_run_command")
+                .map(|definition| {
+                    definition.parameters["properties"]["profile"]["enum"]
+                        .as_array()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }),
         });
         if let Some(token) = &self.cancel_on_reply {
             token.cancel();
@@ -383,20 +439,8 @@ fn a_command_tool_call_requires_an_operator_approval() {
     let mut fixture = Fixture::new();
     let workspace_id = fixture.workspace_id;
     let session_id = fixture.snapshot().session_id;
-    let control = fixture.control_mut();
-    control
-        .set_permissions(
-            workspace_id,
-            PermissionSet {
-                model_tools: true,
-                execute: Access::Prompt,
-                read: Access::Allow,
-                write: Access::Prompt,
-                ..PermissionSet::default()
-            },
-            control.revision(),
-        )
-        .expect("enable command tools");
+    fixture.enable_commands();
+    fixture.declare_profile("system");
     let mut model = ScriptedModel::new(vec![
         tool_reply(vec![call(
             "cmd-1",
@@ -536,6 +580,107 @@ fn the_command_tool_requires_execute() {
             .iter()
             .any(|name| name == "workspace_run_command"),
         "the command tool was advertised without execute"
+    );
+}
+
+/// Every command call names a profile, so with none recorded every call
+/// would fail: the tool is not advertised even though execute permits it.
+#[test]
+fn the_command_tool_is_withheld_without_a_recorded_profile() {
+    let mut fixture = Fixture::new();
+    fixture.enable_commands();
+    let mut model = ScriptedModel::new(vec![text_reply("text only")]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("text turn");
+    assert!(
+        !model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_run_command"),
+        "the command tool was advertised with no profile recorded"
+    );
+    assert!(
+        report
+            .manifest
+            .tools
+            .is_some_and(|tools| !tools.iter().any(|name| name == "workspace_run_command")),
+        "the manifest named a withheld command tool"
+    );
+}
+
+/// The `profile` parameter lists the recorded profiles in the order they
+/// were added, so the model names one that exists instead of guessing.
+#[test]
+fn the_command_tool_lists_the_recorded_profiles() {
+    let mut fixture = Fixture::new();
+    fixture.enable_commands();
+    fixture.declare_profile("rust");
+    fixture.declare_profile("python-3.14");
+    let mut model = ScriptedModel::new(vec![text_reply("text only")]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("text turn");
+    assert_eq!(
+        model.requests[0].command_profiles.as_deref(),
+        Some(["rust".to_owned(), "python-3.14".to_owned()].as_slice())
+    );
+}
+
+/// Regression: a call that names a profile nobody recorded used to record an
+/// approval request, so the operator approved a command that could never
+/// start. It is now answered with the recorded names before any approval is
+/// requested, recorded as refused, and the turn continues.
+#[test]
+fn a_command_naming_an_unrecorded_profile_is_refused_before_an_approval() {
+    let mut fixture = Fixture::new();
+    fixture.enable_commands();
+    fixture.declare_profile("rust");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "cmd-1",
+            "workspace_run_command",
+            json!({"profile": "system", "program": "cargo", "arguments": ["fmt"]}),
+        )]),
+        text_reply("no such profile"),
+    ]);
+    let report = fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn continues after the refusal");
+    assert_eq!(report.tool_calls, 1);
+    assert_eq!(report.reply, "no such profile");
+    let result = fixture
+        .snapshot()
+        .messages
+        .iter()
+        .find(|message| message.text.contains("profile_not_recorded"))
+        .map(|message| message.text.clone())
+        .expect("the result names the refusal");
+    assert!(result.contains(r#""profiles":["rust"]"#), "{result}");
+    fixture.close_journal();
+    assert_eq!(
+        fixture.last_tool_code().as_deref(),
+        Some("profile_not_recorded")
+    );
+
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    assert!(
+        control.approval_statuses(now_unix()).is_empty(),
+        "an approval was requested for an unrecorded profile"
+    );
+    assert!(!fixture.data.join("runs-v1.jsonl").exists());
+
+    let refused = read_events(&fixture.data.join("model-actions-v1.jsonl"))
+        .into_iter()
+        .find(|record| record["event"]["payload"]["call_id"] == "cmd-1")
+        .expect("the call is in the action journal");
+    assert_eq!(refused["event"]["type"], "action_refused");
+    assert_eq!(refused["event"]["payload"]["tool"], "run_command");
+    assert_eq!(
+        refused["event"]["payload"]["reason"]["type"],
+        "invalid_request"
     );
 }
 
@@ -2706,7 +2851,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
     assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.8.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.9.0");
 }
 
 /// A session whose earlier turn advertised tool schema 0.2.0 still replays and
@@ -4091,8 +4236,9 @@ fn the_rename_and_delete_tools_require_live_read_and_write() {
     }
 }
 
-/// With `execute` also enabled, all nine tool slots are used, in the
-/// documented order, and the manifest records the same list.
+/// With `execute` also enabled and a toolchain profile recorded, all nine
+/// tool slots are used, in the documented order, and the manifest records the
+/// same list.
 #[test]
 fn all_nine_tools_are_advertised_in_order_with_execute_enabled() {
     let mut fixture = Fixture::new();
@@ -4109,6 +4255,7 @@ fn all_nine_tools_are_advertised_in_order_with_execute_enabled() {
             control.revision(),
         )
         .expect("enable execute");
+    fixture.declare_profile("system");
     let mut model = ScriptedModel::new(vec![text_reply("done")]);
     let report = fixture
         .run(&mut model, TurnLimits::default())
