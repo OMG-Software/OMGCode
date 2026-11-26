@@ -326,10 +326,12 @@ struct Inner {
     /// Called on a turn's thread each time the turn starts waiting for an
     /// approval decision, so the shell can show its approvals window
     /// (ADR-0105). It decides nothing. Each turn copies the observer when it
-    /// starts. Owners: this field and the slots of turns started while it was
-    /// set. A shell observer may own a handle that reaches this service, which
-    /// is a cycle; [`DesktopService::shutdown`] clears the field to end it,
-    /// and a turn that outlives shutdown keeps its copy until it ends.
+    /// starts. Owners: this field and the threads of turns started while it
+    /// was set; the turn table keeps only a reader of each slot, without the
+    /// observer, because it keeps finished slots. A shell observer may own a
+    /// handle that reaches this service, which is a cycle;
+    /// [`DesktopService::shutdown`] clears the field to end it, and a turn
+    /// that outlives shutdown keeps its copy until its thread ends.
     approval_wait_observer: Mutex<Option<omgcode_core::turn::WaitObserver>>,
     /// Set while one settings change waits for the operator or applies, so
     /// a second change is refused rather than opening a second dialog.

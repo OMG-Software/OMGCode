@@ -39,19 +39,30 @@ denies, and **Approve** is armed only one second after a review renders.
    nothing. A slot without one behaves as before.
 2. **The desktop service holds one observer.**
    `DesktopService::set_approval_wait_observer` replaces it. Each turn
-   copies it when it starts; a running turn keeps its copy.
-   `DesktopService::shutdown` drops the service's copy, which ends the
+   copies it when it starts; a running turn keeps its copy until its thread
+   ends. The turn table, which keeps finished slots, holds
+   `ApprovalWaitSlot::reader`, which shares the awaited call but not the
+   observer. `DesktopService::shutdown` drops the service's copy, so once
+   the turn threads have ended nothing holds the observer, which ends the
    reference cycle a shell observer forms through the application handle.
 3. **The shell shows the approvals window from Rust.** At startup the shell
-   registers an observer that calls `present_approvals`. When this process
+   registers an observer that calls `present_approvals`, which posts one
+   closure to the event loop. There, where window calls take effect at once,
+   the shell checks the foreground and acts, so the operator cannot switch
+   applications between the check and the activation. When this process
    owns the foreground window, the approvals window is unminimized, shown,
-   and focused, as **Review** does. Otherwise it is shown and its taskbar
-   button flashes until the operator comes to it (`UserAttentionType::Critical`),
-   and nothing takes the foreground. On Windows, ownership of the foreground
+   and activated. Otherwise it is shown and its taskbar button flashes
+   until the operator comes to it (`UserAttentionType::Critical`), and
+   nothing takes the foreground. On Windows, ownership of the foreground
    window is read with `GetForegroundWindow` and `GetWindowThreadProcessId`
-   in `omgcode-platform` (`foreground::this_process_owns_foreground`). On
-   Linux, where the prototype has not run, any OMGCode window that reports
-   focus counts.
+   in `omgcode-platform` (`foreground::this_process_owns_foreground`), and
+   the window is activated with `SetForegroundWindow` alone
+   (`foreground::activate_if_foreground_owner`), never with tao's
+   `set_focus`, whose fallback sends the simulated key press. If Windows
+   refuses, or another application took the foreground since the check, the
+   window flashes instead. On Linux, where the prototype has not run, any
+   OMGCode window that reports focus counts, and the toolkit's focus
+   request is used.
 4. **Nothing reaches a webview.** No command, event, or capability is added.
    The `main` window cannot open or focus the approvals window in any new
    way, and the approvals window decides exactly as before.
@@ -64,7 +75,9 @@ denies, and **Approve** is armed only one second after a review renders.
    request under review stays selected, as for any poll.
 6. **Settings is unchanged.** `settings_show_window` and
    `settings_show_workspace` already unminimize, show, and focus the window,
-   and now share the same helper as `approvals_show_window`. The operator
+   and now share the same helper as `approvals_show_window`. That helper
+   keeps tao's `set_focus`, because it runs on the operator's own click in
+   OMGCode, which leaves this process in the foreground. The operator
    saw the window open in front every time in their latest testing and had
    seen it open behind `main` only occasionally before. No cause was found
    in the code, so no speculative change was made.
@@ -90,6 +103,13 @@ denies, and **Approve** is armed only one second after a review renders.
   request, at the cost of more store reads while nothing changes.
 - **Poll the turn table from a shell thread.** It needs a supervised thread
   and still reacts late; the observer runs exactly when the wait begins.
+- **Check the foreground on the turn's thread and queue the focus.** Review
+  found that the operator could switch applications before the queued
+  `set_focus` ran, which would then send the simulated key press to the
+  other application.
+- **Clear the observer from each slot when its turn finishes.** It works,
+  but every path that ends a turn would have to remember to do it; a reader
+  that never held the observer needs no cleanup.
 
 ## Consequences
 
@@ -99,20 +119,22 @@ denies, and **Approve** is armed only one second after a review renders.
   record, as opening it always has. For a file-write approval, that review
   makes its audited broker read, now without a click.
 - The observer runs before the wait starts, so a slow observer would delay
-  the wait; the shell's observer only posts messages to the event loop and,
-  on Windows, makes two non-blocking Win32 calls.
+  the wait; the shell's observer only posts one closure to the event loop.
 - `omgcode-desktop` now depends on the workspace crate `omgcode-platform`.
-  `omgcode-platform` gains one Windows-only function with two `unsafe`
+  `omgcode-platform` gains two Windows-only functions with four `unsafe`
   calls; no third-party code is added.
 - Every time the operator switches to the approvals window it makes one
   extra `approvals_list` call, which reads the approval store as each poll
   does.
-- Tests cover the slot's observer, that a real desktop turn tells the
-  observer once and still waits for a decision, that shutdown drops the
-  observer, and that a focus event lists a new request without moving the
-  review. Which window ends up in front, the taskbar flash, and whether
-  WebView2 delivers the page's `focus` event when the window is activated
-  depend on the Windows desktop and were not driven by automation.
+- Tests cover the slot's observer and its reader, that a real desktop turn
+  tells the observer once and still waits for a decision, that shutdown
+  drops the observer with and without a finished turn in the table, that
+  activation refuses a handle that is not this process's window, and that
+  a focus event lists a new request without moving the review. No test
+  activates a real window. Which window ends up in front, the taskbar
+  flash, and whether WebView2 delivers the page's `focus` event when the
+  window is activated depend on the Windows desktop and were not driven by
+  automation.
 
 ## References
 

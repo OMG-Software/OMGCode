@@ -1832,12 +1832,15 @@ The flow:
    pending count. It can show the approvals window and nothing more.
    Since 0.69.0 (ADR-0105) Rust also shows the approvals window as soon as a
    desktop turn starts waiting, before the wait begins, through an observer
-   the shell registers with the service at startup. When OMGCode owns the
-   foreground window (on Windows, read with `GetForegroundWindow`), the window
-   is unminimized, shown, and focused, as **Review** does. When another
-   application owns it, the window is shown and its taskbar button flashes
-   until the operator comes to it, and the foreground is not taken: on
-   Windows that would send the other application a simulated key press. No
+   the shell registers with the service at startup. The observer posts one
+   closure to the event loop, which checks the foreground and acts in the
+   same callback. When OMGCode owns the foreground window (on Windows, read
+   with `GetForegroundWindow`), the window is unminimized, shown, and
+   activated with `SetForegroundWindow` alone, not tao's `set_focus`. When
+   another application owns it, or Windows refuses, the window is shown and
+   its taskbar button flashes until the operator comes to it, and the
+   foreground is not taken: on Windows that would send the other
+   application a simulated key press. No
    webview can trigger this, and the window decides as below. An approval
    recorded by a CLI turn shows only in the count.
 3. The operator opens the `approvals` window, or it opens itself (step 2).

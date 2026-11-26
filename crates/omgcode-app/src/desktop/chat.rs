@@ -286,6 +286,10 @@ impl DesktopService {
             Some(observer) => ApprovalWaitSlot::new().with_observer(observer),
             None => ApprovalWaitSlot::new(),
         };
+        // The table keeps finished slots, so it holds a reader: only the turn
+        // thread's copy keeps the observer, which shutdown must be able to
+        // release (ADR-0105).
+        let awaited = approval_wait.reader();
         let job = TurnJob {
             session_id,
             path,
@@ -294,7 +298,7 @@ impl DesktopService {
             token,
             clients,
             skills,
-            approval_wait: approval_wait.clone(),
+            approval_wait,
         };
 
         // Reserve the slot and start the thread under one lock hold, so two
@@ -311,7 +315,7 @@ impl DesktopService {
             return Err(DesktopError::too_many_turns());
         }
         let handle = spawn_turn(inner, job)?;
-        turns.insert_running(session_id, handle, approval_wait);
+        turns.insert_running(session_id, handle, awaited);
         drop(turns);
         Ok(status_of(
             session_id,

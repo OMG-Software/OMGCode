@@ -43,7 +43,9 @@ pub struct AwaitedCall {
 ///
 /// An attached [`WaitObserver`] is shared by every clone made after it was
 /// attached. It must not own a clone of the slot it is attached to, or the
-/// slot would keep itself alive.
+/// slot would keep itself alive. A holder that only reads the call, and may
+/// outlive the turn, keeps [`ApprovalWaitSlot::reader`] instead, so it does
+/// not keep the observer alive.
 #[derive(Clone, Default)]
 pub struct ApprovalWaitSlot {
     call: Arc<Mutex<Option<AwaitedCall>>>,
@@ -82,6 +84,16 @@ impl ApprovalWaitSlot {
     pub fn with_observer(mut self, observer: WaitObserver) -> Self {
         self.observer = Some(observer);
         self
+    }
+
+    /// A handle that shares this slot's call but holds no observer. A wait
+    /// published through it tells no observer.
+    #[must_use]
+    pub fn reader(&self) -> Self {
+        Self {
+            call: Arc::clone(&self.call),
+            observer: None,
+        }
     }
 
     /// The call the turn waits on now, or `None` when it is not waiting.
@@ -178,6 +190,40 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(*seen.lock().expect("seen"), vec![Some(first), Some(second)]);
         assert_eq!(reader.current(), None);
+    }
+
+    #[test]
+    fn a_reader_shares_the_call_but_not_the_observer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observer: WaitObserver = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let weak = Arc::downgrade(&observer);
+        let slot = ApprovalWaitSlot::new().with_observer(observer);
+        let reader = slot.reader();
+        assert!(format!("{reader:?}").contains("observer: false"));
+
+        let published = call();
+        let guard = slot.publish(published.clone());
+        assert_eq!(reader.current(), Some(published));
+        drop(guard);
+        assert_eq!(reader.current(), None);
+        drop(reader.publish(call()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Only the reader is left, and it does not keep the observer alive.
+        drop(slot);
+        assert!(weak.upgrade().is_none());
+        let late = call();
+        let shared = reader.clone();
+        let guard = reader.publish(late.clone());
+        assert_eq!(shared.current(), Some(late));
+        drop(guard);
     }
 
     #[test]

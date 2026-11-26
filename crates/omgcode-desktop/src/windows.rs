@@ -138,10 +138,10 @@ pub fn create_windows(app: &App) -> tauri::Result<()> {
 
 /// Unminimize, show, and focus `window`.
 ///
-/// Used when the operator asks for a window from `main`, and when a turn
-/// starts waiting for an approval while the operator works in this
-/// application. Both cases leave this process in the foreground, so focusing
-/// needs no workaround.
+/// Used when the operator asks for a window from `main`, a request that
+/// follows their own click, so this process is in the foreground and
+/// focusing needs no workaround. A window shown on its own uses
+/// [`present_approvals`] instead.
 ///
 /// # Errors
 ///
@@ -157,36 +157,79 @@ pub fn bring_to_front(window: &WebviewWindow) -> tauri::Result<()> {
 ///
 /// When the operator is working in this application, the window is brought to
 /// the front. Otherwise it is shown and its taskbar button flashes until the
-/// operator comes to it, and focus stays with the other application: on
-/// Windows, taking the foreground from another application sends that
-/// application a simulated key press. Neither path approves anything: the
-/// window never focuses **Approve**, no key decides, and **Approve** is armed
-/// only one second after a review renders.
+/// operator comes to it, and focus stays with the other application. Neither
+/// path approves anything: the window never focuses **Approve**, no key
+/// decides, and **Approve** is armed only one second after a review renders.
 ///
-/// Runs on the turn's thread before the wait starts. The window steps are
-/// messages to the event loop. A failure is reported on standard error and
-/// the turn waits either way.
+/// Runs on the turn's thread before the wait starts and only posts one
+/// closure to the event loop. A failure is reported on standard error and the
+/// turn waits either way.
 pub fn present_approvals(app: &AppHandle) {
+    let handle = app.clone();
+    // The foreground check and the activation run in one event-loop callback,
+    // where window calls take effect at once: checking on the turn's thread
+    // left a gap in which the operator could switch applications before the
+    // focus request ran.
+    if app
+        .run_on_main_thread(move || present_on_event_loop(&handle))
+        .is_err()
+    {
+        eprintln!("omgcode-desktop: could not show the approvals window");
+    }
+}
+
+fn present_on_event_loop(app: &AppHandle) {
     let Some(window) = app.get_webview_window(WindowLabel::Approvals.as_str()) else {
         eprintln!("omgcode-desktop: the approvals window is missing");
         return;
     };
     let shown = if operator_is_here(app) {
-        bring_to_front(&window)
+        raise_without_input(&window)
     } else {
-        window
-            .show()
-            .and_then(|()| window.request_user_attention(Some(UserAttentionType::Critical)))
+        show_and_flash(&window)
     };
     if shown.is_err() {
         eprintln!("omgcode-desktop: could not show the approvals window");
     }
 }
 
+/// Show `window` and flash its taskbar button until the operator comes to it,
+/// leaving the foreground where it is.
+fn show_and_flash(window: &WebviewWindow) -> tauri::Result<()> {
+    window.show()?;
+    window.request_user_attention(Some(UserAttentionType::Critical))
+}
+
+/// Unminimize, show, and activate `window` without tao's `set_focus`, which
+/// sends a simulated Alt key press to the foreground application when
+/// Windows refuses the activation. If another application took the
+/// foreground since the check, or Windows refuses, the window flashes
+/// instead.
+#[cfg(windows)]
+fn raise_without_input(window: &WebviewWindow) -> tauri::Result<()> {
+    window.unminimize()?;
+    window.show()?;
+    let activated = window.hwnd().is_ok_and(|hwnd| {
+        omgcode_platform::foreground::activate_if_foreground_owner(hwnd.0.addr())
+    });
+    if activated {
+        Ok(())
+    } else {
+        window.request_user_attention(Some(UserAttentionType::Critical))
+    }
+}
+
+/// Unminimize, show, and focus `window`; outside Windows the toolkit's focus
+/// request sends no input.
+#[cfg(not(windows))]
+fn raise_without_input(window: &WebviewWindow) -> tauri::Result<()> {
+    bring_to_front(window)
+}
+
 /// Whether the operator is working in this application now. On Windows the
 /// foreground window's owner decides, because a window's own focus flag is
 /// clear while its webview holds the keyboard focus. Elsewhere a window of
-/// this application must report focus; that query waits for the event loop.
+/// this application must report focus.
 fn operator_is_here(app: &AppHandle) -> bool {
     omgcode_platform::foreground::this_process_owns_foreground().unwrap_or_else(|| {
         WindowLabel::ALL.iter().any(|label| {

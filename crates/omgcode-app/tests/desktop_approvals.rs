@@ -477,6 +477,29 @@ fn shutdown_drops_the_approval_wait_observer() {
     assert_eq!(setup.server.finish(), 0);
 }
 
+#[test]
+fn a_finished_turn_does_not_keep_the_observer_after_shutdown() {
+    use std::sync::Arc;
+
+    let setup = setup(vec![Step::reply(text("hello"))]);
+    let observer: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+    let watch = Arc::downgrade(&observer);
+    setup
+        .service
+        .set_approval_wait_observer(observer)
+        .expect("observer");
+    let session = setup.session("Finished");
+    setup.turn(session, "say hello");
+    // The turn table keeps the finished slot, which must hold no observer.
+    let report = setup.service.shutdown(Duration::from_secs(5));
+    assert_eq!(report.still_running, 0);
+    assert!(
+        watch.upgrade().is_none(),
+        "a finished turn's slot keeps the observer"
+    );
+    assert_eq!(setup.server.finish(), 1);
+}
+
 /// Two sessions, each with a turn waiting on one pending edit approval for
 /// its own file. Each turn needs one more model reply once it is decided.
 fn two_pending() -> (Setup, [(Uuid, Uuid); 2]) {
