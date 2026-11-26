@@ -9,8 +9,9 @@ in a registered workspace. When a workspace enables `model_tools`, chat runs
 the core's bounded turn/tool runtime so the model can read and list files in
 that workspace; with `read` and `write` enabled it can request an exact edit
 or multi-edit of an existing file, the creation of a new file, the rename of a
-file, or the deletion of a file after a checkpoint, and with `execute`, `read`,
-and `write` enabled it can request a command. Each write or command needs an
+file, the deletion of a file after a checkpoint, or the creation of one
+directory whose parent exists, and with `execute`, `read`, and `write` enabled
+it can request a command. Each write or command needs an
 approval under `prompt` and none under `allow`
 ([ADR-0063](adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
 Trusted CLI apply can
@@ -27,7 +28,9 @@ delete workspace files without a checkpoint. The CLI's `file` commands cannot
 delete workspace files, and the CLI cannot use Git or connect to MCP servers.
 When a workspace enables `model_tools`, chat lets the model read and list
 files in that workspace, request an exact edit, multi-edit, file creation,
-rename, or checkpointed deletion with read/write, and request a command with
+rename, checkpointed deletion, or directory creation
+([ADR-0079](adr/0079-add-a-model-tool-that-creates-one-directory.md)) with
+read/write, and request a command with
 execute/read/write once a toolchain profile is recorded for the running
 platform
 ([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
@@ -577,8 +580,8 @@ follow the same rule for `file restore` and `file delete-checkpoint`.
 `read_list_when_workspace_model_tools_enabled_edit_multi_edit_create_rename_delete_and_command_require_approval`
 there. `model_write_tools` and `model_command_tool` are `approval_required`.
 None of them reports whether any workspace enables the preference.
-`workspace_file_tools`, which covers general model file tools beyond the
-approval-gated edit, multi-edit, create, rename, and delete tools, remains
+`workspace_file_tools`, which covers general model file tools beyond the edit,
+multi-edit, create, rename, delete, and directory-creation tools, remains
 `false`.
 
 ```text
