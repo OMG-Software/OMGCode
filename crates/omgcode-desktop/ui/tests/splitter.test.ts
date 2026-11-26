@@ -91,8 +91,17 @@ function key(target: HTMLElement, name: string, shiftKey = false): void {
   target.dispatchEvent(new KeyboardEvent("keydown", { key: name, shiftKey, bubbles: true }));
 }
 
-function pointer(target: EventTarget, type: string, x: number, y: number, button = 0): void {
-  target.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button, bubbles: true }));
+function pointer(
+  target: EventTarget,
+  type: string,
+  x: number,
+  y: number,
+  button = 0,
+  pointerId = 1,
+): void {
+  target.dispatchEvent(
+    new PointerEvent(type, { clientX: x, clientY: y, button, pointerId, bubbles: true }),
+  );
 }
 
 describe("a splitter", () => {
@@ -193,6 +202,21 @@ describe("a splitter", () => {
     expect(document.documentElement.classList.contains("resizing-rows")).toBe(false);
   });
 
+  it("follows only the pointer that started the drag", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    pointer(splitter.element, "pointerdown", 300, 0, 0, 1);
+    pointer(document, "pointermove", 400, 0, 0, 2);
+    expect(splitter.size()).toBe(200);
+    pointer(document, "pointerup", 400, 0, 0, 2);
+    pointer(document, "pointercancel", 400, 0, 0, 2);
+    expect(splitter.element.classList.contains("dragging")).toBe(true);
+    pointer(document, "pointermove", 340, 0, 0, 1);
+    expect(splitter.size()).toBe(240);
+    pointer(document, "pointerup", 340, 0, 0, 1);
+    expect(splitter.element.classList.contains("dragging")).toBe(false);
+  });
+
   it("ignores a button other than the primary one", () => {
     const { section, neighbour } = parts();
     const splitter = make({ section, neighbour, vertical: WIDTH });
@@ -246,6 +270,22 @@ describe("a splitter", () => {
     sized(neighbour, 800, 600);
     window.dispatchEvent(new Event("resize"));
     expect(splitter.size()).toBe(470);
+  });
+
+  it("narrows until the neighbour keeps its minimum after the window shrinks past it", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    key(splitter.element, "End");
+    expect(splitter.size()).toBe(500);
+    // A 400-pixel container: the section takes its width, the line one pixel, and the
+    // neighbour what is left, which is nothing while the section is too wide.
+    const width = () => Number.parseInt(section.style.getPropertyValue("--queue-width"), 10);
+    section.getBoundingClientRect = () => new DOMRect(0, 0, width(), 600);
+    neighbour.getBoundingClientRect = () => new DOMRect(0, 0, Math.max(0, 400 - width() - 1), 600);
+    window.dispatchEvent(new Event("resize"));
+    // 500 shows a 0-pixel neighbour, 350 a 49-pixel one, and 249 leaves it 150.
+    expect(splitter.size()).toBe(400 - 1 - WIDTH.neighbourMin);
+    expect(splitter.element.getAttribute("aria-valuenow")).toBe("249");
   });
 
   it("keeps a hidden section's size while its neighbour is laid out", () => {

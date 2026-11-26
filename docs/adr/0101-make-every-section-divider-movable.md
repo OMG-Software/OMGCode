@@ -61,10 +61,13 @@ Facts established before the decision, on 2026-11-26:
    stylesheet's own size where there is none. It never collapses a section, so
    Enter does nothing. It reports `aria-valuenow`, `aria-valuemin`,
    `aria-valuemax`, and `aria-valuetext`. A drag listens on the document, so it
-   follows a pointer that leaves the line, and marks the page so the cursor
-   stays and no text is selected. When the window or the neighbour shrinks,
-   the section narrows to the room left; it does not grow back by itself. A
-   change in the neighbour's own size is fitted on the next frame, outside the
+   follows a pointer that leaves the line, but only the pointer that started
+   it moves or ends it; it marks the page so the cursor stays and no text is
+   selected. When the window or the neighbour shrinks, the section narrows
+   until the neighbour keeps its minimum; it does not grow back by itself. A
+   neighbour squeezed to nothing shows only part of the shortfall, so a fit
+   writes the size and measures again, at most 32 times. A change in the
+   neighbour's own size is fitted on the next frame, outside the
    size observer's callback, so narrowing cannot report an observer loop. A
    hidden section measures nothing and keeps its size for when it shows again.
 4. **One module writes styles.** `ui/src/ui/size_property.ts` is now the only

@@ -16,6 +16,14 @@ export const KEY_STEP = 16;
 export const LARGE_KEY_STEP = 64;
 
 /**
+ * The most measuring passes one fit makes. While the neighbour is squeezed to nothing, each pass
+ * narrows the section by the neighbour's whole minimum (96 pixels or more for every divider), and
+ * one more pass settles it, so no divider needs more than 12; the cap only guards against a
+ * stylesheet that ignores the size.
+ */
+const MAX_FIT_PASSES = 32;
+
+/**
  * A vertical splitter is a vertical line that moves left and right and sets a width; a horizontal
  * one moves up and down and sets a height.
  */
@@ -106,7 +114,8 @@ export function createSplitter(options: SplitterOptions): Splitter {
   }
 
   let current = wanted();
-  let drag: { origin: number; startSize: number } | null = null;
+  /** The drag in progress, and the pointer that started it: no other pointer moves or ends it. */
+  let drag: { pointer: number; origin: number; startSize: number } | null = null;
 
   function axis(): SplitAxis {
     // `current` is always an orientation with an axis: see `wanted`.
@@ -221,11 +230,18 @@ export function createSplitter(options: SplitterOptions): Splitter {
   }
 
   function onPointerMove(event: PointerEvent): void {
-    if (drag !== null) {
+    if (drag !== null && event.pointerId === drag.pointer) {
       setSize(drag.startSize + growth(position(event) - drag.origin));
     }
   }
 
+  function onPointerEnd(event: PointerEvent): void {
+    if (drag !== null && event.pointerId === drag.pointer) {
+      endDrag();
+    }
+  }
+
+  /** Ends the drag whichever pointer owns it, as disposal and an orientation change need. */
   function endDrag(): void {
     if (drag === null) {
       return;
@@ -234,8 +250,8 @@ export function createSplitter(options: SplitterOptions): Splitter {
     element.classList.remove("dragging");
     document.documentElement.classList.remove("resizing-columns", "resizing-rows");
     document.removeEventListener("pointermove", onPointerMove);
-    document.removeEventListener("pointerup", endDrag);
-    document.removeEventListener("pointercancel", endDrag);
+    document.removeEventListener("pointerup", onPointerEnd);
+    document.removeEventListener("pointercancel", onPointerEnd);
   }
 
   function startDrag(event: PointerEvent): void {
@@ -244,7 +260,7 @@ export function createSplitter(options: SplitterOptions): Splitter {
     }
     event.preventDefault();
     endDrag();
-    drag = { origin: position(event), startSize: startSize() };
+    drag = { pointer: event.pointerId, origin: position(event), startSize: startSize() };
     element.classList.add("dragging");
     document.documentElement.classList.add(
       current === "vertical" ? "resizing-columns" : "resizing-rows",
@@ -252,22 +268,29 @@ export function createSplitter(options: SplitterOptions): Splitter {
     element.focus();
     // Listening on the document follows a pointer that leaves the thin splitter mid-drag.
     document.addEventListener("pointermove", onPointerMove);
-    document.addEventListener("pointerup", endDrag);
-    document.addEventListener("pointercancel", endDrag);
+    document.addEventListener("pointerup", onPointerEnd);
+    document.addEventListener("pointercancel", onPointerEnd);
   }
 
+  /**
+   * Narrows the section until its neighbour keeps its minimum or the section reaches its own. A
+   * neighbour squeezed to nothing shows only part of the shortfall, so each pass writes the size
+   * and measures again: a window that shrinks past the neighbour in one step can take several.
+   */
   function fitToRoom(): void {
     const next = wanted();
     if (next !== current) {
       endDrag();
       current = next;
     }
-    const set = sizes.get(current);
-    if (set !== undefined) {
+    for (let pass = 0; pass < MAX_FIT_PASSES; pass += 1) {
+      const set = sizes.get(current);
       const limit = upperLimit();
-      if (set > limit) {
-        sizes.set(current, limit);
+      if (set === undefined || set <= limit) {
+        break;
       }
+      sizes.set(current, limit);
+      setSizeProperty(section, axis().property, limit);
     }
     render();
   }
