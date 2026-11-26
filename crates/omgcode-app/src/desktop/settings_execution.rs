@@ -161,7 +161,7 @@ pub struct ContainerRevokeRequest {
 
 impl DesktopError {
     /// Container grants exist only on Windows.
-    fn unsupported_platform() -> Self {
+    pub(super) fn unsupported_platform() -> Self {
         Self::execution(
             "unsupported_platform",
             "Container grants exist only on Windows.",
@@ -175,7 +175,7 @@ impl DesktopError {
 
     /// Map a grant or revocation failure. The operating system's own text is
     /// never shown, because it can name a path or an account.
-    fn from_grant(error: &ControlError) -> Self {
+    pub(super) fn from_grant(error: &ControlError) -> Self {
         match error {
             ControlError::Container(_) => Self::execution(
                 "container_access_failed",

@@ -6,6 +6,38 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.65.0 adds **Generate toolchain profiles from local packages** to
+  the **Toolchain profiles** group of the desktop `settings` window
+  (ADR-0103). A new core service, `toolchain_discovery`, holds one detector
+  per family: Rust (rustup toolchains), C and C++ (MSVC with the Windows SDK,
+  Clang, and MinGW GCC on Windows; GCC and Clang on Linux), Java, Python,
+  Perl, Go, Node.js, .NET, and Ruby. It reads the standard install folders,
+  the operator's `PATH`, `JAVA_HOME`, `GOROOT`, and `RUSTUP_HOME`, and small
+  installer-written files; it runs no program, reads no registry key, and
+  never reads a workspace's files such as `rust-toolchain.toml`. Each
+  proposal lists its roots, `PATH` entries, and derived non-secret variables
+  (such as `JAVA_HOME`, `GOROOT`, `DOTNET_ROOT`, and MSVC's `INCLUDE` and
+  `LIB`), plus the system part every profile needs, and notes when its family
+  has not passed the confined acceptance runs. No root is a filesystem or
+  drive root, the home folder or its ancestor, or a link, and no reserved
+  variable is proposed. A Rust proposal is one toolchain directory, without
+  the rustup proxies or `~/.cargo`. Three `settings`-only commands
+  (`settings_discover_toolchains`, `settings_add_discovered_profiles`, and
+  `settings_grant_discovered_roots`) carry only the revision, a workspace
+  identifier, and the digests of 1 to 8 selected proposals. Rust discovers
+  again and refuses a list that no longer matches as `discovery_changed`,
+  shows one native confirmation per batch that lists every root, `PATH` entry,
+  and variable with its value, and records each profile with `add_profile`
+  or, on Windows, grants read-execute access with `grant_container_access`,
+  from the confirmed revision. On Windows each root says whether the selected
+  workspace's container can read it, needs a grant, or needs an
+  administrator; only folders this account can change are granted. Core gains
+  `ControlStore::check_profile`, which applies every `add_profile` rule and
+  records nothing, so each proposal shows why core would refuse it, and
+  `add_profile` now refuses a 33rd profile with its own reason. Model runs
+  keep no network, a 20-second deadline, and 1 GiB of memory, so a `cargo`
+  build that needs crates.io dependencies still fails offline.
+
 - Version 0.64.0 adds the `web_fetch` model tool (ADR-0098), so a model on
   any provider can read public documentation. The OMGCode process sends one
   HTTPS `GET` and returns one slice of the page text (`offset`, and

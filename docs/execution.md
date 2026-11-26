@@ -828,7 +828,10 @@ its target, and every later action in the same session carries
 
 ### Toolchain profiles
 
-Profiles are declared by the operator. Nothing is discovered automatically.
+Profiles are declared by the operator. Nothing is recorded automatically: the
+desktop `settings` window can propose profiles from the installed toolchains,
+and the operator selects and confirms each one (see
+[generated profiles](#generated-profiles)).
 
 | Command | Effect |
 | --- | --- |
@@ -866,6 +869,55 @@ Rules:
 A profile lists what a toolchain needs, not just its executable. Tools that
 read configuration outside their installation need that directory as a root.
 For example, a distribution Node reads `/etc/ssl`.
+
+#### Generated profiles
+
+Version 0.65.0 adds **Generate toolchain profiles from local packages** to the
+**Toolchain profiles** group of the `settings` window
+([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
+Core's trusted discovery service proposes profiles; it records and grants
+nothing.
+
+- **Families:** Rust (rustup toolchains), C and C++ (MSVC with the Windows
+  SDK, Clang, and MinGW GCC on Windows; GCC and Clang on Linux), Java, Python,
+  Perl, Go, Node.js, .NET, and Ruby. Each family is one detector in a
+  registry.
+- **Inputs:** the standard install folders, the operator's `PATH`,
+  `JAVA_HOME`, `GOROOT`, and `RUSTUP_HOME`, and small files the installers
+  wrote (rustup's `settings.toml`, a JDK's `release`, Go's `VERSION`).
+  Discovery runs no program, confined or not, reads no registry key, and
+  never reads a workspace's files, such as `rust-toolchain.toml`.
+- **Proposals:** each lists its roots, `PATH` entries, and variables, plus the
+  system part every profile needs (`System32`, or `/usr` and the real
+  top-level `bin` and `lib` directories). No root is a filesystem or drive
+  root, the home directory or its ancestor, or a link. Variables are derived
+  setup values only, such as `JAVA_HOME`, `GOROOT`, `DOTNET_ROOT`, and MSVC's
+  `INCLUDE` and `LIB`; reserved names are never proposed. A Rust proposal is
+  one toolchain directory, without the rustup proxies or `~/.cargo`. At most
+  32 proposals are returned, 8 per base name, newest first.
+- **Checks:** each proposal shows the reason core would refuse it now, from
+  `check_profile`, which applies every `add_profile` rule and records nothing.
+- **Adding:** the window sends only the settings revision and the digests of
+  1 to 8 selected proposals. Rust discovers again, refuses a selection that no
+  longer matches (`discovery_changed`), shows one native confirmation that
+  lists every root, `PATH` entry, and variable with its value, and records each
+  profile with `add_profile` from the confirmed revision.
+- **Windows grants:** with a workspace selected, each root says whether its
+  container can read it, needs a read-execute grant, or needs an
+  administrator. **Grant folders for selected…** grants only the folders this
+  account can change, after one native confirmation, through
+  `grant_container_access`; administrator-only folders are named and skipped.
+- **Notes:** a proposal says when its family has not passed the confined
+  acceptance runs (only Rust, MSVC, Linux GCC, Python, Go, and Node.js have),
+  when it is a runtime without a compiler, and that offline runs cannot
+  download dependencies.
+
+Known limits: a model command runs with no network, a 20-second deadline, and
+1 GiB of memory, so a `cargo` build that needs crates.io dependencies fails
+unless they are already present. Only a trusted CLI `run --network` under the
+workspace's `task_network` preference can fetch them. Toolchains installed in
+custom folders that are not on `PATH` are not found. No CLI command lists
+proposals.
 
 ### Run journal
 

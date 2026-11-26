@@ -304,3 +304,81 @@ fn reserved_names_and_profile_names_are_checked_case_insensitively() {
     assert!(!valid_profile_name("-x"));
     assert!(!valid_profile_name("a b"));
 }
+
+/// `check_profile` refuses what `add_profile` refuses, for the same reason,
+/// and records nothing either way (ADR-0103).
+#[test]
+fn checking_a_profile_applies_every_add_rule_and_records_nothing() {
+    let mut scene = scene();
+    // The open store locks the journal on Windows, so compare its length.
+    let journal = fs::metadata(scene.data.join(FILE_NAME))
+        .expect("journal")
+        .len();
+    scene
+        .store
+        .check_profile(&declaration(&scene))
+        .expect("an acceptable declaration");
+    assert_eq!(scene.store.revision(), 1);
+    assert!(scene.store.profiles().is_empty());
+    assert_eq!(
+        fs::metadata(scene.data.join(FILE_NAME))
+            .expect("journal")
+            .len(),
+        journal
+    );
+
+    let inside = declaration_with(&scene.root.join("app"), "inside");
+    let reserved = ProfileDeclaration {
+        environment: vec![("Path".into(), "x".into())],
+        ..declaration(&scene)
+    };
+    let outside_entry = ProfileDeclaration {
+        path_entries: vec![scene.root.clone()],
+        ..declaration(&scene)
+    };
+    for refused in [inside, reserved, outside_entry] {
+        let checked = scene.store.check_profile(&refused).expect_err("refused");
+        let added = scene.store.add_profile(&refused, 1).expect_err("refused");
+        assert_eq!(checked.to_string(), added.to_string());
+    }
+    scene
+        .store
+        .add_profile(&declaration(&scene), 1)
+        .expect("profile");
+    let duplicate = scene
+        .store
+        .check_profile(&declaration(&scene))
+        .expect_err("the name is recorded");
+    assert!(
+        duplicate.to_string().contains("already exists"),
+        "{duplicate}"
+    );
+}
+
+/// The 33rd profile is refused with a reason before anything is appended.
+#[test]
+fn the_profile_limit_is_refused_with_a_reason() {
+    let mut scene = scene();
+    for index in 0..MAX_PROFILES {
+        let revision = scene.store.revision();
+        scene
+            .store
+            .add_profile(
+                &declaration_with(&scene.tools, &format!("p{index}")),
+                revision,
+            )
+            .expect("profile within the limit");
+    }
+    let revision = scene.store.revision();
+    let over = declaration_with(&scene.tools, "one-more");
+    let checked = scene
+        .store
+        .check_profile(&over)
+        .expect_err("over the limit");
+    assert!(
+        matches!(checked, ControlError::ProfileRefused(reason) if reason.contains("at most 32")),
+        "{checked}"
+    );
+    assert!(scene.store.add_profile(&over, revision).is_err());
+    assert_eq!(scene.store.revision(), revision);
+}

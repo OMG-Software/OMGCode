@@ -636,6 +636,61 @@ export interface ContainerGrantView {
   state: "pending" | "active" | "revoking";
 }
 
+/**
+ * What the selected workspace's container needs before a run can read one proposed root
+ * (ADR-0103). `not_applicable` off Windows or with no workspace selected.
+ */
+export type RootGrantNeed =
+  | "not_applicable"
+  | "readable"
+  | "needs_grant"
+  | "needs_administrator"
+  | "unknown";
+
+export type ToolchainFamily =
+  | "rust"
+  | "c_cpp"
+  | "java"
+  | "python"
+  | "perl"
+  | "go"
+  | "node"
+  | "dot_net"
+  | "ruby";
+
+/**
+ * One toolchain profile proposal that Rust made by reading install folders (ADR-0103). Every
+ * string is display-safe text; none is ever sent back. A change names a proposal by `digest`.
+ */
+export interface ToolchainProposalView {
+  digest: string;
+  family: ToolchainFamily;
+  family_label: string;
+  name: string;
+  version: string | null;
+  read_only_roots: Array<{ folder: string; grant: RootGrantNeed }>;
+  path_entries: string[];
+  environment: Array<{ name: string; value: string }>;
+  notes: string[];
+  /** Why core would refuse to add it now, or `null`. */
+  refusal: string | null;
+  /** A profile with this name is already recorded. */
+  recorded: boolean;
+}
+
+/** The reply to the three discovery commands. */
+export interface ToolchainDiscovery {
+  overview: SettingsOverview;
+  /** The workspace the roots report container access for, or `null`. */
+  workspace_id: string | null;
+  /**
+   * Windows with a workspace: whether it has the active read-write grant on its own folder that
+   * every run needs. `null` otherwise.
+   */
+  workspace_grant_active: boolean | null;
+  proposals: ToolchainProposalView[];
+}
+
 export interface SkillSettingView {
   name: string;
   application: boolean | null;

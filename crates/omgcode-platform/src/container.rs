@@ -197,6 +197,28 @@ pub fn granted_access(path: &Path, name: &ContainerName) -> io::Result<Option<Co
     }
 }
 
+/// Whether this process could change the access-control list of the
+/// directory at `path`. It opens the directory for `WRITE_DAC`, the access a
+/// grant needs, and closes it at once; nothing is changed. `Ok(false)` means
+/// access was denied, as for a folder only administrators may change. The
+/// answer can change before a grant is attempted, so a grant can still fail.
+///
+/// # Errors
+///
+/// Returns an error for a relative or device path, a path that cannot be
+/// opened for another reason, or outside Windows.
+pub fn can_change_access(path: &Path) -> io::Result<bool> {
+    #[cfg(windows)]
+    {
+        windows::can_change_access(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Err(unsupported())
+    }
+}
+
 #[cfg(not(windows))]
 fn unsupported() -> io::Error {
     io::Error::new(

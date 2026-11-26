@@ -43,13 +43,18 @@ An installed toolchain may need executables, helper programs, shared libraries,
 SDK files, configuration, and machine-derived environment values. A single
 executable-path grant is often insufficient.
 
-Profiles are currently declared by the operator, with no discovery; see
+Profiles are declared by the operator; see
 [ADR-0030](adr/0030-run-trusted-commands-through-recorded-toolchain-profiles.md).
-Any later discovery runs through a trusted host-side service. It proposes the
-required resources for user selection; the model cannot approve new host
-access.
+Since version 0.65.0 the `settings` window can generate proposals from the
+installed toolchains through a trusted host-side service in core
+([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
+It reads install folders, the operator's `PATH` and a few toolchain
+variables, and small installer-written files; it runs no probe and reads no
+workspace file. It proposes the required resources for user selection, and
+each selected profile or Windows grant is recorded through the existing core
+call after a native confirmation. The model cannot approve new host access.
 Do not execute repository-controlled discovery hooks or version probes with
-unrestricted host privileges. Run executable probes in confinement.
+unrestricted host privileges. Run any future executable probe in confinement.
 
 For an installed toolchain, expose only the required installation resources,
 normally read-only. A managed environment can provide an isolated installation

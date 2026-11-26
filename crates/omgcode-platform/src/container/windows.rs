@@ -287,6 +287,22 @@ pub(crate) fn granted_access(path: &Path, sid: &Sid) -> io::Result<Option<Contai
     })
 }
 
+/// Whether the directory at `path` can be opened with the access a grant
+/// uses. The handle is closed when this returns; nothing is changed.
+pub(crate) fn can_change_access(path: &Path) -> io::Result<bool> {
+    require_absolute(path)?;
+    match OpenOptions::new()
+        .access_mode(GRANT_ACCESS)
+        .share_mode(SHARE_READ_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(_directory) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 const fn mask(access: ContainerAccess) -> u32 {
     match access {
         ContainerAccess::ReadExecute => READ_EXECUTE_MASK,

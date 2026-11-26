@@ -37,6 +37,52 @@ pub(super) const GRANT_EVENT_RESERVE_BYTES: usize = 512;
 const MAX_SID_CHARS: usize = 184;
 const CONTAINER_PREFIX: &str = "OMGCode.Workspace.";
 
+/// What a workspace's container needs before a run can read a toolchain
+/// root, as the `settings` window's toolchain discovery shows it (ADR-0103).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootGrantNeed {
+    /// Not Windows: there are no container grants, and the Linux runner
+    /// exposes profile roots itself.
+    NotApplicable,
+    /// The container can already read and execute it, because every
+    /// application package can or a grant covers it.
+    Readable,
+    /// A read-execute grant is needed, and this account can change the
+    /// folder's access-control list.
+    NeedsGrant,
+    /// A grant is needed, but this account cannot change the folder's
+    /// access-control list. An administrator can, or a user-owned copy of the
+    /// toolchain can be granted instead.
+    NeedsAdministrator,
+    /// The access-control list could not be read, for example because the
+    /// folder is a link.
+    Unknown,
+}
+
+/// Whether the container of `workspace_id` can read `path` now and, when it
+/// cannot, whether this account could grant it. This only reads access-control
+/// lists and opens the folder for the access a grant uses; nothing is changed
+/// or recorded. The answer can change before a grant is attempted.
+#[must_use]
+pub fn root_grant_need(workspace_id: WorkspaceId, path: &Path) -> RootGrantNeed {
+    if !CONTAINER_GRANTS_SUPPORTED {
+        return RootGrantNeed::NotApplicable;
+    }
+    let Ok(name) = container_name(workspace_id) else {
+        return RootGrantNeed::Unknown;
+    };
+    match platform::granted_access(path, &name) {
+        Ok(Some(_)) => RootGrantNeed::Readable,
+        Ok(None) => match platform::can_change_access(path) {
+            Ok(true) => RootGrantNeed::NeedsGrant,
+            Ok(false) => RootGrantNeed::NeedsAdministrator,
+            Err(_) => RootGrantNeed::Unknown,
+        },
+        Err(_) => RootGrantNeed::Unknown,
+    }
+}
+
 /// Access recorded for one grant.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

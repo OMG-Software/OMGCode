@@ -8,6 +8,7 @@
   ],
   "permissions": [
     "allow-settings-add-connection",
+    "allow-settings-add-discovered-profiles",
     "allow-settings-add-package-profile",
     "allow-settings-add-toolchain-profile",
     "allow-settings-add-web-fetch-host",
@@ -16,7 +17,9 @@
     "allow-settings-choose-root",
     "allow-settings-clear-package-cache",
     "allow-settings-clear-scope",
+    "allow-settings-discover-toolchains",
     "allow-settings-grant-container-folder",
+    "allow-settings-grant-discovered-roots",
     "allow-settings-import-skill",
     "allow-settings-overview",
     "allow-settings-register-workspace",

@@ -209,12 +209,42 @@ impl ControlStore {
         expected_revision: u64,
     ) -> Result<ToolchainProfile, ControlError> {
         self.check_revision(expected_revision)?;
+        let profile = self.prepare_profile(declaration)?;
+        self.append(
+            Action::ProfileAdded {
+                profile: profile.clone(),
+            },
+            self.next_revision()?,
+        )?;
+        Ok(profile)
+    }
+
+    /// Check `declaration` exactly as [`add_profile`](Self::add_profile)
+    /// would, apart from the revision, without recording anything. Each
+    /// directory is captured and checked as it is now; `add_profile` captures
+    /// and checks it again. Used to show which discovered proposals core
+    /// would refuse, and why (ADR-0103).
+    pub fn check_profile(&self, declaration: &ProfileDeclaration) -> Result<(), ControlError> {
+        self.prepare_profile(declaration).map(|_| ())
+    }
+
+    /// Build the profile `declaration` describes after every check
+    /// `add_profile` makes besides the revision.
+    fn prepare_profile(
+        &self,
+        declaration: &ProfileDeclaration,
+    ) -> Result<ToolchainProfile, ControlError> {
         let platform = ProfilePlatform::current().ok_or(ControlError::ProfileRefused(
             "toolchain profiles exist only on Linux and Windows",
         ))?;
         if self.profile(&declaration.name).is_some() {
             return Err(ControlError::ProfileRefused(
                 "a profile with this name already exists; remove it first",
+            ));
+        }
+        if self.snapshot.profiles.len() >= MAX_PROFILES {
+            return Err(ControlError::ProfileRefused(
+                "at most 32 profiles can be recorded; remove one first",
             ));
         }
         let mut roots: Vec<DirectoryRecord> = Vec::new();
@@ -264,12 +294,6 @@ impl ControlStore {
             }
         }
         validate_shape(&profile)?;
-        self.append(
-            Action::ProfileAdded {
-                profile: profile.clone(),
-            },
-            self.next_revision()?,
-        )?;
         Ok(profile)
     }
 

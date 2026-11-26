@@ -12,11 +12,12 @@
 use omgcode_app::desktop::{
     ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ChatGptRequest,
     ChatGptSignOutResult, ConnectionAddRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
-    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
-    NewConnectionKind, PackageProfileAddRequest, PermissionFlags, PermissionsChangeRequest,
-    ProfileRemoveRequest, SettingsOverview, SettingsRevisionRequest, SkillChoice,
-    SkillRemoveRequest, SkillStateRequest, ToolchainProfileAddRequest, WebHostChangeRequest,
-    WorkspaceInstructionsRequest, WorkspaceRevisionRequest,
+    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, DiscoveredGrantsRequest,
+    DiscoveredProfilesRequest, EnvironmentEntry, NewConnectionKind, PackageProfileAddRequest,
+    PermissionFlags, PermissionsChangeRequest, ProfileRemoveRequest, SettingsOverview,
+    SettingsRevisionRequest, SkillChoice, SkillRemoveRequest, SkillStateRequest,
+    ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProfileAddRequest,
+    WebHostChangeRequest, WorkspaceInstructionsRequest, WorkspaceRevisionRequest, discovery_host,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -713,6 +714,94 @@ pub async fn settings_revoke_container_grant(
     let request = ContainerRevokeRequest { revision, grant_id };
     blocking(&state, move |service| {
         service.settings_revoke_container_grant(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Reads this computer's standard install locations and the
+/// operator's `PATH` and returns a toolchain profile proposal for each
+/// toolchain found, checked against the settings (ADR-0103). No program runs,
+/// no workspace file is read, and nothing is recorded. With `workspace_id`,
+/// on Windows, each root says whether that workspace's container can read it.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unsupported_platform`,
+/// `unknown_workspace`, `busy`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_discover_toolchains(
+    webview: Webview,
+    state: Service<'_>,
+    workspace_id: Option<Uuid>,
+) -> Result<ToolchainDiscovery, CommandError> {
+    authorize(Command::SettingsDiscoverToolchains, webview.label())?;
+    let request = ToolchainDiscoveryRequest { workspace_id };
+    blocking(&state, move |service| {
+        service.settings_discover_toolchains(request, &discovery_host()?)
+    })
+    .await
+}
+
+/// `settings` only. Discovers again, and after one native confirmation that
+/// lists each selected proposal's roots, `PATH` entries, and variables,
+/// records the proposals whose digests the window sent as `omgcode workspace
+/// profile-add` does (ADR-0103). No path is carried.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `discovery_changed`, `cancelled`, `stale_revision`, or `control` with
+/// core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_add_discovered_profiles(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    digests: Vec<String>,
+    workspace_id: Option<Uuid>,
+) -> Result<ToolchainDiscovery, CommandError> {
+    authorize(Command::SettingsAddDiscoveredProfiles, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = DiscoveredProfilesRequest {
+        revision,
+        digests,
+        workspace_id,
+    };
+    blocking(&state, move |service| {
+        service.settings_add_discovered_profiles(request, &discovery_host()?, &prompt)
+    })
+    .await
+}
+
+/// `settings` only, Windows only. Discovers again, and after one native
+/// confirmation that names the workspace and every folder, grants the
+/// workspace's container read-execute access to the selected proposals' roots
+/// that it cannot read and this account can grant, as `omgcode workspace
+/// container-grant` does (ADR-0103).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unsupported_platform`,
+/// `invalid_request`, `discovery_changed`, `unknown_workspace`,
+/// `nothing_to_grant`, `cancelled`, `stale_revision`,
+/// `container_access_failed`, or `control` with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_grant_discovered_roots(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    workspace_id: Uuid,
+    digests: Vec<String>,
+) -> Result<ToolchainDiscovery, CommandError> {
+    authorize(Command::SettingsGrantDiscoveredRoots, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = DiscoveredGrantsRequest {
+        revision,
+        workspace_id,
+        digests,
+    };
+    blocking(&state, move |service| {
+        service.settings_grant_discovered_roots(request, &discovery_host()?, &prompt)
     })
     .await
 }

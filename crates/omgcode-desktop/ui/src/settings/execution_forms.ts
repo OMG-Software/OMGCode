@@ -1,5 +1,6 @@
 import { button, el, neutralise } from "../dom";
 import type { ContainerAccess, SectionContext } from "./context";
+import { discoveryPanel } from "./discovery_panel";
 import { emptyLine, facts, row } from "./parts";
 
 /** The buttons that ask Rust to open its folder dialogs and confirmations (ADR-0088). */
@@ -300,7 +301,10 @@ function list(rows: HTMLElement[], emptyText: string): HTMLElement {
   return rows.length === 0 ? emptyLine(emptyText) : el("ul", { class: "row-list" }, ...rows);
 }
 
-/** The Toolchain profiles group: the recorded profiles, an add form, and a remove button each. */
+/**
+ * The Toolchain profiles group: proposals generated from installed toolchains (ADR-0103), the
+ * recorded profiles, an add form, and a remove button each.
+ */
 export function toolchainGroup(ctx: SectionContext): HTMLElement {
   const forms = ctx.view.executionForms;
   const form = disclosure("Add toolchain profile", forms.toolchainOpen, (open) => {
@@ -310,6 +314,7 @@ export function toolchainGroup(ctx: SectionContext): HTMLElement {
   return block(
     "Toolchain profiles",
     el("p", { class: "section-help", text: TOOLCHAIN_HELP }),
+    discoveryPanel(ctx),
     form,
     list(toolchainRows(ctx), "No toolchain profile is recorded."),
   );
