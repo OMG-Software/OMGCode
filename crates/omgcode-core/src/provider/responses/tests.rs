@@ -1025,7 +1025,9 @@ fn ten_tool_definitions() -> Vec<crate::turn::ToolDefinition> {
     definitions.push(crate::turn::rename_tool_definition());
     definitions.push(crate::turn::delete_tool_definition());
     definitions.push(crate::turn::create_directory_tool_definition());
-    definitions.push(crate::turn::command_tool_definition());
+    definitions.push(crate::turn::command_tool_definition(
+        &crate::turn::longest_profile_names(),
+    ));
     definitions.push(crate::turn::web_fetch_tool_definition());
     definitions
 }

@@ -2577,8 +2577,9 @@ mod web_fetch_tool_tests {
     use super::*;
     use crate::turn::{
         command_tool_definition, create_directory_tool_definition, create_tool_definition,
-        delete_tool_definition, edit_tool_definition, multi_edit_tool_definition,
-        rename_tool_definition, tool_definitions, web_fetch_tool_definition,
+        delete_tool_definition, edit_tool_definition, longest_profile_names,
+        multi_edit_tool_definition, rename_tool_definition, tool_definitions,
+        web_fetch_tool_definition,
     };
 
     /// ADR-0098: the Chat Completions request builder accepts the ten tools
@@ -2593,7 +2594,7 @@ mod web_fetch_tool_tests {
         tools.push(rename_tool_definition());
         tools.push(delete_tool_definition());
         tools.push(create_directory_tool_definition());
-        tools.push(command_tool_definition());
+        tools.push(command_tool_definition(&longest_profile_names()));
         tools.push(web_fetch_tool_definition());
         assert_eq!(tools.len(), 10);
         let client = LocalModelClient::new(

@@ -16,7 +16,7 @@ use omgcode_core::action_journal::{
     RefusalReason, StoredTarget,
 };
 use omgcode_core::control::{
-    ApprovalOperation, ApprovalState, ApprovalStatus, ControlStore, now_unix,
+    ApprovalOperation, ApprovalState, ApprovalStatus, ControlStore, ProfileDeclaration, now_unix,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole};
@@ -531,7 +531,7 @@ fn the_web_fetch_definition_has_the_documented_strict_schema() {
         parameters["properties"]["max_bytes"]["maximum"],
         MAX_RESULT_BYTES
     );
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.8.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.9.0");
 }
 
 #[test]
@@ -583,7 +583,7 @@ fn web_fetch_is_offered_exactly_while_its_preference_and_model_tools_permit_it()
         );
         assert_eq!(
             report.manifest.tool_schema_version.as_deref(),
-            Some("0.8.0")
+            Some("0.9.0")
         );
     }
 }
@@ -595,6 +595,21 @@ fn all_ten_tools_are_advertised_in_order_with_every_preference_enabled() {
         execute: Access::Prompt,
         ..fetching(Access::Prompt)
     });
+    // The command tool is offered only while a toolchain profile is recorded.
+    let tools = fixture._temporary.path().join("tools");
+    fs::create_dir(&tools).expect("toolchain root");
+    let control = fixture.control.as_mut().expect("control store is open");
+    control
+        .add_profile(
+            &ProfileDeclaration {
+                name: "system".into(),
+                read_only_roots: vec![tools],
+                path_entries: Vec::new(),
+                environment: Vec::new(),
+            },
+            control.revision(),
+        )
+        .expect("toolchain profile");
     let mut model = ScriptedModel::new(vec![text_reply("done")]);
     let report = fixture
         .run(&FakeFetcher::serving("page"), &mut model)

@@ -121,7 +121,10 @@ journal is opened, so the session's later model actions are marked
 compaction, which keeps these events. Saved fetch results replay under the
 same live `model_tools` and `read` rule as other tool results. A request
 manifest may list ten tool names, with tool schema `0.8.0`; a build before
-0.64.0 refuses a journal whose manifest lists ten.
+0.64.0 refuses a journal whose manifest lists ten. Since 0.65.0 the schema is
+`0.9.0`, whose command tool lists the recorded toolchain profiles
+(ADR-0100); the manifest still records only tool names, and earlier versions
+replay unchanged.
 
 The version-2 `request.manifest` payload adds optional `tool_schema_version` and
 `tools` fields. They are present together only when the request advertised
@@ -140,10 +143,10 @@ selection in such a session with `skill_session_version` before any request.
 Skill messages are never recorded, so replay and compaction never see them.
 A recorded assistant reply can still repeat skill text.
 
-Since 0.65.0 a version-3 `request.manifest` may also carry `reasoning_effort`:
+Since 0.66.0 a version-3 `request.manifest` may also carry `reasoning_effort`:
 one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, the
 effort the chat client sent with the turn's requests (ADR-0102). It is written
-only when an effort was sent, so other journals keep their bytes, and 0.64.0
+only when an effort was sent, so other journals keep their bytes, and 0.65.0
 and earlier refuse a journal that has it; the schema version did not change.
 A version-1 or version-2 journal refuses the field, and chat refuses an effort
 in such a session with `session` before anything is recorded. Compaction

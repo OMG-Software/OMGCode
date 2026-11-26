@@ -445,7 +445,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   `reasoning_content` back. This client keeps no reasoning text, so every
   request to the DeepSeek endpoint sends `"thinking": {"type": "disabled"}`.
   DeepSeek turns therefore run without thinking.
-- **Reasoning effort.** Since 0.65.0 a turn may send a reasoning effort
+- **Reasoning effort.** Since 0.66.0 a turn may send a reasoning effort
   ([ADR-0102](adr/0102-choose-a-reasoning-effort-per-session.md)): `none`,
   `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, chosen per session in
   the desktop model box or with CLI `chat --reasoning-effort`. Chat

@@ -40,7 +40,12 @@ the clipboard only, with icon buttons named in their tooltips
 Chat offers the session's model read and list tools; when the workspace
 also enables `read` and `write`, six file-write tools (exact edit, multi-edit,
 create, rename, delete, and directory creation); and, when it also enables `execute`, `read`, and
-`write`, one command tool. Each workspace preference except `model_tools` is
+`write` and at least one toolchain profile is recorded for the running
+platform, one command tool whose `profile` parameter lists those profiles. A
+command that names another profile is answered with `profile_not_recorded`
+before any approval is requested
+([ADR-0100](docs/adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+Each workspace preference except `model_tools` is
 `deny`, `prompt`, or `allow`, and each file-write tool has a limit that can
 only narrow `write` ([ADR-0063](docs/adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
 A model call whose state is `prompt` requires a trusted single-use approval;
