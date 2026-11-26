@@ -217,6 +217,22 @@ describe("a splitter", () => {
     expect(splitter.element.classList.contains("dragging")).toBe(false);
   });
 
+  it("cannot be taken over by a second pointer pressing on it", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    pointer(splitter.element, "pointerdown", 300, 0, 0, 1);
+    pointer(splitter.element, "pointerdown", 100, 0, 0, 2);
+    pointer(document, "pointermove", 140, 0, 0, 2);
+    expect(splitter.size()).toBe(200);
+    // The owner's drag keeps its origin.
+    pointer(document, "pointermove", 340, 0, 0, 1);
+    expect(splitter.size()).toBe(240);
+    // The owner pressing again restarts the drag from where it is.
+    pointer(splitter.element, "pointerdown", 500, 0, 0, 1);
+    pointer(document, "pointermove", 516, 0, 0, 1);
+    expect(splitter.size()).toBe(256);
+  });
+
   it("ignores a button other than the primary one", () => {
     const { section, neighbour } = parts();
     const splitter = make({ section, neighbour, vertical: WIDTH });

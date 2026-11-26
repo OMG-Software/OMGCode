@@ -62,7 +62,8 @@ Facts established before the decision, on 2026-11-26:
    Enter does nothing. It reports `aria-valuenow`, `aria-valuemin`,
    `aria-valuemax`, and `aria-valuetext`. A drag listens on the document, so it
    follows a pointer that leaves the line, but only the pointer that started
-   it moves or ends it; it marks the page so the cursor stays and no text is
+   it moves, ends, or restarts it, and no other pointer can take it over; it
+   marks the page so the cursor stays and no text is
    selected. When the window or the neighbour shrinks, the section narrows
    until the neighbour keeps its minimum; it does not grow back by itself. A
    neighbour squeezed to nothing shows only part of the shortfall, so a fit

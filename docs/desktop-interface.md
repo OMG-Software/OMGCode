@@ -520,8 +520,8 @@ never collapses either:
   movement (16 pixels, 64 with Shift), Home for the section's minimum, and End
   for the largest size its neighbour allows. A double click restores the
   starting size, or the stylesheet's own size for the message box and the
-  footer. Enter does nothing. Only the pointer that starts a drag moves or
-  ends it. Each line is a focusable `separator` with an
+  footer. Enter does nothing. Only the pointer that starts a drag moves,
+  ends, or restarts it; another pointer cannot take it over. Each line is a focusable `separator` with an
   accessible name ("Resize the approval list", "Resize the settings
   sections", "Resize the message box", "Resize the side panel footer"),
   `aria-controls`, `aria-orientation`, and its current, least, and greatest

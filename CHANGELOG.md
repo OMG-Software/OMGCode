@@ -13,8 +13,8 @@ Changes are recorded here before a release version is assigned.
   list moves from 150 to 420 pixels. In the `main` window the composer's top
   line sets the message box's height, from 64 pixels to whatever leaves the
   transcript 120, replacing the box's own resize grip and its 40% cap, and
-  the line above the right-hand panel's footer sets the model box's height
-  from 48 to 720 pixels, scrolling it when shorter. Each divider is a
+  the line above the right-hand panel's footer sets the footer's height from
+  48 to 720 pixels, scrolling its contents when shorter. Each divider is a
   focusable window splitter built by `ui/src/ui/splitter.ts`: drag it, or use
   the arrow keys (16 pixels, 64 with Shift), Home, and End; a double click
   restores its starting size. None collapses, the neighbour never goes below

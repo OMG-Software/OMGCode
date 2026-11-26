@@ -255,7 +255,9 @@ export function createSplitter(options: SplitterOptions): Splitter {
   }
 
   function startDrag(event: PointerEvent): void {
-    if (event.button !== 0) {
+    // Another pointer cannot take a drag over. The owner pressing again restarts it, which
+    // recovers a drag whose release never arrived.
+    if (event.button !== 0 || (drag !== null && event.pointerId !== drag.pointer)) {
       return;
     }
     event.preventDefault();
