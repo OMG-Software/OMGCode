@@ -9,8 +9,8 @@ selected model's read, list, edit, multi-edit, create, rename, delete,
 directory-creation, and command tools. A write or command needs an approval
 unless the operator sets its preference to `allow`. The edit and multi-edit
 tools change one existing
-file only through checkpointed apply after an approved, writers-stopped
-decision; the create tool makes one new file through the exclusive create,
+file only through checkpointed apply, after an approved, writers-stopped
+decision under `prompt`; the create tool makes one new file through the exclusive create,
 without a checkpoint; the rename tool moves one file to a name that does not
 exist, without a checkpoint; the delete tool removes one file after a
 checkpoint of its bytes; and the directory tool creates one directory whose
@@ -128,11 +128,11 @@ delete, directory-creation, and command tools, and the `web_fetch` tool behind
 the live `web_fetch` preference, which needs an approval unless that
 preference is `allow` and the host is on the workspace's allowlist
 (ADR-0098), only for a workspace that enables `model_tools`. The edit and
-multi-edit tools write
-only through checkpointed apply after an approved, writers-stopped decision, the
-create tool only through the exclusive create, the rename tool only through the
-no-replace rename, and the delete tool only through a checkpointed removal, each
-after the same decision, and none detects concurrent writers.
+multi-edit tools write only through checkpointed apply, the create tool only
+through the exclusive create, the rename tool only through the no-replace
+rename, and the delete tool only through a checkpointed removal. Each acts
+after an approved, writers-stopped decision under `prompt` and without one
+under `allow`, and none detects concurrent writers.
 A read-only CLI preview compares a workspace file with trusted proposed
 content without writing to the workspace or creating a checkpoint.
 Dependency security audits, native containment qualification, and release checks

@@ -7,11 +7,13 @@ and save that conversation. It can read/list files, exclusively create new
 files/directories, and preview a bounded diff against trusted proposed content
 in a registered workspace. When a workspace enables `model_tools`, chat runs
 the core's bounded turn/tool runtime so the model can read and list files in
-that workspace; with `read` and `write` enabled it can request an
-approval-gated exact edit or multi-edit of an existing file, the creation of a
-new file, the rename of a file, or the deletion of a file after a checkpoint, and
-with `execute`, `read`, and
-`write` enabled it can request an approval-gated command. Trusted CLI apply can
+that workspace; with `read` and `write` enabled it can request an exact edit
+or multi-edit of an existing file, the creation of a new file, the rename of a
+file, or the deletion of a file after a checkpoint, and with `execute`, `read`,
+and `write` enabled it can request a command. Each write or command needs an
+approval under `prompt` and none under `allow`
+([ADR-0063](adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
+Trusted CLI apply can
 replace an existing file on Linux ext4, btrfs, XFS, tmpfs, or ZFS or on Windows
 NTFS or ReFS ([ADR-0069](adr/0069-allow-refs-btrfs-xfs-tmpfs-and-zfs-for-trusted-apply.md)). Trusted restore puts a
 retained checkpoint's original bytes back through apply, and trusted checkpoint
@@ -23,12 +25,13 @@ run in a run journal. Every run is limited in memory, live processes, and CPU
 time. A program started by `run` can create, change, and
 delete workspace files without a checkpoint. The CLI's `file` commands cannot
 delete workspace files, and the CLI cannot use Git or connect to MCP servers.
-When a workspace enables `model_tools`, chat lets the local model read and list
-files in that workspace, request an approval-gated exact edit, multi-edit, file
-creation, rename, or checkpointed deletion with read/write, and request an
-approval-gated command with execute/read/write once a toolchain profile is
-recorded for the running platform
+When a workspace enables `model_tools`, chat lets the model read and list
+files in that workspace, request an exact edit, multi-edit, file creation,
+rename, or checkpointed deletion with read/write, and request a command with
+execute/read/write once a toolchain profile is recorded for the running
+platform
 ([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+Each write or command needs an approval under `prompt` and none under `allow`.
 A separate `web_fetch`
 preference lets it fetch one public HTTPS page per call, with an approval
 for each fetch under `prompt` and for each host off the workspace allowlist
@@ -263,9 +266,10 @@ three words and can only narrow `--write`. `--model-tools` takes `true` or
 `task-network`, `host-services`, `web-fetch`, and `model-tools`. All decisions
 still report `execution_allowed: false`; only the trusted `run` command starts
 a process, and the model command tool reaches it after a consumed approval
-under `prompt`, or without one under `allow`. Settings commands do not dispatch
+under `prompt`, or without one under `allow`; the model write tools follow the
+same rule. Settings commands do not dispatch
 tools. `--model-tools true` lets chat offer the model read/list tools, with
-read/write the approval-gated edit, multi-edit, create, rename, delete, and
+read/write the edit, multi-edit, create, rename, delete, and
 create-directory tools, with execute/read/write the command tool when a
 toolchain profile is recorded for the platform, and with `--web-fetch` other
 than `deny` the `web_fetch` tool. `web-host-add`, `web-host-remove`, and
@@ -719,15 +723,17 @@ remains text.
 
 When the workspace enables `model_tools`, chat offers `workspace_read_file` and
 `workspace_list_directory`. When `read` and `write` also allow it, it offers
-the approval-gated `workspace_edit_file`, `workspace_multi_edit_file`,
+`workspace_edit_file`, `workspace_multi_edit_file`,
 `workspace_create_file`, `workspace_rename_file`, `workspace_delete_file`, and
 `workspace_create_directory`.
 When `execute`, `read`, and `write`
 also allow it and a toolchain profile is recorded for the running platform, it
-offers the approval-gated `workspace_run_command`, whose `profile` parameter
+offers `workspace_run_command`, whose `profile` parameter
 lists those profiles; a call naming another profile gets `profile_not_recorded`
-before any approval is requested (ADR-0100). When the workspace's `web_fetch`
-preference is `prompt` or `allow`, it offers `web_fetch` (ADR-0098). Set
+before any approval is requested (ADR-0100). The write tools and the command
+tool need an approval under `prompt` and none under `allow`. When the
+workspace's `web_fetch` preference is `prompt` or `allow`, it offers
+`web_fetch` (ADR-0098). Set
 `--max-tool-calls <1–256>` to override the default of 128 for this turn. A batch
 that would exceed the cap is refused before any of its calls run. The `tool_limit`
 error reports the configured cap, calls used, and calls requested. Start a new

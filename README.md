@@ -192,7 +192,8 @@ removes one resolved checkpoint's files and keeps its ledger history until
 trusted `file compact-checkpoints --discard-history`, or an apply, restore, or
 deletion that would not fit, compacts the ledger. Neither
 command is power-loss qualified. The model edit and multi-edit tools use the same
-checkpointed apply after an approved, writers-stopped decision; the create tool
+checkpointed apply, under `prompt` after an approved, writers-stopped decision
+and under `allow` without one; the create tool
 uses the exclusive create without a checkpoint; the delete tool uses a
 checkpointed removal; and the rename tool uses a no-replace rename without a
 checkpoint. None detects a concurrent writer, and none is power-loss

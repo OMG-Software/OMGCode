@@ -387,7 +387,12 @@ Changes are recorded here before a release version is assigned.
     only the local LM Studio adapter reads a stored credential now cover
     hosted connections (ADR-0092) and ChatGPT sign-in (ADR-0093). The
     desktop guide gives the 120-second plan-route timeout and the 2,048-model,
-    4 MiB model-list limits.
+    4 MiB model-list limits. The settings guide and the security rules say
+    which endpoint each kind's profile records, instead of loopback only or
+    none.
+  - The file-access guide limits "deletion only through the delete tool" to
+    the broker: a program started by `run` or the model command tool can
+    still delete workspace files without a checkpoint.
   - Desktop: the guide counts 66 commands and 32 `settings` commands, lists
     the create-directory review field and the six three-state preferences,
     and no longer says the CI desktop build has not run. The frontend README

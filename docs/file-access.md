@@ -27,10 +27,12 @@ the [replacement contract](#replacement-contract). Trusted restore writes a
 retained checkpoint's original bytes back through that same apply path, and
 trusted checkpoint deletion removes one resolved private entry; see
 [Phase A4](#implemented-restore-and-checkpoint-deletion-phase-a4). A create
-operation still refuses every existing entry. Workspace file deletion exists
-only as the checkpointed model delete tool
+operation still refuses every existing entry. Through the broker, workspace
+file deletion exists only as the checkpointed model delete tool
 ([ADR-0055](adr/0055-add-checkpointed-delete-and-no-replace-rename-model-tools.md)),
-whose retained original the trusted `file restore --removed` writes back.
+whose retained original the trusted `file restore --removed` writes back. A
+program started by the trusted `run` command or the model command tool can
+still create, change, or delete workspace files without a checkpoint.
 Restore-as-create, recursive directory creation, and action replay are
 unavailable. A content check followed by rename cannot guarantee no
 lost updates against independent writers. See

@@ -300,11 +300,12 @@ crate.
   ([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
   Label fetched text as untrusted web content from its host, never as
   workspace data or instructions.
-- Provider profiles record only a name, kind, and authentication mode. Never
-  store a token, password, certificate, endpoint, or account in them. Keep
-  subscription and API-key usage separate, and do not implement an adapter or
-  login without the reviewed credential service and the provider's supported
-  route. A profile is configuration, not authentication. See ADR-0038.
+- Provider profiles record only a name, kind, authentication mode, and an
+  optional endpoint that core validates on record and on replay (ADR-0048,
+  ADR-0092). Never store a token, password, certificate, or account in them.
+  Keep subscription and API-key usage separate, and do not implement an
+  adapter or login without the reviewed credential service and the provider's
+  supported route. A profile is configuration, not authentication. See ADR-0038.
 - Store provider credentials only through `omgcode_platform::credentials`
   (ADR-0042): DPAPI files with verified private DACLs on Windows and Secret
   Service items on Linux, never a plaintext fallback. Read secrets only from a

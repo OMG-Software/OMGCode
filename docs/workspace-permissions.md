@@ -313,11 +313,15 @@ and `provider_profile_removed`; `workspace status` lists them under
 authentication matrix. A control journal written by 0.24.0 cannot be read by
 0.23.0.
 
-Since 0.31.0, `provider-profile-add` accepts `--endpoint <url>` for an
-`lm_studio` profile, and since 0.44.0 for an `ollama_local` profile, and
-refuses it for every other kind. The endpoint is
-validated when recorded and again on replay, and it cannot be changed without
-removing the profile. `provider_profile_added` carries an `endpoint` field
+`provider-profile-add` accepts `--endpoint <url>`. An `lm_studio` profile
+(since 0.31.0) and an `ollama_local` profile (since 0.44.0) take a loopback
+address. Each named hosted kind accepts only its provider's one documented
+endpoint: `ollama_cloud` since 0.50.0 (ADR-0071) and the others since 0.59.0
+(ADR-0092). An `api_key` profile of a named hosted kind that omits
+`--endpoint` records that endpoint. An `openai_compatible` profile needs an
+`https://` base URL that core validates and refuses rather than rewrites. The
+endpoint is validated when recorded and again on replay, and it cannot be
+changed without removing the profile. `provider_profile_added` carries an `endpoint` field
 only when one is recorded, so a journal without one is unchanged; a control
 journal that records an endpoint cannot be read by 0.30.0. The
 [provider authentication guide](provider-authentication.md#endpoint-binding-0310)
