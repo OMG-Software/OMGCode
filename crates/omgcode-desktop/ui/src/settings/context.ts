@@ -189,6 +189,8 @@ export interface DiscoveryState {
   /** The workspace the list reports container access for, or `null`. */
   workspaceId: string | null;
   workspaceGrantActive: boolean | null;
+  /** Installations the list leaves out because a bound was reached. */
+  omitted: number;
   /** The selected proposals, by digest. */
   selected: Set<string>;
   /** The workspace chosen for the next list and grants; `""` for none. */
@@ -208,6 +210,7 @@ export function newExecutionForms(): ExecutionForms {
       proposals: null,
       workspaceId: null,
       workspaceGrantActive: null,
+      omitted: 0,
       selected: new Set(),
       chosenWorkspace: "",
     },

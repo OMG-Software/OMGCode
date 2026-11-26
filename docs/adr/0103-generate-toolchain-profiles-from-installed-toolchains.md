@@ -39,18 +39,29 @@ confirmed settings revision.
    Go's `VERSION`), each at most 64 KiB. Versions come from those files and
    from folder names (`lib/gcc/<target>/<version>`, `python3NN.dll`, MSVC and
    Windows SDK version folders). It runs no program, confined or not, and
-   reads no registry key. It never reads a workspace's files, so
-   project-controlled configuration such as `rust-toolchain.toml`, `.nvmrc`,
-   `.python-version`, or `global.json` cannot steer it. Listing is bounded to
-   512 entries per folder and 256 `PATH` entries.
+   reads no registry key. It never reads repository configuration such as
+   `rust-toolchain.toml`, `.nvmrc`, `.python-version`, or `global.json`, and
+   never looks inside a workspace on its own. A folder that `PATH` or one of
+   those variables names is read like any install folder, installer files
+   included, even inside the development root; core refuses it as a root
+   before any confirmation, and the list shows why. A file is checked to be
+   a regular file before it is opened, so a FIFO at an installer's path
+   cannot block discovery. A listing examines at most 16,384 entries per
+   folder and keeps the first 512 directories by name, filtered and sorted
+   before the cut so the result does not depend on listing order; at most
+   256 `PATH` entries are followed.
 3. **What a proposal holds.** Each proposal has a name, a family, an optional
    version, roots, `PATH` entries, variables, and fixed notes.
    - Every proposal adds the system part the acceptance-tested profiles
      listed: `System32` on Windows; `/usr` and any real top-level `bin`,
      `lib`, `lib64`, or `lib32` on Linux.
    - A root is never a filesystem or drive root, nor the home directory or one
-     of its ancestors. A symbolic link or junction is never a root. A nested
-     or repeated root is dropped, and every `PATH` entry lies inside a root.
+     of its ancestors. A nested or repeated root is dropped, and every `PATH`
+     entry lies inside a root. A root left after that is never itself a
+     symbolic link or junction: core records a root's resolved location, so
+     a linked root, such as a `JAVA_HOME` that names a link, would be
+     recorded at a path the confirmation never showed. Such a candidate is
+     left out.
    - Only non-secret setup values are derived: `JAVA_HOME`, `GOROOT` with
      `GOTOOLCHAIN=local`, `GOENV=off`, and `GOFLAGS=-buildvcs=false`,
      `DOTNET_ROOT` with telemetry, logo, and certificate generation off,
@@ -67,7 +78,9 @@ confirmed settings revision.
    - Names follow core's name rule: the newest or default installation of a
      family gets the bare name (`rust`, `go`, `java`, `python`), others a
      version suffix. At most 8 proposals share a base name and 32 are
-     returned.
+     returned. Past 32, every base name keeps its first installation before
+     any keeps a second, so the families listed last do not lose every
+     proposal, and the list reports how many installations it left out.
    - Notes say when a family has not passed the confined acceptance runs
      (only Rust, MSVC, Linux GCC, Python, Go, and Node.js have), when a JDK
      or .NET install is a runtime only, when Node on Windows needs
@@ -79,13 +92,21 @@ confirmed settings revision.
    `settings_grant_discovered_roots` take the settings revision and 1 to 8
    digests. Rust discovers again and applies only proposals whose digests
    still match; a selection made from an outdated list is refused as
-   `discovery_changed`. Discovery runs before the settings store is opened.
+   `discovery_changed`. Discovery and the access-control reads run while the
+   settings store is closed; it is opened to resolve the workspace and to
+   build the view. A workspace the request names is checked before any
+   dialog; once a change is recorded, a workspace unregistered meanwhile only
+   leaves the refreshed list without container access.
 5. **Core decides, before any dialog.** A new `ControlStore::check_profile`
    applies every rule of `add_profile` except the revision and records
    nothing. The list shows each proposal's refusal reason (for example, the
    name is taken, or 32 profiles exist), and an add whose selection core
    would refuse is refused before the confirmation. `add_profile` now gives
-   the 32-profile limit its own reason.
+   the 32-profile limit its own reason. `ControlStore::check_container_grants`
+   does the same for a batch of grants: the workspace, application storage,
+   the development-root scope, an existing grant or a repeat in the batch,
+   and the 32-per-workspace and 256 limits counting the batch.
+   `grant_container_access` runs the same checks.
 6. **One native confirmation per batch.** Adding lists each selected
    profile's name, family, version, roots, `PATH` entries, and variables with
    their values, and says the list came from reading folders, no program ran,
@@ -104,13 +125,18 @@ confirmed settings revision.
    the derived container identity and opens the folder for `WRITE_DAC` to
    learn whether a grant could be applied; nothing changes. The grant command
    collects the `needs_grant` roots of the selection, drops folders beneath
-   another, names the workspace and every folder in one native confirmation,
-   lists the administrator-only folders it skips, and calls
-   `grant_container_access` for each with the confirmed, advancing revision.
-   Folders a grant would fail on are never offered, so no refused access-list
-   change leaves a `pending` grant that blocks the workspace's runs. The list
-   also says whether the workspace has the active read-write grant on its own
-   folder that every run needs.
+   another, and checks them with `check_container_grants`; a refusal names
+   the folder before any dialog. It then names the workspace and every
+   folder in one native confirmation, lists the folders it skips (those that
+   need an administrator and those whose access-control list could not be
+   read), and calls `grant_container_access` for each with the confirmed,
+   advancing revision. Folders a grant would fail on are never offered, so
+   no refused access-list change leaves a `pending` grant that blocks the
+   workspace's runs. The list also says whether the workspace has the active
+   read-write grant on its own folder that every run needs; core records a
+   read-write grant only on that folder. Choosing another workspace in the
+   window generates a list on screen again, so its access states never
+   describe another workspace.
 
 ## Alternatives considered
 
@@ -137,6 +163,13 @@ confirmed settings revision.
 - **Offer every missing grant.** Rejected: a grant on an administrator-owned
   folder fails after the record, leaving a `pending` grant that blocks runs
   until revoked.
+- **Skip installer files inside the development root.** Rejected for now:
+  discovery would have to open the settings store to learn the root before
+  it reads any folder. Core refuses such a root before any confirmation, and
+  the version read from it reaches only the list, bounded and display-safe.
+- **Cut the list at 32 in family order.** Rejected: the families listed last
+  would lose every proposal on a computer with many toolchains of the first
+  families, with nothing on screen saying so.
 
 ## Consequences
 
@@ -160,6 +193,10 @@ confirmed settings revision.
   running Linux shell.
 - Windows grant checks read real access-control lists; their integration
   tests stop at the confirmation and apply no grant.
+- The type check before an installer file is opened narrows, but does not
+  close, the window in which a FIFO put at that path could block discovery.
+- A folder with more than 16,384 entries is examined only in part, in the
+  order the filesystem lists it.
 
 ## References
 

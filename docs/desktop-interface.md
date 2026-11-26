@@ -342,7 +342,7 @@ their registered identifier, and approvals by identifier.
 | `settings_revoke_container_grant` | settings | Windows only. Revoke one recorded grant after a native confirmation and stop the workspace's earlier runs (ADR-0088) |
 | `settings_discover_toolchains` | settings | Read the standard install folders and the operator's `PATH` and return toolchain profile proposals with core's refusal reason for each; with a workspace, on Windows, each root's container access. Runs no program and records nothing (ADR-0103) |
 | `settings_add_discovered_profiles` | settings | Discover again and, after one native confirmation that lists every root, `PATH` entry, and variable, record the proposals whose digests the window sent as `workspace profile-add` does (ADR-0103) |
-| `settings_grant_discovered_roots` | settings | Windows only. Discover again and, after one native confirmation that names the workspace and every folder, grant read-execute access to the selected proposals' roots that the container cannot read and this account can grant (ADR-0103) |
+| `settings_grant_discovered_roots` | settings | Windows only. Discover again, check every folder with core's grant rules, and, after one native confirmation that names the workspace and every folder, grant read-execute access to the selected proposals' roots that the container cannot read and this account can grant (ADR-0103) |
 
 `main` shows the session tree, search, transcripts, and chat. It renders
 transcript text. `approvals` lists approval records, shows the reviewed
@@ -1307,21 +1307,26 @@ waits. The window shows:
   the add form. It asks Rust for proposals, which core makes by reading the
   standard install folders, the operator's `PATH`, `JAVA_HOME`, `GOROOT`, and
   `RUSTUP_HOME`, and small installer-written files; it runs no program and
-  reads no workspace file. Each proposal shows its name, family, version,
-  roots, `PATH` entries, variables with their values, notes, and, when core
-  would refuse it now, the reason, with its checkbox disabled. On Windows a
-  **Show container access for** choice names a workspace, and each root then
-  says whether that workspace's container can read it, needs a grant, or
-  needs an administrator to grant; a line says when the workspace lacks the
+  never reads repository configuration such as `rust-toolchain.toml`. Each
+  proposal shows its name, family, version, roots, `PATH` entries, variables
+  with their values, notes, and, when core would refuse it now, the reason,
+  with its checkbox disabled. A line says how many installations the list
+  left out when a bound was reached. On Windows a **Show container access
+  for** choice names a workspace, and each root then says whether that
+  workspace's container can read it, needs a grant, or needs an
+  administrator to grant; changing the choice generates a list on screen
+  again, keeping the selection. A line says when the workspace lacks the
   active read-write grant on its own folder. **Add selected profiles…** sends
   the revision and the digests of 1 to 8 selected proposals; Rust discovers
   again, refuses a list that no longer matches as `discovery_changed`, shows
   one native confirmation that lists everything, and records each profile.
   **Grant folders for selected…** (Windows) sends the list's workspace and
-  the digests; Rust grants only the folders this account can change, after
-  one native confirmation that names the workspace and every folder, and
-  names the administrator-only folders it skips. A declined confirmation or
-  a refusal keeps the list and the selection.
+  the digests; Rust checks every folder with core's grant rules before the
+  dialog, grants only the folders this account can change, after one native
+  confirmation that names the workspace and every folder, and names the
+  folders it skips: those that need an administrator and those whose
+  access-control list could not be read. A declined confirmation or a
+  refusal keeps the list and the selection.
 
   **Package-network profiles** list each profile's origins and how many
   credentials are bound, and a **Remove** button. A line says a profile is
@@ -2312,9 +2317,12 @@ ACLs the private store refuses, see the notes in
   (`crates/omgcode-app/tests/desktop_settings_discovery.rs`), by layer and
   bundle tests, and by Vitest against a fake transport and the mock backend.
   On Windows the root checks read real access-control lists of fixture
-  folders; no test applies a grant. Discovery was not run against this
-  computer's own toolchains by a test, the native dialogs and the real shell's
-  settings window were not driven by automation, and nothing ran on Linux.
+  folders; no test applies a grant. The Linux-only core tests (a linked root
+  and a FIFO at an installer's path) and the service tests ran in WSL Ubuntu
+  24.04 and in CI. Discovery ran against real toolchains only through an
+  ignored test run by hand on one Windows computer, the native dialogs and
+  the real shell's settings window were not driven by automation, and the
+  desktop shell never ran on Linux.
 - Phase S2 (0.41.0): the change commands were checked by service tests with a
   scripted prompt, by unit, layer, and bundle tests, and in the Vite
   development server against the mock backend. The native dialogs and the

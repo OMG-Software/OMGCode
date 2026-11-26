@@ -49,8 +49,8 @@ Since version 0.66.0 the `settings` window can generate proposals from the
 installed toolchains through a trusted host-side service in core
 ([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 It reads install folders, the operator's `PATH` and a few toolchain
-variables, and small installer-written files; it runs no probe and reads no
-workspace file. It proposes the required resources for user selection, and
+variables, and small installer-written files; it runs no probe and never
+reads repository configuration such as `rust-toolchain.toml`. It proposes the required resources for user selection, and
 each selected profile or Windows grant is recorded through the existing core
 call after a native confirmation. The model cannot approve new host access.
 Do not execute repository-controlled discovery hooks or version probes with

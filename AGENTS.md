@@ -216,7 +216,8 @@ container grants, after native confirmations; none can be edited
 It also proposes toolchain profiles for the installed Rust, C and C++, Java,
 Python, Perl, Go, Node.js, .NET, and Ruby toolchains from a core service that
 reads install folders, the operator's `PATH`, and installer-written files,
-runs no program, and reads no workspace file. The operator selects
+runs no program, and never reads repository configuration such as
+`rust-toolchain.toml`. The operator selects
 proposals, and one native confirmation per batch records them through the
 core add call or, on Windows, grants the folders a workspace's container
 needs; discovery grants nothing

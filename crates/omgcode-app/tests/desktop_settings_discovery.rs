@@ -279,6 +279,7 @@ fn discovery_proposes_installed_toolchains_and_records_nothing() {
         assert_eq!(root["grant"], "not_applicable");
     }
     assert_eq!(wire_view["workspace_grant_active"], Value::Null);
+    assert_eq!(wire_view["omitted"], 0);
     assert_eq!(discovery.overview.revision, before);
     assert_eq!(current_revision(&fixture.data), before);
     assert_eq!(profile_count(&fixture.data), 0);
@@ -579,6 +580,32 @@ fn an_unknown_workspace_is_refused() {
     assert_eq!(error.code(), "unknown_workspace");
 }
 
+#[test]
+fn adding_with_an_unknown_workspace_is_refused_before_any_dialog() {
+    let fixture = Fixture::new();
+    let host = Host::new(&fixture);
+    let discovery = discover(&fixture, &host, None);
+    let before = discovery.overview.revision;
+
+    let error = service(&fixture.data)
+        .settings_add_discovered_profiles(
+            DiscoveredProfilesRequest {
+                revision: before,
+                digests: digests_of(&discovery),
+                workspace_id: Some(Uuid::new_v4()),
+            },
+            &host.discovery(),
+            &ScriptedPrompt::silent(),
+        )
+        .expect_err("unknown");
+
+    // Refused before the dialog and before any profile, so the window never
+    // reports a failure for a change that was recorded.
+    assert_eq!(error.code(), "unknown_workspace");
+    assert_eq!(profile_count(&fixture.data), 0);
+    assert_eq!(current_revision(&fixture.data), before);
+}
+
 #[cfg(windows)]
 #[test]
 fn on_windows_each_root_says_what_the_workspace_container_needs() {
@@ -666,6 +693,69 @@ fn on_windows_a_grant_for_an_unregistered_workspace_is_refused_before_any_dialog
         .expect_err("unknown");
 
     assert_eq!(error.code(), "unknown_workspace");
+}
+
+#[cfg(windows)]
+#[test]
+fn on_windows_a_folder_core_would_not_grant_is_refused_before_any_dialog() {
+    let fixture = Fixture::new();
+    let host = Host::new(&fixture);
+    let workspace = with_workspace(&fixture);
+    // A Go that the operator's GOROOT names inside the development root,
+    // beside the workspace rather than in it.
+    let inside = fixture.development.join("tools").join("go");
+    go_install(&inside, "1.24.0");
+    let request = service(&fixture.data)
+        .settings_discover_toolchains(
+            ToolchainDiscoveryRequest {
+                workspace_id: Some(workspace),
+            },
+            &host.discovery().with_goroot(inside.clone()),
+        )
+        .expect("discovered");
+    let shown_root = inside.display().to_string();
+    let proposal = request
+        .proposals
+        .iter()
+        .find(|proposal| {
+            proposal
+                .read_only_roots
+                .iter()
+                .any(|root| root.folder == shown_root)
+        })
+        .expect("the GOROOT proposal");
+    // Core would refuse it as a profile too, and the list says so.
+    assert!(proposal.refusal.is_some(), "{proposal:?}");
+    let before = request.overview.revision;
+
+    let error = service(&fixture.data)
+        .settings_grant_discovered_roots(
+            DiscoveredGrantsRequest {
+                revision: before,
+                workspace_id: workspace,
+                digests: vec![proposal.digest.clone()],
+            },
+            &host.discovery().with_goroot(inside),
+            &ScriptedPrompt::silent(),
+        )
+        .expect_err("core refuses the grant");
+
+    assert_eq!(error.code(), "control");
+    assert!(
+        error.message().starts_with(&shown_root),
+        "{}",
+        error.message()
+    );
+    assert!(
+        error.message().contains("development root"),
+        "{}",
+        error.message()
+    );
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("exists");
+    assert!(store.container_grants().is_empty());
+    assert_eq!(store.revision(), before);
 }
 
 #[cfg(not(windows))]

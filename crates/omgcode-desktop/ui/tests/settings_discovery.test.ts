@@ -10,6 +10,7 @@ import {
   DISCOVERY_HELP,
   GRANT_SELECTED_LABEL,
   NOTHING_FOUND,
+  omittedText,
   SELECTION_LIMIT,
   WORKSPACE_GRANT_MISSING,
 } from "../src/settings/discovery_panel";
@@ -124,6 +125,7 @@ function discovery(
     workspace_id: null,
     workspace_grant_active: null,
     proposals,
+    omitted: 0,
     ...overrides,
   };
 }
@@ -247,6 +249,21 @@ describe("generating toolchain profiles", () => {
     expect(root.querySelector(".settings-body img, .settings-body script")).toBeNull();
     expect(group().textContent).toContain(HOSTILE.img);
   });
+
+  it("says how many installations the list leaves out", async () => {
+    let omitted = 5;
+    await start(() => overview(), {
+      settings_discover_toolchains: () => discovery([proposal()], { omitted }),
+    });
+    await generate();
+    expect(group().textContent).toContain(omittedText(5));
+    expect(omittedText(5)).toContain("5 more installations were found");
+    expect(omittedText(1)).toContain("1 more installation was found");
+
+    omitted = 0;
+    await generate();
+    expect(group().textContent).not.toContain("more installation");
+  });
 });
 
 describe("adding proposals", () => {
@@ -365,6 +382,55 @@ describe("granting proposed roots on Windows", () => {
     expect(text).toContain("C:\\Program Files\\Go (the container can read it)");
     expect(text).toContain("D:\\locked (needs an administrator to grant)");
     expect(text).toContain(WORKSPACE_GRANT_MISSING);
+  });
+
+  it("generates a list on screen again when another workspace is chosen", async () => {
+    await start(() => overview(), {
+      settings_discover_toolchains: (args) =>
+        args.workspace_id === A
+          ? discovery([NEEDS], { workspace_id: A, workspace_grant_active: true })
+          : discovery([proposal()]),
+    });
+    const select = (): HTMLSelectElement => {
+      const found = group().querySelector<HTMLSelectElement>("#discovery-workspace");
+      if (found === null) {
+        throw new Error("No workspace choice");
+      }
+      return found;
+    };
+    await generate();
+    tick(0);
+    expect(group().textContent).not.toContain("needs a grant");
+
+    choose(select(), A);
+    await settle();
+
+    const calls = ipc.callsTo("settings_discover_toolchains");
+    expect(calls.map((call) => call.args)).toEqual([{ workspace_id: null }, { workspace_id: A }]);
+    // The roots now report the chosen workspace's access, and the selection is kept.
+    expect(group().textContent).toContain("C:\\Users\\op\\go (needs a grant)");
+    expect(boxes()[0]?.checked).toBe(true);
+    expect(buttonByText(group(), GRANT_SELECTED_LABEL).disabled).toBe(false);
+
+    choose(select(), "");
+    await settle();
+    expect(ipc.callsTo("settings_discover_toolchains").at(-1)?.args).toEqual({
+      workspace_id: null,
+    });
+    expect(group().textContent).not.toContain("needs a grant");
+  });
+
+  it("does not ask Rust when a workspace is chosen before any list", async () => {
+    await start(() => overview(), {
+      settings_discover_toolchains: () => discovery([NEEDS], { workspace_id: A }),
+    });
+    const select = group().querySelector<HTMLSelectElement>("#discovery-workspace");
+    if (select === null) {
+      throw new Error("No workspace choice");
+    }
+    choose(select, A);
+    await settle();
+    expect(ipc.callsTo("settings_discover_toolchains")).toHaveLength(0);
   });
 
   it("sends the revision, the list's workspace, and the selected digests", async () => {

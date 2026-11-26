@@ -853,7 +853,9 @@ fn installations_of_one_name_are_bounded() {
             "home/operator/.rustup/toolchains/1.{minor}.0-x86_64-unknown-linux-gnu/bin/rustc"
         ));
     }
-    let proposals = discover(&host);
+    let found = discover_bounded(&host);
+    assert_eq!(found.omitted, 20 - MAX_PER_NAME);
+    let proposals = found.proposals;
     let rust = of_family(&proposals, ToolchainFamily::Rust);
     assert_eq!(rust.len(), MAX_PER_NAME);
     // Newest first.
@@ -862,6 +864,133 @@ fn installations_of_one_name_are_bounded() {
         named(&proposals, "rust").version(),
         Some("1.19.0-x86_64-unknown-linux-gnu")
     );
+}
+
+#[test]
+fn past_the_proposal_bound_every_name_keeps_its_first_installation() {
+    let candidate = |family, name: &'static str, variant: usize| {
+        Candidate::new(family, name, variant.to_string())
+    };
+    // Listed by family: many under the first names, one under each later one.
+    let mut ordered: Vec<Candidate> = Vec::new();
+    for name in ["rust", "msvc", "java", "python", "perl"] {
+        for variant in 0..8 {
+            ordered.push(candidate(ToolchainFamily::Rust, name, variant));
+        }
+    }
+    ordered.push(candidate(ToolchainFamily::Go, "go", 0));
+    ordered.push(candidate(ToolchainFamily::Ruby, "ruby", 0));
+    let keep = fair_share(&ordered, MAX_PROPOSALS);
+    assert_eq!(keep.iter().filter(|kept| **kept).count(), MAX_PROPOSALS);
+    let kept: Vec<(&str, &str)> = ordered
+        .iter()
+        .zip(&keep)
+        .filter(|(_, kept)| **kept)
+        .map(|(candidate, _)| (candidate.base_name, candidate.variant.as_str()))
+        .collect();
+    // Six rounds fill the bound: go and ruby keep their only installation,
+    // and each of the five longer names keeps its first six.
+    assert!(kept.contains(&("go", "0")) && kept.contains(&("ruby", "0")));
+    assert!(kept.contains(&("perl", "5")) && !kept.contains(&("rust", "6")));
+    // The list keeps its order.
+    assert_eq!(kept.first(), Some(&("rust", "0")));
+    assert_eq!(kept.last(), Some(&("ruby", "0")));
+    assert_eq!(fair_share(&ordered[..3], MAX_PROPOSALS), [true, true, true]);
+}
+
+#[test]
+fn a_long_listing_keeps_the_first_directories_by_name_after_filtering() {
+    let tree = Tree::new();
+    let lib = tree.dir("usr/lib");
+    for index in 0..MAX_LISTED_ENTRIES + 88 {
+        tree.dir(&format!("usr/lib/aa-{index:04}"));
+    }
+    tree.file("usr/lib/go-file");
+    // Sorts after every `aa-` directory, so a cut before the filter could
+    // lose it whatever order the filesystem lists entries in.
+    tree.dir("usr/lib/go-1.22");
+    let all = child_directories(&lib);
+    assert_eq!(all.len(), MAX_LISTED_ENTRIES);
+    assert_eq!(all.first(), Some(&tree.path("usr/lib/aa-0000")));
+    assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(
+        child_directories_named(&lib, "GO"),
+        [tree.path("usr/lib/go-1.22")]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_root_that_is_a_link_is_not_proposed() {
+    let tree = Tree::new();
+    let host = tree.linux();
+    // Outside every standard location, so only `JAVA_HOME` leads here.
+    let jdk = "srv/jdk-21";
+    tree.file(&format!("{jdk}/bin/java"));
+    tree.file(&format!("{jdk}/bin/javac"));
+    std::os::unix::fs::symlink(tree.path(jdk), tree.path("srv/java-current")).expect("link");
+    let linked = discover(&host.clone().with_java_home(tree.path("srv/java-current")));
+    assert!(of_family(&linked, ToolchainFamily::Java).is_empty());
+    let real = discover(&host.with_java_home(tree.path(jdk)));
+    assert_eq!(of_family(&real, ToolchainFamily::Java), ["java"]);
+    assert_eq!(
+        named(&real, "java").read_only_roots(),
+        [tree.path(jdk), tree.path("usr")]
+    );
+}
+
+/// A FIFO where an installer file belongs is refused before it is opened, so
+/// it cannot block discovery. Discovery runs in a child process, so a
+/// regression fails at a deadline instead of hanging the test run.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fifo_at_an_installer_file_does_not_block_discovery() {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const CHILD_MARKER: &str = "OMGCODE_DISCOVERY_FIFO_CHILD";
+    const DEADLINE: Duration = Duration::from_secs(5);
+    const POLL: Duration = Duration::from_millis(10);
+
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let tree = Tree::new();
+        let host = tree.linux();
+        tree.file("usr/local/go/bin/go");
+        tree.dir("usr/local/go/src/runtime");
+        let status = Command::new("mkfifo")
+            .arg(tree.path("usr/local/go/VERSION"))
+            .status()
+            .expect("create FIFO fixture");
+        assert!(status.success(), "mkfifo must create the fixture");
+        assert_eq!(of_family(&discover(&host), ToolchainFamily::Go), ["go"]);
+        return;
+    }
+
+    let executable = std::env::current_exe().expect("locate the unit test executable");
+    let mut child = Command::new(executable)
+        .arg("--exact")
+        .arg("toolchain_discovery::tests::a_fifo_at_an_installer_file_does_not_block_discovery")
+        .env(CHILD_MARKER, "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start bounded FIFO child");
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        match child.try_wait().expect("check FIFO child status") {
+            Some(status) => {
+                assert!(status.success(), "the FIFO child must finish discovery");
+                break;
+            }
+            None if Instant::now() < deadline => thread::sleep(POLL),
+            None => {
+                child.kill().expect("terminate hung FIFO child");
+                let _ = child.wait().expect("reap FIFO child");
+                panic!("discovery blocked on a FIFO past the five-second deadline");
+            }
+        }
+    }
 }
 
 #[test]

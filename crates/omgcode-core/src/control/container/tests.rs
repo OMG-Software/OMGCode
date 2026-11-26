@@ -264,6 +264,15 @@ fn other_platforms_refuse_grants_without_recording_them() {
         matches!(&error, ControlError::Container(cause) if cause.kind() == std::io::ErrorKind::Unsupported),
         "{error}"
     );
+    let checked = store.check_container_grants(
+        workspace,
+        std::slice::from_ref(&scene.toolchain),
+        ContainerGrantAccess::ReadExecute,
+    );
+    assert!(
+        matches!(&checked, Err((0, ControlError::Container(cause))) if cause.kind() == std::io::ErrorKind::Unsupported),
+        "{checked:?}"
+    );
     assert_eq!(store.entries.len(), events);
 }
 
@@ -469,6 +478,79 @@ mod windows {
             Err(ControlError::GrantRefused(_))
         ));
         store.revoke_container_grant(inside.id()).expect("revoke");
+    }
+
+    #[test]
+    fn a_grant_batch_is_checked_with_every_grant_rule_and_records_nothing() {
+        let scene = Scene::new();
+        let (mut store, workspace) = scene.store();
+        let read = ContainerGrantAccess::ReadExecute;
+        let outside = scene.toolchain.parent().expect("temporary root");
+        let second = outside.join("second");
+        fs::create_dir(&second).expect("second");
+        let events = store.entries.len();
+
+        store
+            .check_container_grants(workspace, &[scene.toolchain.clone(), second.clone()], read)
+            .expect("both folders can be granted");
+        let refusals: [(&str, Vec<PathBuf>, usize); 3] = [
+            (
+                "another workspace under the development root",
+                vec![scene.toolchain.clone(), scene.other.clone()],
+                1,
+            ),
+            (
+                "one folder twice",
+                vec![scene.toolchain.clone(), scene.toolchain.clone()],
+                1,
+            ),
+            ("application storage", vec![scene.data.clone()], 0),
+        ];
+        for (name, batch, refused_at) in refusals {
+            let (index, error) = store
+                .check_container_grants(workspace, &batch, read)
+                .expect_err(name);
+            assert_eq!(index, refused_at, "{name}: {error}");
+            assert!(
+                matches!(
+                    error,
+                    ControlError::GrantRefused(_) | ControlError::StorageOverlap
+                ),
+                "{name}: {error}"
+            );
+        }
+        assert!(matches!(
+            store.check_container_grants(WorkspaceId::fresh(), std::slice::from_ref(&second), read),
+            Err((0, ControlError::UnknownWorkspace))
+        ));
+        assert_eq!(store.entries.len(), events, "a check records nothing");
+        assert_eq!(access(&scene.toolchain, workspace), None);
+
+        // A grant already recorded on the folder, which a failed grant
+        // leaves `pending` with no access-control entry.
+        store.test_record_grant(workspace, &scene.toolchain, read);
+        let (index, error) = store
+            .check_container_grants(workspace, std::slice::from_ref(&scene.toolchain), read)
+            .expect_err("already granted");
+        assert_eq!(index, 0);
+        assert!(error.to_string().contains("revoke it first"), "{error}");
+
+        // The workspace limit counts the folders earlier in the batch.
+        for filler in 1..MAX_GRANTS_PER_WORKSPACE - 1 {
+            let folder = outside.join(format!("filler-{filler}"));
+            fs::create_dir(&folder).expect("filler");
+            store.test_record_grant(workspace, &folder, read);
+        }
+        let third = outside.join("third");
+        fs::create_dir(&third).expect("third");
+        store
+            .check_container_grants(workspace, std::slice::from_ref(&second), read)
+            .expect("one more fits");
+        let (index, error) = store
+            .check_container_grants(workspace, &[second, third], read)
+            .expect_err("two more do not");
+        assert_eq!(index, 1);
+        assert!(error.to_string().contains("at most 32 grants"), "{error}");
     }
 
     #[test]

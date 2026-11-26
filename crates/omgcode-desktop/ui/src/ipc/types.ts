@@ -689,6 +689,8 @@ export interface ToolchainDiscovery {
    */
   workspace_grant_active: boolean | null;
   proposals: ToolchainProposalView[];
+  /** Installations found and not proposed: more than eight under one name, or 32 in all. */
+  omitted: number;
 }
 
 export interface SkillSettingView {

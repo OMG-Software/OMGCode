@@ -12,9 +12,16 @@
 //!   `settings.toml`, a JDK's `release`, and Go's `VERSION`, each bounded. It
 //!   starts no program, runs no version probe, and reads no registry key.
 //! - It never reads repository configuration such as `rust-toolchain.toml`,
-//!   `.nvmrc`, `go.mod`, or `.python-version`. A directory inside the
-//!   development root can still appear through the operator's `PATH`; core
-//!   refuses it as a toolchain root, and the window shows that refusal.
+//!   `.nvmrc`, `go.mod`, or `.python-version`, and never looks inside a
+//!   workspace on its own. A folder that the operator's `PATH`, `JAVA_HOME`,
+//!   `GOROOT`, or `RUSTUP_HOME` names is read like any install folder, its
+//!   installer files included, even inside the development root; core
+//!   refuses such a folder as a toolchain root before any confirmation, and
+//!   the window shows that refusal.
+//! - No proposed root is itself a link. Core records a root by its resolved
+//!   identity, so a linked root, such as a `JAVA_HOME` that names a link,
+//!   would be recorded at a path the confirmation never showed; such a
+//!   candidate is left out.
 //! - A proposal grants nothing. Adding one goes through
 //!   [`ControlStore::add_profile`](crate::control::ControlStore::add_profile)
 //!   with the operator's native confirmation and expected revision, which
@@ -51,8 +58,11 @@ mod tests;
 pub const MAX_PROPOSALS: usize = 32;
 /// Most installations proposed under one base name, such as `python`.
 const MAX_PER_NAME: usize = 8;
-/// Most entries read from one directory listing.
+/// Most directories kept from one listing, the first by name.
 const MAX_LISTED_ENTRIES: usize = 512;
+/// Most entries examined in one listing, in the order the filesystem returns
+/// them. Large system directories such as `/usr/lib` hold a few thousand.
+const MAX_SCANNED_ENTRIES: usize = 16_384;
 /// Most operator `PATH` entries considered.
 const MAX_SEARCH_DIRECTORIES: usize = 256;
 /// Most bytes read from one installer-written text file.
@@ -652,6 +662,13 @@ impl Candidate {
                 roots.push(root.clone());
             }
         }
+        // Core records a root by its resolved identity, so a root that is a
+        // link would be recorded at a path the confirmation never showed. A
+        // link nested inside another root, such as Debian's
+        // `/usr/lib/jvm/default-java` under `/usr`, was dropped above.
+        if roots.iter().any(|root| !real_directory(root)) {
+            return None;
+        }
         self.roots = roots;
         let mut path_entries: Vec<PathBuf> = Vec::new();
         for entry in &self.path_entries {
@@ -683,18 +700,39 @@ impl Candidate {
     }
 }
 
+/// What one discovery found.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Discovered {
+    /// The proposals, at most [`MAX_PROPOSALS`], as [`discover`] returns them.
+    pub proposals: Vec<ToolchainProposal>,
+    /// Installations found and not proposed because a bound was reached:
+    /// eight under one name, or [`MAX_PROPOSALS`] in all.
+    pub omitted: usize,
+}
+
 /// Find the toolchains installed on `host` and propose a profile for each.
 ///
 /// Proposals are listed by family, the preferred installation of each name
 /// first and then by descending version. At most [`MAX_PROPOSALS`] are
-/// returned. A proposal can still be refused by core, for example because a
-/// root overlaps the development root or its name is already recorded; check
-/// it with [`ControlStore::check_profile`] before offering it.
+/// returned; [`discover_bounded`] also says how many were left out. A
+/// proposal can still be refused by core, for example because a root
+/// overlaps the development root or its name is already recorded; check it
+/// with [`ControlStore::check_profile`] before offering it.
 ///
 /// [`ControlStore::check_profile`]: crate::control::ControlStore::check_profile
 #[must_use]
 pub fn discover(host: &DiscoveryHost) -> Vec<ToolchainProposal> {
+    discover_bounded(host).proposals
+}
+
+/// [`discover`], with the number of installations the bounds left out. When
+/// more than [`MAX_PROPOSALS`] remain, each name keeps its first installation
+/// before any name keeps a second, so the families listed last are not the
+/// first to lose every proposal.
+#[must_use]
+pub fn discover_bounded(host: &DiscoveryHost) -> Discovered {
     let system = host.system_part();
+    let mut omitted = 0;
     let mut ordered: Vec<Candidate> = Vec::new();
     for detect in DETECTORS {
         let mut found: Vec<Candidate> = detect(host)
@@ -723,17 +761,24 @@ pub fn discover(host: &DiscoveryHost) -> Vec<ToolchainProposal> {
             let duplicate = kept.iter().any(|other| {
                 other.base_name == candidate.base_name && other.same_profile(&candidate)
             });
-            if under_name < MAX_PER_NAME && !duplicate {
+            if duplicate {
+                continue;
+            }
+            if under_name < MAX_PER_NAME {
                 kept.push(candidate);
+            } else {
+                omitted += 1;
             }
         }
         for name in names {
             ordered.extend(kept.iter().filter(|c| c.base_name == name).cloned());
         }
     }
+    let keep = fair_share(&ordered, MAX_PROPOSALS);
+    omitted += ordered.len() - keep.iter().filter(|kept| **kept).count();
     let mut taken: Vec<String> = Vec::new();
     let mut proposals = Vec::new();
-    for candidate in ordered.into_iter().take(MAX_PROPOSALS) {
+    for (candidate, _) in ordered.into_iter().zip(keep).filter(|(_, kept)| *kept) {
         let first_of_name = !taken
             .iter()
             .any(|name| name.eq_ignore_ascii_case(candidate.base_name));
@@ -756,7 +801,39 @@ pub fn discover(host: &DiscoveryHost) -> Vec<ToolchainProposal> {
             notes: candidate.notes,
         });
     }
-    proposals
+    Discovered { proposals, omitted }
+}
+
+/// Which of `ordered` to keep when at most `limit` can be: every name's first
+/// candidate, then every name's second, and so on, in list order within each
+/// round. The kept candidates keep their place in the list.
+fn fair_share(ordered: &[Candidate], limit: usize) -> Vec<bool> {
+    let mut seen: Vec<(&'static str, usize)> = Vec::new();
+    let mut ranked: Vec<(usize, usize)> = Vec::with_capacity(ordered.len());
+    for (index, candidate) in ordered.iter().enumerate() {
+        let rank = match seen
+            .iter_mut()
+            .find(|(name, _)| *name == candidate.base_name)
+        {
+            Some((_, count)) => {
+                *count += 1;
+                *count - 1
+            }
+            None => {
+                seen.push((candidate.base_name, 1));
+                0
+            }
+        };
+        ranked.push((rank, index));
+    }
+    ranked.sort_unstable();
+    let mut keep = vec![false; ordered.len()];
+    for (_, index) in ranked.into_iter().take(limit) {
+        if let Some(slot) = keep.get_mut(index) {
+            *slot = true;
+        }
+    }
+    keep
 }
 
 /// `base-variant` with every character outside core's name rule replaced by
@@ -846,41 +923,59 @@ fn is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
-/// The real directories directly inside `path`, sorted by name. At most 512
-/// entries are read.
+/// The real directories directly inside `path`, sorted by name: the first
+/// [`MAX_LISTED_ENTRIES`] of them by name.
 fn child_directories(path: &Path) -> Vec<PathBuf> {
+    listed_directories(path, None)
+}
+
+/// The real directories inside `path` whose names start with `prefix`,
+/// compared case-insensitively, sorted by name: the first
+/// [`MAX_LISTED_ENTRIES`] of them by name.
+fn child_directories_named(path: &Path, prefix: &str) -> Vec<PathBuf> {
+    listed_directories(path, Some(prefix))
+}
+
+/// The listing behind [`child_directories`]. The entry type and name come
+/// from the listing itself, so no entry is opened or examined further. Only
+/// the first [`MAX_SCANNED_ENTRIES`] entries the filesystem returns are
+/// examined; the filter and the sort come before the [`MAX_LISTED_ENTRIES`]
+/// cut, so which directories are kept does not depend on listing order.
+fn listed_directories(path: &Path, prefix: Option<&str>) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(path) else {
         return Vec::new();
     };
     let mut found: Vec<PathBuf> = entries
-        .take(MAX_LISTED_ENTRIES)
+        .take(MAX_SCANNED_ENTRIES)
         .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+        })
+        .filter(|entry| {
+            prefix.is_none_or(|prefix| {
+                entry.file_name().to_str().is_some_and(|name| {
+                    name.get(..prefix.len())
+                        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+                })
+            })
+        })
         .map(|entry| entry.path())
-        .filter(|child| real_directory(child))
         .collect();
     found.sort();
+    found.truncate(MAX_LISTED_ENTRIES);
     found
 }
 
-/// The real directories inside `path` whose names start with `prefix`,
-/// compared case-insensitively.
-fn child_directories_named(path: &Path, prefix: &str) -> Vec<PathBuf> {
-    child_directories(path)
-        .into_iter()
-        .filter(|child| {
-            file_name(child).is_some_and(|name| {
-                name.len() >= prefix.len()
-                    && name
-                        .get(..prefix.len())
-                        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
-            })
-        })
-        .collect()
-}
-
 /// The text of a small installer-written file, at most 64 KiB of it, when it
-/// is UTF-8.
+/// is UTF-8. The type is checked before the file is opened, so a FIFO or
+/// device at an installer's path is never opened and cannot block discovery;
+/// the open handle is checked again.
 fn read_text(path: &Path) -> Option<String> {
+    if !is_file(path) {
+        return None;
+    }
     let file = fs::File::open(path).ok()?;
     if !file.metadata().ok()?.is_file() {
         return None;

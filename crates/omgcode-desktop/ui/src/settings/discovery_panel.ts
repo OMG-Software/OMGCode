@@ -16,14 +16,20 @@ export const GRANT_SELECTED_LABEL = "Grant folders for selected…";
 export const MAX_SELECTED = 8;
 
 export const DISCOVERY_HELP =
-  "OMGCode can look for installed toolchains (Rust, C and C++, Java, Python, Perl, Go, Node.js, .NET, and Ruby) in their standard install folders and on your PATH, and propose a profile for each. It only reads folders and small files the installers wrote. It runs no program and never reads a workspace's files, such as rust-toolchain.toml. Nothing is recorded until you select proposals and confirm them in a system dialog.";
+  "OMGCode can look for installed toolchains (Rust, C and C++, Java, Python, Perl, Go, Node.js, .NET, and Ruby) in their standard install folders and on your PATH, and propose a profile for each. It only reads folders and small files the installers wrote. It runs no program and never reads a project's configuration, such as rust-toolchain.toml. Nothing is recorded until you select proposals and confirm them in a system dialog.";
 export const DISCOVERY_GRANT_HELP =
-  "On Windows a run can read a root only when the workspace's container can. Choose a workspace to see which roots need a read-execute grant. A folder only an administrator can change is named, not granted.";
+  "On Windows a run can read a root only when the workspace's container can. Choose a workspace to see which roots need a read-execute grant; a list already shown is generated again for it. A folder only an administrator can change is named, not granted.";
 export const NOTHING_FOUND = "No toolchain was found in the standard install folders or on PATH.";
 export const SELECTION_LIMIT = "Select at most 8 proposals at a time.";
 export const WORKSPACE_GRANT_MISSING =
   "This workspace has no active read-write grant on its own folder, which every run in it needs. Grant it under Container grants.";
 export const NO_WORKSPACE = "No workspace";
+
+/** Says how many installations the list leaves out. */
+export function omittedText(count: number): string {
+  const what = count === 1 ? "1 more installation was" : `${count} more installations were`;
+  return `${what} found and not listed: a list holds at most 8 installations under one name and 32 in all, each name's preferred installation first.`;
+}
 
 const GRANT_TEXT: Record<RootGrantNeed, string> = {
   not_applicable: "",
@@ -42,6 +48,7 @@ function run(ctx: SectionContext, change: DiscoveryChange, keepSelection: boolea
     state.proposals = result.proposals;
     state.workspaceId = result.workspace_id;
     state.workspaceGrantActive = result.workspace_grant_active;
+    state.omitted = result.omitted;
     // A kept selection loses proposals that are gone or that core would now refuse.
     const addable = new Set(
       result.proposals
@@ -114,9 +121,13 @@ function proposalRow(
   return item;
 }
 
-/** The workspace choice for container access, on Windows with a registered workspace. */
+/**
+ * The workspace choice for container access, on Windows with a registered workspace. A list on
+ * screen is generated again for the new choice, so its grant states never describe another
+ * workspace.
+ */
 function workspaceChoice(ctx: SectionContext): HTMLElement | null {
-  const { overview } = ctx;
+  const { overview, actions } = ctx;
   const state = ctx.view.executionForms.discovery;
   if (!overview.container_grants_supported || overview.workspaces.length === 0) {
     return null;
@@ -131,6 +142,9 @@ function workspaceChoice(ctx: SectionContext): HTMLElement | null {
   choice.value = chosenWorkspace(ctx) ?? "";
   choice.addEventListener("change", () => {
     state.chosenWorkspace = choice.value;
+    if (state.proposals !== null) {
+      run(ctx, actions.discoverToolchains(chosenWorkspace(ctx)), true);
+    }
   });
   return el(
     "div",
@@ -179,6 +193,9 @@ export function discoveryPanel(ctx: SectionContext): HTMLElement {
   if (proposals.length === 0) {
     panel.append(emptyLine(NOTHING_FOUND));
     return panel;
+  }
+  if (state.omitted > 0) {
+    panel.append(el("p", { class: "muted", text: omittedText(state.omitted) }));
   }
   // The list's own workspace, not the one chosen since, decides the grants.
   const listWorkspace = overview.workspaces.some((w) => w.workspace_id === state.workspaceId)

@@ -244,7 +244,6 @@ const BUILT_IN_PREFERENCES: MockPreferences = {
   enter_to_send: true,
 };
 
-/** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
 /** A sample toolchain proposal of the mock's discovery (ADR-0103). */
 interface MockProposal {
   family: ToolchainProposalView["family"];
@@ -316,6 +315,7 @@ function mockDigest(index: number): string {
   return ((index % 15) + 1).toString(16).repeat(64);
 }
 
+/** Creates a fresh mock core. `now` supplies milliseconds since the epoch. */
 export function createMockBackend(now: () => number = Date.now): { invoke: Invoker } {
   const { groups, sessions } = buildFixtures(now());
   const byId = new Map<string, FixtureSession>(sessions.map((s) => [s.summary.session_id, s]));
@@ -1869,6 +1869,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       workspace_id: workspaceId,
       workspace_grant_active: active,
       proposals,
+      omitted: 0,
     };
   }
 

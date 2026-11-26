@@ -903,17 +903,26 @@ nothing.
   registry.
 - **Inputs:** the standard install folders, the operator's `PATH`,
   `JAVA_HOME`, `GOROOT`, and `RUSTUP_HOME`, and small files the installers
-  wrote (rustup's `settings.toml`, a JDK's `release`, Go's `VERSION`).
-  Discovery runs no program, confined or not, reads no registry key, and
-  never reads a workspace's files, such as `rust-toolchain.toml`.
+  wrote (rustup's `settings.toml`, a JDK's `release`, Go's `VERSION`), each
+  checked to be a regular file before it is opened. Discovery runs no
+  program, confined or not, reads no registry key, and never reads
+  repository configuration such as `rust-toolchain.toml`. A folder that
+  `PATH` or one of those variables names is read like any install folder,
+  installer files included, even inside the development root; core refuses
+  it as a root before any confirmation, and the list shows why.
 - **Proposals:** each lists its roots, `PATH` entries, and variables, plus the
   system part every profile needs (`System32`, or `/usr` and the real
   top-level `bin` and `lib` directories). No root is a filesystem or drive
-  root, the home directory or its ancestor, or a link. Variables are derived
-  setup values only, such as `JAVA_HOME`, `GOROOT`, `DOTNET_ROOT`, and MSVC's
-  `INCLUDE` and `LIB`; reserved names are never proposed. A Rust proposal is
-  one toolchain directory, without the rustup proxies or `~/.cargo`. At most
-  32 proposals are returned, 8 per base name, newest first.
+  root, the home directory or its ancestor, or itself a link: core records a
+  root's resolved location, so a linked root is left out. Variables are
+  derived setup values only, such as `JAVA_HOME`, `GOROOT`, `DOTNET_ROOT`,
+  and MSVC's `INCLUDE` and `LIB`; reserved names are never proposed. A Rust
+  proposal is one toolchain directory, without the rustup proxies or
+  `~/.cargo`. At most 32 proposals are returned, 8 per base name, newest
+  first; past 32, every base name keeps its first installation before any
+  keeps a second, and the list says how many installations it left out. A
+  folder listing examines at most 16,384 entries and keeps the first 512
+  directories by name.
 - **Checks:** each proposal shows the reason core would refuse it now, from
   `check_profile`, which applies every `add_profile` rule and records nothing.
 - **Adding:** the window sends only the settings revision and the digests of
@@ -923,9 +932,15 @@ nothing.
   profile with `add_profile` from the confirmed revision.
 - **Windows grants:** with a workspace selected, each root says whether its
   container can read it, needs a read-execute grant, or needs an
-  administrator. **Grant folders for selected…** grants only the folders this
+  administrator. The access-control lists are read while the settings store
+  is closed. **Grant folders for selected…** grants only the folders this
   account can change, after one native confirmation, through
-  `grant_container_access`; administrator-only folders are named and skipped.
+  `grant_container_access`. Before the dialog, core's
+  `check_container_grants` applies every grant rule to the whole batch (the
+  development-root scope, application storage, an existing grant, and the
+  32-per-workspace and 256 limits), and a refusal names the folder.
+  Administrator-only folders, and folders whose access-control list could
+  not be read, are named and skipped.
 - **Notes:** a proposal says when its family has not passed the confined
   acceptance runs (only Rust, MSVC, Linux GCC, Python, Go, and Node.js have),
   when it is a runtime without a compiler, and that offline runs cannot
