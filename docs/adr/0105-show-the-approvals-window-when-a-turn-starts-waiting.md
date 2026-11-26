@@ -50,9 +50,10 @@ denies, and **Approve** is armed only one second after a review renders.
    closure to the event loop. There, where window calls take effect at once,
    the shell checks the foreground and acts, so only a few window calls on
    one thread separate the check from the activation, not a queued message.
-   Another application can still take the foreground in that gap, so the
-   activation checks ownership again (below) rather than relying on the
-   callback to make the check and the activation atomic. When this process
+   Another application can still take the foreground in that gap, so on
+   Windows the activation checks ownership again (below) rather than
+   relying on the callback to make the check and the activation atomic.
+   When this process
    owns the foreground window, the approvals window is unminimized, shown,
    and activated. Otherwise it is shown and its taskbar button flashes
    until the operator comes to it (`UserAttentionType::Critical`), and
@@ -65,7 +66,8 @@ denies, and **Approve** is armed only one second after a review renders.
    refuses, or another application took the foreground since the check, the
    window flashes instead. On Linux, where the prototype has not run, any
    OMGCode window that reports focus counts, and the toolkit's focus
-   request is used.
+   request is used without a second ownership check; it sends no simulated
+   input.
 4. **Nothing reaches a webview.** No command, event, or capability is added.
    The `main` window cannot open or focus the approvals window in any new
    way, and the approvals window decides exactly as before.
