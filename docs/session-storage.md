@@ -105,7 +105,9 @@ journal that holds a `tool.requested` event over 4 KiB of arguments or any
 event over 64 KiB, as an invalid journal; it does not repair it. A journal
 opens in both only when every call is within 4 KiB and every event within
 64 KiB. An event can pass 64 KiB with no large call, for example a message of
-control characters, each stored as a six-byte escape.
+11 to 13 KiB of characters such as U+0001, each stored as a six-byte `\u0001`
+escape. A 16 KiB message of them would exceed this build's 80 KiB event bound
+and cannot be recorded.
 
 **Web fetch calls (ADR-0098).** A `web_fetch` call is recorded like any
 other call: one `tool.requested`, one `tool.completed`, and one `tool`
