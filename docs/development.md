@@ -11,7 +11,8 @@ that workspace; with `read` and `write` enabled it can request an exact edit
 or multi-edit of an existing file, the creation of a new file, the rename of a
 file, the deletion of a file after a checkpoint, or the creation of one
 directory whose parent exists, and with `execute`, `read`, and `write` enabled
-it can request a command. Each write or command needs an
+it can request a command once a toolchain profile is recorded for the running
+platform. Each write or command needs an
 approval under `prompt` and none under `allow`
 ([ADR-0063](adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
 Trusted CLI apply can
@@ -560,9 +561,10 @@ native mount. Execute remains disabled. The `audit`, `acknowledge`,
 `forget-checkpoint-store` also requires the workspace to be registered.
 They do not require a configured root, workspace registration, or session
 selection. Chat advertises the read/list tools when the session's workspace
-enables `model_tools`, the edit, multi-edit, and create tools when `read` and
-`write` are also enabled,
-and the command tool when `execute`, `read`, and `write` are also enabled; see
+enables `model_tools`, the edit, multi-edit, create, rename, delete, and
+directory-creation tools when `read` and `write` are also enabled, and the
+command tool when `execute`, `read`, and `write` are also enabled and a
+toolchain profile is recorded for the running platform; see
 [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 
 Capability JSON separates implementation from availability. On Linux and

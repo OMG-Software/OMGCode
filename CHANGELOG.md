@@ -386,7 +386,8 @@ Changes are recorded here before a release version is assigned.
     answer of the command tool (ADR-0100), the 32 KiB argument limit of the
     edit and multi-edit tools, and recoverable refused calls (ADR-0099).
     Chat advertises at most ten tool names, not eight. The development
-    guide's tool summaries name the directory tool.
+    guide's tool summaries name the directory tool and say the command tool
+    needs a toolchain profile recorded for the running platform.
   - Providers: statements that no cloud adapter or login exists and that
     only the local LM Studio adapter reads a stored credential now cover
     hosted connections (ADR-0092) and ChatGPT sign-in (ADR-0093). The
