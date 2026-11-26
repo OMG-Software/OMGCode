@@ -7,8 +7,10 @@ Changes are recorded here before a release version is assigned.
 ### Added
 
 - Version 0.68.0 adds **Generate toolchain profiles from local packages** to
-  the **Toolchain profiles** group of the desktop `settings` window: it
-  generates toolchain profiles from installed toolchains (ADR-0103). A new
+  the **Toolchain profiles** group of the desktop `settings` window. The
+  local packages are the toolchains installed on this computer, and it
+  generates toolchain profiles from those installed toolchains (ADR-0103).
+  A new
   core service, `toolchain_discovery`, holds one detector
   per family: Rust (rustup toolchains), C and C++ (MSVC with the Windows SDK,
   Clang, and MinGW GCC on Windows; GCC and Clang on Linux), Java, Python,
