@@ -470,6 +470,43 @@ describe("a splitter", () => {
     sized(neighbour, 10, 600);
     window.dispatchEvent(new Event("resize"));
     expect(splitter.size()).toBe(500);
+    // Its own line no longer answers either: no key, press, or double click.
+    key(splitter.element, "Home");
+    splitter.element.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(splitter.size()).toBe(500);
+    pointer(splitter.element, "pointerdown", 300, 0);
+    expect(splitter.element.classList.contains("dragging")).toBe(false);
+    expect(document.documentElement.classList.contains("resizing-columns")).toBe(false);
+  });
+
+  it("ignores the release of another button while the primary one is held", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    pointer(splitter.element, "pointerdown", 300, 0);
+    pointer(document, "pointerup", 320, 0, { button: 2, buttons: 1 });
+    expect(splitter.element.classList.contains("dragging")).toBe(true);
+    pointer(document, "pointermove", 340, 0);
+    expect(splitter.size()).toBe(240);
+    pointer(document, "pointerup", 340, 0);
+    expect(splitter.element.classList.contains("dragging")).toBe(false);
+  });
+
+  it("keeps the page's resize class until every drag in the window ends", () => {
+    const first = parts();
+    const second = parts();
+    second.section.id = "second-section";
+    const a = make({ ...first, vertical: WIDTH });
+    const b = make({ ...second, vertical: WIDTH });
+    const root = document.documentElement.classList;
+    pointer(a.element, "pointerdown", 300, 0, { pointerId: 1 });
+    pointer(b.element, "pointerdown", 600, 0, { pointerId: 2 });
+    pointer(document, "pointerup", 300, 0, { pointerId: 1 });
+    expect(a.element.classList.contains("dragging")).toBe(false);
+    expect(root.contains("resizing-columns")).toBe(true);
+    pointer(document, "pointermove", 640, 0, { pointerId: 2 });
+    expect(b.size()).toBe(240);
+    pointer(document, "pointerup", 640, 0, { pointerId: 2 });
+    expect(root.contains("resizing-columns")).toBe(false);
   });
 });
 

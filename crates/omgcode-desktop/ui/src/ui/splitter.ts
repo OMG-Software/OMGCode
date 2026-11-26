@@ -80,6 +80,30 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+/** The class a drag puts on the page, which keeps its cursor and stops text selection. */
+type PageClass = "resizing-columns" | "resizing-rows";
+
+/**
+ * How many drags in this window hold each page class. Two splitters can be dragged at once with
+ * two pointers, so one drag ending must not clear the class the other still needs.
+ */
+const pageHolds = new Map<PageClass, number>();
+
+function holdPage(name: PageClass): void {
+  pageHolds.set(name, (pageHolds.get(name) ?? 0) + 1);
+  document.documentElement.classList.add(name);
+}
+
+function releasePage(name: PageClass): void {
+  const left = (pageHolds.get(name) ?? 1) - 1;
+  if (left > 0) {
+    pageHolds.set(name, left);
+    return;
+  }
+  pageHolds.delete(name);
+  document.documentElement.classList.remove(name);
+}
+
 /** Builds a splitter and starts following the window's and the neighbour's size. */
 export function createSplitter(options: SplitterOptions): Splitter {
   const { section, neighbour, placement } = options;
@@ -114,8 +138,11 @@ export function createSplitter(options: SplitterOptions): Splitter {
   }
 
   let current = wanted();
-  /** The drag in progress, and the pointer that started it: no other pointer moves or ends it. */
-  let drag: { pointer: number; origin: number; startSize: number } | null = null;
+  /**
+   * The drag in progress, the pointer that started it (no other pointer moves or ends it), and
+   * the page class it holds.
+   */
+  let drag: { pointer: number; origin: number; startSize: number; page: PageClass } | null = null;
 
   function axis(): SplitAxis {
     // `current` is always an orientation with an axis: see `wanted`.
@@ -243,9 +270,15 @@ export function createSplitter(options: SplitterOptions): Splitter {
 
   /** A release, a cancellation, or lost capture by the pointer that owns the drag ends it. */
   function onPointerEnd(event: PointerEvent): void {
-    if (drag !== null && event.pointerId === drag.pointer) {
-      endDrag();
+    if (drag === null || event.pointerId !== drag.pointer) {
+      return;
     }
+    // A cancellation or lost capture always ends the drag. A release that leaves the primary
+    // button held is another button's, which the drag ignores as it ignores that button's press.
+    if (event.type === "pointerup" && (event.buttons & 1) !== 0) {
+      return;
+    }
+    endDrag();
   }
 
   /** Ends the drag whichever pointer owns it, as disposal and an orientation change need. */
@@ -253,10 +286,10 @@ export function createSplitter(options: SplitterOptions): Splitter {
     if (drag === null) {
       return;
     }
-    const owner = drag.pointer;
+    const { pointer: owner, page } = drag;
     drag = null;
     element.classList.remove("dragging");
-    document.documentElement.classList.remove("resizing-columns", "resizing-rows");
+    releasePage(page);
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerup", onPointerEnd);
     document.removeEventListener("pointercancel", onPointerEnd);
@@ -289,11 +322,10 @@ export function createSplitter(options: SplitterOptions): Splitter {
     }
     event.preventDefault();
     endDrag();
-    drag = { pointer: event.pointerId, origin: position(event), startSize: startSize() };
+    const page: PageClass = current === "vertical" ? "resizing-columns" : "resizing-rows";
+    drag = { pointer: event.pointerId, origin: position(event), startSize: startSize(), page };
     element.classList.add("dragging");
-    document.documentElement.classList.add(
-      current === "vertical" ? "resizing-columns" : "resizing-rows",
-    );
+    holdPage(page);
     element.focus();
     capture(event.pointerId);
     // Listening on the document follows a pointer that leaves the thin splitter mid-drag, and
@@ -328,14 +360,17 @@ export function createSplitter(options: SplitterOptions): Splitter {
     render();
   }
 
-  element.addEventListener("keydown", onKey);
-  element.addEventListener("pointerdown", startDrag);
+  // Disposal aborts this, which removes every listener below.
+  const listening = new AbortController();
+  const { signal } = listening;
+  element.addEventListener("keydown", onKey, { signal });
+  element.addEventListener("pointerdown", startDrag, { signal });
   // The browser drops capture when the pointer is released, or abnormally, such as when the
   // window loses the pointer; either way the drag is over.
-  element.addEventListener("lostpointercapture", onPointerEnd);
-  element.addEventListener("dblclick", restore);
+  element.addEventListener("lostpointercapture", onPointerEnd, { signal });
+  element.addEventListener("dblclick", restore, { signal });
   // A size the stylesheet chose is read when the splitter gains focus, so it is announced.
-  element.addEventListener("focus", render);
+  element.addEventListener("focus", render, { signal });
 
   let frame: number | null = null;
   /**
@@ -357,7 +392,7 @@ export function createSplitter(options: SplitterOptions): Splitter {
 
   // The window's resize event, and the neighbour's own size for a change that fires none, such as
   // a panel opening beside it. Fitting only narrows the section, so it settles after one pass.
-  window.addEventListener("resize", fitToRoom);
+  window.addEventListener("resize", fitToRoom, { signal });
   const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fitSoon) : null;
   observer?.observe(neighbour);
   render();
@@ -369,12 +404,12 @@ export function createSplitter(options: SplitterOptions): Splitter {
     fit: fitToRoom,
     dispose() {
       endDrag();
+      listening.abort();
       observer?.disconnect();
       if (frame !== null && typeof cancelAnimationFrame === "function") {
         cancelAnimationFrame(frame);
       }
       frame = null;
-      window.removeEventListener("resize", fitToRoom);
     },
   };
 }

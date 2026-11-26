@@ -65,8 +65,9 @@ Facts established before the decision, on 2026-11-26:
    ends when the pointer is released over another window and the capture is
    lost. A move with the button up ends a drag whose release never arrived.
    Only the pointer that started a drag moves, ends, or restarts it, and no
-   other pointer can take it over. A drag marks the page so the cursor stays
-   and no text is selected. When the window or the neighbour shrinks, the
+   other pointer can take it over, and another button's release does not end
+   it. A drag marks the page so the cursor stays and no text is selected,
+   until every drag in the window has ended. When the window or the neighbour shrinks, the
    section narrows until the neighbour keeps its minimum, whether the splitter
    or the stylesheet chose its size; a narrowed stylesheet size is recorded,
    and the section does not grow back by itself. A
