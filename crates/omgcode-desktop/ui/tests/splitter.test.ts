@@ -91,17 +91,27 @@ function key(target: HTMLElement, name: string, shiftKey = false): void {
   target.dispatchEvent(new KeyboardEvent("keydown", { key: name, shiftKey, bubbles: true }));
 }
 
+/**
+ * Dispatches a pointer event as a browser would for the primary button: a press and the moves
+ * after it report the button held, a release reports none, and a move changes no button.
+ */
 function pointer(
   target: EventTarget,
   type: string,
   x: number,
   y: number,
-  button = 0,
-  pointerId = 1,
+  options: { button?: number; buttons?: number; pointerId?: number } = {},
 ): void {
-  target.dispatchEvent(
-    new PointerEvent(type, { clientX: x, clientY: y, button, pointerId, bubbles: true }),
-  );
+  const held = type === "pointerdown" || type === "pointermove";
+  const init: PointerEventInit = {
+    clientX: x,
+    clientY: y,
+    button: options.button ?? (type === "pointermove" ? -1 : 0),
+    buttons: options.buttons ?? (held ? 1 : 0),
+    pointerId: options.pointerId ?? 1,
+    bubbles: true,
+  };
+  target.dispatchEvent(new PointerEvent(type, init));
 }
 
 describe("a splitter", () => {
@@ -205,40 +215,94 @@ describe("a splitter", () => {
   it("follows only the pointer that started the drag", () => {
     const { section, neighbour } = parts();
     const splitter = make({ section, neighbour, vertical: WIDTH });
-    pointer(splitter.element, "pointerdown", 300, 0, 0, 1);
-    pointer(document, "pointermove", 400, 0, 0, 2);
+    pointer(splitter.element, "pointerdown", 300, 0, { pointerId: 1 });
+    pointer(document, "pointermove", 400, 0, { pointerId: 2 });
     expect(splitter.size()).toBe(200);
-    pointer(document, "pointerup", 400, 0, 0, 2);
-    pointer(document, "pointercancel", 400, 0, 0, 2);
+    pointer(document, "pointerup", 400, 0, { pointerId: 2 });
+    pointer(document, "pointercancel", 400, 0, { pointerId: 2 });
     expect(splitter.element.classList.contains("dragging")).toBe(true);
-    pointer(document, "pointermove", 340, 0, 0, 1);
+    pointer(document, "pointermove", 340, 0, { pointerId: 1 });
     expect(splitter.size()).toBe(240);
-    pointer(document, "pointerup", 340, 0, 0, 1);
+    pointer(document, "pointerup", 340, 0, { pointerId: 1 });
     expect(splitter.element.classList.contains("dragging")).toBe(false);
   });
 
   it("cannot be taken over by a second pointer pressing on it", () => {
     const { section, neighbour } = parts();
     const splitter = make({ section, neighbour, vertical: WIDTH });
-    pointer(splitter.element, "pointerdown", 300, 0, 0, 1);
-    pointer(splitter.element, "pointerdown", 100, 0, 0, 2);
-    pointer(document, "pointermove", 140, 0, 0, 2);
+    pointer(splitter.element, "pointerdown", 300, 0, { pointerId: 1 });
+    pointer(splitter.element, "pointerdown", 100, 0, { pointerId: 2 });
+    pointer(document, "pointermove", 140, 0, { pointerId: 2 });
     expect(splitter.size()).toBe(200);
     // The owner's drag keeps its origin.
-    pointer(document, "pointermove", 340, 0, 0, 1);
+    pointer(document, "pointermove", 340, 0, { pointerId: 1 });
     expect(splitter.size()).toBe(240);
     // The owner pressing again restarts the drag from where it is.
-    pointer(splitter.element, "pointerdown", 500, 0, 0, 1);
-    pointer(document, "pointermove", 516, 0, 0, 1);
+    pointer(splitter.element, "pointerdown", 500, 0, { pointerId: 1 });
+    pointer(document, "pointermove", 516, 0, { pointerId: 1 });
     expect(splitter.size()).toBe(256);
   });
 
   it("ignores a button other than the primary one", () => {
     const { section, neighbour } = parts();
     const splitter = make({ section, neighbour, vertical: WIDTH });
-    pointer(splitter.element, "pointerdown", 300, 0, 2);
-    pointer(document, "pointermove", 400, 0);
+    pointer(splitter.element, "pointerdown", 300, 0, { button: 2, buttons: 2 });
+    pointer(document, "pointermove", 400, 0, { buttons: 2 });
     expect(splitter.size()).toBe(200);
+  });
+
+  it("ends a drag whose release never arrived at the first move with the button up", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    pointer(splitter.element, "pointerdown", 300, 0);
+    pointer(document, "pointermove", 340, 0);
+    expect(splitter.size()).toBe(240);
+    pointer(document, "pointermove", 400, 0, { buttons: 0 });
+    expect(splitter.size()).toBe(240);
+    expect(splitter.element.classList.contains("dragging")).toBe(false);
+    expect(document.documentElement.classList.contains("resizing-columns")).toBe(false);
+    pointer(document, "pointermove", 450, 0);
+    expect(splitter.size()).toBe(240);
+  });
+
+  it("captures the pointer and ends the drag when the capture is lost", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    const captured = new Set<number>();
+    const element = splitter.element;
+    element.setPointerCapture = (id: number) => {
+      captured.add(id);
+    };
+    element.hasPointerCapture = (id: number) => captured.has(id);
+    element.releasePointerCapture = (id: number) => {
+      captured.delete(id);
+    };
+    pointer(element, "pointerdown", 300, 0, { pointerId: 5 });
+    expect(captured.has(5)).toBe(true);
+    // Another pointer's lost capture leaves the drag alone.
+    pointer(element, "lostpointercapture", 0, 0, { pointerId: 6 });
+    expect(element.classList.contains("dragging")).toBe(true);
+    // Released over another window: the browser drops the capture and sends no release here.
+    captured.delete(5);
+    pointer(element, "lostpointercapture", 0, 0, { pointerId: 5 });
+    expect(element.classList.contains("dragging")).toBe(false);
+    expect(document.documentElement.classList.contains("resizing-columns")).toBe(false);
+    // Disposal mid-drag lets the capture go.
+    pointer(element, "pointerdown", 300, 0, { pointerId: 5 });
+    expect(captured.has(5)).toBe(true);
+    splitter.dispose();
+    expect(captured.has(5)).toBe(false);
+  });
+
+  it("still drags where the pointer cannot be captured", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, vertical: WIDTH });
+    splitter.element.setPointerCapture = () => {
+      throw new DOMException("No active pointer.", "NotFoundError");
+    };
+    pointer(splitter.element, "pointerdown", 300, 0);
+    pointer(document, "pointermove", 340, 0);
+    expect(splitter.size()).toBe(240);
   });
 
   it("keeps the stylesheet's size until it moves, and a double click restores that", () => {
@@ -302,6 +366,22 @@ describe("a splitter", () => {
     // 500 shows a 0-pixel neighbour, 350 a 49-pixel one, and 249 leaves it 150.
     expect(splitter.size()).toBe(400 - 1 - WIDTH.neighbourMin);
     expect(splitter.element.getAttribute("aria-valuenow")).toBe("249");
+  });
+
+  it("narrows a section still at the stylesheet's size, and leaves one that fits", () => {
+    const { section, neighbour } = parts();
+    const splitter = make({ section, neighbour, placement: "before", horizontal: HEIGHT });
+    sized(section, 400, 70);
+    sized(neighbour, 400, 500);
+    window.dispatchEvent(new Event("resize"));
+    expect(splitter.size()).toBeNull();
+    expect(section.style.getPropertyValue("--message-height")).toBe("");
+    // A short window: the content-sized section leaves its neighbour 50 of the 100 it keeps.
+    sized(section, 400, 300);
+    sized(neighbour, 400, 50);
+    window.dispatchEvent(new Event("resize"));
+    expect(splitter.size()).toBe(250);
+    expect(section.style.getPropertyValue("--message-height")).toBe("250px");
   });
 
   it("keeps a hidden section's size while its neighbour is laid out", () => {

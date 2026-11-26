@@ -520,9 +520,10 @@ never collapses either:
   movement (16 pixels, 64 with Shift), Home for the section's minimum, and End
   for the largest size its neighbour allows. A double click restores the
   starting size, or the stylesheet's own size for the message box and the
-  footer. Enter does nothing. Only the pointer that starts a drag moves,
-  ends, or restarts it; another pointer cannot take it over. Each line is a focusable `separator` with an
-  accessible name ("Resize the approval list", "Resize the settings
+  footer. Enter does nothing. A drag ends on release, even over another
+  window. Only the pointer that starts a drag moves, ends, or restarts it;
+  another pointer cannot take it over. Each line is a focusable `separator`
+  with an accessible name ("Resize the approval list", "Resize the settings
   sections", "Resize the message box", "Resize the side panel footer"),
   `aria-controls`, `aria-orientation`, and its current, least, and greatest
   values.
@@ -530,6 +531,8 @@ never collapses either:
   size it keeps. When the window or the neighbour shrinks, the section
   narrows until the neighbour has that size again, even when the window
   shrinks past the neighbour in one step, and does not grow back by itself.
+  This holds for a section still at its stylesheet size too, such as the
+  footer at its content's height, which then keeps the narrowed size.
   A hidden section, such as the footer of a collapsed panel, keeps its size.
 - **Orientation.** Below 720 pixels wide the `approvals` panes stack and the
   queue's divider turns horizontal; each orientation keeps its own size.

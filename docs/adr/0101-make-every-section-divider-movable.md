@@ -60,12 +60,16 @@ Facts established before the decision, on 2026-11-26:
    the neighbour allows. A double click restores the starting size, or the
    stylesheet's own size where there is none. It never collapses a section, so
    Enter does nothing. It reports `aria-valuenow`, `aria-valuemin`,
-   `aria-valuemax`, and `aria-valuetext`. A drag listens on the document, so it
-   follows a pointer that leaves the line, but only the pointer that started
-   it moves, ends, or restarts it, and no other pointer can take it over; it
-   marks the page so the cursor stays and no text is
-   selected. When the window or the neighbour shrinks, the section narrows
-   until the neighbour keeps its minimum; it does not grow back by itself. A
+   `aria-valuemax`, and `aria-valuetext`. A drag captures its pointer and
+   listens on the document, so it follows a pointer that leaves the line and
+   ends when the pointer is released over another window and the capture is
+   lost. A move with the button up ends a drag whose release never arrived.
+   Only the pointer that started a drag moves, ends, or restarts it, and no
+   other pointer can take it over. A drag marks the page so the cursor stays
+   and no text is selected. When the window or the neighbour shrinks, the
+   section narrows until the neighbour keeps its minimum, whether the splitter
+   or the stylesheet chose its size; a narrowed stylesheet size is recorded,
+   and the section does not grow back by itself. A
    neighbour squeezed to nothing shows only part of the shortfall, so a fit
    writes the size and measures again, at most 32 times. A change in the
    neighbour's own size is fitted on the next frame, outside the

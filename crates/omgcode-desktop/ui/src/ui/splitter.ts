@@ -230,11 +230,18 @@ export function createSplitter(options: SplitterOptions): Splitter {
   }
 
   function onPointerMove(event: PointerEvent): void {
-    if (drag !== null && event.pointerId === drag.pointer) {
-      setSize(drag.startSize + growth(position(event) - drag.origin));
+    if (drag === null || event.pointerId !== drag.pointer) {
+      return;
     }
+    // A move with the primary button up means the release never arrived: end the drag there.
+    if ((event.buttons & 1) === 0) {
+      endDrag();
+      return;
+    }
+    setSize(drag.startSize + growth(position(event) - drag.origin));
   }
 
+  /** A release, a cancellation, or lost capture by the pointer that owns the drag ends it. */
   function onPointerEnd(event: PointerEvent): void {
     if (drag !== null && event.pointerId === drag.pointer) {
       endDrag();
@@ -246,12 +253,32 @@ export function createSplitter(options: SplitterOptions): Splitter {
     if (drag === null) {
       return;
     }
+    const owner = drag.pointer;
     drag = null;
     element.classList.remove("dragging");
     document.documentElement.classList.remove("resizing-columns", "resizing-rows");
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerup", onPointerEnd);
     document.removeEventListener("pointercancel", onPointerEnd);
+    if (typeof element.hasPointerCapture === "function" && element.hasPointerCapture(owner)) {
+      element.releasePointerCapture(owner);
+    }
+  }
+
+  /**
+   * Sends the pointer's later events to the splitter, so its release reaches the page even over
+   * another window. A pointer that is no longer active cannot be captured; the document listeners
+   * still follow it, and a move with the button up ends the drag.
+   */
+  function capture(pointer: number): void {
+    if (typeof element.setPointerCapture !== "function") {
+      return;
+    }
+    try {
+      element.setPointerCapture(pointer);
+    } catch {
+      // Not active: see above.
+    }
   }
 
   function startDrag(event: PointerEvent): void {
@@ -268,16 +295,19 @@ export function createSplitter(options: SplitterOptions): Splitter {
       current === "vertical" ? "resizing-columns" : "resizing-rows",
     );
     element.focus();
-    // Listening on the document follows a pointer that leaves the thin splitter mid-drag.
+    capture(event.pointerId);
+    // Listening on the document follows a pointer that leaves the thin splitter mid-drag, and
+    // still hears the captured events, which bubble to it.
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("pointerup", onPointerEnd);
     document.addEventListener("pointercancel", onPointerEnd);
   }
 
   /**
-   * Narrows the section until its neighbour keeps its minimum or the section reaches its own. A
-   * neighbour squeezed to nothing shows only part of the shortfall, so each pass writes the size
-   * and measures again: a window that shrinks past the neighbour in one step can take several.
+   * Narrows the section until its neighbour keeps its minimum or the section reaches its own,
+   * whether the splitter set its size or the stylesheet did; narrowing a stylesheet size records
+   * it. A neighbour squeezed to nothing shows only part of the shortfall, so each pass writes the
+   * size and measures again: a window that shrinks past the neighbour in one step can take several.
    */
   function fitToRoom(): void {
     const next = wanted();
@@ -286,9 +316,10 @@ export function createSplitter(options: SplitterOptions): Splitter {
       current = next;
     }
     for (let pass = 0; pass < MAX_FIT_PASSES; pass += 1) {
-      const set = sizes.get(current);
+      // A hidden section measures 0, which is within any limit.
+      const size = sizes.get(current) ?? extent(section);
       const limit = upperLimit();
-      if (set === undefined || set <= limit) {
+      if (size <= limit) {
         break;
       }
       sizes.set(current, limit);
@@ -299,6 +330,9 @@ export function createSplitter(options: SplitterOptions): Splitter {
 
   element.addEventListener("keydown", onKey);
   element.addEventListener("pointerdown", startDrag);
+  // The browser drops capture when the pointer is released, or abnormally, such as when the
+  // window loses the pointer; either way the drag is over.
+  element.addEventListener("lostpointercapture", onPointerEnd);
   element.addEventListener("dblclick", restore);
   // A size the stylesheet chose is read when the splitter gains focus, so it is announced.
   element.addEventListener("focus", render);
