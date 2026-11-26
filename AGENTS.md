@@ -144,6 +144,10 @@ in the same turn; on the CLI only a later identical call may consume an
 approved record. The trusted CLI or the desktop
 approvals window can decide a record; the window shows a request only when core
 reproduces its digest, and approval needs a single-use review token.
+When a desktop turn starts waiting, Rust shows the approvals window: it comes
+to the front only when OMGCode owns the foreground window, and otherwise its
+taskbar button flashes without taking focus from another application
+([ADR-0105](docs/adr/0105-show-the-approvals-window-when-a-turn-starts-waiting.md)).
 `workspace_run_command` then
 invokes the trusted runner, and `workspace_edit_file` then calls the
 checkpointed apply with the size and digest of a live trusted read

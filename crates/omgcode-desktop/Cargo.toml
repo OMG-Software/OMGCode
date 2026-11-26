@@ -29,6 +29,9 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
 omgcode-app = { path = "../omgcode-app" }
+# Whether this process owns the foreground window before the approvals window is
+# brought to the front (ADR-0105). A workspace crate: no third-party code is added.
+omgcode-platform = { path = "../omgcode-platform" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

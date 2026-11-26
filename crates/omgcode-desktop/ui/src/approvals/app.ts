@@ -452,8 +452,19 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   void poller.tick();
   poller.start();
 
+  /**
+   * Rust shows and may focus this window when a turn starts waiting (ADR-0105); the
+   * list should not wait for the next poll. A tick changes only the list: the selection
+   * rule above still keeps a pending request under review.
+   */
+  function onWindowFocus(): void {
+    void poller.tick();
+  }
+  window.addEventListener("focus", onWindowFocus);
+
   return {
     dispose() {
+      window.removeEventListener("focus", onWindowFocus);
       poller.stop();
       clearInterval(countdownTimer);
       queueSplitter.dispose();

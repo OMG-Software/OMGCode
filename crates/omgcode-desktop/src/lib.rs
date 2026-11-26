@@ -139,11 +139,23 @@ fn check_connection(connection: &LocalConnection) -> Result<(), String> {
 }
 
 fn run_app(service: Arc<DesktopService>) -> ExitCode {
+    let observed = Arc::clone(&service);
     let built = tauri::Builder::default()
         .manage(service)
         .manage(ShutdownGate::default())
-        .setup(|app| {
+        .setup(move |app| {
             windows::create_windows(app)?;
+            // A turn that starts waiting for an approval shows the approvals
+            // window (ADR-0105). The service keeps this observer and the handle
+            // reaches the service through managed state; that cycle ends when
+            // `DesktopService::shutdown` drops the observer.
+            let handle = app.handle().clone();
+            if observed
+                .set_approval_wait_observer(Arc::new(move || windows::present_approvals(&handle)))
+                .is_err()
+            {
+                eprintln!("omgcode-desktop: the approvals window will not open on its own");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

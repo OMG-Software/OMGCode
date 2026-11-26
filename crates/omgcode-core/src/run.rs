@@ -677,7 +677,7 @@ fn workspace_access(
         return Err(if running {
             "the workspace read-write container grant was revoked"
         } else {
-            "grant the workspace directory read-write to its container first"
+            "the workspace's sandbox has no read-write grant on the workspace folder; grant it first under Settings, Advanced, Container grants, or with `omgcode workspace container-grant`"
         });
     }
     Ok(())

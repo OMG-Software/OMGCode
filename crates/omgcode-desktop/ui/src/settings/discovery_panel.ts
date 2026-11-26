@@ -23,7 +23,7 @@ export const NOTHING_FOUND =
   "No toolchain was found in the standard install folders, on PATH, or in the folders named by JAVA_HOME, GOROOT, and RUSTUP_HOME.";
 export const SELECTION_LIMIT = "Select at most 8 proposals at a time.";
 export const WORKSPACE_GRANT_MISSING =
-  "This workspace has no active read-write grant on its own folder, which every run in it needs. Grant it under Container grants.";
+  "This workspace's sandbox has no active read-write grant on the workspace folder, which every run in it needs. Grant it under Container grants with Read and write the workspace's own folder.";
 export const NO_WORKSPACE = "No workspace";
 
 /** Says how many installations the list leaves out. */

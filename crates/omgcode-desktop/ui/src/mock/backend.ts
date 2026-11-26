@@ -1521,7 +1521,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       case "settings_grant_container_folder":
         return changeSettings(args, () => {
           const workspaceId = str(args, "workspace_id");
-          mockWorkspace({ workspace_id: workspaceId });
+          const workspace = mockWorkspace({ workspace_id: workspaceId });
           const access = str(args, "access");
           if (access !== "read_execute" && access !== "read_write") {
             fail("invalid_argument", "Bad access.");
@@ -1529,7 +1529,9 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           settings.container_grants.push({
             grant_id: `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`,
             workspace_id: workspaceId,
-            directory: nextMockFolder("grant"),
+            // As in Rust (ADR-0104): read and write goes on the workspace's own folder, with no
+            // folder dialog; read and execute goes on a folder the dialog would choose.
+            directory: access === "read_write" ? workspace.folder_display : nextMockFolder("grant"),
             access,
             state: "active",
           });

@@ -454,7 +454,8 @@ The `main` window is laid out as follows.
   It has no model or provider control and shows no connection message
   (ADR-0084). The segment reads "N approvals waiting" with a
   **Review** button while the advisory count is above zero, and is hidden at
-  zero. **Review** and the sidebar row only call `approvals_show_window`. The
+  zero. **Review** and the sidebar row only call `approvals_show_window`;
+  Rust also shows the window when a turn starts waiting (ADR-0105). The
   notice line above the status bar now only reports a failure to open a
   window, with **Dismiss**; the earlier "An approval is waiting." banner is
   gone.
@@ -1434,12 +1435,24 @@ waits. The window shows:
   no control, the overview's `container_grants_supported` is false, and the two
   commands return `unsupported_platform`. On Windows each grant lists its
   folder, workspace, access, and state (`pending`, `active`, `revoking`) with a
-  **Revoke** button, and **Grant a folder** has a workspace select and an
-  access select (read and execute, or read and write for the workspace
-  folder only). **Grant folder…** calls `settings_grant_container_folder`;
-  Rust opens the folder dialog and shows a confirmation naming the workspace,
-  the folder, and the access, and saying that the folder's access-control
-  list changes on disk for that workspace's AppContainer. A failed list
+  **Revoke** button. The group's help says that each workspace's commands run
+  in its own AppContainer, a Windows sandbox with no access to the operator's
+  files until a grant adds it, and that registering a folder gives none.
+  **Grant a folder** has a **Workspace whose commands get access** select, an
+  access select (**Read and execute a folder you choose**, or **Read and write
+  the workspace's own folder**), and a hint that follows the access. Both
+  buttons call `settings_grant_container_folder` with the workspace and the
+  access. For read and execute, **Grant folder…** has Rust open the folder
+  dialog. For read and write, **Grant the workspace folder…** opens no
+  dialog: core accepts that access only on the workspace's own directory, so
+  Rust uses the recorded one, and core still checks that the directory at
+  that path is the recorded directory
+  ([ADR-0104](adr/0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)).
+  A recorded path this system cannot form is refused as `invalid_request`.
+  Either way Rust shows a confirmation that names the workspace, the folder
+  (once, for read and write), and the access, says that the access goes to
+  the workspace's sandbox, and says that the folder's access-control list
+  changes on disk until the grant is revoked. A failed list
   change leaves the grant `pending` (the command fails with
   `container_access_failed`); **Revoke** tries again, and a revocation that
   fails stays `revoking`. Revoking checks the revision under the lock, stops
@@ -1817,8 +1830,25 @@ The flow:
    exact call it waits on so that the approvals window can review it.
 2. The `main` window polls `approvals_summary` every 3 seconds and shows the
    pending count. It can show the approvals window and nothing more.
-3. The operator opens the `approvals` window. It polls `approvals_list` every 3
-   seconds. Polling stops while a window is hidden. Since 0.45.0 (ADR-0065)
+   Since 0.69.0 (ADR-0105) Rust also shows the approvals window as soon as a
+   desktop turn starts waiting, before the wait begins, through an observer
+   the shell registers with the service at startup. The observer posts one
+   closure to the event loop, which checks the foreground and acts in the
+   same callback. When OMGCode owns the foreground window (on Windows, read
+   with `GetForegroundWindow`), the window is unminimized, shown, and
+   activated with `SetForegroundWindow` alone, not tao's `set_focus`. When
+   another application owns it, or Windows refuses, the window is shown and
+   its taskbar button flashes until the operator comes to it, and the
+   foreground is not taken: on Windows that would send the other
+   application a simulated key press. No
+   webview can trigger this, and the window decides as below. An approval
+   recorded by a CLI turn shows only in the count.
+3. The operator opens the `approvals` window, or it opens itself (step 2).
+   It polls `approvals_list` every 3
+   seconds. Polling stops while a window is hidden. Since 0.69.0 (ADR-0105)
+   it also lists again when the window gains focus, so a request that
+   brought it forward is listed without waiting for the next poll; a new
+   request never replaces the one under review. Since 0.45.0 (ADR-0065)
    the window shows a queue beside a review pane; each column scrolls on its
    own, and below 720 pixels wide they stack. Since 0.66.0 (ADR-0101) the
    line between them moves, to widen the queue or, stacked, make it taller

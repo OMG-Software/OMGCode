@@ -1,6 +1,6 @@
 # 0088: Change execution settings in the settings window
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0104](0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)
 - Date: 2026-11-24
 
 ## Context

@@ -7,6 +7,8 @@ import { emptyLine, facts, row } from "./parts";
 export const ADD_TOOLCHAIN_LABEL = "Add profile…";
 export const ADD_PACKAGE_LABEL = "Add package profile…";
 export const GRANT_FOLDER_LABEL = "Grant folder…";
+/** Read and write is granted on the workspace's own folder only, so no folder dialog opens (ADR-0104). */
+export const GRANT_WORKSPACE_FOLDER_LABEL = "Grant the workspace folder…";
 
 export const TOOLCHAIN_HELP =
   "A toolchain profile lists the directories a run may read and execute, the directories searched for programs, and extra environment variables. Rust opens a system folder dialog for each root and each PATH entry, then asks you to confirm the whole profile. A profile grants nothing by itself, and it cannot be edited: remove it and add it again.";
@@ -15,7 +17,11 @@ export const ENVIRONMENT_WARNING =
 export const PACKAGE_HELP =
   "A package-network profile records registry origins as configuration only. No run uses it and it grants no network access. Registry credentials are bound with the trusted CLI, not here. Removing a profile also unbinds and deletes the credentials bound to its origins. A profile cannot be edited: remove it and add it again.";
 export const GRANT_HELP =
-  "A container grant changes a folder's access-control list on disk for one workspace's AppContainer, and stays until you revoke it. Rust opens the folder dialog and asks you to confirm. A grant that shows pending or revoking did not finish: Revoke tries again.";
+  "OMGCode runs each workspace's commands in that workspace's own AppContainer, a Windows sandbox that starts with no access to your files. Registering a folder as a workspace does not change that. A container grant adds the sandbox to one folder's access-control list on disk and stays until you revoke it. Every run needs read and write on the workspace's own folder; a toolchain outside it needs read and execute. A grant that shows pending or revoking did not finish: Revoke tries again.";
+export const GRANT_READ_WRITE_HINT =
+  "Lets the commands OMGCode runs for this workspace read and write its own folder, which every run needs. No folder dialog opens, because read and write can only be granted on the workspace's own folder. You confirm in a system dialog.";
+export const GRANT_READ_EXECUTE_HINT =
+  "Lets the commands OMGCode runs for this workspace read and execute a folder you choose, such as a toolchain outside the workspace. A system folder dialog opens, then you confirm.";
 export const GRANTS_UNSUPPORTED =
   "Container grants are Windows-only. This computer cannot record or apply them, so there is nothing to change here.";
 
@@ -268,27 +274,40 @@ function grantForm(ctx: SectionContext): HTMLElement {
   workspace.value = known ? draft.workspaceId : (overview.workspaces[0]?.workspace_id ?? "");
   const access = el("select", { attrs: { id: "new-grant-access" } });
   access.append(
-    el("option", { text: "Read and execute", attrs: { value: "read_execute" } }),
     el("option", {
-      text: "Read and write (the workspace folder only)",
+      text: "Read and execute a folder you choose",
+      attrs: { value: "read_execute" },
+    }),
+    el("option", {
+      text: "Read and write the workspace's own folder",
       attrs: { value: "read_write" },
     }),
   );
   access.value = draft.access;
+  const hint = el("p", { class: "muted", attrs: { id: "new-grant-hint" } });
+  const grant = button(GRANT_FOLDER_LABEL, () =>
+    submit(actions.grantContainerFolder(workspace.value, access.value as ContainerAccess)),
+  );
+  // The button and the hint follow the access: read and write opens no folder dialog.
+  const describe = (): void => {
+    const readWrite = access.value === "read_write";
+    grant.textContent = readWrite ? GRANT_WORKSPACE_FOLDER_LABEL : GRANT_FOLDER_LABEL;
+    hint.textContent = readWrite ? GRANT_READ_WRITE_HINT : GRANT_READ_EXECUTE_HINT;
+  };
+  describe();
   workspace.addEventListener("change", () => {
     draft.workspaceId = workspace.value;
   });
   access.addEventListener("change", () => {
     draft.access = access.value as ContainerAccess;
+    describe();
   });
-  const grant = button(GRANT_FOLDER_LABEL, () =>
-    submit(actions.grantContainerFolder(workspace.value, access.value as ContainerAccess)),
-  );
   return el(
     "div",
     { class: "form" },
-    labelled("Workspace", "new-grant-workspace", workspace),
+    labelled("Workspace whose commands get access", "new-grant-workspace", workspace),
     labelled("Access", "new-grant-access", access),
+    hint,
     el("div", { class: "row-actions" }, grant),
   );
 }

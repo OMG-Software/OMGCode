@@ -1,12 +1,13 @@
 //! Chat commands: defaults, model list, send, status, cancel, and shutdown.
 
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use omgcode_core::session_index::IndexedState;
 use uuid::Uuid;
 
 use omgcode_core::skills::{MAX_SELECTED_SKILLS, SkillName};
-use omgcode_core::turn::ApprovalWaitSlot;
+use omgcode_core::turn::{ApprovalWaitSlot, WaitObserver};
 
 use super::ChatEventSink;
 use super::error::DesktopError;
@@ -281,7 +282,14 @@ impl DesktopService {
         let clients = ChatClients::for_connection(&settings, &connection)
             .map_err(|error| DesktopError::from_app(&error))?;
         let token = connection.token;
-        let approval_wait = ApprovalWaitSlot::new();
+        let approval_wait = match inner.current_approval_wait_observer()? {
+            Some(observer) => ApprovalWaitSlot::new().with_observer(observer),
+            None => ApprovalWaitSlot::new(),
+        };
+        // The table keeps finished slots, so it holds a reader: only the turn
+        // thread's copy keeps the observer, which shutdown must be able to
+        // release (ADR-0105).
+        let awaited = approval_wait.reader();
         let job = TurnJob {
             session_id,
             path,
@@ -290,7 +298,7 @@ impl DesktopService {
             token,
             clients,
             skills,
-            approval_wait: approval_wait.clone(),
+            approval_wait,
         };
 
         // Reserve the slot and start the thread under one lock hold, so two
@@ -307,7 +315,7 @@ impl DesktopService {
             return Err(DesktopError::too_many_turns());
         }
         let handle = spawn_turn(inner, job)?;
-        turns.insert_running(session_id, handle, approval_wait);
+        turns.insert_running(session_id, handle, awaited);
         drop(turns);
         Ok(status_of(
             session_id,
@@ -376,6 +384,25 @@ impl DesktopService {
         Ok(())
     }
 
+    /// Register the one approval-wait observer, replacing any earlier one
+    /// (ADR-0105). Turns started afterwards call it on their own thread each
+    /// time they start waiting for an approval decision; a turn already
+    /// running keeps the observer it started with. The observer must return
+    /// promptly, must not panic, and must not call this service. It is told
+    /// only that a wait began and can approve nothing.
+    ///
+    /// # Errors
+    ///
+    /// `internal` when the service state is unavailable.
+    pub fn set_approval_wait_observer(&self, observer: WaitObserver) -> Result<(), DesktopError> {
+        *self
+            .inner
+            .approval_wait_observer
+            .lock()
+            .map_err(|_| DesktopError::poisoned())? = Some(observer);
+        Ok(())
+    }
+
     /// Request cancellation of every running turn and wait up to `grace` for
     /// the turn threads to finish, polling for completion.
     ///
@@ -388,7 +415,16 @@ impl DesktopService {
     /// close later with the interrupt command. After shutdown, `chat_send` is
     /// refused.
     pub fn shutdown(&self, grace: Duration) -> ShutdownReport {
-        self.inner.shutdown_turns(grace)
+        let report = self.inner.shutdown_turns(grace);
+        // No turn starts after shutdown, so the observer is no longer needed.
+        // Dropping it ends the cycle a shell observer may form with this
+        // service. A poisoned lock is recovered: the value is a whole `Option`.
+        self.inner
+            .approval_wait_observer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        report
     }
 
     fn read_status(&self, session_id: Uuid) -> Result<ChatStatus, DesktopError> {
@@ -476,5 +512,17 @@ fn status_of(session_id: Uuid, state: Option<&SlotState>) -> ChatStatus {
         state,
         outcome,
         error,
+    }
+}
+
+impl Inner {
+    /// A copy of the registered approval-wait observer, if any (ADR-0105).
+    /// The lock is held only to clone it.
+    fn current_approval_wait_observer(&self) -> Result<Option<WaitObserver>, DesktopError> {
+        Ok(self
+            .approval_wait_observer
+            .lock()
+            .map_err(|_| DesktopError::poisoned())?
+            .clone())
     }
 }

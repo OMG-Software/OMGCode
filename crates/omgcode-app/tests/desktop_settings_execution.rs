@@ -974,17 +974,87 @@ mod windows {
     }
 
     #[test]
-    fn the_write_access_is_named_in_the_confirmation() {
+    fn a_read_write_grant_opens_no_folder_dialog_and_names_the_workspace_folder_once() {
         let fixture = Fixture::new();
         let workspace = with_workspace(&fixture);
         let now = current_revision(&fixture.data);
-        let prompt = ScriptedPrompt::new()
-            .folder(Some(&fixture.development.join("project")))
-            .answer(false);
-        let _ = service(&fixture.data)
-            .settings_grant_container_folder(grant_request(now, workspace, "read_write"), &prompt);
-        let message = prompt.confirmations().remove(0).message;
-        assert!(message.contains("read and write"), "{message}");
+        // No folder is scripted: a folder dialog would fail the test.
+        let prompt = ScriptedPrompt::new().answer(false);
+
+        let error =
+            error_of(service(&fixture.data).settings_grant_container_folder(
+                grant_request(now, workspace, "read_write"),
+                &prompt,
+            ));
+
+        assert_eq!(error.code(), "cancelled");
+        let asked = prompt.asked();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let Asked::Confirm(confirmation) = &asked[0] else {
+            panic!("only the confirmation is shown");
+        };
+        let message = &confirmation.message;
+        // The folder is shown once, as the workspace's; the temporary root's
+        // name cannot end a line with the workspace's own name.
+        let folder_lines = message
+            .lines()
+            .filter(|line| line.ends_with("project"))
+            .count();
+        assert_eq!(folder_lines, 1, "{message}");
+        for expected in [
+            "read and write that folder",
+            "AppContainer",
+            "sandbox",
+            "access-control list",
+        ] {
+            assert!(message.contains(expected), "{expected} in {message}");
+        }
+        assert_eq!(current_revision(&fixture.data), now);
+        let store = ControlStore::open_existing(&fixture.data)
+            .expect("open")
+            .expect("exists");
+        assert!(store.container_grants().is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_read_write_grant_reaches_core_with_the_confirmed_revision() {
+        let fixture = Fixture::new();
+        let workspace = with_workspace(&fixture);
+        let now = current_revision(&fixture.data);
+        let other = tool_root(&fixture, "other");
+        let data = fixture.data.clone();
+        let prompt = ScriptedPrompt::new().answer(true).meanwhile(move || {
+            let mut store = ControlStore::open_existing(&data)
+                .expect("open")
+                .expect("exists");
+            let revision = store.revision();
+            store
+                .add_profile(
+                    &omgcode_core::control::ProfileDeclaration {
+                        name: "intervening".into(),
+                        read_only_roots: vec![other],
+                        path_entries: Vec::new(),
+                        environment: Vec::new(),
+                    },
+                    revision,
+                )
+                .expect("an intervening change");
+        });
+
+        let error =
+            error_of(service(&fixture.data).settings_grant_container_folder(
+                grant_request(now, workspace, "read_write"),
+                &prompt,
+            ));
+
+        // The grant went to core without a dialog, and core refused the
+        // revision before it recorded or changed anything: no ACL changes here.
+        assert_eq!(error.code(), "stale_revision");
+        assert_eq!(prompt.confirmations().len(), 1);
+        let store = ControlStore::open_existing(&fixture.data)
+            .expect("open")
+            .expect("exists");
+        assert!(store.container_grants().is_empty());
     }
 
     #[test]

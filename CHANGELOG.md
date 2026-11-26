@@ -546,6 +546,63 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.69.0 makes the read-write container grant say what it does
+  (ADR-0104). In the desktop `settings` window, **Grant a folder** with read
+  and write no longer opens a folder dialog: core accepts that access only on
+  the workspace's own directory, so Rust uses the recorded one, and core
+  still checks that the directory there is the recorded directory. The
+  button reads **Grant the workspace folder…**, the access options read
+  **Read and execute a folder you choose** and **Read and write the
+  workspace's own folder**, and a hint under the selects says what each
+  does. A read-execute grant still opens the dialog. The grant, revoke, and
+  toolchain-discovery confirmations, the folder dialog's title, and the
+  group's help now say that the access goes to the workspace's AppContainer,
+  the Windows sandbox its commands run in, and that registering a folder
+  gives it none; the read-write confirmation names the folder once instead
+  of as both the workspace and the folder. A run refused for a missing grant
+  now says the workspace's sandbox has no read-write grant on the workspace
+  folder, and where to grant it. The command's request is unchanged and
+  carries no path. An operator had read the old confirmation as giving a
+  folder access to itself. No test applies a real grant, and the native
+  dialogs were not driven by automation.
+
+- Version 0.69.0 also shows the desktop approvals window as soon as a chat
+  turn starts waiting for an approval (ADR-0105), instead of only counting
+  it in the `main` window. Core's `ApprovalWaitSlot` can carry a `WaitObserver`
+  that the turn calls on its own thread, with no lock held, each time it
+  publishes the call it waits on; the observer receives nothing and decides
+  nothing. `DesktopService::set_approval_wait_observer` holds one, each turn
+  copies it when it starts, the turn table keeps only an
+  `ApprovalWaitSlot::reader` without it, and `DesktopService::shutdown`
+  drops it. The shell registers an observer at startup that posts one
+  closure to the event loop, which checks the foreground and acts in the
+  same callback. When OMGCode owns the foreground window, read on Windows
+  with `GetForegroundWindow` and `GetWindowThreadProcessId` in a new
+  `omgcode-platform` function (`foreground::this_process_owns_foreground`),
+  the approvals window is unminimized, shown, and activated with
+  `SetForegroundWindow` alone (`foreground::activate_if_foreground_owner`),
+  never tao's `set_focus`. Otherwise, or if Windows refuses, it is shown
+  and its taskbar button flashes, and the foreground is not taken, because
+  on Windows that sends the other application a simulated key press. No
+  command, event, or capability is added, and the approvals window still
+  never focuses **Approve**, decides on no key, and arms **Approve** one
+  second after a review renders. The approvals window also lists again
+  when it gains focus, so a request that brought it forward appears without
+  waiting up to 3 seconds for the next poll; a new request still never
+  replaces the one under review. An approval recorded by a CLI turn still
+  shows only in the count. The `settings` and `approvals` show commands now share one helper
+  and behave as before; the operator saw the settings window open in front
+  every time in their latest testing, and no cause of an earlier, occasional
+  open behind `main` was found. `omgcode-desktop` now depends on the
+  workspace crate `omgcode-platform`. Tests cover the observer and its
+  reader, a real desktop turn telling it once while still waiting for a
+  decision, shutdown dropping it with and without a finished turn, the
+  activation refusing a handle that is not this process's window, and the
+  focus refresh keeping the review; which window ends
+  up in front, the taskbar flash, and whether WebView2 delivers the focus
+  event were not driven by automation. The approvals tests now dispose a
+  window before starting another in the same test.
+
 - Version 0.61.0 restyles the desktop windows in the OMG Software
   outlined-toggle palette (ADR-0095). The theme uses neutral greys around
   charcoal `#151515`, switch orange `#ff761f` as the accent, and charcoal

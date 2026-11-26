@@ -5,6 +5,7 @@ pub mod broker;
 pub mod browser;
 pub mod container;
 pub mod credentials;
+pub mod foreground;
 pub mod interrupt;
 pub mod journal;
 pub mod private_store;
