@@ -98,7 +98,9 @@ impl FolderPurpose {
             Self::Skill => "Choose a skill folder",
             Self::ToolchainRoot => "Choose a read-only root for the toolchain profile",
             Self::ToolchainPathEntry => "Choose a PATH entry inside a root of the profile",
-            Self::ContainerGrant => "Choose a folder the workspace's commands may read and execute",
+            // The access goes to the workspace's AppContainer, not to the
+            // operator or the folder (ADR-0104).
+            Self::ContainerGrant => "Choose a folder the workspace's sandbox may read and execute",
         }
     }
 }
@@ -1534,6 +1536,11 @@ mod tests {
         assert_eq!(
             FolderPurpose::PackageCache.title(),
             "Choose a package cache folder"
+        );
+        // The grant dialog names who receives the access (ADR-0104).
+        assert_eq!(
+            FolderPurpose::ContainerGrant.title(),
+            "Choose a folder the workspace's sandbox may read and execute"
         );
     }
 }
