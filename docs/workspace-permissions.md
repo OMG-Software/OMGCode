@@ -183,7 +183,10 @@ Version 0.14.0 refuses a settings log that records a grant. The
 [ADR-0088](adr/0088-change-execution-settings-in-the-settings-window.md) the
 desktop `settings` window grants a folder and revokes a grant through the same
 core calls, with native dialogs and confirmations; on other platforms it
-returns `unsupported_platform`. It adds no new event.
+returns `unsupported_platform`. It adds no new event. Since
+[ADR-0104](adr/0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)
+a read-write grant there opens no folder dialog and uses the workspace's
+recorded directory.
 
 ## Unregistering a workspace
 

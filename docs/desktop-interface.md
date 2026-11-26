@@ -1434,12 +1434,24 @@ waits. The window shows:
   no control, the overview's `container_grants_supported` is false, and the two
   commands return `unsupported_platform`. On Windows each grant lists its
   folder, workspace, access, and state (`pending`, `active`, `revoking`) with a
-  **Revoke** button, and **Grant a folder** has a workspace select and an
-  access select (read and execute, or read and write for the workspace
-  folder only). **Grant folder…** calls `settings_grant_container_folder`;
-  Rust opens the folder dialog and shows a confirmation naming the workspace,
-  the folder, and the access, and saying that the folder's access-control
-  list changes on disk for that workspace's AppContainer. A failed list
+  **Revoke** button. The group's help says that each workspace's commands run
+  in its own AppContainer, a Windows sandbox with no access to the operator's
+  files until a grant adds it, and that registering a folder gives none.
+  **Grant a folder** has a **Workspace whose commands get access** select, an
+  access select (**Read and execute a folder you choose**, or **Read and write
+  the workspace's own folder**), and a hint that follows the access. Both
+  buttons call `settings_grant_container_folder` with the workspace and the
+  access. For read and execute, **Grant folder…** has Rust open the folder
+  dialog. For read and write, **Grant the workspace folder…** opens no
+  dialog: core accepts that access only on the workspace's own directory, so
+  Rust uses the recorded one, and core still checks that the directory at
+  that path is the recorded directory
+  ([ADR-0104](adr/0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)).
+  A recorded path this system cannot form is refused as `invalid_request`.
+  Either way Rust shows a confirmation that names the workspace, the folder
+  (once, for read and write), and the access, says that the access goes to
+  the workspace's sandbox, and says that the folder's access-control list
+  changes on disk until the grant is revoked. A failed list
   change leaves the grant `pending` (the command fails with
   `container_access_failed`); **Revoke** tries again, and a revocation that
   fails stays `revoking`. Revoking checks the revision under the lock, stops

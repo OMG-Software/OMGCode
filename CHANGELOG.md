@@ -546,6 +546,26 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.69.0 makes the read-write container grant say what it does
+  (ADR-0104). In the desktop `settings` window, **Grant a folder** with read
+  and write no longer opens a folder dialog: core accepts that access only on
+  the workspace's own directory, so Rust uses the recorded one, and core
+  still checks that the directory there is the recorded directory. The
+  button reads **Grant the workspace folder…**, the access options read
+  **Read and execute a folder you choose** and **Read and write the
+  workspace's own folder**, and a hint under the selects says what each
+  does. A read-execute grant still opens the dialog. The grant, revoke, and
+  toolchain-discovery confirmations, the folder dialog's title, and the
+  group's help now say that the access goes to the workspace's AppContainer,
+  the Windows sandbox its commands run in, and that registering a folder
+  gives it none; the read-write confirmation names the folder once instead
+  of as both the workspace and the folder. A run refused for a missing grant
+  now says the workspace's sandbox has no read-write grant on the workspace
+  folder, and where to grant it. The command's request is unchanged and
+  carries no path. An operator had read the old confirmation as giving a
+  folder access to itself. No test applies a real grant, and the native
+  dialogs were not driven by automation.
+
 - Version 0.61.0 restyles the desktop windows in the OMG Software
   outlined-toggle palette (ADR-0095). The theme uses neutral greys around
   charcoal `#151515`, switch orange `#ff761f` as the accent, and charcoal

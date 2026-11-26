@@ -411,9 +411,16 @@ Rules:
   the root's ancestors; a dedicated top-level directory is recommended.
 - Grants work only on Windows. Elsewhere `container-grant` fails and records
   nothing. The desktop `settings` window grants and revokes through the same
-  core calls after a native folder dialog and confirmation, and returns
-  `unsupported_platform` elsewhere (ADR-0088). A revocation there stops the
-  workspace's earlier runs, as `container-revoke` does.
+  core calls after a native confirmation, and returns `unsupported_platform`
+  elsewhere (ADR-0088). A read-execute grant there starts with a native
+  folder dialog. A read-write grant opens none and uses the workspace's
+  recorded directory, the only one core accepts for that access
+  ([ADR-0104](adr/0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)).
+  A revocation there stops the workspace's earlier runs, as
+  `container-revoke` does.
+- A run refused for a missing read-write grant says the workspace's sandbox
+  has no read-write grant on the workspace folder, and names the `settings`
+  window's **Container grants** group and `workspace container-grant`.
 
 ## Trusted runs
 
