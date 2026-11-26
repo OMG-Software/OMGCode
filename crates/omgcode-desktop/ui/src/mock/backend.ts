@@ -17,8 +17,10 @@ import type {
   ContextBreakdown,
   ContextPart,
   ContextPartId,
+  FixedHostedKind,
   PermissionFlags,
   ProcessEntry,
+  ReasoningEffort,
   SearchHit,
   SessionProcesses,
   SessionSummary,
@@ -55,6 +57,27 @@ const TOKEN_LIFETIME_MS = 120_000;
 const MOCK_ENDPOINT = "http://127.0.0.1:1234/v1";
 /** A mock session's record that follows the global default (a model chosen, no provider). */
 const FOLLOW = Symbol("follow");
+/** Every effort core accepts, in its order (ADR-0102). */
+const REASONING_EFFORTS: readonly ReasoningEffort[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+/** The fixed hosted kinds whose documented endpoint takes `reasoning_effort`: core's `EFFORT_ENDPOINTS` (ADR-0102). */
+const EFFORT_KINDS: ReadonlySet<FixedHostedKind> = new Set<FixedHostedKind>([
+  "ollama_cloud",
+  "openai",
+  "google",
+  "moonshot",
+  "minimax",
+  "open_router",
+  "z_ai",
+  "xai",
+]);
 
 interface Fail {
   code: string;
@@ -263,7 +286,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
    */
   const sessionChoices = new Map<
     string,
-    { profile: string | null | typeof FOLLOW; endpoint: string | null; model: string }
+    {
+      profile: string | null | typeof FOLLOW;
+      endpoint: string | null;
+      model: string;
+      effort: ReasoningEffort | null;
+    }
   >();
   /** The workspace each session created here belongs to, as core records it. */
   const sessionWorkspaces = new Map<string, string>();
@@ -532,6 +560,10 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     }
     if (message.trim() === "" || settings.model.trim() === "") {
       fail("invalid_argument", "A message and a model are required.");
+    }
+    const effort = settings.reasoning_effort ?? null;
+    if (effort !== null && !acceptedEfforts(id).includes(effort)) {
+      fail("invalid_request", "This connection does not take a reasoning effort.");
     }
     appendManifest(item, settings.model);
     append(item, "user", message);
@@ -1129,10 +1161,12 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         if (!staleChoice(id) && (effectiveConnection(id).profile ?? null) === wanted) {
           fail("control", "this is already the connection of this session");
         }
+        // Accepted efforts depend on the provider, so the choice clears it with the model.
         sessionChoices.set(id, {
           profile: wanted,
           endpoint: profile === null ? MOCK_ENDPOINT : profile.endpoint,
           model: "",
+          effort: null,
         });
         return connectionStatus(id);
       }
@@ -1149,6 +1183,30 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           profile: existing === undefined ? FOLLOW : existing.profile,
           endpoint: existing === undefined ? null : existing.endpoint,
           model,
+          effort: existing?.effort ?? null,
+        });
+        return connectionStatus(id);
+      }
+      // One session's reasoning effort (ADR-0102). Like Rust: only the seven names, and only for
+      // a connection that takes one.
+      case "session_effort_select": {
+        const id = str(args, "session_id");
+        session(id);
+        const wanted = args.reasoning_effort ?? null;
+        const effort =
+          wanted === null ? null : (REASONING_EFFORTS.find((each) => each === wanted) ?? undefined);
+        if (effort === undefined) {
+          fail("invalid_argument", "Bad reasoning effort.");
+        }
+        if (effort !== null && !acceptedEfforts(id).includes(effort)) {
+          fail("invalid_request", "This connection does not take a reasoning effort.");
+        }
+        const existing = sessionChoices.get(id);
+        sessionChoices.set(id, {
+          profile: existing === undefined ? FOLLOW : existing.profile,
+          endpoint: existing === undefined ? null : existing.endpoint,
+          model: existing === undefined ? chatDefaults().settings.model : existing.model,
+          effort,
         });
         return connectionStatus(id);
       }
@@ -1635,6 +1693,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
+  /** The efforts a session's connection takes: all, or none where core's endpoint rule takes none. */
+  function acceptedEfforts(sessionId: string | null): ReasoningEffort[] {
+    return endpointTakesEffort(effectiveConnection(sessionId).endpoint)
+      ? [...REASONING_EFFORTS]
+      : [];
+  }
+
   /** What the composer reads for a session (ADR-0071). */
   function connectionStatus(sessionId: string | null): ConnectionStatus {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
@@ -1656,6 +1721,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       connection: view,
       origin: !settings.connection.selectable ? "launch" : own ? "session" : "default",
       model: choice === undefined ? chatDefaults().settings.model : choice.model,
+      reasoning_effort: choice?.effort ?? null,
+      reasoning_efforts: acceptedEfforts(sessionId),
       stale,
       session_choices_unreadable: false,
       choices,
@@ -1809,6 +1876,22 @@ const MAX_ENDPOINT_BYTES = 256;
  */
 export function isLocalEndpoint(endpoint: string): boolean {
   return isLocalEndpointText(endpoint);
+}
+
+/**
+ * The mock's copy of core's effort rule (`ModelEndpoint::takes_reasoning_effort`, ADR-0102), in
+ * core's parse order. The endpoint decides, not the profile kind: a fixed endpoint, with or without
+ * one trailing `/`, takes an effort only where its provider documents one, even when typed as an
+ * `openai_compatible` address; any other typed address and a loopback endpoint take one; anything
+ * else takes none.
+ */
+export function endpointTakesEffort(endpoint: string): boolean {
+  for (const [kind, fixed] of Object.entries(FIXED_ENDPOINTS) as [FixedHostedKind, string][]) {
+    if (endpoint === fixed || endpoint === `${fixed}/`) {
+      return EFFORT_KINDS.has(kind);
+    }
+  }
+  return isCustomEndpoint(endpoint) || isLocalEndpoint(endpoint);
 }
 
 /**

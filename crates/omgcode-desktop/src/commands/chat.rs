@@ -4,8 +4,8 @@
 use omgcode_app::desktop::{
     ChatDefaults, ChatEvent, ChatEventSink, ChatModels, ChatPreferencesSaveRequest,
     ChatSendRequest, ChatSettingsDto, ChatStatus, ComposerPreferencesDto, ConnectionChooseRequest,
-    ConnectionStatus, ConnectionStatusRequest, ContextBreakdown, SessionContext,
-    SessionModelSelectRequest, SessionRequest, SessionSkills,
+    ConnectionStatus, ConnectionStatusRequest, ContextBreakdown, ReasoningEffort, SessionContext,
+    SessionEffortSelectRequest, SessionModelSelectRequest, SessionRequest, SessionSkills,
 };
 use tauri::Webview;
 use tauri::ipc::Channel;
@@ -152,6 +152,34 @@ pub async fn session_model_select(
     authorize(Command::SessionModelSelect, webview.label())?;
     let request = SessionModelSelectRequest { session_id, model };
     blocking(&state, move |service| service.session_model_select(request)).await
+}
+
+/// `main` only. Records the reasoning effort chosen for one session, or none
+/// for `null` (ADR-0102). No dialog: an effort grants nothing, and the server
+/// still decides whether its model takes the value. Only the seven documented
+/// names deserialize.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request` for an
+/// effort the session's connection does not take, `not_found`,
+/// `session_choices`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn session_effort_select(
+    webview: Webview,
+    state: Service<'_>,
+    session_id: Uuid,
+    reasoning_effort: Option<ReasoningEffort>,
+) -> Result<ConnectionStatus, CommandError> {
+    authorize(Command::SessionEffortSelect, webview.label())?;
+    let request = SessionEffortSelectRequest {
+        session_id,
+        reasoning_effort,
+    };
+    blocking(&state, move |service| {
+        service.session_effort_select(request)
+    })
+    .await
 }
 
 /// `main` only. Lists the models a session's connection reports, for the

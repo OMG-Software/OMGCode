@@ -202,6 +202,11 @@ are chosen per session in a box in the right-hand panel's footer, reachable
 from the collapsed rail; a provider change needs the native confirmation, and
 each turn re-checks the session's recorded endpoint (ADR-0071,
 [ADR-0089](docs/adr/0089-choose-the-provider-and-model-in-the-side-panel-footer.md)).
+An **Effort** dropdown in the same box records a per-session reasoning effort,
+which the CLI sets with `chat --reasoning-effort`; it is sent only to endpoints
+whose provider documents the field, nothing is sent by default, and no
+request with an effort was made to a real provider
+([ADR-0102](docs/adr/0102-choose-a-reasoning-effort-per-session.md)).
 A status bar at the bottom of the `main`
 window shows the open session's workspace and Git branch, read from `HEAD`
 without a Git process, and the approvals count; it offers no connection choice

@@ -1,6 +1,8 @@
 import { el, replaceChildren } from "../dom";
+import type { ReasoningEffort } from "../ipc/types";
 import { isHostedKind } from "../providers";
 import type { ConnectionChange, ConnectionModel } from "./connection_state";
+import { createEffortSelect } from "./effort_select";
 import { createModelPicker } from "./model_picker";
 import { createProviderSelect } from "./provider_select";
 
@@ -18,6 +20,8 @@ export interface ModelBox {
   element: HTMLElement;
   /** The chosen model id, or an empty string when none is chosen. */
   model(): string;
+  /** The chosen reasoning effort, or `null` to send none (ADR-0102). */
+  effort(): ReasoningEffort | null;
   /** Disabled while no session accepts a message or a turn runs; the composer sets it. */
   setEnabled(enabled: boolean): void;
   /** Called when the chosen model or the listed models change; returns the unsubscribe function. */
@@ -30,7 +34,8 @@ export interface ModelBox {
  * controls and the same shared connection the composer used to hold: only the place changed. A
  * different session, a confirmed provider choice, or a changed connection clears the model and
  * lists the new session's models; the model shown is always the one the connection holds. The
- * composer asks `model()` for each send, so a send uses what the box shows.
+ * Effort dropdown offers what the connection accepts (ADR-0102). The composer asks `model()` and
+ * `effort()` for each send, so a send uses what the box shows.
  */
 export function createModelBox(connection: ConnectionModel): ModelBox {
   const listeners = new Set<() => void>();
@@ -57,6 +62,7 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
     (id) => void connection.chooseModel(id),
   );
   const providerSelect = createProviderSelect(connection, "Provider");
+  const effortSelect = createEffortSelect(connection);
   /** What the model list was last requested for, so only a real change reloads it. */
   let loadedKey: string | null = null;
   let enabled = false;
@@ -64,6 +70,7 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
   function refresh(): void {
     picker.setDisabled(!enabled || connection.busy());
     providerSelect.setLocked(!enabled);
+    effortSelect.setLocked(!enabled);
     replaceChildren(providerNote, connection.message());
     providerNote.hidden = connection.message() === "";
     choicesNote.hidden = connection.status()?.session_choices_unreadable !== true;
@@ -71,6 +78,7 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
 
   function onConnection(change: ConnectionChange): void {
     providerSelect.render();
+    effortSelect.render();
     const status = connection.status();
     const id = connection.sessionId();
     if (change === "opening") {
@@ -78,6 +86,8 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
       picker.reset();
       picker.setHosted(false);
     } else if (status !== null && id !== null && change !== "busy" && change !== "message") {
+      // An effort answer can be a reopened session's first status (its read was dropped while
+      // the save was pending), so it loads the list like a read; the key stops a needless reload.
       picker.setHosted(isHostedKind(status.connection.kind));
       const key = [
         id,
@@ -99,6 +109,7 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
   }
   const unsubscribe = connection.subscribe(onConnection);
   providerSelect.render();
+  effortSelect.render();
   refresh();
 
   const element = el(
@@ -112,11 +123,13 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
       providerSelect.element,
     ),
     el("div", { class: "model-box-field" }, el("span", { text: "Model" }), picker.element),
+    el("label", { class: "model-box-field" }, el("span", { text: "Effort" }), effortSelect.element),
     el(
       "div",
       { class: "model-box-status" },
       picker.note,
       picker.warning,
+      effortSelect.note,
       providerNote,
       choicesNote,
     ),
@@ -125,6 +138,7 @@ export function createModelBox(connection: ConnectionModel): ModelBox {
   return {
     element,
     model: () => picker.value(),
+    effort: () => effortSelect.value(),
     setEnabled(next) {
       if (next !== enabled) {
         enabled = next;

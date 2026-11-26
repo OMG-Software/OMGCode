@@ -92,6 +92,30 @@ pub(crate) fn disables_thinking(text: &str) -> bool {
         .any(|fixed| matches_fixed(text, fixed))
 }
 
+/// Fixed endpoints whose provider documents a top-level `reasoning_effort` on
+/// its OpenAI-compatible Chat Completions API (ADR-0102, checked 2026-11-26).
+/// It is an allowlist: a fixed endpoint added later takes no effort until its
+/// documentation is checked. Anthropic's compatibility layer documents the
+/// field as ignored, DeepSeek's `thinking` field (sent as disabled) overrides
+/// it, and Tencent, Meta, and Tinker document none.
+const EFFORT_ENDPOINTS: &[&str] = &[
+    OLLAMA_CLOUD_ENDPOINT,
+    OPENAI_ENDPOINT,
+    GOOGLE_ENDPOINT,
+    MOONSHOT_ENDPOINT,
+    MINIMAX_ENDPOINT,
+    OPENROUTER_ENDPOINT,
+    Z_AI_ENDPOINT,
+    XAI_ENDPOINT,
+];
+
+/// Whether the fixed endpoint `text` takes a reasoning effort.
+pub(crate) fn fixed_takes_effort(text: &str) -> bool {
+    EFFORT_ENDPOINTS
+        .iter()
+        .any(|fixed| matches_fixed(text, fixed))
+}
+
 /// Longest endpoint text either hosted rule reads, checked before parsing.
 const MAX_ENDPOINT_BYTES: usize = 256;
 

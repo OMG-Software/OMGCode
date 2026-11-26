@@ -143,6 +143,15 @@ selection in such a session with `skill_session_version` before any request.
 Skill messages are never recorded, so replay and compaction never see them.
 A recorded assistant reply can still repeat skill text.
 
+Since 0.67.0 a version-3 `request.manifest` may also carry `reasoning_effort`:
+one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, the
+effort the chat client sent with the turn's requests (ADR-0102). It is written
+only when an effort was sent, so other journals keep their bytes, and 0.66.0
+and earlier refuse a journal that has it; the schema version did not change.
+A version-1 or version-2 journal refuses the field, and chat refuses an effort
+in such a session with `session` before anything is recorded. Compaction
+summary requests send no effort.
+
 | Event type | Payload in v3 | State rule |
 | --- | --- | --- |
 | `context.compacted` | `summary`, `compacted_messages`, `includes_tool_results`, `summary_sha256`, `model`, optional `prompt_tokens`, optional `completion_tokens` | Requires an idle, unarchived session. The summary is at most 16 KiB minus a fixed untrusted-source label, and the digest is the lowercase SHA-256 of the summary. The boundary is within the message history, later than any prior compaction, and followed by a user message when any message is retained. The original messages remain. |

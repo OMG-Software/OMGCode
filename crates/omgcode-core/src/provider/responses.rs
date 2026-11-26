@@ -7,7 +7,10 @@
 //! from the finished output items once `response.completed` arrives, and
 //! every other ending fails the request.
 
-use super::{MAX_RESPONSE_TOOL_CALLS, MAX_STREAM_BYTES, ProviderError, Usage, json_string_len};
+use super::{
+    MAX_RESPONSE_TOOL_CALLS, MAX_STREAM_BYTES, ProviderError, ReasoningEffort, Usage,
+    json_string_len,
+};
 use crate::prompt::{ModelMessage, ModelRole};
 use crate::storage::parse_strict_json;
 use crate::turn::ToolDefinition;
@@ -118,6 +121,15 @@ struct ResponsesRequest<'a> {
     tools: Option<[Namespace<'a>; 1]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'static str>,
+    /// Sent only when the operator chose an effort (ADR-0102).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning>,
+}
+
+/// The Responses API's reasoning options: the effort only.
+#[derive(Serialize)]
+struct Reasoning {
+    effort: ReasoningEffort,
 }
 
 /// One input item. A tool result in tools mode becomes the model's own call
@@ -172,10 +184,12 @@ struct FunctionTool<'a> {
 /// text (ADR-0097). Every other message, and a tool result in a request
 /// without tools, becomes a message item; a tool result is `user` text there.
 /// `store` is `false` and `stream` is `true`, as the route requires. Tools,
-/// when given, go in one namespace. No output limit, sampling, reasoning, or
-/// conversation field is sent.
+/// when given, go in one namespace. An `effort` is sent as
+/// `reasoning.effort` (ADR-0102); `None` sends no `reasoning` field. No output
+/// limit, sampling, reasoning summary, or conversation field is sent.
 pub(super) fn request_body(
     model: &str,
+    effort: Option<ReasoningEffort>,
     messages: &[ModelMessage],
     tools: Option<&[ToolDefinition]>,
 ) -> Result<Vec<u8>, ProviderError> {
@@ -234,6 +248,7 @@ pub(super) fn request_body(
         stream: true,
         tools,
         tool_choice,
+        reasoning: effort.map(|effort| Reasoning { effort }),
     })
     .map_err(|_| ProviderError::RequestTooLarge)
 }

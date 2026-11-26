@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
     ChatState, ChatStatus, Confirmation, ConnectionOrigin, ConnectionStatus, DesktopConfig,
-    DesktopError, DesktopService, FolderPurpose, SettingsPrompt,
+    DesktopError, DesktopService, FolderPurpose, ReasoningEffort, SessionEffortSelectRequest,
+    SettingsPrompt,
 };
 use omgcode_core::control::ControlStore;
 use serde_json::json;
@@ -96,7 +97,7 @@ fn choose(
     service: &DesktopService,
     session: Uuid,
     profile: Option<&str>,
-    prompt: &Answers,
+    prompt: &dyn SettingsPrompt,
 ) -> Result<ConnectionStatus, DesktopError> {
     service.connection_select(
         wire(json!({ "session_id": session, "profile": profile })),
@@ -110,6 +111,16 @@ fn model(
     model: &str,
 ) -> Result<ConnectionStatus, DesktopError> {
     service.session_model_select(wire(json!({ "session_id": session, "model": model })))
+}
+
+fn effort(
+    service: &DesktopService,
+    session: Uuid,
+    effort: Option<&str>,
+) -> Result<ConnectionStatus, DesktopError> {
+    service.session_effort_select(wire(
+        json!({ "session_id": session, "reasoning_effort": effort }),
+    ))
 }
 
 fn send(
@@ -646,6 +657,182 @@ fn a_model_is_validated_and_never_pins_a_provider() {
     assert_eq!(listed.endpoint, other.endpoint);
     assert_eq!(listed.kind, Some("lm_studio"));
     other.finish();
+    default.assert_untouched();
+}
+
+/// An effort is recorded per session without a dialog, kept by a model
+/// choice, omitted from the file when none is chosen, and sent with the
+/// session's turn (ADR-0102 decisions 7 and 8).
+#[test]
+fn an_effort_is_recorded_per_session_and_sent_with_its_turn() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let default = MockServer::start(vec![Step::reply(text("thought hard"))]);
+    let service = active(&fixture, &default.endpoint);
+    let id = session(&service, workspace.id);
+    let other = session(&service, workspace.id);
+
+    // A loopback connection takes every effort; none is chosen yet.
+    let before = status(&service, Some(id));
+    assert_eq!(before.reasoning_effort, None);
+    assert_eq!(before.reasoning_efforts, ReasoningEffort::ALL);
+
+    let chosen = effort(&service, id, Some("high")).expect("effort");
+    assert_eq!(chosen.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(chosen.origin, ConnectionOrigin::Default);
+    assert_eq!(chosen.model, "", "an effort leaves the model as it was");
+    let on_disk = fs::read_to_string(record_file(&fixture)).expect("record file");
+    assert!(
+        on_disk.contains("\"reasoning_effort\": \"high\""),
+        "{on_disk}"
+    );
+    assert_eq!(status(&service, Some(other)).reasoning_effort, None);
+
+    // A model choice keeps the effort; clearing it removes the field.
+    let kept = model(&service, id, "fixture").expect("model");
+    assert_eq!(kept.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(
+        effort(&service, id, Some("xhigh"))
+            .expect("change")
+            .reasoning_effort,
+        Some(ReasoningEffort::XHigh)
+    );
+
+    // Only the seven names, and no other field, are accepted.
+    for request in [
+        json!({ "session_id": id, "reasoning_effort": "extreme" }),
+        json!({ "session_id": id, "reasoning_effort": "High" }),
+        json!({ "session_id": id, "reasoning_effort": "low", "endpoint": "x" }),
+    ] {
+        assert!(
+            serde_json::from_value::<SessionEffortSelectRequest>(request.clone()).is_err(),
+            "{request}"
+        );
+    }
+    assert_eq!(
+        code(effort(&service, Uuid::new_v4(), Some("low"))),
+        "not_found"
+    );
+
+    // The turn sends the effort the composer names.
+    let mut settings = settings_json(&default.endpoint);
+    settings["reasoning_effort"] = json!("xhigh");
+    service
+        .chat_send(wire(json!({
+            "session_id": id,
+            "message": "hello",
+            "settings": settings,
+            "skills": [],
+        })))
+        .expect("turn starts");
+    let done = wait_finished(&service, id);
+    assert!(matches!(done.state, ChatState::Completed), "{done:?}");
+    let (served, recorded) = default.finish_recorded();
+    assert_eq!(served, 1);
+    let request: serde_json::Value =
+        serde_json::from_str(&recorded[0].body).expect("chat request body");
+    assert_eq!(request["reasoning_effort"], "xhigh");
+
+    let cleared = effort(&service, id, None).expect("clear");
+    assert_eq!(cleared.reasoning_effort, None);
+    let on_disk = fs::read_to_string(record_file(&fixture)).expect("record file");
+    assert!(!on_disk.contains("reasoning_effort"), "{on_disk}");
+}
+
+/// A connection whose provider documents no effort offers none and refuses
+/// one, on save and on send; choosing a provider clears the session's effort
+/// (ADR-0102 decisions 2, 7, and 8).
+#[test]
+fn a_connection_without_effort_refuses_one_and_a_provider_change_clears_it() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let default = NoCallServer::start();
+    let service = active(&fixture, &default.endpoint);
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile_at("deep", "deepseek", "api_key", "https://api.deepseek.com");
+    vault.bind("deep", b"fake-deepseek-key-for-the-test");
+    let id = session(&service, workspace.id);
+    effort(&service, id, Some("medium")).expect("effort on the default");
+
+    let prompt = Answers::with(&[true]);
+    let chosen = choose(&service, id, Some("deep"), &prompt).expect("choose deepseek");
+    assert_eq!(chosen.reasoning_effort, None, "a provider choice clears it");
+    assert!(chosen.reasoning_efforts.is_empty());
+    assert_eq!(code(effort(&service, id, Some("low"))), "invalid_request");
+    assert_eq!(
+        effort(&service, id, None).expect("none").reasoning_effort,
+        None
+    );
+
+    // The send is refused before the turn starts; nothing reaches the network.
+    let mut settings = settings_json(&chosen.connection.endpoint);
+    settings["reasoning_effort"] = json!("low");
+    let refused = service.chat_send(wire(json!({
+        "session_id": id,
+        "message": "hello",
+        "settings": settings,
+        "skills": [],
+    })));
+    assert_eq!(code(refused), "invalid_request");
+    assert_eq!(
+        status(&service, Some(id)).reasoning_effort,
+        None,
+        "a refused send records nothing"
+    );
+    default.assert_untouched();
+}
+
+/// Answers Yes, but first tries an effort choice for the same session while
+/// the provider confirmation is open, and keeps what that returned.
+struct EffortDuringConfirmation<'a> {
+    service: &'a DesktopService,
+    session: Uuid,
+    refused: RefCell<Option<&'static str>>,
+}
+
+impl SettingsPrompt for EffortDuringConfirmation<'_> {
+    fn pick_folder(
+        &self,
+        _purpose: FolderPurpose,
+        _start: Option<&std::path::Path>,
+    ) -> Option<PathBuf> {
+        panic!("no folder dialog is expected");
+    }
+
+    fn confirm(&self, _confirmation: &Confirmation) -> bool {
+        let attempt = effort(self.service, self.session, Some("high"));
+        self.refused.replace(Some(code(attempt)));
+        true
+    }
+}
+
+/// An effort choice runs as one settings change, as a provider choice does,
+/// so a provider choice cannot land between its check and its save: while a
+/// confirmation is open it is refused with `settings_change_running`, and it
+/// works again once the provider choice ends (ADR-0102).
+#[test]
+fn an_effort_choice_is_refused_while_a_provider_choice_runs() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let default = NoCallServer::start();
+    let service = active(&fixture, &default.endpoint);
+    let mut vault = Vault::new(&fixture.data);
+    vault.add_profile_at("deep", "deepseek", "api_key", "https://api.deepseek.com");
+    vault.bind("deep", b"fake-deepseek-key-for-the-test");
+    let id = session(&service, workspace.id);
+
+    let prompt = EffortDuringConfirmation {
+        service: &service,
+        session: id,
+        refused: RefCell::new(None),
+    };
+    let chosen = choose(&service, id, Some("deep"), &prompt).expect("choose deepseek");
+    assert_eq!(prompt.refused.take(), Some("settings_change_running"));
+    assert_eq!(chosen.reasoning_effort, None);
+    assert!(chosen.reasoning_efforts.is_empty());
+    // The guard is released: the next choice is checked against DeepSeek.
+    assert_eq!(code(effort(&service, id, Some("high"))), "invalid_request");
+    assert_eq!(status(&service, Some(id)).reasoning_effort, None);
     default.assert_untouched();
 }
 

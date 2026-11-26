@@ -62,8 +62,8 @@ use super::state::folder_of_directory;
 use super::wire::{
     ApiKeySetRequest, ConnectionAddRequest, ConnectionChooseRequest, ConnectionRemoveRequest,
     ConnectionSelectRequest, ConnectionStatus, ConnectionStatusRequest, PermissionFlags,
-    PermissionsChangeRequest, SessionModelSelectRequest, SettingsOverview, SettingsRevisionRequest,
-    WorkspaceRevisionRequest,
+    PermissionsChangeRequest, SessionEffortSelectRequest, SessionModelSelectRequest,
+    SettingsOverview, SettingsRevisionRequest, WorkspaceRevisionRequest,
 };
 
 /// What the operator is asked to choose a folder for. The shell uses it for
@@ -897,8 +897,8 @@ impl DesktopService {
     /// a hosted service, that prompts and tool output leave this computer for
     /// its host), which
     /// no webview can answer. Only on Yes is the choice recorded for the
-    /// session, and its model is cleared because model ids belong to one
-    /// server. The settings store is read again after Yes, so a profile
+    /// session, and its model and reasoning effort are cleared because model
+    /// ids belong to one server. The settings store is read again after Yes, so a profile
     /// removed, or given another endpoint, while the dialog was open records
     /// nothing. No settings revision is involved: the global selection is not
     /// changed.
@@ -948,9 +948,12 @@ impl DesktopService {
         if again != (choice.clone(), confirmation) {
             return Err(DesktopError::stale_revision());
         }
+        // The model and effort are cleared: model ids belong to one server,
+        // and the efforts a model accepts depend on it (ADR-0102).
         inner.update_session_record(session_id, |_| SessionRecord {
             connection: choice.record(&inner.endpoint),
             model: String::new(),
+            reasoning_effort: None,
         })?;
         self.connection_status(ConnectionStatusRequest {
             session_id: Some(session_id),
@@ -980,9 +983,65 @@ impl DesktopService {
                     record.connection.clone()
                 }),
                 model: request.model,
+                reasoning_effort: existing.and_then(|record| record.reasoning_effort),
             })?;
         self.connection_status(ConnectionStatusRequest {
             session_id: Some(request.session_id),
+        })
+    }
+
+    /// `main` only: record the reasoning effort chosen for one session
+    /// (ADR-0102), or `None` to send none. No dialog is shown: an effort
+    /// grants nothing, and the server still decides whether its model takes
+    /// the value. An effort is refused unless the session's connection, as
+    /// `connection_status` reports it now, takes one. The session's provider
+    /// and model are kept. Like a model choice, a session with no record gets
+    /// one that follows the default connection; it records the model the
+    /// status showed (the saved preference's), so the model shown does not
+    /// change.
+    ///
+    /// It holds the one-change-at-a-time guard, as a provider choice does,
+    /// so the connection it checks the effort against is the one the record
+    /// keeps: a provider choice cannot land between the check and the save.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request` for an effort the session's connection does not
+    /// take; `settings_change_running` while another settings change, such
+    /// as a provider choice awaiting its confirmation, runs; `not_found`;
+    /// `busy`, `control`, or `internal` while reading the connection;
+    /// `session_choices` when the choice cannot be saved.
+    pub fn session_effort_select(
+        &self,
+        request: SessionEffortSelectRequest,
+    ) -> Result<ConnectionStatus, DesktopError> {
+        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
+        let session_id = request.session_id;
+        let status = self.connection_status(ConnectionStatusRequest {
+            session_id: Some(session_id),
+        })?;
+        if request
+            .reasoning_effort
+            .is_some_and(|effort| !status.reasoning_efforts.contains(&effort))
+        {
+            return Err(DesktopError::invalid_request(
+                "This connection does not take a reasoning effort.",
+            ));
+        }
+        self.inner
+            .update_session_record(session_id, |existing| match existing {
+                Some(record) => SessionRecord {
+                    reasoning_effort: request.reasoning_effort,
+                    ..record.clone()
+                },
+                None => SessionRecord {
+                    connection: ChosenConnection::Follow {},
+                    model: status.model,
+                    reasoning_effort: request.reasoning_effort,
+                },
+            })?;
+        self.connection_status(ConnectionStatusRequest {
+            session_id: Some(session_id),
         })
     }
 

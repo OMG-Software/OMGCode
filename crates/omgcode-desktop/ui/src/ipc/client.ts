@@ -10,6 +10,7 @@ import type {
   ConnectionStatus,
   ContextBreakdown,
   GitStatusView,
+  ReasoningEffort,
   SearchResult,
   SessionContext,
   SessionProcesses,
@@ -148,6 +149,11 @@ export const api = {
   /** Records the session's model. No dialog: a model grants nothing. */
   sessionModelSelect: (sessionId: string, model: string) =>
     invokeCommand<ConnectionStatus>("session_model_select", { session_id: sessionId, model }),
+  sessionEffortSelect: (sessionId: string, effort: ReasoningEffort | null) =>
+    invokeCommand<ConnectionStatus>("session_effort_select", {
+      session_id: sessionId,
+      reasoning_effort: effort,
+    }),
   chatStatus: (sessionId: string) =>
     invokeCommand<ChatStatus>("chat_status", { session_id: sessionId }),
   chatCancel: (sessionId: string) =>

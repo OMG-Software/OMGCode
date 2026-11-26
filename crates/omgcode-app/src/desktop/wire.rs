@@ -14,6 +14,7 @@
 
 use omgcode_core::control::{ApprovalOperation, ApprovalState};
 use omgcode_core::policy::{Access, WriteToolAccess};
+use omgcode_core::provider::ReasoningEffort;
 use omgcode_core::session::{MessageRole, MessageSource, ToolOutcome};
 use omgcode_core::turn::DEFAULT_MAX_TOOL_CALLS;
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,12 @@ pub struct ChatSettingsDto {
     pub compact_threshold: u64,
     /// Whether to compact at the effective trigger before a turn.
     pub auto_compact: bool,
+    /// The reasoning effort the turn's chat requests send, or `null` (or
+    /// absent) for none (ADR-0102). Only the seven documented names are
+    /// accepted. `chat_send` refuses one the session's connection does not
+    /// take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Arguments of `chat_send`.
@@ -1118,6 +1125,12 @@ pub struct ConnectionStatus {
     /// The model chosen for the session, or the saved chat preference's model
     /// when the session has none. Empty when neither exists.
     pub model: String,
+    /// The reasoning effort chosen for the session, or `null` for none
+    /// (ADR-0102).
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// The efforts `connection` takes, from the least reasoning to the most:
+    /// every documented value, or none when the connection takes no effort.
+    pub reasoning_efforts: Vec<ReasoningEffort>,
     /// Whether the session's recorded connection can no longer be used as
     /// recorded (its profile is gone, not selectable, or has another
     /// endpoint). The next turn is refused with `session_connection_stale`
@@ -1195,6 +1208,16 @@ pub struct SessionModelSelectRequest {
     pub session_id: Uuid,
     /// The model id. Empty clears the session's model.
     pub model: String,
+}
+
+/// Arguments of `session_effort_select` (ADR-0102).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEffortSelectRequest {
+    /// The session the effort is for.
+    pub session_id: Uuid,
+    /// One of the seven documented names, or `null` to send no effort.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// What the status bar shows about a session's workspace (ADR-0064).

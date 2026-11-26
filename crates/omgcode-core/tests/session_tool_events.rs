@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use omgcode_core::provider::ReasoningEffort;
 use omgcode_core::session::{
     ManifestSkill, MessageRole, RequestManifest, SessionError, SessionJournal, ToolOutcome,
 };
@@ -547,6 +548,7 @@ fn a_schema_v2_journal_keeps_recording_and_replaying_tool_manifests() {
         tool_schema_version: Some("1".into()),
         tools: Some(vec!["workspace_read_file".into()]),
         skills: Vec::new(),
+        reasoning_effort: None,
     };
 
     let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");
@@ -590,6 +592,7 @@ fn given_a_version_2_journal_when_a_skill_manifest_is_recorded_or_replayed_then_
         tool_schema_version: None,
         tools: None,
         skills,
+        reasoning_effort: None,
     };
 
     // The journal API refuses the field on a writable version 2 journal.
@@ -642,6 +645,97 @@ fn given_a_version_2_journal_when_a_skill_manifest_is_recorded_or_replayed_then_
     journal
         .record_manifest(request_id, manifest)
         .expect("schema v3 accepts a skill manifest");
+}
+
+/// A reasoning effort (ADR-0102) follows the skills rule: only a version 3
+/// journal records or replays it, and a manifest without one omits the field.
+#[test]
+fn given_a_version_2_journal_when_an_effort_manifest_is_recorded_or_replayed_then_it_is_refused() {
+    let manifest = RequestManifest {
+        base_prompt: "base instructions".into(),
+        prompt_version: "1".into(),
+        prompt_sha256: "a".repeat(64),
+        custom_instructions: String::new(),
+        model: "local-model".into(),
+        base_url: "http://127.0.0.1:1234/v1".into(),
+        context_tokens: 32_000,
+        max_output_tokens: 2_000,
+        tool_schema_version: None,
+        tools: None,
+        skills: Vec::new(),
+        reasoning_effort: Some(ReasoningEffort::High),
+    };
+    let without = RequestManifest {
+        reasoning_effort: None,
+        ..manifest.clone()
+    };
+    assert!(
+        serde_json::to_value(&without)
+            .expect("manifest JSON")
+            .get("reasoning_effort")
+            .is_none()
+    );
+
+    // The journal API refuses the field on a writable version 2 journal.
+    let (_temporary, path, session_id) = setup();
+    let first = rewrite_first_event_schema(&path, 2);
+    let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");
+    assert!(!journal.supports_reasoning_effort());
+    let request_id = journal.start_turn().expect("start turn");
+    journal
+        .record_message(MessageRole::User, "think")
+        .expect("user message");
+    assert!(matches!(
+        journal.record_manifest(request_id, manifest.clone()),
+        Err(SessionError::InvalidValue(_))
+    ));
+    drop(journal);
+
+    // Replay refuses a version 2 line that carries it.
+    let payload = json!({
+        "request_id": Uuid::nil(),
+        "manifest": serde_json::to_value(&manifest).expect("manifest JSON"),
+    });
+    assert_eq!(payload["manifest"]["reasoning_effort"], "high");
+    write_events(
+        &path,
+        &[
+            first,
+            event(
+                session_id,
+                1,
+                2,
+                "turn.started",
+                json!({"request_id": Uuid::nil()}),
+            ),
+            event(session_id, 2, 2, "request.manifest", payload),
+        ],
+    );
+    assert!(matches!(
+        SessionJournal::open(&path),
+        Err(SessionError::InvalidJournal(_))
+    ));
+
+    // A version 3 journal records it and replays it.
+    let (_temporary, path, _session_id) = setup();
+    let mut journal = SessionJournal::open(&path).expect("open schema-v3 journal");
+    assert!(journal.supports_reasoning_effort());
+    let request_id = journal.start_turn().expect("start turn");
+    journal
+        .record_message(MessageRole::User, "think")
+        .expect("user message");
+    journal
+        .record_manifest(request_id, manifest)
+        .expect("schema v3 accepts an effort");
+    journal.complete_turn(request_id).expect("complete turn");
+    drop(journal);
+    SessionJournal::open(&path).expect("replay a schema-v3 effort");
+    let recorded = read_events(&path);
+    assert!(
+        recorded
+            .iter()
+            .any(|event| event["payload"]["manifest"]["reasoning_effort"] == "high")
+    );
 }
 
 /// Argument JSON of exactly `bytes` bytes whose second JSON escaping inside the

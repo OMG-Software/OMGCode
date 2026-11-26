@@ -22,7 +22,7 @@ use omgcode_app::{
 use omgcode_core::context::ContextBudget;
 use omgcode_core::control::ControlStore;
 use omgcode_core::policy::{Access, PermissionSet, WriteToolAccess};
-use omgcode_core::provider::{LocalModelClient, LocalModelConfig};
+use omgcode_core::provider::{LocalModelClient, LocalModelConfig, ReasoningEffort};
 use omgcode_core::session::{MessageRole, SessionJournal};
 use omgcode_core::turn::CancelToken;
 use serde_json::{Value, json};
@@ -892,6 +892,115 @@ fn a_turn_without_a_stream_hook_sends_stream_false() {
             Some("text/event-stream")
         );
     }
+}
+
+/// A chosen reasoning effort is sent as `reasoning_effort` and recorded in the
+/// turn's request manifest; without one neither carries the field (ADR-0102).
+#[test]
+fn a_chosen_reasoning_effort_is_sent_and_recorded_in_the_manifest() {
+    for tools_enabled in [false, true] {
+        for (effort, expected) in [(None, None), (Some(ReasoningEffort::XHigh), Some("xhigh"))] {
+            let fixture = Fixture::new(tools_enabled);
+            let mut journal = fixture.journal();
+            let server =
+                common::MockServer::start(vec![common::Step::reply(common::text("plain"))]);
+            let mut chosen = settings(&server.endpoint);
+            chosen.reasoning_effort = effort;
+            turn(
+                &mut journal,
+                &fixture.data,
+                &chosen,
+                None,
+                "hello",
+                &mut ChatHooks::default(),
+            )
+            .expect("turn");
+            let (served, recorded) = server.finish_recorded();
+            assert_eq!(served, 1);
+            let request = request_body(&recorded[0]);
+            assert_eq!(
+                request.get("reasoning_effort").and_then(Value::as_str),
+                expected,
+                "tools_enabled={tools_enabled}"
+            );
+            let events = close_and_read(journal);
+            let manifests: Vec<&Value> = events
+                .iter()
+                .filter(|event| event["type"] == "request.manifest")
+                .map(|event| &event["payload"]["manifest"])
+                .collect();
+            assert_eq!(manifests.len(), 1);
+            assert_eq!(
+                manifests[0].get("reasoning_effort").and_then(Value::as_str),
+                expected,
+                "tools_enabled={tools_enabled}"
+            );
+        }
+    }
+}
+
+/// An endpoint whose provider documents no `reasoning_effort` refuses one
+/// before anything is sent or recorded (ADR-0102 decision 3).
+#[test]
+fn an_effort_for_an_endpoint_that_takes_none_is_refused_before_any_request() {
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal();
+    let mut chosen = settings("https://api.deepseek.com");
+    chosen.reasoning_effort = Some(ReasoningEffort::Low);
+    let error = turn(
+        &mut journal,
+        &fixture.data,
+        &chosen,
+        Some(SECRET),
+        "hello",
+        &mut ChatHooks::default(),
+    )
+    .expect_err("DeepSeek takes no effort field");
+    assert_eq!(error.code(), "provider");
+    assert!(!error.message().contains(SECRET));
+    let events = close_and_read(journal);
+    assert!(
+        events
+            .iter()
+            .all(|event| event["type"] != "turn.started" && event["type"] != "request.manifest")
+    );
+}
+
+/// A version 2 session cannot record an effort, so a turn that would send one
+/// is refused before anything is recorded or requested (ADR-0102 decision 5).
+#[test]
+fn an_effort_in_a_version_2_session_is_refused_before_anything_is_recorded() {
+    let fixture = Fixture::new(false);
+    let journal = fixture.journal();
+    let path = journal.path().to_owned();
+    drop(journal);
+    let rewritten: String = fs::read_to_string(&path)
+        .expect("journal file")
+        .lines()
+        .map(|line| {
+            let mut event: Value = serde_json::from_str(line).expect("journal event");
+            event["schema_version"] = json!(2);
+            serde_json::to_string(&event).expect("event JSON") + "\n"
+        })
+        .collect();
+    fs::write(&path, rewritten).expect("rewrite journal");
+    let mut journal = SessionJournal::open(&path).expect("open schema-v2 journal");
+    let server = common::NoCallServer::start();
+    let mut chosen = settings(&server.endpoint);
+    chosen.reasoning_effort = Some(ReasoningEffort::Medium);
+    let error = turn(
+        &mut journal,
+        &fixture.data,
+        &chosen,
+        None,
+        "hello",
+        &mut ChatHooks::default(),
+    )
+    .expect_err("a version 2 session cannot record an effort");
+    assert_eq!(error.code(), "session");
+    let events = close_and_read(journal);
+    assert!(events.iter().all(|event| event["type"] != "turn.started"));
+    server.assert_untouched();
 }
 
 // ---- Cancelling a streamed turn (ADR-0050) ----

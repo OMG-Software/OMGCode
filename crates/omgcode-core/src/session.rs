@@ -16,6 +16,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
+use crate::provider::ReasoningEffort;
 use crate::storage::{self, StorageError};
 
 mod discovery;
@@ -441,6 +442,12 @@ impl SessionJournal {
     /// Report whether this journal may record a request's skill selection.
     /// Only a version 3 journal may; an older one keeps its own subset.
     pub const fn supports_skill_manifests(&self) -> bool {
+        self.schema_version >= SCHEMA_VERSION
+    }
+
+    /// Report whether this journal may record a request's reasoning effort
+    /// (ADR-0102). Only a version 3 journal may, as for a skill selection.
+    pub const fn supports_reasoning_effort(&self) -> bool {
         self.schema_version >= SCHEMA_VERSION
     }
 
@@ -1121,6 +1128,11 @@ pub struct RequestManifest {
     /// bytes. An older build refuses a journal that contains it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<ManifestSkill>,
+    /// The reasoning effort the turn's model requests sent (ADR-0102). The
+    /// field is omitted when no effort was sent, so journals without one keep
+    /// their bytes. An older build refuses a journal that contains it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// One skill the operator selected for a request: identity and digest only.
@@ -1215,6 +1227,13 @@ fn validate_manifest(manifest: &RequestManifest, schema_version: u32) -> Result<
     if !manifest.skills.is_empty() && schema_version < SCHEMA_VERSION {
         return Err(SessionError::InvalidValue(
             "request manifest skills need a version 3 session",
+        ));
+    }
+    // The same holds for an effort (ADR-0102): a build that reads only an
+    // older journal's subset must never meet the field there.
+    if manifest.reasoning_effort.is_some() && schema_version < SCHEMA_VERSION {
+        return Err(SessionError::InvalidValue(
+            "request manifest reasoning effort needs a version 3 session",
         ));
     }
     if manifest.skills.len() > crate::skills::MAX_SELECTED_SKILLS {

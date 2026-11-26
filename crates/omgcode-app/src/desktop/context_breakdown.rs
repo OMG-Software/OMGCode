@@ -3,9 +3,10 @@
 //! [`DesktopService::session_context_breakdown`] serves the `main` window's
 //! Context tab. It resolves everything from trusted state by session id: the
 //! journal through the index, the saved chat budgets and global instructions,
-//! the session workspace's saved instructions, and live settings for the tool
-//! decision. It sends nothing to a model, records nothing in any journal, and
-//! returns names and numbers only, never instruction or message text.
+//! the session workspace's saved instructions, the session's recorded
+//! reasoning effort, and live settings for the tool decision. It sends nothing
+//! to a model, records nothing in any journal, and returns names and numbers
+//! only, never instruction or message text.
 //!
 //! The arithmetic is the pre-turn trigger's own (`estimate_history_parts` in
 //! core, applied by the chat module), so the parts add up to the estimate the
@@ -31,12 +32,13 @@ impl DesktopService {
     /// The parts are the base prompt, the global and the workspace custom
     /// instructions, the tool definitions (only when live settings would offer
     /// tools), the active compaction summary, the retained conversation, and
-    /// the fixed framing no part owns; skills are listed as not included
-    /// because they are chosen for one turn. The totals are those of the
-    /// composer's meter: the estimate, the output reserve, the effective
-    /// trigger, the saved capacity (`null` when none is saved), and whether
-    /// auto-compaction is on. They come from the saved chat budgets, the same
-    /// source the composer sends with a turn.
+    /// the fixed framing no part owns, which includes the reasoning effort
+    /// field when the session records an effort (ADR-0102); skills are listed
+    /// as not included because they are chosen for one turn. The totals are
+    /// those of the composer's meter: the estimate, the output reserve, the
+    /// effective trigger, the saved capacity (`null` when none is saved), and
+    /// whether auto-compaction is on. They come from the saved chat budgets,
+    /// the same source the composer sends with a turn.
     ///
     /// A session whose workspace is no longer registered is not an error. As in
     /// `chat_send`, its workspace instructions are not sent, even when a saved
@@ -102,12 +104,19 @@ impl DesktopService {
             ToolMode::Enabled { .. } => (true, None),
             ToolMode::Disabled { reason } => (false, Some(reason)),
         };
+        // The effort the composer sends with the next turn is the one the
+        // session records; an unreadable choices file records none.
+        let (records, _) = inner.session_records();
+        let reasoning_effort = records
+            .get(&session_id)
+            .and_then(|record| record.reasoning_effort);
         let parts = estimate_next_turn_parts(
             &journal,
             &inner.data_root,
             &composed,
             global_bytes,
             tools_enabled,
+            reasoning_effort,
         )
         .map_err(|error| DesktopError::from_app(&error))?;
         drop(journal);

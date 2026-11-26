@@ -224,4 +224,62 @@ describe("serialized connection writes", () => {
     await choosingB;
     expect(model.status()?.model).toBe("a-new");
   });
+
+  // An effort choice (ADR-0102) shares the model save's queue and counters.
+  it("sends an effort save after a pending model save, and keeps the effort's answer", async () => {
+    const writes = install();
+    const model = createConnectionModel();
+    await model.open("s-a");
+    const changes: string[] = [];
+    model.subscribe((change) => changes.push(change));
+
+    const savingModel = model.chooseModel("m1");
+    const savingEffort = model.chooseEffort("high");
+    await flush();
+    expect(writes.map((write) => write.command)).toEqual(["session_model_select"]);
+
+    writes[0]?.resolve(status("m1"));
+    await flush();
+    expect(writes.map((write) => write.command)).toEqual([
+      "session_model_select",
+      "session_effort_select",
+    ]);
+    expect(writes[1]?.args).toEqual({ session_id: "s-a", reasoning_effort: "high" });
+    // The model save's answer is older than the effort pick, so it is not shown.
+    expect(model.status()?.model).toBe("read");
+
+    writes[1]?.resolve({ ...status("m1"), reasoning_effort: "high" });
+    await Promise.all([savingModel, savingEffort]);
+    expect(model.status()?.model).toBe("m1");
+    expect(model.status()?.reasoning_effort).toBe("high");
+    expect(changes).toEqual(["effort"]);
+  });
+
+  it("drops a status read that answers while the session's effort save is pending", async () => {
+    const calls = installDeferred();
+    const model = createConnectionModel();
+    const opening = model.open("s-a");
+    await flush();
+    calls[0]?.resolve(status("m"));
+    await opening;
+    let reads = 0;
+    model.subscribe((change) => {
+      if (change === "read") {
+        reads += 1;
+      }
+    });
+
+    const choosing = model.chooseEffort(null);
+    await flush();
+    expect(calls[1]?.args).toEqual({ session_id: "s-a", reasoning_effort: null });
+    const refreshing = model.refresh();
+    await flush();
+    calls[2]?.resolve({ ...status("m"), reasoning_effort: "low" });
+    await refreshing;
+    expect(reads).toBe(0);
+
+    calls[1]?.resolve(status("m"));
+    await choosing;
+    expect(model.status()?.reasoning_effort).toBeNull();
+  });
 });
