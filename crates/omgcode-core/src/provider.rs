@@ -364,6 +364,15 @@ pub enum ProviderError {
     /// The local server returned a non-success status.
     #[error("local model server returned HTTP status {0}")]
     HttpStatus(u16),
+    /// The server refused the reasoning effort the request sent (ADR-0108):
+    /// a client-error status whose body names `reasoning_effort` as the
+    /// refused parameter. The value is the one this client sent; no server
+    /// text is kept.
+    #[error(
+        "the model server refused the reasoning effort `{}`; choose another effort or the default",
+        .0.as_str()
+    )]
+    EffortRefused(ReasoningEffort),
     /// The server response exceeds the byte limit.
     #[error("local model response exceeds 1 MiB")]
     ResponseTooLarge,
@@ -931,7 +940,8 @@ impl LocalModelClient {
 
     /// Send a non-streaming request and read its whole body within 1 MiB.
     ///
-    /// Dropping the response or the pending request on any return closes the
+    /// A non-success status is reported by [`Self::chat_failure`]. Dropping
+    /// the response or the pending request on any return closes the
     /// connection.
     async fn whole_exchange(
         &self,
@@ -939,16 +949,20 @@ impl LocalModelClient {
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, ProviderError> {
         let client = self.http_client()?;
-        let response = self
+        let mut response = self
             .send(&client, body, false, self.authorization.as_ref(), cancel)
             .await?;
+        if !response.status().is_success() {
+            return Err(self.chat_failure(&mut response, cancel).await);
+        }
         read_whole_body(response, MAX_RESPONSE_BYTES, cancel).await
     }
 
     /// Send a streaming request and feed the response body to the stream
     /// parser.
     ///
-    /// Every wait goes through [`until_cancelled`], and the token is also
+    /// A non-success status is reported by [`Self::chat_failure`]. Every wait
+    /// goes through [`until_cancelled`], and the token is also
     /// checked before each piece of the body, so a fast stream cannot starve
     /// the check. Dropping the response or the pending request on any return
     /// closes the connection. Text already passed to `on_text` stays delivered.
@@ -963,6 +977,9 @@ impl LocalModelClient {
         let mut response = self
             .send(&client, body, true, self.authorization.as_ref(), cancel)
             .await?;
+        if !response.status().is_success() {
+            return Err(self.chat_failure(&mut response, cancel).await);
+        }
         check_streaming_head(response.status(), response.headers())?;
 
         let mut parser = stream::StreamParser::new(mode);
@@ -984,6 +1001,49 @@ impl LocalModelClient {
             }
         }
     }
+
+    /// The failure that a non-success Chat Completions response reports
+    /// (ADR-0108).
+    ///
+    /// Only a client-error status to a request that sent a reasoning effort
+    /// reads the body, keeping at most [`MAX_ERROR_BODY_BYTES`] of it as
+    /// [`read_error_body`] describes, and only its `error.param` is looked
+    /// at: `reasoning_effort` there makes the failure
+    /// [`ProviderError::EffortRefused`] with the effort this client sent.
+    /// Every other response, and a longer or unreadable body, is
+    /// [`ProviderError::HttpStatus`]; the body of a request without an
+    /// effort, or of a server error, is not read. No server text is kept.
+    /// The read shares the request's deadline and watches `cancel`.
+    async fn chat_failure(&self, response: &mut Response, cancel: &CancelToken) -> ProviderError {
+        let status = response.status();
+        let failure = ProviderError::HttpStatus(status.as_u16());
+        let Some(effort) = self.reasoning_effort else {
+            return failure;
+        };
+        if !status.is_client_error() {
+            return failure;
+        }
+        match read_error_body(response, cancel).await {
+            Ok(Some(body)) if names_effort_parameter(&body) => ProviderError::EffortRefused(effort),
+            Ok(_) => failure,
+            Err(error) => error,
+        }
+    }
+}
+
+/// Whether a failed response's body names `reasoning_effort` as the
+/// parameter it refused: the `error.param` string of one strict JSON value,
+/// where LM Studio puts it and OpenAI's SDK reads it (ADR-0108). Nothing
+/// else in the body is read.
+fn names_effort_parameter(body: &[u8]) -> bool {
+    let Ok(value) = parse_strict_json(body) else {
+        return false;
+    };
+    value
+        .get("error")
+        .and_then(|error| error.get("param"))
+        .and_then(Value::as_str)
+        == Some("reasoning_effort")
 }
 
 impl LocalModelClient {
@@ -1093,8 +1153,14 @@ impl LocalModelClient {
     }
 }
 
-/// Read at most [`MAX_ERROR_BODY_BYTES`] of a failed response. A read error
+/// Keep at most [`MAX_ERROR_BODY_BYTES`] of a failed response. A read error
 /// or a longer body gives `None`, so the caller reports the status alone.
+///
+/// The limit is checked as each piece of the body arrives, so the piece
+/// that passes it has already been received and is dropped unkept. Over
+/// HTTP/1, the only protocol this client speaks, one piece is one socket
+/// read, which hyper 1.12.0 caps at its 417,792-byte read buffer
+/// (`proto/h1/io.rs`, `DEFAULT_MAX_BUFFER_SIZE`).
 async fn read_error_body(
     response: &mut Response,
     cancel: &CancelToken,
@@ -1287,6 +1353,7 @@ const fn model_error(error: ProviderError) -> ModelError {
         ProviderError::RequestTooLarge | ProviderError::ContextLimit => ModelError::RequestTooLarge,
         ProviderError::Transport
         | ProviderError::HttpStatus(_)
+        | ProviderError::EffortRefused(_)
         | ProviderError::IncompleteStream
         | ProviderError::ResponseFailed(_)
         | ProviderError::SignInRequired
@@ -2125,6 +2192,38 @@ mod tests {
             client(Some(ReasoningEffort::Low)).text_body(&history, false),
             Err(ProviderError::ContextLimit)
         );
+    }
+
+    /// Only `error.param` of one strict JSON value names a refused effort
+    /// (ADR-0108). The message, type, and code are not read, so a body
+    /// that only mentions the field elsewhere does not count.
+    #[test]
+    fn only_an_error_param_of_reasoning_effort_names_a_refused_effort() {
+        for body in [
+            r#"{"error":{"param":"reasoning_effort"}}"#,
+            r#"{"error":{"message":"m","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_value"}}"#,
+            " {\"error\":{\"param\":\"reasoning_effort\"}}\n",
+        ] {
+            assert!(names_effort_parameter(body.as_bytes()), "{body}");
+        }
+        for body in [
+            "",
+            "not json",
+            r#"{"param":"reasoning_effort"}"#,
+            r#"{"error":{"param":"model"}}"#,
+            r#"{"error":{"param":"reasoning"}}"#,
+            r#"{"error":{"param":"Reasoning_Effort"}}"#,
+            r#"{"error":{"param":["reasoning_effort"]}}"#,
+            r#"{"error":{"param":null,"message":"reasoning_effort"}}"#,
+            r#"{"error":"reasoning_effort"}"#,
+            r#"[{"error":{"param":"reasoning_effort"}}]"#,
+            // Duplicate keys are refused at every depth, so neither copy is
+            // believed.
+            r#"{"error":{"param":"model","param":"reasoning_effort"}}"#,
+            r#"{"error":{"param":"reasoning_effort"}} {"error":{}}"#,
+        ] {
+            assert!(!names_effort_parameter(body.as_bytes()), "{body}");
+        }
     }
 
     use std::net::TcpListener;

@@ -365,6 +365,21 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Version 0.71.0 names a reasoning effort that the server refused; it is a
+  minor version because the public `ProviderError` enum gains the variant
+  `EffortRefused`, which breaks an exhaustive `match` on it. A chat
+  turn with the effort **Max** against LM Studio 0.4.28 failed at once with
+  only "local model server returned HTTP status 400": LM Studio accepts
+  `none` through `xhigh` and refuses `max`, and the Chat Completions client
+  never read a failed response's body. Now a client-error response to a
+  request that sent an effort is read, keeping at most 64 KiB, and when its
+  `error.param` is `reasoning_effort` the turn fails with the code
+  `effort_refused` and "the model server refused the reasoning effort
+  `max`; choose another effort or the default". Only that field is read and
+  no server text is shown or kept; every other Chat Completions failure
+  keeps its HTTP status, and a request without an effort reads no error
+  body, as before. The ChatGPT plan route is unchanged.
+  The journal still records `model_error` (ADR-0108, amending ADR-0102).
 - Four CodeQL alerts in the desktop UI are resolved. The text-append helper
   (`append` in `dom.ts`) now handles a string child and a node child in
   separate branches (alert 21). Two security-test script end-tag patterns

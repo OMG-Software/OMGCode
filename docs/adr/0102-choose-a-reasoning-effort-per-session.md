@@ -1,6 +1,6 @@
 # 0102: Choose a reasoning effort per session
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0108](0108-report-a-refused-reasoning-effort-by-name.md)
 - Date: 2026-11-26
 - Amends: [ADR-0089](0089-choose-the-provider-and-model-in-the-side-panel-footer.md) decision 1, for the box's contents only;
   [ADR-0087](0087-show-a-per-part-context-estimate-for-the-open-session.md) decision 3, for what framing counts
@@ -148,9 +148,11 @@ No provider's effort handling was exercised with a real request.
   documents one. "Default" keeps the previous behaviour exactly.
 - A value the model does not support fails the turn with the provider's
   HTTP status, before any reply; the operator chooses another value.
-- Ollama Cloud's and LM Studio's handling, and every hosted provider's, were
-  not observed with a real request. LM Studio before 0.4.8 may ignore or
-  refuse the field.
+  ADR-0108 found that the status alone did not name the problem, and makes a
+  Chat Completions refusal that names `reasoning_effort` report the value.
+- Ollama Cloud's handling, and every hosted provider's, were not observed
+  with a real request. LM Studio before 0.4.8 may ignore or refuse the
+  field. LM Studio was later observed to refuse `max` (ADR-0108).
 - An older build refuses a journal with a recorded effort and reads a
   session-connections file with an effort as unreadable.
 

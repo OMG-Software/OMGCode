@@ -923,8 +923,12 @@ untouched controls take the returned values.
   flight), but not by a launch argument that fixes the connection.
   `chat_send` sends the effort the box shows in its settings as
   `reasoning_effort`, and Rust refuses one the turn's connection does not
-  take. The server still decides whether its model accepts the value; a
-  refusal arrives as the provider's error.
+  take. The server still decides whether its model accepts the value. A
+  Chat Completions refusal that names `reasoning_effort` fails the turn with
+  the code `effort_refused` and a message naming the value sent, such as
+  LM Studio's refusal of `max`; any other Chat Completions refusal arrives
+  as the provider's HTTP status (ADR-0108), and a ChatGPT plan failure keeps
+  its own code (ADR-0093).
 - **Saved preferences.** Two windows save one file, each its own fields,
   under one service lock, so neither overwrites the other's (ADR-0080). The
   composer's **Save as defaults** sends the compaction threshold, the

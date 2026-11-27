@@ -815,8 +815,10 @@ summary requests send none) and records it in the turn's request manifest
 (ADR-0102). Without the flag nothing is sent and
 the provider's default applies. A connection whose provider documents no
 effort field refuses the flag with the code `provider` before any request,
-and a version 1 or 2 session refuses it with `session`. See
-[reasoning effort](provider-authentication.md).
+and a version 1 or 2 session refuses it with `session`. A Chat Completions
+server that refuses the value and names `reasoning_effort` in its error
+fails the turn with the code `effort_refused` (ADR-0108); LM Studio does
+this for `max`. See [reasoning effort](provider-authentication.md).
 
 Each text-only invocation sends one request, which is not streamed unless
 `--stream` is given. A tool-enabled turn sends at most one request more than
