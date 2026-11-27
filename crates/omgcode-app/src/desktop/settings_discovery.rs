@@ -202,12 +202,20 @@ impl DesktopError {
         )
     }
 
-    /// Every profile was recorded, but the assignment to the workspace failed.
-    fn not_assigned(total: usize, cause: &Self) -> Self {
+    /// Every profile was recorded, but the assignment to the workspace did
+    /// not complete: `assigned` of them were assigned before it failed.
+    fn not_assigned(total: usize, assigned: usize, cause: &Self) -> Self {
+        let outcome = if assigned == 0 {
+            format!("The {total} profile(s) were recorded but not assigned to the workspace")
+        } else {
+            format!(
+                "The {total} profile(s) were recorded, and {assigned} of them were assigned to the workspace before the assignment failed"
+            )
+        };
         Self::execution(
             cause.code(),
             format!(
-                "The {total} profile(s) were recorded but not assigned to the workspace: {} Assign them on the workspace's page.",
+                "{outcome}: {} Reload the workspace's page and turn on the others there.",
                 cause.message()
             ),
         )
@@ -500,11 +508,23 @@ impl DesktopService {
             }
             if let Some((workspace_id, _, plan)) = &assign {
                 let names: Vec<&str> = chosen.iter().map(ToolchainProposal::name).collect();
-                store
-                    .assign_profiles_with_access(*workspace_id, &names, plan, expected)
-                    .map_err(|error| {
-                        DesktopError::not_assigned(chosen.len(), &DesktopError::from_grant(&error))
-                    })?;
+                if let Err(error) =
+                    store.assign_profiles_with_access(*workspace_id, &names, plan, expected)
+                {
+                    // Assignments recorded before the failure stand.
+                    let assigned = names
+                        .iter()
+                        .filter_map(|name| store.profile(name))
+                        .filter(|status| {
+                            store.profile_assigned(*workspace_id, status.profile().id())
+                        })
+                        .count();
+                    return Err(DesktopError::not_assigned(
+                        chosen.len(),
+                        assigned,
+                        &DesktopError::from_grant(&error),
+                    ));
+                }
             }
         }
         self.discovery_view(host, request.workspace_id, MissingWorkspace::Ignore)

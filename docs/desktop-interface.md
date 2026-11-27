@@ -1391,8 +1391,12 @@ waits. The window shows:
   cannot be revoked, the workspace stays registered with the grants not yet
   revoked, the runs the revocations withdrew are stopped and waited for, and
   the command fails with `container_access_failed` or
-  `revocation_incomplete`, saying to retry the grant's **Revoke** and remove
-  the workspace again. If that file cannot
+  `revocation_incomplete`, saying how many grants were not revoked, to retry
+  each one's **Revoke**, and to remove the workspace again; a grant revoked
+  whose AppContainer profile could not be deleted is reported apart, because
+  it is no longer listed. When every grant was revoked but the removal
+  cannot be recorded, the workspace stays registered and the command fails
+  with `revocation_incomplete` after the same wait. If that file cannot
   be deleted, the command still stops and waits for the runs the removal
   withdraws, then fails with `instructions_orphaned` (a run that was not
   stopped is reported first); no turn sends the file, because `chat_send`

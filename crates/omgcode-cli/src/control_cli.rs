@@ -4,8 +4,8 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    ContainerGrantAccess, ControlError, ControlStore, CredentialId, PackageProfileDeclaration,
-    ProfileDeclaration, ProviderProfileDeclaration, Revocations,
+    ContainerGrantAccess, ContainerGrantState, ControlError, ControlStore, CredentialId,
+    PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -565,11 +565,31 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .register_workspace_with_access(&path, revision)
                 .map_err(control_error)?;
             let grant = registered.grant.map_err(|error| {
+                let id = registered.registration.id();
+                // A grant whose access-control change failed is recorded
+                // `pending`, and a second grant of the same folder, or
+                // registering it again, is refused or skipped until it is
+                // revoked.
+                let pending = store
+                    .container_grants()
+                    .iter()
+                    .find(|status| {
+                        status.grant().workspace_id() == id
+                            && status.state() != ContainerGrantState::Active
+                    })
+                    .map(|status| status.grant().id());
+                let recovery = pending.map_or_else(
+                    || "Grant it with `workspace container-grant`.".to_owned(),
+                    |grant| {
+                        format!(
+                            "Grant {grant} is recorded as pending: revoke it with `workspace container-revoke {grant}`, then register the folder again with the current revision from `workspace status`, which grants it."
+                        )
+                    },
+                );
                 CliError::new(
                     "control",
                     format!(
-                        "The workspace was registered as {}, but its container could not be granted its folder: {error}. Grant it with `workspace container-grant`.",
-                        registered.registration.id()
+                        "The workspace was registered as {id}, but its container could not be granted its folder: {error}. {recovery}"
                     ),
                 )
             })?;
@@ -592,13 +612,20 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             // A revocation withdraws every run of the workspace that started
             // before it, and runs start only under the lock held here.
             let before = run::pending_runs(&store);
-            let revocations = store
+            let unregistration = store
                 .unregister_workspace_with_access(workspace_id, revision)
                 .map_err(control_error)?;
             let snapshot = store.snapshot();
             let listed = withdrawn_runs(&store);
             drop(store);
-            finish_revocations(data_root, listed, before, &revocations, true)?;
+            finish_revocations(
+                data_root,
+                listed,
+                before,
+                &unregistration.revocations,
+                RevokingChange::Unregistration(unregistration.removal.as_ref()),
+            )?;
+            let revocations = unregistration.revocations;
             // The change is recorded. A saved desktop instructions file is
             // removed next, without the desktop's in-process lock; a file that
             // remains is never sent, because a turn reads it only for a
@@ -692,7 +719,13 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             });
             let listed = withdrawn_runs(&store);
             drop(store);
-            finish_revocations(data_root, listed, before, &revocations, false)?;
+            finish_revocations(
+                data_root,
+                listed,
+                before,
+                &revocations,
+                RevokingChange::Recorded,
+            )?;
             print_json(&output)
         }
         WorkspaceCommand::ProfileAssign {
@@ -719,7 +752,13 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             });
             let listed = withdrawn_runs(&store);
             drop(store);
-            finish_revocations(data_root, listed, before, &revocations, false)?;
+            finish_revocations(
+                data_root,
+                listed,
+                before,
+                &revocations,
+                RevokingChange::Recorded,
+            )?;
             print_json(&output)
         }
         WorkspaceCommand::PackageProfileAdd(args) => package_profile_add(args, data_root),
@@ -912,19 +951,30 @@ fn profile_assign(
     }))
 }
 
+/// The change [`finish_revocations`] reports on.
+#[derive(Clone, Copy)]
+enum RevokingChange<'a> {
+    /// A recorded change, which stands whatever its revocations did.
+    Recorded,
+    /// An unregistration, recorded only after every grant was revoked, with
+    /// the error that kept it from being recorded after that, if any.
+    Unregistration(Option<&'a ControlError>),
+}
+
 /// After a recorded change that may have revoked grants, wait for the runs it
 /// withdrew, then report what did not complete. `listed` holds the runs the
 /// settings withdrew; `before` every pending run, listed by
 /// `run::pending_runs` before the change. Any revocation, even one that failed
 /// after it was requested, withdraws every run of its workspace, so the runs
-/// of those workspaces are waited for too. A grant that could not be revoked
-/// stays recorded, and `workspace container-revoke` retries it.
+/// of those workspaces are waited for too. Every grant that could not be
+/// revoked is named; it stays recorded, and `workspace container-revoke`
+/// retries it.
 fn finish_revocations(
     data_root: &Path,
     listed: Result<Vec<Uuid>, CliError>,
     before: Result<Vec<(WorkspaceId, Uuid)>, run::RunError>,
     revocations: &Revocations,
-    unregistration: bool,
+    change: RevokingChange<'_>,
 ) -> Result<(), CliError> {
     let mut wait = listed.as_deref().unwrap_or(&[]).to_vec();
     let mut problems = Vec::new();
@@ -937,19 +987,39 @@ fn finish_revocations(
         }
     }
     let mut kind = "run";
-    if let Some((grant, error)) = &revocations.failure {
+    if !revocations.failures.is_empty() {
         kind = "control";
-        // An unregistration is recorded only after every grant is revoked.
-        let message = if unregistration {
-            format!(
-                "The workspace stays registered, because grant {grant} could not be revoked: {error}. Retry with `workspace container-revoke {grant}`, then unregister it again."
-            )
-        } else {
-            format!(
-                "The change was recorded, but grant {grant} could not be revoked: {error}. Retry with `workspace container-revoke {grant}`."
-            )
+        let mut message = match change {
+            RevokingChange::Recorded => {
+                "The change was recorded, but not every container grant it releases was revoked.".to_owned()
+            }
+            RevokingChange::Unregistration(_) => {
+                "The workspace stays registered, because not every container grant of it was revoked.".to_owned()
+            }
         };
+        for (grant, error) in &revocations.failures {
+            if matches!(error, ControlError::ProfileRemoval(_)) {
+                // The grant is revoked; only the container's profile, which
+                // holds no grant now, could not be deleted.
+                message.push_str(&format!(" Grant {grant}: {error}."));
+            } else {
+                message.push_str(&format!(
+                    " Grant {grant} could not be revoked: {error}; retry with `workspace container-revoke {grant}`."
+                ));
+            }
+        }
+        if matches!(change, RevokingChange::Unregistration(_)) {
+            message.push_str(" Then unregister it again.");
+        }
         problems.insert(0, message);
+    } else if let RevokingChange::Unregistration(Some(error)) = change {
+        kind = "control";
+        problems.insert(
+            0,
+            format!(
+                "Every container grant of the workspace was revoked, but its removal could not be recorded: {error}. The workspace stays registered; unregister it again."
+            ),
+        );
     }
     if let Err(error) = stop_withdrawn_runs(data_root, &wait) {
         problems.push(error.message);

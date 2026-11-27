@@ -230,10 +230,13 @@ withdrawn like any run whose workspace is no longer registered.
 
 Since ADR-0107 the command first revokes every container grant of the
 workspace, in any state, and lists them under `revoked`. It records
-`workspace_unregistered` only when every revocation was confirmed. A failed
-revocation leaves the workspace registered with the grants not yet revoked;
-the command says so, and `workspace container-revoke` retries the grant before
-the operator unregisters again. The event itself is still refused while any
+`workspace_unregistered` only when every revocation was confirmed. Every
+grant is attempted, even after one fails. A failed revocation leaves the
+workspace registered with the grants not yet revoked; the command names each
+one, and `workspace container-revoke` retries it before the operator
+unregisters again. When every grant was revoked but the event cannot be
+recorded, the workspace also stays registered, and the command still waits
+for the runs the revocations withdrew. The event itself is still refused while any
 grant names the workspace (`grant refused`), so replay keeps ADR-0081's rule.
 An unknown workspace and a stale revision are refused as for any other
 settings change, before anything is revoked. Registering the same folder afterwards assigns a new

@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
 
+use omgcode_core::control::ControlStore;
+use support::spawn_gate::without_child_spawns;
 use support::{
     assert_control_error, assert_error_code, assert_success, json_output, live_revision, path_arg,
-    register_workspace, run_cli,
+    run_cli,
 };
 
 const FILE_CONTENT: &str = "FILE_BODY_SECRET_9fa0321d2c7e";
@@ -45,11 +47,21 @@ fn workspace_fixture() -> WorkspaceFixture {
     );
     assert_success(&root);
     assert_eq!(json_output(&root)["revision"], 1);
-    let registered = register_workspace(&data_root, &workspace, 1);
-    let workspace_id = registered["registration_id"]
-        .as_str()
-        .expect("workspace ID")
-        .to_owned();
+    // Core's registration primitive grants nothing. These tests run no
+    // program, so the workspace needs no container access, and no
+    // access-control entry or AppContainer profile can outlive them
+    // (ADR-0107). The store is closed before any child starts.
+    let workspace_id = without_child_spawns(|| {
+        let mut store = ControlStore::open_existing(&data_root)
+            .expect("open settings")
+            .expect("settings exist");
+        store
+            .register_workspace(&workspace, 1)
+            .expect("register workspace")
+            .id()
+            .as_uuid()
+            .to_string()
+    });
 
     WorkspaceFixture {
         _temporary: temporary,

@@ -410,6 +410,9 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
         .expect("registered again");
     assert_eq!(repeated.revision, overview.revision);
     assert_eq!(repeated.workspaces.len(), 1);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 /// Unregistering revokes the workspace's grants first, so on Windows the one
@@ -440,15 +443,25 @@ fn unregistering_revokes_the_grant_registration_made() {
         cfg!(windows),
         "{message}"
     );
+    // The folder's own line, and on Windows its grant's line; a parent
+    // folder whose name contains `project` is not counted.
     assert_eq!(
-        message.matches("project").count(),
-        if cfg!(windows) { 2 } else { 1 }
+        message
+            .lines()
+            .filter(|line| line.trim_end().ends_with("project"))
+            .count(),
+        if cfg!(windows) { 2 } else { 1 },
+        "{message}"
     );
     let store = ControlStore::open_existing(&fixture.data)
         .expect("open")
         .expect("exists");
     assert!(store.container_grants().is_empty());
     assert_eq!(store.workspaces().count(), 0);
+    drop(store);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[test]

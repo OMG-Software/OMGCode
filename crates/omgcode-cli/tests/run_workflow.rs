@@ -19,6 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use support::run_scene::{Scene, error_message, run_json, shell, system_root, wait};
+use support::spawn_gate;
 use support::{
     CLI_DEADLINE, HOST_ENV_SENTINEL, HOST_ENV_SENTINEL_VALUE, assert_control_error,
     assert_error_code, assert_success, cli_command, json_output, path_arg, run_with_deadline,
@@ -910,10 +911,7 @@ fn removing_the_profile_stops_a_live_run() {
 fn unassigning_the_profile_stops_a_live_run() {
     let scene = Scene::new();
     assert_success(&scene.add_profile("system", &[]));
-    let child = scene
-        .command(&[], &shell(LONG_RUN))
-        .spawn()
-        .expect("spawn run");
+    let child = spawn_gate::spawn(&mut scene.command(&[], &shell(LONG_RUN))).expect("spawn run");
     wait_for_start(&scene);
     let revision = scene.revision().to_string();
     let output = scene.settings_cli(&[

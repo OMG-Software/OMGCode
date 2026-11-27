@@ -23,9 +23,9 @@ use omgcode_platform::container::{self as platform, CONTAINER_GRANTS_SUPPORTED};
 use uuid::Uuid;
 
 use super::{
-    Action, ContainerGrant, ContainerGrantAccess, ContainerRevocation, ControlError,
-    ControlSnapshot, ControlStore, ProfilePlatform, RootGrantNeed, WorkspaceRegistration,
-    root_grant_need,
+    Action, ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
+    ContainerRevocation, ControlError, ControlSnapshot, ControlStore, ProfilePlatform,
+    RootGrantNeed, WorkspaceRegistration, root_grant_need,
 };
 use crate::policy::WorkspaceId;
 use crate::workspace::DirectoryRecord;
@@ -140,15 +140,37 @@ pub struct RegisteredWorkspace {
 pub struct Revocations {
     /// The confirmed revocations, in order.
     pub revoked: Vec<ContainerRevocation>,
-    /// The first revocation that failed, with its grant; later ones were not
-    /// attempted. The grant stays recorded, `revoking` when its access-control
-    /// change failed, and `workspace container-revoke` retries it.
-    pub failure: Option<(Uuid, ControlError)>,
+    /// Each revocation that failed, with its grant, in order. Every grant is
+    /// attempted, so one failure never leaves a later grant unrevoked. A
+    /// failed grant stays recorded, `revoking` when its access-control change
+    /// failed, and `workspace container-revoke` retries it. After
+    /// [`ControlError::ProfileRemoval`] the grant is revoked, and only the
+    /// container's AppContainer profile, which then holds no grant, remains.
+    pub failures: Vec<(Uuid, ControlError)>,
     /// The workspace of each grant whose revocation was attempted, confirmed
     /// or not, each once, in order. A revocation withdraws every run of its
     /// workspace, which the settings alone do not show, so a caller waits
     /// for the runs of these workspaces that it listed before the change.
     pub workspaces: Vec<WorkspaceId>,
+}
+
+/// What [`ControlStore::unregister_workspace_with_access`] did.
+#[derive(Debug)]
+pub struct Unregistration {
+    /// The revocations made first. The workspace stays registered when any
+    /// of them failed.
+    pub revocations: Revocations,
+    /// Why the workspace stays registered although every revocation was
+    /// confirmed: its removal could not be recorded. `None` otherwise.
+    pub removal: Option<ControlError>,
+}
+
+impl Unregistration {
+    /// Whether the workspace was unregistered.
+    #[must_use]
+    pub fn unregistered(&self) -> bool {
+        self.revocations.failures.is_empty() && self.removal.is_none()
+    }
 }
 
 impl Revocations {
@@ -262,7 +284,8 @@ impl ControlStore {
     /// # Errors
     ///
     /// What [`Self::assign_profile`] refuses for any of them, apart from the
-    /// revision, and a profile named twice.
+    /// revision; a profile named twice; and a container grant of the
+    /// workspace that is pending or being revoked.
     pub fn plan_profiles_access(
         &self,
         workspace_id: WorkspaceId,
@@ -276,6 +299,7 @@ impl ControlStore {
             }
             ids.push(id);
         }
+        self.check_grants_settled(workspace_id)?;
         let mut plan = ProfileAccessPlan::default();
         if !CONTAINER_GRANTS_SUPPORTED {
             return Ok(plan);
@@ -309,7 +333,8 @@ impl ControlStore {
     ///
     /// # Errors
     ///
-    /// An unknown workspace.
+    /// An unknown workspace, and a container grant of it that is pending or
+    /// being revoked.
     pub fn plan_folder_access(
         &self,
         workspace_id: WorkspaceId,
@@ -318,6 +343,7 @@ impl ControlStore {
         if self.workspace(workspace_id).is_none() {
             return Err(ControlError::UnknownWorkspace);
         }
+        self.check_grants_settled(workspace_id)?;
         let mut plan = ProfileAccessPlan::default();
         if CONTAINER_GRANTS_SUPPORTED {
             self.plan_into(workspace_id, paths, &mut plan);
@@ -329,15 +355,18 @@ impl ControlStore {
     /// the assignment, under this store's lock. The plan is made again first:
     /// a different list of folders to grant refuses the assignment, so the
     /// operator never grants a folder they did not see. Each grant goes
-    /// through [`Self::grant_container_access`] and advances the revision.
+    /// through [`Self::grant_container_access`], is refused when its folder
+    /// is no longer the confirmed directory, and advances the revision.
     ///
     /// # Errors
     ///
     /// What [`Self::assign_profile`] refuses; a changed plan; a folder core's
-    /// grant rules refuse, before anything is recorded; and the first grant
-    /// that fails. Grants applied before a failure stay recorded, the profile
-    /// is then not assigned, and a grant whose access-control change failed
-    /// stays `pending` until it is revoked.
+    /// grant rules refuse, before anything is recorded; the first grant that
+    /// fails; and an assignment that cannot be recorded. After a failure the
+    /// profile is not assigned, and the grants this call made that no
+    /// assigned profile needs are revoked, which withdraws the workspace's
+    /// runs. A grant whose revocation fails then stays recorded, `pending`
+    /// or `revoking`, until it is revoked.
     pub fn assign_profile_with_access(
         &mut self,
         workspace_id: WorkspaceId,
@@ -357,7 +386,8 @@ impl ControlStore {
     /// # Errors
     ///
     /// As [`Self::assign_profile_with_access`]. An assignment that fails
-    /// after others were recorded leaves those recorded.
+    /// after others were recorded leaves those recorded, with the grants
+    /// they need.
     pub fn assign_profiles_with_access(
         &mut self,
         workspace_id: WorkspaceId,
@@ -372,21 +402,51 @@ impl ControlStore {
                 "the folders this assignment grants changed; review it again",
             ));
         }
-        let paths = plan.paths();
-        self.check_container_grants(workspace_id, &paths, ContainerGrantAccess::ReadExecute)
-            .map_err(|(_, error)| error)?;
-        let mut granted = Vec::with_capacity(paths.len());
-        for path in &paths {
-            granted.push(self.grant_container_access(
+        self.check_container_grants(
+            workspace_id,
+            &plan.paths(),
+            ContainerGrantAccess::ReadExecute,
+        )
+        .map_err(|(_, error)| error)?;
+        let mut granted = Vec::with_capacity(plan.grant.len());
+        for folder in &plan.grant {
+            match self.grant_confirmed_container_access(
                 workspace_id,
-                path,
+                &folder.path,
+                folder.record.as_ref(),
                 ContainerGrantAccess::ReadExecute,
                 self.revision(),
-            )?);
+            ) {
+                Ok(grant) => granted.push(grant),
+                Err(error) => {
+                    // A grant whose access-control change failed is recorded
+                    // `pending`, and it is this call's: the plan leaves out a
+                    // folder that already has a grant of the workspace.
+                    let mut made: Vec<Uuid> = granted.iter().map(ContainerGrant::id).collect();
+                    made.extend(
+                        folder
+                            .record
+                            .as_ref()
+                            .and_then(|record| self.workspace_grant_on(workspace_id, record)),
+                    );
+                    self.release_unneeded(workspace_id, &made);
+                    return Err(error);
+                }
+            }
         }
         let mut profile_ids = Vec::with_capacity(names.len());
         for name in names {
-            profile_ids.push(self.assign_profile(workspace_id, name, self.revision())?);
+            match self.assign_profile(workspace_id, name, self.revision()) {
+                Ok(id) => profile_ids.push(id),
+                Err(error) => {
+                    // The grants were the operator's consent to this
+                    // assignment, so a grant no recorded assignment needs
+                    // does not outlive it.
+                    let made: Vec<Uuid> = granted.iter().map(ContainerGrant::id).collect();
+                    self.release_unneeded(workspace_id, &made);
+                    return Err(error);
+                }
+            }
         }
         Ok(ProfileAssignment {
             profile_ids,
@@ -559,16 +619,18 @@ impl ControlStore {
     ///
     /// # Errors
     ///
-    /// A stale revision or an unknown workspace, before anything changes, and
-    /// a failed unregistration after every grant was revoked. A failed
-    /// revocation does not fail the call; it is reported in
-    /// [`Revocations::failure`], and the workspace then stays registered with
+    /// A stale revision or an unknown workspace, before anything changes.
+    /// What fails after that does not fail the call, because the revocations
+    /// before it stand and their runs must be waited for: a failed revocation
+    /// is reported in [`Revocations::failures`], and a removal that cannot be
+    /// recorded after every grant was revoked in
+    /// [`Unregistration::removal`]. The workspace then stays registered, with
     /// the grants not yet revoked.
     pub fn unregister_workspace_with_access(
         &mut self,
         id: WorkspaceId,
         expected_revision: u64,
-    ) -> Result<Revocations, ControlError> {
+    ) -> Result<Unregistration, ControlError> {
         self.check_revision(expected_revision)?;
         if self.workspace(id).is_none() {
             return Err(ControlError::UnknownWorkspace);
@@ -580,10 +642,15 @@ impl ControlStore {
             .map(|status| status.grant().id())
             .collect();
         let revocations = self.revoke_each(&grants);
-        if revocations.failure.is_none() {
-            self.unregister_workspace(id, self.revision())?;
-        }
-        Ok(revocations)
+        let removal = if revocations.failures.is_empty() {
+            self.unregister_workspace(id, self.revision()).err()
+        } else {
+            None
+        };
+        Ok(Unregistration {
+            revocations,
+            removal,
+        })
     }
 
     /// The profile `name`'s identifier when it can be assigned to
@@ -676,8 +743,39 @@ impl ControlStore {
         plan.grant.retain(|_| kept.next().unwrap_or(true));
     }
 
+    /// Refuse while a container grant of `workspace_id` is pending or being
+    /// revoked. A run of the workspace is refused while one is, and a plan
+    /// leaves out a folder whose grant is recorded in any state, so an
+    /// assignment would look complete while its runs stay refused.
+    fn check_grants_settled(&self, workspace_id: WorkspaceId) -> Result<(), ControlError> {
+        if self.container_grants().iter().any(|status| {
+            status.grant().workspace_id() == workspace_id
+                && status.state() != ContainerGrantState::Active
+        }) {
+            return Err(ControlError::GrantRefused(
+                "a container grant of this workspace is pending or being revoked; revoke it under Settings, Advanced, Container grants, or with `omgcode workspace container-revoke`, then assign the profile again",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The recorded grant of `workspace_id` on `directory`, in any state.
+    fn workspace_grant_on(
+        &self,
+        workspace_id: WorkspaceId,
+        directory: &DirectoryRecord,
+    ) -> Option<Uuid> {
+        self.container_grants()
+            .iter()
+            .map(ContainerGrantStatus::grant)
+            .find(|grant| {
+                grant.workspace_id() == workspace_id && grant.directory().same_directory(directory)
+            })
+            .map(ContainerGrant::id)
+    }
+
     /// The workspace's read-execute grants on `roots`, the roots of the
-    /// profile `leaving`, that no other profile assigned to it lists and that
+    /// profile `leaving`, that no other profile assigned to it needs and that
     /// are not its package cache root.
     fn unneeded_root_grants(
         &self,
@@ -685,41 +783,94 @@ impl ControlStore {
         leaving: Uuid,
         roots: &[DirectoryRecord],
     ) -> Vec<Uuid> {
-        let still_needed: Vec<&DirectoryRecord> = self
-            .assigned_profiles(workspace_id)
-            .iter()
-            .filter(|id| **id != leaving)
-            .filter_map(|id| {
-                self.profiles()
-                    .iter()
-                    .find(|status| status.profile().id() == *id)
-            })
-            .flat_map(|status| status.profile().read_only_roots())
-            .collect();
         let cache = self
             .snapshot
             .package_cache_roots
             .iter()
             .find(|status| status.workspace_id == workspace_id)
             .map(|status| &status.directory);
-        self.container_grants()
+        let candidates: Vec<&ContainerGrant> = self
+            .container_grants()
             .iter()
-            .map(super::ContainerGrantStatus::grant)
+            .map(ContainerGrantStatus::grant)
             .filter(|grant| {
                 let directory = grant.directory();
                 grant.workspace_id() == workspace_id
                     && grant.access() == ContainerGrantAccess::ReadExecute
                     && roots.iter().any(|root| root.same_directory(directory))
-                    && !still_needed
-                        .iter()
-                        .any(|root| root.same_directory(directory))
                     && cache.is_none_or(|cache| !cache.same_directory(directory))
             })
+            .collect();
+        let releasing: Vec<Uuid> = candidates.iter().map(|grant| grant.id()).collect();
+        candidates
+            .into_iter()
+            .filter(|grant| !self.grant_needed(workspace_id, grant, Some(leaving), &releasing))
             .map(ContainerGrant::id)
             .collect()
     }
 
-    /// Revoke each grant in order and stop at the first failure.
+    /// Whether a root of a profile assigned to `workspace_id`, other than
+    /// `leaving`, relies on `grant`: the root is the grant's folder, or lies
+    /// beneath it and no grant of the workspace outside `releasing` is on the
+    /// root or above it. A root inside another profile's root was readable
+    /// when it was planned, so it was given no grant of its own. A folder
+    /// whose containment cannot be read counts as not relying on the grant.
+    fn grant_needed(
+        &self,
+        workspace_id: WorkspaceId,
+        grant: &ContainerGrant,
+        leaving: Option<Uuid>,
+        releasing: &[Uuid],
+    ) -> bool {
+        let directory = grant.directory();
+        let kept: Vec<&DirectoryRecord> = self
+            .container_grants()
+            .iter()
+            .map(ContainerGrantStatus::grant)
+            .filter(|other| {
+                other.workspace_id() == workspace_id
+                    && other.id() != grant.id()
+                    && !releasing.contains(&other.id())
+            })
+            .map(ContainerGrant::directory)
+            .collect();
+        self.assigned_profiles(workspace_id)
+            .iter()
+            .filter(|id| Some(**id) != leaving)
+            .filter_map(|id| {
+                self.profiles()
+                    .iter()
+                    .find(|status| status.profile().id() == *id)
+            })
+            .flat_map(|status| status.profile().read_only_roots())
+            .any(|root| {
+                root.same_directory(directory)
+                    || (directory.contains(root).unwrap_or(false)
+                        && !kept.iter().any(|other| {
+                            other.same_directory(root) || other.contains(root).unwrap_or(false)
+                        }))
+            })
+    }
+
+    /// Revoke the grants in `made`, made by an assignment that then failed,
+    /// that no profile assigned to the workspace needs. A revocation that
+    /// fails leaves its grant recorded, as any failed revocation does.
+    fn release_unneeded(&mut self, workspace_id: WorkspaceId, made: &[Uuid]) {
+        let unneeded: Vec<Uuid> = made
+            .iter()
+            .filter(|id| {
+                self.container_grants()
+                    .iter()
+                    .map(ContainerGrantStatus::grant)
+                    .find(|grant| grant.id() == **id)
+                    .is_some_and(|grant| !self.grant_needed(workspace_id, grant, None, made))
+            })
+            .copied()
+            .collect();
+        let _ = self.revoke_each(&unneeded);
+    }
+
+    /// Revoke each grant in order, attempting every one.
     fn revoke_each(&mut self, grants: &[Uuid]) -> Revocations {
         let mut revocations = Revocations::default();
         for grant in grants {
@@ -730,10 +881,7 @@ impl ControlStore {
             }
             match self.revoke_container_grant(*grant) {
                 Ok(revocation) => revocations.revoked.push(revocation),
-                Err(error) => {
-                    revocations.failure = Some((*grant, error));
-                    break;
-                }
+                Err(error) => revocations.failures.push((*grant, error)),
             }
         }
         revocations

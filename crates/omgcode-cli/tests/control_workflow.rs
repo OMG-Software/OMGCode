@@ -15,7 +15,7 @@ use omgcode_core::control::ControlStore;
 use support::CLI_DEADLINE;
 use support::{
     GRANT_CLI_DEADLINE, HANG_FIXTURE_ENV, assert_control_error, assert_error_code, assert_success,
-    json_output, path_arg, run_cli, run_cli_for, run_with_deadline,
+    json_output, path_arg, revoke_recorded_grants, run_cli, run_cli_for, run_with_deadline,
 };
 
 /// Park only when the timeout regression launches this test in a child process.
@@ -934,29 +934,11 @@ struct RevokeGrantsOnDrop<'a>(&'a Path);
 
 impl Drop for RevokeGrantsOnDrop<'_> {
     fn drop(&mut self) {
-        let status = run_cli(self.0, &["workspace", "status"]);
-        if !status.status.success() {
-            return;
-        }
-        for grant in json_output(&status)["container_grants"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            let Some(id) = grant["id"].as_str() else {
-                continue;
-            };
-            let revoked = run_cli_for(
-                self.0,
-                &["workspace", "container-revoke", id],
-                GRANT_CLI_DEADLINE,
-            );
-            if !revoked.status.success() {
-                eprintln!(
-                    "grant revocation failed during cleanup: {id}: {}",
-                    String::from_utf8_lossy(&revoked.stderr)
-                );
-            }
+        // The helpers report a failed status read, a timeout, and a failed
+        // revocation instead of panicking, which would abort a run that is
+        // already unwinding, and every grant is attempted.
+        for problem in revoke_recorded_grants(self.0) {
+            eprintln!("grant revocation failed during cleanup: {problem}");
         }
     }
 }

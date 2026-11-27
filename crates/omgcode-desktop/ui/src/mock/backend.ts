@@ -356,6 +356,9 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   let savedPreferences: MockPreferences | null = null;
   let nextSkillFolder = 0;
   let mockFolders = 0;
+  // Grant identifiers come from this counter, never from the list's length, so a revoked
+  // grant's identifier is never reused (core gives each grant a new UUID).
+  let grantsMade = 0;
   /** The next sample folder a mock dialog "chooses". */
   const nextMockFolder = (kind: string): string => {
     mockFolders += 1;
@@ -1032,6 +1035,20 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             instructions: "",
             instructions_max_bytes: 0,
           });
+          // Like core on Windows (ADR-0107): registering grants the workspace's container read
+          // and write on its own folder.
+          if (settings.container_grants_supported) {
+            const registered = settings.workspaces[settings.workspaces.length - 1];
+            if (registered !== undefined) {
+              settings.container_grants.push({
+                grant_id: mockGrantId(),
+                workspace_id: registered.workspace_id,
+                directory: registered.folder_display,
+                access: "read_write",
+                state: "active",
+              });
+            }
+          }
         });
       case "settings_set_permissions":
         return changeSettings(args, () => {
@@ -1927,7 +1944,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   }
 
   function mockGrantId(): string {
-    return `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`;
+    grantsMade += 1;
+    return `00000000-0000-4000-8001-${String(grantsMade).padStart(12, "0")}`;
   }
 
   /** Records one active read-execute grant, as a confirmed grant ends up in core. */

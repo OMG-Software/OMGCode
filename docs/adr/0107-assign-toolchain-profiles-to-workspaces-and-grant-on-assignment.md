@@ -64,25 +64,38 @@ per-call approval of a command, which is a different decision.
    store's lock core plans again and refuses the assignment if the folders
    to grant changed, so no folder is granted that the operator did not see.
    Core then checks the batch against the grant limits, applies each grant,
-   and records the assignment last. A failed grant leaves the profile
-   unassigned; grants applied before it stay recorded, and one whose
-   access-control change failed stays `pending` until it is revoked. Off
-   Windows the plan is empty and assigning records only the event.
+   refusing a folder that is no longer the directory the operator confirmed,
+   and records the assignment last. When a grant fails, or the assignment
+   cannot be recorded, the profile stays unassigned and core revokes the
+   grants that call made that no assigned profile needs, so no access
+   outlives a consent that did not take effect; a grant whose revocation
+   fails stays recorded, `pending` or `revoking`, until it is revoked. A
+   workspace with a grant that is pending or being revoked is refused a plan,
+   because its runs are refused until that grant is settled. Off Windows the
+   plan is empty and assigning records only the event.
 4. **Registering grants the workspace folder.** On Windows, registering a
    folder grants its container read-write on that folder when no grant of the
    workspace is recorded on it and this account can change the folder's
    access-control list. Registering an already registered folder that has no
    such grant grants it, which is how a workspace registered before this
    change gets it. A failed grant leaves the workspace registered and is
-   reported.
+   reported; a grant left `pending` is named, with how to revoke it and
+   register the folder again.
 5. **Removing revokes what is no longer needed.** Unassigning a profile, and
    removing an assigned profile, revoke the workspace's read-execute grants
    on that profile's roots that no profile still assigned to the workspace
-   lists and that are not the workspace's package cache root. The workspace
-   folder's read-write grant is never revoked by these. Unregistering a
-   workspace revokes every grant of the workspace first and unregisters it
-   only when every revocation was confirmed; otherwise it stays registered
-   with the grants not yet revoked, and the operator retries. The
+   needs and that are not the workspace's package cache root. A profile still
+   assigned needs a grant on one of its roots, and a grant on a folder that
+   holds one of its roots that no other grant reaches: a root inside a
+   granted folder was readable when it was planned and got no grant of its
+   own. The workspace folder's read-write grant is never revoked by these.
+   Every grant is attempted even after one fails, and each grant not revoked
+   is reported. Unregistering a workspace revokes every grant of the
+   workspace first and unregisters it only when every revocation was
+   confirmed; otherwise it stays registered with the grants not yet revoked,
+   and the operator retries. A removal that cannot be recorded after every
+   grant was revoked also leaves it registered, and the revocations are still
+   returned so their runs are waited for. The
    unregistration primitive and replay still refuse while a grant exists
    ([ADR-0081](0081-unregister-a-workspace.md)). Any revocation still
    withdraws every run of its workspace, so each caller lists the pending

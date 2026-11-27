@@ -679,6 +679,10 @@ fn adding_with_a_workspace_names_what_it_grants_in_the_one_confirmation() {
     assert!(store.container_grants().is_empty());
     assert!(store.profiles().is_empty());
     assert_eq!(store.revision(), before);
+    drop(store);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[test]
@@ -735,6 +739,10 @@ fn adding_with_a_workspace_assigns_the_profiles_and_grants_their_folders() {
     } else {
         assert!(grants.is_empty(), "{grants:?}");
     }
+    drop(store);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[cfg(windows)]
@@ -793,6 +801,10 @@ fn on_windows_adding_a_proposal_inside_the_development_root_to_a_workspace_grant
         .expect("exists");
     assert!(store.container_grants().is_empty());
     assert_eq!(store.revision(), before);
+    drop(store);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[cfg(not(windows))]

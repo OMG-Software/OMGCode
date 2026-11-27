@@ -218,7 +218,10 @@ fn replay_refuses_an_assignment_of_an_unknown_profile() {
     );
     assert_ne!(text, tampered);
     fs::write(&journal, tampered).expect("tamper journal");
-    assert!(ControlStore::open(&data).is_err());
+    assert!(matches!(
+        ControlStore::open(&data),
+        Err(ControlError::Invalid("assignment of an unknown profile"))
+    ));
 }
 
 /// Off Windows nothing is planned; on Windows a fresh folder the current
@@ -408,11 +411,11 @@ fn only_grants_no_remaining_profile_needs_are_unneeded() {
     );
 }
 
-/// A revocation names the workspace of every grant it attempted, each once and
-/// in order, whether or not the grant was revoked, and keeps only those
+/// A revocation attempts every grant, names the workspace of each, once and in
+/// order, whether or not the grant was revoked, and keeps only those
 /// workspaces' runs to wait for. On Windows the recorded grants have no real
-/// access-control entry, and removing nothing succeeds; elsewhere the first
-/// revocation fails, which still names its workspace.
+/// access-control entry, and removing nothing succeeds; elsewhere every
+/// revocation fails, and a failure does not stop the later ones.
 #[test]
 fn revocations_name_each_attempted_workspace_and_its_runs() {
     let mut scene = scene();
@@ -434,20 +437,241 @@ fn revocations_name_each_attempted_workspace_and_its_runs() {
     let (run_app, run_other, run_third) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
     let pending = [(app, run_app), (other, run_other), (third, run_third)];
     if CONTAINER_GRANTS_SUPPORTED {
-        assert!(revocations.failure.is_none(), "{:?}", revocations.failure);
+        assert!(
+            revocations.failures.is_empty(),
+            "{:?}",
+            revocations.failures
+        );
         assert_eq!(revocations.revoked.len(), 3);
-        assert_eq!(revocations.workspaces, [app, other]);
-        assert_eq!(revocations.withdrawn_runs(&pending), [run_app, run_other]);
     } else {
         assert!(revocations.revoked.is_empty());
-        assert!(
-            matches!(revocations.failure, Some((id, ControlError::Container(_))) if id == first),
-            "{:?}",
-            revocations.failure
-        );
-        // The failure stops the loop, so `other` was never attempted.
-        assert_eq!(revocations.workspaces, [app]);
-        assert_eq!(revocations.withdrawn_runs(&pending), [run_app]);
+        let failed: Vec<Uuid> = revocations
+            .failures
+            .iter()
+            .map(|(grant, error)| {
+                assert!(matches!(error, ControlError::Container(_)), "{error:?}");
+                *grant
+            })
+            .collect();
+        assert_eq!(failed, [first, second, last]);
     }
+    assert_eq!(revocations.workspaces, [app, other]);
+    assert_eq!(revocations.withdrawn_runs(&pending), [run_app, run_other]);
     assert!(Revocations::default().withdrawn_runs(&pending).is_empty());
+}
+
+/// A grant on an outer folder that a still-assigned profile's root lies
+/// inside is kept, because that root was readable through it when it was
+/// planned and has no grant of its own; it is released once the inner root
+/// has its own grant or its profile is unassigned.
+#[test]
+fn a_grant_a_nested_root_relies_on_is_kept() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("outer", &["sdk"]);
+    scene.profile("inner", &["sdk/bin"]);
+    scene.assign(app, "outer").expect("assign outer");
+    scene.assign(app, "inner").expect("assign inner");
+    let read = ContainerGrantAccess::ReadExecute;
+    let sdk = scene
+        .store
+        .test_record_grant(app, &scene.outside.join("sdk"), read);
+    let released = |store: &ControlStore| {
+        store
+            .grants_released_by_unassignment(app, "outer")
+            .expect("preview")
+    };
+
+    assert!(released(&scene.store).is_empty());
+    assert_eq!(
+        scene
+            .store
+            .grants_released_by_removal("outer")
+            .expect("removal preview"),
+        [(app, Vec::new())]
+    );
+
+    let revision = scene.store.revision();
+    scene
+        .store
+        .unassign_profile(app, "inner", revision)
+        .expect("unassign inner");
+    assert_eq!(released(&scene.store), [sdk]);
+
+    scene.assign(app, "inner").expect("assign inner again");
+    scene
+        .store
+        .test_record_grant(app, &scene.outside.join("sdk/bin"), read);
+    assert_eq!(released(&scene.store), [sdk]);
+}
+
+/// A workspace whose container grant is pending, or being revoked, is refused
+/// a plan, because its runs are refused until that grant is settled. Another
+/// workspace is not affected.
+#[test]
+fn a_pending_grant_refuses_an_assignment_plan() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    let other = scene.register("other");
+    scene.profile("rust", &["rust"]);
+    let cache = scene.outside.join("cache");
+    fs::create_dir_all(&cache).expect("folder");
+    scene
+        .store
+        .test_record_pending_grant(app, &cache, ContainerGrantAccess::ReadExecute);
+
+    assert!(matches!(
+        scene.store.plan_profile_access(app, "rust"),
+        Err(ControlError::GrantRefused(_))
+    ));
+    assert!(matches!(
+        scene
+            .store
+            .plan_folder_access(app, &[scene.outside.join("rust")]),
+        Err(ControlError::GrantRefused(_))
+    ));
+    let revision = scene.store.revision();
+    assert!(matches!(
+        scene.store.assign_profile_with_access(
+            app,
+            "rust",
+            &ProfileAccessPlan::default(),
+            revision
+        ),
+        Err(ControlError::GrantRefused(_))
+    ));
+    assert!(scene.store.assigned_profiles(app).is_empty());
+    scene
+        .store
+        .plan_profile_access(other, "rust")
+        .expect("another workspace plans");
+}
+
+/// A grant whose folder is no longer the directory the operator confirmed is
+/// refused before anything is recorded. Off Windows no grant is made at all.
+#[test]
+fn a_grant_of_a_changed_folder_is_refused_before_it_is_recorded() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    let confirmed_path = scene.outside.join("confirmed");
+    let other_path = scene.outside.join("other");
+    fs::create_dir_all(&confirmed_path).expect("confirmed folder");
+    fs::create_dir_all(&other_path).expect("other folder");
+    let confirmed = DirectoryRecord::capture(&confirmed_path).expect("identity");
+    let revision = scene.store.revision();
+
+    let result = scene.store.grant_confirmed_container_access(
+        app,
+        &other_path,
+        Some(&confirmed),
+        ContainerGrantAccess::ReadExecute,
+        revision,
+    );
+
+    if CONTAINER_GRANTS_SUPPORTED {
+        assert!(
+            matches!(result, Err(ControlError::GrantRefused(_))),
+            "{result:?}"
+        );
+    } else {
+        assert!(
+            matches!(result, Err(ControlError::Container(_))),
+            "{result:?}"
+        );
+    }
+    assert_eq!(scene.store.revision(), revision);
+    assert!(scene.store.container_grants().is_empty());
+}
+
+/// An unregistration whose removal cannot be recorded after its revocations
+/// returns them, so the caller waits for the runs they withdrew, and the
+/// workspace stays registered. On Windows the recorded grant has no real
+/// access-control entry, and removing nothing succeeds; elsewhere the
+/// revocation fails, which also keeps the workspace registered.
+#[test]
+fn an_unregistration_that_cannot_be_recorded_returns_its_revocations() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    let path = scene.outside.join("tool");
+    fs::create_dir_all(&path).expect("folder");
+    let grant = scene
+        .store
+        .test_record_grant(app, &path, ContainerGrantAccess::ReadExecute);
+    // Two events remain: the revocation's request and outcome fit in the
+    // reserve kept for the grant, and the removal does not.
+    let initial = scene.store.entries[0].clone();
+    scene
+        .store
+        .entries
+        .resize(crate::control::MAX_EVENTS - 2, initial);
+    let revision = scene.store.revision();
+
+    let unregistration = scene
+        .store
+        .unregister_workspace_with_access(app, revision)
+        .expect("revocations are returned");
+
+    assert!(!unregistration.unregistered());
+    assert!(scene.store.workspace(app).is_some());
+    assert_eq!(unregistration.revocations.workspaces, [app]);
+    if CONTAINER_GRANTS_SUPPORTED {
+        assert!(
+            unregistration.revocations.failures.is_empty(),
+            "{:?}",
+            unregistration.revocations.failures
+        );
+        assert_eq!(unregistration.revocations.revoked.len(), 1);
+        assert_eq!(unregistration.revocations.revoked[0].grant_id, grant);
+        assert!(matches!(
+            unregistration.removal,
+            Some(ControlError::LimitReached)
+        ));
+        assert!(scene.store.container_grants().is_empty());
+    } else {
+        assert_eq!(unregistration.revocations.failures.len(), 1);
+        assert!(unregistration.removal.is_none());
+    }
+}
+
+/// Windows only, with a real grant on a temporary folder: an assignment that
+/// cannot be recorded, because the journal reaches its event limit after the
+/// grant, revokes that grant again, so no access outlives the failed consent.
+#[cfg(windows)]
+#[test]
+fn an_assignment_that_cannot_be_recorded_revokes_its_grant() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("rust", &["rust"]);
+    let plan = scene.store.plan_profile_access(app, "rust").expect("plan");
+    assert_eq!(plan.to_grant().len(), 1, "{plan:?}");
+    // With no grant and no skill recorded, the grant's request needs its
+    // event and the three a pending grant reserves, its outcome one more, and
+    // the assignment one beside the two an active grant reserves: 4,092
+    // events leave room for the grant and none for the assignment.
+    let initial = scene.store.entries[0].clone();
+    scene
+        .store
+        .entries
+        .resize(crate::control::MAX_EVENTS - 4, initial);
+    let revision = scene.store.revision();
+
+    let result = scene
+        .store
+        .assign_profile_with_access(app, "rust", &plan, revision);
+
+    let left: Vec<Uuid> = scene
+        .store
+        .container_grants()
+        .iter()
+        .map(|status| status.grant().id())
+        .collect();
+    for grant in &left {
+        let _ = scene.store.revoke_container_grant(*grant);
+    }
+    assert!(
+        matches!(result, Err(ControlError::LimitReached)),
+        "{result:?}"
+    );
+    assert!(left.is_empty(), "a grant outlived the failed assignment");
+    assert!(scene.store.assigned_profiles(app).is_empty());
 }

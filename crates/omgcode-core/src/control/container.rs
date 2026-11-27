@@ -238,6 +238,24 @@ impl ControlStore {
         path: &Path,
         access: ContainerGrantAccess,
     ) -> Uuid {
+        let id = self.test_record_pending_grant(workspace_id, path, access);
+        self.append(
+            Action::ContainerGrantApplied { grant_id: id },
+            self.revision(),
+        )
+        .expect("applied");
+        id
+    }
+
+    /// Record a requested grant whose access-control change was never
+    /// confirmed, so it stays `pending`, without changing any ACL.
+    #[cfg(test)]
+    pub(crate) fn test_record_pending_grant(
+        &mut self,
+        workspace_id: WorkspaceId,
+        path: &Path,
+        access: ContainerGrantAccess,
+    ) -> Uuid {
         let grant = ContainerGrant {
             id: Uuid::new_v4(),
             workspace_id,
@@ -253,11 +271,6 @@ impl ControlStore {
         let revision = self.next_revision().expect("revision");
         self.append(Action::ContainerGrantRequested { grant }, revision)
             .expect("request");
-        self.append(
-            Action::ContainerGrantApplied { grant_id: id },
-            self.revision(),
-        )
-        .expect("applied");
         id
     }
 
@@ -295,8 +308,29 @@ impl ControlStore {
         access: ContainerGrantAccess,
         expected_revision: u64,
     ) -> Result<ContainerGrant, ControlError> {
+        self.grant_confirmed_container_access(workspace_id, path, None, access, expected_revision)
+    }
+
+    /// As [`Self::grant_container_access`]. With `confirmed`, the directory
+    /// the operator confirmed, the grant is refused before anything is
+    /// recorded when the folder at `path` is no longer that directory, so the
+    /// access-control change, which is bound to the directory captured here,
+    /// reaches only the confirmed one.
+    pub(super) fn grant_confirmed_container_access(
+        &mut self,
+        workspace_id: WorkspaceId,
+        path: &Path,
+        confirmed: Option<&DirectoryRecord>,
+        access: ContainerGrantAccess,
+        expected_revision: u64,
+    ) -> Result<ContainerGrant, ControlError> {
         self.check_revision(expected_revision)?;
         let directory = self.prepare_grant(workspace_id, path, access, &[])?;
+        if confirmed.is_some_and(|confirmed| !confirmed.same_directory(&directory)) {
+            return Err(ControlError::GrantRefused(
+                "a folder changed after its grant was confirmed; review the change again",
+            ));
+        }
         let name = container_name(workspace_id)?;
         let grant = ContainerGrant {
             id: Uuid::new_v4(),

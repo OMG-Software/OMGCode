@@ -517,8 +517,11 @@ const DECLARED_PROFILE: &str = "system";
 ///
 /// On Windows, registering a workspace through the `settings` service grants
 /// its container its folder (ADR-0107), which adds an access-control entry and
-/// creates an AppContainer profile on the host. Dropping the fixture revokes
-/// every grant still recorded, so neither outlives the test.
+/// creates an AppContainer profile on the host. A test that grants ends with
+/// [`Fixture::revoke_grants`], which fails it when a grant cannot be revoked,
+/// before the temporary directory and the journal needed to retry are gone.
+/// Dropping the fixture revokes every grant still recorded as a fallback for
+/// a test that ends early, reporting a failure without panicking.
 pub struct Fixture {
     _temporary: TempDir,
     pub data: PathBuf,
@@ -527,12 +530,26 @@ pub struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Err(problem) = self.revoke_grants() {
+            // Never panic in drop: a second panic would abort the run.
+            eprintln!("fixture cleanup: {problem}");
+        }
+    }
+}
+
+impl Fixture {
+    /// Revoke every container grant still recorded, attempting each one.
+    ///
+    /// # Errors
+    ///
+    /// The settings store could not be opened, or a grant could not be
+    /// revoked; every failure is named.
+    pub fn revoke_grants(&self) -> Result<(), String> {
         let mut control = match ControlStore::open_existing(&self.data) {
             Ok(Some(control)) => control,
-            Ok(None) => return,
+            Ok(None) => return Ok(()),
             Err(error) => {
-                eprintln!("fixture cleanup could not open the settings store: {error}");
-                return;
+                return Err(format!("the settings store could not be opened: {error}"));
             }
         };
         let grants: Vec<Uuid> = control
@@ -540,16 +557,21 @@ impl Drop for Fixture {
             .iter()
             .map(|status| status.grant().id())
             .collect();
-        for grant in grants {
-            if let Err(error) = control.revoke_container_grant(grant) {
-                // Never panic in drop: a second panic would abort the run.
-                eprintln!("fixture cleanup could not revoke container grant {grant}: {error}");
-            }
+        let failures: Vec<String> = grants
+            .into_iter()
+            .filter_map(|grant| {
+                control
+                    .revoke_container_grant(grant)
+                    .err()
+                    .map(|error| format!("container grant {grant} could not be revoked: {error}"))
+            })
+            .collect();
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
         }
     }
-}
-
-impl Fixture {
     /// Application data only; no settings store exists.
     pub fn bare() -> Self {
         let temporary = tempfile::tempdir().expect("private fixture root");

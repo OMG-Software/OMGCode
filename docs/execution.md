@@ -958,29 +958,43 @@ consent to give that workspace's sandbox the profile's folders.
   that already has a recorded grant of the workspace. Folders that only an
   administrator can grant, and folders whose access-control list could not be
   read, are listed apart and not granted. A root that is no longer the
-  recorded directory is listed as unknown. Off Windows the plan is empty.
+  recorded directory is listed as unknown. Off Windows the plan is empty. A
+  workspace with a container grant that is pending or being revoked is
+  refused a plan on every platform, because its runs are refused until that
+  grant is settled; revoke it first.
 - **Assigning:** under the store's lock core plans again and refuses the
   assignment when the folders to grant differ from the plan the operator
   confirmed. It then applies `check_container_grants` to the batch, grants
-  each folder read-execute through `grant_container_access`, and records the
-  assignment last. A failed grant leaves the profile unassigned; grants
-  applied before it stay recorded, and one whose access-control change failed
-  stays `pending` until it is revoked. `profile-assign` is itself the consent,
+  each folder read-execute through `grant_container_access`, refusing before
+  anything is recorded a folder that is no longer the directory the operator
+  confirmed, and records the assignment last. When a grant fails, or the
+  assignment cannot be recorded, the profile stays unassigned and core
+  revokes the grants this call made that no assigned profile needs, which
+  withdraws the workspace's runs; a grant whose revocation fails stays
+  recorded, `pending` or `revoking`, until it is revoked. `profile-assign` is itself the consent,
   so it plans and assigns in one call, and prints `assigned_profile_id`,
   `granted` (each `grant_id` with its folder), and `not_granted` with the
   reason.
 - **Unassigning and removing:** the change is recorded first. Then core
   revokes the workspace's read-execute grants whose folder is one of the
-  profile's roots, is not a root of a profile still assigned to the
-  workspace, and is not the workspace's package cache root. The workspace
-  folder's read-write grant is never revoked here. `profile-unassign` and
-  `profile-remove` print what they revoked under `revoked`; a failed
-  revocation leaves the change recorded, is reported, and
-  `container-revoke` retries it.
+  profile's roots, that no profile still assigned to the workspace needs, and
+  that are not on the workspace's package cache root. A profile still
+  assigned needs a grant on one of its roots, and a grant on a folder that
+  holds one of its roots when no other grant of the workspace is on that root
+  or above it: a root inside a granted folder was readable when it was
+  planned, so it got no grant of its own. A folder whose containment cannot
+  be read counts as not needing the grant. The workspace folder's read-write
+  grant is never revoked here. Every grant is attempted, even after one
+  fails. `profile-unassign` and `profile-remove` print what they revoked
+  under `revoked`; a failed revocation leaves the change recorded, each grant
+  not revoked is named with its `container-revoke` command, and a grant whose
+  AppContainer profile could not be deleted afterwards is named as revoked.
 - **Unregistering:** `workspace unregister` revokes every grant of the
   workspace first and unregisters it only when every revocation was
   confirmed; otherwise the workspace stays registered with the grants not yet
-  revoked. See [workspace settings](workspace-permissions.md#unregistering-a-workspace).
+  revoked, each named. When every grant was revoked but the removal cannot be
+  recorded, the workspace also stays registered, and the runs the
+  revocations withdrew are still waited for. See [workspace settings](workspace-permissions.md#unregistering-a-workspace).
 - **Runs:** each revocation withdraws every run of its workspace, as
   `container-revoke` does, so these commands stop and wait for those runs.
 - **Upgrading:** existing profiles start assigned to no workspace. Assign each

@@ -815,7 +815,7 @@ impl DesktopService {
         // The preferences lock comes first, as in every other save that also
         // reads settings, so the removal of the instructions file never
         // overlaps a save or a turn's read of it.
-        let (listed, before, revocations, removed) = {
+        let (listed, before, unregistration, removed) = {
             let _lock = self
                 .inner
                 .preferences
@@ -826,24 +826,33 @@ impl DesktopService {
             // settings no longer show once it is unregistered, so its runs
             // are listed before the change.
             let before = run::pending_runs(&store);
-            let revocations = store
+            let unregistration = store
                 .unregister_workspace_with_access(workspace_id, request.revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
             // The change is recorded, so the runs it withdraws are listed
             // before anything else can fail, and are stopped and waited for
             // even when the file below cannot be deleted.
             let listed = run::withdrawn_runs(&store);
-            let removed = revocations
-                .failure
-                .is_none()
+            let removed = unregistration
+                .unregistered()
                 .then(|| instructions::remove(&self.inner.data_root, *workspace_id.as_uuid()));
-            (listed, before, revocations, removed)
+            (listed, before, unregistration, removed)
         };
-        // A grant that was not revoked, then a run that was not stopped, is
-        // reported first; a remaining instructions file is never sent,
-        // because the workspace is no longer registered.
-        let (also, deferred) =
-            revocation_outcome(before, &revocations, RevokingChange::Unregistration);
+        // A grant that was not revoked, or a removal that was not recorded,
+        // then a run that was not stopped, is reported first; a remaining
+        // instructions file is never sent, because the workspace is no longer
+        // registered.
+        let (also, deferred) = revocation_outcome(
+            before,
+            &unregistration.revocations,
+            RevokingChange::Unregistration,
+        );
+        let deferred = deferred.or_else(|| {
+            unregistration
+                .removal
+                .as_ref()
+                .map(DesktopError::removal_not_recorded)
+        });
         let overview = self.finish_reporting(listed, also, deferred)?;
         if let Some(Err(_)) = removed {
             return Err(DesktopError::removed_instructions_orphaned());
@@ -1520,10 +1529,8 @@ pub(super) fn revocation_outcome(
             unchecked: true,
         },
     };
-    let deferred = revocations
-        .failure
-        .as_ref()
-        .map(|(_, error)| DesktopError::revocation_incomplete(error, change));
+    let deferred = (!revocations.failures.is_empty())
+        .then(|| DesktopError::revocation_incomplete(&revocations.failures, change));
     (also, deferred)
 }
 
@@ -1584,35 +1591,80 @@ impl DesktopError {
         )
     }
 
-    /// A grant the change should have revoked was not. After a recorded
-    /// change the change stands; after an unregistration the workspace stays
-    /// registered. The operating system's own text is never shown.
-    pub(super) fn revocation_incomplete(error: &ControlError, change: RevokingChange) -> Self {
-        let (outcome, then) = match change {
-            RevokingChange::Recorded => (
-                "The change was recorded, but a container grant it releases",
-                "",
-            ),
-            RevokingChange::Unregistration => (
-                "The workspace stays registered, because one of its container grants",
-                " Then remove the workspace again.",
-            ),
-        };
-        match error {
-            ControlError::Container(_) => Self::execution(
-                "container_access_failed",
-                format!(
-                    "{outcome} could not be removed from its folder's access list. The grant stays revoking; the settings list it, and Revoke tries again.{then}"
-                ),
-            ),
-            other => Self::execution(
-                "revocation_incomplete",
-                format!(
-                    "{outcome} was not revoked: {}. The settings list the grant, and Revoke tries again.{then}",
-                    Self::from_control(other).message()
-                ),
-            ),
+    /// Revocations the change made did not all complete; every grant was
+    /// attempted. After a recorded change the change stands; after an
+    /// unregistration the workspace stays registered. A grant revoked whose
+    /// container profile could not be deleted is not listed for **Revoke**,
+    /// because it is gone. The operating system's own text is never shown.
+    pub(super) fn revocation_incomplete(
+        failures: &[(uuid::Uuid, ControlError)],
+        change: RevokingChange,
+    ) -> Self {
+        let mut message = match change {
+            RevokingChange::Recorded => {
+                "The change was recorded, but not every container grant it releases was revoked."
+            }
+            RevokingChange::Unregistration => {
+                "The workspace stays registered, because not every container grant of it was revoked."
+            }
         }
+        .to_owned();
+        let unrevoked: Vec<&ControlError> = failures
+            .iter()
+            .map(|(_, error)| error)
+            .filter(|error| !matches!(error, ControlError::ProfileRemoval(_)))
+            .collect();
+        let access = unrevoked
+            .iter()
+            .any(|error| matches!(error, ControlError::Container(_)));
+        if let Some(other) = unrevoked
+            .iter()
+            .find(|error| !matches!(error, ControlError::Container(_)))
+        {
+            message.push_str(&format!(
+                " {} grant(s) were not revoked: {}.",
+                unrevoked.len(),
+                Self::from_control(other).message().trim_end_matches('.')
+            ));
+        } else if access {
+            message.push_str(&format!(
+                " {} grant(s) could not be removed from their folders' access lists and stay revoking.",
+                unrevoked.len()
+            ));
+        }
+        if !unrevoked.is_empty() {
+            message.push_str(" The settings list each one, and Revoke tries again.");
+        }
+        if unrevoked.len() < failures.len() {
+            message.push_str(
+                " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now.",
+            );
+        }
+        if change == RevokingChange::Unregistration {
+            message.push_str(if unrevoked.is_empty() {
+                " Remove the workspace again."
+            } else {
+                " Then remove the workspace again."
+            });
+        }
+        let code = if access {
+            "container_access_failed"
+        } else {
+            "revocation_incomplete"
+        };
+        Self::execution(code, message)
+    }
+
+    /// Every container grant of the workspace was revoked, but its removal
+    /// could not be recorded, so it stays registered.
+    fn removal_not_recorded(error: &ControlError) -> Self {
+        Self::execution(
+            "revocation_incomplete",
+            format!(
+                "Every container grant of the workspace was revoked, but its removal could not be recorded: {}. The workspace stays registered; remove it again.",
+                Self::from_control(error).message().trim_end_matches('.')
+            ),
+        )
     }
 }
 

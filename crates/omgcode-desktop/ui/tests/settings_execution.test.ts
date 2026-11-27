@@ -469,6 +469,54 @@ describe("mock execution commands", () => {
     ).rejects.toMatchObject({ code: "control" });
   });
 
+  it("grants a registered workspace its folder and never reuses a revoked grant's identifier", async () => {
+    const { invoke } = createMockBackend();
+    const before = await overviewOf(invoke);
+    const first = before.workspaces[0]?.workspace_id ?? "";
+    const registered = (await invoke("settings_register_workspace", {
+      revision: before.revision,
+    })) as SettingsOverview;
+    const added = registered.workspaces[registered.workspaces.length - 1];
+    expect(registered.container_grants).toEqual([
+      expect.objectContaining({
+        workspace_id: added?.workspace_id,
+        directory: added?.folder_display,
+        access: "read_write",
+        state: "active",
+      }),
+    ]);
+    const second = added?.workspace_id ?? "";
+
+    const change = async (command: string, workspace: string) => {
+      const { revision } = await overviewOf(invoke);
+      return (await invoke(command, {
+        revision,
+        workspace_id: workspace,
+        name: "rust",
+      })) as SettingsOverview;
+    };
+    await change("settings_assign_toolchain_profile", first);
+    await change("settings_assign_toolchain_profile", second);
+    await change("settings_unassign_toolchain_profile", first);
+    const again = await change("settings_assign_toolchain_profile", first);
+    const ids = again.container_grants.map((grant) => grant.grant_id);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    const own = again.container_grants.find(
+      (grant) => grant.workspace_id === first && grant.access === "read_execute",
+    );
+    const revoked = (await invoke("settings_revoke_container_grant", {
+      revision: again.revision,
+      grant_id: own?.grant_id,
+    })) as SettingsOverview;
+    expect(
+      revoked.container_grants.some(
+        (grant) => grant.workspace_id === second && grant.access === "read_execute",
+      ),
+    ).toBe(true);
+    expect(revoked.container_grants.some((grant) => grant.grant_id === own?.grant_id)).toBe(false);
+  });
+
   it("ends the assignments and their grants when an assigned profile is removed", async () => {
     const { invoke } = createMockBackend();
     const before = await overviewOf(invoke);

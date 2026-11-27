@@ -22,7 +22,10 @@ use omgcode_app::desktop::{
     FolderPurpose, PackageProfileAddRequest, ProfileAssignmentRequest, ProfileRemoveRequest,
     SettingsOverview, SettingsPrompt, ToolchainProfileAddRequest, WebHostChangeRequest,
 };
-use omgcode_core::control::{ContainerGrantAccess, ControlStore, PackageProfileDeclaration};
+use omgcode_core::control::{
+    ContainerGrantAccess, ContainerGrantState, ControlStore, PackageProfileDeclaration,
+};
+use omgcode_core::turn::display_safe_line;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -189,8 +192,8 @@ fn assignment(revision: u64, workspace: Uuid, name: &str) -> ProfileAssignmentRe
     wire(json!({ "revision": revision, "workspace_id": workspace, "name": name }))
 }
 
-/// The recorded grants as `(access, directory)`, in order.
-fn recorded_grants(data: &Path) -> Vec<(ContainerGrantAccess, PathBuf)> {
+/// The recorded grants as `(access, state, directory display)`, in order.
+fn recorded_grants(data: &Path) -> Vec<(ContainerGrantAccess, ContainerGrantState, String)> {
     ControlStore::open_existing(data)
         .expect("open")
         .expect("exists")
@@ -199,16 +202,21 @@ fn recorded_grants(data: &Path) -> Vec<(ContainerGrantAccess, PathBuf)> {
         .map(|status| {
             (
                 status.grant().access(),
-                resolved(Path::new(&status.grant().directory_display())),
+                status.state(),
+                status.grant().directory_display(),
             )
         })
         .collect()
 }
 
-/// `path` as the operating system resolves it, for comparing with a recorded
-/// directory.
-fn resolved(path: &Path) -> PathBuf {
-    fs::canonicalize(path).expect("canonical path")
+/// The display text core records for the directory at `path`: its canonical
+/// path, made display-safe. Display text is compared, never reopened.
+fn displayed(path: &Path) -> String {
+    display_safe_line(
+        &fs::canonicalize(path)
+            .expect("canonical path")
+            .to_string_lossy(),
+    )
 }
 
 /// Record a toolchain profile through the service.
@@ -588,7 +596,8 @@ fn assigning_a_profile_is_confirmed_with_the_folders_it_grants() {
             recorded_grants(&fixture.data),
             [(
                 ContainerGrantAccess::ReadExecute,
-                resolved(&tool_root(&fixture, "rust"))
+                ContainerGrantState::Active,
+                displayed(&tool_root(&fixture, "rust"))
             )]
         );
     } else {
@@ -603,6 +612,9 @@ fn assigning_a_profile_is_confirmed_with_the_folders_it_grants() {
     ));
     assert_eq!(error.code(), "control");
     assert!(silent.asked().is_empty());
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 /// Unassigning revokes the grants only that profile needed and says so;
@@ -663,6 +675,9 @@ fn unassigning_a_profile_revokes_the_grants_it_alone_needed() {
     assert_eq!(error.code(), "control");
     assert!(error.message().contains("not assigned"), "{error}");
     assert!(silent.asked().is_empty());
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 /// Removing an assigned profile names the workspace it leaves and, on
@@ -695,6 +710,9 @@ fn removing_an_assigned_profile_names_its_workspace_and_revokes_its_grant() {
     assert!(overview.toolchain_profiles.is_empty());
     assert!(overview.workspaces[0].profiles.is_empty());
     assert!(recorded_grants(&fixture.data).is_empty());
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[test]

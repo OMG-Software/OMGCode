@@ -202,6 +202,88 @@ pub(crate) fn path_arg(path: &Path) -> &str {
 /// well as updating access-control lists.
 pub(crate) const GRANT_CLI_DEADLINE: Duration = Duration::from_secs(120);
 
+/// The identifiers of the container grants `workspace status` lists, read
+/// without panicking, for cleanup that may run while a test unwinds.
+///
+/// # Errors
+///
+/// Status could not run, timed out, failed, or printed no JSON.
+#[allow(
+    dead_code,
+    reason = "only test binaries that clean up container grants use it"
+)]
+pub(crate) fn recorded_grant_ids(data_root: &Path) -> Result<Vec<String>, String> {
+    let result = run_with_deadline(
+        cli_command(data_root, &["workspace", "status"]),
+        GRANT_CLI_DEADLINE,
+    )
+    .map_err(|error| format!("status could not run: {error}"))?;
+    if result.timed_out {
+        return Err("status timed out".to_owned());
+    }
+    if !result.output.status.success() {
+        return Err(format!(
+            "status failed: {}",
+            String::from_utf8_lossy(&result.output.stderr)
+        ));
+    }
+    let status: serde_json::Value = serde_json::from_slice(&result.output.stdout)
+        .map_err(|error| format!("status is not JSON: {error}"))?;
+    Ok(status["container_grants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|grant| grant["id"].as_str().map(str::to_owned))
+        .collect())
+}
+
+/// Revoke the grant `grant` without panicking, for cleanup code.
+///
+/// # Errors
+///
+/// The revocation could not run, timed out, or failed.
+#[allow(
+    dead_code,
+    reason = "only test binaries that clean up container grants use it"
+)]
+pub(crate) fn revoke_grant_quietly(
+    data_root: &Path,
+    grant: &str,
+    deadline: Duration,
+) -> Result<(), String> {
+    let result = run_with_deadline(
+        cli_command(data_root, &["workspace", "container-revoke", grant]),
+        deadline,
+    )
+    .map_err(|error| format!("{grant}: {error}"))?;
+    if result.timed_out {
+        return Err(format!("{grant}: timed out"));
+    }
+    if !result.output.status.success() {
+        return Err(format!(
+            "{grant}: {}",
+            String::from_utf8_lossy(&result.output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Revoke every container grant `workspace status` lists, attempting each
+/// one, and return the failures. Never panics.
+#[allow(
+    dead_code,
+    reason = "only test binaries that clean up container grants use it"
+)]
+pub(crate) fn revoke_recorded_grants(data_root: &Path) -> Vec<String> {
+    match recorded_grant_ids(data_root) {
+        Ok(grants) => grants
+            .iter()
+            .filter_map(|grant| revoke_grant_quietly(data_root, grant, GRANT_CLI_DEADLINE).err())
+            .collect(),
+        Err(error) => vec![error],
+    }
+}
+
 /// Register `workspace` through the CLI at `revision` and return the JSON
 /// output, failing the test on error.
 ///
@@ -222,19 +304,33 @@ pub(crate) fn register_workspace(
     revision: u64,
 ) -> serde_json::Value {
     let revision = revision.to_string();
-    let output = run_cli_for(
-        data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(workspace),
-            "--revision",
-            &revision,
-        ],
+    let result = run_with_deadline(
+        cli_command(
+            data_root,
+            &[
+                "workspace",
+                "register",
+                path_arg(workspace),
+                "--revision",
+                &revision,
+            ],
+        ),
         GRANT_CLI_DEADLINE,
-    );
-    assert_success(&output);
-    let registered = json_output(&output);
+    )
+    .expect("run OMGCode CLI");
+    if result.timed_out || !result.output.status.success() {
+        // A registration that failed after recording its grant leaves it
+        // pending; revoke it before failing, so no access-control entry or
+        // AppContainer profile outlives the test.
+        let cleanup = revoke_recorded_grants(data_root);
+        panic!(
+            "registration failed (timed out: {}): stdout={} stderr={}; cleanup failures: {cleanup:?}",
+            result.timed_out,
+            String::from_utf8_lossy(&result.output.stdout),
+            String::from_utf8_lossy(&result.output.stderr)
+        );
+    }
+    let registered = json_output(&result.output);
     if let Some(grant) = registered["grant_id"].as_str() {
         assert_success(&run_cli_for(
             data_root,

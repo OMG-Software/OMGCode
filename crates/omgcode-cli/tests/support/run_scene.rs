@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use super::{
-    assert_success, cli_command, json_output, path_arg, run_cli, run_cli_for, run_with_deadline,
+    assert_success, cli_command, json_output, path_arg, recorded_grant_ids, run_cli, run_cli_for,
+    run_with_deadline,
 };
 
 /// CLI deadline for a container grant or revocation.
@@ -159,17 +160,12 @@ impl Scene {
     /// before its identifier was known. When status cannot be read, the
     /// tracked list is kept.
     fn track_recorded_grants(&mut self) {
-        let output = self.cli(&["workspace", "status"]);
-        if !output.status.success() {
+        // `Drop` calls this, so status is read without panicking: a second
+        // panic while a test unwinds would abort the run and skip the
+        // revocations.
+        let Ok(recorded) = recorded_grant_ids(&self.data) else {
             return;
-        }
-        let status = json_output(&output);
-        let recorded: Vec<String> = status["container_grants"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|grant| grant["id"].as_str().map(str::to_owned))
-            .collect();
+        };
         self.grants.retain(|known| recorded.contains(known));
         for id in recorded {
             if !self.grants.contains(&id) {
