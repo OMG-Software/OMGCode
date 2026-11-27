@@ -44,7 +44,7 @@ const FORBIDDEN: Array<[string, RegExp]> = [
 ];
 
 function relative(key: string): string {
-  return key.replace("../", "");
+  return key.replace(/^\.\.\//, "");
 }
 
 describe("source scan", () => {
@@ -197,7 +197,7 @@ describe("HTML entry files", () => {
   it.each(Object.entries(pages))(
     "%s has no inline script or style and no remote URL",
     (_key, html) => {
-      const scripts = Array.from(html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi));
+      const scripts = Array.from(html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi));
       expect(scripts).toHaveLength(1);
       expect(scripts[0]?.[1]).toMatch(/\bsrc="\.\/src\/[a-z]+\.ts"/);
       expect(scripts[0]?.[2]?.trim()).toBe("");
