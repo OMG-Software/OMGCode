@@ -464,8 +464,14 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   Anthropic or DeepSeek endpoint refuses an effort too. The field's bytes
   count in the pre-turn context estimate. Values are not adjusted per model,
   and each provider's model
-  decides which it accepts; a refused value arrives as that provider's HTTP
-  error. No request with an effort was made to any provider.
+  decides which it accepts. On Chat Completions, a client-error response to
+  a request that sent an effort is read for at most 64 KiB, and when its
+  `error.param` is `reasoning_effort` the failure names the value OMGCode
+  sent, with the code `effort_refused`; no server text is shown or kept
+  (ADR-0108). Any other refusal, and every plan-route refusal, arrives as the
+  HTTP status. LM Studio, observed with `google/gemma-4-e4b` loaded on
+  2026-11-27, accepts `none` through `xhigh` and refuses `max` with HTTP 400
+  and that parameter. No hosted provider was observed with an effort.
 - **Not covered.** Native provider APIs (for example Anthropic Messages),
   subscription sign-in (ChatGPT sign-in came later, with ADR-0093),
   provider-specific parameters such as OpenRouter

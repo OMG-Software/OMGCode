@@ -116,9 +116,10 @@ meaningful alternative does not need an ADR.
 | [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |
 | [0100: List the recorded toolchain profiles in the command tool](0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md) | Accepted | 2026-11-26 |
 | [0101: Make every section divider movable](0101-make-every-section-divider-movable.md) | Accepted | 2026-11-26 |
-| [0102: Choose a reasoning effort per session](0102-choose-a-reasoning-effort-per-session.md) | Accepted | 2026-11-26 |
+| [0102: Choose a reasoning effort per session](0102-choose-a-reasoning-effort-per-session.md) | Accepted, amended by ADR-0108 | 2026-11-26 |
 | [0103: Generate toolchain profiles from installed toolchains](0103-generate-toolchain-profiles-from-installed-toolchains.md) | Accepted | 2026-11-26 |
 | [0104: Grant the workspace folder read-write without a folder dialog](0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md) | Accepted | 2026-11-26 |
 | [0105: Show the approvals window when a turn starts waiting](0105-show-the-approvals-window-when-a-turn-starts-waiting.md) | Accepted | 2026-11-26 |
 | [0106: Name the ungranted run path by its role](0106-name-the-ungranted-run-path-by-its-role.md) | Accepted | 2026-11-26 |
 | [0107: Assign toolchain profiles to workspaces and grant on assignment](0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md) | Accepted | 2026-11-27 |
+| [0108: Report a refused reasoning effort by name](0108-report-a-refused-reasoning-effort-by-name.md) | Accepted | 2026-11-27 |

@@ -1,6 +1,6 @@
 use omgcode_core::prompt::{BASE_PROMPT, ModelMessage, ModelRole};
 use omgcode_core::provider::{
-    LocalModelClient, LocalModelConfig, ModelReply, ProviderError, Usage,
+    LocalModelClient, LocalModelConfig, ModelReply, ProviderError, ReasoningEffort, Usage,
 };
 use omgcode_core::turn::{CancelToken, ToolCall, ToolCallError, ToolModelReply, tool_definitions};
 use serde_json::Value;
@@ -903,6 +903,133 @@ fn a_non_success_status_to_a_streamed_request_is_an_http_status_error() {
     );
     assert_eq!(exchange.result, Err(ProviderError::HttpStatus(503)));
     assert!(exchange.pieces.is_empty());
+}
+
+/// LM Studio's answer to `"reasoning_effort": "max"`, recorded from a real
+/// server on 2026-11-27 with `google/gemma-4-e4b` loaded (ADR-0108).
+const EFFORT_REFUSED: &str = r#"{"error":{"message":"Invalid 'reasoning_effort' value: 'max'. Supported values: none, minimal, low, medium, high, xhigh.","type":"invalid_request_error","param":"reasoning_effort","code":"invalid_value"}}"#;
+const JSON_BODY: &str = "Content-Type: application/json; charset=utf-8\r\n";
+
+/// The four Chat Completions request methods.
+#[derive(Clone, Copy, Debug)]
+enum Method {
+    Text,
+    StreamedText,
+    Tools,
+    StreamedTools,
+}
+
+impl Method {
+    const ALL: [Self; 4] = [
+        Self::Text,
+        Self::StreamedText,
+        Self::Tools,
+        Self::StreamedTools,
+    ];
+}
+
+/// Send one request by `method`, with `effort`, to a fixture that answers
+/// `status` with a JSON `body`. Returns the error and the request sent.
+fn refused_exchange(
+    method: Method,
+    effort: Option<ReasoningEffort>,
+    status: &str,
+    body: &str,
+) -> (ProviderError, Value) {
+    let fixture = Fixture::start(status, body.as_bytes(), JSON_BODY);
+    let model = client(fixture.address.clone(), None)
+        .with_reasoning_effort(effort)
+        .expect("a loopback server takes an effort");
+    let cancel = CancelToken::new();
+    let mut pieces = Vec::new();
+    let mut on_text = |text: &str| pieces.push(text.to_owned());
+    let result = match method {
+        Method::Text => model.complete(&messages(), &cancel).map(|_| ()),
+        Method::StreamedText => model
+            .complete_streaming(&messages(), &mut on_text, &cancel)
+            .map(|_| ()),
+        Method::Tools => model
+            .complete_with_tools(&messages(), &tool_definitions(), &cancel)
+            .map(|_| ()),
+        Method::StreamedTools => model
+            .complete_with_tools_streaming(&messages(), &tool_definitions(), &mut on_text, &cancel)
+            .map(|_| ()),
+    };
+    let (_, request) = fixture.finish();
+    assert!(pieces.is_empty(), "{method:?}: no reply text arrived");
+    (
+        result.expect_err("a non-success status is an error"),
+        serde_json::from_slice(&request).expect("request JSON"),
+    )
+}
+
+/// The regression behind ADR-0108: LM Studio refused the effort `max` and
+/// the operator saw only "HTTP status 400".
+#[test]
+fn a_refused_reasoning_effort_is_reported_by_name_without_server_text() {
+    for method in Method::ALL {
+        let (error, request) = refused_exchange(
+            method,
+            Some(ReasoningEffort::Max),
+            "400 Bad Request",
+            EFFORT_REFUSED,
+        );
+        assert_eq!(request["reasoning_effort"], "max", "{method:?}");
+        assert_eq!(
+            error,
+            ProviderError::EffortRefused(ReasoningEffort::Max),
+            "{method:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("reasoning effort `max`"),
+            "{method:?}: {message}"
+        );
+        assert!(
+            !message.contains("Supported values"),
+            "{method:?}: {message}"
+        );
+        assert!(!format!("{error:?}").contains("Supported"), "{method:?}");
+    }
+}
+
+/// Only a client-error body that names `reasoning_effort` as its parameter,
+/// for a request that sent one, is a refused effort. Anything else keeps the
+/// status, as before.
+#[test]
+fn an_error_that_does_not_name_the_sent_effort_keeps_its_status() {
+    let other_param = r#"{"error":{"message":"m","type":"invalid_request_error","param":"model","code":"invalid_value"}}"#;
+    let cases = [
+        (
+            Some(ReasoningEffort::Max),
+            "400 Bad Request",
+            other_param,
+            400,
+        ),
+        (
+            Some(ReasoningEffort::Max),
+            "400 Bad Request",
+            "not json",
+            400,
+        ),
+        (
+            Some(ReasoningEffort::High),
+            "500 Internal Server Error",
+            EFFORT_REFUSED,
+            500,
+        ),
+        (None, "400 Bad Request", EFFORT_REFUSED, 400),
+    ];
+    for method in Method::ALL {
+        for (effort, status, body, code) in cases {
+            let (error, _) = refused_exchange(method, effort, status, body);
+            assert_eq!(
+                error,
+                ProviderError::HttpStatus(code),
+                "{method:?} {effort:?} {status} {body}"
+            );
+        }
+    }
 }
 
 #[test]

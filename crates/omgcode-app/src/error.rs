@@ -111,7 +111,7 @@ impl AppError {
     pub fn provider(error: ProviderError) -> Self {
         Self {
             kind: ErrorKind::Provider,
-            detail: plan_failure_code(error),
+            detail: provider_failure_code(error),
             message: error.to_string(),
         }
     }
@@ -157,10 +157,12 @@ impl fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-/// The specific code of a ChatGPT plan failure, which the runtime's model
-/// error categories do not carry (ADR-0093). Other failures have none.
-const fn plan_failure_code(error: ProviderError) -> Option<&'static str> {
+/// The specific code of a ChatGPT plan failure (ADR-0093) or of a refused
+/// reasoning effort (ADR-0108), which the runtime's model error categories
+/// do not carry. Other failures have none.
+const fn provider_failure_code(error: ProviderError) -> Option<&'static str> {
     match error {
+        ProviderError::EffortRefused(_) => Some("effort_refused"),
         ProviderError::SignInRequired => Some("signin_required"),
         ProviderError::AccessTokenUnavailable => Some("access_token_unavailable"),
         ProviderError::ResponseFailed(ResponseFailure::Failed) => Some("plan_request_failed"),
@@ -174,6 +176,8 @@ const fn plan_failure_code(error: ProviderError) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use omgcode_core::provider::ReasoningEffort;
+
     use super::*;
 
     #[test]
@@ -229,6 +233,14 @@ mod tests {
         assert_eq!(
             AppError::provider(ProviderError::AccessTokenUnavailable).code(),
             "access_token_unavailable"
+        );
+        let effort = AppError::provider(ProviderError::EffortRefused(ReasoningEffort::Max));
+        assert_eq!(effort.kind(), ErrorKind::Provider);
+        assert_eq!(effort.code(), "effort_refused");
+        assert!(effort.message().contains("reasoning effort `max`"));
+        assert_eq!(
+            AppError::provider(ProviderError::HttpStatus(400)).code(),
+            "provider"
         );
         let session = AppError::session(SessionError::LimitReached);
         assert_eq!(session.code(), "session");
