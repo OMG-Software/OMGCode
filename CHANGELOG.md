@@ -372,7 +372,7 @@ Changes are recorded here before a release version is assigned.
   only "local model server returned HTTP status 400": LM Studio accepts
   `none` through `xhigh` and refuses `max`, and the Chat Completions client
   never read a failed response's body. Now a client-error response to a
-  request that sent an effort is read for at most 64 KiB, and when its
+  request that sent an effort is read, keeping at most 64 KiB, and when its
   `error.param` is `reasoning_effort` the turn fails with the code
   `effort_refused` and "the model server refused the reasoning effort
   `max`; choose another effort or the default". Only that field is read and

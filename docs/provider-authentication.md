@@ -465,7 +465,7 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   count in the pre-turn context estimate. Values are not adjusted per model,
   and each provider's model
   decides which it accepts. On Chat Completions, a client-error response to
-  a request that sent an effort is read for at most 64 KiB, and when its
+  a request that sent an effort is read, keeping at most 64 KiB, and when its
   `error.param` is `reasoning_effort` the failure names the value OMGCode
   sent, with the code `effort_refused`; no server text is shown or kept
   (ADR-0108). Any other refusal, and every plan-route refusal, arrives as the

@@ -34,9 +34,14 @@ else (ADR-0093).
 ## Decision
 
 1. When a Chat Completions request that sent a reasoning effort gets a
-   client-error (4xx) status, core reads at most 64 KiB of the body, within
-   the request's deadline and watching its cancel token, through the reader
-   the plan route uses.
+   client-error (4xx) status, core reads the body through the reader the
+   plan route uses, within the request's deadline and watching its cancel
+   token, and keeps at most 64 KiB of it. The limit is checked as each
+   piece arrives: the piece that passes it is dropped unkept and the
+   failure keeps its status. Over HTTP/1, the only protocol the client
+   speaks, one piece is one socket read, which hyper 1.12.0 caps at its
+   417,792-byte read buffer, so that much can be received before the read
+   stops.
 2. Only `error.param` of one strict JSON value is examined, with duplicate
    keys refused at every depth. When it is exactly `reasoning_effort`, the
    failure is `ProviderError::EffortRefused` with the effort this client
@@ -76,8 +81,9 @@ else (ADR-0093).
 - A refused effort on LM Studio, or on any Chat Completions server that
   names the parameter in `error.param` as OpenAI's SDK expects, tells the
   operator which value to change. Other refusals look as they did.
-- A request with an effort that fails with 4xx now reads up to 64 KiB of the
-  body before returning, within the same deadline and cancellation.
+- A request with an effort that fails with 4xx now reads its body before
+  returning, keeping at most 64 KiB and receiving at most one more piece of
+  up to 417,792 bytes, within the same deadline and cancellation.
 - The journal still records only `model_error`; the specific code appears
   only in the CLI and desktop error.
 - Not observed: Ollama, Ollama Cloud, and every hosted provider's refusal of

@@ -1006,8 +1006,9 @@ impl LocalModelClient {
     /// (ADR-0108).
     ///
     /// Only a client-error status to a request that sent a reasoning effort
-    /// reads the body, at most [`MAX_ERROR_BODY_BYTES`] of it, and only its
-    /// `error.param` is looked at: `reasoning_effort` there makes the failure
+    /// reads the body, keeping at most [`MAX_ERROR_BODY_BYTES`] of it as
+    /// [`read_error_body`] describes, and only its `error.param` is looked
+    /// at: `reasoning_effort` there makes the failure
     /// [`ProviderError::EffortRefused`] with the effort this client sent.
     /// Every other response, and a longer or unreadable body, is
     /// [`ProviderError::HttpStatus`]; the body of a request without an
@@ -1152,8 +1153,14 @@ impl LocalModelClient {
     }
 }
 
-/// Read at most [`MAX_ERROR_BODY_BYTES`] of a failed response. A read error
+/// Keep at most [`MAX_ERROR_BODY_BYTES`] of a failed response. A read error
 /// or a longer body gives `None`, so the caller reports the status alone.
+///
+/// The limit is checked as each piece of the body arrives, so the piece
+/// that passes it has already been received and is dropped unkept. Over
+/// HTTP/1, the only protocol this client speaks, one piece is one socket
+/// read, which hyper 1.12.0 caps at its 417,792-byte read buffer
+/// (`proto/h1/io.rs`, `DEFAULT_MAX_BUFFER_SIZE`).
 async fn read_error_body(
     response: &mut Response,
     cancel: &CancelToken,
