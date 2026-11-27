@@ -817,6 +817,96 @@ fn an_assignment_that_cannot_be_recorded_revokes_its_grant() {
     assert!(scene.store.assigned_profiles(app).is_empty());
 }
 
+/// What [`release_after_removal`] observed, for assertions made after the
+/// real grants are cleaned up.
+#[cfg(windows)]
+#[derive(Debug)]
+struct ReleaseAfterRemoval {
+    /// The folders each assignment's plan granted, in order: outer, inner.
+    planned: [usize; 2],
+    /// The revocations of unassigning `outer`, then `inner`.
+    released: [Revocations; 2],
+    /// The grants recorded after both unassignments.
+    left: usize,
+    /// A fresh plan for `outer` after the grant was revoked.
+    replanned: ProfileAccessPlan,
+}
+
+/// Assign `outer` (`sdk`) and `inner` (`sdk/bin`) with real grants, remove
+/// `sdk/bin`, then unassign `outer` and `inner` in turn.
+#[cfg(windows)]
+fn release_after_removal(
+    store: &mut ControlStore,
+    app: WorkspaceId,
+    outside: &Path,
+) -> Result<ReleaseAfterRemoval, String> {
+    let mut planned = [0; 2];
+    for (index, name) in ["outer", "inner"].into_iter().enumerate() {
+        let plan = store
+            .plan_profile_access(app, name)
+            .map_err(|error| format!("plan {name}: {error}"))?;
+        planned[index] = plan.to_grant().len();
+        let revision = store.revision();
+        store
+            .assign_profile_with_access(app, name, &plan, revision)
+            .map_err(|failure| format!("assign {name}: {failure:?}"))?;
+    }
+    fs::remove_dir(outside.join("sdk/bin"))
+        .map_err(|error| format!("remove the nested root: {error}"))?;
+    let mut unassign = |name: &str| {
+        let revision = store.revision();
+        store
+            .unassign_profile_with_access(app, name, revision)
+            .map(|(_, revocations)| revocations)
+            .map_err(|error| format!("unassign {name}: {error}"))
+    };
+    let released = [unassign("outer")?, unassign("inner")?];
+    let replanned = store
+        .plan_profile_access(app, "outer")
+        .map_err(|error| format!("plan outer again: {error}"))?;
+    Ok(ReleaseAfterRemoval {
+        planned,
+        released,
+        left: store.container_grants().len(),
+        replanned,
+    })
+}
+
+/// Windows only, with a real grant on a temporary folder: a nested root that
+/// was removed keeps the outer grant while its profile is assigned, and
+/// unassigning that profile then removes the grant's access-control entry,
+/// so the folder needs a grant again.
+#[cfg(windows)]
+#[test]
+fn a_removed_nested_root_releases_the_real_outer_grant_with_its_profile() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("outer", &["sdk"]);
+    scene.profile("inner", &["sdk/bin"]);
+    let outside = scene.outside.clone();
+
+    let result = release_after_removal(&mut scene.store, app, &outside);
+
+    let (_, cleanup) = revoke_left(&mut scene.store);
+    assert!(cleanup.is_empty(), "cleanup failed: {cleanup:?}");
+    let seen = result.expect("assign, remove, and unassign");
+    // The outer grant made the nested root readable, so it got none.
+    assert_eq!(seen.planned, [1, 0], "{seen:?}");
+    let [outer, inner] = &seen.released;
+    assert!(
+        outer.revoked.is_empty() && outer.failures.is_empty(),
+        "{seen:?}"
+    );
+    assert!(outer.workspaces.is_empty(), "{seen:?}");
+    assert_eq!(inner.revoked.len(), 1, "{seen:?}");
+    assert!(inner.failures.is_empty(), "{seen:?}");
+    assert_eq!(seen.left, 0, "{seen:?}");
+    let [again] = seen.replanned.to_grant() else {
+        panic!("the folder needs its grant again: {seen:?}");
+    };
+    assert_eq!(again.path().file_name(), Some(std::ffi::OsStr::new("sdk")));
+}
+
 /// Revoke every recorded grant, attempting each, and return the grants
 /// that were left and each revocation that failed, with its grant, so a
 /// Windows test that applied real access-control entries can report what
