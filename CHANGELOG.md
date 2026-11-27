@@ -365,7 +365,9 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
-- Version 0.70.1 names a reasoning effort that the server refused. A chat
+- Version 0.71.0 names a reasoning effort that the server refused; it is a
+  minor version because the public `ProviderError` enum gains the variant
+  `EffortRefused`, which breaks an exhaustive `match` on it. A chat
   turn with the effort **Max** against LM Studio 0.4.28 failed at once with
   only "local model server returned HTTP status 400": LM Studio accepts
   `none` through `xhigh` and refuses `max`, and the Chat Completions client
