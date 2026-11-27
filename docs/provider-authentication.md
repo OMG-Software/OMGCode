@@ -468,8 +468,12 @@ validation, no proxy, redirect, or retry, and the same timeouts and limits.
   a request that sent an effort is read, keeping at most 64 KiB, and when its
   `error.param` is `reasoning_effort` the failure names the value OMGCode
   sent, with the code `effort_refused`; no server text is shown or kept
-  (ADR-0108). Any other refusal, and every plan-route refusal, arrives as the
-  HTTP status. LM Studio, observed with `google/gemma-4-e4b` loaded on
+  (ADR-0108). Any other Chat Completions refusal arrives as the HTTP status.
+  The plan route does not look for a refused effort: its failures keep their
+  own handling, a specific code such as `usage_limit_exceeded` when the body
+  names a documented one (ADR-0093), and otherwise the HTTP status. How the
+  plan route refuses an effort was not observed. LM Studio, observed with
+  `google/gemma-4-e4b` loaded on
   2026-11-27, accepts `none` through `xhigh` and refuses `max` with HTTP 400
   and that parameter. No hosted provider was observed with an effort.
 - **Not covered.** Native provider APIs (for example Anthropic Messages),

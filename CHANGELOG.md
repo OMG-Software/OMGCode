@@ -376,8 +376,9 @@ Changes are recorded here before a release version is assigned.
   `error.param` is `reasoning_effort` the turn fails with the code
   `effort_refused` and "the model server refused the reasoning effort
   `max`; choose another effort or the default". Only that field is read and
-  no server text is shown or kept; every other failure keeps its HTTP
-  status, and a request without an effort reads no error body, as before.
+  no server text is shown or kept; every other Chat Completions failure
+  keeps its HTTP status, and a request without an effort reads no error
+  body, as before. The ChatGPT plan route is unchanged.
   The journal still records `model_error` (ADR-0108, amending ADR-0102).
 - The guides now match the code at version 0.69.0. PRs #69 to #76 merged
   in parallel, so statements one change made were left stale by another.
