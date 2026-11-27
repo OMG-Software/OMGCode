@@ -616,7 +616,11 @@ Changes are recorded here before a release version is assigned.
   confirmed directory. An assignment whose grant fails, or that cannot be
   recorded, revokes the grants it made that no assigned profile needs,
   waits for the runs those revocations withdrew, and reports each grant it
-  could not revoke, and a
+  could not revoke and each grant it kept because a profile already
+  assigned to the workspace needs it; when it revoked every grant it made,
+  the `settings` window says so instead of pointing to a pending grant. A
+  revocation report counts each kind of failure under its own reason, so a
+  grant left `revoking` is named beside grants that failed otherwise. A
   workspace with a pending or revoking grant is refused a plan. Folders that
   need an administrator, or whose access could not be read, are listed and
   not granted. Registering a

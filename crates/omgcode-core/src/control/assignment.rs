@@ -214,6 +214,10 @@ pub struct AssignmentFailure {
     /// `revoking`, with its access, until the operator revokes it. Each
     /// revocation withdrew the runs of its workspace.
     pub released: Revocations,
+    /// The grants the call made that a profile already assigned to the
+    /// workspace needs, so they were not revoked and stay recorded, in the
+    /// order made. One whose access-control change failed stays `pending`.
+    pub kept: Vec<Uuid>,
 }
 
 impl From<ControlError> for AssignmentFailure {
@@ -222,6 +226,7 @@ impl From<ControlError> for AssignmentFailure {
         Self {
             error,
             released: Revocations::default(),
+            kept: Vec::new(),
         }
     }
 }
@@ -504,8 +509,7 @@ impl ControlStore {
                             .as_ref()
                             .and_then(|record| self.workspace_grant_on(workspace_id, record)),
                     );
-                    let released = self.release_unneeded(workspace_id, &made);
-                    return Err(AssignmentFailure { error, released });
+                    return Err(self.undo_grants(workspace_id, &made, error));
                 }
             }
         }
@@ -518,8 +522,7 @@ impl ControlStore {
                     // assignment, so a grant no recorded assignment needs
                     // does not outlive it.
                     let made: Vec<Uuid> = granted.iter().map(ContainerGrant::id).collect();
-                    let released = self.release_unneeded(workspace_id, &made);
-                    return Err(AssignmentFailure { error, released });
+                    return Err(self.undo_grants(workspace_id, &made, error));
                 }
             }
         }
@@ -991,6 +994,33 @@ impl ControlStore {
             .copied()
             .collect();
         self.revoke_each(&unneeded)
+    }
+
+    /// The failure of an assignment that made the grants `made`, after
+    /// revoking those no assigned profile needs; the rest are `kept`.
+    fn undo_grants(
+        &mut self,
+        workspace_id: WorkspaceId,
+        made: &[Uuid],
+        error: ControlError,
+    ) -> AssignmentFailure {
+        let released = self.release_unneeded(workspace_id, made);
+        let kept = made
+            .iter()
+            .filter(|id| {
+                !released
+                    .revoked
+                    .iter()
+                    .any(|revocation| revocation.grant_id == **id)
+                    && !released.failures.iter().any(|(grant, _)| grant == *id)
+            })
+            .copied()
+            .collect();
+        AssignmentFailure {
+            error,
+            released,
+            kept,
+        }
     }
 
     /// Revoke each grant in order, attempting every one.

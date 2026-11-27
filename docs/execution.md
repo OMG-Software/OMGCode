@@ -981,11 +981,16 @@ consent to give that workspace's sandbox the profile's folders.
   assignment cannot be recorded, the profile stays unassigned and core
   revokes the grants this call made that no assigned profile needs, which
   withdraws the workspace's runs; a grant whose revocation fails stays
-  recorded, `pending` or `revoking`, until it is revoked. Core returns those
-  revocations with the error: `profile-assign` names each grant not revoked
-  with its `container-revoke` command, and the `settings` window counts them
-  and points to each one's **Revoke**, and says so when only an AppContainer
-  profile could not be deleted. When the rollback revoked a grant, or tried
+  recorded, `pending` or `revoking`, until it is revoked. A grant the call
+  made that a profile already assigned to the workspace needs is kept, and
+  stays recorded in its state, `pending` if its access-control change failed.
+  Core returns those revocations, and the grants it kept, with the error:
+  `profile-assign` names each grant not revoked with its `container-revoke`
+  command and each grant kept, and the `settings` window counts them and
+  points to each one's **Revoke**, and says so when only an AppContainer
+  profile could not be deleted. When the rollback revoked every grant the
+  call made, the `settings` window says so, and that none is left pending,
+  instead of pointing to a pending grant. When the rollback revoked a grant, or tried
   to, both wait for the workspace's withdrawn runs to stop before they report,
   as an unassignment does. `profile-assign` is itself the consent,
   so it plans and assigns in one call, and prints `assigned_profile_id`,

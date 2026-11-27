@@ -71,7 +71,9 @@ per-call approval of a command, which is a different decision.
    outlives a consent that did not take effect; a grant whose revocation
    fails stays recorded, `pending` or `revoking`, until it is revoked, and
    the failure returns those revocations so the operator is told which
-   grants are left. A rollback that revoked a grant, or tried to, withdrew
+   grants are left. A grant the call made that a profile already assigned to
+   the workspace needs is kept, and the failure names it too, since it can be
+   the `pending` grant whose change failed. A rollback that revoked a grant, or tried to, withdrew
    the workspace's runs, so the caller waits for them before it reports, as
    after an unassignment. A
    workspace with a grant that is pending or being revoked is refused a plan,

@@ -982,16 +982,22 @@ fn profile_assign(
 fn assignment_failed(failure: AssignmentFailure) -> CliError {
     let mut error = control_error(failure.error);
     let failures = &failure.released.failures;
-    if !failures.is_empty() {
-        if !error.message.ends_with('.') {
-            error.message.push('.');
-        }
-        error.message.push_str(if all_revoked(failures) {
-            " The profile was not assigned, and every container grant the assignment made was revoked."
-        } else {
-            " The profile was not assigned, but not every container grant the assignment made was revoked."
-        });
-        error.message.push_str(&unrevoked_grants(failures));
+    if failures.is_empty() && failure.kept.is_empty() {
+        return error;
+    }
+    if !error.message.ends_with('.') {
+        error.message.push('.');
+    }
+    error.message.push_str(if all_revoked(failures) && failure.kept.is_empty() {
+        " The profile was not assigned, and every container grant the assignment made was revoked."
+    } else {
+        " The profile was not assigned, but not every container grant the assignment made was revoked."
+    });
+    error.message.push_str(&unrevoked_grants(failures));
+    for grant in &failure.kept {
+        error.message.push_str(&format!(
+            " Grant {grant} is kept, because a profile already assigned to the workspace needs it."
+        ));
     }
     error
 }
@@ -1395,7 +1401,26 @@ mod tests {
                 failures: released,
                 ..Revocations::default()
             },
+            kept: Vec::new(),
         }
+    }
+
+    /// A grant a failed assignment kept for a profile already assigned to
+    /// the workspace is named, and the message does not say every grant was
+    /// revoked.
+    #[test]
+    fn a_failed_assignment_names_each_grant_it_kept() {
+        let kept = Uuid::new_v4();
+        let error = assignment_failed(AssignmentFailure {
+            kept: vec![kept],
+            ..failure(Vec::new())
+        });
+        assert_eq!(
+            error.message,
+            format!(
+                "control journal capacity reached. The profile was not assigned, but not every container grant the assignment made was revoked. Grant {kept} is kept, because a profile already assigned to the workspace needs it."
+            )
+        );
     }
 
     /// A failed assignment whose grants were all revoked reports only its

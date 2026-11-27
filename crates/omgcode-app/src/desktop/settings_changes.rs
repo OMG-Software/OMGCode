@@ -1686,23 +1686,34 @@ impl DesktopError {
             }
         }
         .to_owned();
+        // Each kind of failure is counted under its own reason: an
+        // access-list failure leaves its grant `revoking`, and any other
+        // failure is counted under the message it maps to.
         let access = unrevoked
             .iter()
-            .any(|error| matches!(error, ControlError::Container(_)));
-        if let Some(other) = unrevoked
+            .filter(|error| matches!(error, ControlError::Container(_)))
+            .count();
+        if access > 0 {
+            message.push_str(&format!(
+                " {access} grant(s) could not be removed from their folders' access lists and stay revoking."
+            ));
+        }
+        let mut reasons: Vec<(String, usize)> = Vec::new();
+        for error in unrevoked
             .iter()
-            .find(|error| !matches!(error, ControlError::Container(_)))
+            .filter(|error| !matches!(error, ControlError::Container(_)))
         {
-            message.push_str(&format!(
-                " {} grant(s) were not revoked: {}.",
-                unrevoked.len(),
-                Self::from_control(other).message().trim_end_matches('.')
-            ));
-        } else if access {
-            message.push_str(&format!(
-                " {} grant(s) could not be removed from their folders' access lists and stay revoking.",
-                unrevoked.len()
-            ));
+            let reason = Self::from_control(error)
+                .message()
+                .trim_end_matches('.')
+                .to_owned();
+            match reasons.iter_mut().find(|(seen, _)| *seen == reason) {
+                Some((_, count)) => *count += 1,
+                None => reasons.push((reason, 1)),
+            }
+        }
+        for (reason, count) in &reasons {
+            message.push_str(&format!(" {count} grant(s) were not revoked: {reason}."));
         }
         if !unrevoked.is_empty() {
             message.push_str(" The settings list each one, and Revoke tries again.");
@@ -1721,7 +1732,7 @@ impl DesktopError {
                 " Then remove the workspace again."
             });
         }
-        let code = if access {
+        let code = if access > 0 {
             "container_access_failed"
         } else {
             "revocation_incomplete"
@@ -1845,6 +1856,7 @@ mod tests {
                 workspaces,
                 ..Revocations::default()
             },
+            kept: Vec::new(),
         };
 
         assert!(rollback_withdrawn(before(), &failure(vec![])).is_none());
@@ -1891,8 +1903,6 @@ mod tests {
         }
     }
 
-    /// A grant left revoking is still reported beside one whose profile
-    /// could not be deleted.
     /// A folder grant registration did not attempt is reported with its
     /// reason, so the operator does not learn of it from a refused run.
     #[test]
@@ -1918,6 +1928,8 @@ mod tests {
         );
     }
 
+    /// A grant left revoking is still reported beside one whose profile
+    /// could not be deleted.
     #[test]
     fn a_grant_left_revoking_is_reported_beside_a_failed_profile_deletion() {
         let failures = [
@@ -1946,6 +1958,44 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("operating system text"), "{message}");
+    }
+
+    /// When one grant fails its access-list change and others fail for
+    /// other reasons, each kind is counted under its own reason, and the
+    /// access-list one is still said to stay revoking.
+    #[test]
+    fn mixed_revocation_failures_are_counted_by_kind() {
+        let failures = [
+            (
+                uuid::Uuid::new_v4(),
+                ControlError::Container(std::io::Error::other("operating system text")),
+            ),
+            (uuid::Uuid::new_v4(), ControlError::UnknownGrant),
+            (uuid::Uuid::new_v4(), ControlError::UnknownGrant),
+            (uuid::Uuid::new_v4(), ControlError::LimitReached),
+        ];
+        let error = DesktopError::revocation_incomplete(&failures, RevokingChange::Recorded);
+        let message = error.message();
+        assert_eq!(error.code(), "container_access_failed");
+        let unknown = DesktopError::from_control(&ControlError::UnknownGrant);
+        let limit = DesktopError::from_control(&ControlError::LimitReached);
+        assert_eq!(
+            message,
+            format!(
+                "The change was recorded, but not every container grant it releases was revoked. 1 grant(s) could not be removed from their folders' access lists and stay revoking. 2 grant(s) were not revoked: {}. 1 grant(s) were not revoked: {}. The settings list each one, and Revoke tries again.",
+                unknown.message().trim_end_matches('.'),
+                limit.message().trim_end_matches('.')
+            )
+        );
+        assert!(!message.contains("operating system text"), "{message}");
+
+        let others = DesktopError::revocation_incomplete(&failures[1..], RevokingChange::Recorded);
+        assert_eq!(others.code(), "revocation_incomplete");
+        assert!(
+            !others.message().contains("access lists"),
+            "{}",
+            others.message()
+        );
     }
 
     #[test]

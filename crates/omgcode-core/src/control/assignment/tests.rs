@@ -331,7 +331,8 @@ fn an_assignment_applies_only_the_confirmed_plan() {
                 Err(AssignmentFailure {
                     error: ControlError::ProfileRefused(_),
                     released,
-                }) if released.workspaces.is_empty()
+                    kept,
+                }) if released.workspaces.is_empty() && kept.is_empty()
             ),
             "{result:?}"
         );
@@ -1188,4 +1189,37 @@ fn an_active_read_write_grant_is_not_named_as_unusable() {
             .is_none()
     );
     assert!(failures.is_empty(), "{failures:?}");
+}
+
+/// A failed assignment's rollback keeps a grant it made that a profile
+/// already assigned to the workspace needs, and says so, so a report does not
+/// claim that nothing is left; the grant no profile needs is released.
+#[test]
+fn a_rollback_names_the_grants_it_kept_for_an_assigned_profile() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("kept", &["kept"]);
+    scene.assign(app, "kept").expect("assign kept");
+    let read = ContainerGrantAccess::ReadExecute;
+    let needed = scene
+        .store
+        .test_record_grant(app, &scene.outside.join("kept"), read);
+    let path = scene.outside.join("made");
+    fs::create_dir_all(&path).expect("grant folder");
+    let made = scene.store.test_record_grant(app, &path, read);
+
+    let failure = scene
+        .store
+        .undo_grants(app, &[needed, made], ControlError::LimitReached);
+
+    assert!(matches!(failure.error, ControlError::LimitReached));
+    assert_eq!(failure.kept, [needed]);
+    let released: Vec<Uuid> = failure
+        .released
+        .revoked
+        .iter()
+        .map(|revocation| revocation.grant_id)
+        .chain(failure.released.failures.iter().map(|(grant, _)| *grant))
+        .collect();
+    assert_eq!(released, [made], "only the unneeded grant was released");
 }

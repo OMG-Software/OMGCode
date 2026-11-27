@@ -183,6 +183,10 @@ pub struct ContainerRevokeRequest {
     pub grant_id: Uuid,
 }
 
+/// The cause of a grant whose access-control change failed, before any word
+/// on what became of the grant.
+const ACCESS_LIST_FAILED: &str = "The folder's access list could not be changed or read back.";
+
 impl DesktopError {
     /// Container grants exist only on Windows.
     pub(super) fn unsupported_platform() -> Self {
@@ -203,7 +207,9 @@ impl DesktopError {
         match error {
             ControlError::Container(_) => Self::execution(
                 "container_access_failed",
-                "The folder's access list could not be changed or read back. If the grant was recorded it stays pending or revoking; the settings list its state, and Revoke tries again.",
+                format!(
+                    "{ACCESS_LIST_FAILED} If the grant was recorded it stays pending or revoking; the settings list its state, and Revoke tries again."
+                ),
             ),
             other => Self::from_control(other),
         }
@@ -211,21 +217,44 @@ impl DesktopError {
 
     /// An assignment that failed, as [`Self::from_grant`] reports its cause,
     /// with the count of grants it made that could not be revoked afterwards;
-    /// the settings list each one, and **Revoke** tries again. A grant revoked
-    /// whose AppContainer profile alone could not be deleted holds no access
-    /// and is not counted, but the message says the profile was left. The
-    /// operating system's own text is never shown.
+    /// the settings list each one, and **Revoke** tries again, and of those
+    /// it kept because a profile already assigned to the workspace needs
+    /// them. When the rollback revoked every grant the assignment made, the
+    /// message says so instead of pointing to a pending grant that is gone. A
+    /// grant revoked whose AppContainer profile alone could not be deleted
+    /// holds no access and is not counted, but the message says the profile
+    /// was left. The operating system's own text is never shown.
     pub(super) fn assignment_failed(failure: &AssignmentFailure) -> Self {
-        let cause = Self::from_grant(&failure.error);
-        let failures = &failure.released.failures;
-        if failures.is_empty() {
-            return cause;
+        let released = &failure.released;
+        let failures = &released.failures;
+        let kept = failure.kept.len();
+        if failures.is_empty() && released.revoked.is_empty() && kept == 0 {
+            // Nothing was granted, so a failed grant, if one was recorded at
+            // all, was not reached by the rollback.
+            return Self::from_grant(&failure.error);
         }
         let left = failures
             .iter()
             .filter(|(_, error)| !matches!(error, ControlError::ProfileRemoval(_)))
             .count();
+        let all_revoked = left == 0 && kept == 0;
+        let cause = match &failure.error {
+            ControlError::Container(_) if all_revoked => {
+                Self::execution("container_access_failed", ACCESS_LIST_FAILED)
+            }
+            other => Self::from_grant(other),
+        };
         let mut message = format!("{}.", cause.message().trim_end_matches('.'));
+        if all_revoked {
+            message.push_str(
+                " The grants the failed assignment made were revoked; none is left pending.",
+            );
+        }
+        if kept > 0 {
+            message.push_str(&format!(
+                " {kept} container grant(s) the failed assignment made are kept, because a profile already assigned to the workspace needs them; the settings list each one and its state."
+            ));
+        }
         if left > 0 {
             message.push_str(&format!(
                 " {left} container grant(s) the failed assignment made could not be revoked; the settings list each one, and Revoke tries again."
@@ -1053,22 +1082,45 @@ mod tests {
                 failures,
                 ..Revocations::default()
             },
+            kept: Vec::new(),
         }
     }
 
-    /// A failed assignment whose rollback revoked everything reports its
-    /// cause as a grant failure does; one that left grants also counts them,
-    /// without the operating system's text. A grant whose profile alone
-    /// could not be deleted is not counted, but the message says the profile
-    /// was left.
+    /// A failed assignment that made no grant reports its cause as a grant
+    /// failure does. One whose rollback revoked every grant it made says so
+    /// instead of pointing to a pending grant; one that left or kept grants
+    /// counts them, without the operating system's text. A grant whose
+    /// profile alone could not be deleted is not counted, but the message
+    /// says the profile was left.
     #[test]
     fn a_failed_assignment_counts_the_grants_it_left() {
         let os = || std::io::Error::other("operating system text");
         let profile_left = " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now.";
+        let revoked = " The grants the failed assignment made were revoked; none is left pending.";
         let cause = DesktopError::from_grant(&ControlError::LimitReached);
         let clean = DesktopError::assignment_failed(&failure(ControlError::LimitReached, vec![]));
         assert_eq!(clean.code(), cause.code());
         assert_eq!(clean.message(), cause.message());
+
+        let mut rolled_back = failure(ControlError::Container(os()), vec![]);
+        rolled_back
+            .released
+            .revoked
+            .push(omgcode_core::control::ContainerRevocation {
+                grant_id: Uuid::new_v4(),
+                profile_deleted: true,
+            });
+        let rolled_back = DesktopError::assignment_failed(&rolled_back);
+        assert_eq!(rolled_back.code(), "container_access_failed");
+        assert_eq!(
+            rolled_back.message(),
+            format!("{ACCESS_LIST_FAILED}{revoked}")
+        );
+        assert!(
+            !rolled_back.message().contains("pending or revoking"),
+            "{}",
+            rolled_back.message()
+        );
 
         let alone = DesktopError::assignment_failed(&failure(
             ControlError::LimitReached,
@@ -1077,8 +1129,25 @@ mod tests {
         assert_eq!(alone.code(), cause.code());
         assert_eq!(
             alone.message(),
-            format!("{}.{profile_left}", cause.message().trim_end_matches('.'))
+            format!(
+                "{}.{revoked}{profile_left}",
+                cause.message().trim_end_matches('.')
+            )
         );
+
+        let kept = DesktopError::assignment_failed(&AssignmentFailure {
+            kept: vec![Uuid::new_v4()],
+            ..failure(ControlError::Container(os()), vec![])
+        });
+        let message = kept.message();
+        assert!(message.contains("pending or revoking"), "{message}");
+        assert!(
+            message.ends_with(
+                " 1 container grant(s) the failed assignment made are kept, because a profile already assigned to the workspace needs them; the settings list each one and its state."
+            ),
+            "{message}"
+        );
+        assert!(!message.contains("none is left pending"), "{message}");
 
         let left = DesktopError::assignment_failed(&failure(
             ControlError::Container(os()),
