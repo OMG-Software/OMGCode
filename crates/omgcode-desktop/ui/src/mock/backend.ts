@@ -362,8 +362,7 @@ export function mockReleasedGrants(
   const own = grants.filter((grant) => grant.workspace_id === workspaceId);
   const candidates = own.filter(
     (grant) =>
-      grant.access === "read_execute" &&
-      roots.some((root) => mockHolds(grant.directory, root)),
+      grant.access === "read_execute" && roots.some((root) => mockHolds(grant.directory, root)),
   );
   const cover = own.filter((grant) => grant.state === "active" && !candidates.includes(grant));
   const needed = (grant: ContainerGrantView): boolean =>

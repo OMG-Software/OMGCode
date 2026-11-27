@@ -1149,9 +1149,7 @@ describe("mock unassignment releases grants as core does (ADR-0107)", () => {
     ...overrides,
   });
   const released = (grants: ContainerGrantView[], needs: string[] = []) =>
-    mockReleasedGrants(grants, "app", ["/toolchains/rust"], needs).map(
-      (entry) => entry.directory,
-    );
+    mockReleasedGrants(grants, "app", ["/toolchains/rust"], needs).map((entry) => entry.directory);
 
   it("releases a grant on a folder that holds the root, not only one on the root", () => {
     expect(released([grant("/toolchains/rust"), grant("/toolchains")])).toEqual([
