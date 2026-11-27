@@ -375,8 +375,8 @@ Changes are recorded here before a release version is assigned.
   gnome-keyring daemon's output and exit status and checks that the daemon
   it started owns `org.freedesktop.secrets`. After a failed Linux step,
   `.github/scripts/secret-service-diagnostics.sh` prints that record, the
-  journal for gnome-keyring and the session bus, and kernel OOM and crash
-  lines. In that run's second attempt the daemon left the session bus and 28
+  journal for gnome-keyring and the session bus, the daemon's core dumps, and
+  kernel OOM and crash lines. In that run's second attempt the daemon left the session bus and 28
   credential tests failed with `Locked`. The cause is still unknown; this
   change adds diagnostics only and retries or serialises no test. No
   application behaviour or version changed.

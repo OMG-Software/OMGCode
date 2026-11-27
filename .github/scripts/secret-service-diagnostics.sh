@@ -31,8 +31,9 @@ busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DB
   GetConnectionUnixProcessID s org.freedesktop.secrets
 echo "::endgroup::"
 
-# journalctl --user reads only per-user journal files, which journald does not
-# write on volatile storage, so read every journal through sudo instead.
+# One query over the system and user journals: journalctl --user would omit
+# systemd-oomd, a system unit. USER_UNIT= entries are the user manager's own
+# lines, such as the session bus stopping or restarting.
 echo "::group::Journal: gnome-keyring, the session bus, and systemd-oomd"
 sudo journalctl --no-pager -o short-precise -b \
   SYSLOG_IDENTIFIER=gnome-keyring-daemon \
@@ -40,12 +41,22 @@ sudo journalctl --no-pager -o short-precise -b \
   + USER_UNIT=gnome-keyring-daemon.service \
   + USER_UNIT=gnome-keyring-daemon.socket \
   + _SYSTEMD_USER_UNIT=dbus.service \
+  + USER_UNIT=dbus.service \
   + _SYSTEMD_USER_UNIT=dbus-broker.service \
+  + USER_UNIT=dbus-broker.service \
   + _SYSTEMD_UNIT=systemd-oomd.service
 echo "::endgroup::"
 
+echo "::group::Core dumps of gnome-keyring-daemon"
+if command -v coredumpctl >/dev/null; then
+  sudo coredumpctl --no-pager info /usr/bin/gnome-keyring-daemon
+else
+  echo "coredumpctl is not installed; kernel.core_pattern is $(cat /proc/sys/kernel/core_pattern)"
+fi
+echo "::endgroup::"
+
 echo "::group::Kernel messages about memory pressure and crashes"
-sudo dmesg -T | grep -iE 'out of memory|oom|killed process|segfault|general protection|traps:|keyring' \
+sudo dmesg -T | grep -iE 'out of memory|oom|killed process|segfault|general protection|traps:|gnome-keyring' \
   || echo "No matching kernel messages."
 free -m
 echo "::endgroup::"

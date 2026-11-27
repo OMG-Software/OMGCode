@@ -125,8 +125,9 @@ which never starts a service, until that daemon owns
 `org.freedesktop.secrets`, and fails if another process owns the name. When a
 later step fails, `.github/scripts/secret-service-diagnostics.sh` prints that
 log, whether the daemon still runs, the current name owner, journal entries
-for gnome-keyring, the session bus, and systemd-oomd, and kernel OOM and crash
-lines. In the second attempt of that run the daemon left the session bus
+for gnome-keyring, the session bus, and systemd-oomd, the daemon's core dumps
+through `coredumpctl` (the runner's `core_pattern` is systemd-coredump), and
+kernel OOM and crash lines. In the second attempt of that run the daemon left the session bus
 partway through the core tests, D-Bus activated the packaged
 `gnome-keyring-daemon.service` with a locked login collection, and 28
 credential tests failed with `Locked`. Its cause is unknown. The scripts only
