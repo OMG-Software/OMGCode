@@ -1158,6 +1158,18 @@ describe("mock unassignment releases grants as core does (ADR-0107)", () => {
     ]);
   });
 
+  it("releases a pending or revoking parent grant, as core revokes it in any state", () => {
+    expect(
+      released([
+        grant("/toolchains", { state: "pending" }),
+        grant("/toolchains/rust", { state: "revoking" }),
+      ]),
+    ).toEqual(["/toolchains", "/toolchains/rust"]);
+    expect(released([grant("/toolchains", { state: "pending" })], ["/toolchains/node"])).toEqual(
+      [],
+    );
+  });
+
   it("keeps a parent grant that a still-assigned root or the cache root relies on", () => {
     expect(released([grant("/toolchains")], ["/toolchains/node"])).toEqual([]);
     expect(released([grant("/toolchains")], ["/toolchains/cache"])).toEqual([]);

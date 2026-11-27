@@ -2551,7 +2551,8 @@ ACLs the private store refuses, see the notes in
   without granting. Layer and bundle tests check the command lists, and
   Vitest checks the switches and the discovery panel against a fake
   transport and the mock backend, and that the mock's unassignment releases
-  the same read-execute grants as core, parent folders included. The core,
+  the same read-execute grants as core, parent folders and pending or
+  revoking grants included. The core,
   CLI, and app suites also ran in WSL Ubuntu 24.04. The native dialogs and
   the real shell's settings window
   were not driven by automation.

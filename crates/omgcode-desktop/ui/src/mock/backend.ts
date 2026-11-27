@@ -352,6 +352,9 @@ function mockHolds(outer: string, inner: string): boolean {
  * holds one. It is kept while a folder in `needs`, the roots of the profiles still assigned and the
  * package cache root, relies on it: that folder is the grant's own, or lies beneath it while no
  * other active grant of the workspace outside the candidates is on or above that folder.
+ * A candidate may be in any state: core revokes a pending or revoking grant too, and keeps it,
+ * `revoking`, only when its access-list change fails, which the mock, like its revoke command,
+ * never models.
  */
 export function mockReleasedGrants(
   grants: readonly ContainerGrantView[],
