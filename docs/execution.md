@@ -973,8 +973,8 @@ consent to give that workspace's sandbox the profile's folders.
   refused a plan on every platform, because its runs are refused until that
   grant is settled; revoke it first.
 - **Assigning:** under the store's lock core plans again and refuses the
-  assignment when the folders to grant differ from the plan the operator
-  confirmed. It then applies `check_container_grants` to the batch, grants
+  assignment when the folders to grant, or the folders left out and their
+  reasons, differ from the plan the operator confirmed. It then applies `check_container_grants` to the batch, grants
   each folder read-execute through `grant_container_access`, refusing before
   anything is recorded a folder that is no longer the directory the operator
   confirmed, and records the assignment last. When a grant fails, or the

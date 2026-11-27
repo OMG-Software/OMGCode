@@ -311,6 +311,39 @@ fn a_batch_plan_matches_the_plan_from_unrecorded_folders() {
     ));
 }
 
+/// A confirmed plan whose folders left out differ from the plan made again,
+/// such as a folder shown as needing an administrator that is now unknown,
+/// is refused before anything is recorded, on every platform.
+#[test]
+fn an_assignment_refuses_a_changed_list_of_folders_left_out() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("rust", &["rust"]);
+    let revision = scene.store.revision();
+    let mut confirmed = scene.store.plan_profile_access(app, "rust").expect("plan");
+    confirmed.administrator.push(PlannedFolder {
+        path: scene.outside.join("gone"),
+        display: String::from("gone"),
+        record: None,
+    });
+    let result = scene
+        .store
+        .assign_profile_with_access(app, "rust", &confirmed, revision);
+    assert!(
+        matches!(
+            &result,
+            Err(AssignmentFailure {
+                error: ControlError::ProfileRefused(reason),
+                ..
+            }) if reason.contains("leaves out changed")
+        ),
+        "{result:?}"
+    );
+    assert_eq!(scene.store.revision(), revision);
+    assert!(scene.store.assigned_profiles(app).is_empty());
+    assert!(scene.store.container_grants().is_empty());
+}
+
 /// An assignment whose plan changed since the operator confirmed it is
 /// refused before anything is recorded. Off Windows the plan is empty, so the
 /// assignment records the event and grants nothing.

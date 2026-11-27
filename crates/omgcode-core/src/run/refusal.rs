@@ -139,7 +139,9 @@ impl fmt::Display for UngrantedRunPath {
 pub(super) struct ListedPaths {
     /// The run's toolchain profile name.
     pub(super) profile: String,
-    /// The profile's read-only roots, in recorded order.
+    /// The profile's read-only roots, in recorded order. Every platform's
+    /// setup lists them first among the confinement's read-only entries, so
+    /// read-only entry `i` below their count is root `i`.
     pub(super) roots: Vec<PathBuf>,
     /// The workspace's package cache root, when the run lists one.
     pub(super) package_cache: Option<PathBuf>,
@@ -158,22 +160,28 @@ impl ListedPaths {
         }
     }
 
-    /// Match by path rather than by index: the lists hold other entries in a
-    /// platform-specific order, and only the path says which one was meant.
+    /// A read-only entry inside the roots' range that holds that root's path
+    /// is that root. Past that range the path decides, since the lists hold
+    /// other entries in a platform-specific order: the package cache first,
+    /// so a cache root that is the same folder as a profile root is named as
+    /// the cache when its own entry is refused, then any root by its path.
     fn role(&self, entry: ConfinementEntry, path: &Path) -> RefusedPathRole {
+        let root = |index: usize| RefusedPathRole::ProfileRoot {
+            profile: self.profile.clone(),
+            // At most 16 roots, so this cannot saturate.
+            number: index.saturating_add(1),
+        };
         match entry {
             ConfinementEntry::Program => RefusedPathRole::Program,
             ConfinementEntry::ReadWrite(_) if path == self.workspace => RefusedPathRole::Workspace,
             ConfinementEntry::ReadWrite(_) => RefusedPathRole::Other,
-            ConfinementEntry::ReadOnly(_) => {
-                if let Some(index) = self.roots.iter().position(|root| root == path) {
-                    RefusedPathRole::ProfileRoot {
-                        profile: self.profile.clone(),
-                        // At most 16 roots, so this cannot saturate.
-                        number: index.saturating_add(1),
-                    }
+            ConfinementEntry::ReadOnly(index) => {
+                if self.roots.get(index).is_some_and(|listed| listed == path) {
+                    root(index)
                 } else if self.package_cache.as_deref() == Some(path) {
                     RefusedPathRole::PackageCache
+                } else if let Some(index) = self.roots.iter().position(|listed| listed == path) {
+                    root(index)
                 } else {
                     RefusedPathRole::Other
                 }
@@ -291,6 +299,38 @@ mod tests {
                 RefusedPathRole::Other,
             ),
         ]
+    }
+
+    /// A package cache root that is the same folder as a profile root is
+    /// named by the entry the runner refused: the root's own entry as that
+    /// root, and the cache's entry, listed after the roots, as the cache.
+    #[test]
+    fn a_cache_root_shared_with_a_profile_root_is_named_by_its_entry() {
+        let mut listed = listed();
+        listed.package_cache = Some(listed.roots[1].clone());
+        let shared = listed.roots[1].clone();
+        let refused = |entry| {
+            listed
+                .refusal(ungranted(
+                    entry,
+                    shared.clone(),
+                    ContainerAccess::ReadExecute,
+                    None,
+                ))
+                .role()
+                .clone()
+        };
+        assert_eq!(
+            refused(ConfinementEntry::ReadOnly(1)),
+            RefusedPathRole::ProfileRoot {
+                profile: "rust".into(),
+                number: 2,
+            }
+        );
+        assert_eq!(
+            refused(ConfinementEntry::ReadOnly(2)),
+            RefusedPathRole::PackageCache
+        );
     }
 
     #[test]

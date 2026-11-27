@@ -46,9 +46,14 @@ where to grant without naming a folder.
    the levels are unchanged.
 2. **Core names the path by its role.** Core keeps the paths it listed for
    the run: the profile name and roots in recorded order, the package cache
-   root, and the workspace folder. It matches the refused path against them,
-   by path rather than by index, because the lists hold other entries in an
-   order that differs by platform. `RunError::NotGranted` carries an
+   root, and the workspace folder. It matches the refused path against them
+   by path, because the lists hold other entries in an order that differs by
+   platform. The one index it uses is a read-only entry's: every platform
+   lists the profile roots first among the read-only entries, so a refused
+   read-only entry whose position holds a root with that path is that root.
+   A package cache root that is also a profile root is then named by the
+   entry Windows refused, not by whichever list core checks first.
+   `RunError::NotGranted` carries an
    `UngrantedRunPath` with the role (`workspace`, `profile_root` with the
    profile and its 1-based position, `package_cache`, `program`, or `other`),
    the access needed and held, and the path. The run journal still records
@@ -84,7 +89,8 @@ where to grant without naming a folder.
   older builds would then refuse to read. The role and position already lead
   to the folder in the settings window.
 - **Report the list index only.** Indexes depend on how each platform builds
-  the lists, and the operator never sees those lists.
+  the lists, and the operator never sees those lists. Core uses a read-only
+  entry's index only to tell apart two roles that share a path.
 - **Say whether this account can apply the grant**, as toolchain discovery
   does ([ADR-0103](0103-generate-toolchain-profiles-from-installed-toolchains.md)).
   It would add another access check after a refusal for a case the settings

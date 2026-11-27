@@ -611,7 +611,8 @@ Changes are recorded here before a release version is assigned.
   build refuses them. On Windows assigning is the consent to grant: core plans
   read-execute grants for the profile's roots that the workspace's
   AppContainer cannot read yet, the operator confirms the plan, and core
-  refuses the assignment if the plan changed, then applies the grants and
+  refuses the assignment if the plan changed, including the folders it
+  leaves out and why, then applies the grants and
   records the assignment last, granting only a folder that is still the
   confirmed directory. An assignment whose grant fails, or that cannot be
   recorded, revokes the grants it made that no assigned profile needs,
@@ -678,7 +679,10 @@ Changes are recorded here before a release version is assigned.
   package. Finding it took reading each root's access-control list by hand.
   The Windows runner now returns `ProcessError::Ungranted` with the refused
   entry, its path, the access it needs, and the access the container has.
-  Core matches the path against the paths it listed and returns
+  Core matches the path against the paths it listed, using a refused
+  read-only entry's position when that holds a profile root with the path,
+  so a package cache root that is also a profile root is named by the entry
+  Windows refused, and returns
   `RunError::NotGranted`, whose text names the role: root N of toolchain
   profile `NAME` (numbered from 1 as `profile-show` and the `settings`
   window list them), the workspace's package cache root, the workspace

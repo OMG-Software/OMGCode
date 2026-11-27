@@ -62,7 +62,8 @@ per-call approval of a command, which is a different decision.
    can grant, and folders whose access-control list could not be read, are
    listed apart and not granted. The operator confirms that plan. Under the
    store's lock core plans again and refuses the assignment if the folders
-   to grant changed, so no folder is granted that the operator did not see.
+   to grant, or the folders left out and their reasons, changed, so no
+   folder is granted, and none left out, that the operator did not see.
    Core then checks the batch against the grant limits, applies each grant,
    refusing a folder that is no longer the directory the operator confirmed,
    and records the assignment last. When a grant fails, or the assignment

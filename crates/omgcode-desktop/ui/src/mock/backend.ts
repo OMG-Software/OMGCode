@@ -14,6 +14,7 @@ import type {
   ComposerPreferences,
   ConnectionStatus,
   ConnectionView,
+  ContainerGrantView,
   ContextBreakdown,
   ContextPart,
   ContextPartId,
@@ -339,6 +340,41 @@ const MOCK_PROPOSALS: readonly MockProposal[] = [
     ],
   },
 ];
+
+/** Whether `inner` is the folder `outer` or lies beneath it, by the recorded path text. */
+function mockHolds(outer: string, inner: string): boolean {
+  return inner === outer || inner.startsWith(outer.endsWith("/") ? outer : `${outer}/`);
+}
+
+/**
+ * Like core (ADR-0107): the grants of `workspaceId` that end when a profile with the read-only
+ * `roots` leaves it. A candidate is a read-execute grant on one of those roots or on a folder that
+ * holds one. It is kept while a folder in `needs`, the roots of the profiles still assigned and the
+ * package cache root, relies on it: that folder is the grant's own, or lies beneath it while no
+ * other active grant of the workspace outside the candidates is on or above that folder.
+ */
+export function mockReleasedGrants(
+  grants: readonly ContainerGrantView[],
+  workspaceId: string,
+  roots: readonly string[],
+  needs: readonly string[],
+): ContainerGrantView[] {
+  const own = grants.filter((grant) => grant.workspace_id === workspaceId);
+  const candidates = own.filter(
+    (grant) =>
+      grant.access === "read_execute" &&
+      roots.some((root) => mockHolds(grant.directory, root)),
+  );
+  const cover = own.filter((grant) => grant.state === "active" && !candidates.includes(grant));
+  const needed = (grant: ContainerGrantView): boolean =>
+    needs.some(
+      (folder) =>
+        folder === grant.directory ||
+        (mockHolds(grant.directory, folder) &&
+          !cover.some((other) => mockHolds(other.directory, folder))),
+    );
+  return candidates.filter((grant) => !needed(grant));
+}
 
 /** A stable sample digest: 64 copies of one hex digit. */
 function mockDigest(index: number): string {
@@ -1960,25 +1996,28 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   }
 
   /**
-   * Like core (ADR-0107): the assignment ends, and the workspace's read-execute grants on the
-   * profile's roots that no other assigned profile names are revoked.
+   * Like core (ADR-0107): the assignment ends, and the grants `mockReleasedGrants` finds that no
+   * profile still assigned, and not the package cache root, needs are revoked.
    */
   function mockUnassign(workspace: WorkspaceSettingsView, profile: ToolchainProfileView): void {
     workspace.profiles = workspace.profiles.filter(
       (name) => name.toLowerCase() !== profile.name.toLowerCase(),
     );
-    const kept = new Set(
-      settings.toolchain_profiles
-        .filter((other) => mockAssigned(workspace, other.name))
-        .flatMap((other) => other.read_only_roots),
+    const needs = settings.toolchain_profiles
+      .filter((other) => mockAssigned(workspace, other.name))
+      .flatMap((other) => other.read_only_roots);
+    if (workspace.package_cache_root !== null) {
+      needs.push(workspace.package_cache_root);
+    }
+    const released = new Set(
+      mockReleasedGrants(
+        settings.container_grants,
+        workspace.workspace_id,
+        profile.read_only_roots,
+        needs,
+      ),
     );
-    settings.container_grants = settings.container_grants.filter(
-      (grant) =>
-        grant.workspace_id !== workspace.workspace_id ||
-        grant.access !== "read_execute" ||
-        !profile.read_only_roots.includes(grant.directory) ||
-        kept.has(grant.directory),
-    );
+    settings.container_grants = settings.container_grants.filter((grant) => !released.has(grant));
   }
 
   /** Home folders need a grant; `/usr/local` needs an administrator; the rest is readable. */

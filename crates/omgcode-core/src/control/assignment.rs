@@ -430,8 +430,9 @@ impl ControlStore {
 
     /// Grant the folders the operator confirmed in `confirmed`, then record
     /// the assignment, under this store's lock. The plan is made again first:
-    /// a different list of folders to grant refuses the assignment, so the
-    /// operator never grants a folder they did not see. Each grant goes
+    /// a different list of folders to grant, or of folders left out with
+    /// their reasons, refuses the assignment, so the operator never grants a
+    /// folder they did not see or relies on a reason that no longer holds. Each grant goes
     /// through [`Self::grant_container_access`], is refused when its folder
     /// is no longer the confirmed directory, and advances the revision.
     ///
@@ -476,9 +477,11 @@ impl ControlStore {
     ) -> Result<ProfileAssignment, AssignmentFailure> {
         self.check_revision(expected_revision)?;
         let plan = self.plan_profiles_access(workspace_id, names)?;
-        if plan.grant != confirmed.grant {
+        // The operator confirmed the folders left out, with their reasons,
+        // as well as those granted, so a change to either is refused.
+        if plan != *confirmed {
             return Err(ControlError::ProfileRefused(
-                "the folders this assignment grants changed; review it again",
+                "the folders this assignment grants or leaves out changed; review it again",
             )
             .into());
         }
