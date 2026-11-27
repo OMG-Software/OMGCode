@@ -335,6 +335,11 @@ export interface WorkspaceSettingsView {
    */
   web_fetch_hosts: string[];
   write_tools: WriteToolAccess;
+  /**
+   * The names of the toolchain profiles assigned to the workspace, in the order assigned
+   * (ADR-0107). Its commands can use only these.
+   */
+  profiles: string[];
   package_cache_root: string | null;
   /** The workspace's custom instructions (ADR-0080); `null` when the saved file is unreadable. */
   instructions: string | null;
@@ -734,6 +739,11 @@ export interface SettingsOverview {
   connection: ConnectionView;
   provider_profiles: ProviderProfileView[];
   toolchain_profiles: ToolchainProfileView[];
+  /**
+   * The platform a toolchain profile must name to run, and so to be assigned, here; `null` where
+   * no profile runs.
+   */
+  profile_platform: ToolchainProfileView["platform"] | null;
   package_profiles: PackageProfileView[];
   container_grants: ContainerGrantView[];
   /** Whether this computer can record container grants (Windows only). */

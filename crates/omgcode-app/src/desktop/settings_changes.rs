@@ -44,11 +44,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
-    ControlError, ControlStore, CredentialId, CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES,
-    ProviderAuth, ProviderCredentialError, ProviderKind, ProviderProfileDeclaration,
+    AssignmentFailure, CONTAINER_GRANTS_SUPPORTED, ControlError, ControlStore, CredentialId,
+    CredentialStore, FolderGrant, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth,
+    ProviderCredentialError, ProviderKind, ProviderProfileDeclaration, Revocations, SkippedGrant,
     delete_unbound_credential,
 };
-use omgcode_core::policy::{Access, PermissionSet, WriteTool};
+use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::provider::ModelEndpoint;
 use omgcode_core::run::{self, REVOCATION_WAIT};
 use omgcode_core::turn::display_safe_line;
@@ -607,13 +608,21 @@ impl DesktopService {
 
     /// `settings` only. Ask the operator for a folder below the development
     /// root and, after a native confirmation, register it as a workspace with
-    /// the default preferences. Registering a folder again reuses its
-    /// identifier and changes nothing.
+    /// the default preferences, as `omgcode workspace register` does. On
+    /// Windows the same consent grants the workspace's container read and
+    /// write on the folder when this account can change its access list
+    /// (ADR-0107). Registering a folder again reuses its identifier and
+    /// grants the folder only if that grant is missing.
     ///
     /// # Errors
     ///
-    /// `no_development_root` before any dialog when no root is set; otherwise
-    /// as [`settings_choose_root`](Self::settings_choose_root).
+    /// `no_development_root` before any dialog when no root is set;
+    /// `workspace_grant_failed` when the workspace was registered but its
+    /// folder's grant failed; `workspace_grant_skipped` when it was
+    /// registered but only an administrator can grant its folder, or this
+    /// account's access to the folder's access list could not be read;
+    /// otherwise as
+    /// [`settings_choose_root`](Self::settings_choose_root).
     pub fn settings_register_workspace(
         &self,
         request: SettingsRevisionRequest,
@@ -640,19 +649,20 @@ impl DesktopService {
             .collect();
         confirm(
             prompt,
-            &Confirmation {
-                title: "Register a workspace",
-                message: format!(
-                    "Register this folder as a workspace?\n\n{}\n\nA new workspace starts with {} on and everything else off.",
-                    shown(&folder),
-                    on.join(" and ")
-                ),
-            },
+            &register_confirmation(&shown(&folder), &on.join(" and ")),
         )?;
-        self.apply(|store| {
-            store
-                .register_workspace(&folder, request.revision)
-                .map(drop)
+        self.apply_reporting(|store| {
+            let registered = store
+                .register_workspace_with_access(&folder, request.revision)
+                .map_err(|error| DesktopError::from_control(&error))?;
+            let unfinished = match registered.grant {
+                Ok(FolderGrant::Granted(_) | FolderGrant::NotNeeded) => None,
+                Ok(FolderGrant::Skipped(reason)) => {
+                    Some(DesktopError::workspace_grant_skipped(reason))
+                }
+                Err(error) => Some(DesktopError::workspace_grant_failed(&error)),
+            };
+            Ok((AlsoWithdrawn::default(), unfinished))
         })
     }
 
@@ -755,23 +765,27 @@ impl DesktopService {
     /// confirmation that names its folder and lists what is removed
     /// (ADR-0081).
     ///
-    /// One settings event drops the registration, its preferences, its
-    /// package cache root selection, its skill overrides, and its checkpoint
-    /// folder record. The workspace's instructions file is then deleted under
-    /// the preferences lock, so no later turn sends its text. The folder, its
-    /// `.OMGCode` folder, cached packages, and the sessions recorded in the
-    /// workspace are not touched. Registering the folder again assigns a new
-    /// identifier, so those sessions stay in the journals and chat without
-    /// tools.
+    /// Every container grant of the workspace is revoked first, as `omgcode
+    /// workspace unregister` does (ADR-0107). When one cannot be revoked, the
+    /// workspace stays registered with the grants not yet revoked, and the
+    /// error says so. Then one settings event drops the registration, its
+    /// preferences, its profile assignments, its package cache root
+    /// selection, its skill overrides, and its checkpoint folder record. The
+    /// workspace's instructions file is then deleted under the preferences
+    /// lock, so no later turn sends its text. The folder, its `.OMGCode`
+    /// folder, cached packages, and the sessions recorded in the workspace are
+    /// not touched. Registering the folder again assigns a new identifier, so
+    /// those sessions stay in the journals and chat without tools.
     ///
     /// # Errors
     ///
     /// `unknown_workspace`; `turn_running` while a chat turn runs in a session
     /// of the workspace (checked before the dialog and again before the
-    /// change); `control` with core's refusal while a container grant names
-    /// the workspace; `instructions_orphaned` when the workspace was removed
-    /// and its withdrawn runs were stopped, but its instructions file could
-    /// not be deleted; otherwise as
+    /// change); `container_access_failed` or `revocation_incomplete` when a
+    /// grant was not revoked, so the workspace stays registered;
+    /// `instructions_orphaned` when the workspace was removed and its
+    /// withdrawn runs were stopped, but its instructions file could not be
+    /// deleted; otherwise as
     /// [`settings_choose_root`](Self::settings_choose_root).
     pub fn settings_unregister_workspace(
         &self,
@@ -779,30 +793,26 @@ impl DesktopService {
         prompt: &dyn SettingsPrompt,
     ) -> Result<SettingsOverview, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        let (workspace_id, workspace_folder) = {
+        let (workspace_id, workspace_folder, grants) = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let workspace = store
                 .registered_workspace(request.workspace_id)
                 .ok_or_else(DesktopError::unknown_workspace)?;
-            store
-                .check_removable(workspace.id())
-                .map_err(|error| DesktopError::from_control(&error))?;
+            let grants = store
+                .container_grants()
+                .iter()
+                .filter(|status| status.grant().workspace_id() == workspace.id())
+                .map(|status| display_safe_line(&status.grant().directory_display()))
+                .collect::<Vec<_>>();
             (
                 workspace.id(),
                 folder_of_directory(workspace.directory_path()),
+                grants,
             )
         };
         self.refuse_running_turns(request.workspace_id)?;
-        confirm(
-            prompt,
-            &Confirmation {
-                title: "Remove a workspace",
-                message: format!(
-                    "Remove this workspace?\n\n{workspace_folder}\n\nIts preferences, instructions, package cache selection, skill overrides, and checkpoint record are removed from OMGCode. The folder and its files are not touched, and its checkpoints stay in its .OMGCode folder. Its sessions stay, and can chat without tools only. Registering the folder again makes a new workspace with the default preferences."
-                ),
-            },
-        )?;
+        confirm(prompt, &unregister_confirmation(&workspace_folder, &grants))?;
         // The dialog can stay open for a long time, so a turn started meanwhile
         // is found here. A turn that starts after this check stops using tools,
         // because every tool call checks the live settings.
@@ -810,28 +820,48 @@ impl DesktopService {
         // The preferences lock comes first, as in every other save that also
         // reads settings, so the removal of the instructions file never
         // overlaps a save or a turn's read of it.
-        let (listed, removed) = {
+        let (listed, before, unregistration, removed) = {
             let _lock = self
                 .inner
                 .preferences
                 .lock()
                 .map_err(|_| DesktopError::poisoned())?;
             let mut store = self.inner.open_or_create_control()?;
-            store
-                .unregister_workspace(workspace_id, request.revision)
+            // A revocation withdraws every run of the workspace, which the
+            // settings no longer show once it is unregistered, so its runs
+            // are listed before the change.
+            let before = run::pending_runs(&store);
+            let unregistration = store
+                .unregister_workspace_with_access(workspace_id, request.revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
-            // The removal is recorded, so the runs it withdraws are listed
+            // The change is recorded, so the runs it withdraws are listed
             // before anything else can fail, and are stopped and waited for
             // even when the file below cannot be deleted.
             let listed = run::withdrawn_runs(&store);
-            let removed = instructions::remove(&self.inner.data_root, *workspace_id.as_uuid());
-            (listed, removed)
+            let removed = unregistration
+                .unregistered()
+                .then(|| instructions::remove(&self.inner.data_root, *workspace_id.as_uuid()));
+            (listed, before, unregistration, removed)
         };
-        // A run that was not stopped is reported first; a remaining
+        // A grant that was not revoked, or a removal that was not recorded,
+        // then a run that was not stopped, is reported first; a remaining
         // instructions file is never sent, because the workspace is no longer
         // registered.
-        let overview = self.finish_change(listed, AlsoWithdrawn::default())?;
-        removed.map_err(|_| DesktopError::removed_instructions_orphaned())?;
+        let (also, deferred) = revocation_outcome(
+            before,
+            &unregistration.revocations,
+            RevokingChange::Unregistration,
+        );
+        let deferred = deferred.or_else(|| {
+            unregistration
+                .removal
+                .as_ref()
+                .map(DesktopError::removal_not_recorded)
+        });
+        let overview = self.finish_reporting(listed, also, deferred)?;
+        if let Some(Err(_)) = removed {
+            return Err(DesktopError::removed_instructions_orphaned());
+        }
         Ok(overview)
     }
 
@@ -1390,12 +1420,61 @@ impl DesktopService {
         &self,
         change: impl FnOnce(&mut ControlStore) -> Result<AlsoWithdrawn, DesktopError>,
     ) -> Result<SettingsOverview, DesktopError> {
-        let (listed, also) = {
+        self.apply_reporting(|store| change(store).map(|also| (also, None)))
+    }
+
+    /// As [`apply_checked_also`](Self::apply_checked_also), for a change that
+    /// was recorded but did not finish everything it set out to do, such as
+    /// an unassignment whose grant could not be revoked (ADR-0107). The
+    /// runs are waited for first, because the recorded part of the change
+    /// can have withdrawn them; the deferred error is returned afterwards,
+    /// with any wait failure added to its message.
+    pub(super) fn apply_reporting(
+        &self,
+        change: impl FnOnce(
+            &mut ControlStore,
+        ) -> Result<(AlsoWithdrawn, Option<DesktopError>), DesktopError>,
+    ) -> Result<SettingsOverview, DesktopError> {
+        let (listed, also, deferred) = {
             let mut store = self.inner.open_or_create_control()?;
-            let also = change(&mut store)?;
-            (run::withdrawn_runs(&store), also)
+            let (also, deferred) = change(&mut store)?;
+            (run::withdrawn_runs(&store), also, deferred)
         };
-        self.finish_change(listed, also)
+        self.finish_reporting(listed, also, deferred)
+    }
+
+    /// [`finish_change`](Self::finish_change), then `deferred`, the error of
+    /// a change that was recorded but not finished, with any wait failure
+    /// added to its message.
+    fn finish_reporting(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+        also: AlsoWithdrawn,
+        deferred: Option<DesktopError>,
+    ) -> Result<SettingsOverview, DesktopError> {
+        match deferred {
+            None => self.finish_change(listed, also),
+            Some(error) => Err(self.failed_after_wait(listed, also, error)),
+        }
+    }
+
+    /// `error`, the failure of a change that still withdrew runs, such as an
+    /// assignment whose rollback revoked a grant (ADR-0107), returned after
+    /// the wait in [`finish_change`](Self::finish_change) with any wait
+    /// failure added to its message. The store must be closed.
+    pub(super) fn failed_after_wait(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+        also: AlsoWithdrawn,
+        error: DesktopError,
+    ) -> DesktopError {
+        match self.wait_for_withdrawn(listed, also) {
+            Ok(()) => error,
+            Err(wait) => DesktopError::execution(
+                error.code(),
+                format!("{} {}", error.message(), wait.message()),
+            ),
+        }
     }
 
     /// After a recorded change: wait for the runs it withdrew, the runs in
@@ -1406,6 +1485,18 @@ impl DesktopService {
         listed: Result<Vec<uuid::Uuid>, run::RunError>,
         also: AlsoWithdrawn,
     ) -> Result<SettingsOverview, DesktopError> {
+        self.wait_for_withdrawn(listed, also)?;
+        let store = self.inner.open_or_create_control()?;
+        Ok(overview_of(&self.inner, store))
+    }
+
+    /// Wait for the runs listed as withdrawn, the runs in `also`, and any
+    /// others the settings now withdraw to stop.
+    fn wait_for_withdrawn(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+        also: AlsoWithdrawn,
+    ) -> Result<(), DesktopError> {
         // An unreadable run journal never undoes the recorded change, and the
         // watchers still stop the runs: wait for what the settings now
         // withdraw, then report that the runs were not all checked.
@@ -1419,8 +1510,7 @@ impl DesktopService {
         if listed.is_err() || also.unchecked {
             return Err(DesktopError::runs_unchecked());
         }
-        let store = self.inner.open_or_create_control()?;
-        Ok(overview_of(&self.inner, store))
+        Ok(())
     }
 }
 
@@ -1431,6 +1521,236 @@ pub(super) struct AlsoWithdrawn {
     pub runs: Vec<uuid::Uuid>,
     /// The run journal could not be read, so the list may be incomplete.
     pub unchecked: bool,
+}
+
+/// Which operator change revoked grants, which decides what a failed
+/// revocation left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RevokingChange {
+    /// An unassignment or a profile removal, recorded before its revocations.
+    Recorded,
+    /// An unregistration, recorded only after every grant was revoked, so a
+    /// failed revocation leaves the workspace registered.
+    Unregistration,
+}
+
+/// What a change that revoked grants leaves to wait for and report.
+///
+/// Revoking any grant withdraws every run of its workspace. `before` holds
+/// every pending run, listed by `run::pending_runs` under the lock before the
+/// change; only the runs of a workspace whose grant the change tried to revoke
+/// are waited for, because a run that is not withdrawn would be reported as
+/// not stopped. A revocation that failed is reported after the wait, because
+/// the revocations before it stand.
+pub(super) fn revocation_outcome(
+    before: Result<Vec<(WorkspaceId, uuid::Uuid)>, run::RunError>,
+    revocations: &Revocations,
+    change: RevokingChange,
+) -> (AlsoWithdrawn, Option<DesktopError>) {
+    let attempted = !revocations.workspaces.is_empty();
+    let also = match (attempted, before) {
+        (false, _) => AlsoWithdrawn::default(),
+        (true, Ok(runs)) => AlsoWithdrawn {
+            runs: revocations.withdrawn_runs(&runs),
+            unchecked: false,
+        },
+        (true, Err(_)) => AlsoWithdrawn {
+            runs: Vec::new(),
+            unchecked: true,
+        },
+    };
+    let deferred = (!revocations.failures.is_empty())
+        .then(|| DesktopError::revocation_incomplete(&revocations.failures, change));
+    (also, deferred)
+}
+
+/// The runs to wait for after a failed assignment, or `None` when its
+/// rollback attempted no revocation. Revoking a grant withdraws every run of
+/// its workspace that started before, so a rollback that revoked one, or
+/// tried to, stops those runs as an unassignment does (ADR-0107). `before`
+/// holds every pending run, listed under the lock before the assignment.
+pub(super) fn rollback_withdrawn(
+    before: Result<Vec<(WorkspaceId, uuid::Uuid)>, run::RunError>,
+    failure: &AssignmentFailure,
+) -> Option<AlsoWithdrawn> {
+    (!failure.released.workspaces.is_empty())
+        .then(|| revocation_outcome(before, &failure.released, RevokingChange::Recorded).0)
+}
+
+/// The native confirmation for registering `folder`. On Windows it also asks
+/// for the read-write grant registration applies (ADR-0107).
+fn register_confirmation(folder: &str, on: &str) -> Confirmation {
+    let sandbox = if CONTAINER_GRANTS_SUPPORTED {
+        "\n\nOMGCode runs the workspace's commands in its own AppContainer, a Windows sandbox that starts with no access to your files. Registering also lets that sandbox read and write this folder and everything beneath it, by adding it to the folder's access-control list on disk, when this account can change that list. The access stays until you revoke it or remove the workspace."
+    } else {
+        ""
+    };
+    Confirmation {
+        title: "Register a workspace",
+        message: format!(
+            "Register this folder as a workspace?\n\n{folder}\n\nA new workspace starts with {on} on and everything else off.{sandbox}"
+        ),
+    }
+}
+
+/// The native confirmation for removing a workspace whose container grants
+/// are on `grants`, display-safe.
+fn unregister_confirmation(workspace_folder: &str, grants: &[String]) -> Confirmation {
+    let revoked = if grants.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nFirst, the workspace's AppContainer, the Windows sandbox its commands run in, is removed from the access-control list of each folder it was granted, and its runs are stopped:\n{}\nIf a folder's list cannot be changed, the workspace stays registered.",
+            grants
+                .iter()
+                .map(|grant| format!("  {grant}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    Confirmation {
+        title: "Remove a workspace",
+        message: format!(
+            "Remove this workspace?\n\n{workspace_folder}{revoked}\n\nIts preferences, toolchain profile assignments, instructions, package cache selection, skill overrides, and checkpoint record are removed from OMGCode. The folder and its files are not touched, and its checkpoints stay in its .OMGCode folder. Its sessions stay, and can chat without tools only. Registering the folder again makes a new workspace with the default preferences."
+        ),
+    }
+}
+
+impl DesktopError {
+    /// The workspace was registered, but its container was not granted its
+    /// folder. The operating system's own text is never shown.
+    fn workspace_grant_failed(error: &ControlError) -> Self {
+        let reason = match error {
+            ControlError::Container(_) => {
+                "its folder's access list could not be changed or read back".to_owned()
+            }
+            other => Self::from_control(other).message().to_owned(),
+        };
+        Self::execution(
+            "workspace_grant_failed",
+            format!(
+                "The workspace was registered, but its sandbox was not granted its folder: {reason}. Under Container grants, first revoke a grant of the folder that is pending or gives only read and execute, if there is one, then grant the folder read and write."
+            ),
+        )
+    }
+
+    /// The workspace was registered, but its folder needs a grant that was
+    /// not attempted (ADR-0107). A run in it is refused until it has one.
+    fn workspace_grant_skipped(reason: SkippedGrant) -> Self {
+        let (reason, recovery) = match reason {
+            SkippedGrant::NeedsAdministrator => (
+                "only an administrator can change its folder's access list",
+                "Its runs are refused until an administrator grants the folder.",
+            ),
+            SkippedGrant::AccessUnknown => (
+                "whether this account can change its folder's access list could not be read",
+                "Its runs are refused until it has that grant: grant the folder read and write under Container grants.",
+            ),
+        };
+        Self::execution(
+            "workspace_grant_skipped",
+            format!(
+                "The workspace was registered, but its sandbox was not granted its folder: {reason}. {recovery}"
+            ),
+        )
+    }
+
+    /// Revocations the change made did not all complete; every grant was
+    /// attempted. After a recorded change the change stands; after an
+    /// unregistration the workspace stays registered. A grant revoked whose
+    /// container profile could not be deleted is not listed for **Revoke**,
+    /// because it is gone, and when no other grant failed the message says
+    /// every grant was revoked. The operating system's own text is never
+    /// shown.
+    pub(super) fn revocation_incomplete(
+        failures: &[(uuid::Uuid, ControlError)],
+        change: RevokingChange,
+    ) -> Self {
+        let unrevoked: Vec<&ControlError> = failures
+            .iter()
+            .map(|(_, error)| error)
+            .filter(|error| !matches!(error, ControlError::ProfileRemoval(_)))
+            .collect();
+        let mut message = match (change, unrevoked.is_empty()) {
+            (RevokingChange::Recorded, false) => {
+                "The change was recorded, but not every container grant it releases was revoked."
+            }
+            (RevokingChange::Recorded, true) => {
+                "The change was recorded, and every container grant it releases was revoked."
+            }
+            (RevokingChange::Unregistration, false) => {
+                "The workspace stays registered, because not every container grant of it was revoked."
+            }
+            (RevokingChange::Unregistration, true) => {
+                "The workspace stays registered: every container grant of it was revoked, but its removal was not attempted."
+            }
+        }
+        .to_owned();
+        // Each kind of failure is counted under its own reason: an
+        // access-list failure leaves its grant `revoking`, and any other
+        // failure is counted under the message it maps to.
+        let access = unrevoked
+            .iter()
+            .filter(|error| matches!(error, ControlError::Container(_)))
+            .count();
+        if access > 0 {
+            message.push_str(&format!(
+                " {access} grant(s) could not be removed from their folders' access lists and stay revoking."
+            ));
+        }
+        let mut reasons: Vec<(String, usize)> = Vec::new();
+        for error in unrevoked
+            .iter()
+            .filter(|error| !matches!(error, ControlError::Container(_)))
+        {
+            let reason = Self::from_control(error)
+                .message()
+                .trim_end_matches('.')
+                .to_owned();
+            match reasons.iter_mut().find(|(seen, _)| *seen == reason) {
+                Some((_, count)) => *count += 1,
+                None => reasons.push((reason, 1)),
+            }
+        }
+        for (reason, count) in &reasons {
+            message.push_str(&format!(" {count} grant(s) were not revoked: {reason}."));
+        }
+        if !unrevoked.is_empty() {
+            message.push_str(" The settings list each one, and Revoke tries again.");
+        }
+        if unrevoked.len() < failures.len() {
+            message.push_str(if unrevoked.is_empty() {
+                " The workspace's AppContainer profile could not be deleted afterwards; it holds no access now."
+            } else {
+                " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now."
+            });
+        }
+        if change == RevokingChange::Unregistration {
+            message.push_str(if unrevoked.is_empty() {
+                " Remove the workspace again."
+            } else {
+                " Then remove the workspace again."
+            });
+        }
+        let code = if access > 0 {
+            "container_access_failed"
+        } else {
+            "revocation_incomplete"
+        };
+        Self::execution(code, message)
+    }
+
+    /// Every container grant of the workspace was revoked, but its removal
+    /// could not be recorded, so it stays registered.
+    fn removal_not_recorded(error: &ControlError) -> Self {
+        Self::execution(
+            "revocation_incomplete",
+            format!(
+                "Every container grant of the workspace was revoked, but its removal could not be recorded: {}. The workspace stays registered; remove it again.",
+                Self::from_control(error).message().trim_end_matches('.')
+            ),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1509,6 +1829,172 @@ mod tests {
             confirmation
                 .message
                 .contains("- delete tool: prompt to allow.")
+        );
+    }
+
+    fn removal_failed() -> ControlError {
+        ControlError::ProfileRemoval(std::io::Error::other("operating system text"))
+    }
+
+    /// A failed assignment waits only when its rollback attempted a
+    /// revocation, and then for that workspace's pending runs alone; a run
+    /// list that could not be read is reported as unchecked.
+    #[test]
+    fn a_failed_assignment_waits_for_the_runs_its_rollback_withdrew() {
+        let id = || {
+            uuid::Uuid::new_v4()
+                .to_string()
+                .parse::<WorkspaceId>()
+                .expect("workspace id")
+        };
+        let (app, other) = (id(), id());
+        let (run_app, run_other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let before = || Ok(vec![(app, run_app), (other, run_other)]);
+        let failure = |workspaces| AssignmentFailure {
+            error: ControlError::LimitReached,
+            released: Revocations {
+                workspaces,
+                ..Revocations::default()
+            },
+            kept: Vec::new(),
+        };
+
+        assert!(rollback_withdrawn(before(), &failure(vec![])).is_none());
+        let also = rollback_withdrawn(before(), &failure(vec![app])).expect("a wait");
+        assert_eq!(also.runs, [run_app]);
+        assert!(!also.unchecked);
+        let unread = rollback_withdrawn(
+            Err(run::RunError::Refused("the run journal is unreadable")),
+            &failure(vec![app]),
+        )
+        .expect("a wait");
+        assert!(unread.runs.is_empty());
+        assert!(unread.unchecked);
+    }
+
+    /// A grant revoked whose AppContainer profile could not be deleted is
+    /// not reported as a grant left to revoke.
+    #[test]
+    fn a_failed_profile_deletion_alone_says_every_grant_was_revoked() {
+        let failures = [(uuid::Uuid::new_v4(), removal_failed())];
+        for (change, lead) in [
+            (
+                RevokingChange::Recorded,
+                "The change was recorded, and every container grant it releases was revoked.",
+            ),
+            (
+                RevokingChange::Unregistration,
+                "The workspace stays registered: every container grant of it was revoked",
+            ),
+        ] {
+            let error = DesktopError::revocation_incomplete(&failures, change);
+            let message = error.message();
+            assert_eq!(error.code(), "revocation_incomplete");
+            assert!(message.starts_with(lead), "{message}");
+            assert!(message.contains("could not be deleted"), "{message}");
+            assert!(!message.contains("not revoked"), "{message}");
+            assert!(!message.contains("Revoke tries again"), "{message}");
+            assert!(!message.contains("operating system text"), "{message}");
+            assert_eq!(
+                message.ends_with(" Remove the workspace again."),
+                change == RevokingChange::Unregistration,
+                "{message}"
+            );
+        }
+    }
+
+    /// A folder grant registration did not attempt is reported with its
+    /// reason, so the operator does not learn of it from a refused run.
+    #[test]
+    fn a_skipped_folder_grant_is_reported_with_its_reason() {
+        let error = DesktopError::workspace_grant_skipped(SkippedGrant::NeedsAdministrator);
+        assert_eq!(error.code(), "workspace_grant_skipped");
+        assert_eq!(
+            error.message(),
+            "The workspace was registered, but its sandbox was not granted its folder: only an administrator can change its folder's access list. Its runs are refused until an administrator grants the folder."
+        );
+        let error = DesktopError::workspace_grant_skipped(SkippedGrant::AccessUnknown);
+        assert!(
+            error
+                .message()
+                .contains("could not be read. Its runs are refused until it has that grant"),
+            "{}",
+            error.message()
+        );
+        assert!(
+            error.message().ends_with("under Container grants."),
+            "{}",
+            error.message()
+        );
+    }
+
+    /// A grant left revoking is still reported beside one whose profile
+    /// could not be deleted.
+    #[test]
+    fn a_grant_left_revoking_is_reported_beside_a_failed_profile_deletion() {
+        let failures = [
+            (uuid::Uuid::new_v4(), removal_failed()),
+            (
+                uuid::Uuid::new_v4(),
+                ControlError::Container(std::io::Error::other("operating system text")),
+            ),
+        ];
+        let error = DesktopError::revocation_incomplete(&failures, RevokingChange::Unregistration);
+        let message = error.message();
+        assert_eq!(error.code(), "container_access_failed");
+        assert!(
+            message.starts_with(
+                "The workspace stays registered, because not every container grant of it was revoked."
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains(" 1 grant(s) could not be removed"),
+            "{message}"
+        );
+        assert!(message.contains("A grant was revoked, but"), "{message}");
+        assert!(
+            message.ends_with(" Then remove the workspace again."),
+            "{message}"
+        );
+        assert!(!message.contains("operating system text"), "{message}");
+    }
+
+    /// When one grant fails its access-list change and others fail for
+    /// other reasons, each kind is counted under its own reason, and the
+    /// access-list one is still said to stay revoking.
+    #[test]
+    fn mixed_revocation_failures_are_counted_by_kind() {
+        let failures = [
+            (
+                uuid::Uuid::new_v4(),
+                ControlError::Container(std::io::Error::other("operating system text")),
+            ),
+            (uuid::Uuid::new_v4(), ControlError::UnknownGrant),
+            (uuid::Uuid::new_v4(), ControlError::UnknownGrant),
+            (uuid::Uuid::new_v4(), ControlError::LimitReached),
+        ];
+        let error = DesktopError::revocation_incomplete(&failures, RevokingChange::Recorded);
+        let message = error.message();
+        assert_eq!(error.code(), "container_access_failed");
+        let unknown = DesktopError::from_control(&ControlError::UnknownGrant);
+        let limit = DesktopError::from_control(&ControlError::LimitReached);
+        assert_eq!(
+            message,
+            format!(
+                "The change was recorded, but not every container grant it releases was revoked. 1 grant(s) could not be removed from their folders' access lists and stay revoking. 2 grant(s) were not revoked: {}. 1 grant(s) were not revoked: {}. The settings list each one, and Revoke tries again.",
+                unknown.message().trim_end_matches('.'),
+                limit.message().trim_end_matches('.')
+            )
+        );
+        assert!(!message.contains("operating system text"), "{message}");
+
+        let others = DesktopError::revocation_incomplete(&failures[1..], RevokingChange::Recorded);
+        assert_eq!(others.code(), "revocation_incomplete");
+        assert!(
+            !others.message().contains("access lists"),
+            "{}",
+            others.message()
         );
     }
 

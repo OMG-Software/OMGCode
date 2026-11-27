@@ -43,11 +43,20 @@ the clipboard only, with icon buttons named in their tooltips
 Chat offers the session's model read and list tools; when the workspace
 also enables `read` and `write`, six file-write tools (exact edit, multi-edit,
 create, rename, delete, and directory creation); and, when it also enables `execute`, `read`, and
-`write` and at least one toolchain profile is recorded for the running
-platform, one command tool whose `profile` parameter lists those profiles. A
-command that names another profile is answered with `profile_not_recorded`
-before any approval is requested
+`write` and at least one toolchain profile of the running platform is
+assigned to the workspace, one command tool whose `profile` parameter lists
+those profiles. A command that names another profile is answered with
+`profile_not_recorded` before any approval is requested
 ([ADR-0100](docs/adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+A workspace runs only the profiles assigned to it, through the trusted CLI
+`workspace profile-assign` or a switch on its page in the `settings` window.
+On Windows assigning is the operator's consent to grant the workspace's
+AppContainer read and execute on the profile's folders that this account can
+change, after a confirmation that names them; registering a workspace grants
+its folder read and write; and unassigning, removing a profile, or
+unregistering revokes the grants no longer needed. Existing profiles start
+assigned to no workspace
+([ADR-0107](docs/adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)).
 Each workspace preference except `model_tools` is
 `deny`, `prompt`, or `allow`, and each file-write tool has a limit that can
 only narrow `write` ([ADR-0063](docs/adr/0063-deny-prompt-or-allow-each-preference-wait-for-approvals-in-the-turn-and-journal-model-actions.md)).
@@ -181,8 +190,9 @@ skills for one turn ([ADR-0059](docs/adr/0059-configure-trusted-settings-in-an-i
 The `settings` window changes the development root, workspace registrations,
 workspace preferences, and package cache roots, and lists workspaces under
 **Workspaces** in its navigation. It can unregister a workspace, which keeps
-its folder, files, and sessions and is refused while a container grant names
-it ([ADR-0081](docs/adr/0081-unregister-a-workspace.md)). Rust opens a native folder
+its folder, files, and sessions, revokes its container grants first, and
+stays registered if one cannot be revoked
+([ADR-0081](docs/adr/0081-unregister-a-workspace.md), ADR-0107). Rust opens a native folder
 dialog for each folder and a native confirmation before each change that
 widens access, and creates an empty settings store on first use
 ([ADR-0060](docs/adr/0060-change-workspace-settings-from-the-desktop-with-native-dialogs.md)).
@@ -234,10 +244,11 @@ reads install folders, the operator's `PATH`, and installer-written files,
 runs no program, and never reads repository configuration such as
 `rust-toolchain.toml`. The operator selects
 proposals, and one native confirmation per batch records them through the
-core add call on every platform. On Windows a separate command, after its
-own confirmation, grants a workspace's container the folders it needs that
-this account can change; discovery grants nothing
-([ADR-0103](docs/adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
+core add call on every platform. With a workspace chosen, the same
+confirmation also assigns the profiles to it and, on Windows, grants its
+container the folders they need that this account can change; discovery
+itself grants nothing
+([ADR-0103](docs/adr/0103-generate-toolchain-profiles-from-installed-toolchains.md), ADR-0107).
 Other credentials, apart from ChatGPT sign-in and sign-out, still change, and packages are fetched and programs run,
 only through the trusted CLI. The desktop shell has no working terminal, diff
 view, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to

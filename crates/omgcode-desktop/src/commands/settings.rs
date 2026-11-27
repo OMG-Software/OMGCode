@@ -12,10 +12,10 @@
 use omgcode_app::desktop::{
     ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ChatGptRequest,
     ChatGptSignOutResult, ConnectionAddRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
-    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, DiscoveredGrantsRequest,
+    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest,
     DiscoveredProfilesRequest, EnvironmentEntry, NewConnectionKind, PackageProfileAddRequest,
-    PermissionFlags, PermissionsChangeRequest, ProfileRemoveRequest, SettingsOverview,
-    SettingsRevisionRequest, SkillChoice, SkillRemoveRequest, SkillStateRequest,
+    PermissionFlags, PermissionsChangeRequest, ProfileAssignmentRequest, ProfileRemoveRequest,
+    SettingsOverview, SettingsRevisionRequest, SkillChoice, SkillRemoveRequest, SkillStateRequest,
     ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProfileAddRequest,
     WebHostChangeRequest, WorkspaceInstructionsRequest, WorkspaceRevisionRequest, discovery_host,
 };
@@ -607,6 +607,69 @@ pub async fn settings_remove_toolchain_profile(
     .await
 }
 
+/// `settings` only. After a native confirmation that names the workspace, the
+/// profile, and on Windows each folder its container is granted read and
+/// execute, assigns a toolchain profile to the workspace as `omgcode workspace
+/// profile-assign` does (ADR-0107).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unknown_workspace`,
+/// `cancelled`, `stale_revision`, `container_access_failed`, or `control`
+/// with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_assign_toolchain_profile(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    workspace_id: Uuid,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsAssignToolchainProfile, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ProfileAssignmentRequest {
+        revision,
+        workspace_id,
+        name,
+    };
+    blocking(&state, move |service| {
+        service.settings_assign_toolchain_profile(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation, unassigns a toolchain
+/// profile from a workspace as `omgcode workspace profile-unassign` does,
+/// revokes the grants no other assigned profile needs, and stops the runs
+/// that withdraws (ADR-0107).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unknown_workspace`,
+/// `cancelled`, `stale_revision`, `container_access_failed`,
+/// `revocation_incomplete`, `runs_not_stopped`, or `control` with core's
+/// reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_unassign_toolchain_profile(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    workspace_id: Uuid,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsUnassignToolchainProfile, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ProfileAssignmentRequest {
+        revision,
+        workspace_id,
+        name,
+    };
+    blocking(&state, move |service| {
+        service.settings_unassign_toolchain_profile(request, &prompt)
+    })
+    .await
+}
+
 /// `settings` only. After a native confirmation that lists the origins core
 /// parsed, records a package-network profile (configuration only) as `omgcode
 /// workspace package-profile-add` does (ADR-0088).
@@ -769,39 +832,6 @@ pub async fn settings_add_discovered_profiles(
     };
     blocking(&state, move |service| {
         service.settings_add_discovered_profiles(request, &discovery_host()?, &prompt)
-    })
-    .await
-}
-
-/// `settings` only, Windows only. Discovers again, and after one native
-/// confirmation that names the workspace and every folder, grants the
-/// workspace's container read-execute access to the selected proposals' roots
-/// that it cannot read and this account can grant, as `omgcode workspace
-/// container-grant` does (ADR-0103).
-///
-/// # Errors
-///
-/// `forbidden_window`, or the service's error (`unsupported_platform`,
-/// `invalid_request`, `discovery_changed`, `unknown_workspace`,
-/// `nothing_to_grant`, `cancelled`, `stale_revision`,
-/// `container_access_failed`, or `control` with core's reason).
-#[tauri::command(rename_all = "snake_case")]
-pub async fn settings_grant_discovered_roots(
-    webview: Webview,
-    state: Service<'_>,
-    revision: u64,
-    workspace_id: Uuid,
-    digests: Vec<String>,
-) -> Result<ToolchainDiscovery, CommandError> {
-    authorize(Command::SettingsGrantDiscoveredRoots, webview.label())?;
-    let prompt = NativePrompt::new(webview.window());
-    let request = DiscoveredGrantsRequest {
-        revision,
-        workspace_id,
-        digests,
-    };
-    blocking(&state, move |service| {
-        service.settings_grant_discovered_roots(request, &discovery_host()?, &prompt)
     })
     .await
 }

@@ -3,7 +3,9 @@ mod support;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use support::{assert_error_code, assert_success, json_output, path_arg, run_cli};
+use support::{
+    assert_error_code, assert_success, json_output, path_arg, register_workspace, run_cli,
+};
 use tempfile::TempDir;
 
 const SKILL_MD: &str =
@@ -58,18 +60,7 @@ fn scene() -> Scene {
         ],
     );
     assert_success(&root);
-    let registered = run_cli(
-        &data,
-        &[
-            "workspace",
-            "register",
-            path_arg(&workspace),
-            "--revision",
-            "1",
-        ],
-    );
-    assert_success(&registered);
-    let registered = json_output(&registered);
+    let registered = register_workspace(&data, &workspace, 1);
     Scene {
         _temporary: temporary,
         data,

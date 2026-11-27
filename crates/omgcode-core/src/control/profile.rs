@@ -455,6 +455,10 @@ pub(super) fn apply(
                 .position(|status| status.profile.id == *profile_id)
                 .ok_or(ControlError::Invalid("removal of an unknown profile"))?;
             state.profiles.remove(index);
+            // Removing a profile ends every assignment of it (ADR-0107).
+            for workspace in &mut state.workspaces {
+                workspace.profiles.retain(|id| id != profile_id);
+            }
         }
         _ => {}
     }

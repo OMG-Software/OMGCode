@@ -90,10 +90,19 @@ export interface Actions {
    * workspace, on Windows, each root says what its container needs. Records nothing.
    */
   discoverToolchains(workspaceId: string | null): DiscoveryChange;
-  /** Records the proposals with these digests after one system confirmation. */
+  /**
+   * Records the proposals with these digests after one system confirmation. With a workspace,
+   * the same confirmation names the folders its container is granted, and the profiles are
+   * assigned to it (ADR-0107).
+   */
   addDiscoveredProfiles(digests: string[], workspaceId: string | null): DiscoveryChange;
-  /** Windows only. Grants the roots these proposals need after one system confirmation. */
-  grantDiscoveredRoots(workspaceId: string, digests: string[]): DiscoveryChange;
+  /**
+   * Assigns a toolchain profile to a workspace (ADR-0107). Rust names the folders it grants the
+   * workspace's container in a system confirmation; the confirmation is the consent.
+   */
+  assignToolchainProfile(workspaceId: string, name: string): Change;
+  /** Unassigns a toolchain profile and revokes the grants it alone needed; Rust confirms natively. */
+  unassignToolchainProfile(workspaceId: string, name: string): Change;
 }
 
 /**

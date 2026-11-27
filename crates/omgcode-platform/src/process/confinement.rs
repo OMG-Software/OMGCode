@@ -8,10 +8,11 @@
 //! listed path is already granted to it. See `docs/execution.md`, ADR-0028,
 //! ADR-0029, and ADR-0032.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::{ProcessError, contains_nul};
-use crate::container::ContainerName;
+use crate::container::{ContainerAccess, ContainerName};
 
 /// Largest number of paths, read-only and read-write together, in one confinement.
 pub const MAX_CONFINEMENT_PATHS: usize = 64;
@@ -32,7 +33,8 @@ pub const MAX_CONFINEMENT_PATHS: usize = 64;
 /// On Windows the rules are not applied at start. Access comes from the
 /// persistent grants made with [`crate::container::grant`]; each listed path
 /// must already carry a grant of at least its listed level for
-/// [`Confinement::container`], or nothing starts. Paths every application
+/// [`Confinement::container`], or nothing starts and
+/// [`ProcessError::Ungranted`] names the entry. Paths every application
 /// package can read, such as the Windows directory, stay readable, and grants
 /// that are not listed still apply.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -96,6 +98,47 @@ pub enum UnixSocketAccess {
     /// Connecting to the Docker daemon is usually equivalent to root on the
     /// host. Select this only on an explicit operator decision.
     HostServices,
+}
+
+/// Which path of a run a Windows grant check refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfinementEntry {
+    /// The entry at this index of [`Confinement::read_only`].
+    ReadOnly(usize),
+    /// The entry at this index of [`Confinement::read_write`].
+    ReadWrite(usize),
+    /// The run's program, [`ProcessSpec::program`](super::ProcessSpec::program).
+    Program,
+}
+
+impl fmt::Display for ConfinementEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadOnly(index) => write!(formatter, "read-only entry {index}"),
+            Self::ReadWrite(index) => write!(formatter, "read-write entry {index}"),
+            Self::Program => formatter.write_str("the program"),
+        }
+    }
+}
+
+/// A path a run lists, or its program, that the run's AppContainer cannot use
+/// at the level the run needs. Only the Windows runner reports it, before
+/// anything starts.
+///
+/// `path` is the host path exactly as the caller listed it, so the caller can
+/// tell which of its paths was refused. [`ProcessError`]'s `Display` leaves it
+/// out: callers pass that text on, and it reaches a model as a tool result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UngrantedPath {
+    /// Which listed path was refused.
+    pub entry: ConfinementEntry,
+    /// The refused path, as listed.
+    pub path: PathBuf,
+    /// The access the run needs on `path`.
+    pub needed: ContainerAccess,
+    /// The access the container has on `path` now, from a grant or because
+    /// every application package has it. `None` when it has neither.
+    pub granted: Option<ContainerAccess>,
 }
 
 impl Confinement {

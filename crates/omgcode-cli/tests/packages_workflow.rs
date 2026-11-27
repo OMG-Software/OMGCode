@@ -10,7 +10,9 @@ use std::path::Path;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use support::{assert_error_code, assert_success, json_output, path_arg, run_cli};
+use support::{
+    assert_error_code, assert_success, json_output, path_arg, register_workspace, run_cli,
+};
 use tempfile::TempDir;
 
 const PROFILE: &str = "registries";
@@ -121,18 +123,8 @@ fn a_trusted_fetch_writes_a_private_cache_and_is_audited() {
     );
     assert_success(&output);
     let initial_revision = json_output(&output)["revision"].as_u64().expect("revision");
-    let output = run_cli(
-        &data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(&workspace),
-            "--revision",
-            &initial_revision.to_string(),
-        ],
-    );
-    assert_success(&output);
-    let id = json_output(&output)["registration_id"]
+    let registered = register_workspace(&data_root, &workspace, initial_revision);
+    let id = registered["registration_id"]
         .as_str()
         .expect("workspace id")
         .to_owned();

@@ -3,6 +3,7 @@ import { setInvoker } from "../src/ipc/client";
 import type {
   ProviderProfileView,
   SettingsOverview,
+  ToolchainProfileView,
   WorkspaceSettingsView,
   WriteToolAccess,
 } from "../src/ipc/types";
@@ -17,6 +18,7 @@ import {
   WEB_HOSTS_HELP,
   webHostMessage,
 } from "../src/settings/web_hosts";
+import { PROFILES_EMPTY, PROFILES_HELP, useProfileLabel } from "../src/settings/workspace_profiles";
 import {
   ALL_TOOLS_LABEL,
   PACKAGE_CACHE_HELP,
@@ -56,6 +58,7 @@ function workspace(id: string, folder: string, extra: Partial<WorkspaceSettingsV
     host_services: "deny",
     web_fetch: "deny",
     web_fetch_hosts: [],
+    profiles: [],
     write_tools: { ...ALL_TOOLS },
     package_cache_root: null,
     instructions: "",
@@ -92,6 +95,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     },
     provider_profiles: [profile()],
     toolchain_profiles: [],
+    profile_platform: "linux",
     package_profiles: [],
     container_grants: [],
     container_grants_supported: true,
@@ -1317,5 +1321,112 @@ describe("web fetch", () => {
     );
     expect(root.querySelector(".web-host img")).toBeNull();
     expect(listed()).toEqual([hostile]);
+  });
+});
+
+describe("toolchain profiles on the workspace page (ADR-0107)", () => {
+  function toolchain(
+    name: string,
+    platform: ToolchainProfileView["platform"],
+  ): ToolchainProfileView {
+    return {
+      name,
+      platform,
+      read_only_roots: [`/opt/${name}`],
+      path_entries: [`/opt/${name}/bin`],
+      environment_names: [],
+    };
+  }
+
+  const RECORDED = [
+    toolchain("rust", "linux"),
+    toolchain("go", "linux"),
+    toolchain("msvc", "windows"),
+  ];
+
+  function profileSwitch(name: string): HTMLInputElement | null {
+    return root.querySelector<HTMLInputElement>(`input[aria-label="${useProfileLabel(name)}"]`);
+  }
+
+  function flip(name: string): void {
+    const box = profileSwitch(name);
+    if (box === null) {
+      throw new Error(`No switch for ${name}`);
+    }
+    box.checked = !box.checked;
+    box.dispatchEvent(new Event("change"));
+  }
+
+  it("shows one switch per profile of this platform, on when assigned", async () => {
+    await start(() =>
+      overview({
+        toolchain_profiles: RECORDED,
+        // Core compares names case-insensitively, and so does the page.
+        workspaces: [workspace(A, "/home/dev/a", { execute: "allow", profiles: ["RUST"] })],
+      }),
+    );
+    expect(root.textContent).toContain(PROFILES_HELP);
+    expect(profileSwitch("rust")?.checked).toBe(true);
+    expect(profileSwitch("go")?.checked).toBe(false);
+    // A Windows profile cannot run here, so it is not offered.
+    expect(profileSwitch("msvc")).toBeNull();
+    expect(root.querySelector(".workspace-profile")?.textContent).toContain("/opt/rust");
+  });
+
+  it("asks Rust to assign or unassign with the revision, the workspace, and the name only", async () => {
+    await start(
+      () =>
+        overview({
+          toolchain_profiles: RECORDED,
+          workspaces: [workspace(A, "/home/dev/a", { profiles: ["rust"] })],
+        }),
+      {
+        settings_assign_toolchain_profile: () =>
+          overview({
+            revision: 4,
+            toolchain_profiles: RECORDED,
+            workspaces: [workspace(A, "/home/dev/a", { profiles: ["rust", "go"] })],
+          }),
+        settings_unassign_toolchain_profile: () =>
+          overview({
+            revision: 5,
+            toolchain_profiles: RECORDED,
+            workspaces: [workspace(A, "/home/dev/a", { profiles: ["go"] })],
+          }),
+      },
+    );
+    flip("go");
+    await settle();
+    expect(ipc.callsTo("settings_assign_toolchain_profile")[0]?.args).toEqual({
+      revision: 3,
+      workspace_id: A,
+      name: "go",
+    });
+    expect(profileSwitch("go")?.checked).toBe(true);
+
+    flip("rust");
+    await settle();
+    expect(ipc.callsTo("settings_unassign_toolchain_profile")[0]?.args).toEqual({
+      revision: 4,
+      workspace_id: A,
+      name: "rust",
+    });
+    expect(profileSwitch("rust")?.checked).toBe(false);
+  });
+
+  it("shows the recorded state again when the operator declines", async () => {
+    await start(() => overview({ toolchain_profiles: RECORDED }), {
+      settings_assign_toolchain_profile: () => rejection("cancelled", "No change was made."),
+    });
+    flip("go");
+    await settle();
+    expect(ipc.callsTo("settings_assign_toolchain_profile")).toHaveLength(1);
+    expect(profileSwitch("go")?.checked).toBe(false);
+  });
+
+  it("says where to add one when no profile of this platform is recorded", async () => {
+    await start(() => overview({ toolchain_profiles: [toolchain("msvc", "windows")] }));
+    expect(root.textContent).toContain(PROFILES_EMPTY);
+    expect(root.querySelector(".workspace-profile")).toBeNull();
   });
 });

@@ -82,6 +82,9 @@ impl Fixture {
                 control.revision(),
             )
             .expect("declare a toolchain profile");
+        control
+            .assign_profile(workspace_id, "system", control.revision())
+            .expect("assign the toolchain profile");
         drop(control);
         let journal =
             SessionJournal::create_with_workspace_id(&data, &workspace, "Review", workspace_id)

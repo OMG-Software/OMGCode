@@ -1,5 +1,5 @@
-//! Toolchain profiles and container grants generated from the toolchains
-//! installed on this computer, for the `settings` window (ADR-0103).
+//! Toolchain profiles generated from the toolchains installed on this
+//! computer, for the `settings` window (ADR-0103, ADR-0107).
 //!
 //! Discovery is core's trusted host-side service
 //! ([`omgcode_core::toolchain_discovery`]): it reads folders and a few small
@@ -12,42 +12,48 @@
 //!   from an outdated list is refused as `discovery_changed`.
 //! - Each proposal is checked with core's [`ControlStore::check_profile`],
 //!   and its refusal reason is shown; nothing is recorded by a check.
-//! - Adding profiles calls [`ControlStore::add_profile`], and granting
-//!   folders calls [`ControlStore::grant_container_access`], with the same
-//!   validation and events as the CLI and the hand-entered forms (ADR-0088).
-//!   Each batch is applied after one native confirmation that lists every
-//!   profile's roots, `PATH` entries, and variables, or every folder, and
-//!   uses the revision the operator confirmed, advancing it once per record.
+//! - Adding profiles calls [`ControlStore::add_profile`] with the same
+//!   validation and events as the CLI and the hand-entered form (ADR-0088).
+//!   With a workspace chosen, the same batch then assigns them to it through
+//!   [`ControlStore::assign_profiles_with_access`], as `omgcode workspace
+//!   profile-assign` does. On Windows that grants the workspace's container
+//!   read and execute on each root it cannot read yet and this account can
+//!   change; the confirmation names each one, and each one left out because
+//!   it needs an administrator or its access could not be read. Every folder
+//!   to grant is checked with core's grant rules
+//!   ([`ControlStore::check_container_grants`]) before the dialog, and core
+//!   refuses the assignment when the folders changed after it was shown.
+//! - The batch is applied after one native confirmation that lists every
+//!   profile's roots, `PATH` entries, and variables, and every folder to
+//!   grant, and uses the revision the operator confirmed, advancing it once
+//!   per record.
 //! - Unlike the hand-entered form, the confirmation shows variable values:
 //!   discovery derived them from installation paths, the operator typed none
 //!   of them, and none is a secret. Each is cut to a bounded length.
-//! - On Windows the proposals say, for one selected workspace, which roots
-//!   its container can already read, which need a read-execute grant, and
-//!   which need administrator rights to grant. Only folders whose
-//!   access-control list this account can change are offered, so a folder
-//!   only an administrator can change is never recorded as a grant. A
-//!   recorded grant can still stay `pending` when its access list cannot be
-//!   changed afterwards; the command then reports `container_access_failed`,
-//!   and the operator revokes the grant. A folder whose access-control list
-//!   cannot be read is named and skipped, and every folder to grant is
-//!   checked with core's grant rules
-//!   ([`ControlStore::check_container_grants`]) before the dialog.
-//! - Access-control lists are read while the settings store is closed.
+//! - On Windows the proposals say, for the chosen workspace, which roots its
+//!   container can already read, which need a read-execute grant, and which
+//!   need administrator rights to grant. A recorded grant can still stay
+//!   `pending` when its access list cannot be changed afterwards; the command
+//!   then reports `container_access_failed`, and the operator revokes it.
+//! - Discovery and the listing's access-control reads run while the settings
+//!   store is closed. Planning an assignment reads them under the store, as
+//!   the CLI does, so the plan and the settings it checks are one state.
 //!
 //! As for every settings change, the store is released before a dialog.
 //!
 //! [`ControlStore::check_profile`]: omgcode_core::control::ControlStore::check_profile
 //! [`ControlStore::add_profile`]: omgcode_core::control::ControlStore::add_profile
-//! [`ControlStore::grant_container_access`]: omgcode_core::control::ControlStore::grant_container_access
+//! [`ControlStore::assign_profiles_with_access`]: omgcode_core::control::ControlStore::assign_profiles_with_access
 //! [`ControlStore::check_container_grants`]: omgcode_core::control::ControlStore::check_container_grants
 
 use std::path::PathBuf;
 
 use omgcode_core::control::{
     CONTAINER_GRANTS_SUPPORTED, ContainerGrantAccess, ContainerGrantState, ControlError,
-    ControlStore, RootGrantNeed, root_grant_need,
+    ControlStore, PlannedFolder, ProfileAccessPlan, RootGrantNeed, root_grant_need,
 };
 use omgcode_core::policy::WorkspaceId;
+use omgcode_core::run;
 use omgcode_core::toolchain_discovery::{
     DiscoveryHost, ToolchainFamily, ToolchainProposal, discover, discover_bounded,
 };
@@ -59,8 +65,9 @@ use super::DesktopService;
 use super::error::DesktopError;
 use super::settings::overview_of;
 use super::settings_changes::{
-    ChangeGuard, Confirmation, SettingsPrompt, check_revision, confirm, shown,
+    ChangeGuard, Confirmation, SettingsPrompt, check_revision, confirm, rollback_withdrawn, shown,
 };
+use super::settings_execution::access_plan_text;
 use super::state::folder_of_directory;
 use super::wire::SettingsOverview;
 
@@ -88,21 +95,10 @@ pub struct DiscoveredProfilesRequest {
     pub revision: u64,
     /// The digests of the selected proposals, 1 to 8.
     pub digests: Vec<String>,
-    /// The workspace the refreshed list reports access for, as in
-    /// [`ToolchainDiscoveryRequest`].
+    /// A registered workspace to assign the profiles to, which the
+    /// refreshed list also reports access for. `None` records the profiles
+    /// only.
     pub workspace_id: Option<Uuid>,
-}
-
-/// Arguments of `settings_grant_discovered_roots`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct DiscoveredGrantsRequest {
-    /// The settings revision the window last read.
-    pub revision: u64,
-    /// The registered workspace whose container gets the grants.
-    pub workspace_id: Uuid,
-    /// The digests of the selected proposals, 1 to 8.
-    pub digests: Vec<String>,
 }
 
 /// One proposed root and what the selected workspace's container needs to
@@ -196,50 +192,31 @@ impl DesktopError {
         )
     }
 
-    /// No root of the selected proposals can be granted: each is readable,
-    /// needs an administrator, or has an access-control list that could not
-    /// be read.
-    fn nothing_to_grant(administrator: usize, unknown: usize) -> Self {
-        if administrator == 0 && unknown == 0 {
-            return Self::execution(
-                "nothing_to_grant",
-                "The workspace's container can already read every folder these profiles need.",
-            );
-        }
-        let mut reasons = Vec::new();
-        let mut advice = Vec::new();
-        if administrator > 0 {
-            reasons.push(format!(
-                "{administrator} folder(s) need an administrator to change their access-control lists"
-            ));
-            advice.push(
-                "Ask an administrator, or install a copy of the toolchain under your own profile.",
-            );
-        }
-        if unknown > 0 {
-            reasons.push(format!(
-                "the access-control lists of {unknown} folder(s) could not be read"
-            ));
-            advice.push(
-                "Check that each folder still exists and is not a link, then generate the list again.",
-            );
-        }
-        Self::execution(
-            "nothing_to_grant",
-            format!(
-                "No folder can be granted from this account: {}. {}",
-                reasons.join(", and "),
-                advice.join(" ")
-            ),
-        )
-    }
-
     /// A batch stopped after recording some of its records.
     fn partly_applied(what: &str, done: usize, total: usize, cause: &Self) -> Self {
         Self::execution(
             cause.code(),
             format!(
                 "{done} of {total} {what} were recorded before this failure: {}",
+                cause.message()
+            ),
+        )
+    }
+
+    /// Every profile was recorded, but the assignment to the workspace did
+    /// not complete: `assigned` of them were assigned before it failed.
+    fn not_assigned(total: usize, assigned: usize, cause: &Self) -> Self {
+        let outcome = if assigned == 0 {
+            format!("The {total} profile(s) were recorded but not assigned to the workspace")
+        } else {
+            format!(
+                "The {total} profile(s) were recorded, and {assigned} of them were assigned to the workspace before the assignment failed"
+            )
+        };
+        Self::execution(
+            cause.code(),
+            format!(
+                "{outcome}: {} Reload the workspace's page and turn on the others there.",
                 cause.message()
             ),
         )
@@ -409,57 +386,31 @@ fn confirmation_entry(proposal: &ToolchainProposal) -> String {
     )
 }
 
-/// The native confirmation for adding the selected proposals.
-fn add_confirmation(chosen: &[ToolchainProposal]) -> Confirmation {
+/// The native confirmation for adding the selected proposals and, with
+/// `assign`, the workspace folder and plan, assigning them to it.
+fn add_confirmation(
+    chosen: &[ToolchainProposal],
+    assign: Option<(&str, &ProfileAccessPlan)>,
+) -> Confirmation {
     let platform = if cfg!(windows) { "Windows" } else { "Linux" };
+    let assignment = match assign {
+        None => "A profile grants nothing by itself: assign it to a workspace to use it there."
+            .to_owned(),
+        Some((workspace, plan)) => format!(
+            "The profiles are also assigned to the workspace\n{workspace}\nso its runs can select them.{}",
+            access_plan_text(plan),
+        ),
+    };
     Confirmation {
         title: "Add generated toolchain profiles",
         message: format!(
-            "Add {} toolchain profile(s) for {platform}? A run that selects a profile can read and execute everything beneath its roots.\n\n{}\n\nOMGCode found these by reading folders on this computer; it ran no program. A profile grants nothing by itself: a run still needs the workspace's execute preference. Variable values are stored in plain text and shown by status.",
+            "Add {} toolchain profile(s) for {platform}? A run that selects a profile can read and execute everything beneath its roots.\n\n{}\n\nOMGCode found these by reading folders on this computer; it ran no program. Variable values are stored in plain text and shown by status. A run still needs the workspace's execute preference.\n\n{assignment}",
             chosen.len(),
             chosen
                 .iter()
                 .map(confirmation_entry)
                 .collect::<Vec<_>>()
                 .join("\n\n"),
-        ),
-    }
-}
-
-/// The native confirmation for granting `folders` to a workspace. It also
-/// names the folders that are not granted: those that need an administrator
-/// and those whose access-control list could not be read.
-fn grants_confirmation(
-    workspace: &str,
-    folders: &[PathBuf],
-    administrator: &[PathBuf],
-    unknown: &[PathBuf],
-) -> Confirmation {
-    let list = |paths: &[PathBuf]| {
-        paths
-            .iter()
-            .map(|path| format!("  {}", shown(path)))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let mut skipped = String::new();
-    if !administrator.is_empty() {
-        skipped.push_str(&format!(
-            "\n\nThese folders also need a grant, but this account cannot change their access-control lists, so they are not granted:\n{}",
-            list(administrator)
-        ));
-    }
-    if !unknown.is_empty() {
-        skipped.push_str(&format!(
-            "\n\nOMGCode could not read the access-control lists of these folders, so they are not granted. Check that each still exists and is not a link, then generate the list again:\n{}",
-            list(unknown)
-        ));
-    }
-    Confirmation {
-        title: "Grant toolchain folders to a workspace",
-        message: format!(
-            "Let the commands OMGCode runs for the workspace\n{workspace}\nread and execute these folders and everything beneath them?\n{}\n\nThis adds the workspace's AppContainer, the Windows sandbox its commands run in, to each folder's access-control list on disk, and each grant stays until you revoke it.{skipped}",
-            list(folders)
         ),
     }
 }
@@ -485,18 +436,24 @@ impl DesktopService {
     /// `settings` only. After one native confirmation that lists each
     /// selected proposal's roots, `PATH` entries, and variables, record the
     /// proposals as `omgcode workspace profile-add` does, in the order
-    /// selected, starting at the confirmed revision.
+    /// selected, starting at the confirmed revision. With a workspace, the
+    /// same confirmation also names each folder its container is granted, and
+    /// the profiles are then assigned to it as `omgcode workspace
+    /// profile-assign` does (ADR-0107).
     ///
     /// # Errors
     ///
     /// `invalid_request` for a selection outside its bounds;
     /// `discovery_changed` when a selected proposal is no longer proposed;
     /// `unknown_workspace`, before any dialog; `control` with core's reason,
-    /// before any dialog, for a proposal core would refuse; `cancelled`;
-    /// `stale_revision`; `settings_change_running`; `busy`. A failure after
-    /// some profiles were recorded says how many. Once the profiles are
-    /// recorded, a workspace unregistered meanwhile only leaves the refreshed
-    /// list without container access.
+    /// before any dialog, for a proposal or a folder core would refuse;
+    /// `cancelled`; `stale_revision`; `settings_change_running`; `busy`;
+    /// `container_access_failed` when a grant was recorded but its access
+    /// list could not be changed (it stays `pending`; revoke it). A failure
+    /// after some profiles were recorded says how many, and a failed
+    /// assignment says the profiles were recorded but not assigned. Once the
+    /// profiles are recorded, a workspace unregistered meanwhile only leaves
+    /// the refreshed list without container access.
     pub fn settings_add_discovered_profiles(
         &self,
         request: DiscoveredProfilesRequest,
@@ -509,14 +466,9 @@ impl DesktopService {
             return Err(DesktopError::discovery_unsupported());
         }
         let chosen = selected(host, &request.digests)?;
-        {
+        let assign = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
-            if let Some(workspace_id) = request.workspace_id {
-                store
-                    .registered_workspace(workspace_id)
-                    .ok_or_else(DesktopError::unknown_workspace)?;
-            }
             for proposal in &chosen {
                 store
                     .check_profile(&proposal.declaration())
@@ -527,8 +479,20 @@ impl DesktopService {
                         )
                     })?;
             }
-        }
-        confirm(prompt, &add_confirmation(&chosen))?;
+            match request.workspace_id {
+                None => None,
+                Some(id) => Some(planned_assignment(&store, id, &chosen)?),
+            }
+        };
+        confirm(
+            prompt,
+            &add_confirmation(
+                &chosen,
+                assign
+                    .as_ref()
+                    .map(|(_, folder, plan)| (folder.as_str(), plan)),
+            ),
+        )?;
         {
             let mut store = self.inner.open_or_create_control()?;
             let mut expected = request.revision;
@@ -543,122 +507,37 @@ impl DesktopService {
                 }
                 expected = store.revision();
             }
+            if let Some((workspace_id, _, plan)) = &assign {
+                let names: Vec<&str> = chosen.iter().map(ToolchainProposal::name).collect();
+                let before = run::pending_runs(&store);
+                if let Err(failure) =
+                    store.assign_profiles_with_access(*workspace_id, &names, plan, expected)
+                {
+                    // Assignments recorded before the failure stand.
+                    let assigned = names
+                        .iter()
+                        .filter_map(|name| store.profile(name))
+                        .filter(|status| {
+                            store.profile_assigned(*workspace_id, status.profile().id())
+                        })
+                        .count();
+                    let error = DesktopError::not_assigned(
+                        chosen.len(),
+                        assigned,
+                        &DesktopError::assignment_failed(&failure),
+                    );
+                    // A rollback that revoked a grant withdrew the
+                    // workspace's runs: wait for them with the store closed.
+                    let Some(also) = rollback_withdrawn(before, &failure) else {
+                        return Err(error);
+                    };
+                    let listed = run::withdrawn_runs(&store);
+                    drop(store);
+                    return Err(self.failed_after_wait(listed, also, error));
+                }
+            }
         }
         self.discovery_view(host, request.workspace_id, MissingWorkspace::Ignore)
-    }
-
-    /// `settings` only. Windows only. For the selected proposals, find the
-    /// roots the workspace's container cannot read and this account can
-    /// grant, and after one native confirmation that names the workspace and
-    /// every folder, grant each read-execute as `omgcode workspace
-    /// container-grant` does, starting at the confirmed revision. Folders
-    /// that need administrator rights, and folders whose access-control list
-    /// could not be read, are named and skipped. Every folder to grant is
-    /// checked with core's grant rules before the dialog.
-    ///
-    /// # Errors
-    ///
-    /// `unsupported_platform` outside Windows; `invalid_request`;
-    /// `discovery_changed`; `unknown_workspace`; `nothing_to_grant`;
-    /// `control` with core's reason, before any dialog, for a folder core
-    /// would refuse; `cancelled`; `stale_revision`;
-    /// `settings_change_running`; `busy`; `container_access_failed` when a
-    /// grant was recorded but its access list could not be changed (it stays
-    /// `pending`; revoke it). A failure after some grants were applied says
-    /// how many.
-    pub fn settings_grant_discovered_roots(
-        &self,
-        request: DiscoveredGrantsRequest,
-        host: &DiscoveryHost,
-        prompt: &dyn SettingsPrompt,
-    ) -> Result<ToolchainDiscovery, DesktopError> {
-        if !CONTAINER_GRANTS_SUPPORTED {
-            return Err(DesktopError::unsupported_platform());
-        }
-        let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        check_digests(&request.digests)?;
-        if host.platform() != current_platform()? {
-            return Err(DesktopError::discovery_unsupported());
-        }
-        let chosen = selected(host, &request.digests)?;
-        let workspace_id = {
-            let store = self.inner.open_or_create_control()?;
-            check_revision(&store, request.revision)?;
-            store
-                .registered_workspace(request.workspace_id)
-                .ok_or_else(DesktopError::unknown_workspace)?
-                .id()
-        };
-        // The access-control lists are read while the store is closed.
-        let mut folders: Vec<PathBuf> = Vec::new();
-        let mut administrator: Vec<PathBuf> = Vec::new();
-        let mut unknown: Vec<PathBuf> = Vec::new();
-        for root in chosen.iter().flat_map(ToolchainProposal::read_only_roots) {
-            let list = match root_grant_need(workspace_id, root) {
-                RootGrantNeed::NeedsGrant => &mut folders,
-                RootGrantNeed::NeedsAdministrator => &mut administrator,
-                RootGrantNeed::Unknown => &mut unknown,
-                RootGrantNeed::NotApplicable | RootGrantNeed::Readable => continue,
-            };
-            if !list.contains(root) {
-                list.push(root.clone());
-            }
-        }
-        // A grant reaches everything beneath its folder.
-        let needed = folders.clone();
-        folders.retain(|folder| {
-            !needed
-                .iter()
-                .any(|outer| outer != folder && folder.starts_with(outer))
-        });
-        if folders.is_empty() {
-            return Err(DesktopError::nothing_to_grant(
-                administrator.len(),
-                unknown.len(),
-            ));
-        }
-        let workspace_folder = {
-            let store = self.inner.open_or_create_control()?;
-            check_revision(&store, request.revision)?;
-            let workspace = store
-                .registered_workspace(request.workspace_id)
-                .ok_or_else(DesktopError::unknown_workspace)?;
-            store
-                .check_container_grants(workspace_id, &folders, ContainerGrantAccess::ReadExecute)
-                .map_err(|(index, error)| {
-                    let folder = folders.get(index).map(|folder| shown(folder));
-                    DesktopError::execution(
-                        DesktopError::from_control(&error).code(),
-                        format!("{}: {}", folder.unwrap_or_default(), refusal_text(&error)),
-                    )
-                })?;
-            folder_of_directory(workspace.directory_path())
-        };
-        confirm(
-            prompt,
-            &grants_confirmation(&workspace_folder, &folders, &administrator, &unknown),
-        )?;
-        {
-            let mut store = self.inner.open_or_create_control()?;
-            let mut expected = request.revision;
-            for (done, folder) in folders.iter().enumerate() {
-                if let Err(error) = store.grant_container_access(
-                    workspace_id,
-                    folder,
-                    ContainerGrantAccess::ReadExecute,
-                    expected,
-                ) {
-                    let cause = DesktopError::from_grant(&error);
-                    return Err(if done == 0 {
-                        cause
-                    } else {
-                        DesktopError::partly_applied("grants", done, folders.len(), &cause)
-                    });
-                }
-                expected = store.revision();
-            }
-        }
-        self.discovery_view(host, Some(request.workspace_id), MissingWorkspace::Ignore)
     }
 
     /// Discover on `host` and build the view against the store as it is now.
@@ -742,6 +621,48 @@ impl DesktopService {
     }
 }
 
+/// The workspace `id`, its display folder, and the access plan for assigning
+/// the `chosen` proposals to it, checked with core's grant rules.
+fn planned_assignment(
+    store: &ControlStore,
+    id: Uuid,
+    chosen: &[ToolchainProposal],
+) -> Result<(WorkspaceId, String, ProfileAccessPlan), DesktopError> {
+    let workspace = store
+        .registered_workspace(id)
+        .ok_or_else(DesktopError::unknown_workspace)?;
+    let roots: Vec<PathBuf> = chosen
+        .iter()
+        .flat_map(ToolchainProposal::read_only_roots)
+        .cloned()
+        .collect();
+    let plan = store
+        .plan_folder_access(workspace.id(), &roots)
+        .map_err(|error| DesktopError::from_control(&error))?;
+    let folders: Vec<PathBuf> = plan
+        .to_grant()
+        .iter()
+        .map(|folder| folder.path().to_path_buf())
+        .collect();
+    store
+        .check_container_grants(workspace.id(), &folders, ContainerGrantAccess::ReadExecute)
+        .map_err(|(index, error)| {
+            let folder = plan
+                .to_grant()
+                .get(index)
+                .map_or("", PlannedFolder::display);
+            DesktopError::execution(
+                DesktopError::from_control(&error).code(),
+                format!("{}: {}", display_safe_line(folder), refusal_text(&error)),
+            )
+        })?;
+    Ok((
+        workspace.id(),
+        folder_of_directory(workspace.directory_path()),
+        plan,
+    ))
+}
+
 /// The profile platform of this build.
 fn current_platform() -> Result<omgcode_core::control::ProfilePlatform, DesktopError> {
     omgcode_core::control::ProfilePlatform::current()
@@ -796,13 +717,6 @@ mod tests {
             }))
             .is_err()
         );
-        assert!(
-            serde_json::from_value::<DiscoveredGrantsRequest>(serde_json::json!({
-                "revision": 1, "digests": [DIGEST],
-                "workspace_id": "6f1c1f0e-8f42-4c5b-9a55-0d2a3c4b5d6e", "folder": "C:\\x"
-            }))
-            .is_err()
-        );
     }
 
     #[test]
@@ -811,54 +725,5 @@ mod tests {
         assert_eq!(shown.chars().count(), SHOWN_VALUE_CHARS + 1);
         assert!(shown.ends_with('…'));
         assert!(!bounded("a\nb\u{202e}", 80).contains(['\n', '\u{202e}']));
-    }
-
-    #[test]
-    fn the_grant_confirmation_names_the_workspace_every_folder_and_the_skipped_ones() {
-        let confirmation = grants_confirmation(
-            "C:\\dev\\app",
-            &[PathBuf::from("C:\\Users\\a\\.rustup\\toolchains\\stable")],
-            &[PathBuf::from("C:\\Strawberry")],
-            &[PathBuf::from("C:\\Linked\\jdk")],
-        );
-        for expected in [
-            "C:\\dev\\app",
-            "stable",
-            "read and execute",
-            "access-control list",
-            "AppContainer",
-            "C:\\Strawberry",
-            "cannot change",
-            "C:\\Linked\\jdk",
-            "could not read",
-        ] {
-            assert!(
-                confirmation.message.contains(expected),
-                "{expected}: {}",
-                confirmation.message
-            );
-        }
-        let without = grants_confirmation("w", &[PathBuf::from("C:\\x")], &[], &[]);
-        assert!(!without.message.contains("cannot change"));
-        assert!(!without.message.contains("could not read"));
-    }
-
-    #[test]
-    fn nothing_to_grant_says_why_each_folder_was_skipped() {
-        let readable = DesktopError::nothing_to_grant(0, 0);
-        assert_eq!(readable.code(), "nothing_to_grant");
-        assert!(readable.message().contains("can already read every folder"));
-        let unread = DesktopError::nothing_to_grant(0, 2);
-        assert!(
-            !unread.message().contains("can already read"),
-            "{}",
-            unread.message()
-        );
-        assert!(unread.message().contains("2 folder(s) could not be read"));
-        assert!(unread.message().contains("not a link"));
-        assert!(!unread.message().contains("administrator"));
-        let both = DesktopError::nothing_to_grant(1, 3);
-        assert!(both.message().contains("1 folder(s) need an administrator"));
-        assert!(both.message().contains("3 folder(s) could not be read"));
     }
 }

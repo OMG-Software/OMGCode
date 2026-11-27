@@ -4,8 +4,8 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    ContainerGrantAccess, ControlError, ControlStore, CredentialId, PackageProfileDeclaration,
-    ProfileDeclaration, ProviderProfileDeclaration,
+    AssignmentFailure, ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
+    PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -45,17 +45,25 @@ pub(crate) enum WorkspaceCommand {
         revision: u64,
     },
     /// Register a workspace below the configured development root.
+    ///
+    /// On Windows, registering is also the consent to grant the workspace's
+    /// AppContainer read and write access to its folder (ADR-0107), when this
+    /// account can change the folder's access. Registering a folder again
+    /// keeps its identifier and grants that access if it is missing. A folder
+    /// only an administrator can grant, or whose access could not be read, is
+    /// listed under `not_granted`, and runs in the workspace are refused.
     Register {
         path: PathBuf,
         #[arg(long)]
         revision: u64,
     },
     /// Remove one workspace's registration and the settings that name it: its
-    /// preferences, `web_fetch` host allowlist, package cache selection, skill overrides, checkpoint
-    /// record, and saved desktop instructions. The folder and its files are
-    /// not touched. Refused while a container grant names the workspace; revoke
-    /// it with `container-revoke` first. Registering the folder again assigns a
-    /// new identifier.
+    /// preferences, `web_fetch` host allowlist, assigned toolchain profiles,
+    /// package cache selection, skill overrides, checkpoint record, and saved
+    /// desktop instructions. The folder and its files are not touched. Every
+    /// container grant of the workspace is revoked first (ADR-0107); if one
+    /// cannot be revoked, the workspace stays registered. Registering the
+    /// folder again assigns a new identifier.
     Unregister {
         workspace: String,
         #[arg(long)]
@@ -94,19 +102,49 @@ pub(crate) enum WorkspaceCommand {
     ///
     /// Read-write grants are limited to the workspace directory. The grant
     /// persists until it is revoked. `omgcode run` needs a read-write grant
-    /// on the workspace.
+    /// on the workspace, which `register` applies; `profile-assign` grants a
+    /// profile's folders.
     ContainerGrant(ContainerGrantArgs),
     /// Revoke one recorded container grant. Needs no revision.
     ContainerRevoke {
         /// The grant identifier shown by `container-grant` and `status`.
         grant: Uuid,
     },
-    /// Record a toolchain profile for `omgcode run`.
+    /// Record a toolchain profile for `omgcode run`. A workspace runs it only
+    /// after `profile-assign`.
     ProfileAdd(ProfileAddArgs),
     /// Show one recorded toolchain profile.
     ProfileShow { name: String },
-    /// Remove a toolchain profile.
+    /// Remove a toolchain profile. Its assignments end, and in each workspace
+    /// it was assigned to, the grants on its folders that no profile still
+    /// assigned there needs are revoked.
     ProfileRemove {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Let a workspace run a recorded toolchain profile (ADR-0107).
+    ///
+    /// On Windows, running this command is the consent to grant the
+    /// workspace's AppContainer read and execute access to each of the
+    /// profile's folders it cannot read yet and this account can change. The
+    /// grants are applied first, then the assignment is recorded. Folders only
+    /// an administrator can grant, or whose access could not be read, are
+    /// listed under `not_granted`; a run that needs one is refused.
+    ProfileAssign {
+        workspace: String,
+        /// The toolchain profile name.
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Stop a workspace from running a toolchain profile. Its runs of that
+    /// profile are withdrawn, and on Windows the grants on the profile's
+    /// folders that no profile still assigned to the workspace needs are
+    /// revoked, which withdraws every run of the workspace.
+    ProfileUnassign {
+        workspace: String,
+        /// The toolchain profile name.
         name: String,
         #[arg(long)]
         revision: u64,
@@ -525,13 +563,49 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         }
         WorkspaceCommand::Register { path, revision } => {
             let mut store = open(data_root)?;
-            let registration = store
-                .register_workspace(&path, revision)
+            let registered = store
+                .register_workspace_with_access(&path, revision)
                 .map_err(control_error)?;
-            print_json(&json!({
-                "registration_id": registration.id(),
+            let grant = registered.grant.map_err(|error| {
+                let id = registered.registration.id();
+                // A grant whose access-control change failed is recorded
+                // `pending`, and core records one grant per folder, so a
+                // grant on the folder that is not an active read-write grant
+                // refuses a second grant, and registering again, until it is
+                // revoked.
+                let unusable = store
+                    .unusable_folder_grant(id)
+                    .map(|status| status.grant().id());
+                let recovery = unusable.map_or_else(
+                    || "Grant it with `workspace container-grant`.".to_owned(),
+                    |grant| {
+                        format!(
+                            "Grant {grant} on the folder is not an active read-write grant: revoke it with `workspace container-revoke {grant}`, then register the folder again with the current revision from `workspace status`, which grants it."
+                        )
+                    },
+                );
+                CliError::new(
+                    "control",
+                    format!(
+                        "The workspace was registered as {id}, but its container could not be granted its folder: {error}. {recovery}"
+                    ),
+                )
+            })?;
+            let mut output = json!({
+                "registration_id": registered.registration.id(),
                 "snapshot": store.snapshot(),
-            }))
+            });
+            match grant {
+                FolderGrant::Granted(grant) => output["grant_id"] = json!(grant.id()),
+                FolderGrant::Skipped(skipped) => {
+                    output["not_granted"] = json!({
+                        "path": registered.registration.directory_display(),
+                        "reason": skipped.as_str(),
+                    });
+                }
+                FolderGrant::NotNeeded => {}
+            }
+            print_json(&output)
         }
         WorkspaceCommand::Unregister {
             workspace,
@@ -540,14 +614,23 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             let workspace_id = parse_workspace_id(&workspace)?;
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            store
-                .unregister_workspace(workspace_id, revision)
+            // A revocation withdraws every run of the workspace that started
+            // before it, and runs start only under the lock held here.
+            let before = run::pending_runs(&store);
+            let unregistration = store
+                .unregister_workspace_with_access(workspace_id, revision)
                 .map_err(control_error)?;
             let snapshot = store.snapshot();
             let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
-            listed?;
+            finish_revocations(
+                data_root,
+                listed,
+                before,
+                &unregistration.revocations,
+                RevokingChange::Unregistration(unregistration.removal.as_ref()),
+            )?;
+            let revocations = unregistration.revocations;
             // The change is recorded. A saved desktop instructions file is
             // removed next, without the desktop's in-process lock; a file that
             // remains is never sent, because a turn reads it only for a
@@ -564,6 +647,7 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             })?;
             print_json(&json!({
                 "unregistered_workspace_id": workspace_id,
+                "revoked": revocations.revoked,
                 "snapshot": snapshot,
             }))
         }
@@ -629,17 +713,57 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::ProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            let profile_id = store
-                .remove_profile(&name, revision)
+            let before = run::pending_runs(&store);
+            let (profile_id, revocations) = store
+                .remove_profile_with_access(&name, revision)
                 .map_err(control_error)?;
             let output = json!({
                 "removed_profile_id": profile_id,
+                "revoked": revocations.revoked,
                 "snapshot": store.snapshot(),
             });
             let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
-            listed?;
+            finish_revocations(
+                data_root,
+                listed,
+                before,
+                &revocations,
+                RevokingChange::Recorded,
+            )?;
+            print_json(&output)
+        }
+        WorkspaceCommand::ProfileAssign {
+            workspace,
+            name,
+            revision,
+        } => profile_assign(&workspace, &name, revision, data_root),
+        WorkspaceCommand::ProfileUnassign {
+            workspace,
+            name,
+            revision,
+        } => {
+            let workspace_id = parse_workspace_id(&workspace)?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let before = run::pending_runs(&store);
+            let (profile_id, revocations) = store
+                .unassign_profile_with_access(workspace_id, &name, revision)
+                .map_err(control_error)?;
+            let output = json!({
+                "unassigned_profile_id": profile_id,
+                "revoked": revocations.revoked,
+                "snapshot": store.snapshot(),
+            });
+            let listed = withdrawn_runs(&store);
+            drop(store);
+            finish_revocations(
+                data_root,
+                listed,
+                before,
+                &revocations,
+                RevokingChange::Recorded,
+            )?;
             print_json(&output)
         }
         WorkspaceCommand::PackageProfileAdd(args) => package_profile_add(args, data_root),
@@ -787,6 +911,249 @@ fn container_grant(args: ContainerGrantArgs, data_root: &Path) -> Result<(), Cli
         "grant_id": grant.id(),
         "snapshot": store.snapshot(),
     }))
+}
+
+/// Assign a profile to a workspace and grant what it needs. The command is
+/// the operator's consent, so the plan made here under the control lock is
+/// the one applied. A failed assignment whose rollback revoked a grant, or
+/// tried to, waits for the workspace's runs that withdrew before it reports.
+fn profile_assign(
+    workspace: &str,
+    name: &str,
+    revision: u64,
+    data_root: &Path,
+) -> Result<(), CliError> {
+    let workspace_id = parse_workspace_id(workspace)?;
+    let mut store = open_existing(data_root)?
+        .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+    let plan = store
+        .plan_profile_access(workspace_id, name)
+        .map_err(control_error)?;
+    let before = run::pending_runs(&store);
+    let assignment = match store.assign_profile_with_access(workspace_id, name, &plan, revision) {
+        Ok(assignment) => assignment,
+        Err(failure) if failure.released.workspaces.is_empty() => {
+            return Err(assignment_failed(failure));
+        }
+        Err(failure) => {
+            // Revoking a grant withdraws every run of its workspace that
+            // started before: wait for them with the store closed.
+            let listed = withdrawn_runs(&store);
+            drop(store);
+            let problems = wait_for_revoked_runs(data_root, listed, before, &failure.released);
+            let mut error = assignment_failed(failure);
+            for problem in problems {
+                if !error.message.ends_with('.') {
+                    error.message.push('.');
+                }
+                error.message.push(' ');
+                error.message.push_str(&problem);
+            }
+            return Err(error);
+        }
+    };
+    let not_granted: Vec<_> = assignment
+        .plan
+        .needs_administrator()
+        .iter()
+        .map(|folder| (folder, "needs_administrator"))
+        .chain(
+            assignment
+                .plan
+                .unknown()
+                .iter()
+                .map(|folder| (folder, "access_unknown")),
+        )
+        .map(|(folder, reason)| json!({ "path": folder.display(), "reason": reason }))
+        .collect();
+    print_json(&json!({
+        "assigned_profile_id": assignment.profile_ids.first(),
+        "granted": assignment.granted.iter().map(|grant| json!({
+            "grant_id": grant.id(),
+            "path": grant.directory_display(),
+        })).collect::<Vec<_>>(),
+        "not_granted": not_granted,
+        "snapshot": store.snapshot(),
+    }))
+}
+
+/// The error of a failed assignment, naming each grant it made that could
+/// not be revoked afterwards, with the command that retries it.
+fn assignment_failed(failure: AssignmentFailure) -> CliError {
+    let mut error = control_error(failure.error);
+    let failures = &failure.released.failures;
+    if failures.is_empty() && failure.kept.is_empty() {
+        return error;
+    }
+    if !error.message.ends_with('.') {
+        error.message.push('.');
+    }
+    error.message.push_str(if all_revoked(failures) && failure.kept.is_empty() {
+        " The profile was not assigned, and every container grant the assignment made was revoked."
+    } else {
+        " The profile was not assigned, but not every container grant the assignment made was revoked."
+    });
+    error.message.push_str(&unrevoked_grants(failures));
+    for grant in &failure.kept {
+        error.message.push_str(&format!(
+            " Grant {grant} is kept, because a profile already assigned to the workspace needs it."
+        ));
+    }
+    error
+}
+
+/// Whether every failure is a grant revoked whose AppContainer profile alone
+/// could not be deleted, so no grant keeps its access.
+fn all_revoked(failures: &[(Uuid, ControlError)]) -> bool {
+    failures
+        .iter()
+        .all(|(_, error)| matches!(error, ControlError::ProfileRemoval(_)))
+}
+
+/// One sentence per failed revocation: a grant not revoked, with the command
+/// that retries it, or a grant revoked whose profile could not be deleted.
+fn unrevoked_grants(failures: &[(Uuid, ControlError)]) -> String {
+    let mut text = String::new();
+    for (grant, error) in failures {
+        if matches!(error, ControlError::ProfileRemoval(_)) {
+            // The grant is revoked; only the container's profile, which
+            // holds no grant now, could not be deleted.
+            text.push_str(&format!(" Grant {grant}: {error}."));
+        } else {
+            text.push_str(&format!(
+                " Grant {grant} could not be revoked: {error}; retry with `workspace container-revoke {grant}`."
+            ));
+        }
+    }
+    text
+}
+
+/// The change [`finish_revocations`] reports on.
+#[derive(Clone, Copy)]
+enum RevokingChange<'a> {
+    /// A recorded change, which stands whatever its revocations did.
+    Recorded,
+    /// An unregistration, recorded only after every grant was revoked, with
+    /// the error that kept it from being recorded after that, if any.
+    Unregistration(Option<&'a ControlError>),
+}
+
+/// After a recorded change that may have revoked grants, wait for the runs it
+/// withdrew, then report what did not complete. `listed` holds the runs the
+/// settings withdrew; `before` every pending run, listed by
+/// `run::pending_runs` before the change. Any revocation, even one that failed
+/// after it was requested, withdraws every run of its workspace, so the runs
+/// of those workspaces are waited for too. Every grant that could not be
+/// revoked is named; it stays recorded, and `workspace container-revoke`
+/// retries it.
+fn finish_revocations(
+    data_root: &Path,
+    listed: Result<Vec<Uuid>, CliError>,
+    before: Result<Vec<(WorkspaceId, Uuid)>, run::RunError>,
+    revocations: &Revocations,
+    change: RevokingChange<'_>,
+) -> Result<(), CliError> {
+    let mut problems = wait_for_revoked_runs(data_root, listed, before, revocations);
+    let mut kind = "run";
+    if !revocations.failures.is_empty() {
+        kind = "control";
+        let revoked = all_revoked(&revocations.failures);
+        let mut message = match (change, revoked) {
+            (RevokingChange::Recorded, false) => {
+                "The change was recorded, but not every container grant it releases was revoked."
+            }
+            (RevokingChange::Recorded, true) => {
+                "The change was recorded, and every container grant it releases was revoked."
+            }
+            (RevokingChange::Unregistration(_), false) => {
+                "The workspace stays registered, because not every container grant of it was revoked."
+            }
+            (RevokingChange::Unregistration(_), true) => {
+                "The workspace stays registered: every container grant of it was revoked, but its removal was not attempted."
+            }
+        }
+        .to_owned();
+        message.push_str(&unrevoked_grants(&revocations.failures));
+        if matches!(change, RevokingChange::Unregistration(_)) {
+            message.push_str(if revoked {
+                " Unregister it again."
+            } else {
+                " Then unregister it again."
+            });
+        }
+        problems.insert(0, message);
+    } else if let RevokingChange::Unregistration(Some(error)) = change {
+        kind = "control";
+        problems.insert(
+            0,
+            format!(
+                "Every container grant of the workspace was revoked, but its removal could not be recorded: {error}. The workspace stays registered; unregister it again."
+            ),
+        );
+    } else if !problems.is_empty() {
+        // The JSON naming what was revoked is not printed after a failure.
+        problems.insert(0, completed_change(change, revocations));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::new(kind, problems.join(" ")))
+    }
+}
+
+/// What a change whose every revocation succeeded did, for an error raised
+/// after it: the change and each grant it revoked.
+fn completed_change(change: RevokingChange<'_>, revocations: &Revocations) -> String {
+    let (done, grants) = match change {
+        RevokingChange::Recorded => (
+            "The change was recorded",
+            "every container grant it releases was revoked",
+        ),
+        RevokingChange::Unregistration(_) => (
+            "The workspace was unregistered",
+            "every container grant of it was revoked",
+        ),
+    };
+    let revoked: Vec<String> = revocations
+        .revoked
+        .iter()
+        .map(|revocation| revocation.grant_id.to_string())
+        .collect();
+    match revoked.as_slice() {
+        [] => format!("{done}."),
+        [grant] => format!("{done}, and {grants} (grant {grant})."),
+        _ => format!("{done}, and {grants} (grants {}).", revoked.join(", ")),
+    }
+}
+
+/// Wait for the runs the settings withdrew, `listed`, and the pending runs in
+/// `before` of each workspace whose grant was revoked or was tried, then
+/// return each problem met, in order. Any revocation, even one that failed
+/// after it was requested, withdraws every run of its workspace. The store
+/// must be closed.
+fn wait_for_revoked_runs(
+    data_root: &Path,
+    listed: Result<Vec<Uuid>, CliError>,
+    before: Result<Vec<(WorkspaceId, Uuid)>, run::RunError>,
+    revocations: &Revocations,
+) -> Vec<String> {
+    let mut wait = listed.as_deref().unwrap_or(&[]).to_vec();
+    let mut problems = Vec::new();
+    if !revocations.workspaces.is_empty() {
+        match before {
+            Ok(runs) => wait.extend(revocations.withdrawn_runs(&runs)),
+            Err(error) => problems.push(format!(
+                "The runs the revocations affect could not be found: {error}."
+            )),
+        }
+    }
+    if let Err(error) = stop_withdrawn_runs(data_root, &wait) {
+        problems.push(error.message);
+    }
+    if let Err(error) = listed {
+        problems.push(error.message);
+    }
+    problems
 }
 
 fn profile_add(args: ProfileAddArgs, data_root: &Path) -> Result<(), CliError> {
@@ -1020,4 +1387,152 @@ fn parse_workspace_id(value: &str) -> Result<WorkspaceId, CliError> {
 
 pub(crate) fn control_error(error: ControlError) -> CliError {
     CliError::new("control", error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    fn failure(released: Vec<(Uuid, ControlError)>) -> AssignmentFailure {
+        AssignmentFailure {
+            error: ControlError::LimitReached,
+            released: Revocations {
+                failures: released,
+                ..Revocations::default()
+            },
+            kept: Vec::new(),
+        }
+    }
+
+    /// A grant a failed assignment kept for a profile already assigned to
+    /// the workspace is named, and the message does not say every grant was
+    /// revoked.
+    #[test]
+    fn a_failed_assignment_names_each_grant_it_kept() {
+        let kept = Uuid::new_v4();
+        let error = assignment_failed(AssignmentFailure {
+            kept: vec![kept],
+            ..failure(Vec::new())
+        });
+        assert_eq!(
+            error.message,
+            format!(
+                "control journal capacity reached. The profile was not assigned, but not every container grant the assignment made was revoked. Grant {kept} is kept, because a profile already assigned to the workspace needs it."
+            )
+        );
+    }
+
+    /// A failed assignment whose grants were all revoked reports only its
+    /// cause.
+    #[test]
+    fn a_failed_assignment_with_nothing_left_reports_its_cause() {
+        let error = assignment_failed(failure(Vec::new()));
+        assert_eq!(error.code, "control");
+        assert_eq!(error.message, "control journal capacity reached");
+    }
+
+    /// A grant a failed assignment could not revoke is named with the
+    /// command that retries it; one whose profile alone could not be deleted
+    /// is named as revoked.
+    #[test]
+    fn a_failed_assignment_names_each_grant_it_left() {
+        let (left, removed) = (Uuid::new_v4(), Uuid::new_v4());
+        let error = assignment_failed(failure(vec![
+            (left, ControlError::Container(io::Error::other("denied"))),
+            (
+                removed,
+                ControlError::ProfileRemoval(io::Error::other("busy")),
+            ),
+        ]));
+        assert!(
+            error.message.starts_with(
+                "control journal capacity reached. The profile was not assigned, but not every container grant the assignment made was revoked."
+            ),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&format!(
+                "Grant {left} could not be revoked: container access change failed: denied; retry with `workspace container-revoke {left}`."
+            )),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&format!(
+                "Grant {removed}: the grant was revoked, but the container profile could not be deleted: busy."
+            )),
+            "{}",
+            error.message
+        );
+    }
+
+    /// When every failure is a profile that could not be deleted, the
+    /// message says every grant was revoked.
+    #[test]
+    fn a_failed_profile_deletion_alone_says_every_grant_was_revoked() {
+        let failures = vec![(
+            Uuid::new_v4(),
+            ControlError::ProfileRemoval(io::Error::other("busy")),
+        )];
+        assert!(all_revoked(&failures));
+        let error = assignment_failed(failure(failures));
+        assert!(
+            error
+                .message
+                .contains("every container grant the assignment made was revoked."),
+            "{}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("container-revoke"),
+            "{}",
+            error.message
+        );
+        assert!(!all_revoked(&[(
+            Uuid::new_v4(),
+            ControlError::Container(io::Error::other("denied")),
+        )]));
+    }
+
+    fn revoked(grants: &[Uuid]) -> Revocations {
+        Revocations {
+            revoked: grants
+                .iter()
+                .map(|&grant_id| omgcode_core::control::ContainerRevocation {
+                    grant_id,
+                    profile_deleted: false,
+                })
+                .collect(),
+            ..Revocations::default()
+        }
+    }
+
+    /// An error raised after every revocation succeeded, such as an
+    /// unreadable run journal, names the change and each grant it revoked,
+    /// because the JSON that lists them is not printed.
+    #[test]
+    fn a_completed_change_names_each_grant_it_revoked() {
+        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+        assert_eq!(
+            completed_change(RevokingChange::Recorded, &revoked(&[first])),
+            format!(
+                "The change was recorded, and every container grant it releases was revoked (grant {first})."
+            )
+        );
+        assert_eq!(
+            completed_change(
+                RevokingChange::Unregistration(None),
+                &revoked(&[first, second])
+            ),
+            format!(
+                "The workspace was unregistered, and every container grant of it was revoked (grants {first}, {second})."
+            )
+        );
+        assert_eq!(
+            completed_change(RevokingChange::Recorded, &revoked(&[])),
+            "The change was recorded."
+        );
+    }
 }

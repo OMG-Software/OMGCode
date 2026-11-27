@@ -7,17 +7,51 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
+use omgcode_core::control::ContainerGrantAccess;
 use omgcode_core::policy::WorkspaceId;
 use omgcode_core::run::{
     self, CancelSignal, DEFAULT_TREE_CPU_TIME, DEFAULT_TREE_DISK_BYTES, DEFAULT_TREE_MEMORY_BYTES,
     DEFAULT_TREE_PROCESSES, MAX_CAPTURE_BYTES, MAX_DEADLINE, MAX_TREE_CPU_TIME,
     MAX_TREE_DISK_BYTES, MAX_TREE_MEMORY_BYTES, MAX_TREE_PROCESSES, MIN_TREE_DISK_BYTES,
-    MIN_TREE_MEMORY_BYTES, ProcessLimits, RunError, RunRequest, TreeLimits, cancel_on_interrupt,
+    MIN_TREE_MEMORY_BYTES, ProcessLimits, RefusedPathRole, RunError, RunRequest, TreeLimits,
+    UngrantedRunPath, cancel_on_interrupt,
 };
+use omgcode_core::session::NativePath;
+use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::{CliError, print_json};
+
+/// The path a run needed that the workspace's container cannot use, shown to
+/// the operator beside the error message. The message names only the path's
+/// role, because the command tool sends the same text to a model (ADR-0106).
+#[derive(Serialize)]
+pub(crate) struct RefusedPath {
+    role: RefusedPathRole,
+    needed: ContainerGrantAccess,
+    granted: Option<ContainerGrantAccess>,
+    /// The path when it is valid Unicode.
+    path: Option<String>,
+    /// A lossy form for display only.
+    path_display: String,
+    /// The lossless native form, when it can be encoded.
+    path_native: Option<NativePath>,
+}
+
+impl RefusedPath {
+    fn new(refusal: &UngrantedRunPath) -> Self {
+        let path = refusal.path();
+        Self {
+            role: refusal.role().clone(),
+            needed: refusal.needed(),
+            granted: refusal.granted(),
+            path: path.to_str().map(str::to_owned),
+            path_display: path.to_string_lossy().into_owned(),
+            path_native: NativePath::from_path(path).ok(),
+        }
+    }
+}
 
 /// Run one program in a workspace under native confinement.
 #[derive(Args)]
@@ -161,7 +195,15 @@ pub(crate) fn run(args: RunArgs, data_root: &Path) -> Result<(), CliError> {
                 ),
             ))
         }
-        Err(error) => Err(CliError::new("run", error.to_string())),
+        Err(error) => {
+            let failure = CliError::new("run", error.to_string());
+            Err(match &error {
+                RunError::NotGranted { refusal, .. } => {
+                    failure.with_refused_path(RefusedPath::new(refusal))
+                }
+                _ => failure,
+            })
+        }
     }
 }
 

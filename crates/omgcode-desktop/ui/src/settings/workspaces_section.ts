@@ -11,6 +11,7 @@ import { workspaceInstructionsBlock } from "./chat_section";
 import { type SectionContext, scopedWorkspace } from "./context";
 import { emptyLine, facts, sectionHead } from "./parts";
 import { webHostsBlock } from "./web_hosts";
+import { workspaceProfilesBlock } from "./workspace_profiles";
 
 export const WORKSPACES_HELP =
   "Workspaces are folders inside the development root. Tools reach only registered workspaces.";
@@ -312,6 +313,9 @@ function workspaceBlock(
       const row = permissionRow(workspace, key, label, ctx);
       if (key === "write") {
         return [row, toolLimits(workspace, ctx)];
+      }
+      if (key === "execute") {
+        return [row, workspaceProfilesBlock(workspace, ctx)];
       }
       return key === "web_fetch" ? [row, webHostsBlock(workspace, ctx)] : [row];
     }),

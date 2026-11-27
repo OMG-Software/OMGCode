@@ -37,6 +37,11 @@ use crate::session::{NativePath, SessionError};
 use crate::storage::{self, StorageError};
 use crate::workspace::DirectoryRecord;
 
+mod refusal;
+
+use refusal::ListedPaths;
+pub use refusal::{RefusedPathRole, UngrantedRunPath};
+
 pub use omgcode_platform::interrupt::{InterruptWatch, cancel_on_interrupt, watch_interrupt};
 pub use omgcode_platform::process::{CancelSignal, ProcessLimits, TreeLimits};
 pub use omgcode_platform::process::{
@@ -216,6 +221,16 @@ pub enum RunError {
         #[source]
         source: ProcessError,
     },
+    /// The intent was recorded, but the workspace's AppContainer cannot use
+    /// one of the run's paths at the level the run needs, so nothing started.
+    /// The outcome is recorded as `not_started`. The text names the path's
+    /// role and the missing access, never the path, because a model receives
+    /// it (ADR-0106); [`UngrantedRunPath::path`] has the path.
+    #[error("run {run_id} did not start: {refusal}")]
+    NotGranted {
+        run_id: Uuid,
+        refusal: Box<UngrantedRunPath>,
+    },
     /// The program started, but supervision failed. The tree was observed
     /// empty and the outcome is recorded.
     #[error("run {run_id} failed during supervision: {source}")]
@@ -263,6 +278,8 @@ struct Prepared {
     spec: ProcessSpec,
     confinement: Confinement,
     scratch: Option<Scratch>,
+    /// What each path core listed is for, to name a refused one.
+    listed: ListedPaths,
 }
 
 /// The Linux per-run scratch directory, removed after the run.
@@ -441,7 +458,8 @@ pub fn run(
     });
     let revoked_because = revoked.get().copied();
     let scratch_removed = prepared.scratch.as_mut().map(Scratch::remove);
-    let (finish, outcome, failure) = settle(run_id, result, revoked_because.is_some());
+    let (finish, outcome, failure) =
+        settle(run_id, result, revoked_because.is_some(), &prepared.listed);
     let report = RunReport {
         start: prepared.start,
         finish,
@@ -587,6 +605,9 @@ fn withdrawn(control: &ControlStore, start: &RunStart) -> Option<&'static str> {
         Some(status) if status.profile().id() == start.profile_id => {}
         _ => return Some("the toolchain profile was removed"),
     }
+    if !control.profile_assigned(start.workspace_id, start.profile_id) {
+        return Some("the toolchain profile was unassigned from the workspace");
+    }
     if start.model_origin && !registration.permissions().model_tools {
         return Some("the workspace model_tools preference is disabled");
     }
@@ -611,6 +632,12 @@ fn withdrawn(control: &ControlStore, start: &RunStart) -> Option<&'static str> {
 /// continue.
 const STANDING_ALLOW_WITHDRAWN: &str =
     "the workspace no longer allows this model command without an approval";
+
+/// Why a run of a profile not assigned to its workspace is refused
+/// (ADR-0107). The command tool sends this text to a model, so it names no
+/// path.
+const PROFILE_NOT_ASSIGNED: &str = "the toolchain profile is not assigned to this workspace; \
+     assign it in the settings window or with `omgcode workspace profile-assign`";
 
 /// Whether the settings still let a model command run without an approval.
 /// A standing-allow run is checked against this under the runner's settings
@@ -717,6 +744,24 @@ pub fn workspace_runs(
         .collect())
 }
 
+/// The pending runs of every workspace, each with its workspace.
+///
+/// An operator change that revokes container grants (ADR-0107) calls this
+/// under the control lock before it records anything, then waits for the
+/// runs that [`Revocations::withdrawn_runs`](crate::control::Revocations::withdrawn_runs)
+/// selects: the runs of each workspace whose grant it tried to revoke.
+pub fn pending_runs(control: &ControlStore) -> Result<Vec<(WorkspaceId, Uuid)>, RunError> {
+    let (journal_root, store_id) = control.file_audit_context()?;
+    let Some(journal) = RunJournal::open_existing(&journal_root, store_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(journal
+        .pending_starts()
+        .into_iter()
+        .map(|start| (start.workspace_id, start.run_id))
+        .collect())
+}
+
 /// The pending runs that the settings in `control` no longer allow.
 ///
 /// A settings change calls this while it still holds the control lock, right
@@ -815,11 +860,13 @@ fn confirm_stopped(
 }
 
 /// Map the runner's result to a recorded outcome and, for failures, an error.
-/// A tree stopped because access was withdrawn is recorded as `revoked`.
+/// A tree stopped because access was withdrawn is recorded as `revoked`. A
+/// refused path is named by its role in `listed`.
 fn settle(
     run_id: Uuid,
     result: Result<ProcessOutcome, ProcessError>,
     revoked: bool,
+    listed: &ListedPaths,
 ) -> (RunFinish, Option<ProcessOutcome>, Option<RunError>) {
     match result {
         Ok(outcome) => {
@@ -860,6 +907,13 @@ fn settle(
                 ProcessError::CleanupUnconfirmed(_) => (
                     RunResult::CleanupUnconfirmed,
                     RunError::CleanupUnconfirmed { run_id, source },
+                ),
+                ProcessError::Ungranted(ungranted) => (
+                    RunResult::NotStarted,
+                    RunError::NotGranted {
+                        run_id,
+                        refusal: Box::new(listed.refusal(*ungranted)),
+                    },
                 ),
                 source => (
                     RunResult::NotStarted,
@@ -952,6 +1006,10 @@ fn prepare(
             "the profile was declared on another platform",
         ));
     }
+    // A workspace runs only the profiles assigned to it (ADR-0107).
+    if !control.profile_assigned(request.workspace_id, profile.id()) {
+        return Err(RunError::Refused(PROFILE_NOT_ASSIGNED));
+    }
     let roots = current_roots(control, profile)?;
     // On Linux this needs a delegated cgroup; without one nothing is recorded.
     process::check_tree_limits().map_err(RunError::Limits)?;
@@ -981,7 +1039,13 @@ fn prepare(
     let search_path = std::env::join_paths(&path_entries)
         .map_err(|_| RunError::Refused("a PATH entry contains the platform's list separator"))?;
     let mut environment = vec![(OsString::from("PATH"), search_path)];
-    let (confinement, scratch, support_paths, package_cache) = platform_setup(
+    let listed_roots = roots.clone();
+    let PlatformSetup {
+        confinement,
+        scratch,
+        support_paths,
+        package_cache,
+    } = platform_setup(
         control,
         request,
         &scope.workspace,
@@ -1033,10 +1097,16 @@ fn prepare(
         } else {
             None
         },
-        package_cache,
+        package_cache: package_cache.is_some(),
         package_cache_root,
         model_origin: request.model_tools,
         standing_allow: request.standing_allow,
+    };
+    let listed = ListedPaths {
+        profile: profile.name().to_owned(),
+        roots: listed_roots,
+        package_cache,
+        workspace,
     };
     Ok(Prepared {
         start,
@@ -1048,6 +1118,7 @@ fn prepare(
         },
         confinement,
         scratch,
+        listed,
     })
 }
 
@@ -1163,8 +1234,18 @@ fn network_access(request: &RunRequest) -> NetworkAccess {
     }
 }
 
-/// Build the platform confinement and the runner-owned variables. Also
-/// return the resolver and certificate paths added for network access.
+/// What [`platform_setup`] builds for one run.
+struct PlatformSetup {
+    confinement: Confinement,
+    /// The Linux per-run scratch directory.
+    scratch: Option<Scratch>,
+    /// The resolver and certificate paths added for network access.
+    support_paths: Vec<PathBuf>,
+    /// The package cache root the run lists, if any.
+    package_cache: Option<PathBuf>,
+}
+
+/// Build the platform confinement and the runner-owned variables.
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn platform_setup(
@@ -1176,7 +1257,7 @@ fn platform_setup(
     data_root: &Path,
     run_id: Uuid,
     environment: &mut Vec<(OsString, OsString)>,
-) -> Result<(Confinement, Option<Scratch>, Vec<PathBuf>, bool), RunError> {
+) -> Result<PlatformSetup, RunError> {
     let parent = data_root.join("run-scratch");
     crate::storage::create_private_directories(&parent)
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -1223,12 +1304,12 @@ fn platform_setup(
         network: network_access(request),
         container: None,
     };
-    Ok((
+    Ok(PlatformSetup {
         confinement,
-        Some(scratch),
+        scratch: Some(scratch),
         support_paths,
-        package_cache.is_some(),
-    ))
+        package_cache,
+    })
 }
 
 /// The private package cache for one workspace, when it exists as a plain
@@ -1288,7 +1369,7 @@ fn platform_setup(
     data_root: &Path,
     _run_id: Uuid,
     environment: &mut Vec<(OsString, OsString)>,
-) -> Result<(Confinement, Option<Scratch>, Vec<PathBuf>, bool), RunError> {
+) -> Result<PlatformSetup, RunError> {
     use crate::control::container_name;
 
     workspace_access(control, request.workspace_id, workspace_record, false)
@@ -1319,7 +1400,12 @@ fn platform_setup(
         network: network_access(request),
         container: Some(name),
     };
-    Ok((confinement, None, Vec::new(), package_cache.is_some()))
+    Ok(PlatformSetup {
+        confinement,
+        scratch: None,
+        support_paths: Vec::new(),
+        package_cache,
+    })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -1333,7 +1419,7 @@ fn platform_setup(
     _data_root: &Path,
     _run_id: Uuid,
     _environment: &mut Vec<(OsString, OsString)>,
-) -> Result<(Confinement, Option<Scratch>, Vec<PathBuf>, bool), RunError> {
+) -> Result<PlatformSetup, RunError> {
     Err(RunError::Refused(
         "trusted runs exist only on Linux and Windows",
     ))
@@ -1568,6 +1654,78 @@ mod tests {
         }
     }
 
+    /// A path the container cannot use is a `not_started` run with no
+    /// confinement, like any other refused start, and its error names the
+    /// path's role instead of the path. Other start failures are unchanged.
+    #[test]
+    fn an_ungranted_path_is_recorded_as_not_started_and_named_by_its_role() {
+        use omgcode_platform::container::ContainerAccess;
+        use omgcode_platform::process::{ConfinementEntry, UngrantedPath};
+
+        let base = std::env::temp_dir().join("omgcode-settle-user");
+        let root = base.join("toolchain-kappa");
+        let listed = ListedPaths {
+            profile: "tools".into(),
+            roots: vec![base.join("system-lambda"), root.clone()],
+            package_cache: None,
+            workspace: base.join("work-mu"),
+        };
+        let run_id = Uuid::new_v4();
+        let ungranted = UngrantedPath {
+            entry: ConfinementEntry::ReadOnly(1),
+            path: root.clone(),
+            needed: ContainerAccess::ReadExecute,
+            granted: None,
+        };
+        let (finish, outcome, failure) = settle(
+            run_id,
+            Err(ProcessError::Ungranted(Box::new(ungranted))),
+            false,
+            &listed,
+        );
+        assert_eq!(finish.result, RunResult::NotStarted);
+        assert!(finish.confinement.is_none(), "{finish:?}");
+        assert!(outcome.is_none());
+        let Some(RunError::NotGranted {
+            run_id: refused,
+            refusal,
+        }) = failure
+        else {
+            panic!("expected a refused path, got {failure:?}");
+        };
+        assert_eq!(refused, run_id);
+        assert_eq!(
+            refusal.role(),
+            &RefusedPathRole::ProfileRoot {
+                profile: "tools".into(),
+                number: 2,
+            }
+        );
+        assert_eq!(refusal.path(), root);
+        let text = RunError::NotGranted { run_id, refusal }.to_string();
+        assert!(
+            text.starts_with(&format!(
+                "run {run_id} did not start: the workspace's sandbox has no access to root 2 of toolchain profile `tools`"
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("omgcode-settle-user"), "{text}");
+        assert!(!text.contains("toolchain-kappa"), "{text}");
+
+        let missing = io::Error::new(io::ErrorKind::NotFound, "no profile");
+        let (finish, _, failure) = settle(
+            run_id,
+            Err(ProcessError::Confinement(missing)),
+            false,
+            &listed,
+        );
+        assert_eq!(finish.result, RunResult::NotStarted);
+        assert!(
+            matches!(failure, Some(RunError::NotStarted { .. })),
+            "{failure:?}"
+        );
+    }
+
     /// A run of a recorded profile, so the settings still allow it on Linux.
     #[cfg(target_os = "linux")]
     fn allowed_start(data: &Path, directory: &Path, workspace_id: WorkspaceId) -> RunStart {
@@ -1585,6 +1743,9 @@ mod tests {
                 control.revision(),
             )
             .expect("profile");
+        control
+            .assign_profile(workspace_id, "kept", control.revision())
+            .expect("assign profile");
         let mut start = withdrawn_start(workspace_id);
         start.profile_id = profile.id();
         start.profile_name = "kept".into();
@@ -2036,6 +2197,54 @@ mod tests {
         assert!(!journal_root.join("runs-v1.jsonl").exists());
     }
 
+    /// A recorded profile that is not assigned to the workspace is refused
+    /// before anything is recorded, and the refusal names no path (ADR-0107).
+    #[test]
+    fn a_profile_not_assigned_to_the_workspace_is_refused_before_recording() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, _store_id) = store(directory.path());
+        let tools = directory.path().join("tools");
+        fs::create_dir(&tools).expect("tools");
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .add_profile(
+                &crate::control::ProfileDeclaration {
+                    name: "system".into(),
+                    read_only_roots: vec![tools],
+                    ..crate::control::ProfileDeclaration::default()
+                },
+                control.revision(),
+            )
+            .expect("profile");
+        drop(control);
+        let request = RunRequest {
+            workspace_id,
+            profile: "system".into(),
+            program: PathBuf::from("true"),
+            arguments: Vec::new(),
+            working_directory: None,
+            host_services: false,
+            network: false,
+            model_tools: false,
+            standing_allow: false,
+            limits: ProcessLimits {
+                tree: Some(process::TreeLimits {
+                    max_memory_bytes: 1024 * 1024 * 1024,
+                    max_processes: 64,
+                    max_cpu_time: Duration::from_secs(60),
+                    max_disk_bytes: Some(1024 * 1024 * 1024),
+                }),
+                ..ProcessLimits::default()
+            },
+        };
+        let result = run(&data, &request, &CancelSignal::new());
+        assert!(
+            matches!(result, Err(RunError::Refused(PROFILE_NOT_ASSIGNED))),
+            "{result:?}"
+        );
+        assert!(!journal_root.join("runs-v1.jsonl").exists());
+    }
+
     /// Only an effective `allow` lets a model command run unattended.
     #[test]
     fn unattended_runs_need_every_command_preference_at_allow() {
@@ -2180,6 +2389,30 @@ mod tests {
         // records the withdrawal, so a live watcher stops it.
         assert_eq!(withdrawn(&control, &model), None);
         assert!(control.model_tool_revocations(workspace_id) > baseline);
+    }
+
+    /// Unassigning the run's toolchain profile from its workspace withdraws
+    /// the run, even though the profile itself is still recorded.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unassigning_the_profile_withdraws_the_run() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, _journal_root, _store_id) = store(directory.path());
+        let start = allowed_start(&data, directory.path(), workspace_id);
+        let control = open_control(&data).expect("control");
+        assert_eq!(withdrawn(&control, &start), None);
+        drop(control);
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .unassign_profile(workspace_id, "kept", control.revision())
+            .expect("unassign");
+        drop(control);
+        let control = open_control(&data).expect("control");
+        assert!(control.profile("kept").is_some());
+        assert_eq!(
+            withdrawn(&control, &start),
+            Some("the toolchain profile was unassigned from the workspace")
+        );
     }
 
     /// A configured cache-root change withdraws a run that holds the old

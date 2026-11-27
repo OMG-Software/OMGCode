@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatDefaults, ChatEvent, SettingsOverview, WorkspaceList } from "../src/ipc/types";
+import type {
+  ChatDefaults,
+  ChatEvent,
+  ContainerGrantView,
+  SettingsOverview,
+  WorkspaceList,
+} from "../src/ipc/types";
 import {
   createMockBackend,
   endpointTakesEffort,
   isCustomEndpoint,
   isLocalEndpoint,
+  mockReleasedGrants,
 } from "../src/mock/backend";
 import { OMGCODE_MOCK_FIXTURE_MARKER } from "../src/mock/fixtures";
 
@@ -1126,5 +1133,68 @@ describe("mock ChatGPT sign-in (ADR-0093)", () => {
         name: "chatgpt",
       }),
     ).rejects.toMatchObject({ code: "credential" });
+  });
+});
+
+describe("mock unassignment releases grants as core does (ADR-0107)", () => {
+  const grant = (
+    directory: string,
+    overrides: Partial<ContainerGrantView> = {},
+  ): ContainerGrantView => ({
+    grant_id: directory,
+    workspace_id: "app",
+    directory,
+    access: "read_execute",
+    state: "active",
+    ...overrides,
+  });
+  const released = (grants: ContainerGrantView[], needs: string[] = []) =>
+    mockReleasedGrants(grants, "app", ["/toolchains/rust"], needs).map((entry) => entry.directory);
+
+  it("releases a grant on a folder that holds the root, not only one on the root", () => {
+    expect(released([grant("/toolchains/rust"), grant("/toolchains")])).toEqual([
+      "/toolchains/rust",
+      "/toolchains",
+    ]);
+  });
+
+  it("releases a pending or revoking parent grant, as core revokes it in any state", () => {
+    expect(
+      released([
+        grant("/toolchains", { state: "pending" }),
+        grant("/toolchains/rust", { state: "revoking" }),
+      ]),
+    ).toEqual(["/toolchains", "/toolchains/rust"]);
+    expect(released([grant("/toolchains", { state: "pending" })], ["/toolchains/node"])).toEqual(
+      [],
+    );
+  });
+
+  it("keeps a parent grant that a still-assigned root or the cache root relies on", () => {
+    expect(released([grant("/toolchains")], ["/toolchains/node"])).toEqual([]);
+    expect(released([grant("/toolchains")], ["/toolchains/cache"])).toEqual([]);
+  });
+
+  it("releases it when another active grant covers that root, but not a pending one", () => {
+    expect(
+      released([grant("/toolchains"), grant("/toolchains/node")], ["/toolchains/node"]),
+    ).toEqual(["/toolchains"]);
+    expect(
+      released(
+        [grant("/toolchains"), grant("/toolchains/node", { state: "pending" })],
+        ["/toolchains/node"],
+      ),
+    ).toEqual([]);
+  });
+
+  it("leaves other workspaces, read-write grants, and look-alike folders alone", () => {
+    expect(
+      released([
+        grant("/toolchains", { workspace_id: "other" }),
+        grant("/toolchains", { access: "read_write" }),
+        grant("/toolchains/rust-old"),
+        grant("/toolchains/ru"),
+      ]),
+    ).toEqual([]);
   });
 });

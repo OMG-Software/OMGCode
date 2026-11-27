@@ -15,7 +15,7 @@ use omgcode_app::desktop::{
     PermissionsChangeRequest, SettingsOverview, SettingsPrompt, SettingsRevisionRequest,
     WorkspaceRevisionRequest,
 };
-use omgcode_core::control::ControlStore;
+use omgcode_core::control::{ContainerGrantAccess, ContainerGrantState, ControlStore};
 use omgcode_core::policy::{Access, PermissionSet};
 use serde_json::json;
 
@@ -336,7 +336,9 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
         .settings_register_workspace(revision(1), &prompt)
         .expect("registered");
 
-    assert_eq!(overview.revision, 2);
+    // On Windows the same consent grants the workspace's container its
+    // folder, one more record (ADR-0107).
+    assert_eq!(overview.revision, if cfg!(windows) { 3 } else { 2 });
     assert_eq!(overview.workspaces.len(), 1);
     let workspace = &overview.workspaces[0];
     assert!(workspace.folder_display.ends_with("project"));
@@ -375,6 +377,91 @@ fn registering_starts_at_the_root_and_uses_the_default_preferences() {
         "{}",
         confirmation.message
     );
+    for part in ["AppContainer", "read and write", "access-control list"] {
+        assert_eq!(
+            confirmation.message.contains(part),
+            cfg!(windows),
+            "{part}: {}",
+            confirmation.message
+        );
+    }
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("exists");
+    let grants = store.container_grants();
+    if cfg!(windows) {
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].grant().access(), ContainerGrantAccess::ReadWrite);
+        assert_eq!(grants[0].state(), ContainerGrantState::Active);
+        assert_eq!(
+            *grants[0].grant().workspace_id().as_uuid(),
+            workspace.workspace_id
+        );
+    } else {
+        assert!(grants.is_empty());
+    }
+    drop(store);
+
+    // Registering the folder again reuses the workspace and grants nothing
+    // more, because its grant is recorded.
+    let again = ScriptedPrompt::new().folder(Some(&project)).answer(true);
+    let repeated = service(&fixture.data)
+        .settings_register_workspace(revision(overview.revision), &again)
+        .expect("registered again");
+    assert_eq!(repeated.revision, overview.revision);
+    assert_eq!(repeated.workspaces.len(), 1);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
+}
+
+/// Unregistering revokes the workspace's grants first, so on Windows the one
+/// registration made is gone with it, and the confirmation names its folder
+/// (ADR-0107).
+#[test]
+fn unregistering_revokes_the_grant_registration_made() {
+    let fixture = Fixture::new();
+    let project = fixture.development.join("project");
+    fs::create_dir_all(&project).expect("project");
+    let registered = service(&fixture.data)
+        .settings_register_workspace(
+            revision(1),
+            &ScriptedPrompt::new().folder(Some(&project)).answer(true),
+        )
+        .expect("registered");
+    let workspace = registered.workspaces[0].workspace_id;
+
+    let prompt = ScriptedPrompt::new().answer(true);
+    let overview = service(&fixture.data)
+        .settings_unregister_workspace(for_workspace(workspace, registered.revision), &prompt)
+        .expect("unregistered");
+
+    assert!(overview.workspaces.is_empty());
+    let message = &prompt.confirmations()[0].message;
+    assert_eq!(
+        message.contains("access-control list"),
+        cfg!(windows),
+        "{message}"
+    );
+    // The folder's own line, and on Windows its grant's line; a parent
+    // folder whose name contains `project` is not counted.
+    assert_eq!(
+        message
+            .lines()
+            .filter(|line| line.trim_end().ends_with("project"))
+            .count(),
+        if cfg!(windows) { 2 } else { 1 },
+        "{message}"
+    );
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("exists");
+    assert!(store.container_grants().is_empty());
+    assert_eq!(store.workspaces().count(), 0);
+    drop(store);
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[test]

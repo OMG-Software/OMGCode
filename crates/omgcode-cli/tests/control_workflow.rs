@@ -10,11 +10,13 @@ use std::time::Duration;
 use tempfile::TempDir;
 use uuid::Uuid;
 
+use omgcode_core::control::ControlStore;
 #[cfg(unix)]
 use support::CLI_DEADLINE;
+use support::spawn_gate::without_child_spawns;
 use support::{
-    HANG_FIXTURE_ENV, assert_control_error, assert_error_code, assert_success, json_output,
-    path_arg, run_cli, run_with_deadline,
+    GRANT_CLI_DEADLINE, HANG_FIXTURE_ENV, assert_control_error, assert_error_code, assert_success,
+    json_output, path_arg, revoke_recorded_grants, run_cli, run_cli_for, run_with_deadline,
 };
 
 /// Park only when the timeout regression launches this test in a child process.
@@ -91,55 +93,56 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
     assert_eq!(root_snapshot["revision"], 1);
     assert_ne!(root_snapshot["development_root"], Value::Null);
 
-    // When two paths register, their IDs persist and an idempotent repeat does not advance revision.
-    let first = run_cli(
-        &data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(&first_workspace),
-            "--revision",
-            "1",
-        ],
-    );
-    assert_success(&first);
-    let first = json_output(&first);
+    // When two paths register, their IDs persist and an idempotent repeat
+    // does not advance revision. On Windows each registration also grants
+    // the workspace's container read-write on its folder (ADR-0107), one
+    // more revision; Linux records no grant.
+    let _cleanup = RevokeGrantsOnDrop(&data_root);
+    let step: u64 = if cfg!(windows) { 2 } else { 1 };
+    let register_cli = |workspace: &Path, revision: u64| {
+        let output = run_cli_for(
+            &data_root,
+            &[
+                "workspace",
+                "register",
+                path_arg(workspace),
+                "--revision",
+                &revision.to_string(),
+            ],
+            GRANT_CLI_DEADLINE,
+        );
+        assert_success(&output);
+        json_output(&output)
+    };
+    let first = register_cli(&first_workspace, 1);
     let first_id = first["registration_id"]
         .as_str()
         .expect("first workspace ID");
-    assert_eq!(first["snapshot"]["revision"], 2);
-    let first_repeat = run_cli(
-        &data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(&first_workspace),
-            "--revision",
-            "2",
-        ],
-    );
-    assert_success(&first_repeat);
-    let first_repeat = json_output(&first_repeat);
+    assert_eq!(first["snapshot"]["revision"], 1 + step);
+    assert_eq!(first.get("grant_id").is_some(), cfg!(windows), "{first}");
+    let first_repeat = register_cli(&first_workspace, 1 + step);
     assert_eq!(first_repeat["registration_id"], first_id);
-    assert_eq!(first_repeat["snapshot"]["revision"], 2);
+    assert_eq!(first_repeat["snapshot"]["revision"], 1 + step);
+    assert!(first_repeat.get("grant_id").is_none(), "{first_repeat}");
 
-    let second = run_cli(
-        &data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(&second_workspace),
-            "--revision",
-            "2",
-        ],
-    );
-    assert_success(&second);
-    let second = json_output(&second);
+    let second = register_cli(&second_workspace, 1 + step);
     let second_id = second["registration_id"]
         .as_str()
         .expect("second workspace ID");
     assert_ne!(first_id, second_id);
-    assert_eq!(second["snapshot"]["revision"], 3);
+    let base = 1 + 2 * step;
+    assert_eq!(second["snapshot"]["revision"], base);
+    let grants = second["snapshot"]["container_grants"].as_array();
+    if cfg!(windows) {
+        let grants = grants.expect("grants");
+        assert_eq!(grants.len(), 2, "{second}");
+        for grant in grants {
+            assert_eq!(grant["access"], "read_write", "{grant}");
+            assert_eq!(grant["state"], "active", "{grant}");
+        }
+    } else {
+        assert!(grants.is_none(), "{second}");
+    }
 
     // When flags are omitted, defaults allow read, prompt for write, and deny
     // execute, network, and host services, with model tools off. Status
@@ -181,7 +184,7 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
             "permissions",
             first_id,
             "--revision",
-            "3",
+            &base.to_string(),
             "--execute",
             "true",
             "--task-network",
@@ -190,7 +193,7 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
     );
     assert_success(&permissions);
     let permissions = json_output(&permissions);
-    assert_eq!(permissions["revision"], 4);
+    assert_eq!(permissions["revision"], base + 1);
     let limited = run_cli(
         &data_root,
         &[
@@ -198,14 +201,14 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
             "permissions",
             first_id,
             "--revision",
-            "4",
+            &(base + 1).to_string(),
             "--create-directory-tool",
             "prompt",
         ],
     );
     assert_success(&limited);
     let limited = json_output(&limited);
-    assert_eq!(limited["revision"], 5);
+    assert_eq!(limited["revision"], base + 2);
     let limits = limited["workspaces"]
         .as_array()
         .expect("workspace registrations")
@@ -222,7 +225,7 @@ fn workspace_commands_persist_cas_permissions_policy_and_audit_results() {
             "permissions",
             first_id,
             "--revision",
-            "3",
+            &base.to_string(),
             "--read",
             "false",
         ],
@@ -330,18 +333,7 @@ fn configured_sessions_keep_workspace_ids_and_fail_closed_outside_the_root() {
     fs::create_dir_all(&workspace).expect("create workspace");
     fs::create_dir(&outside_workspace).expect("create outside workspace");
     set_root(&data_root, &development_root);
-    let registration = run_cli(
-        &data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(&workspace),
-            "--revision",
-            "1",
-        ],
-    );
-    assert_success(&registration);
-    let expected_id = json_output(&registration)["registration_id"].clone();
+    let expected_id = Value::from(register(&data_root, &workspace, 1));
 
     // When new sessions use the same configured workspace, they record its stable ID.
     let first = run_cli(
@@ -918,22 +910,46 @@ fn approvals_are_requested_decided_and_consumed_once() {
     assert_error_code(&output, "approval");
 }
 
+/// Register `workspace` with the core primitive, which records only the
+/// registration. The CLI `register` command also grants the workspace's
+/// Windows container its folder (ADR-0107); tests of other commands use this
+/// so their revisions match on every platform and no AppContainer state
+/// outlives them. `workspace_commands_persist_cas_permissions_policy_and_audit_results`
+/// covers the command itself. The store is opened and closed while no test
+/// thread can start a child, which would otherwise share its lock on Unix
+/// and make the next open report `Busy`.
 fn register(data_root: &Path, workspace: &Path, revision: u64) -> String {
-    let output = run_cli(
-        data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(workspace),
-            "--revision",
-            &revision.to_string(),
-        ],
-    );
-    assert_success(&output);
-    json_output(&output)["registration_id"]
-        .as_str()
-        .expect("registration ID")
-        .to_owned()
+    without_child_spawns(|| {
+        let mut store = ControlStore::open_existing(data_root)
+            .expect("open settings")
+            .expect("settings exist");
+        store
+            .register_workspace(workspace, revision)
+            .expect("register workspace")
+            .id()
+            .as_uuid()
+            .to_string()
+    })
+}
+
+/// Revokes every recorded container grant when dropped, so a test that
+/// registers through the CLI leaves no ACL entry or AppContainer profile
+/// behind, even when it fails. It reports failures and never panics.
+struct RevokeGrantsOnDrop<'a>(&'a Path);
+
+impl Drop for RevokeGrantsOnDrop<'_> {
+    fn drop(&mut self) {
+        // The helpers report a failed status read, a timeout, and a failed
+        // revocation instead of panicking, which would abort a run that is
+        // already unwinding, and every grant is attempted. A failed write to
+        // stderr is ignored, so that report is lost then.
+        for problem in revoke_recorded_grants(self.0) {
+            let _ = writeln!(
+                io::stderr(),
+                "grant revocation failed during cleanup: {problem}"
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -948,6 +964,7 @@ fn container_grants_are_recorded_listed_and_revoked() {
     fs::create_dir_all(&workspace).expect("create workspace");
     fs::create_dir_all(&toolchain).expect("create toolchain");
     set_root(&data_root, &development_root);
+    let _cleanup = RevokeGrantsOnDrop(&data_root);
     let id = register(&data_root, &workspace, 1);
 
     // When the workspace and the toolchain are granted to its container.
@@ -1525,10 +1542,12 @@ fn web_fetch_preference_and_hosts_are_revisioned_and_validated() {
     assert_control_error(&missing);
 }
 
-/// A recorded container grant refuses the removal until it is revoked.
+/// Unregistering revokes every container grant of the workspace first, then
+/// removes the registration; the revocation needs no extra revision
+/// (ADR-0107, revising ADR-0081's refusal).
 #[cfg(windows)]
 #[test]
-fn unregister_is_refused_while_a_container_grant_names_the_workspace() {
+fn unregister_revokes_the_workspace_grants_first() {
     // Given a workspace with a read-write container grant.
     let temporary = TempDir::new().expect("private temporary directory");
     let data_root = temporary.path().join("application-data");
@@ -1536,6 +1555,7 @@ fn unregister_is_refused_while_a_container_grant_names_the_workspace() {
     let workspace = development_root.join("app");
     fs::create_dir_all(&workspace).expect("create workspace");
     set_root(&data_root, &development_root);
+    let _cleanup = RevokeGrantsOnDrop(&data_root);
     let id = register(&data_root, &workspace, 1);
     let grant = run_cli(
         &data_root,
@@ -1556,26 +1576,34 @@ fn unregister_is_refused_while_a_container_grant_names_the_workspace() {
         .expect("grant ID")
         .to_owned();
 
-    // When unregistering, it is refused and nothing changes.
-    let refused = run_cli(
+    // When unregistering with a stale revision, nothing is revoked.
+    let stale = run_cli(
         &data_root,
-        &["workspace", "unregister", &id, "--revision", "3"],
+        &["workspace", "unregister", &id, "--revision", "2"],
     );
-    assert_control_error(&refused);
+    assert_control_error(&stale);
     let status = json_output(&run_cli(&data_root, &["workspace", "status"]));
     assert_eq!(status["revision"], 3);
     assert_eq!(
-        status["workspaces"].as_array().expect("workspaces").len(),
+        status["container_grants"].as_array().expect("grants").len(),
         1
     );
 
-    // Then it succeeds once the grant is revoked.
-    assert_success(&run_cli(
-        &data_root,
-        &["workspace", "container-revoke", &grant_id],
-    ));
-    assert_success(&run_cli(
+    // Then the current revision revokes the grant, deleting the container's
+    // profile, and removes the workspace.
+    let removed = run_cli_for(
         &data_root,
         &["workspace", "unregister", &id, "--revision", "3"],
-    ));
+        GRANT_CLI_DEADLINE,
+    );
+    assert_success(&removed);
+    let removed = json_output(&removed);
+    assert_eq!(
+        removed["revoked"],
+        json!([{"grant_id": grant_id, "profile_deleted": true}]),
+        "{removed}"
+    );
+    assert_eq!(removed["snapshot"]["revision"], 4);
+    assert_eq!(removed["snapshot"]["workspaces"], json!([]));
+    assert!(removed["snapshot"].get("container_grants").is_none());
 }

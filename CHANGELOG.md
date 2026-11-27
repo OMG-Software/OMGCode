@@ -600,6 +600,102 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.70.0 also assigns toolchain profiles to workspaces and grants a
+  profile's folders when it is assigned (ADR-0107). A workspace now runs only
+  the profiles assigned to it: the runner refuses any other recorded profile
+  before anything starts, the run watcher withdraws a run whose profile is
+  unassigned, and the model command tool is offered only while a profile of
+  this platform is assigned, listing only those (tool schema 0.10.0; the
+  `profile_not_recorded` code is kept). Two control events,
+  `profile_assigned` and `profile_unassigned`, record the change, and an older
+  build refuses them. On Windows assigning is the consent to grant: core plans
+  read-execute grants for the profile's roots that the workspace's
+  AppContainer cannot read yet, the operator confirms the plan, and core
+  refuses the assignment if the plan changed, including the folders it
+  leaves out and why, then applies the grants and
+  records the assignment last, granting only a folder that is still the
+  confirmed directory. An assignment whose grant fails, or that cannot be
+  recorded, revokes the grants it made that no assigned profile needs,
+  waits for the runs those revocations withdrew, and reports each grant it
+  could not revoke and each grant it kept because a profile already
+  assigned to the workspace needs it; when it revoked every grant it made,
+  the `settings` window says so instead of pointing to a pending grant. A
+  revocation report counts each kind of failure under its own reason, so a
+  grant left `revoking` is named beside grants that failed otherwise. A
+  workspace with a pending or revoking grant is refused a plan. Folders that
+  need an administrator, or whose access could not be read, are listed and
+  not granted. Registering a
+  workspace grants its container read-write on its folder, and registering an
+  existing folder again grants it if that grant is missing. A grant of the
+  workspace already on the folder that is not an active read-write grant,
+  such as a read-execute grant or one left `pending`, refuses the grant and
+  is named to revoke before registering again. A folder only an
+  administrator can grant, or whose access could not be read, is not
+  granted and is reported with its reason: `register` prints it under
+  `not_granted`, and the `settings` window returns `workspace_grant_skipped`.
+  The read-write folder grant's confirmation no longer says registering gave
+  the sandbox no access; it says registering normally grants it. Unassigning or
+  removing a profile revokes the workspace's read-execute grants on its roots,
+  or on a folder that holds one, that no other assigned profile and not the
+  package cache root needs, never the workspace folder's grant; a grant on a
+  folder that holds a still-assigned profile's root, which got no grant of
+  its own, is kept until that profile is unassigned too, while no other
+  active grant covers that root. A moved or removed root is matched by its
+  recorded path, so it neither releases the grant early nor keeps it after
+  its profile goes. Every grant is
+  attempted, and each one not revoked is named. Unregistering revokes every
+  grant of the workspace first and leaves it registered if a revocation
+  fails or its removal cannot be recorded. Each caller waits for the runs
+  the settings change itself withdrew, such as a run of an unassigned
+  profile even when nothing is revoked, as on Linux, and beyond those only
+  for the runs of the workspaces whose grants it revoked. When the run journal cannot
+  be read after every revocation succeeded, `profile-unassign`,
+  `profile-remove`, and `unregister` fail with code `run` and name each
+  grant they revoked, since their JSON is not printed. The
+  trusted CLI adds `workspace profile-assign` and `workspace
+  profile-unassign`, and `register`, `unregister`, and `profile-remove` report
+  what they granted or revoked. The desktop `settings` window shows one
+  switch per profile on each workspace page, through
+  `settings_assign_toolchain_profile` and
+  `settings_unassign_toolchain_profile`, each after a native confirmation that
+  names the folders it grants or the grants it revokes. Adding discovered
+  profiles with a workspace chosen also assigns them in the same
+  confirmation, the workspace choice is shown on every platform, and
+  `settings_grant_discovered_roots` is removed, so the `settings` window has
+  33 commands and the shell 67. Existing profiles start assigned to no
+  workspace: assign each workspace's profiles once. On Windows a profile whose
+  folders are already granted grants nothing new. Granting at run time was
+  drafted and dropped before it was committed. Windows CLI and desktop
+  service tests apply and revoke real grants on temporary folders; the
+  desktop shell's native dialogs were not driven.
+
+- Version 0.70.0 makes a Windows run refused for a missing container grant
+  say which grant is missing (ADR-0106). The refusal used to be one fixed
+  sentence, "a confinement path is not granted to the container at its
+  listed level", for every path, so neither the operator nor a model relaying
+  the command tool's result could tell which folder to grant. An operator's
+  `rust` profile had four roots; the rustup toolchain under their own folder
+  had no grant, and the other three are readable by every application
+  package. Finding it took reading each root's access-control list by hand.
+  The Windows runner now returns `ProcessError::Ungranted` with the refused
+  entry, its path, the access it needs, and the access the container has.
+  Core matches the path against the paths it listed, using a refused
+  read-only entry's position when that holds a profile root with the path,
+  so a package cache root that is also a profile root is named by the entry
+  Windows refused, and returns
+  `RunError::NotGranted`, whose text names the role: root N of toolchain
+  profile `NAME` (numbered from 1 as `profile-show` and the `settings`
+  window list them), the workspace's package cache root, the workspace
+  folder, or the program file. The text gives the needed and held access and
+  says where to grant it, but never includes the path. The command tool sends
+  that text to the model, and a path under the user's folder can name the
+  account. The trusted CLI's `run` error keeps the same message and adds
+  `refused_path` with the role, `needed`, `granted`, and the path as `path`,
+  `path_display`, and `path_native`. The checked paths, their order, the
+  levels, the `not_started` record, and the tool's `command_failed` code are
+  unchanged. Windows platform and CLI tests apply real grants to temporary
+  folders; the desktop shell was not driven.
+
 - Version 0.69.0 makes the read-write container grant say what it does
   (ADR-0104). In the desktop `settings` window, **Grant a folder** with read
   and write no longer opens a folder dialog: core accepts that access only on

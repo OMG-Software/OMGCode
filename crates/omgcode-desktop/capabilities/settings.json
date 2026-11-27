@@ -12,6 +12,7 @@
     "allow-settings-add-package-profile",
     "allow-settings-add-toolchain-profile",
     "allow-settings-add-web-fetch-host",
+    "allow-settings-assign-toolchain-profile",
     "allow-settings-cancel-chatgpt-sign-in",
     "allow-settings-choose-package-cache",
     "allow-settings-choose-root",
@@ -19,7 +20,6 @@
     "allow-settings-clear-scope",
     "allow-settings-discover-toolchains",
     "allow-settings-grant-container-folder",
-    "allow-settings-grant-discovered-roots",
     "allow-settings-import-skill",
     "allow-settings-overview",
     "allow-settings-register-workspace",
@@ -38,6 +38,7 @@
     "allow-settings-set-workspace-instructions",
     "allow-settings-sign-in-chatgpt",
     "allow-settings-sign-out-chatgpt",
+    "allow-settings-unassign-toolchain-profile",
     "allow-settings-unregister-workspace"
   ]
 }

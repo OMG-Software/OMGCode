@@ -510,14 +510,69 @@ pub struct Workspace {
     pub path: PathBuf,
 }
 
+/// The toolchain profile [`Fixture::declare_profile`] records.
+const DECLARED_PROFILE: &str = "system";
+
 /// Private application data, a development root, and registered workspaces.
+///
+/// On Windows, registering a workspace through the `settings` service grants
+/// its container its folder (ADR-0107), which adds an access-control entry and
+/// creates an AppContainer profile on the host. A test that grants ends with
+/// [`Fixture::revoke_grants`], which fails it when a grant cannot be revoked,
+/// before the temporary directory and the journal needed to retry are gone.
+/// Dropping the fixture revokes every grant still recorded as a fallback for
+/// a test that ends early, reporting a failure without panicking.
 pub struct Fixture {
     _temporary: TempDir,
     pub data: PathBuf,
     pub development: PathBuf,
 }
 
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Err(problem) = self.revoke_grants() {
+            // Never panic in drop: a second panic would abort the run. A
+            // failed write to stderr is ignored, so the report is lost then.
+            let _ = writeln!(std::io::stderr(), "fixture cleanup: {problem}");
+        }
+    }
+}
+
 impl Fixture {
+    /// Revoke every container grant still recorded, attempting each one.
+    ///
+    /// # Errors
+    ///
+    /// The settings store could not be opened, or a grant could not be
+    /// revoked; every failure is named.
+    pub fn revoke_grants(&self) -> Result<(), String> {
+        let mut control = match ControlStore::open_existing(&self.data) {
+            Ok(Some(control)) => control,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                return Err(format!("the settings store could not be opened: {error}"));
+            }
+        };
+        let grants: Vec<Uuid> = control
+            .container_grants()
+            .iter()
+            .map(|status| status.grant().id())
+            .collect();
+        let failures: Vec<String> = grants
+            .into_iter()
+            .filter_map(|grant| {
+                control
+                    .revoke_container_grant(grant)
+                    .err()
+                    .map(|error| format!("container grant {grant} could not be revoked: {error}"))
+            })
+            .collect();
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
     /// Application data only; no settings store exists.
     pub fn bare() -> Self {
         let temporary = tempfile::tempdir().expect("private fixture root");
@@ -567,13 +622,22 @@ impl Fixture {
         control
             .set_permissions(id, permissions, control.revision())
             .expect("workspace permissions");
+        // A workspace runs only its assigned profiles (ADR-0107). The
+        // primitive records the assignment and grants nothing.
+        if control.profile(DECLARED_PROFILE).is_some() {
+            control
+                .assign_profile(id, DECLARED_PROFILE, control.revision())
+                .expect("profile assigned");
+        }
         Workspace {
             id: *id.as_uuid(),
             path,
         }
     }
 
-    /// Declare a toolchain profile so the command tool can be offered.
+    /// Declare a toolchain profile so the command tool can be offered, and
+    /// assign it to every registered workspace; [`Self::workspace`] assigns
+    /// it to a workspace registered later. No access is granted.
     pub fn declare_profile(&self) {
         let tools = self.data.parent().expect("temporary root").join("tools");
         fs::create_dir_all(&tools).expect("toolchain root");
@@ -581,7 +645,7 @@ impl Fixture {
         control
             .add_profile(
                 &ProfileDeclaration {
-                    name: "system".into(),
+                    name: DECLARED_PROFILE.into(),
                     read_only_roots: vec![tools],
                     path_entries: Vec::new(),
                     environment: Vec::new(),
@@ -589,6 +653,15 @@ impl Fixture {
                 control.revision(),
             )
             .expect("toolchain profile");
+        let workspaces: Vec<_> = control
+            .workspaces()
+            .map(|workspace| workspace.id())
+            .collect();
+        for id in workspaces {
+            control
+                .assign_profile(id, DECLARED_PROFILE, control.revision())
+                .expect("profile assigned");
+        }
     }
 
     pub fn service(&self, endpoint: &str) -> DesktopService {

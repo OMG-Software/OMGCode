@@ -133,13 +133,13 @@ pub use self::processes::{
 use self::review_tokens::ReviewTokens;
 pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
 pub use self::settings_discovery::{
-    DiscoveredGrantsRequest, DiscoveredProfilesRequest, MAX_SELECTED_PROPOSALS, ProposedRootView,
-    ProposedVariableView, ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProposalView,
-    discovery_host,
+    DiscoveredProfilesRequest, MAX_SELECTED_PROPOSALS, ProposedRootView, ProposedVariableView,
+    ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProposalView, discovery_host,
 };
 pub use self::settings_execution::{
     ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest, EnvironmentEntry,
-    PackageProfileAddRequest, ProfileRemoveRequest, ToolchainProfileAddRequest,
+    PackageProfileAddRequest, ProfileAssignmentRequest, ProfileRemoveRequest,
+    ToolchainProfileAddRequest,
 };
 pub use self::settings_skills::{SkillChoice, SkillRemoveRequest, SkillStateRequest};
 pub use self::settings_web_hosts::WebHostChangeRequest;

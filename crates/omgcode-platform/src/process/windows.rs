@@ -54,9 +54,10 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::{
-    AppliedConfinement, CancelSignal, Capture, Confinement, NetworkAccess, ProcessError,
-    ProcessLimits, ProcessOutcome, ProcessSpec, ProcessTree, ResourceLimit, Termination,
-    TreeLimits, TreeUsage, UnixSocketAccess, is_batch_script, stop_tree, supervise,
+    AppliedConfinement, CancelSignal, Capture, Confinement, ConfinementEntry, NetworkAccess,
+    ProcessError, ProcessLimits, ProcessOutcome, ProcessSpec, ProcessTree, ResourceLimit,
+    Termination, TreeLimits, TreeUsage, UngrantedPath, UnixSocketAccess, is_batch_script,
+    stop_tree, supervise,
 };
 use crate::container::ContainerAccess;
 use crate::container::windows::{derive_sid, granted_access, profile_exists};
@@ -231,31 +232,52 @@ fn prepare_container(spec: &ProcessSpec, confinement: &Confinement) -> Result<Si
             "Windows confinement needs LOCALAPPDATA in the environment",
         ));
     }
-    let rules = [
-        (&confinement.read_only, ContainerAccess::ReadExecute),
-        (&confinement.read_write, ContainerAccess::ReadWrite),
-    ];
-    for (paths, needed) in rules {
-        for path in paths {
-            let access = granted_access(path, &sid).map_err(ProcessError::Confinement)?;
-            if !covers(access, needed) {
-                return Err(ProcessError::Confinement(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "a confinement path is not granted to the container at its listed level",
-                )));
-            }
-        }
+    for (index, path) in confinement.read_only.iter().enumerate() {
+        require_access(
+            path,
+            &sid,
+            ContainerAccess::ReadExecute,
+            ConfinementEntry::ReadOnly(index),
+        )?;
+    }
+    for (index, path) in confinement.read_write.iter().enumerate() {
+        require_access(
+            path,
+            &sid,
+            ContainerAccess::ReadWrite,
+            ConfinementEntry::ReadWrite(index),
+        )?;
     }
     // `CreateProcessW` maps the image with the caller's token, so a program
     // the container cannot read would still start. Refuse it here instead.
-    let program = granted_access(&spec.program, &sid).map_err(ProcessError::Confinement)?;
-    if !covers(program, ContainerAccess::ReadExecute) {
-        return Err(ProcessError::Confinement(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "the program is not readable and executable by the container",
-        )));
-    }
+    require_access(
+        &spec.program,
+        &sid,
+        ContainerAccess::ReadExecute,
+        ConfinementEntry::Program,
+    )?;
     Ok(sid)
+}
+
+/// Refuse `path` unless the container already has `needed` access to it.
+/// The refusal carries the path and which entry it was, so the caller can
+/// name what to grant; a DACL that cannot be read stays a confinement error.
+fn require_access(
+    path: &Path,
+    sid: &Sid,
+    needed: ContainerAccess,
+    entry: ConfinementEntry,
+) -> Result<(), ProcessError> {
+    let granted = granted_access(path, sid).map_err(ProcessError::Confinement)?;
+    if covers(granted, needed) {
+        return Ok(());
+    }
+    Err(ProcessError::Ungranted(Box::new(UngrantedPath {
+        entry,
+        path: path.to_path_buf(),
+        needed,
+        granted,
+    })))
 }
 
 const fn covers(granted: Option<ContainerAccess>, needed: ContainerAccess) -> bool {

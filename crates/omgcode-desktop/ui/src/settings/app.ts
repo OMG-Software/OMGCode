@@ -146,8 +146,10 @@ const ACTIONS: Omit<Actions, "signInChatGpt" | "signOutChatGpt"> = {
   discoverToolchains: (workspaceId) => () => settingsApi.discoverToolchains(workspaceId),
   addDiscoveredProfiles: (digests, workspaceId) => (revision) =>
     settingsApi.addDiscoveredProfiles(revision, digests, workspaceId),
-  grantDiscoveredRoots: (workspaceId, digests) => (revision) =>
-    settingsApi.grantDiscoveredRoots(revision, workspaceId, digests),
+  assignToolchainProfile: (workspaceId, name) => (revision) =>
+    settingsApi.assignToolchainProfile(revision, workspaceId, name),
+  unassignToolchainProfile: (workspaceId, name) => (revision) =>
+    settingsApi.unassignToolchainProfile(revision, workspaceId, name),
 };
 
 /**

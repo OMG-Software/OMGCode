@@ -1,11 +1,13 @@
-//! Toolchain profile, package-network profile, and container grant changes
-//! from the desktop `settings` window (ADR-0088). A scripted prompt stands in
-//! for the native dialogs, as in `desktop_settings_skills`.
+//! Toolchain profile, profile assignment, package-network profile, and
+//! container grant changes from the desktop `settings` window (ADR-0088,
+//! ADR-0107). A scripted prompt stands in for the native dialogs, as in
+//! `desktop_settings_skills`.
 //!
-//! No test applies a container grant: that changes a folder's access-control
-//! list and creates an AppContainer profile on the host. The grant paths that
-//! run before any change (revision, workspace, dialogs, confirmation text) are
-//! tested on Windows, and the platform refusal elsewhere.
+//! The hand-made grant command is tested up to its confirmation on Windows,
+//! and its platform refusal elsewhere. An accepted profile assignment applies
+//! a real read-execute grant to a temporary toolchain folder on Windows, as
+//! the CLI tests do; dropping the fixture revokes every recorded grant, which
+//! also deletes the AppContainer profile.
 
 mod common;
 
@@ -17,10 +19,13 @@ use std::path::{Path, PathBuf};
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
     Confirmation, ContainerGrantRequest, DesktopConfig, DesktopError, DesktopService,
-    FolderPurpose, PackageProfileAddRequest, ProfileRemoveRequest, SettingsOverview,
-    SettingsPrompt, SettingsRevisionRequest, ToolchainProfileAddRequest, WebHostChangeRequest,
+    FolderPurpose, PackageProfileAddRequest, ProfileAssignmentRequest, ProfileRemoveRequest,
+    SettingsOverview, SettingsPrompt, ToolchainProfileAddRequest, WebHostChangeRequest,
 };
-use omgcode_core::control::{ControlStore, PackageProfileDeclaration};
+use omgcode_core::control::{
+    ContainerGrantAccess, ContainerGrantState, ControlStore, PackageProfileDeclaration,
+};
+use omgcode_core::turn::display_safe_line;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -166,18 +171,52 @@ fn tool_root(fixture: &Fixture, name: &str) -> PathBuf {
     root
 }
 
-/// Register one workspace through the service; returns its identifier.
+/// Register one workspace with core's primitive, which grants nothing (the
+/// service's registration grants its folder on Windows, ADR-0107); returns
+/// its identifier.
 fn with_workspace(fixture: &Fixture) -> Uuid {
     let project = fixture.development.join("project");
     fs::create_dir_all(&project).expect("project");
-    let prompt = ScriptedPrompt::new().folder(Some(&project)).answer(true);
-    let request: SettingsRevisionRequest =
-        wire(json!({ "revision": current_revision(&fixture.data) }));
-    service(&fixture.data)
-        .settings_register_workspace(request, &prompt)
+    let mut store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("exists");
+    let revision = store.revision();
+    *store
+        .register_workspace(&project, revision)
         .expect("registered")
-        .workspaces[0]
-        .workspace_id
+        .id()
+        .as_uuid()
+}
+
+fn assignment(revision: u64, workspace: Uuid, name: &str) -> ProfileAssignmentRequest {
+    wire(json!({ "revision": revision, "workspace_id": workspace, "name": name }))
+}
+
+/// The recorded grants as `(access, state, directory display)`, in order.
+fn recorded_grants(data: &Path) -> Vec<(ContainerGrantAccess, ContainerGrantState, String)> {
+    ControlStore::open_existing(data)
+        .expect("open")
+        .expect("exists")
+        .container_grants()
+        .iter()
+        .map(|status| {
+            (
+                status.grant().access(),
+                status.state(),
+                status.grant().directory_display(),
+            )
+        })
+        .collect()
+}
+
+/// The display text core records for the directory at `path`: its canonical
+/// path, made display-safe. Display text is compared, never reopened.
+fn displayed(path: &Path) -> String {
+    display_safe_line(
+        &fs::canonicalize(path)
+            .expect("canonical path")
+            .to_string_lossy(),
+    )
 }
 
 /// Record a toolchain profile through the service.
@@ -419,7 +458,10 @@ fn removing_a_profile_is_confirmed_by_name_and_applied_with_the_confirmed_revisi
     assert_eq!(error.code(), "cancelled");
     let message = declined.confirmations().remove(0).message;
     assert!(message.contains("rust"), "{message}");
-    assert!(message.contains("already started"), "{message}");
+    assert!(
+        message.contains("not assigned to any workspace"),
+        "{message}"
+    );
     assert_eq!(current_revision(&fixture.data), added.revision);
 
     // Stale and unknown are refused before any dialog.
@@ -476,6 +518,201 @@ fn a_removal_is_refused_when_the_settings_change_during_the_confirmation() {
         .expect("open")
         .expect("exists");
     assert!(store.profile("rust").is_some());
+}
+
+/// Assigning a profile is confirmed with the workspace, the profile, and on
+/// Windows the folder its container is granted; the confirmation is the
+/// consent to that grant (ADR-0107). On Windows the accepted assignment
+/// applies a real read-execute grant to a temporary folder, which dropping
+/// the fixture revokes.
+#[test]
+fn assigning_a_profile_is_confirmed_with_the_folders_it_grants() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    let added = profile_added(&fixture, "rust");
+    let shown_root = Path::new("toolchains").join("rust").display().to_string();
+    let before = added.revision;
+
+    let declined = ScriptedPrompt::new().answer(false);
+    let error = error_of(
+        service(&fixture.data)
+            .settings_assign_toolchain_profile(assignment(before, workspace, "rust"), &declined),
+    );
+    assert_eq!(error.code(), "cancelled");
+    let confirmation = declined.confirmations().remove(0);
+    assert_eq!(confirmation.title, "Use a toolchain profile in a workspace");
+    for part in ["rust", "project"] {
+        assert!(
+            confirmation.message.contains(part),
+            "{part}: {}",
+            confirmation.message
+        );
+    }
+    for part in [
+        shown_root.as_str(),
+        "read and execute",
+        "access-control list",
+        "AppContainer",
+    ] {
+        assert_eq!(
+            confirmation.message.contains(part),
+            cfg!(windows),
+            "{part}: {}",
+            confirmation.message
+        );
+    }
+    assert_eq!(current_revision(&fixture.data), before);
+    assert!(recorded_grants(&fixture.data).is_empty());
+
+    // A stale revision, an unknown workspace, and an unknown profile are
+    // refused before any dialog.
+    let silent = ScriptedPrompt::new();
+    for (request, code) in [
+        (assignment(before + 1, workspace, "rust"), "stale_revision"),
+        (
+            assignment(before, Uuid::new_v4(), "rust"),
+            "unknown_workspace",
+        ),
+        (assignment(before, workspace, "missing"), "control"),
+    ] {
+        let error =
+            error_of(service(&fixture.data).settings_assign_toolchain_profile(request, &silent));
+        assert_eq!(error.code(), code, "{error}");
+    }
+    assert!(silent.asked().is_empty());
+
+    let accepted = ScriptedPrompt::new().answer(true);
+    let overview = service(&fixture.data)
+        .settings_assign_toolchain_profile(assignment(before, workspace, "rust"), &accepted)
+        .expect("assigned");
+    assert_eq!(overview.workspaces[0].profiles, ["rust"]);
+    if cfg!(windows) {
+        assert_eq!(
+            overview.revision,
+            before + 2,
+            "a grant, then the assignment"
+        );
+        assert_eq!(
+            recorded_grants(&fixture.data),
+            [(
+                ContainerGrantAccess::ReadExecute,
+                ContainerGrantState::Active,
+                displayed(&tool_root(&fixture, "rust"))
+            )]
+        );
+    } else {
+        assert_eq!(overview.revision, before + 1);
+        assert!(recorded_grants(&fixture.data).is_empty());
+    }
+
+    // Assigning it again is refused before any dialog.
+    let error = error_of(service(&fixture.data).settings_assign_toolchain_profile(
+        assignment(overview.revision, workspace, "rust"),
+        &silent,
+    ));
+    assert_eq!(error.code(), "control");
+    assert!(silent.asked().is_empty());
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
+}
+
+/// Unassigning revokes the grants only that profile needed and says so;
+/// unassigning a profile that is not assigned is refused before any dialog.
+#[test]
+fn unassigning_a_profile_revokes_the_grants_it_alone_needed() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    profile_added(&fixture, "rust");
+    let shown_root = Path::new("toolchains").join("rust").display().to_string();
+    let assigned = service(&fixture.data)
+        .settings_assign_toolchain_profile(
+            assignment(current_revision(&fixture.data), workspace, "rust"),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect("assigned");
+
+    let declined = ScriptedPrompt::new().answer(false);
+    let error = error_of(service(&fixture.data).settings_unassign_toolchain_profile(
+        assignment(assigned.revision, workspace, "rust"),
+        &declined,
+    ));
+    assert_eq!(error.code(), "cancelled");
+    let confirmation = declined.confirmations().remove(0);
+    for part in ["rust", "project", "stopped"] {
+        assert!(
+            confirmation.message.contains(part),
+            "{part}: {}",
+            confirmation.message
+        );
+    }
+    for part in [shown_root.as_str(), "access-control list"] {
+        assert_eq!(
+            confirmation.message.contains(part),
+            cfg!(windows),
+            "{part}: {}",
+            confirmation.message
+        );
+    }
+    assert_eq!(current_revision(&fixture.data), assigned.revision);
+
+    let overview = service(&fixture.data)
+        .settings_unassign_toolchain_profile(
+            assignment(assigned.revision, workspace, "rust"),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect("unassigned");
+    assert!(overview.workspaces[0].profiles.is_empty());
+    // A revocation needs no revision; the unassignment is one record.
+    assert_eq!(overview.revision, assigned.revision + 1);
+    assert!(recorded_grants(&fixture.data).is_empty());
+
+    let silent = ScriptedPrompt::new();
+    let error = error_of(service(&fixture.data).settings_unassign_toolchain_profile(
+        assignment(overview.revision, workspace, "rust"),
+        &silent,
+    ));
+    assert_eq!(error.code(), "control");
+    assert!(error.message().contains("not assigned"), "{error}");
+    assert!(silent.asked().is_empty());
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
+}
+
+/// Removing an assigned profile names the workspace it leaves and, on
+/// Windows, the folder whose grant it revokes.
+#[test]
+fn removing_an_assigned_profile_names_its_workspace_and_revokes_its_grant() {
+    let fixture = Fixture::new();
+    let workspace = with_workspace(&fixture);
+    profile_added(&fixture, "rust");
+    let shown_root = Path::new("toolchains").join("rust").display().to_string();
+    let assigned = service(&fixture.data)
+        .settings_assign_toolchain_profile(
+            assignment(current_revision(&fixture.data), workspace, "rust"),
+            &ScriptedPrompt::new().answer(true),
+        )
+        .expect("assigned");
+
+    let prompt = ScriptedPrompt::new().answer(true);
+    let overview = service(&fixture.data)
+        .settings_remove_toolchain_profile(remove(assigned.revision, "rust"), &prompt)
+        .expect("removed");
+
+    let message = prompt.confirmations().remove(0).message;
+    assert!(message.contains("project"), "{message}");
+    assert_eq!(
+        message.contains(shown_root.as_str()),
+        cfg!(windows),
+        "{message}"
+    );
+    assert!(overview.toolchain_profiles.is_empty());
+    assert!(overview.workspaces[0].profiles.is_empty());
+    assert!(recorded_grants(&fixture.data).is_empty());
+    fixture
+        .revoke_grants()
+        .expect("every container grant is revoked");
 }
 
 #[test]

@@ -46,6 +46,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
         host_services: "deny",
         web_fetch: "deny",
         web_fetch_hosts: [],
+        profiles: [],
         write_tools: {
           edit: "allow",
           multi_edit: "allow",
@@ -68,6 +69,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     },
     provider_profiles: [],
     toolchain_profiles: [],
+    profile_platform: "linux",
     package_profiles: [],
     container_grants: [],
     container_grants_supported: true,
@@ -430,6 +432,106 @@ describe("mock execution commands", () => {
       name: "node",
     })) as SettingsOverview;
     expect(removed.toolchain_profiles.some((entry) => entry.name === "node")).toBe(false);
+  });
+
+  it("assigns a profile, grants its home-folder root, and revokes it on unassign (ADR-0107)", async () => {
+    const { invoke } = createMockBackend();
+    const before = await overviewOf(invoke);
+    const workspace = before.workspaces[0]?.workspace_id ?? "";
+    const change = (command: string, revision: number) =>
+      invoke(command, { revision, workspace_id: workspace, name: "rust" });
+
+    const assigned = (await change(
+      "settings_assign_toolchain_profile",
+      before.revision,
+    )) as SettingsOverview;
+    expect(assigned.workspaces[0]?.profiles).toEqual(["rust"]);
+    expect(assigned.container_grants).toEqual([
+      expect.objectContaining({
+        workspace_id: workspace,
+        directory: "/home/dev/.rustup",
+        access: "read_execute",
+        state: "active",
+      }),
+    ]);
+    await expect(
+      change("settings_assign_toolchain_profile", assigned.revision),
+    ).rejects.toMatchObject({ code: "control" });
+
+    const unassigned = (await change(
+      "settings_unassign_toolchain_profile",
+      assigned.revision,
+    )) as SettingsOverview;
+    expect(unassigned.workspaces[0]?.profiles).toEqual([]);
+    expect(unassigned.container_grants).toEqual([]);
+    await expect(
+      change("settings_unassign_toolchain_profile", unassigned.revision),
+    ).rejects.toMatchObject({ code: "control" });
+  });
+
+  it("grants a registered workspace its folder and never reuses a revoked grant's identifier", async () => {
+    const { invoke } = createMockBackend();
+    const before = await overviewOf(invoke);
+    const first = before.workspaces[0]?.workspace_id ?? "";
+    const registered = (await invoke("settings_register_workspace", {
+      revision: before.revision,
+    })) as SettingsOverview;
+    const added = registered.workspaces[registered.workspaces.length - 1];
+    expect(registered.container_grants).toEqual([
+      expect.objectContaining({
+        workspace_id: added?.workspace_id,
+        directory: added?.folder_display,
+        access: "read_write",
+        state: "active",
+      }),
+    ]);
+    const second = added?.workspace_id ?? "";
+
+    const change = async (command: string, workspace: string) => {
+      const { revision } = await overviewOf(invoke);
+      return (await invoke(command, {
+        revision,
+        workspace_id: workspace,
+        name: "rust",
+      })) as SettingsOverview;
+    };
+    await change("settings_assign_toolchain_profile", first);
+    await change("settings_assign_toolchain_profile", second);
+    await change("settings_unassign_toolchain_profile", first);
+    const again = await change("settings_assign_toolchain_profile", first);
+    const ids = again.container_grants.map((grant) => grant.grant_id);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    const own = again.container_grants.find(
+      (grant) => grant.workspace_id === first && grant.access === "read_execute",
+    );
+    const revoked = (await invoke("settings_revoke_container_grant", {
+      revision: again.revision,
+      grant_id: own?.grant_id,
+    })) as SettingsOverview;
+    expect(
+      revoked.container_grants.some(
+        (grant) => grant.workspace_id === second && grant.access === "read_execute",
+      ),
+    ).toBe(true);
+    expect(revoked.container_grants.some((grant) => grant.grant_id === own?.grant_id)).toBe(false);
+  });
+
+  it("ends the assignments and their grants when an assigned profile is removed", async () => {
+    const { invoke } = createMockBackend();
+    const before = await overviewOf(invoke);
+    const workspace = before.workspaces[0]?.workspace_id ?? "";
+    const assigned = (await invoke("settings_assign_toolchain_profile", {
+      revision: before.revision,
+      workspace_id: workspace,
+      name: "rust",
+    })) as SettingsOverview;
+    const removed = (await invoke("settings_remove_toolchain_profile", {
+      revision: assigned.revision,
+      name: "rust",
+    })) as SettingsOverview;
+    expect(removed.workspaces.every((entry) => entry.profiles.length === 0)).toBe(true);
+    expect(removed.container_grants).toEqual([]);
   });
 
   it("adds and removes a package profile and refuses a bad origin", async () => {

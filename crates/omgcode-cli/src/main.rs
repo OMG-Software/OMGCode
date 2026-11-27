@@ -301,6 +301,9 @@ struct CliError {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     session: Option<Box<JournalLocator>>,
+    /// The path a refused run needed, for the operator only (ADR-0106).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refused_path: Option<Box<run_cli::RefusedPath>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -331,12 +334,19 @@ impl CliError {
             code,
             message: message.into(),
             session: None,
+            refused_path: None,
         }
     }
 
     /// Preserve the existing session locator on all post-open chat failures.
     fn with_session(mut self, session: JournalLocator) -> Self {
         self.session = Some(Box::new(session));
+        self
+    }
+
+    /// Name the path a refused run needed. The message leaves it out.
+    fn with_refused_path(mut self, refused: run_cli::RefusedPath) -> Self {
+        self.refused_path = Some(Box::new(refused));
         self
     }
 }
