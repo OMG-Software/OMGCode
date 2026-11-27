@@ -1157,8 +1157,9 @@ unlocks a login collection:
 `printf '\n' | gnome-keyring-daemon --unlock --components=secrets`. Use a
 scratch `XDG_DATA_HOME` to keep test keyrings apart from your own. CI starts
 the daemon with `.github/scripts/start-secret-service.sh`, which keeps its
-output for diagnosis ([repository checks](repository-checks.md#rust-and-frontend-workflows)). Tests use
-private data and loopback fixtures. They do not call a live model. Live compatibility checks
+output for diagnosis
+([repository checks](repository-checks.md#rust-and-frontend-workflows)).
+Tests use private data and loopback fixtures. They do not call a live model. Live compatibility checks
 are explicit, bounded checks of a particular server/model/auth profile.
 
 The toolchain acceptance tests are ignored by default. After a change to runs,
