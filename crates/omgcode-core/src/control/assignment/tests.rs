@@ -1111,3 +1111,81 @@ fn registering_grants_the_folder_once() {
     );
     assert!(failures.is_empty(), "{failures:?}");
 }
+
+/// On Windows, a read-execute grant of the workspace on its own folder, which
+/// core accepts, does not stand in for the read-write grant its runs need:
+/// registering the folder again is refused and names that grant, instead of
+/// reporting that no grant was needed.
+#[cfg(windows)]
+#[test]
+fn a_read_execute_grant_on_the_folder_refuses_registering_again() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    let folder = scene.root.join("app");
+    let revision = scene.store.revision();
+    let granted = scene.store.grant_container_access(
+        app,
+        &folder,
+        ContainerGrantAccess::ReadExecute,
+        revision,
+    );
+    let again = granted.as_ref().ok().map(|_| {
+        let revision = scene.store.revision();
+        scene
+            .store
+            .register_workspace_with_access(&folder, revision)
+            .map(|registered| (registered.registration.id(), registered.grant))
+    });
+    let named = scene
+        .store
+        .unusable_folder_grant(app)
+        .map(|status| status.grant().id());
+    let (left, failures) = revoke_left(&mut scene.store);
+    let granted = granted.expect("read-execute grant");
+    let Some(Ok((registered, grant))) = again else {
+        panic!("the folder was not registered again: {again:?}");
+    };
+    assert_eq!(registered, app, "registering again keeps the identifier");
+    assert!(
+        matches!(grant, Err(ControlError::GrantRefused(reason)) if reason.contains("not an active read-write grant")),
+        "{grant:?}"
+    );
+    assert_eq!(named, Some(granted.id()));
+    assert_eq!(left, vec![granted.id()], "no second grant was recorded");
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+/// An active read-write grant on the folder is what registering needs, so
+/// it is not named as one to revoke; an unknown workspace names nothing.
+#[cfg(windows)]
+#[test]
+fn an_active_read_write_grant_is_not_named_as_unusable() {
+    let mut scene = scene();
+    let folder = scene.root.join("app");
+    fs::create_dir(&folder).expect("workspace directory");
+    let revision = scene.store.revision();
+    let registered = scene
+        .store
+        .register_workspace_with_access(&folder, revision);
+    let named = registered.as_ref().ok().map(|registered| {
+        scene
+            .store
+            .unusable_folder_grant(registered.registration.id())
+            .map(|status| status.grant().id())
+    });
+    let (_, failures) = revoke_left(&mut scene.store);
+    let registered = registered.expect("registered");
+    assert!(
+        matches!(registered.grant, Ok(FolderGrant::Granted(_))),
+        "{:?}",
+        registered.grant
+    );
+    assert_eq!(named, Some(None));
+    assert!(
+        scene
+            .store
+            .unusable_folder_grant(WorkspaceId::fresh())
+            .is_none()
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+}

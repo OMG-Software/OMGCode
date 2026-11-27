@@ -4,9 +4,8 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    AssignmentFailure, ContainerGrantAccess, ContainerGrantState, ControlError, ControlStore,
-    CredentialId, FolderGrant, PackageProfileDeclaration, ProfileDeclaration,
-    ProviderProfileDeclaration, Revocations,
+    AssignmentFailure, ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
+    PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -570,22 +569,18 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             let grant = registered.grant.map_err(|error| {
                 let id = registered.registration.id();
                 // A grant whose access-control change failed is recorded
-                // `pending`, and a second grant of the same folder, or
-                // registering it again, is refused or skipped until it is
+                // `pending`, and core records one grant per folder, so a
+                // grant on the folder that is not an active read-write grant
+                // refuses a second grant, and registering again, until it is
                 // revoked.
-                let pending = store
-                    .container_grants()
-                    .iter()
-                    .find(|status| {
-                        status.grant().workspace_id() == id
-                            && status.state() != ContainerGrantState::Active
-                    })
+                let unusable = store
+                    .unusable_folder_grant(id)
                     .map(|status| status.grant().id());
-                let recovery = pending.map_or_else(
+                let recovery = unusable.map_or_else(
                     || "Grant it with `workspace container-grant`.".to_owned(),
                     |grant| {
                         format!(
-                            "Grant {grant} is recorded as pending: revoke it with `workspace container-revoke {grant}`, then register the folder again with the current revision from `workspace status`, which grants it."
+                            "Grant {grant} on the folder is not an active read-write grant: revoke it with `workspace container-revoke {grant}`, then register the folder again with the current revision from `workspace status`, which grants it."
                         )
                     },
                 );

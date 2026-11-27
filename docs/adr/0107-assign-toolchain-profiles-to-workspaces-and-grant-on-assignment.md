@@ -83,8 +83,10 @@ per-call approval of a command, which is a different decision.
    access-control list. Registering an already registered folder that has no
    such grant grants it, which is how a workspace registered before this
    change gets it. A failed grant leaves the workspace registered and is
-   reported; a grant left `pending` is named, with how to revoke it and
-   register the folder again. A folder only an administrator can grant, or
+   reported. Only an active read-write grant on the folder counts as the
+   grant; a read-execute grant on it, or one left `pending` or `revoking`,
+   refuses the grant and is named, with how to revoke it and register the
+   folder again. A folder only an administrator can grant, or
    whose access could not be read, is not attempted, and registering reports
    it with that reason, as an assignment's plan lists such folders, instead
    of leaving the operator to learn of it from a refused run.

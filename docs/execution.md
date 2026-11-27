@@ -433,7 +433,12 @@ Rules:
   folder when no grant of the workspace is recorded on that folder and this
   account can change the folder's access-control list. Registering a folder
   that is registered already grants it if that grant is missing, which is how
-  a workspace registered before 0.70.0 gets it. A failed grant leaves the
+  a workspace registered before 0.70.0 gets it. An active read-write grant on
+  the folder needs nothing. Any other grant of the workspace on the folder,
+  a read-execute grant or one left `pending` or `revoking`, refuses the
+  grant, because core records one grant per folder: `register` fails, names
+  that grant with its `container-revoke` command, and says to register again.
+  A failed grant leaves the
   workspace registered and is reported; `register` prints `grant_id` when it
   granted. When only an administrator can change the folder's
   access-control list, or whether this account can could not be read, no

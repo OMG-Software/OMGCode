@@ -621,7 +621,10 @@ Changes are recorded here before a release version is assigned.
   need an administrator, or whose access could not be read, are listed and
   not granted. Registering a
   workspace grants its container read-write on its folder, and registering an
-  existing folder again grants it if that grant is missing. A folder only an
+  existing folder again grants it if that grant is missing. A grant of the
+  workspace already on the folder that is not an active read-write grant,
+  such as a read-execute grant or one left `pending`, refuses the grant and
+  is named to revoke before registering again. A folder only an
   administrator can grant, or whose access could not be read, is not
   granted and is reported with its reason: `register` prints it under
   `not_granted`, and the `settings` window returns `workspace_grant_skipped`.
@@ -637,8 +640,10 @@ Changes are recorded here before a release version is assigned.
   its profile goes. Every grant is
   attempted, and each one not revoked is named. Unregistering revokes every
   grant of the workspace first and leaves it registered if a revocation
-  fails or its removal cannot be recorded. Each caller waits only for the
-  runs of the workspaces whose grants it revoked. When the run journal cannot
+  fails or its removal cannot be recorded. Each caller waits for the runs
+  the settings change itself withdrew, such as a run of an unassigned
+  profile even when nothing is revoked, as on Linux, and beyond those only
+  for the runs of the workspaces whose grants it revoked. When the run journal cannot
   be read after every revocation succeeded, `profile-unassign`,
   `profile-remove`, and `unregister` fail with code `run` and name each
   grant they revoked, since their JSON is not printed. The

@@ -141,8 +141,8 @@ pub struct RegisteredWorkspace {
 pub enum FolderGrant {
     /// Granted now.
     Granted(ContainerGrant),
-    /// None was needed: container grants exist only on Windows, or a grant of
-    /// the workspace is recorded on the folder already.
+    /// None was needed: container grants exist only on Windows, or an active
+    /// read-write grant of the workspace is recorded on the folder already.
     NotNeeded,
     /// The folder needs a grant that was not attempted. A run in the
     /// workspace is refused until it has one.
@@ -643,12 +643,16 @@ impl ControlStore {
     /// its access-control list. Registering a folder again that has no such
     /// grant grants it. A grant this account cannot apply, or whose need
     /// could not be read, is not attempted and is reported as
-    /// [`FolderGrant::Skipped`].
+    /// [`FolderGrant::Skipped`]. Another grant of the workspace on the folder,
+    /// such as a read-execute grant or one left `pending` or `revoking`,
+    /// refuses the grant, because core records one grant per folder; see
+    /// [`Self::unusable_folder_grant`].
     ///
     /// # Errors
     ///
-    /// What [`Self::register_workspace`] refuses. A failed grant does not
-    /// fail the call; it is reported in [`RegisteredWorkspace::grant`].
+    /// What [`Self::register_workspace`] refuses. A failed or refused grant
+    /// does not fail the call; it is reported in
+    /// [`RegisteredWorkspace::grant`].
     pub fn register_workspace_with_access(
         &mut self,
         path: &Path,
@@ -662,21 +666,51 @@ impl ControlStore {
         })
     }
 
+    /// The grant of workspace `id` recorded on its own folder that is not an
+    /// active read-write grant: a read-execute grant, or one left `pending`
+    /// or `revoking`. While it is recorded the folder cannot get the
+    /// read-write grant the workspace's runs need, so it must be revoked
+    /// first. `None` for an unknown workspace or when there is no such grant.
+    #[must_use]
+    pub fn unusable_folder_grant(&self, id: WorkspaceId) -> Option<&ContainerGrantStatus> {
+        let registration = self.workspace(id)?;
+        self.folder_grant(registration)
+            .filter(|status| !Self::usable_folder_grant(status))
+    }
+
+    /// The grant of a workspace recorded on its own folder, in any state.
+    fn folder_grant(&self, registration: &WorkspaceRegistration) -> Option<&ContainerGrantStatus> {
+        self.container_grants().iter().find(|status| {
+            status.grant().workspace_id() == registration.id
+                && status
+                    .grant()
+                    .directory()
+                    .same_directory(&registration.directory)
+        })
+    }
+
+    /// Whether a grant on a workspace's folder gives its runs what they need.
+    fn usable_folder_grant(status: &ContainerGrantStatus) -> bool {
+        status.state() == ContainerGrantState::Active
+            && status.grant().access() == ContainerGrantAccess::ReadWrite
+    }
+
     /// The read-write grant [`Self::register_workspace_with_access`] applies.
     fn grant_own_folder(
         &mut self,
         registration: &WorkspaceRegistration,
     ) -> Result<FolderGrant, ControlError> {
-        if !CONTAINER_GRANTS_SUPPORTED
-            || self.container_grants().iter().any(|status| {
-                status.grant().workspace_id() == registration.id
-                    && status
-                        .grant()
-                        .directory()
-                        .same_directory(&registration.directory)
-            })
-        {
+        if !CONTAINER_GRANTS_SUPPORTED {
             return Ok(FolderGrant::NotNeeded);
+        }
+        if let Some(status) = self.folder_grant(registration) {
+            return if Self::usable_folder_grant(status) {
+                Ok(FolderGrant::NotNeeded)
+            } else {
+                Err(ControlError::GrantRefused(
+                    "the workspace folder has a grant of the workspace that is not an active read-write grant; revoke it, then register the folder again",
+                ))
+            };
         }
         let live = registration.directory.live_path()?;
         if let Some(skipped) = SkippedGrant::from_check(&platform::can_change_access(&live)) {

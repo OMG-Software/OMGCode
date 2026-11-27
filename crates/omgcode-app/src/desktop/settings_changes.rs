@@ -1629,7 +1629,7 @@ impl DesktopError {
         Self::execution(
             "workspace_grant_failed",
             format!(
-                "The workspace was registered, but its sandbox was not granted its folder: {reason}. Grant the folder read and write under Container grants, or revoke a pending grant and grant it again."
+                "The workspace was registered, but its sandbox was not granted its folder: {reason}. Under Container grants, first revoke a grant of the folder that is pending or gives only read and execute, if there is one, then grant the folder read and write."
             ),
         )
     }

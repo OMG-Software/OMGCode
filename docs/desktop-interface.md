@@ -134,7 +134,9 @@ merged to `main` at the time of writing):
   its grants first. When only an administrator can grant the folder, or
   whether this account can could not be read, the workspace is registered,
   nothing is attempted, and the change returns `workspace_grant_skipped` with
-  the reason; a failed grant returns `workspace_grant_failed`. The read-write
+  the reason; a failed grant returns `workspace_grant_failed`, as does a
+  grant refused because the folder has a read-execute, pending, or revoking
+  grant of the workspace, which its message says to revoke first. The read-write
   folder grant's confirmation says that registering normally grants the
   folder and that the sandbox has no read-write grant on it now.
 
