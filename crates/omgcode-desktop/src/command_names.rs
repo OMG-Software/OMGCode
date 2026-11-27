@@ -69,5 +69,6 @@ pub const COMMAND_NAMES: &[&str] = &[
     "session_web_audit",
     "settings_discover_toolchains",
     "settings_add_discovered_profiles",
-    "settings_grant_discovered_roots",
+    "settings_assign_toolchain_profile",
+    "settings_unassign_toolchain_profile",
 ];

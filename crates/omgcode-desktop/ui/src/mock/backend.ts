@@ -29,6 +29,7 @@ import type {
   SettingsOverview,
   SnippetPart,
   ToolchainDiscovery,
+  ToolchainProfileView,
   ToolchainProposalView,
   TreeSort,
   TreeView,
@@ -107,6 +108,12 @@ const MOCK_COMPONENT_CHARS_MAX = 255;
 
 /** Rust's bound on the patterns in a workspace's host allowlist (ADR-0098). */
 const MOCK_WEB_HOSTS_MAX = 32;
+
+/**
+ * The platform the mock's toolchain profiles name. It matches its container grants, which exist
+ * only on Windows, so every sample profile can be assigned.
+ */
+const MOCK_PLATFORM: ToolchainProfileView["platform"] = "windows";
 
 /** Like core: suffixes that never name a public host, refused as a name or beneath one. */
 const MOCK_WEB_HOST_RESERVED = [
@@ -1020,6 +1027,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
               delete: "allow",
               create_directory: "allow",
             },
+            profiles: [],
             package_cache_root: null,
             instructions: "",
             instructions_max_bytes: 0,
@@ -1041,6 +1049,10 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       case "settings_unregister_workspace":
         return changeSettings(args, () => {
           const removed = mockWorkspace(args);
+          // Like core (ADR-0107): its grants are revoked first.
+          settings.container_grants = settings.container_grants.filter(
+            (grant) => grant.workspace_id !== removed.workspace_id,
+          );
           settings.workspaces = settings.workspaces.filter((w) => w !== removed);
         });
       // Like core: only a local profile with an endpoint can be chosen, and the confirmation
@@ -1445,7 +1457,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           const roots = Array.from({ length: rootCount }, () => nextMockFolder("root"));
           settings.toolchain_profiles.push({
             name,
-            platform: "linux",
+            platform: MOCK_PLATFORM,
             read_only_roots: roots,
             path_entries: Array.from(
               { length: pathCount },
@@ -1464,7 +1476,38 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (index < 0) {
             fail("control", "unknown profile");
           }
-          settings.toolchain_profiles.splice(index, 1);
+          const [removed] = settings.toolchain_profiles.splice(index, 1);
+          // Like core (ADR-0107): every assignment ends and the grants it alone needed go.
+          for (const workspace of settings.workspaces) {
+            if (removed !== undefined && mockAssigned(workspace, removed.name)) {
+              mockUnassign(workspace, removed);
+            }
+          }
+        });
+      // Like core (ADR-0107): assigning grants the workspace's container each root it cannot read
+      // yet; the system confirmation that names them is accepted here.
+      case "settings_assign_toolchain_profile":
+        return changeSettings(args, () => {
+          const workspace = mockWorkspace(args);
+          const profile = mockProfile(str(args, "name"));
+          if (mockAssigned(workspace, profile.name)) {
+            fail("control", "the profile is already assigned to this workspace");
+          }
+          for (const root of profile.read_only_roots) {
+            if (mockGrantNeed(workspace.workspace_id, root) === "needs_grant") {
+              mockGrant(workspace.workspace_id, root);
+            }
+          }
+          workspace.profiles.push(profile.name);
+        });
+      case "settings_unassign_toolchain_profile":
+        return changeSettings(args, () => {
+          const workspace = mockWorkspace(args);
+          const profile = mockProfile(str(args, "name"));
+          if (!mockAssigned(workspace, profile.name)) {
+            fail("control", "the profile is not assigned to this workspace");
+          }
+          mockUnassign(workspace, profile);
         });
       case "settings_add_package_profile":
         return changeSettings(args, () => {
@@ -1527,7 +1570,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             fail("invalid_argument", "Bad access.");
           }
           settings.container_grants.push({
-            grant_id: `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`,
+            grant_id: mockGrantId(),
             workspace_id: workspaceId,
             // As in Rust (ADR-0104): read and write goes on the workspace's own folder, with no
             // folder dialog; read and execute goes on a folder the dialog would choose.
@@ -1564,44 +1607,27 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         for (const proposal of chosen) {
           settings.toolchain_profiles.push({
             name: proposal.name,
-            platform: "linux",
+            platform: MOCK_PLATFORM,
             read_only_roots: [...proposal.roots],
             path_entries: [...proposal.path_entries],
             environment_names: proposal.environment.map((variable) => variable.name),
           });
           settings.revision += 1;
         }
-        return mockDiscovery(workspaceId);
-      }
-      case "settings_grant_discovered_roots": {
-        if (!settings.container_grants_supported) {
-          fail("unsupported_platform", "Container grants exist only on Windows.");
-        }
-        const chosen = mockSelection(args);
-        const workspaceId = str(args, "workspace_id");
-        mockWorkspace({ workspace_id: workspaceId });
-        if (args.revision !== settings.revision) {
-          fail("stale_revision", "The settings changed since this window read them.");
-        }
-        const folders = [
-          ...new Set(
-            chosen
-              .flatMap((proposal) => proposal.roots)
-              .filter((root) => mockGrantNeed(workspaceId, root) === "needs_grant"),
-          ),
-        ];
-        if (folders.length === 0) {
-          fail("nothing_to_grant", "No folder can be granted from this account.");
-        }
-        for (const directory of folders) {
-          settings.container_grants.push({
-            grant_id: `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`,
-            workspace_id: workspaceId,
-            directory,
-            access: "read_execute",
-            state: "active",
-          });
-          settings.revision += 1;
+        // Like core (ADR-0107): with a workspace, the same confirmation assigns them and grants
+        // the roots its container cannot read yet.
+        if (workspaceId !== null) {
+          const workspace = mockWorkspace({ workspace_id: workspaceId });
+          for (const proposal of chosen) {
+            for (const root of proposal.roots) {
+              if (mockGrantNeed(workspaceId, root) === "needs_grant") {
+                mockGrant(workspaceId, root);
+                settings.revision += 1;
+              }
+            }
+            workspace.profiles.push(proposal.name);
+            settings.revision += 1;
+          }
         }
         return mockDiscovery(workspaceId);
       }
@@ -1886,6 +1912,57 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     return settings.toolchain_profiles.some((p) => p.name.toLowerCase() === name.toLowerCase());
   }
 
+  function mockProfile(name: string): ToolchainProfileView {
+    const found = settings.toolchain_profiles.find(
+      (p) => p.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (found === undefined) {
+      fail("control", "unknown profile");
+    }
+    return found;
+  }
+
+  function mockAssigned(workspace: WorkspaceSettingsView, name: string): boolean {
+    return workspace.profiles.some((p) => p.toLowerCase() === name.toLowerCase());
+  }
+
+  function mockGrantId(): string {
+    return `00000000-0000-4000-8000-${String(settings.container_grants.length + 1).padStart(12, "0")}`;
+  }
+
+  /** Records one active read-execute grant, as a confirmed grant ends up in core. */
+  function mockGrant(workspaceId: string, directory: string): void {
+    settings.container_grants.push({
+      grant_id: mockGrantId(),
+      workspace_id: workspaceId,
+      directory,
+      access: "read_execute",
+      state: "active",
+    });
+  }
+
+  /**
+   * Like core (ADR-0107): the assignment ends, and the workspace's read-execute grants on the
+   * profile's roots that no other assigned profile names are revoked.
+   */
+  function mockUnassign(workspace: WorkspaceSettingsView, profile: ToolchainProfileView): void {
+    workspace.profiles = workspace.profiles.filter(
+      (name) => name.toLowerCase() !== profile.name.toLowerCase(),
+    );
+    const kept = new Set(
+      settings.toolchain_profiles
+        .filter((other) => mockAssigned(workspace, other.name))
+        .flatMap((other) => other.read_only_roots),
+    );
+    settings.container_grants = settings.container_grants.filter(
+      (grant) =>
+        grant.workspace_id !== workspace.workspace_id ||
+        grant.access !== "read_execute" ||
+        !profile.read_only_roots.includes(grant.directory) ||
+        kept.has(grant.directory),
+    );
+  }
+
   /** Home folders need a grant; `/usr/local` needs an administrator; the rest is readable. */
   function mockGrantNeed(workspaceId: string | null, folder: string): RootGrantNeed {
     if (workspaceId === null || !settings.container_grants_supported) {
@@ -1996,6 +2073,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             delete: "prompt",
             create_directory: "allow",
           },
+          profiles: [],
           package_cache_root: null,
           instructions: "Run the tests before answering.",
           instructions_max_bytes: 0,
@@ -2019,6 +2097,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             delete: "allow",
             create_directory: "allow",
           },
+          profiles: [],
           package_cache_root: null,
           instructions: "",
           instructions_max_bytes: 0,
@@ -2056,12 +2135,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       toolchain_profiles: [
         {
           name: "rust",
-          platform: "linux",
+          platform: MOCK_PLATFORM,
           read_only_roots: ["/home/dev/.rustup"],
           path_entries: [],
           environment_names: ["RUSTUP_HOME"],
         },
       ],
+      profile_platform: MOCK_PLATFORM,
       package_profiles: [],
       container_grants: [],
       container_grants_supported: true,

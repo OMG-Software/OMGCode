@@ -23,6 +23,7 @@ use crate::storage::{self, StorageError};
 use crate::workspace::DirectoryRecord;
 
 mod approval;
+mod assignment;
 mod container;
 mod credential;
 mod package;
@@ -39,6 +40,9 @@ pub use approval::{
     MAX_APPROVALS, MAX_PENDING_APPROVALS, MIN_APPROVAL_TTL_SECS, now_unix,
 };
 
+pub use assignment::{
+    PlannedFolder, ProfileAccessPlan, ProfileAssignment, RegisteredWorkspace, Revocations,
+};
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
     ContainerRevocation, RootGrantNeed, container_name, root_grant_need,
@@ -210,6 +214,10 @@ pub struct WorkspaceRegistration {
     /// replay, so a registration event neither writes nor reads it.
     #[serde(skip)]
     web_fetch_hosts: Vec<WebHostPattern>,
+    /// The toolchain profiles the workspace may run, in assignment order
+    /// (ADR-0107). Derived from `Profile*ssigned` events on replay.
+    #[serde(skip)]
+    profiles: Vec<Uuid>,
 }
 
 impl WorkspaceRegistration {
@@ -341,6 +349,9 @@ struct WorkspaceView<'a> {
     id: WorkspaceId,
     directory: &'a DirectoryRecord,
     permissions: PermissionView<'a>,
+    /// The assigned toolchain profiles, by identifier (ADR-0107).
+    #[serde(skip_serializing_if = "<[Uuid]>::is_empty")]
+    assigned_profiles: &'a [Uuid],
 }
 
 /// Every preference, including denied optional ones and unrestricted
@@ -378,6 +389,7 @@ fn serialize_workspace_views<S: serde::Serializer>(
                 web_fetch_hosts: &workspace.web_fetch_hosts,
                 write_tools: permissions.write_tools,
             },
+            assigned_profiles: &workspace.profiles,
         }
     }))
 }
@@ -448,6 +460,18 @@ enum Action {
         profile: ToolchainProfile,
     },
     ProfileRemoved {
+        profile_id: Uuid,
+    },
+    /// The workspace may run this toolchain profile (ADR-0107).
+    ProfileAssigned {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
+        profile_id: Uuid,
+    },
+    /// The workspace no longer runs this toolchain profile.
+    ProfileUnassigned {
+        #[serde(deserialize_with = "deserialize_workspace_id")]
+        workspace_id: WorkspaceId,
         profile_id: Uuid,
     },
     PackageProfileAdded {
@@ -1158,6 +1182,7 @@ impl ControlStore {
             directory,
             permissions: PermissionSet::default(),
             web_fetch_hosts: Vec::new(),
+            profiles: Vec::new(),
         };
         self.append(
             Action::WorkspaceRegistered {
@@ -1178,10 +1203,12 @@ impl ControlStore {
     /// the revision change makes every outstanding approval unusable.
     /// Registering the same folder again assigns a new identifier.
     ///
-    /// Refuses while any container grant, in any state, names the workspace:
-    /// the operator must revoke it first so no ACL is stranded. The caller
-    /// holds the settings lock, and removes the workspace's instructions file
-    /// itself under the preferences lock.
+    /// Refuses while any container grant, in any state, names the workspace,
+    /// so no ACL is stranded; the operator surfaces use
+    /// [`Self::unregister_workspace_with_access`], which revokes them first
+    /// (ADR-0107). The event also drops the workspace's profile assignments.
+    /// The caller holds the settings lock, and removes the workspace's
+    /// instructions file itself under the preferences lock.
     pub fn unregister_workspace(
         &mut self,
         id: WorkspaceId,
@@ -1676,6 +1703,9 @@ impl ControlStore {
             | Action::ContainerGrantRevoked { .. } => container::apply(state, &entry.action)?,
             Action::ProfileAdded { .. } | Action::ProfileRemoved { .. } => {
                 profile::apply(state, &entry.action, revision)?;
+            }
+            Action::ProfileAssigned { .. } | Action::ProfileUnassigned { .. } => {
+                assignment::apply(state, &entry.action)?;
             }
             Action::WebFetchHostAdded { .. } | Action::WebFetchHostRemoved { .. } => {
                 web_hosts::apply(state, &entry.action)?;

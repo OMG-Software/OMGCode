@@ -6,24 +6,25 @@ import { emptyLine, facts, row } from "./parts";
 /**
  * Toolchain profiles proposed from the toolchains installed on this computer (ADR-0103). Rust
  * finds them by reading folders and runs nothing; this panel shows each proposal in full and
- * sends back only the digests the operator selects. Each add or grant waits for one system
- * confirmation that lists what it records.
+ * sends back only the digests the operator selects. An add waits for one system confirmation
+ * that lists what it records and, with a workspace chosen, the folders that workspace's
+ * container is granted when the profiles are assigned to it (ADR-0107).
  */
 export const DISCOVER_LABEL = "Generate toolchain profiles from local packages";
 export const ADD_SELECTED_LABEL = "Add selected profiles…";
-export const GRANT_SELECTED_LABEL = "Grant folders for selected…";
-/** The most proposals one add or grant sends; Rust refuses more. */
+/** The most proposals one add sends; Rust refuses more. */
 export const MAX_SELECTED = 8;
 
 export const DISCOVERY_HELP =
   "OMGCode can look for installed toolchains (Rust, C and C++, Java, Python, Perl, Go, Node.js, .NET, and Ruby) in their standard install folders, on your PATH, and in the folders named by JAVA_HOME, GOROOT, and RUSTUP_HOME, and propose a profile for each. It only reads folders and small files the installers wrote. It runs no program and never reads a project's configuration, such as rust-toolchain.toml. Nothing is recorded until you select proposals and confirm them in a system dialog.";
-export const DISCOVERY_GRANT_HELP =
-  "On Windows a run can read a root only when the workspace's container can. Choose a workspace to see which roots need a read-execute grant; a list already shown is generated again for it. A folder only an administrator can change is named, not granted.";
+export const DISCOVERY_WORKSPACE_HELP =
+  "Choose a workspace to assign the profiles you add to it, so its commands can use them. On Windows each root then says whether that workspace's sandbox can read it, and the add grants the roots it cannot, after the system dialog names each folder. A folder only an administrator can change is named, not granted. A list already shown is generated again for the choice.";
+export const ASSIGN_NOTE = "The profiles you add are also assigned to the chosen workspace.";
 export const NOTHING_FOUND =
   "No toolchain was found in the standard install folders, on PATH, or in the folders named by JAVA_HOME, GOROOT, and RUSTUP_HOME.";
 export const SELECTION_LIMIT = "Select at most 8 proposals at a time.";
 export const WORKSPACE_GRANT_MISSING =
-  "This workspace's sandbox has no active read-write grant on the workspace folder, which every run in it needs. Grant it under Container grants with Read and write the workspace's own folder.";
+  "This workspace's sandbox has no active read-write grant on the workspace folder, which every run in it needs. Register the folder again to grant it, or grant it under Container grants with Read and write.";
 export const NO_WORKSPACE = "No workspace";
 
 /** Says how many installations the list leaves out. */
@@ -123,14 +124,14 @@ function proposalRow(
 }
 
 /**
- * The workspace choice for container access, on Windows with a registered workspace. A list on
- * screen is generated again for the new choice, so its grant states never describe another
- * workspace.
+ * The workspace choice, with a registered workspace: the workspace an add assigns the profiles
+ * to and, on Windows, whose container access the roots report. A list on screen is generated
+ * again for the new choice, so its grant states never describe another workspace.
  */
 function workspaceChoice(ctx: SectionContext): HTMLElement | null {
   const { overview, actions } = ctx;
   const state = ctx.view.executionForms.discovery;
-  if (!overview.container_grants_supported || overview.workspaces.length === 0) {
+  if (overview.workspaces.length === 0) {
     return null;
   }
   const choice = el("select", { attrs: { id: "discovery-workspace" } });
@@ -150,16 +151,16 @@ function workspaceChoice(ctx: SectionContext): HTMLElement | null {
   return el(
     "div",
     { class: "field" },
-    el("label", { text: "Show container access for", attrs: { for: "discovery-workspace" } }),
+    el("label", { text: "Assign to workspace", attrs: { for: "discovery-workspace" } }),
     choice,
   );
 }
 
-/** The chosen workspace if it is still registered and grants exist here, else `null`. */
+/** The chosen workspace if it is still registered, else `null`. */
 function chosenWorkspace(ctx: SectionContext): string | null {
   const { overview } = ctx;
   const chosen = ctx.view.executionForms.discovery.chosenWorkspace;
-  if (!overview.container_grants_supported || chosen === "") {
+  if (chosen === "") {
     return null;
   }
   return overview.workspaces.some((entry) => entry.workspace_id === chosen) ? chosen : null;
@@ -167,7 +168,7 @@ function chosenWorkspace(ctx: SectionContext): string | null {
 
 /**
  * The discovery panel: a button that asks Rust for proposals, then each proposal with a checkbox,
- * and buttons that add the selected ones or, on Windows, grant the folders they need.
+ * and a button that adds the selected ones and assigns them to the list's workspace, if any.
  */
 export function discoveryPanel(ctx: SectionContext): HTMLElement {
   const { overview, actions } = ctx;
@@ -184,7 +185,7 @@ export function discoveryPanel(ctx: SectionContext): HTMLElement {
   );
   const choice = workspaceChoice(ctx);
   if (choice !== null) {
-    panel.append(el("p", { class: "muted", text: DISCOVERY_GRANT_HELP }), choice);
+    panel.append(el("p", { class: "muted", text: DISCOVERY_WORKSPACE_HELP }), choice);
   }
   panel.append(el("div", { class: "row-actions" }, generate));
   const proposals = state.proposals;
@@ -198,7 +199,7 @@ export function discoveryPanel(ctx: SectionContext): HTMLElement {
   if (state.omitted > 0) {
     panel.append(el("p", { class: "muted", text: omittedText(state.omitted) }));
   }
-  // The list's own workspace, not the one chosen since, decides the grants.
+  // The list's own workspace, not the one chosen since, decides the assignment and grants.
   const listWorkspace = overview.workspaces.some((w) => w.workspace_id === state.workspaceId)
     ? state.workspaceId
     : null;
@@ -214,17 +215,6 @@ export function discoveryPanel(ctx: SectionContext): HTMLElement {
     }
     run(ctx, actions.addDiscoveredProfiles(digests, listWorkspace), false);
   });
-  const grant = button(GRANT_SELECTED_LABEL, () => {
-    const digests = selectedDigests();
-    if (digests.length > MAX_SELECTED) {
-      problem.textContent = SELECTION_LIMIT;
-      problem.hidden = false;
-      return;
-    }
-    if (listWorkspace !== null) {
-      run(ctx, actions.grantDiscoveredRoots(listWorkspace, digests), true);
-    }
-  });
   /** The selected digests in list order, so the confirmation follows the list. */
   function selectedDigests(): string[] {
     return (proposals ?? [])
@@ -235,11 +225,6 @@ export function discoveryPanel(ctx: SectionContext): HTMLElement {
     problem.hidden = true;
     const chosen = (proposals ?? []).filter((proposal) => state.selected.has(proposal.digest));
     add.disabled = !chosen.some((proposal) => proposal.refusal === null);
-    grant.disabled =
-      listWorkspace === null ||
-      !chosen.some((proposal) =>
-        proposal.read_only_roots.some((root) => root.grant === "needs_grant"),
-      );
   }
   panel.append(
     el(
@@ -249,11 +234,10 @@ export function discoveryPanel(ctx: SectionContext): HTMLElement {
     ),
     problem,
   );
-  const buttons = el("div", { class: "row-actions" }, add);
-  if (overview.container_grants_supported) {
-    buttons.append(grant);
+  if (listWorkspace !== null) {
+    panel.append(el("p", { class: "muted", text: ASSIGN_NOTE }));
   }
-  panel.append(buttons);
+  panel.append(el("div", { class: "row-actions" }, add));
   updateButtons();
   return panel;
 }

@@ -936,6 +936,9 @@ pub struct WorkspaceSettingsView {
     pub web_fetch_hosts: Vec<String>,
     /// Per-tool limits on the five model file-write tools.
     pub write_tools: WriteToolAccess,
+    /// The names of the toolchain profiles assigned to the workspace, in the
+    /// order assigned (ADR-0107). Only these can run in it.
+    pub profiles: Vec<String>,
     /// Display-safe text of the selected package cache root, if any.
     pub package_cache_root: Option<String>,
     /// The workspace's custom instructions (ADR-0080), empty when none are
@@ -1576,6 +1579,9 @@ pub struct SettingsOverview {
     pub provider_profiles: Vec<ProviderProfileView>,
     /// Recorded toolchain profiles.
     pub toolchain_profiles: Vec<ToolchainProfileView>,
+    /// The platform a toolchain profile must name to run, and so to be
+    /// assigned, here: `linux` or `windows`, or `null` where no profile runs.
+    pub profile_platform: Option<&'static str>,
     /// Recorded package-network profiles.
     pub package_profiles: Vec<PackageProfileView>,
     /// Recorded container grants.

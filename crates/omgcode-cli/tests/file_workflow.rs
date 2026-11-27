@@ -7,7 +7,8 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use support::{
-    assert_control_error, assert_error_code, assert_success, json_output, path_arg, run_cli,
+    assert_control_error, assert_error_code, assert_success, json_output, live_revision, path_arg,
+    register_workspace, run_cli,
 };
 
 const FILE_CONTENT: &str = "FILE_BODY_SECRET_9fa0321d2c7e";
@@ -44,18 +45,8 @@ fn workspace_fixture() -> WorkspaceFixture {
     );
     assert_success(&root);
     assert_eq!(json_output(&root)["revision"], 1);
-    let registered = run_cli(
-        &data_root,
-        &[
-            "workspace",
-            "register",
-            path_arg(&workspace),
-            "--revision",
-            "1",
-        ],
-    );
-    assert_success(&registered);
-    let workspace_id = json_output(&registered)["registration_id"]
+    let registered = register_workspace(&data_root, &workspace, 1);
+    let workspace_id = registered["registration_id"]
         .as_str()
         .expect("workspace ID")
         .to_owned();
@@ -280,6 +271,7 @@ fn current_read_and_write_preferences_deny_file_operations() {
     assert_success(&seed);
 
     // When trusted settings disable read and write at the current revision.
+    let revision = live_revision(&fixture.data_root);
     let permissions = run_cli(
         &fixture.data_root,
         &[
@@ -287,7 +279,7 @@ fn current_read_and_write_preferences_deny_file_operations() {
             "permissions",
             &fixture.workspace_id,
             "--revision",
-            "2",
+            &revision.to_string(),
             "--read",
             "false",
             "--write",
@@ -295,7 +287,7 @@ fn current_read_and_write_preferences_deny_file_operations() {
         ],
     );
     assert_success(&permissions);
-    assert_eq!(json_output(&permissions)["revision"], 3);
+    assert_eq!(json_output(&permissions)["revision"], revision + 1);
 
     // Then new reads and writes are denied, and the existing file remains unchanged.
     let mut read_args = scoped_args(&fixture, "read");
@@ -397,7 +389,7 @@ fn cli_archives_completed_audit_and_inspects_it_after_workspace_selection_change
             "set-root",
             path_arg(&next_root),
             "--revision",
-            "2",
+            &live_revision(&fixture.data_root).to_string(),
         ],
     ));
 
@@ -506,7 +498,7 @@ fn edit_preview_fails_closed_on_denial_and_invalid_content() {
             "permissions",
             &fixture.workspace_id,
             "--revision",
-            "2",
+            &live_revision(&fixture.data_root).to_string(),
             "--read",
             "false",
         ],
@@ -536,7 +528,7 @@ fn edit_preview_fails_closed_on_denial_and_invalid_content() {
             "permissions",
             &fixture.workspace_id,
             "--revision",
-            "3",
+            &live_revision(&fixture.data_root).to_string(),
             "--read",
             "true",
         ],

@@ -217,13 +217,23 @@ export const settingsApi = {
       workspace_id: workspaceId,
     }),
   /**
-   * Windows only. Grants the workspace's container read-execute access to the selected
-   * proposals' roots it cannot read, after one system confirmation that names every folder.
+   * Assigns a recorded toolchain profile to a workspace after a system confirmation that names,
+   * on Windows, each folder its container is granted read and execute (ADR-0107).
    */
-  grantDiscoveredRoots: (revision: number, workspaceId: string, digests: string[]) =>
-    invokeCommand<ToolchainDiscovery>("settings_grant_discovered_roots", {
+  assignToolchainProfile: (revision: number, workspaceId: string, name: string) =>
+    invokeCommand<SettingsOverview>("settings_assign_toolchain_profile", {
       revision,
       workspace_id: workspaceId,
-      digests,
+      name,
+    }),
+  /**
+   * Unassigns a toolchain profile from a workspace after a system confirmation; Rust revokes the
+   * grants no other assigned profile needs and stops the runs that withdraws.
+   */
+  unassignToolchainProfile: (revision: number, workspaceId: string, name: string) =>
+    invokeCommand<SettingsOverview>("settings_unassign_toolchain_profile", {
+      revision,
+      workspace_id: workspaceId,
+      name,
     }),
 };

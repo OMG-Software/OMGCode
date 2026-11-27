@@ -1,12 +1,14 @@
-//! Toolchain profiles and container grants generated from installed
-//! toolchains in the desktop `settings` window (ADR-0103). A scripted prompt
-//! stands in for the native dialogs, as in `desktop_settings_execution`, and a
-//! fixture host laid out like this platform stands in for the computer.
+//! Toolchain profiles generated from installed toolchains in the desktop
+//! `settings` window, and their assignment to a chosen workspace (ADR-0103,
+//! ADR-0107). A scripted prompt stands in for the native dialogs, as in
+//! `desktop_settings_execution`, and a fixture host laid out like this
+//! platform stands in for the computer.
 //!
-//! No test applies a container grant: that changes a folder's access-control
-//! list and creates an AppContainer profile on the host. The grant path is
-//! tested up to its confirmation on Windows, and its platform refusal
-//! elsewhere.
+//! Workspaces are registered with core's primitive, which grants nothing. On
+//! Windows, the one test that adds profiles to a workspace applies real
+//! read-execute grants to the fixture host's temporary folders, as the CLI
+//! tests do; dropping the fixture revokes them, which also deletes the
+//! AppContainer profile.
 
 mod common;
 
@@ -17,16 +19,17 @@ use std::path::{Path, PathBuf};
 
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
-    Confirmation, DesktopConfig, DesktopError, DesktopService, DiscoveredGrantsRequest,
-    DiscoveredProfilesRequest, FolderPurpose, SettingsPrompt, SettingsRevisionRequest,
-    ToolchainDiscovery, ToolchainDiscoveryRequest,
+    Confirmation, DesktopConfig, DesktopError, DesktopService, DiscoveredProfilesRequest,
+    FolderPurpose, SettingsPrompt, ToolchainDiscovery, ToolchainDiscoveryRequest,
 };
-use omgcode_core::control::{ControlStore, ProfileDeclaration, ProfilePlatform};
+use omgcode_core::control::{
+    ContainerGrantAccess, ContainerGrantState, ControlStore, ProfileDeclaration, ProfilePlatform,
+};
 use omgcode_core::toolchain_discovery::DiscoveryHost;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use common::{Fixture, json_of, wire};
+use common::{Fixture, json_of};
 
 /// Answers confirmations in order; any folder dialog or an unscripted
 /// confirmation fails the test.
@@ -72,19 +75,6 @@ impl SettingsPrompt for ScriptedPrompt {
             .borrow_mut()
             .pop_front()
             .expect("an unexpected confirmation")
-    }
-}
-
-/// A folder dialog stands in for registering a workspace.
-struct FolderPrompt(PathBuf);
-
-impl SettingsPrompt for FolderPrompt {
-    fn pick_folder(&self, _purpose: FolderPurpose, _start: Option<&Path>) -> Option<PathBuf> {
-        Some(self.0.clone())
-    }
-
-    fn confirm(&self, _confirmation: &Confirmation) -> bool {
-        true
     }
 }
 
@@ -194,17 +184,20 @@ fn add_request(revision: u64, digests: Vec<String>) -> DiscoveredProfilesRequest
     }
 }
 
-/// Register one workspace through the service; returns its identifier.
+/// Register one workspace with core's primitive, which grants nothing;
+/// returns its identifier.
 fn with_workspace(fixture: &Fixture) -> Uuid {
     let project = fixture.development.join("project");
     fs::create_dir_all(&project).expect("project");
-    let request: SettingsRevisionRequest =
-        wire(json!({ "revision": current_revision(&fixture.data) }));
-    service(&fixture.data)
-        .settings_register_workspace(request, &FolderPrompt(project))
+    let mut store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("exists");
+    let revision = store.revision();
+    *store
+        .register_workspace(&project, revision)
         .expect("registered")
-        .workspaces[0]
-        .workspace_id
+        .id()
+        .as_uuid()
 }
 
 fn profile_count(data: &Path) -> usize {
@@ -628,9 +621,8 @@ fn on_windows_each_root_says_what_the_workspace_container_needs() {
     }
 }
 
-#[cfg(windows)]
 #[test]
-fn on_windows_a_grant_confirmation_names_the_workspace_and_every_folder() {
+fn adding_with_a_workspace_names_what_it_grants_in_the_one_confirmation() {
     let fixture = Fixture::new();
     let host = Host::new(&fixture);
     let workspace = with_workspace(&fixture);
@@ -639,11 +631,11 @@ fn on_windows_a_grant_confirmation_names_the_workspace_and_every_folder() {
     let prompt = ScriptedPrompt::answering(false);
 
     let error = service(&fixture.data)
-        .settings_grant_discovered_roots(
-            DiscoveredGrantsRequest {
+        .settings_add_discovered_profiles(
+            DiscoveredProfilesRequest {
                 revision: before,
-                workspace_id: workspace,
                 digests: digests_of(&discovery),
+                workspace_id: Some(workspace),
             },
             &host.discovery(),
             &prompt,
@@ -652,52 +644,102 @@ fn on_windows_a_grant_confirmation_names_the_workspace_and_every_folder() {
 
     assert_eq!(error.code(), "cancelled");
     let shown = prompt.shown();
-    assert_eq!(shown.len(), 1);
+    assert_eq!(shown.len(), 1, "one confirmation for profiles and grants");
     let message = &shown[0].message;
     for expected in [
+        "2 toolchain profile(s)",
         "project",
-        "System32",
-        "Go",
-        "go1.22.0",
-        "read and execute",
-        "access-control list",
+        "assigned to the workspace",
     ] {
         assert!(message.contains(expected), "{expected} in {message}");
     }
-    // System32 is listed once although both proposals need it.
-    assert_eq!(message.matches("System32").count(), 1, "{message}");
+    if cfg!(windows) {
+        for expected in [
+            "System32",
+            "go1.22.0",
+            "read and execute",
+            "access-control list",
+            "AppContainer",
+        ] {
+            assert!(message.contains(expected), "{expected} in {message}");
+        }
+        // Each grant is listed once, although both proposals need System32;
+        // the roots list it once per proposal.
+        let grants = message
+            .split("read and execute access to everything beneath it")
+            .nth(1)
+            .expect("a grant list");
+        assert_eq!(grants.matches("System32").count(), 1, "{message}");
+    } else {
+        assert!(!message.contains("access-control list"), "{message}");
+    }
     let store = ControlStore::open_existing(&fixture.data)
         .expect("open")
         .expect("exists");
     assert!(store.container_grants().is_empty());
+    assert!(store.profiles().is_empty());
     assert_eq!(store.revision(), before);
 }
 
-#[cfg(windows)]
 #[test]
-fn on_windows_a_grant_for_an_unregistered_workspace_is_refused_before_any_dialog() {
+fn adding_with_a_workspace_assigns_the_profiles_and_grants_their_folders() {
     let fixture = Fixture::new();
     let host = Host::new(&fixture);
-    let discovery = discover(&fixture, &host, None);
+    let workspace = with_workspace(&fixture);
+    let discovery = discover(&fixture, &host, Some(workspace));
 
-    let error = service(&fixture.data)
-        .settings_grant_discovered_roots(
-            DiscoveredGrantsRequest {
+    let after = service(&fixture.data)
+        .settings_add_discovered_profiles(
+            DiscoveredProfilesRequest {
                 revision: discovery.overview.revision,
-                workspace_id: Uuid::new_v4(),
                 digests: digests_of(&discovery),
+                workspace_id: Some(workspace),
             },
             &host.discovery(),
-            &ScriptedPrompt::silent(),
+            &ScriptedPrompt::answering(true),
         )
-        .expect_err("unknown");
+        .expect("added and assigned");
 
-    assert_eq!(error.code(), "unknown_workspace");
+    assert_eq!(after.overview.workspaces[0].profiles, ["go", "go-1.22.0"]);
+    let store = ControlStore::open_existing(&fixture.data)
+        .expect("open")
+        .expect("exists");
+    let grants: Vec<_> = store
+        .container_grants()
+        .iter()
+        .map(|status| {
+            let grant = status.grant();
+            assert_eq!(*grant.workspace_id().as_uuid(), workspace);
+            assert_eq!(grant.access(), ContainerGrantAccess::ReadExecute);
+            assert_eq!(status.state(), ContainerGrantState::Active, "{status:?}");
+            grant.directory_display()
+        })
+        .collect();
+    if cfg!(windows) {
+        // System32 once, and each Go installation's own folder.
+        assert_eq!(grants.len(), 3, "{grants:?}");
+        assert_eq!(
+            grants
+                .iter()
+                .filter(|grant| grant.ends_with("System32"))
+                .count(),
+            1,
+            "{grants:?}"
+        );
+        // The refreshed list shows every root as readable now.
+        for proposal in json_of(&after)["proposals"].as_array().expect("proposals") {
+            for root in proposal["read_only_roots"].as_array().expect("roots") {
+                assert_eq!(root["grant"], "readable", "{root}");
+            }
+        }
+    } else {
+        assert!(grants.is_empty(), "{grants:?}");
+    }
 }
 
 #[cfg(windows)]
 #[test]
-fn on_windows_a_folder_core_would_not_grant_is_refused_before_any_dialog() {
+fn on_windows_adding_a_proposal_inside_the_development_root_to_a_workspace_grants_nothing() {
     let fixture = Fixture::new();
     let host = Host::new(&fixture);
     let workspace = with_workspace(&fixture);
@@ -724,28 +766,23 @@ fn on_windows_a_folder_core_would_not_grant_is_refused_before_any_dialog() {
                 .any(|root| root.folder == shown_root)
         })
         .expect("the GOROOT proposal");
-    // Core would refuse it as a profile too, and the list says so.
+    // Core would refuse it as a profile, and the list says so.
     assert!(proposal.refusal.is_some(), "{proposal:?}");
     let before = request.overview.revision;
 
     let error = service(&fixture.data)
-        .settings_grant_discovered_roots(
-            DiscoveredGrantsRequest {
+        .settings_add_discovered_profiles(
+            DiscoveredProfilesRequest {
                 revision: before,
-                workspace_id: workspace,
                 digests: vec![proposal.digest.clone()],
+                workspace_id: Some(workspace),
             },
             &host.discovery().with_goroot(inside),
             &ScriptedPrompt::silent(),
         )
-        .expect_err("core refuses the grant");
+        .expect_err("core refuses the profile");
 
     assert_eq!(error.code(), "control");
-    assert!(
-        error.message().starts_with(&shown_root),
-        "{}",
-        error.message()
-    );
     assert!(
         error.message().contains("development root"),
         "{}",
@@ -760,7 +797,7 @@ fn on_windows_a_folder_core_would_not_grant_is_refused_before_any_dialog() {
 
 #[cfg(not(windows))]
 #[test]
-fn off_windows_grants_are_refused_and_roots_need_none() {
+fn off_windows_roots_need_no_grant() {
     let fixture = Fixture::new();
     let host = Host::new(&fixture);
     let workspace = with_workspace(&fixture);
@@ -773,20 +810,6 @@ fn off_windows_grants_are_refused_and_roots_need_none() {
     {
         assert_eq!(root["grant"], "not_applicable");
     }
-
-    let error = service(&fixture.data)
-        .settings_grant_discovered_roots(
-            DiscoveredGrantsRequest {
-                revision: discovery.overview.revision,
-                workspace_id: workspace,
-                digests: digests_of(&discovery),
-            },
-            &host.discovery(),
-            &ScriptedPrompt::silent(),
-        )
-        .expect_err("unsupported");
-
-    assert_eq!(error.code(), "unsupported_platform");
 }
 
 #[test]

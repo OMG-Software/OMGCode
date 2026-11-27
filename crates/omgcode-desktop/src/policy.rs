@@ -104,12 +104,13 @@ pub enum Command {
     SessionWebAudit,
     SettingsDiscoverToolchains,
     SettingsAddDiscoveredProfiles,
-    SettingsGrantDiscoveredRoots,
+    SettingsAssignToolchainProfile,
+    SettingsUnassignToolchainProfile,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 66] = [
+    pub const ALL: [Self; 67] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -175,7 +176,8 @@ impl Command {
         Self::SessionWebAudit,
         Self::SettingsDiscoverToolchains,
         Self::SettingsAddDiscoveredProfiles,
-        Self::SettingsGrantDiscoveredRoots,
+        Self::SettingsAssignToolchainProfile,
+        Self::SettingsUnassignToolchainProfile,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -247,7 +249,8 @@ impl Command {
             Self::SessionWebAudit => "session_web_audit",
             Self::SettingsDiscoverToolchains => "settings_discover_toolchains",
             Self::SettingsAddDiscoveredProfiles => "settings_add_discovered_profiles",
-            Self::SettingsGrantDiscoveredRoots => "settings_grant_discovered_roots",
+            Self::SettingsAssignToolchainProfile => "settings_assign_toolchain_profile",
+            Self::SettingsUnassignToolchainProfile => "settings_unassign_toolchain_profile",
         }
     }
 
@@ -289,7 +292,8 @@ impl Command {
             | Self::SettingsRemoveWebFetchHost
             | Self::SettingsDiscoverToolchains
             | Self::SettingsAddDiscoveredProfiles
-            | Self::SettingsGrantDiscoveredRoots => WindowLabel::Settings,
+            | Self::SettingsAssignToolchainProfile
+            | Self::SettingsUnassignToolchainProfile => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -358,10 +362,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 66);
+        assert_eq!(Command::ALL.len(), 67);
         assert_eq!(with_window(WindowLabel::Main).len(), 31);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 32);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 33);
     }
 
     #[test]
@@ -465,8 +469,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 66);
-        assert_eq!(shared.len(), 66);
+        assert_eq!(COMMAND_NAMES.len(), 67);
+        assert_eq!(shared.len(), 67);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

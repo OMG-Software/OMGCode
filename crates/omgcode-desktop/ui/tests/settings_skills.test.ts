@@ -31,6 +31,7 @@ function workspace(id: string, folder: string): SettingsOverview["workspaces"][n
     host_services: "deny",
     web_fetch: "deny",
     web_fetch_hosts: [],
+    profiles: [],
     write_tools: {
       edit: "allow",
       multi_edit: "allow",
@@ -62,6 +63,7 @@ function overview(
     },
     provider_profiles: [],
     toolchain_profiles: [],
+    profile_platform: "linux",
     package_profiles: [],
     container_grants: [],
     container_grants_supported: true,

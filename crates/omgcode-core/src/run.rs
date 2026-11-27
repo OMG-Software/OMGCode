@@ -605,6 +605,9 @@ fn withdrawn(control: &ControlStore, start: &RunStart) -> Option<&'static str> {
         Some(status) if status.profile().id() == start.profile_id => {}
         _ => return Some("the toolchain profile was removed"),
     }
+    if !control.profile_assigned(start.workspace_id, start.profile_id) {
+        return Some("the toolchain profile was unassigned from the workspace");
+    }
     if start.model_origin && !registration.permissions().model_tools {
         return Some("the workspace model_tools preference is disabled");
     }
@@ -629,6 +632,12 @@ fn withdrawn(control: &ControlStore, start: &RunStart) -> Option<&'static str> {
 /// continue.
 const STANDING_ALLOW_WITHDRAWN: &str =
     "the workspace no longer allows this model command without an approval";
+
+/// Why a run of a profile not assigned to its workspace is refused
+/// (ADR-0107). The command tool sends this text to a model, so it names no
+/// path.
+const PROFILE_NOT_ASSIGNED: &str = "the toolchain profile is not assigned to this workspace; \
+     assign it in the settings window or with `omgcode workspace profile-assign`";
 
 /// Whether the settings still let a model command run without an approval.
 /// A standing-allow run is checked against this under the runner's settings
@@ -732,6 +741,24 @@ pub fn workspace_runs(
         .into_iter()
         .filter(|start| start.workspace_id == workspace_id)
         .map(|start| start.run_id)
+        .collect())
+}
+
+/// The pending runs of every workspace, each with its workspace.
+///
+/// An operator change that revokes container grants (ADR-0107) calls this
+/// under the control lock before it records anything, then waits for the
+/// runs that [`Revocations::withdrawn_runs`](crate::control::Revocations::withdrawn_runs)
+/// selects: the runs of each workspace whose grant it tried to revoke.
+pub fn pending_runs(control: &ControlStore) -> Result<Vec<(WorkspaceId, Uuid)>, RunError> {
+    let (journal_root, store_id) = control.file_audit_context()?;
+    let Some(journal) = RunJournal::open_existing(&journal_root, store_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(journal
+        .pending_starts()
+        .into_iter()
+        .map(|start| (start.workspace_id, start.run_id))
         .collect())
 }
 
@@ -978,6 +1005,10 @@ fn prepare(
         return Err(RunError::Refused(
             "the profile was declared on another platform",
         ));
+    }
+    // A workspace runs only the profiles assigned to it (ADR-0107).
+    if !control.profile_assigned(request.workspace_id, profile.id()) {
+        return Err(RunError::Refused(PROFILE_NOT_ASSIGNED));
     }
     let roots = current_roots(control, profile)?;
     // On Linux this needs a delegated cgroup; without one nothing is recorded.
@@ -1712,6 +1743,9 @@ mod tests {
                 control.revision(),
             )
             .expect("profile");
+        control
+            .assign_profile(workspace_id, "kept", control.revision())
+            .expect("assign profile");
         let mut start = withdrawn_start(workspace_id);
         start.profile_id = profile.id();
         start.profile_name = "kept".into();
@@ -2163,6 +2197,54 @@ mod tests {
         assert!(!journal_root.join("runs-v1.jsonl").exists());
     }
 
+    /// A recorded profile that is not assigned to the workspace is refused
+    /// before anything is recorded, and the refusal names no path (ADR-0107).
+    #[test]
+    fn a_profile_not_assigned_to_the_workspace_is_refused_before_recording() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, journal_root, _store_id) = store(directory.path());
+        let tools = directory.path().join("tools");
+        fs::create_dir(&tools).expect("tools");
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .add_profile(
+                &crate::control::ProfileDeclaration {
+                    name: "system".into(),
+                    read_only_roots: vec![tools],
+                    ..crate::control::ProfileDeclaration::default()
+                },
+                control.revision(),
+            )
+            .expect("profile");
+        drop(control);
+        let request = RunRequest {
+            workspace_id,
+            profile: "system".into(),
+            program: PathBuf::from("true"),
+            arguments: Vec::new(),
+            working_directory: None,
+            host_services: false,
+            network: false,
+            model_tools: false,
+            standing_allow: false,
+            limits: ProcessLimits {
+                tree: Some(process::TreeLimits {
+                    max_memory_bytes: 1024 * 1024 * 1024,
+                    max_processes: 64,
+                    max_cpu_time: Duration::from_secs(60),
+                    max_disk_bytes: Some(1024 * 1024 * 1024),
+                }),
+                ..ProcessLimits::default()
+            },
+        };
+        let result = run(&data, &request, &CancelSignal::new());
+        assert!(
+            matches!(result, Err(RunError::Refused(PROFILE_NOT_ASSIGNED))),
+            "{result:?}"
+        );
+        assert!(!journal_root.join("runs-v1.jsonl").exists());
+    }
+
     /// Only an effective `allow` lets a model command run unattended.
     #[test]
     fn unattended_runs_need_every_command_preference_at_allow() {
@@ -2307,6 +2389,30 @@ mod tests {
         // records the withdrawal, so a live watcher stops it.
         assert_eq!(withdrawn(&control, &model), None);
         assert!(control.model_tool_revocations(workspace_id) > baseline);
+    }
+
+    /// Unassigning the run's toolchain profile from its workspace withdraws
+    /// the run, even though the profile itself is still recorded.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unassigning_the_profile_withdraws_the_run() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, workspace_id, _journal_root, _store_id) = store(directory.path());
+        let start = allowed_start(&data, directory.path(), workspace_id);
+        let control = open_control(&data).expect("control");
+        assert_eq!(withdrawn(&control, &start), None);
+        drop(control);
+        let mut control = ControlStore::open(&data).expect("control store");
+        control
+            .unassign_profile(workspace_id, "kept", control.revision())
+            .expect("unassign");
+        drop(control);
+        let control = open_control(&data).expect("control");
+        assert!(control.profile("kept").is_some());
+        assert_eq!(
+            withdrawn(&control, &start),
+            Some("the toolchain profile was unassigned from the workspace")
+        );
     }
 
     /// A configured cache-root change withdraws a run that holds the old

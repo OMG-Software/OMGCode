@@ -102,6 +102,17 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                     .map(|pattern| display_safe_line(pattern.as_str()))
                     .collect(),
                 write_tools: permissions.write_tools,
+                profiles: store
+                    .assigned_profiles(workspace.id())
+                    .iter()
+                    .filter_map(|id| {
+                        store
+                            .profiles()
+                            .iter()
+                            .find(|status| status.profile().id() == *id)
+                            .map(|status| status.profile().name().to_owned())
+                    })
+                    .collect(),
                 package_cache_root: store.package_cache_root_display(workspace.id()),
                 instructions: workspace_instructions_view(
                     &inner.data_root,
@@ -203,6 +214,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
         connection,
         provider_profiles,
         toolchain_profiles,
+        profile_platform: ProfilePlatform::current().map(platform_name),
         package_profiles,
         container_grants,
         container_grants_supported: omgcode_core::control::CONTAINER_GRANTS_SUPPORTED,

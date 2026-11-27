@@ -224,7 +224,8 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::sessions::session_web_audit,
             commands::settings::settings_discover_toolchains,
             commands::settings::settings_add_discovered_profiles,
-            commands::settings::settings_grant_discovered_roots
+            commands::settings::settings_assign_toolchain_profile,
+            commands::settings::settings_unassign_toolchain_profile
         ])
         .build(tauri::generate_context!());
     match built {

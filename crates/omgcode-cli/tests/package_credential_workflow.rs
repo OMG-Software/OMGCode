@@ -18,7 +18,7 @@ use omgcode_core::control::{CredentialError, CredentialId, CredentialStore};
 use serde_json::Value;
 use support::{
     CLI_DEADLINE, assert_control_error, assert_error_code, assert_success, cli_command,
-    json_output, path_arg, run_cli, run_with_deadline,
+    json_output, path_arg, register_workspace, run_cli, run_with_deadline,
 };
 use tempfile::TempDir;
 
@@ -122,18 +122,8 @@ fn scene(origin: &str) -> Scene {
         &data,
         &["workspace", "set-root", path_arg(&root), "--revision", "0"],
     ));
-    let registered = run_cli(
-        &data,
-        &[
-            "workspace",
-            "register",
-            path_arg(&workspace),
-            "--revision",
-            &revision(&data).to_string(),
-        ],
-    );
-    assert_success(&registered);
-    let workspace_id = json_output(&registered)["registration_id"]
+    let registered = register_workspace(&data, &workspace, revision(&data));
+    let workspace_id = registered["registration_id"]
         .as_str()
         .expect("workspace id")
         .to_owned();

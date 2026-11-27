@@ -600,6 +600,44 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.70.0 also assigns toolchain profiles to workspaces and grants a
+  profile's folders when it is assigned (ADR-0107). A workspace now runs only
+  the profiles assigned to it: the runner refuses any other recorded profile
+  before anything starts, the run watcher withdraws a run whose profile is
+  unassigned, and the model command tool is offered only while a profile of
+  this platform is assigned, listing only those (tool schema 0.10.0; the
+  `profile_not_recorded` code is kept). Two control events,
+  `profile_assigned` and `profile_unassigned`, record the change, and an older
+  build refuses them. On Windows assigning is the consent to grant: core plans
+  read-execute grants for the profile's roots that the workspace's
+  AppContainer cannot read yet, the operator confirms the plan, and core
+  refuses the assignment if the plan changed, then applies the grants and
+  records the assignment last. Folders that need an administrator, or whose
+  access could not be read, are listed and not granted. Registering a
+  workspace grants its container read-write on its folder, and registering an
+  existing folder again grants it if that grant is missing. Unassigning or
+  removing a profile revokes the workspace's read-execute grants on its roots
+  that no other assigned profile lists, never the workspace folder's grant or
+  the package cache root's. Unregistering revokes every grant of the
+  workspace first and leaves it registered if a revocation fails. Each caller
+  waits only for the runs of the workspaces whose grants it revoked. The
+  trusted CLI adds `workspace profile-assign` and `workspace
+  profile-unassign`, and `register`, `unregister`, and `profile-remove` report
+  what they granted or revoked. The desktop `settings` window shows one
+  switch per profile on each workspace page, through
+  `settings_assign_toolchain_profile` and
+  `settings_unassign_toolchain_profile`, each after a native confirmation that
+  names the folders it grants or the grants it revokes. Adding discovered
+  profiles with a workspace chosen also assigns them in the same
+  confirmation, the workspace choice is shown on every platform, and
+  `settings_grant_discovered_roots` is removed, so the `settings` window has
+  33 commands and the shell 67. Existing profiles start assigned to no
+  workspace: assign each workspace's profiles once. On Windows a profile whose
+  folders are already granted grants nothing new. Granting at run time was
+  drafted and dropped before it was committed. Windows CLI and desktop
+  service tests apply and revoke real grants on temporary folders; the
+  desktop shell's native dialogs were not driven.
+
 - Version 0.70.0 makes a Windows run refused for a missing container grant
   say which grant is missing (ADR-0106). The refusal used to be one fixed
   sentence, "a confinement path is not granted to the container at its

@@ -531,7 +531,7 @@ fn the_web_fetch_definition_has_the_documented_strict_schema() {
         parameters["properties"]["max_bytes"]["maximum"],
         MAX_RESULT_BYTES
     );
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.9.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.10.0");
 }
 
 #[test]
@@ -583,7 +583,7 @@ fn web_fetch_is_offered_exactly_while_its_preference_and_model_tools_permit_it()
         );
         assert_eq!(
             report.manifest.tool_schema_version.as_deref(),
-            Some("0.9.0")
+            Some("0.10.0")
         );
     }
 }
@@ -595,9 +595,11 @@ fn all_ten_tools_are_advertised_in_order_with_every_preference_enabled() {
         execute: Access::Prompt,
         ..fetching(Access::Prompt)
     });
-    // The command tool is offered only while a toolchain profile is recorded.
+    // The command tool is offered only while a toolchain profile is assigned
+    // to the workspace (ADR-0107).
     let tools = fixture._temporary.path().join("tools");
     fs::create_dir(&tools).expect("toolchain root");
+    let workspace_id = fixture.workspace_id;
     let control = fixture.control.as_mut().expect("control store is open");
     control
         .add_profile(
@@ -610,6 +612,9 @@ fn all_ten_tools_are_advertised_in_order_with_every_preference_enabled() {
             control.revision(),
         )
         .expect("toolchain profile");
+    control
+        .assign_profile(workspace_id, "system", control.revision())
+        .expect("assign the profile");
     let mut model = ScriptedModel::new(vec![text_reply("done")]);
     let report = fixture
         .run(&FakeFetcher::serving("page"), &mut model)

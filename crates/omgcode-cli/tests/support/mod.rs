@@ -196,3 +196,67 @@ pub(crate) fn assert_control_error(output: &Output) {
 pub(crate) fn path_arg(path: &Path) -> &str {
     path.to_str().expect("temporary paths are Unicode")
 }
+
+/// Maximum time for a CLI command that changes a container grant. On
+/// Windows it creates or deletes the workspace's AppContainer profile as
+/// well as updating access-control lists.
+pub(crate) const GRANT_CLI_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Register `workspace` through the CLI at `revision` and return the JSON
+/// output, failing the test on error.
+///
+/// On Windows, registering also grants the workspace's container read and
+/// write access to its folder (ADR-0107). Tests that use this run no
+/// program, so the grant is revoked at once; revoking a container's last
+/// grant deletes its profile, so no per-user AppContainer state outlives the
+/// test. The grant advanced the revision, so the output's
+/// `snapshot.revision` is one higher on Windows than on Linux; read the live
+/// revision rather than counting.
+#[allow(
+    dead_code,
+    reason = "only test binaries that register without a run scene use it"
+)]
+pub(crate) fn register_workspace(
+    data_root: &Path,
+    workspace: &Path,
+    revision: u64,
+) -> serde_json::Value {
+    let revision = revision.to_string();
+    let output = run_cli_for(
+        data_root,
+        &[
+            "workspace",
+            "register",
+            path_arg(workspace),
+            "--revision",
+            &revision,
+        ],
+        GRANT_CLI_DEADLINE,
+    );
+    assert_success(&output);
+    let registered = json_output(&output);
+    if let Some(grant) = registered["grant_id"].as_str() {
+        assert_success(&run_cli_for(
+            data_root,
+            &["workspace", "container-revoke", grant],
+            GRANT_CLI_DEADLINE,
+        ));
+    }
+    assert_eq!(
+        registered.get("grant_id").is_some(),
+        cfg!(windows),
+        "{registered}"
+    );
+    registered
+}
+
+/// The live settings revision from `workspace status`.
+#[allow(
+    dead_code,
+    reason = "only test binaries that register without a run scene use it"
+)]
+pub(crate) fn live_revision(data_root: &Path) -> u64 {
+    let output = run_cli(data_root, &["workspace", "status"]);
+    assert_success(&output);
+    json_output(&output)["revision"].as_u64().expect("revision")
+}

@@ -85,12 +85,14 @@ suite(
     });
 
     it("reads every settings-window command from the settings client", () => {
-      // 32 in `settings`, as `policy.rs` and the guide count them.
-      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(32);
+      // 33 in `settings`, as `policy.rs` and the guide count them.
+      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(33);
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_overview");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_discover_toolchains");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_add_discovered_profiles");
-      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_grant_discovered_roots");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_assign_toolchain_profile");
+      expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_unassign_toolchain_profile");
+      expect(SETTINGS_WINDOW_COMMANDS).not.toContain("settings_grant_discovered_roots");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_add_web_fetch_host");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_remove_web_fetch_host");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_revoke_container_grant");

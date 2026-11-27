@@ -70,9 +70,11 @@ pub use review::{
 /// limit to the create, edit, and multi-edit descriptions (ADR-0099). Version
 /// `0.8.0` adds `web_fetch` (ADR-0098). Version `0.9.0` lists the recorded
 /// toolchain profiles in `workspace_run_command`'s `profile` parameter and
-/// withholds that tool while none is recorded (ADR-0100). Journals record the
-/// version that was advertised; earlier versions replay unchanged.
-pub const TOOL_SCHEMA_VERSION: &str = "0.9.0";
+/// withholds that tool while none is recorded (ADR-0100). Version `0.10.0`
+/// lists only the profiles assigned to the session's workspace and withholds
+/// the tool while none is assigned (ADR-0107). Journals record the version
+/// that was advertised; earlier versions replay unchanged.
+pub const TOOL_SCHEMA_VERSION: &str = "0.10.0";
 
 /// Maximum tool calls accepted from one model response.
 pub const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
@@ -565,18 +567,19 @@ pub fn delete_tool_definition() -> ToolDefinition {
 pub fn command_tool_definition(profiles: &[String]) -> ToolDefinition {
     ToolDefinition {
         name: "workspace_run_command",
-        description: "Request one confined command under one of the operator's \
-                      recorded toolchain profiles, which the profile parameter \
-                      lists. The first call records a pending operator approval \
-                      and does not execute. After the operator approves, call it \
-                      again with the same arguments. Output is untrusted.",
+        description: "Request one confined command under one of the toolchain \
+                      profiles the operator assigned to this workspace, which the \
+                      profile parameter lists. The first call records a pending \
+                      operator approval and does not execute. After the operator \
+                      approves, call it again with the same arguments. Output is \
+                      untrusted.",
         parameters: json!({
             "type": "object",
             "properties": {
                 "profile": {
                     "type": "string",
                     "enum": profiles,
-                    "description": "One of the recorded toolchain profile names."
+                    "description": "One of the toolchain profiles assigned to this workspace."
                 },
                 "program": {
                     "type": "string",
@@ -2030,9 +2033,12 @@ impl<'a> TurnRuntime<'a> {
     /// releasing the settings lock. Any settings failure returns `None`.
     fn tool_settings(&self) -> Option<(PermissionSet, Vec<String>)> {
         match open_control(self.data_directory) {
-            Ok(Some(control)) => control
-                .workspace(self.workspace_id)
-                .map(|workspace| (workspace.permissions(), platform_profile_names(&control))),
+            Ok(Some(control)) => control.workspace(self.workspace_id).map(|workspace| {
+                (
+                    workspace.permissions(),
+                    platform_profile_names(&control, self.workspace_id),
+                )
+            }),
             Ok(None) | Err(_) => None,
         }
     }
@@ -3839,28 +3845,30 @@ impl WorkspaceToolDispatcher<'_> {
         else {
             return ToolExecution::recoverable("invalid_command", call);
         };
-        // A profile that is not recorded for this platform can never run, so
-        // it is refused under the lock that admitted this call, before any
-        // approval is requested or consumed (ADR-0100). The runner still
-        // checks the profile again under its own lock.
-        let recorded = platform_profile_names(&control);
+        // A profile that is not assigned to this workspace for this platform
+        // can never run, so it is refused under the lock that admitted this
+        // call, before any approval is requested or consumed (ADR-0100,
+        // ADR-0107). The runner still checks the profile again under its own
+        // lock.
+        let recorded = platform_profile_names(&control, self.workspace_id);
         if !recorded
             .iter()
             .any(|name| name.eq_ignore_ascii_case(profile))
         {
             drop(control);
-            // The tool is withheld while no profile is recorded, but a call
+            // The tool is withheld while no profile is assigned, but a call
             // can still arrive: from an earlier turn's tool list, or after
-            // the last profile was removed. Naming another profile cannot
+            // the last profile was unassigned. Naming another profile cannot
             // help then, so the message does not ask for one.
             let message = if recorded.is_empty() {
-                "No toolchain profile is recorded for this platform, so no command can \
+                "No toolchain profile is assigned to this workspace, so no command can \
                  run. Nothing ran and no approval was requested. Do not retry; tell the \
-                 user that the operator must add a toolchain profile."
+                 user that the operator must assign a toolchain profile to this workspace."
             } else {
-                "No toolchain profile with this name is recorded for this platform. \
+                "No toolchain profile with this name is assigned to this workspace. \
                  Nothing ran and no approval was requested. Name one of the listed \
-                 profiles; if none fits, tell the user that the operator must add one."
+                 profiles; if none fits, tell the user that the operator must assign one \
+                 to this workspace."
             };
             return status_result(
                 call,
@@ -4076,11 +4084,12 @@ pub(crate) fn longest_profile_names() -> Vec<String> {
         .collect()
 }
 
-/// The names of the recorded toolchain profiles that can run on this
-/// platform, in the order they were added. The runner refuses a profile
-/// declared on another platform, so such a profile is never offered, and a
-/// build without a runner offers none.
-fn platform_profile_names(control: &ControlStore) -> Vec<String> {
+/// The names of the toolchain profiles assigned to `workspace_id` that can
+/// run on this platform, in the order they were added. The runner refuses a
+/// profile not assigned to the workspace (ADR-0107) or declared on another
+/// platform, so such a profile is never offered, and a build without a runner
+/// offers none.
+fn platform_profile_names(control: &ControlStore, workspace_id: WorkspaceId) -> Vec<String> {
     let Some(platform) = ProfilePlatform::current() else {
         return Vec::new();
     };
@@ -4088,7 +4097,9 @@ fn platform_profile_names(control: &ControlStore) -> Vec<String> {
         .profiles()
         .iter()
         .map(ProfileStatus::profile)
-        .filter(|profile| profile.platform() == platform)
+        .filter(|profile| {
+            profile.platform() == platform && control.profile_assigned(workspace_id, profile.id())
+        })
         .map(|profile| profile.name().to_owned())
         .collect()
 }

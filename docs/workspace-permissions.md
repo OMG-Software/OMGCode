@@ -126,7 +126,7 @@ zero-based sequence, UTC timestamp, global revision, and tagged `action`:
 | `created` | Initial store identity, sequence and revision zero |
 | `root_set` | Selected directory identity; increment revision |
 | `workspace_registered` | New ID, directory identity, default preferences; increment revision |
-| `workspace_unregistered` | Remove one registration and the settings that name it; nothing on disk changes (ADR-0081); increment revision |
+| `workspace_unregistered` | Remove one registration and the settings that name it, including its profile assignments; nothing on disk changes (ADR-0081); increment revision |
 | `permissions_changed` | Existing ID and complete preference set; increment revision |
 | `web_fetch_host_added` | Add one host pattern to a workspace's `web_fetch` allowlist (ADR-0098); increment revision |
 | `web_fetch_host_removed` | Remove one host pattern from that allowlist; increment revision |
@@ -136,7 +136,9 @@ zero-based sequence, UTC timestamp, global revision, and tagged `action`:
 | `container_revoke_requested` | Revocation intent for a grant; preserve revision |
 | `container_grant_revoked` | Grant removed from the access list; preserve revision |
 | `profile_added` | New toolchain profile; increment revision |
-| `profile_removed` | Remove a toolchain profile; increment revision |
+| `profile_removed` | Remove a toolchain profile and every assignment of it; increment revision |
+| `profile_assigned` | Assign a recorded toolchain profile to one workspace (ADR-0107); increment revision |
+| `profile_unassigned` | End that assignment; increment revision |
 | `package_profile_added` | New package-network profile; increment revision |
 | `package_profile_removed` | Remove a package-network profile and any credential bindings it ends; increment revision |
 | `package_credential_bound` | Bind a stored credential to a package-network profile; increment revision |
@@ -204,7 +206,13 @@ core calls, with native dialogs and confirmations; on other platforms it
 returns `unsupported_platform`. It adds no new event. Since
 [ADR-0104](adr/0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md)
 a read-write grant there opens no folder dialog and uses the workspace's
-recorded directory.
+recorded directory. Since
+[ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)
+the operator changes that need a grant make it: registering a workspace grants
+its container read-write on its folder, and assigning a toolchain profile grants
+read-execute on each of the profile's folders the container cannot read yet.
+Unassigning or removing an assigned profile, and unregistering a workspace,
+revoke the grants no longer needed. They use the same events.
 
 ## Unregistering a workspace
 
@@ -220,10 +228,15 @@ records, and policy-audit records stay as history. The revision change makes
 every outstanding approval unusable, and a started run of the workspace is
 withdrawn like any run whose workspace is no longer registered.
 
-The command is refused while any container grant, in any state, names the
-workspace (`grant refused`): revoke it with `workspace container-revoke`
-first. An unknown workspace and a stale revision are refused as for any other
-settings change. Registering the same folder afterwards assigns a new
+Since ADR-0107 the command first revokes every container grant of the
+workspace, in any state, and lists them under `revoked`. It records
+`workspace_unregistered` only when every revocation was confirmed. A failed
+revocation leaves the workspace registered with the grants not yet revoked;
+the command says so, and `workspace container-revoke` retries the grant before
+the operator unregisters again. The event itself is still refused while any
+grant names the workspace (`grant refused`), so replay keeps ADR-0081's rule.
+An unknown workspace and a stale revision are refused as for any other
+settings change, before anything is revoked. Registering the same folder afterwards assigns a new
 identifier and the default preferences; the old identifier is never reused.
 
 The desktop `settings` window removes the workspace's saved custom
@@ -252,6 +265,24 @@ variables are stored here in plain text; never put secrets in them.
 The desktop `settings` window adds and removes profiles through the same core
 calls, with a native folder dialog for each root and `PATH` entry and a native
 confirmation (ADR-0088); it records the same events and offers no edit.
+
+A workspace runs only the profiles assigned to it
+([ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)).
+`workspace profile-assign <workspace> <name> --revision <n>` and
+`profile-unassign` record `profile_assigned` and `profile_unassigned`, each
+of which increments the revision. Replay refuses an unknown workspace or
+profile, an assignment that exists already, and an unassignment of one that
+does not; assigning also refuses a profile declared on another platform.
+`workspace status` lists each workspace's assigned profile identifiers under
+`assigned_profiles`, in assignment order, and omits the field when there are
+none. Removing a profile ends every assignment of it, and so does
+unregistering the workspace. On Windows assigning grants the folders the
+workspace's container needs, and unassigning revokes those no other assigned
+profile lists; the [execution guide](execution.md#toolchain-profiles) owns
+those rules. The `settings` window assigns and unassigns with a switch per
+profile on the workspace's page, after a native confirmation. Existing
+profiles start assigned to no workspace. Version 0.69.0 refuses a settings
+log that records an assignment.
 
 ## Package-network profiles
 
@@ -622,19 +653,21 @@ profile exposes a program that does. See
 [ADR-0079](adr/0079-add-a-model-tool-that-creates-one-directory.md).
 
 When `model_tools`, `execute`, `read`, and `write` are all enabled and at
-least one toolchain profile is recorded for the running platform, the runtime
-also offers `workspace_run_command`. Its `profile` parameter lists those
-profiles, and a call that names another one is answered with
-`profile_not_recorded` before any approval is requested
-([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+least one toolchain profile of the running platform is assigned to the
+workspace, the runtime also offers `workspace_run_command`. Its `profile`
+parameter lists those profiles, and a call that names another one is answered
+with `profile_not_recorded` before any approval is requested
+([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md),
+[ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)).
 Its first call records a pending approval
 and does not run; after `approvals approve <id>`, a second identical call
 consumes the approval and starts the trusted run. The model cannot approve.
 The tool uses fixed limits and no network or host services. See
 [model command tool](execution.md#model-command-tool) and
 [ADR-0040](adr/0040-gate-the-model-command-tool-with-approvals-and-the-trusted-runner.md).
-The tool schema version is 0.9.0, which lists the recorded toolchain profiles
-in `workspace_run_command` (ADR-0100); 0.8.0 added `web_fetch` (ADR-0098);
+The tool schema version is 0.10.0, which lists only the toolchain profiles
+assigned to the workspace in `workspace_run_command` (ADR-0107); 0.9.0 listed
+the recorded profiles (ADR-0100); 0.8.0 added `web_fetch` (ADR-0098);
 0.7.0 added the 32 KiB argument limit to the
 create, edit, and multi-edit descriptions (ADR-0099); 0.6.0 added
 `workspace_create_directory`; 0.5.0 added `workspace_rename_file` and `workspace_delete_file`; 0.4.0 added

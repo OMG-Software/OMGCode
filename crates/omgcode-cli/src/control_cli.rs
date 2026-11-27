@@ -5,7 +5,7 @@
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
     ContainerGrantAccess, ControlError, ControlStore, CredentialId, PackageProfileDeclaration,
-    ProfileDeclaration, ProviderProfileDeclaration,
+    ProfileDeclaration, ProviderProfileDeclaration, Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -45,17 +45,23 @@ pub(crate) enum WorkspaceCommand {
         revision: u64,
     },
     /// Register a workspace below the configured development root.
+    ///
+    /// On Windows, registering is also the consent to grant the workspace's
+    /// AppContainer read and write access to its folder (ADR-0107), when this
+    /// account can change the folder's access. Registering a folder again
+    /// keeps its identifier and grants that access if it is missing.
     Register {
         path: PathBuf,
         #[arg(long)]
         revision: u64,
     },
     /// Remove one workspace's registration and the settings that name it: its
-    /// preferences, `web_fetch` host allowlist, package cache selection, skill overrides, checkpoint
-    /// record, and saved desktop instructions. The folder and its files are
-    /// not touched. Refused while a container grant names the workspace; revoke
-    /// it with `container-revoke` first. Registering the folder again assigns a
-    /// new identifier.
+    /// preferences, `web_fetch` host allowlist, assigned toolchain profiles,
+    /// package cache selection, skill overrides, checkpoint record, and saved
+    /// desktop instructions. The folder and its files are not touched. Every
+    /// container grant of the workspace is revoked first (ADR-0107); if one
+    /// cannot be revoked, the workspace stays registered. Registering the
+    /// folder again assigns a new identifier.
     Unregister {
         workspace: String,
         #[arg(long)]
@@ -94,19 +100,49 @@ pub(crate) enum WorkspaceCommand {
     ///
     /// Read-write grants are limited to the workspace directory. The grant
     /// persists until it is revoked. `omgcode run` needs a read-write grant
-    /// on the workspace.
+    /// on the workspace, which `register` applies; `profile-assign` grants a
+    /// profile's folders.
     ContainerGrant(ContainerGrantArgs),
     /// Revoke one recorded container grant. Needs no revision.
     ContainerRevoke {
         /// The grant identifier shown by `container-grant` and `status`.
         grant: Uuid,
     },
-    /// Record a toolchain profile for `omgcode run`.
+    /// Record a toolchain profile for `omgcode run`. A workspace runs it only
+    /// after `profile-assign`.
     ProfileAdd(ProfileAddArgs),
     /// Show one recorded toolchain profile.
     ProfileShow { name: String },
-    /// Remove a toolchain profile.
+    /// Remove a toolchain profile. Its assignments end, and in each workspace
+    /// it was assigned to, the grants on its folders that no profile still
+    /// assigned there needs are revoked.
     ProfileRemove {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Let a workspace run a recorded toolchain profile (ADR-0107).
+    ///
+    /// On Windows, running this command is the consent to grant the
+    /// workspace's AppContainer read and execute access to each of the
+    /// profile's folders it cannot read yet and this account can change. The
+    /// grants are applied first, then the assignment is recorded. Folders only
+    /// an administrator can grant, or whose access could not be read, are
+    /// listed under `not_granted`; a run that needs one is refused.
+    ProfileAssign {
+        workspace: String,
+        /// The toolchain profile name.
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Stop a workspace from running a toolchain profile. Its runs of that
+    /// profile are withdrawn, and on Windows the grants on the profile's
+    /// folders that no profile still assigned to the workspace needs are
+    /// revoked, which withdraws every run of the workspace.
+    ProfileUnassign {
+        workspace: String,
+        /// The toolchain profile name.
         name: String,
         #[arg(long)]
         revision: u64,
@@ -525,13 +561,26 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         }
         WorkspaceCommand::Register { path, revision } => {
             let mut store = open(data_root)?;
-            let registration = store
-                .register_workspace(&path, revision)
+            let registered = store
+                .register_workspace_with_access(&path, revision)
                 .map_err(control_error)?;
-            print_json(&json!({
-                "registration_id": registration.id(),
+            let grant = registered.grant.map_err(|error| {
+                CliError::new(
+                    "control",
+                    format!(
+                        "The workspace was registered as {}, but its container could not be granted its folder: {error}. Grant it with `workspace container-grant`.",
+                        registered.registration.id()
+                    ),
+                )
+            })?;
+            let mut output = json!({
+                "registration_id": registered.registration.id(),
                 "snapshot": store.snapshot(),
-            }))
+            });
+            if let Some(grant) = grant {
+                output["grant_id"] = json!(grant.id());
+            }
+            print_json(&output)
         }
         WorkspaceCommand::Unregister {
             workspace,
@@ -540,14 +589,16 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             let workspace_id = parse_workspace_id(&workspace)?;
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            store
-                .unregister_workspace(workspace_id, revision)
+            // A revocation withdraws every run of the workspace that started
+            // before it, and runs start only under the lock held here.
+            let before = run::pending_runs(&store);
+            let revocations = store
+                .unregister_workspace_with_access(workspace_id, revision)
                 .map_err(control_error)?;
             let snapshot = store.snapshot();
             let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
-            listed?;
+            finish_revocations(data_root, listed, before, &revocations, true)?;
             // The change is recorded. A saved desktop instructions file is
             // removed next, without the desktop's in-process lock; a file that
             // remains is never sent, because a turn reads it only for a
@@ -564,6 +615,7 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             })?;
             print_json(&json!({
                 "unregistered_workspace_id": workspace_id,
+                "revoked": revocations.revoked,
                 "snapshot": snapshot,
             }))
         }
@@ -629,17 +681,45 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::ProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            let profile_id = store
-                .remove_profile(&name, revision)
+            let before = run::pending_runs(&store);
+            let (profile_id, revocations) = store
+                .remove_profile_with_access(&name, revision)
                 .map_err(control_error)?;
             let output = json!({
                 "removed_profile_id": profile_id,
+                "revoked": revocations.revoked,
                 "snapshot": store.snapshot(),
             });
             let listed = withdrawn_runs(&store);
             drop(store);
-            stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
-            listed?;
+            finish_revocations(data_root, listed, before, &revocations, false)?;
+            print_json(&output)
+        }
+        WorkspaceCommand::ProfileAssign {
+            workspace,
+            name,
+            revision,
+        } => profile_assign(&workspace, &name, revision, data_root),
+        WorkspaceCommand::ProfileUnassign {
+            workspace,
+            name,
+            revision,
+        } => {
+            let workspace_id = parse_workspace_id(&workspace)?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let before = run::pending_runs(&store);
+            let (profile_id, revocations) = store
+                .unassign_profile_with_access(workspace_id, &name, revision)
+                .map_err(control_error)?;
+            let output = json!({
+                "unassigned_profile_id": profile_id,
+                "revoked": revocations.revoked,
+                "snapshot": store.snapshot(),
+            });
+            let listed = withdrawn_runs(&store);
+            drop(store);
+            finish_revocations(data_root, listed, before, &revocations, false)?;
             print_json(&output)
         }
         WorkspaceCommand::PackageProfileAdd(args) => package_profile_add(args, data_root),
@@ -787,6 +867,101 @@ fn container_grant(args: ContainerGrantArgs, data_root: &Path) -> Result<(), Cli
         "grant_id": grant.id(),
         "snapshot": store.snapshot(),
     }))
+}
+
+/// Assign a profile to a workspace and grant what it needs. The command is
+/// the operator's consent, so the plan made here under the control lock is
+/// the one applied.
+fn profile_assign(
+    workspace: &str,
+    name: &str,
+    revision: u64,
+    data_root: &Path,
+) -> Result<(), CliError> {
+    let workspace_id = parse_workspace_id(workspace)?;
+    let mut store = open_existing(data_root)?
+        .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+    let plan = store
+        .plan_profile_access(workspace_id, name)
+        .map_err(control_error)?;
+    let assignment = store
+        .assign_profile_with_access(workspace_id, name, &plan, revision)
+        .map_err(control_error)?;
+    let not_granted: Vec<_> = assignment
+        .plan
+        .needs_administrator()
+        .iter()
+        .map(|folder| (folder, "needs_administrator"))
+        .chain(
+            assignment
+                .plan
+                .unknown()
+                .iter()
+                .map(|folder| (folder, "access_unknown")),
+        )
+        .map(|(folder, reason)| json!({ "path": folder.display(), "reason": reason }))
+        .collect();
+    print_json(&json!({
+        "assigned_profile_id": assignment.profile_ids.first(),
+        "granted": assignment.granted.iter().map(|grant| json!({
+            "grant_id": grant.id(),
+            "path": grant.directory_display(),
+        })).collect::<Vec<_>>(),
+        "not_granted": not_granted,
+        "snapshot": store.snapshot(),
+    }))
+}
+
+/// After a recorded change that may have revoked grants, wait for the runs it
+/// withdrew, then report what did not complete. `listed` holds the runs the
+/// settings withdrew; `before` every pending run, listed by
+/// `run::pending_runs` before the change. Any revocation, even one that failed
+/// after it was requested, withdraws every run of its workspace, so the runs
+/// of those workspaces are waited for too. A grant that could not be revoked
+/// stays recorded, and `workspace container-revoke` retries it.
+fn finish_revocations(
+    data_root: &Path,
+    listed: Result<Vec<Uuid>, CliError>,
+    before: Result<Vec<(WorkspaceId, Uuid)>, run::RunError>,
+    revocations: &Revocations,
+    unregistration: bool,
+) -> Result<(), CliError> {
+    let mut wait = listed.as_deref().unwrap_or(&[]).to_vec();
+    let mut problems = Vec::new();
+    if !revocations.workspaces.is_empty() {
+        match before {
+            Ok(runs) => wait.extend(revocations.withdrawn_runs(&runs)),
+            Err(error) => problems.push(format!(
+                "The runs the revocations affect could not be found: {error}."
+            )),
+        }
+    }
+    let mut kind = "run";
+    if let Some((grant, error)) = &revocations.failure {
+        kind = "control";
+        // An unregistration is recorded only after every grant is revoked.
+        let message = if unregistration {
+            format!(
+                "The workspace stays registered, because grant {grant} could not be revoked: {error}. Retry with `workspace container-revoke {grant}`, then unregister it again."
+            )
+        } else {
+            format!(
+                "The change was recorded, but grant {grant} could not be revoked: {error}. Retry with `workspace container-revoke {grant}`."
+            )
+        };
+        problems.insert(0, message);
+    }
+    if let Err(error) = stop_withdrawn_runs(data_root, &wait) {
+        problems.push(error.message);
+    }
+    if let Err(error) = listed {
+        problems.push(error.message);
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::new(kind, problems.join(" ")))
+    }
 }
 
 fn profile_add(args: ProfileAddArgs, data_root: &Path) -> Result<(), CliError> {

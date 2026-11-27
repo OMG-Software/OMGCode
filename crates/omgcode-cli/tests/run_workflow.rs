@@ -163,6 +163,12 @@ fn an_ungranted_profile_root_is_named_by_its_profile_and_position() {
     fs::create_dir(&tools).expect("tools");
     // The system root is root 1, so the ungranted folder is root 2.
     assert_success(&scene.add_profile("system", &[&tools]));
+    // Assigning the profile granted the folder (ADR-0107). Revoking that
+    // grant, as an operator can later, leaves the profile assigned and the
+    // folder ungranted.
+    let granted = scene.recorded_grants("read_execute");
+    assert_eq!(granted.len(), 1, "{granted:?}");
+    assert_success(&scene.revoke(&granted[0]));
     let output = scene.run("system", &[], &shell("echo ran>ran.txt"));
     assert_error_code(&output, "run");
     assert!(
@@ -361,6 +367,14 @@ fn refused_runs_record_nothing() {
 
     let output = scene.run("missing", &[], &echo);
     assert!(error_message(&output).contains("not recorded"));
+    assert_success(&scene.record_profile("unassigned", &[]));
+    let output = scene.run("unassigned", &[], &echo);
+    assert_error_code(&output, "run");
+    assert!(
+        error_message(&output).contains("not assigned to this workspace"),
+        "{}",
+        error_message(&output)
+    );
     let output = scene.run("system", &["--host-services"], &echo);
     assert!(error_message(&output).contains(if cfg!(windows) {
         "not available on Windows"
@@ -493,7 +507,8 @@ fn a_networked_run_fetches_over_tls() {
     scene.close();
 }
 
-/// Windows needs a recorded read-write grant on the workspace.
+/// Windows needs a recorded read-write grant on the workspace. Registering
+/// applies it; this scene revokes it.
 #[cfg(windows)]
 #[test]
 fn windows_runs_need_the_workspace_grant() {
@@ -510,15 +525,13 @@ fn windows_runs_need_the_workspace_grant() {
 }
 
 /// A moved or replaced profile root is stale and refused; it is usable again
-/// once the recorded directory is back.
+/// once the recorded directory is back. On Windows, assigning the profile
+/// grants the folder.
 #[test]
 fn stale_profiles_are_refused() {
-    let mut scene = Scene::new();
+    let scene = Scene::new();
     let tools = scene.path("tools");
     fs::create_dir(&tools).expect("tools");
-    if cfg!(windows) {
-        scene.grant(&tools, "read-execute");
-    }
     assert_success(&scene.add_profile("system", &[&tools]));
     run_json(&scene.run("system", &[], &shell("echo fresh")));
     fs::rename(&tools, scene.path("tools-old")).expect("move tools");
@@ -887,6 +900,190 @@ fn removing_the_profile_stops_a_live_run() {
             .as_str()
             .expect("reason")
             .contains("profile")
+    );
+    scene.close();
+}
+
+/// Unassigning the run's profile from its workspace stops the run before the
+/// command reports, although the profile is still recorded (ADR-0107).
+#[test]
+fn unassigning_the_profile_stops_a_live_run() {
+    let scene = Scene::new();
+    assert_success(&scene.add_profile("system", &[]));
+    let child = scene
+        .command(&[], &shell(LONG_RUN))
+        .spawn()
+        .expect("spawn run");
+    wait_for_start(&scene);
+    let revision = scene.revision().to_string();
+    let output = scene.settings_cli(&[
+        "workspace",
+        "profile-unassign",
+        &scene.id,
+        "system",
+        "--revision",
+        &revision,
+    ]);
+    assert_success(&output);
+    // The system root needs no grant, so nothing was revoked.
+    assert_eq!(json_output(&output)["revoked"], serde_json::json!([]));
+    assert_eq!(scene.audit()["pending"], Value::Array(Vec::new()));
+    let run = run_json(&wait(child, Duration::from_secs(30)));
+    assert_eq!(run["finish"]["result"]["kind"], "revoked");
+    assert!(
+        run["revoked_because"]
+            .as_str()
+            .expect("reason")
+            .contains("unassigned"),
+        "{run}"
+    );
+    let output = scene.cli(&["workspace", "profile-show", "system"]);
+    assert_success(&output);
+    scene.close();
+}
+
+/// Assigning a profile grants the workspace's container each folder it
+/// cannot read, and the run then starts; unassigning revokes that grant
+/// and keeps the workspace's own read-write grant (ADR-0107).
+#[cfg(windows)]
+#[test]
+fn assigning_a_profile_grants_its_folder_and_unassigning_revokes_it() {
+    let scene = Scene::new();
+    let tools = scene.path("assigned-tools");
+    fs::create_dir(&tools).expect("tools");
+    assert_success(&scene.record_profile("system", &[&tools]));
+    let output = scene.run("system", &[], &shell("echo unassigned"));
+    assert!(
+        error_message(&output).contains("not assigned to this workspace"),
+        "{}",
+        error_message(&output)
+    );
+    assert!(scene.recorded_grants("read_execute").is_empty());
+
+    let output = scene.assign("system");
+    assert_success(&output);
+    let assigned = json_output(&output);
+    let granted = assigned["granted"].as_array().expect("granted");
+    assert_eq!(granted.len(), 1, "{assigned}");
+    assert_eq!(
+        fs::canonicalize(granted[0]["path"].as_str().expect("path")).expect("granted path"),
+        fs::canonicalize(&tools).expect("tools path"),
+    );
+    assert_eq!(assigned["not_granted"], serde_json::json!([]), "{assigned}");
+    let grant = granted[0]["grant_id"]
+        .as_str()
+        .expect("grant id")
+        .to_owned();
+    assert_eq!(
+        scene.recorded_grants("read_execute"),
+        std::slice::from_ref(&grant)
+    );
+    assert_eq!(
+        assigned["snapshot"]["workspaces"][0]["assigned_profiles"],
+        serde_json::json!([assigned["assigned_profile_id"]]),
+        "{assigned}"
+    );
+    // Every root is checked before the program starts, so a started run
+    // shows the container can read the granted folder.
+    run_json(&scene.run("system", &[], &shell("echo granted")));
+    assert_control_error(&scene.assign("system"));
+
+    let revision = scene.revision().to_string();
+    let output = scene.settings_cli(&[
+        "workspace",
+        "profile-unassign",
+        &scene.id,
+        "system",
+        "--revision",
+        &revision,
+    ]);
+    assert_success(&output);
+    let unassigned = json_output(&output);
+    assert_eq!(
+        unassigned["revoked"],
+        serde_json::json!([{"grant_id": grant, "profile_deleted": false}]),
+        "{unassigned}"
+    );
+    assert!(scene.recorded_grants("read_execute").is_empty());
+    assert_eq!(scene.recorded_grants("read_write").len(), 1);
+    let output = scene.run("system", &[], &shell("echo unassigned"));
+    assert!(error_message(&output).contains("not assigned to this workspace"));
+    scene.close();
+}
+
+/// Removing an assigned profile revokes the grants on its folders that no
+/// other profile assigned to the workspace needs (ADR-0107).
+#[cfg(windows)]
+#[test]
+fn removing_an_assigned_profile_revokes_only_its_unshared_grants() {
+    let scene = Scene::new();
+    let own = scene.path("own-tools");
+    let shared = scene.path("shared-tools");
+    fs::create_dir(&own).expect("own tools");
+    fs::create_dir(&shared).expect("shared tools");
+    assert_success(&scene.add_profile("system", &[&own, &shared]));
+    assert_success(&scene.add_profile("other", &[&shared]));
+    let before = scene.recorded_grants("read_execute");
+    assert_eq!(before.len(), 2, "{before:?}");
+    let revision = scene.revision().to_string();
+    let output = scene.settings_cli(&[
+        "workspace",
+        "profile-remove",
+        "system",
+        "--revision",
+        &revision,
+    ]);
+    assert_success(&output);
+    let removed = json_output(&output);
+    let revoked: Vec<&str> = removed["revoked"]
+        .as_array()
+        .expect("revoked")
+        .iter()
+        .map(|revocation| revocation["grant_id"].as_str().expect("grant id"))
+        .collect();
+    assert_eq!(revoked.len(), 1, "{removed}");
+    let after = scene.recorded_grants("read_execute");
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(!after.iter().any(|grant| grant == revoked[0]));
+    // The remaining profile still runs with its grant.
+    run_json(&scene.run("other", &[], &shell("echo shared")));
+    scene.close();
+}
+
+/// Unregistering a workspace revokes every grant of its container first,
+/// then removes the registration (ADR-0107).
+#[cfg(windows)]
+#[test]
+fn unregistering_revokes_the_workspace_grants() {
+    let scene = Scene::new();
+    let tools = scene.path("tools");
+    fs::create_dir(&tools).expect("tools");
+    assert_success(&scene.add_profile("system", &[&tools]));
+    assert_eq!(scene.recorded_grants("read_execute").len(), 1);
+    assert_eq!(scene.recorded_grants("read_write").len(), 1);
+    let revision = scene.revision().to_string();
+    let output = scene.settings_cli(&[
+        "workspace",
+        "unregister",
+        &scene.id,
+        "--revision",
+        &revision,
+    ]);
+    assert_success(&output);
+    let unregistered = json_output(&output);
+    let revoked = unregistered["revoked"].as_array().expect("revoked");
+    assert_eq!(revoked.len(), 2, "{unregistered}");
+    // The last revocation deleted the container's profile.
+    assert_eq!(revoked[1]["profile_deleted"], true, "{unregistered}");
+    // Status leaves out an empty grant list.
+    assert!(
+        unregistered["snapshot"].get("container_grants").is_none(),
+        "{unregistered}"
+    );
+    assert_eq!(
+        unregistered["snapshot"]["workspaces"],
+        serde_json::json!([]),
+        "{unregistered}"
     );
     scene.close();
 }

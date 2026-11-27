@@ -121,3 +121,4 @@ meaningful alternative does not need an ADR.
 | [0104: Grant the workspace folder read-write without a folder dialog](0104-grant-the-workspace-folder-read-write-without-a-folder-dialog.md) | Accepted | 2026-11-26 |
 | [0105: Show the approvals window when a turn starts waiting](0105-show-the-approvals-window-when-a-turn-starts-waiting.md) | Accepted | 2026-11-26 |
 | [0106: Name the ungranted run path by its role](0106-name-the-ungranted-run-path-by-its-role.md) | Accepted | 2026-11-26 |
+| [0107: Assign toolchain profiles to workspaces and grant on assignment](0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md) | Accepted | 2026-11-27 |

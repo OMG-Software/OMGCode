@@ -373,6 +373,12 @@ registry can log it; use `https`. The runner's environment is not touched.
 
 A grant gives one workspace's container access to one directory and everything
 beneath it. Grants are lasting ACL entries, recorded in the control journal.
+Since 0.70.0 ([ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)) the operator changes that need a grant
+make it through the same calls: `workspace register` grants the workspace
+folder read-write, `workspace profile-assign` grants read-execute on the
+profile's folders the container cannot read yet, and `profile-unassign`,
+`profile-remove`, and `unregister` revoke the grants no longer needed. See
+[assignments](#assignments). The commands below remain for any other folder.
 
 | Command | Effect |
 | --- | --- |
@@ -423,6 +429,13 @@ Rules:
 - A run refused for a missing read-write grant says the workspace's sandbox
   has no read-write grant on the workspace folder, and names the `settings`
   window's **Container grants** group and `workspace container-grant`.
+- Registering a workspace on Windows grants its container read-write on its
+  folder when no grant of the workspace is recorded on that folder and this
+  account can change the folder's access-control list. Registering a folder
+  that is registered already grants it if that grant is missing, which is how
+  a workspace registered before 0.70.0 gets it. A failed grant leaves the
+  workspace registered and is reported; `register` prints `grant_id` when it
+  granted.
 
 ## Trusted runs
 
@@ -472,7 +485,9 @@ While holding the control journal lock, `run` checks:
 3. The profile exists and was declared on this platform. Each root and `PATH`
    entry is still the recorded directory, and no root now overlaps the
    development root or application storage. Otherwise the profile is stale:
-   remove it and add it again.
+   remove it and add it again. Since 0.70.0 the profile must also be assigned
+   to the workspace; otherwise the run is refused with text that names no
+   path and says to assign it ([ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)).
 4. The working directory is a relative path that stays inside the workspace.
    The default is the workspace itself.
 5. The program resolves:
@@ -504,7 +519,8 @@ the event count under the control lock when it starts. The checks are:
 - `execute`, `read`, and `write` are still enabled, `host_services` for a
   run that selected host services, and `task_network` for a run that
   selected network access;
-- the run's profile still exists with the same identity;
+- the run's profile still exists with the same identity and, since 0.70.0,
+  is still assigned to the workspace;
 - for a model run authorized by a standing `allow` (since 0.43.0,
   ADR-0063), the model command state is still `allow`. A change to `prompt`
   stops it, although `prompt` still permits an approved run;
@@ -532,7 +548,11 @@ the watchers still stop the runs; the command waits for what it can find and
 then fails with code `run`.
 `container-revoke` also waits for every pending run of the grant's workspace
 that started before the revocation; it lists them while it holds the control
-lock, under which every run starts. If the run journal cannot be read, for
+lock, under which every run starts. `profile-unassign` records its change
+first too. `profile-unassign`, `profile-remove`, and `unregister` list every
+pending run under the lock before the change, and also wait for those of each
+workspace whose grant they tried to revoke, because any revocation withdraws
+the workspace's runs (ADR-0107). If the run journal cannot be read, for
 example after an interrupted append, it still revokes the grant, then fails
 with code `run` and says that the grant was revoked.
 
@@ -750,6 +770,7 @@ runtime advertises it only when the session workspace's live `model_tools`,
 `execute`, `read`, and `write` preferences are enabled and, since 0.65.0, at
 least one toolchain profile is recorded for the running platform
 ([ADR-0100](adr/0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md)).
+Since 0.70.0 that profile must be assigned to the workspace ([ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)).
 Each call rechecks
 them, and the trusted run checks them again. Since 0.43.0 (ADR-0063) its
 effective state is the most restrictive of the three. At `prompt` each call
@@ -777,11 +798,14 @@ disk growth. It selects no network or host services.
 Since 0.65.0 (tool schema 0.9.0) the `profile` parameter lists, as an `enum`,
 the names of the profiles recorded for the running platform, in the order
 they were added; the list is read from the same settings snapshot that
-selects the tools. A name grants nothing. A call that names a profile not
-recorded for this platform, compared case-insensitively under the lock that
-admits the call, is answered with `profile_not_recorded` and the recorded
-names. With no profile recorded for this platform, the result says that no
-command can run instead of asking for a listed name. Nothing runs, no approval is requested or consumed, the model action
+selects the tools. Since 0.70.0 (tool schema 0.10.0) it lists only the
+profiles of this platform assigned to the workspace, in profile order. A name
+grants nothing. A call that names a profile not assigned to the workspace for
+this platform, compared case-insensitively under the lock that admits the
+call, is answered with `profile_not_recorded` and the assigned names; the
+code is unchanged and the text says "assigned to this workspace". With no
+profile assigned, the result says that no command can run instead of asking
+for a listed name. Nothing runs, no approval is requested or consumed, the model action
 journal records the call as refused (`invalid_request`), and the turn
 continues. The runner still looks the profile up under its own lock, so a
 profile removed after that check still refuses the run.
@@ -876,16 +900,19 @@ desktop `settings` window can propose profiles from the installed toolchains,
 and the operator selects and confirms each one (see
 [generated profiles](#generated-profiles)). Every run names one, whether the
 trusted CLI or the model command tool starts it, and there is no fallback to
-an unconfined run. The model command tool is offered only while at least one
-profile is recorded for the running platform, and it lists their names
-(ADR-0100).
+an unconfined run. Since 0.70.0 a workspace runs only the profiles assigned
+to it, and the model command tool is offered only while at least one profile
+of the running platform is assigned to the workspace; it lists their names
+(ADR-0100, [ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)).
 
 | Command | Effect |
 | --- | --- |
 | `omgcode workspace profile-add <name> --root <dir>... [--path <dir>]... [--env NAME=VALUE]... --revision <n>` | Record a profile. Needs the expected revision and increments it. |
 | `omgcode workspace profile-show <name>` | Show one profile. |
-| `omgcode workspace profile-remove <name> --revision <n>` | Remove it. Needs the expected revision and increments it. |
-| `omgcode workspace status` | Lists profiles under `profiles` with the revision that added each. |
+| `omgcode workspace profile-remove <name> --revision <n>` | Remove it, end its assignments, and revoke the grants they alone needed. Needs the expected revision and increments it. |
+| `omgcode workspace profile-assign <workspace> <name> --revision <n>` | Let the workspace run the profile; on Windows, first grant the folders its container needs. |
+| `omgcode workspace profile-unassign <workspace> <name> --revision <n>` | End the assignment and revoke the grants no other assigned profile needs. |
+| `omgcode workspace status` | Lists profiles under `profiles` with the revision that added each, and each workspace's `assigned_profiles`. |
 
 Rules:
 
@@ -913,6 +940,58 @@ Rules:
   confirmation that lists them and the variable names, and applies the change
   with the confirmed revision ([ADR-0088](adr/0088-change-execution-settings-in-the-settings-window.md)).
 
+#### Assignments
+
+Since 0.70.0 ([ADR-0107](adr/0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md)) a profile is recorded once and assigned to
+each workspace that may run it. Assigning to a workspace is the operator's
+consent to give that workspace's sandbox the profile's folders.
+
+- **Events:** `profile_assigned` and `profile_unassigned` name a workspace and
+  a profile, and each needs the expected revision and increments it. Replay
+  refuses an unknown workspace or profile, an assignment that exists already,
+  and an unassignment of one that does not. Assigning also refuses a profile
+  declared on another platform. Removing a profile ends every assignment of
+  it, and unregistering a workspace drops its assignments. An older build
+  refuses the new events.
+- **Planning, on Windows:** core lists each live root of the profile that the
+  workspace's container cannot read yet, each folder once, skipping a folder
+  that already has a recorded grant of the workspace. Folders that only an
+  administrator can grant, and folders whose access-control list could not be
+  read, are listed apart and not granted. A root that is no longer the
+  recorded directory is listed as unknown. Off Windows the plan is empty.
+- **Assigning:** under the store's lock core plans again and refuses the
+  assignment when the folders to grant differ from the plan the operator
+  confirmed. It then applies `check_container_grants` to the batch, grants
+  each folder read-execute through `grant_container_access`, and records the
+  assignment last. A failed grant leaves the profile unassigned; grants
+  applied before it stay recorded, and one whose access-control change failed
+  stays `pending` until it is revoked. `profile-assign` is itself the consent,
+  so it plans and assigns in one call, and prints `assigned_profile_id`,
+  `granted` (each `grant_id` with its folder), and `not_granted` with the
+  reason.
+- **Unassigning and removing:** the change is recorded first. Then core
+  revokes the workspace's read-execute grants whose folder is one of the
+  profile's roots, is not a root of a profile still assigned to the
+  workspace, and is not the workspace's package cache root. The workspace
+  folder's read-write grant is never revoked here. `profile-unassign` and
+  `profile-remove` print what they revoked under `revoked`; a failed
+  revocation leaves the change recorded, is reported, and
+  `container-revoke` retries it.
+- **Unregistering:** `workspace unregister` revokes every grant of the
+  workspace first and unregisters it only when every revocation was
+  confirmed; otherwise the workspace stays registered with the grants not yet
+  revoked. See [workspace settings](workspace-permissions.md#unregistering-a-workspace).
+- **Runs:** each revocation withdraws every run of its workspace, as
+  `container-revoke` does, so these commands stop and wait for those runs.
+- **Upgrading:** existing profiles start assigned to no workspace. Assign each
+  workspace's profiles once. A profile whose folders are already granted
+  grants nothing new.
+
+The `settings` window shows one switch per profile of this platform on each
+workspace's page. Turning one on or off runs the same core calls after a
+native confirmation that names the workspace, the profile, and each folder it
+grants or each grant it revokes; see the [desktop interface](desktop-interface.md).
+
 A profile lists what a toolchain needs, not just its executable. Tools that
 read configuration outside their installation need that directory as a root.
 For example, a distribution Node reads `/etc/ssl`.
@@ -923,7 +1002,8 @@ Version 0.68.0 adds **Generate toolchain profiles from local packages** to the
 **Toolchain profiles** group of the `settings` window
 ([ADR-0103](adr/0103-generate-toolchain-profiles-from-installed-toolchains.md)).
 Core's trusted discovery service proposes profiles; it records and grants
-nothing.
+nothing. Adding proposals with a workspace chosen also assigns them to it
+(ADR-0107).
 
 - **Families:** Rust (rustup toolchains), C and C++ (MSVC with the Windows
   SDK, Clang, and MinGW GCC on Windows; GCC and Clang on Linux), Java, Python,
@@ -959,19 +1039,23 @@ nothing.
   longer matches (`discovery_changed`), shows one native confirmation that
   lists every root, `PATH` entry, and variable with its value, and records each
   profile with `add_profile` from the confirmed revision.
-- **Windows grants:** with a workspace selected, each root says whether its
-  container can read it, needs a read-execute grant, needs an
+- **Assigning to a workspace:** on every platform the operator can choose a
+  workspace, and adding then also assigns the added profiles to it in the
+  same confirmation (ADR-0107). On Windows each root says whether that
+  workspace's container can read it, needs a read-execute grant, needs an
   administrator, or could not have its access-control list read. The
-  access-control lists are read while the settings store is closed. **Grant folders for selected…** grants only the folders this
-  account can change, after one native confirmation, through
-  `grant_container_access`. Before the dialog, core's
+  access-control lists are read while the settings store is closed. The one
+  confirmation also names the folders the assignment grants, which are only
+  those this account can change. Before the dialog, core's
   `check_container_grants` applies every grant rule to the whole batch (the
   development-root scope, application storage, an existing grant, and the
-  32-per-workspace and 256 limits), and a refusal names the folder.
-  Administrator-only folders, and folders whose access-control list could
-  not be read, are named and skipped. A recorded grant whose access list
-  then cannot be changed stays `pending` and is reported as
-  `container_access_failed`; revoke it.
+  32-per-workspace and 256 limits), and a refusal names the folder. After it,
+  each profile is recorded with `add_profile`, then the grants are applied and
+  the profiles assigned as `profile-assign` does. Administrator-only folders,
+  and folders whose access-control list could not be read, are named and
+  skipped. A recorded grant whose access list then cannot be changed stays
+  `pending` and is reported as `container_access_failed`; revoke it. The
+  separate grant command of 0.68.0 is removed.
 - **Notes:** a proposal says when its family has not passed the confined
   acceptance runs (only Rust, MSVC, Linux GCC, Python, Go, and Node.js have),
   when it is a runtime without a compiler, and that offline runs cannot

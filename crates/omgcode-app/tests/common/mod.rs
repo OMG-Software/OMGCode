@@ -510,11 +510,43 @@ pub struct Workspace {
     pub path: PathBuf,
 }
 
+/// The toolchain profile [`Fixture::declare_profile`] records.
+const DECLARED_PROFILE: &str = "system";
+
 /// Private application data, a development root, and registered workspaces.
+///
+/// On Windows, registering a workspace through the `settings` service grants
+/// its container its folder (ADR-0107), which adds an access-control entry and
+/// creates an AppContainer profile on the host. Dropping the fixture revokes
+/// every grant still recorded, so neither outlives the test.
 pub struct Fixture {
     _temporary: TempDir,
     pub data: PathBuf,
     pub development: PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let mut control = match ControlStore::open_existing(&self.data) {
+            Ok(Some(control)) => control,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("fixture cleanup could not open the settings store: {error}");
+                return;
+            }
+        };
+        let grants: Vec<Uuid> = control
+            .container_grants()
+            .iter()
+            .map(|status| status.grant().id())
+            .collect();
+        for grant in grants {
+            if let Err(error) = control.revoke_container_grant(grant) {
+                // Never panic in drop: a second panic would abort the run.
+                eprintln!("fixture cleanup could not revoke container grant {grant}: {error}");
+            }
+        }
+    }
 }
 
 impl Fixture {
@@ -567,13 +599,22 @@ impl Fixture {
         control
             .set_permissions(id, permissions, control.revision())
             .expect("workspace permissions");
+        // A workspace runs only its assigned profiles (ADR-0107). The
+        // primitive records the assignment and grants nothing.
+        if control.profile(DECLARED_PROFILE).is_some() {
+            control
+                .assign_profile(id, DECLARED_PROFILE, control.revision())
+                .expect("profile assigned");
+        }
         Workspace {
             id: *id.as_uuid(),
             path,
         }
     }
 
-    /// Declare a toolchain profile so the command tool can be offered.
+    /// Declare a toolchain profile so the command tool can be offered, and
+    /// assign it to every registered workspace; [`Self::workspace`] assigns
+    /// it to a workspace registered later. No access is granted.
     pub fn declare_profile(&self) {
         let tools = self.data.parent().expect("temporary root").join("tools");
         fs::create_dir_all(&tools).expect("toolchain root");
@@ -581,7 +622,7 @@ impl Fixture {
         control
             .add_profile(
                 &ProfileDeclaration {
-                    name: "system".into(),
+                    name: DECLARED_PROFILE.into(),
                     read_only_roots: vec![tools],
                     path_entries: Vec::new(),
                     environment: Vec::new(),
@@ -589,6 +630,15 @@ impl Fixture {
                 control.revision(),
             )
             .expect("toolchain profile");
+        let workspaces: Vec<_> = control
+            .workspaces()
+            .map(|workspace| workspace.id())
+            .collect();
+        for id in workspaces {
+            control
+                .assign_profile(id, DECLARED_PROFILE, control.revision())
+                .expect("profile assigned");
+        }
     }
 
     pub fn service(&self, endpoint: &str) -> DesktopService {

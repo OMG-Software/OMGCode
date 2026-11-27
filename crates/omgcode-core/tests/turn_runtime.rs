@@ -163,10 +163,12 @@ impl Fixture {
             .expect("enable command tools");
     }
 
-    /// Record a toolchain profile whose only root is a new empty directory.
+    /// Record a toolchain profile whose only root is a new empty directory,
+    /// and assign it to the workspace (ADR-0107).
     fn declare_profile(&mut self, name: &str) {
         let root = self._temporary.path().join(format!("tools-{name}"));
         fs::create_dir(&root).expect("toolchain root");
+        let workspace_id = self.workspace_id;
         let control = self.control_mut();
         control
             .add_profile(
@@ -179,6 +181,19 @@ impl Fixture {
                 control.revision(),
             )
             .expect("toolchain profile");
+        control
+            .assign_profile(workspace_id, name, control.revision())
+            .expect("assign the profile");
+    }
+
+    /// Record a toolchain profile without assigning it to the workspace.
+    fn declare_unassigned_profile(&mut self, name: &str) {
+        self.declare_profile(name);
+        let workspace_id = self.workspace_id;
+        let control = self.control_mut();
+        control
+            .unassign_profile(workspace_id, name, control.revision())
+            .expect("unassign the profile");
     }
 
     /// Rewrite a recorded profile as declared on the other platform, as a
@@ -552,6 +567,9 @@ fn an_approved_command_consumes_the_approval_and_attempts_the_run() {
             control.revision(),
         )
         .expect("profile");
+    control
+        .assign_profile(workspace_id, "system", control.revision())
+        .expect("assign the profile");
 
     let command = || {
         tool_reply(vec![call(
@@ -711,6 +729,49 @@ fn a_command_naming_an_unrecorded_profile_is_refused_before_an_approval() {
         refused["event"]["payload"]["reason"]["type"],
         "invalid_request"
     );
+}
+
+/// A profile recorded but not assigned to the session's workspace can never
+/// run there (ADR-0107), so it is neither offered nor accepted: the command
+/// tool is withheld, and a call naming it is refused before any approval.
+#[test]
+fn a_profile_not_assigned_to_the_workspace_is_not_offered() {
+    let mut fixture = Fixture::new();
+    fixture.enable_commands();
+    fixture.declare_unassigned_profile("rust");
+    let mut model = ScriptedModel::new(vec![
+        tool_reply(vec![call(
+            "cmd-1",
+            "workspace_run_command",
+            json!({"profile": "rust", "program": "cargo", "arguments": ["fmt"]}),
+        )]),
+        text_reply("nothing can run"),
+    ]);
+    fixture
+        .run(&mut model, TurnLimits::default())
+        .expect("the turn continues after the refusal");
+    assert!(
+        !model.requests[0]
+            .tools
+            .iter()
+            .any(|name| name == "workspace_run_command"),
+        "the command tool was advertised for an unassigned profile"
+    );
+    let result = fixture
+        .snapshot()
+        .messages
+        .iter()
+        .find(|message| message.text.contains("profile_not_recorded"))
+        .map(|message| message.text.clone())
+        .expect("the result names the refusal");
+    assert!(result.contains(r#""profiles":[]"#), "{result}");
+    assert!(result.contains("assigned to this workspace"), "{result}");
+    fixture.close_journal();
+    let control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    assert!(control.approval_statuses(now_unix()).is_empty());
+    assert!(!fixture.data.join("runs-v1.jsonl").exists());
 }
 
 /// A profile declared on the other platform can never run here, so alone it
@@ -2964,7 +3025,7 @@ fn an_older_schema_session_replays_and_accepts_a_new_turn(version: &str, tools: 
         .map(|event| event["payload"]["manifest"]["tool_schema_version"].clone())
         .collect();
     assert_eq!(versions, [json!(version), json!(TOOL_SCHEMA_VERSION)]);
-    assert_eq!(TOOL_SCHEMA_VERSION, "0.9.0");
+    assert_eq!(TOOL_SCHEMA_VERSION, "0.10.0");
 }
 
 /// A session whose earlier turn advertised tool schema 0.2.0 still replays and

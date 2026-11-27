@@ -6,9 +6,10 @@ import { HOSTILE } from "../src/mock/fixtures";
 import { type SettingsApp, startSettings } from "../src/settings/app";
 import {
   ADD_SELECTED_LABEL,
+  ASSIGN_NOTE,
   DISCOVER_LABEL,
   DISCOVERY_HELP,
-  GRANT_SELECTED_LABEL,
+  DISCOVERY_WORKSPACE_HELP,
   NOTHING_FOUND,
   omittedText,
   SELECTION_LIMIT,
@@ -43,6 +44,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
         host_services: "deny",
         web_fetch: "deny",
         web_fetch_hosts: [],
+        profiles: [],
         write_tools: {
           edit: "allow",
           multi_edit: "allow",
@@ -65,6 +67,7 @@ function overview(overrides: Partial<SettingsOverview> = {}): SettingsOverview {
     },
     provider_profiles: [],
     toolchain_profiles: [],
+    profile_platform: "linux",
     package_profiles: [],
     container_grants: [],
     container_grants_supported: true,
@@ -359,7 +362,7 @@ describe("adding proposals", () => {
   });
 });
 
-describe("granting proposed roots on Windows", () => {
+describe("assigning added proposals to a chosen workspace (ADR-0107)", () => {
   const NEEDS = proposal({
     read_only_roots: [
       { folder: "C:\\Users\\op\\go", grant: "needs_grant" },
@@ -414,7 +417,7 @@ describe("granting proposed roots on Windows", () => {
     // The roots now report the chosen workspace's access, and the selection is kept.
     expect(group().textContent).toContain("C:\\Users\\op\\go (needs a grant)");
     expect(boxes()[0]?.checked).toBe(true);
-    expect(buttonByText(group(), GRANT_SELECTED_LABEL).disabled).toBe(false);
+    expect(group().textContent).toContain(ASSIGN_NOTE);
 
     choose(select(), "");
     await settle();
@@ -422,6 +425,8 @@ describe("granting proposed roots on Windows", () => {
       workspace_id: null,
     });
     expect(group().textContent).not.toContain("needs a grant");
+    // Without a workspace an add assigns nothing, so the note is gone.
+    expect(group().textContent).not.toContain(ASSIGN_NOTE);
   });
 
   it("does not ask Rust when a workspace is chosen before any list", async () => {
@@ -437,14 +442,21 @@ describe("granting proposed roots on Windows", () => {
     expect(ipc.callsTo("settings_discover_toolchains")).toHaveLength(0);
   });
 
-  it("sends the revision, the list's workspace, and the selected digests", async () => {
+  it("adds the selection to the list's workspace in one change and offers no separate grant", async () => {
+    const assigned = overview({ revision: 7 });
+    const view = assigned.workspaces[0];
+    if (view !== undefined) {
+      view.profiles = ["go"];
+    }
     await start(() => overview(), {
       settings_discover_toolchains: () => discovery([NEEDS], { workspace_id: A }),
-      settings_grant_discovered_roots: () =>
+      settings_add_discovered_profiles: () =>
         discovery(
           [
             {
               ...NEEDS,
+              recorded: true,
+              refusal: "a profile with this name already exists",
               read_only_roots: [
                 { folder: "C:\\Users\\op\\go", grant: "readable" },
                 { folder: "C:\\Program Files\\Go", grant: "readable" },
@@ -452,47 +464,58 @@ describe("granting proposed roots on Windows", () => {
               ],
             },
           ],
-          { workspace_id: A, overview: overview({ revision: 6 }) },
+          { workspace_id: A, overview: assigned },
         ),
     });
     await generate();
-    const grant = buttonByText(group(), GRANT_SELECTED_LABEL);
-    expect(grant.disabled).toBe(true);
+    expect(group().textContent).toContain(ASSIGN_NOTE);
+    // Granting is part of the add's one confirmation now (ADR-0107): no other button grants.
+    const labels = Array.from(group().querySelectorAll("button")).map((b) => b.textContent ?? "");
+    expect(labels.some((label) => label.includes("Grant"))).toBe(false);
     tick(0);
-    expect(grant.disabled).toBe(false);
-    grant.click();
+    buttonByText(group(), ADD_SELECTED_LABEL).click();
     await settle();
 
-    expect(ipc.callsTo("settings_grant_discovered_roots")[0]?.args).toEqual({
+    expect(ipc.callsTo("settings_add_discovered_profiles")[0]?.args).toEqual({
       revision: 5,
-      workspace_id: A,
       digests: [digest(1)],
+      workspace_id: A,
     });
+    expect(ipc.callsTo("settings_grant_discovered_roots")).toHaveLength(0);
     expect(group().textContent).toContain("C:\\Users\\op\\go (the container can read it)");
-    // The grant keeps the selection, so the operator can add the profile next.
-    expect(boxes()[0]?.checked).toBe(true);
-    // No root of the selection needs a grant any more.
-    expect(buttonByText(group(), GRANT_SELECTED_LABEL).disabled).toBe(true);
+    expect(boxes()[0]?.checked).toBe(false);
   });
 
-  it("offers no grant without a workspace in the list", async () => {
+  it("adds without a workspace when the list has none", async () => {
     await start(() => overview(), {
       settings_discover_toolchains: () => discovery([proposal()]),
+      settings_add_discovered_profiles: () => discovery([proposal({ recorded: true })]),
     });
     await generate();
+    expect(group().textContent).not.toContain(ASSIGN_NOTE);
     tick(0);
-    expect(buttonByText(group(), GRANT_SELECTED_LABEL).disabled).toBe(true);
+    buttonByText(group(), ADD_SELECTED_LABEL).click();
+    await settle();
+    expect(ipc.callsTo("settings_add_discovered_profiles")[0]?.args).toMatchObject({
+      workspace_id: null,
+    });
   });
 
-  it("shows no workspace choice and no grant button off Windows", async () => {
-    await start(() => overview({ container_grants_supported: false }), {
-      settings_discover_toolchains: () =>
-        discovery([proposal()], { overview: overview({ container_grants_supported: false }) }),
+  it("offers the workspace choice off Windows too, where an assignment grants nothing", async () => {
+    const linux = overview({ container_grants_supported: false });
+    await start(() => linux, {
+      settings_discover_toolchains: (args) =>
+        discovery([proposal()], { overview: linux, workspace_id: args.workspace_id as string }),
     });
-    expect(group().querySelector("#discovery-workspace")).toBeNull();
+    expect(group().textContent).toContain(DISCOVERY_WORKSPACE_HELP);
+    const select = group().querySelector<HTMLSelectElement>("#discovery-workspace");
+    if (select === null) {
+      throw new Error("No workspace choice");
+    }
+    choose(select, A);
     await generate();
-    expect(ipc.callsTo("settings_discover_toolchains")[0]?.args).toEqual({ workspace_id: null });
-    expect(() => buttonByText(group(), GRANT_SELECTED_LABEL)).toThrow();
+    expect(ipc.callsTo("settings_discover_toolchains")[0]?.args).toEqual({ workspace_id: A });
+    expect(group().textContent).toContain(ASSIGN_NOTE);
   });
 });
 
@@ -541,34 +564,54 @@ describe("mock discovery commands", () => {
     ).rejects.toMatchObject({ code: "invalid_request" });
   });
 
-  it("grants the home-folder roots a workspace needs and then reports them readable", async () => {
+  it("assigns what it adds to a workspace and grants the home-folder roots it needs", async () => {
     const { invoke } = createMockBackend() as { invoke: Invoke };
     const settings = (await invoke("settings_overview", {})) as SettingsOverview;
     const workspace = settings.workspaces[0]?.workspace_id ?? "";
+    // The recorded `rust` profile blocks its sample; removing it frees the one sample whose
+    // roots include a home folder.
+    const freed = (await invoke("settings_remove_toolchain_profile", {
+      revision: settings.revision,
+      name: "rust",
+    })) as SettingsOverview;
     const listed = (await invoke("settings_discover_toolchains", {
       workspace_id: workspace,
     })) as ToolchainDiscovery;
-    const needing = listed.proposals.find((entry) =>
-      entry.read_only_roots.some((rootEntry) => rootEntry.grant === "needs_grant"),
+    const needing = listed.proposals.find(
+      (entry) =>
+        entry.refusal === null &&
+        entry.read_only_roots.some((rootEntry) => rootEntry.grant === "needs_grant"),
     );
     if (needing === undefined) {
-      throw new Error("a sample needs a grant");
+      throw new Error("an addable sample needs a grant");
     }
-    const granted = (await invoke("settings_grant_discovered_roots", {
-      revision: listed.overview.revision,
-      workspace_id: workspace,
+    const home = needing.read_only_roots.find((rootEntry) => rootEntry.grant === "needs_grant");
+    const added = (await invoke("settings_add_discovered_profiles", {
+      revision: freed.revision,
       digests: [needing.digest],
+      workspace_id: workspace,
     })) as ToolchainDiscovery;
-    const after = granted.proposals.find((entry) => entry.digest === needing.digest);
+
+    expect(added.overview.workspaces[0]?.profiles).toEqual([needing.name]);
+    expect(added.overview.container_grants).toEqual([
+      expect.objectContaining({
+        workspace_id: workspace,
+        directory: home?.folder,
+        access: "read_execute",
+        state: "active",
+      }),
+    ]);
+    const after = added.proposals.find((entry) => entry.digest === needing.digest);
     expect(after?.read_only_roots.some((rootEntry) => rootEntry.grant === "needs_grant")).toBe(
       false,
     );
+    // The separate grant command is gone (ADR-0107).
     await expect(
       invoke("settings_grant_discovered_roots", {
-        revision: granted.overview.revision,
+        revision: added.overview.revision,
         workspace_id: workspace,
         digests: [needing.digest],
       }),
-    ).rejects.toMatchObject({ code: "nothing_to_grant" });
+    ).rejects.toMatchObject({ code: "unknown_command" });
   });
 });
