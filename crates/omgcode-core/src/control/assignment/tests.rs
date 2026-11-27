@@ -511,6 +511,89 @@ fn a_grant_a_nested_root_relies_on_is_kept() {
     assert_eq!(released(&scene.store), [sdk]);
 }
 
+/// A pending grant on a nested root may hold no access, so it does not
+/// stand in for the outer grant that root relies on; an active one does.
+#[test]
+fn only_an_active_grant_stands_in_for_an_outer_grant() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("outer", &["sdk"]);
+    scene.profile("inner", &["sdk/bin"]);
+    scene.assign(app, "outer").expect("assign outer");
+    scene.assign(app, "inner").expect("assign inner");
+    let read = ContainerGrantAccess::ReadExecute;
+    let sdk = scene
+        .store
+        .test_record_grant(app, &scene.outside.join("sdk"), read);
+    let pending = scene
+        .store
+        .test_record_pending_grant(app, &scene.outside.join("sdk/bin"), read);
+    let released = |store: &ControlStore| {
+        store
+            .grants_released_by_unassignment(app, "outer")
+            .expect("preview")
+    };
+
+    assert!(released(&scene.store).is_empty());
+
+    scene
+        .store
+        .append(
+            Action::ContainerGrantApplied { grant_id: pending },
+            scene.store.revision(),
+        )
+        .expect("applied");
+    assert_eq!(released(&scene.store), [sdk]);
+}
+
+/// A nested root that was moved or removed, so its containment cannot be
+/// read live, still counts by its recorded path: its profile keeps the
+/// outer grant while assigned, and unassigning or removing that profile
+/// then releases it.
+#[test]
+fn a_removed_nested_root_keeps_and_then_releases_the_outer_grant() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("outer", &["sdk"]);
+    scene.profile("inner", &["sdk/bin"]);
+    scene.assign(app, "outer").expect("assign outer");
+    scene.assign(app, "inner").expect("assign inner");
+    let sdk = scene.store.test_record_grant(
+        app,
+        &scene.outside.join("sdk"),
+        ContainerGrantAccess::ReadExecute,
+    );
+    fs::remove_dir(scene.outside.join("sdk/bin")).expect("remove the nested root");
+
+    assert!(
+        scene
+            .store
+            .grants_released_by_unassignment(app, "outer")
+            .expect("preview")
+            .is_empty()
+    );
+
+    let revision = scene.store.revision();
+    scene
+        .store
+        .unassign_profile(app, "outer", revision)
+        .expect("unassign outer");
+    assert_eq!(
+        scene
+            .store
+            .grants_released_by_unassignment(app, "inner")
+            .expect("preview"),
+        [sdk]
+    );
+    assert_eq!(
+        scene
+            .store
+            .grants_released_by_removal("inner")
+            .expect("removal preview"),
+        [(app, vec![sdk])]
+    );
+}
+
 /// When the outer profile is unassigned first, its grant is kept for the
 /// nested root; unassigning or removing the inner profile then releases it,
 /// so the grant does not outlive both assignments. A package cache root
@@ -716,15 +799,8 @@ fn an_assignment_that_cannot_be_recorded_revokes_its_grant() {
         .store
         .assign_profile_with_access(app, "rust", &plan, revision);
 
-    let left: Vec<Uuid> = scene
-        .store
-        .container_grants()
-        .iter()
-        .map(|status| status.grant().id())
-        .collect();
-    for grant in &left {
-        let _ = scene.store.revoke_container_grant(*grant);
-    }
+    let (left, cleanup) = revoke_left(&mut scene.store);
+    assert!(cleanup.is_empty(), "cleanup failed: {cleanup:?}");
     let failure = result.expect_err("the assignment cannot be recorded");
     assert!(
         matches!(failure.error, ControlError::LimitReached),
@@ -734,8 +810,87 @@ fn an_assignment_that_cannot_be_recorded_revokes_its_grant() {
     assert_eq!(failure.released.revoked.len(), 1, "{failure:?}");
     assert!(failure.released.failures.is_empty(), "{failure:?}");
     assert_eq!(failure.released.workspaces, [app]);
-    assert!(left.is_empty(), "a grant outlived the failed assignment");
+    assert!(
+        left.is_empty(),
+        "a grant outlived the failed assignment: {left:?}"
+    );
     assert!(scene.store.assigned_profiles(app).is_empty());
+}
+
+/// Revoke every recorded grant, attempting each, and return the grants
+/// that were left and each revocation that failed, with its grant, so a
+/// Windows test that applied real access-control entries can report what
+/// it could not clean up.
+#[cfg(windows)]
+fn revoke_left(store: &mut ControlStore) -> (Vec<Uuid>, Vec<String>) {
+    let left: Vec<Uuid> = store
+        .container_grants()
+        .iter()
+        .map(|status| status.grant().id())
+        .collect();
+    let failures = left
+        .iter()
+        .filter_map(|grant| {
+            store
+                .revoke_container_grant(*grant)
+                .err()
+                .map(|error| format!("{grant}: {error}"))
+        })
+        .collect();
+    (left, failures)
+}
+
+/// When the rollback of a failed assignment cannot revoke the grant it
+/// made, the failure returns that grant, and the grant stays recorded
+/// `revoking` until the operator revokes it. The revocation's
+/// access-control change is made to fail after its request is recorded, as
+/// a real failure leaves it.
+#[cfg(windows)]
+#[test]
+fn an_assignment_whose_rollback_cannot_revoke_returns_the_grant() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("rust", &["rust"]);
+    let plan = scene.store.plan_profile_access(app, "rust").expect("plan");
+    assert_eq!(plan.to_grant().len(), 1, "{plan:?}");
+    // As in the test above: room for the grant and none for the assignment.
+    let initial = scene.store.entries[0].clone();
+    scene
+        .store
+        .entries
+        .resize(crate::control::MAX_EVENTS - 4, initial);
+    let revision = scene.store.revision();
+    scene.store.fail_next_revocation = true;
+
+    let result = scene
+        .store
+        .assign_profile_with_access(app, "rust", &plan, revision);
+
+    let states: Vec<(Uuid, ContainerGrantState)> = scene
+        .store
+        .container_grants()
+        .iter()
+        .map(|status| (status.grant().id(), status.state()))
+        .collect();
+    let (_, cleanup) = revoke_left(&mut scene.store);
+    assert!(cleanup.is_empty(), "cleanup failed: {cleanup:?}");
+    let failure = result.expect_err("the assignment cannot be recorded");
+    assert!(
+        matches!(failure.error, ControlError::LimitReached),
+        "{failure:?}"
+    );
+    let [(grant, ContainerGrantState::Revoking)] = states.as_slice() else {
+        panic!("one grant left revoking: {states:?}");
+    };
+    assert!(failure.released.revoked.is_empty(), "{failure:?}");
+    assert!(
+        matches!(
+            failure.released.failures.as_slice(),
+            [(failed, ControlError::Container(_))] if failed == grant
+        ),
+        "{failure:?}"
+    );
+    assert_eq!(failure.released.workspaces, [app]);
 }
 
 /// A failed assignment's release returns each revocation it attempted, and

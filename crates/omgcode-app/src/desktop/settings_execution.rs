@@ -56,7 +56,7 @@ use super::error::DesktopError;
 use super::settings::overview_of;
 use super::settings_changes::{
     AlsoWithdrawn, ChangeGuard, Confirmation, FolderPurpose, RevokingChange, SettingsPrompt,
-    check_revision, confirm, revocation_outcome, shown,
+    check_revision, confirm, revocation_outcome, rollback_withdrawn, shown,
 };
 use super::state::folder_of_directory;
 use super::wire::SettingsOverview;
@@ -213,25 +213,30 @@ impl DesktopError {
     /// with the count of grants it made that could not be revoked afterwards;
     /// the settings list each one, and **Revoke** tries again. A grant revoked
     /// whose AppContainer profile alone could not be deleted holds no access
-    /// and is not counted.
+    /// and is not counted, but the message says the profile was left. The
+    /// operating system's own text is never shown.
     pub(super) fn assignment_failed(failure: &AssignmentFailure) -> Self {
         let cause = Self::from_grant(&failure.error);
-        let left = failure
-            .released
-            .failures
+        let failures = &failure.released.failures;
+        if failures.is_empty() {
+            return cause;
+        }
+        let left = failures
             .iter()
             .filter(|(_, error)| !matches!(error, ControlError::ProfileRemoval(_)))
             .count();
-        if left == 0 {
-            return cause;
+        let mut message = format!("{}.", cause.message().trim_end_matches('.'));
+        if left > 0 {
+            message.push_str(&format!(
+                " {left} container grant(s) the failed assignment made could not be revoked; the settings list each one, and Revoke tries again."
+            ));
         }
-        Self::execution(
-            cause.code(),
-            format!(
-                "{}. {left} container grant(s) the failed assignment made could not be revoked; the settings list each one, and Revoke tries again.",
-                cause.message().trim_end_matches('.')
-            ),
-        )
+        if left < failures.len() {
+            message.push_str(
+                " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now.",
+            );
+        }
+        Self::execution(cause.code(), message)
     }
 
     /// The package profile was removed, but credentials bound to it were not
@@ -638,7 +643,10 @@ impl DesktopService {
     /// confirmation; `cancelled`; `stale_revision`;
     /// `settings_change_running`; `busy`; `container_access_failed` when a
     /// grant was recorded but the folder's list could not be changed (the
-    /// profile stays unassigned and the grant `pending`; revoke it).
+    /// profile stays unassigned and the grant `pending`; revoke it). A failed
+    /// assignment whose rollback revoked a grant, or tried to, first waits
+    /// for the workspace's runs that withdrew, and adds to its message any it
+    /// could not confirm stopped.
     pub fn settings_assign_toolchain_profile(
         &self,
         request: ProfileAssignmentRequest,
@@ -669,11 +677,25 @@ impl DesktopService {
             (workspace.id(), plan, confirmation)
         };
         confirm(prompt, &confirmation)?;
-        let mut store = self.inner.open_or_create_control()?;
-        store
-            .assign_profile_with_access(workspace_id, &request.name, &plan, request.revision)
-            .map_err(|failure| DesktopError::assignment_failed(&failure))?;
-        Ok(overview_of(&self.inner, store))
+        let (listed, also, error) = {
+            let mut store = self.inner.open_or_create_control()?;
+            let before = run::pending_runs(&store);
+            let failure = match store.assign_profile_with_access(
+                workspace_id,
+                &request.name,
+                &plan,
+                request.revision,
+            ) {
+                Ok(_) => return Ok(overview_of(&self.inner, store)),
+                Err(failure) => failure,
+            };
+            let error = DesktopError::assignment_failed(&failure);
+            let Some(also) = rollback_withdrawn(before, &failure) else {
+                return Err(error);
+            };
+            (run::withdrawn_runs(&store), also, error)
+        };
+        Err(self.failed_after_wait(listed, also, error))
     }
 
     /// `settings` only. After a native confirmation, unassign a toolchain
@@ -1032,20 +1054,29 @@ mod tests {
         }
     }
 
-    /// A failed assignment that left no grant reports its cause as a grant
-    /// failure does; one that left grants also counts them, without the
-    /// operating system's text, and a grant whose profile alone could not
-    /// be deleted is not counted.
+    /// A failed assignment whose rollback revoked everything reports its
+    /// cause as a grant failure does; one that left grants also counts them,
+    /// without the operating system's text. A grant whose profile alone
+    /// could not be deleted is not counted, but the message says the profile
+    /// was left.
     #[test]
     fn a_failed_assignment_counts_the_grants_it_left() {
         let os = || std::io::Error::other("operating system text");
+        let profile_left = " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now.";
+        let cause = DesktopError::from_grant(&ControlError::LimitReached);
+        let clean = DesktopError::assignment_failed(&failure(ControlError::LimitReached, vec![]));
+        assert_eq!(clean.code(), cause.code());
+        assert_eq!(clean.message(), cause.message());
+
         let alone = DesktopError::assignment_failed(&failure(
             ControlError::LimitReached,
             vec![(Uuid::new_v4(), ControlError::ProfileRemoval(os()))],
         ));
-        let cause = DesktopError::from_grant(&ControlError::LimitReached);
         assert_eq!(alone.code(), cause.code());
-        assert_eq!(alone.message(), cause.message());
+        assert_eq!(
+            alone.message(),
+            format!("{}.{profile_left}", cause.message().trim_end_matches('.'))
+        );
 
         let left = DesktopError::assignment_failed(&failure(
             ControlError::Container(os()),
@@ -1062,6 +1093,7 @@ mod tests {
             ),
             "{message}"
         );
+        assert!(message.ends_with(profile_left), "{message}");
         assert!(!message.contains(".."), "{message}");
         assert!(!message.contains("operating system text"), "{message}");
     }

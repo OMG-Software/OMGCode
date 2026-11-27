@@ -53,6 +53,7 @@ use omgcode_core::control::{
     ControlStore, PlannedFolder, ProfileAccessPlan, RootGrantNeed, root_grant_need,
 };
 use omgcode_core::policy::WorkspaceId;
+use omgcode_core::run;
 use omgcode_core::toolchain_discovery::{
     DiscoveryHost, ToolchainFamily, ToolchainProposal, discover, discover_bounded,
 };
@@ -64,7 +65,7 @@ use super::DesktopService;
 use super::error::DesktopError;
 use super::settings::overview_of;
 use super::settings_changes::{
-    ChangeGuard, Confirmation, SettingsPrompt, check_revision, confirm, shown,
+    ChangeGuard, Confirmation, SettingsPrompt, check_revision, confirm, rollback_withdrawn, shown,
 };
 use super::settings_execution::access_plan_text;
 use super::state::folder_of_directory;
@@ -508,6 +509,7 @@ impl DesktopService {
             }
             if let Some((workspace_id, _, plan)) = &assign {
                 let names: Vec<&str> = chosen.iter().map(ToolchainProposal::name).collect();
+                let before = run::pending_runs(&store);
                 if let Err(failure) =
                     store.assign_profiles_with_access(*workspace_id, &names, plan, expected)
                 {
@@ -519,11 +521,19 @@ impl DesktopService {
                             store.profile_assigned(*workspace_id, status.profile().id())
                         })
                         .count();
-                    return Err(DesktopError::not_assigned(
+                    let error = DesktopError::not_assigned(
                         chosen.len(),
                         assigned,
                         &DesktopError::assignment_failed(&failure),
-                    ));
+                    );
+                    // A rollback that revoked a grant withdrew the
+                    // workspace's runs: wait for them with the store closed.
+                    let Some(also) = rollback_withdrawn(before, &failure) else {
+                        return Err(error);
+                    };
+                    let listed = run::withdrawn_runs(&store);
+                    drop(store);
+                    return Err(self.failed_after_wait(listed, also, error));
                 }
             }
         }

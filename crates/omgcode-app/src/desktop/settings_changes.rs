@@ -44,9 +44,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
-    CONTAINER_GRANTS_SUPPORTED, ControlError, ControlStore, CredentialId, CredentialStore,
-    MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth, ProviderCredentialError, ProviderKind,
-    ProviderProfileDeclaration, Revocations, delete_unbound_credential,
+    AssignmentFailure, CONTAINER_GRANTS_SUPPORTED, ControlError, ControlStore, CredentialId,
+    CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth, ProviderCredentialError,
+    ProviderKind, ProviderProfileDeclaration, Revocations, delete_unbound_credential,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::provider::ModelEndpoint;
@@ -1447,14 +1447,28 @@ impl DesktopService {
         also: AlsoWithdrawn,
         deferred: Option<DesktopError>,
     ) -> Result<SettingsOverview, DesktopError> {
-        let finished = self.finish_change(listed, also);
-        match (deferred, finished) {
-            (None, finished) => finished,
-            (Some(error), Ok(_)) => Err(error),
-            (Some(error), Err(wait)) => Err(DesktopError::execution(
+        match deferred {
+            None => self.finish_change(listed, also),
+            Some(error) => Err(self.failed_after_wait(listed, also, error)),
+        }
+    }
+
+    /// `error`, the failure of a change that still withdrew runs, such as an
+    /// assignment whose rollback revoked a grant (ADR-0107), returned after
+    /// the wait in [`finish_change`](Self::finish_change) with any wait
+    /// failure added to its message. The store must be closed.
+    pub(super) fn failed_after_wait(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+        also: AlsoWithdrawn,
+        error: DesktopError,
+    ) -> DesktopError {
+        match self.wait_for_withdrawn(listed, also) {
+            Ok(()) => error,
+            Err(wait) => DesktopError::execution(
                 error.code(),
                 format!("{} {}", error.message(), wait.message()),
-            )),
+            ),
         }
     }
 
@@ -1466,6 +1480,18 @@ impl DesktopService {
         listed: Result<Vec<uuid::Uuid>, run::RunError>,
         also: AlsoWithdrawn,
     ) -> Result<SettingsOverview, DesktopError> {
+        self.wait_for_withdrawn(listed, also)?;
+        let store = self.inner.open_or_create_control()?;
+        Ok(overview_of(&self.inner, store))
+    }
+
+    /// Wait for the runs listed as withdrawn, the runs in `also`, and any
+    /// others the settings now withdraw to stop.
+    fn wait_for_withdrawn(
+        &self,
+        listed: Result<Vec<uuid::Uuid>, run::RunError>,
+        also: AlsoWithdrawn,
+    ) -> Result<(), DesktopError> {
         // An unreadable run journal never undoes the recorded change, and the
         // watchers still stop the runs: wait for what the settings now
         // withdraw, then report that the runs were not all checked.
@@ -1479,8 +1505,7 @@ impl DesktopService {
         if listed.is_err() || also.unchecked {
             return Err(DesktopError::runs_unchecked());
         }
-        let store = self.inner.open_or_create_control()?;
-        Ok(overview_of(&self.inner, store))
+        Ok(())
     }
 }
 
@@ -1532,6 +1557,19 @@ pub(super) fn revocation_outcome(
     let deferred = (!revocations.failures.is_empty())
         .then(|| DesktopError::revocation_incomplete(&revocations.failures, change));
     (also, deferred)
+}
+
+/// The runs to wait for after a failed assignment, or `None` when its
+/// rollback attempted no revocation. Revoking a grant withdraws every run of
+/// its workspace that started before, so a rollback that revoked one, or
+/// tried to, stops those runs as an unassignment does (ADR-0107). `before`
+/// holds every pending run, listed under the lock before the assignment.
+pub(super) fn rollback_withdrawn(
+    before: Result<Vec<(WorkspaceId, uuid::Uuid)>, run::RunError>,
+    failure: &AssignmentFailure,
+) -> Option<AlsoWithdrawn> {
+    (!failure.released.workspaces.is_empty())
+        .then(|| revocation_outcome(before, &failure.released, RevokingChange::Recorded).0)
 }
 
 /// The native confirmation for registering `folder`. On Windows it also asks
@@ -1759,6 +1797,41 @@ mod tests {
 
     fn removal_failed() -> ControlError {
         ControlError::ProfileRemoval(std::io::Error::other("operating system text"))
+    }
+
+    /// A failed assignment waits only when its rollback attempted a
+    /// revocation, and then for that workspace's pending runs alone; a run
+    /// list that could not be read is reported as unchecked.
+    #[test]
+    fn a_failed_assignment_waits_for_the_runs_its_rollback_withdrew() {
+        let id = || {
+            uuid::Uuid::new_v4()
+                .to_string()
+                .parse::<WorkspaceId>()
+                .expect("workspace id")
+        };
+        let (app, other) = (id(), id());
+        let (run_app, run_other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let before = || Ok(vec![(app, run_app), (other, run_other)]);
+        let failure = |workspaces| AssignmentFailure {
+            error: ControlError::LimitReached,
+            released: Revocations {
+                workspaces,
+                ..Revocations::default()
+            },
+        };
+
+        assert!(rollback_withdrawn(before(), &failure(vec![])).is_none());
+        let also = rollback_withdrawn(before(), &failure(vec![app])).expect("a wait");
+        assert_eq!(also.runs, [run_app]);
+        assert!(!also.unchecked);
+        let unread = rollback_withdrawn(
+            Err(run::RunError::Refused("the run journal is unreadable")),
+            &failure(vec![app]),
+        )
+        .expect("a wait");
+        assert!(unread.runs.is_empty());
+        assert!(unread.unchecked);
     }
 
     /// A grant revoked whose AppContainer profile could not be deleted is

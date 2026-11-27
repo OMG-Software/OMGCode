@@ -471,6 +471,12 @@ impl ControlStore {
             )?;
         }
         let live = status.grant.directory.live_path()?;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_revocation) {
+            return Err(ControlError::Container(std::io::Error::other(
+                "injected revocation failure",
+            )));
+        }
         platform::revoke(&live, status.grant.directory.native_identity(), &name)
             .map_err(ControlError::Container)?;
         self.append(Action::ContainerGrantRevoked { grant_id }, self.revision())?;

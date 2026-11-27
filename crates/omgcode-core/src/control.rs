@@ -616,6 +616,10 @@ pub struct ControlStore {
     poisoned: bool,
     #[cfg(test)]
     fail_next_sync: bool,
+    /// Fail the next container revocation's access-control change, after
+    /// its request is recorded, as a real failure would.
+    #[cfg(test)]
+    fail_next_revocation: bool,
 }
 
 /// Descriptive directory records. Only the broker's live checks can authorize I/O.
@@ -885,6 +889,8 @@ impl ControlStore {
             poisoned: false,
             #[cfg(test)]
             fail_next_sync: false,
+            #[cfg(test)]
+            fail_next_revocation: false,
         })
     }
 

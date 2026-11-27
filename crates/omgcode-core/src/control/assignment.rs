@@ -806,8 +806,9 @@ impl ControlStore {
     /// profile `leaving`, or on a folder that holds one of them, that no other
     /// profile assigned to it and not its package cache root needs. A grant on
     /// an outer folder kept for a nested root while its own profile was
-    /// unassigned is released with the last profile inside it. A folder whose
-    /// containment cannot be read is not a candidate.
+    /// unassigned is released with the last profile inside it, even when that
+    /// root was moved or removed since: [`holds`] also reads the recorded
+    /// paths.
     fn unneeded_root_grants(
         &self,
         workspace_id: WorkspaceId,
@@ -822,9 +823,9 @@ impl ControlStore {
                 let directory = grant.directory();
                 grant.workspace_id() == workspace_id
                     && grant.access() == ContainerGrantAccess::ReadExecute
-                    && roots.iter().any(|root| {
-                        root.same_directory(directory) || directory.contains(root).unwrap_or(false)
-                    })
+                    && roots
+                        .iter()
+                        .any(|root| root.same_directory(directory) || holds(directory, root))
             })
             .collect();
         let releasing: Vec<Uuid> = candidates.iter().map(|grant| grant.id()).collect();
@@ -840,11 +841,13 @@ impl ControlStore {
 
     /// Whether a root of a profile assigned to `workspace_id`, other than
     /// `leaving`, or the folder `cache`, relies on `grant`: the root is the
-    /// grant's folder, or lies beneath it and no grant of the workspace
-    /// outside `releasing` is on the root or above it. A root inside another
-    /// profile's root was readable when it was planned, so it was given no
-    /// grant of its own. A folder whose containment cannot be read counts as
-    /// not relying on the grant.
+    /// grant's folder, or lies beneath it, as [`holds`] reads it, and no
+    /// other active grant of the workspace outside `releasing` is on the root
+    /// or, by a live check, above it. A root inside another profile's root was
+    /// readable when it was planned, so it was given no grant of its own. A
+    /// pending or revoking grant may hold no access, so it never stands in
+    /// for this one, and neither does a grant whose containment of the root
+    /// cannot be read: in both cases the grant is kept.
     fn grant_needed(
         &self,
         workspace_id: WorkspaceId,
@@ -857,13 +860,14 @@ impl ControlStore {
         let kept: Vec<&DirectoryRecord> = self
             .container_grants()
             .iter()
-            .map(ContainerGrantStatus::grant)
             .filter(|other| {
+                let other = other.grant();
                 other.workspace_id() == workspace_id
                     && other.id() != grant.id()
                     && !releasing.contains(&other.id())
             })
-            .map(ContainerGrant::directory)
+            .filter(|other| other.state() == ContainerGrantState::Active)
+            .map(|other| other.grant().directory())
             .collect();
         self.assigned_profiles(workspace_id)
             .iter()
@@ -877,7 +881,7 @@ impl ControlStore {
             .chain(cache)
             .any(|root| {
                 root.same_directory(directory)
-                    || (directory.contains(root).unwrap_or(false)
+                    || (holds(directory, root)
                         && !kept.iter().any(|other| {
                             other.same_directory(root) || other.contains(root).unwrap_or(false)
                         }))
@@ -920,6 +924,22 @@ impl ControlStore {
             }
         }
         revocations
+    }
+}
+
+/// Whether `inner` lies beneath `outer` or is `outer`, by a live walk of
+/// their directory identities or by their recorded canonical paths. Both
+/// paths were canonical when recorded and never change, so the answer does
+/// not depend on whether either folder still exists or can be read now. It
+/// decides only which grants to keep or release; it never decides what a
+/// run may reach, and a revocation still checks its folder's live identity.
+fn holds(outer: &DirectoryRecord, inner: &DirectoryRecord) -> bool {
+    if outer.contains(inner).unwrap_or(false) {
+        return true;
+    }
+    match (outer.live_path(), inner.live_path()) {
+        (Ok(outer), Ok(inner)) => inner.starts_with(outer),
+        _ => false,
     }
 }
 

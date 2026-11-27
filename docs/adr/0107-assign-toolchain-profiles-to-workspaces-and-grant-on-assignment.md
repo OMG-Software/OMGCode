@@ -71,7 +71,9 @@ per-call approval of a command, which is a different decision.
    outlives a consent that did not take effect; a grant whose revocation
    fails stays recorded, `pending` or `revoking`, until it is revoked, and
    the failure returns those revocations so the operator is told which
-   grants are left. A
+   grants are left. A rollback that revoked a grant, or tried to, withdrew
+   the workspace's runs, so the caller waits for them before it reports, as
+   after an unassignment. A
    workspace with a grant that is pending or being revoked is refused a plan,
    because its runs are refused until that grant is settled. Off Windows the
    plan is empty and assigning records only the event.
@@ -89,9 +91,15 @@ per-call approval of a command, which is a different decision.
    neither a profile still assigned to the workspace nor the workspace's
    package cache root needs. A profile still assigned, and the cache root,
    need a grant on their folder, and a grant on a folder that holds it that
-   no other grant reaches: a root inside a granted folder was readable when it
-   was planned and got no grant of its own. A grant kept that way is revoked
-   with the last profile inside it, whichever is unassigned first. The
+   no other active grant reaches: a root inside a granted folder was readable
+   when it was planned and got no grant of its own. A pending or revoking
+   grant may hold no access, so it never stands in. A grant kept that way is
+   revoked with the last profile inside it, whichever is unassigned first.
+   Whether a folder holds another is read from their live identities, or,
+   when either was moved, removed, or cannot be read, from their recorded
+   canonical paths, so a missing nested root neither loses the outer grant
+   early nor keeps it forever. That decides only what is kept; a revocation
+   still checks its folder's live identity. The
    workspace folder's read-write grant is never revoked by these.
    Every grant is attempted even after one fails, and each grant not revoked
    is reported. Unregistering a workspace revokes every grant of the

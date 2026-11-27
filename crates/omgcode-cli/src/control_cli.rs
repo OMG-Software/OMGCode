@@ -911,7 +911,8 @@ fn container_grant(args: ContainerGrantArgs, data_root: &Path) -> Result<(), Cli
 
 /// Assign a profile to a workspace and grant what it needs. The command is
 /// the operator's consent, so the plan made here under the control lock is
-/// the one applied.
+/// the one applied. A failed assignment whose rollback revoked a grant, or
+/// tried to, waits for the workspace's runs that withdrew before it reports.
 fn profile_assign(
     workspace: &str,
     name: &str,
@@ -924,9 +925,29 @@ fn profile_assign(
     let plan = store
         .plan_profile_access(workspace_id, name)
         .map_err(control_error)?;
-    let assignment = store
-        .assign_profile_with_access(workspace_id, name, &plan, revision)
-        .map_err(assignment_failed)?;
+    let before = run::pending_runs(&store);
+    let assignment = match store.assign_profile_with_access(workspace_id, name, &plan, revision) {
+        Ok(assignment) => assignment,
+        Err(failure) if failure.released.workspaces.is_empty() => {
+            return Err(assignment_failed(failure));
+        }
+        Err(failure) => {
+            // Revoking a grant withdraws every run of its workspace that
+            // started before: wait for them with the store closed.
+            let listed = withdrawn_runs(&store);
+            drop(store);
+            let problems = wait_for_revoked_runs(data_root, listed, before, &failure.released);
+            let mut error = assignment_failed(failure);
+            for problem in problems {
+                if !error.message.ends_with('.') {
+                    error.message.push('.');
+                }
+                error.message.push(' ');
+                error.message.push_str(&problem);
+            }
+            return Err(error);
+        }
+    };
     let not_granted: Vec<_> = assignment
         .plan
         .needs_administrator()
@@ -1022,16 +1043,7 @@ fn finish_revocations(
     revocations: &Revocations,
     change: RevokingChange<'_>,
 ) -> Result<(), CliError> {
-    let mut wait = listed.as_deref().unwrap_or(&[]).to_vec();
-    let mut problems = Vec::new();
-    if !revocations.workspaces.is_empty() {
-        match before {
-            Ok(runs) => wait.extend(revocations.withdrawn_runs(&runs)),
-            Err(error) => problems.push(format!(
-                "The runs the revocations affect could not be found: {error}."
-            )),
-        }
-    }
+    let mut problems = wait_for_revoked_runs(data_root, listed, before, revocations);
     let mut kind = "run";
     if !revocations.failures.is_empty() {
         kind = "control";
@@ -1069,17 +1081,41 @@ fn finish_revocations(
             ),
         );
     }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::new(kind, problems.join(" ")))
+    }
+}
+
+/// Wait for the runs the settings withdrew, `listed`, and the pending runs in
+/// `before` of each workspace whose grant was revoked or was tried, then
+/// return each problem met, in order. Any revocation, even one that failed
+/// after it was requested, withdraws every run of its workspace. The store
+/// must be closed.
+fn wait_for_revoked_runs(
+    data_root: &Path,
+    listed: Result<Vec<Uuid>, CliError>,
+    before: Result<Vec<(WorkspaceId, Uuid)>, run::RunError>,
+    revocations: &Revocations,
+) -> Vec<String> {
+    let mut wait = listed.as_deref().unwrap_or(&[]).to_vec();
+    let mut problems = Vec::new();
+    if !revocations.workspaces.is_empty() {
+        match before {
+            Ok(runs) => wait.extend(revocations.withdrawn_runs(&runs)),
+            Err(error) => problems.push(format!(
+                "The runs the revocations affect could not be found: {error}."
+            )),
+        }
+    }
     if let Err(error) = stop_withdrawn_runs(data_root, &wait) {
         problems.push(error.message);
     }
     if let Err(error) = listed {
         problems.push(error.message);
     }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::new(kind, problems.join(" ")))
-    }
+    problems
 }
 
 fn profile_add(args: ProfileAddArgs, data_root: &Path) -> Result<(), CliError> {

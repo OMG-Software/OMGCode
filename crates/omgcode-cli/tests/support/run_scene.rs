@@ -70,8 +70,7 @@ impl Scene {
         // A failed registration can still leave a pending grant whose ACL
         // entry exists, so track what was recorded before failing.
         if !registered.status.success() {
-            scene.track_recorded_grants();
-            assert_success(&registered);
+            scene.fail_after_tracking(&registered);
         }
         let registered = json_output(&registered);
         scene.id = registered["registration_id"]
@@ -143,8 +142,7 @@ impl Scene {
             // A failed command can still leave a pending grant whose ACL
             // entry exists. Track every grant of this workspace so the
             // scene revokes it, then fail.
-            self.track_recorded_grants();
-            assert_success(&output);
+            self.fail_after_tracking(&output);
         }
         self.grants.push(
             json_output(&output)["grant_id"]
@@ -159,20 +157,35 @@ impl Scene {
     /// revoked. The scene's data directory is its own, so every grant in it
     /// is the scene's, including one recorded by a registration that failed
     /// before its identifier was known. When status cannot be read, the
-    /// tracked list is kept.
-    fn track_recorded_grants(&mut self) {
+    /// tracked list is kept and the reason is returned, so the caller
+    /// reports that a recorded grant may be missing from it.
+    fn track_recorded_grants(&mut self) -> Result<(), String> {
         // `Drop` calls this, so status is read without panicking: a second
         // panic while a test unwinds would abort the run and skip the
         // revocations.
-        let Ok(recorded) = recorded_grant_ids(&self.data) else {
-            return;
-        };
+        let recorded = recorded_grant_ids(&self.data)?;
         self.grants.retain(|known| recorded.contains(known));
         for id in recorded {
             if !self.grants.contains(&id) {
                 self.grants.push(id);
             }
         }
+        Ok(())
+    }
+
+    /// Fail on `output`, a CLI command that failed, after tracking the
+    /// grants it may have recorded so `Drop` revokes them. A failure to list
+    /// them is reported with the command's own.
+    fn fail_after_tracking(&mut self, output: &Output) -> ! {
+        let tracked = match self.track_recorded_grants() {
+            Ok(()) => "tracked".to_owned(),
+            Err(error) => format!("not listed: {error}"),
+        };
+        panic!(
+            "CLI failed: stdout={} stderr={} recorded grants: {tracked}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// Revoke every grant and fail on any revocation that fails.
@@ -183,13 +196,16 @@ impl Scene {
 
     /// Revoke each tracked grant, and each recorded grant of the workspace,
     /// such as those `profile-assign` applied, once, returning the failures.
-    /// Revoking the last grant also deletes the container profile, so test
-    /// runs leave no per-user AppContainer state behind. A grant whose
-    /// revocation failed stays tracked, so `Drop` retries it after `close`
-    /// fails.
+    /// When the recorded grants cannot be listed, that is a failure too, and
+    /// the tracked grants are still revoked. Revoking the last grant also
+    /// deletes the container profile, so test runs leave no per-user
+    /// AppContainer state behind. A grant whose revocation failed stays
+    /// tracked, so `Drop` retries it after `close` fails.
     fn revoke_grants(&mut self) -> Vec<String> {
-        self.track_recorded_grants();
         let mut failures = Vec::new();
+        if let Err(error) = self.track_recorded_grants() {
+            failures.push(format!("the recorded grants could not be listed: {error}"));
+        }
         let mut unresolved = Vec::new();
         for grant in std::mem::take(&mut self.grants) {
             let command = cli_command(&self.data, &["workspace", "container-revoke", &grant]);

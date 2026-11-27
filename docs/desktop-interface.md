@@ -1337,8 +1337,10 @@ waits. The window shows:
   workspace's sandbox is granted read and execute, and the folders that need
   an administrator or whose access could not be read, then grants and assigns
   with the confirmed plan. When the assignment fails after granting, the
-  grants it made that no assigned profile needs are revoked, and the error
-  counts any that could not be, for their **Revoke**. Turning one off calls
+  grants it made that no assigned profile needs are revoked, the
+  workspace's runs those revocations withdrew are waited for, and the error
+  counts any grant that could not be revoked, for its **Revoke**, and says
+  when only the AppContainer profile could not be deleted. Turning one off calls
   `settings_unassign_toolchain_profile`, whose confirmation names the grants
   it revokes and says the workspace's running commands stop. A declined
   confirmation or a refusal shows the recorded state again. Then the

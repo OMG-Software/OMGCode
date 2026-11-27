@@ -974,7 +974,10 @@ consent to give that workspace's sandbox the profile's folders.
   recorded, `pending` or `revoking`, until it is revoked. Core returns those
   revocations with the error: `profile-assign` names each grant not revoked
   with its `container-revoke` command, and the `settings` window counts them
-  and points to each one's **Revoke**. `profile-assign` is itself the consent,
+  and points to each one's **Revoke**, and says so when only an AppContainer
+  profile could not be deleted. When the rollback revoked a grant, or tried
+  to, both wait for the workspace's withdrawn runs to stop before they report,
+  as an unassignment does. `profile-assign` is itself the consent,
   so it plans and assigns in one call, and prints `assigned_profile_id`,
   `granted` (each `grant_id` with its folder), and `not_granted` with the
   reason.
@@ -983,13 +986,19 @@ consent to give that workspace's sandbox the profile's folders.
   profile's roots or holds one of them, that neither a profile still assigned
   to the workspace nor the workspace's package cache root needs. A profile
   still assigned, and the cache root, need a grant on their folder, and a
-  grant on a folder that holds it when no other grant of the workspace is on
-  that folder or above it: a root inside a granted folder was readable when
-  it was planned, so it got no grant of its own. So a grant on an outer
+  grant on a folder that holds it when no other active grant of the workspace
+  is on that folder or above it: a root inside a granted folder was readable
+  when it was planned, so it got no grant of its own. A pending or revoking
+  grant may hold no access, so it never stands in. So a grant on an outer
   profile's root, kept while a nested root of another profile relies on it,
-  is revoked when that other profile is unassigned too. A folder whose
-  containment cannot be read is not a candidate, and counts as not needing
-  the grant. The workspace folder's read-write
+  is revoked when that other profile is unassigned too. Whether a folder
+  holds another is read from their live identities, or, when either was
+  moved, removed, or cannot be read, from their recorded canonical paths, so
+  a missing nested root still keeps the outer grant while its profile is
+  assigned and releases it afterwards. That decides only what is kept; each
+  revocation still checks its folder's live identity. The workspace folder's
+  read-write
+  grant is never revoked here.
   grant is never revoked here. Every grant is attempted, even after one
   fails. `profile-unassign` and `profile-remove` print what they revoked
   under `revoked`; a failed revocation leaves the change recorded, each grant
