@@ -134,6 +134,91 @@ fn an_ungranted_package_cache_root_fails_the_run() {
         !scene.workspace.join("ran.txt").exists(),
         "the refused run started its program"
     );
+    let error = refused_error(&output, &cache_root, "package-cache-root");
+    let message = error["message"].as_str().expect("message");
+    assert!(
+        message.contains(
+            "has no access to the workspace's package cache root, which needs read-execute"
+        ),
+        "{message}"
+    );
+    assert_eq!(
+        error["refused_path"]["role"],
+        serde_json::json!({"kind": "package_cache"}),
+        "{error}"
+    );
+    assert_one_not_started(&scene);
+    scene.close();
+}
+
+/// The user-profile toolchain case: a profile root the workspace's container
+/// cannot read fails the run before the program starts. The message, which
+/// the command tool also sends to a model, names the root by its profile and
+/// position; only the operator's `refused_path` has the path (ADR-0106).
+#[cfg(windows)]
+#[test]
+fn an_ungranted_profile_root_is_named_by_its_profile_and_position() {
+    let scene = Scene::new();
+    let tools = scene.path("ungranted-tools");
+    fs::create_dir(&tools).expect("tools");
+    // The system root is root 1, so the ungranted folder is root 2.
+    assert_success(&scene.add_profile("system", &[&tools]));
+    let output = scene.run("system", &[], &shell("echo ran>ran.txt"));
+    assert_error_code(&output, "run");
+    assert!(
+        !scene.workspace.join("ran.txt").exists(),
+        "the refused run started its program"
+    );
+    let error = refused_error(&output, &tools, "ungranted-tools");
+    let message = error["message"].as_str().expect("message");
+    assert!(
+        message.contains(
+            "has no access to root 2 of toolchain profile `system`, which needs read-execute"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.contains("Container grants") && message.contains("container-grant"),
+        "{message}"
+    );
+    assert_eq!(
+        error["refused_path"]["role"],
+        serde_json::json!({"kind": "profile_root", "profile": "system", "number": 2}),
+        "{error}"
+    );
+    assert_one_not_started(&scene);
+    scene.close();
+}
+
+/// The CLI error of a run refused for `expected`: the message leaves out the
+/// path (`name` is its last component), and `refused_path` names it at
+/// read-execute with no access held.
+#[cfg(windows)]
+fn refused_error(output: &std::process::Output, expected: &std::path::Path, name: &str) -> Value {
+    let error: Value = serde_json::from_slice(&output.stderr).expect("CLI error is JSON");
+    let error = error["error"].clone();
+    let message = error["message"].as_str().expect("message");
+    assert!(message.contains("did not start"), "{message}");
+    assert!(
+        !message.contains(name),
+        "the message names the path: {message}"
+    );
+    let refused = &error["refused_path"];
+    assert_eq!(refused["needed"], "read_execute", "{error}");
+    assert_eq!(refused["granted"], Value::Null, "{error}");
+    assert!(!refused["path_native"].is_null(), "{error}");
+    let path = refused["path"].as_str().expect("refused path");
+    assert_eq!(
+        fs::canonicalize(path).expect("refused path exists"),
+        fs::canonicalize(expected).expect("expected path exists"),
+        "{error}"
+    );
+    error
+}
+
+/// One run was recorded, and it did not start.
+#[cfg(windows)]
+fn assert_one_not_started(scene: &Scene) {
     let audit = scene.audit();
     let finished: Vec<&Value> = audit["entries"]
         .as_array()
@@ -146,7 +231,6 @@ fn an_ungranted_package_cache_root_fails_the_run() {
         finished[0]["action"]["payload"]["finish"]["result"]["kind"], "not_started",
         "{audit}"
     );
-    scene.close();
 }
 
 /// A Linux run can read only its workspace's package cache. The cache is

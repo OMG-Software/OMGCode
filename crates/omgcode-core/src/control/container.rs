@@ -102,6 +102,22 @@ impl From<ContainerGrantAccess> for ContainerAccess {
     }
 }
 
+impl From<ContainerAccess> for ContainerGrantAccess {
+    fn from(value: ContainerAccess) -> Self {
+        match value {
+            ContainerAccess::ReadExecute => Self::ReadExecute,
+            ContainerAccess::ReadWrite => Self::ReadWrite,
+        }
+    }
+}
+
+impl std::fmt::Display for ContainerGrantAccess {
+    /// The spelling the CLI's `--access` option takes.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        ContainerAccess::from(*self).fmt(formatter)
+    }
+}
+
 /// Where a grant is in its lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

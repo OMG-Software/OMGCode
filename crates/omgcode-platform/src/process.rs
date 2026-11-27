@@ -36,7 +36,8 @@ mod tests;
 #[cfg(target_os = "linux")]
 pub use confinement::network_support_paths;
 pub use confinement::{
-    AppliedConfinement, Confinement, MAX_CONFINEMENT_PATHS, NetworkAccess, UnixSocketAccess,
+    AppliedConfinement, Confinement, ConfinementEntry, MAX_CONFINEMENT_PATHS, NetworkAccess,
+    UngrantedPath, UnixSocketAccess,
 };
 
 /// Largest accepted run deadline.
@@ -300,6 +301,10 @@ pub enum ProcessError {
     /// missing, is a symbolic link, or has an unsupported type. Nothing was
     /// started.
     Confinement(io::Error),
+    /// A listed path, or the program, is not granted to the run's
+    /// AppContainer at the level the run needs. Nothing was started. Only
+    /// Windows reports it; the display text leaves the path out.
+    Ungranted(Box<UngrantedPath>),
     /// The program could not be started. No process from this run remains.
     Spawn(io::Error),
     /// Supervision failed after start. The runner terminated the tree and
@@ -325,6 +330,17 @@ impl fmt::Display for ProcessError {
                 write!(
                     formatter,
                     "a confinement rule could not be prepared: {error}"
+                )
+            }
+            Self::Ungranted(refusal) => {
+                let held = match refusal.granted {
+                    Some(access) => format!("only {access}"),
+                    None => "no access".to_owned(),
+                };
+                write!(
+                    formatter,
+                    "a confinement path is not granted to the container at its listed level: {} needs {} and has {held}",
+                    refusal.entry, refusal.needed
                 )
             }
             Self::Spawn(error) => write!(formatter, "the program could not be started: {error}"),

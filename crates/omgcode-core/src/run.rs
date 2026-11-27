@@ -37,6 +37,11 @@ use crate::session::{NativePath, SessionError};
 use crate::storage::{self, StorageError};
 use crate::workspace::DirectoryRecord;
 
+mod refusal;
+
+use refusal::ListedPaths;
+pub use refusal::{RefusedPathRole, UngrantedRunPath};
+
 pub use omgcode_platform::interrupt::{InterruptWatch, cancel_on_interrupt, watch_interrupt};
 pub use omgcode_platform::process::{CancelSignal, ProcessLimits, TreeLimits};
 pub use omgcode_platform::process::{
@@ -216,6 +221,16 @@ pub enum RunError {
         #[source]
         source: ProcessError,
     },
+    /// The intent was recorded, but the workspace's AppContainer cannot use
+    /// one of the run's paths at the level the run needs, so nothing started.
+    /// The outcome is recorded as `not_started`. The text names the path's
+    /// role and the missing access, never the path, because a model receives
+    /// it (ADR-0106); [`UngrantedRunPath::path`] has the path.
+    #[error("run {run_id} did not start: {refusal}")]
+    NotGranted {
+        run_id: Uuid,
+        refusal: Box<UngrantedRunPath>,
+    },
     /// The program started, but supervision failed. The tree was observed
     /// empty and the outcome is recorded.
     #[error("run {run_id} failed during supervision: {source}")]
@@ -263,6 +278,8 @@ struct Prepared {
     spec: ProcessSpec,
     confinement: Confinement,
     scratch: Option<Scratch>,
+    /// What each path core listed is for, to name a refused one.
+    listed: ListedPaths,
 }
 
 /// The Linux per-run scratch directory, removed after the run.
@@ -441,7 +458,8 @@ pub fn run(
     });
     let revoked_because = revoked.get().copied();
     let scratch_removed = prepared.scratch.as_mut().map(Scratch::remove);
-    let (finish, outcome, failure) = settle(run_id, result, revoked_because.is_some());
+    let (finish, outcome, failure) =
+        settle(run_id, result, revoked_because.is_some(), &prepared.listed);
     let report = RunReport {
         start: prepared.start,
         finish,
@@ -815,11 +833,13 @@ fn confirm_stopped(
 }
 
 /// Map the runner's result to a recorded outcome and, for failures, an error.
-/// A tree stopped because access was withdrawn is recorded as `revoked`.
+/// A tree stopped because access was withdrawn is recorded as `revoked`. A
+/// refused path is named by its role in `listed`.
 fn settle(
     run_id: Uuid,
     result: Result<ProcessOutcome, ProcessError>,
     revoked: bool,
+    listed: &ListedPaths,
 ) -> (RunFinish, Option<ProcessOutcome>, Option<RunError>) {
     match result {
         Ok(outcome) => {
@@ -860,6 +880,13 @@ fn settle(
                 ProcessError::CleanupUnconfirmed(_) => (
                     RunResult::CleanupUnconfirmed,
                     RunError::CleanupUnconfirmed { run_id, source },
+                ),
+                ProcessError::Ungranted(ungranted) => (
+                    RunResult::NotStarted,
+                    RunError::NotGranted {
+                        run_id,
+                        refusal: Box::new(listed.refusal(*ungranted)),
+                    },
                 ),
                 source => (
                     RunResult::NotStarted,
@@ -981,7 +1008,13 @@ fn prepare(
     let search_path = std::env::join_paths(&path_entries)
         .map_err(|_| RunError::Refused("a PATH entry contains the platform's list separator"))?;
     let mut environment = vec![(OsString::from("PATH"), search_path)];
-    let (confinement, scratch, support_paths, package_cache) = platform_setup(
+    let listed_roots = roots.clone();
+    let PlatformSetup {
+        confinement,
+        scratch,
+        support_paths,
+        package_cache,
+    } = platform_setup(
         control,
         request,
         &scope.workspace,
@@ -1033,10 +1066,16 @@ fn prepare(
         } else {
             None
         },
-        package_cache,
+        package_cache: package_cache.is_some(),
         package_cache_root,
         model_origin: request.model_tools,
         standing_allow: request.standing_allow,
+    };
+    let listed = ListedPaths {
+        profile: profile.name().to_owned(),
+        roots: listed_roots,
+        package_cache,
+        workspace,
     };
     Ok(Prepared {
         start,
@@ -1048,6 +1087,7 @@ fn prepare(
         },
         confinement,
         scratch,
+        listed,
     })
 }
 
@@ -1163,8 +1203,18 @@ fn network_access(request: &RunRequest) -> NetworkAccess {
     }
 }
 
-/// Build the platform confinement and the runner-owned variables. Also
-/// return the resolver and certificate paths added for network access.
+/// What [`platform_setup`] builds for one run.
+struct PlatformSetup {
+    confinement: Confinement,
+    /// The Linux per-run scratch directory.
+    scratch: Option<Scratch>,
+    /// The resolver and certificate paths added for network access.
+    support_paths: Vec<PathBuf>,
+    /// The package cache root the run lists, if any.
+    package_cache: Option<PathBuf>,
+}
+
+/// Build the platform confinement and the runner-owned variables.
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn platform_setup(
@@ -1176,7 +1226,7 @@ fn platform_setup(
     data_root: &Path,
     run_id: Uuid,
     environment: &mut Vec<(OsString, OsString)>,
-) -> Result<(Confinement, Option<Scratch>, Vec<PathBuf>, bool), RunError> {
+) -> Result<PlatformSetup, RunError> {
     let parent = data_root.join("run-scratch");
     crate::storage::create_private_directories(&parent)
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -1223,12 +1273,12 @@ fn platform_setup(
         network: network_access(request),
         container: None,
     };
-    Ok((
+    Ok(PlatformSetup {
         confinement,
-        Some(scratch),
+        scratch: Some(scratch),
         support_paths,
-        package_cache.is_some(),
-    ))
+        package_cache,
+    })
 }
 
 /// The private package cache for one workspace, when it exists as a plain
@@ -1288,7 +1338,7 @@ fn platform_setup(
     data_root: &Path,
     _run_id: Uuid,
     environment: &mut Vec<(OsString, OsString)>,
-) -> Result<(Confinement, Option<Scratch>, Vec<PathBuf>, bool), RunError> {
+) -> Result<PlatformSetup, RunError> {
     use crate::control::container_name;
 
     workspace_access(control, request.workspace_id, workspace_record, false)
@@ -1319,7 +1369,12 @@ fn platform_setup(
         network: network_access(request),
         container: Some(name),
     };
-    Ok((confinement, None, Vec::new(), package_cache.is_some()))
+    Ok(PlatformSetup {
+        confinement,
+        scratch: None,
+        support_paths: Vec::new(),
+        package_cache,
+    })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -1333,7 +1388,7 @@ fn platform_setup(
     _data_root: &Path,
     _run_id: Uuid,
     _environment: &mut Vec<(OsString, OsString)>,
-) -> Result<(Confinement, Option<Scratch>, Vec<PathBuf>, bool), RunError> {
+) -> Result<PlatformSetup, RunError> {
     Err(RunError::Refused(
         "trusted runs exist only on Linux and Windows",
     ))
@@ -1566,6 +1621,78 @@ mod tests {
             stderr_bytes: 0,
             usage: None,
         }
+    }
+
+    /// A path the container cannot use is a `not_started` run with no
+    /// confinement, like any other refused start, and its error names the
+    /// path's role instead of the path. Other start failures are unchanged.
+    #[test]
+    fn an_ungranted_path_is_recorded_as_not_started_and_named_by_its_role() {
+        use omgcode_platform::container::ContainerAccess;
+        use omgcode_platform::process::{ConfinementEntry, UngrantedPath};
+
+        let base = std::env::temp_dir().join("omgcode-settle-user");
+        let root = base.join("toolchain-kappa");
+        let listed = ListedPaths {
+            profile: "tools".into(),
+            roots: vec![base.join("system-lambda"), root.clone()],
+            package_cache: None,
+            workspace: base.join("work-mu"),
+        };
+        let run_id = Uuid::new_v4();
+        let ungranted = UngrantedPath {
+            entry: ConfinementEntry::ReadOnly(1),
+            path: root.clone(),
+            needed: ContainerAccess::ReadExecute,
+            granted: None,
+        };
+        let (finish, outcome, failure) = settle(
+            run_id,
+            Err(ProcessError::Ungranted(Box::new(ungranted))),
+            false,
+            &listed,
+        );
+        assert_eq!(finish.result, RunResult::NotStarted);
+        assert!(finish.confinement.is_none(), "{finish:?}");
+        assert!(outcome.is_none());
+        let Some(RunError::NotGranted {
+            run_id: refused,
+            refusal,
+        }) = failure
+        else {
+            panic!("expected a refused path, got {failure:?}");
+        };
+        assert_eq!(refused, run_id);
+        assert_eq!(
+            refusal.role(),
+            &RefusedPathRole::ProfileRoot {
+                profile: "tools".into(),
+                number: 2,
+            }
+        );
+        assert_eq!(refusal.path(), root);
+        let text = RunError::NotGranted { run_id, refusal }.to_string();
+        assert!(
+            text.starts_with(&format!(
+                "run {run_id} did not start: the workspace's sandbox has no access to root 2 of toolchain profile `tools`"
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("omgcode-settle-user"), "{text}");
+        assert!(!text.contains("toolchain-kappa"), "{text}");
+
+        let missing = io::Error::new(io::ErrorKind::NotFound, "no profile");
+        let (finish, _, failure) = settle(
+            run_id,
+            Err(ProcessError::Confinement(missing)),
+            false,
+            &listed,
+        );
+        assert_eq!(finish.result, RunResult::NotStarted);
+        assert!(
+            matches!(failure, Some(RunError::NotStarted { .. })),
+            "{failure:?}"
+        );
     }
 
     /// A run of a recorded profile, so the settings still allow it on Linux.

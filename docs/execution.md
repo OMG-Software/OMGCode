@@ -568,6 +568,23 @@ Linux runs use `PairsOnly` sockets unless host services were selected. Runs
 have no IP networking unless `--network` was passed. Windows
 roots that every application package can read, such as `Program Files`, need
 no grant; others need a read-execute [container grant](#container-grants).
+A folder under the user's own profile, such as a rustup toolchain or
+`%USERPROFILE%\.cargo`, is never readable by every package, so it always
+needs a grant.
+
+On Windows the runner checks each listed path, then the resolved program,
+against its live access-control list before anything starts. When the
+container lacks the access a path needs, the run is recorded as
+`not_started` and fails with a refusal that names the path's role and the
+access: root N of the named toolchain profile (numbered from 1 in the order
+`profile-show` and the `settings` window list them), the workspace's package
+cache root, the workspace folder, or the program file. The refusal says what
+access the container has and where to grant it. It never includes the path,
+because the model's command tool returns the same text and a path under the
+user's folder can name the account. The trusted CLI's `run` error adds
+`refused_path` with the role, `needed`, `granted`, and the path as `path`,
+`path_display`, and `path_native` (ADR-0106). A DACL that cannot be read is
+still reported as a confinement rule that could not be prepared.
 
 `SIGINT` and `SIGTERM` on Linux, and Ctrl+C and Ctrl+Break on Windows, cancel
 the run. The tree is terminated and the outcome is recorded as `cancelled`.

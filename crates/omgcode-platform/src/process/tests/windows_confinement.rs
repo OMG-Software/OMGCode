@@ -30,8 +30,9 @@ use windows_sys::Win32::System::Pipes::{
 };
 
 use super::super::{
-    AppliedConfinement, CancelSignal, Confinement, NetworkAccess, ProcessError, ProcessOutcome,
-    ProcessSpec, ResourceLimit, Termination, UnixSocketAccess, run, run_confined,
+    AppliedConfinement, CancelSignal, Confinement, ConfinementEntry, NetworkAccess, ProcessError,
+    ProcessOutcome, ProcessSpec, ResourceLimit, Termination, UngrantedPath, UnixSocketAccess, run,
+    run_confined,
 };
 use super::{FIXTURE_ENV, HARNESS_ARGS, disk_limits, grow_spec, limits, spec, text};
 use crate::container::windows::tests::{TestContainer, identity, unique_name};
@@ -643,6 +644,9 @@ fn a_networked_container_reaches_the_internet() {
     );
 }
 
+/// A missing or weaker grant names the refused entry, its path, the level it
+/// needs, and what the container has; the error text leaves the path out.
+/// Another container has no profile, which stays a confinement error.
 #[test]
 fn missing_or_weaker_grants_start_nothing() {
     let mut scene = Scene::new();
@@ -650,14 +654,30 @@ fn missing_or_weaker_grants_start_nothing() {
     let mut cases = Vec::new();
     let mut ungranted = scene.confinement();
     ungranted.read_only.push(scene.secret.clone());
-    cases.push(("ungranted path", ungranted));
+    let refused = UngrantedPath {
+        entry: ConfinementEntry::ReadOnly(2),
+        path: scene.secret.clone(),
+        needed: ContainerAccess::ReadExecute,
+        granted: None,
+    };
+    cases.push(("ungranted path", ungranted, Some(refused)));
     let mut weaker = scene.confinement();
     weaker.read_write.push(scene.read_only_directory.clone());
-    cases.push(("read-only grant listed as read-write", weaker));
+    let refused = UngrantedPath {
+        entry: ConfinementEntry::ReadWrite(1),
+        path: scene.read_only_directory.clone(),
+        needed: ContainerAccess::ReadWrite,
+        granted: Some(ContainerAccess::ReadExecute),
+    };
+    cases.push((
+        "read-only grant listed as read-write",
+        weaker,
+        Some(refused),
+    ));
     let mut other_container = scene.confinement();
     other_container.container = Some((*unique_name()).clone());
-    cases.push(("another container", other_container));
-    for (name, confinement) in cases {
+    cases.push(("another container", other_container, None));
+    for (name, confinement, refused) in cases {
         let mut spec = scene.spec();
         spec.environment
             .retain(|(variable, _)| variable != FIXTURE_ENV);
@@ -669,10 +689,18 @@ fn missing_or_weaker_grants_start_nothing() {
         ));
         let error =
             run_confined(&spec, &confinement, &limits(), &CancelSignal::new()).expect_err(name);
-        assert!(
-            matches!(error, ProcessError::Confinement(_)),
-            "{name}: {error}"
-        );
+        match (&error, refused) {
+            (ProcessError::Ungranted(reported), Some(refused)) => {
+                assert_eq!(**reported, refused, "{name}");
+                let text = error.to_string();
+                assert!(
+                    !text.contains(refused.path.to_string_lossy().as_ref()),
+                    "{name}: the error text names the path: {text}"
+                );
+            }
+            (ProcessError::Confinement(_), None) => {}
+            _ => panic!("{name}: unexpected error: {error}"),
+        }
         assert!(!record.exists(), "{name}: the program started");
     }
     // Stop the host TCP service on the normal path and check its count.
@@ -739,9 +767,17 @@ fn a_program_the_container_cannot_read_does_not_start() {
     spec.program = env::current_exe().expect("test executable");
     let error = run_confined(&spec, &scene.confinement(), &limits(), &CancelSignal::new())
         .expect_err("the program is not granted to the container");
-    assert!(
-        matches!(&error, ProcessError::Confinement(cause) if cause.kind() == io::ErrorKind::PermissionDenied),
-        "{error}"
+    let ProcessError::Ungranted(refused) = &error else {
+        panic!("expected an ungranted program, got: {error}");
+    };
+    assert_eq!(
+        **refused,
+        UngrantedPath {
+            entry: ConfinementEntry::Program,
+            path: spec.program.clone(),
+            needed: ContainerAccess::ReadExecute,
+            granted: None,
+        }
     );
     // Stop the host TCP service on the normal path and check its count.
     assert_eq!(

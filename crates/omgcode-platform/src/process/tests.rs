@@ -606,6 +606,53 @@ fn malformed_confinement_is_refused_before_start() {
     }
 }
 
+/// The text names the entry and both levels but never the path, because
+/// callers pass it on to a model.
+#[test]
+fn an_ungranted_path_error_names_the_entry_and_levels_but_not_the_path() {
+    use super::{ConfinementEntry, UngrantedPath};
+    use crate::container::ContainerAccess;
+
+    let path = env::temp_dir().join("omgcode-ungranted-nu");
+    let cases = [
+        (
+            ConfinementEntry::ReadOnly(3),
+            ContainerAccess::ReadExecute,
+            None,
+            "read-only entry 3 needs read-execute and has no access",
+        ),
+        (
+            ConfinementEntry::ReadWrite(0),
+            ContainerAccess::ReadWrite,
+            Some(ContainerAccess::ReadExecute),
+            "read-write entry 0 needs read-write and has only read-execute",
+        ),
+        (
+            ConfinementEntry::Program,
+            ContainerAccess::ReadExecute,
+            None,
+            "the program needs read-execute and has no access",
+        ),
+    ];
+    for (entry, needed, granted, expected) in cases {
+        let error = ProcessError::Ungranted(Box::new(UngrantedPath {
+            entry,
+            path: path.clone(),
+            needed,
+            granted,
+        }));
+        let text = error.to_string();
+        assert_eq!(
+            text,
+            format!(
+                "a confinement path is not granted to the container at its listed level: {expected}"
+            )
+        );
+        assert!(!text.contains("omgcode-ungranted-nu"), "{text}");
+        assert!(std::error::Error::source(&error).is_none());
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_refuses_programs_that_are_not_plain_exe_files() {

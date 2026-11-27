@@ -600,6 +600,30 @@ Changes are recorded here before a release version is assigned.
 
 ### Changed
 
+- Version 0.70.0 makes a Windows run refused for a missing container grant
+  say which grant is missing (ADR-0106). The refusal used to be one fixed
+  sentence, "a confinement path is not granted to the container at its
+  listed level", for every path, so neither the operator nor a model relaying
+  the command tool's result could tell which folder to grant. An operator's
+  `rust` profile had four roots; the rustup toolchain under their own folder
+  had no grant, and the other three are readable by every application
+  package. Finding it took reading each root's access-control list by hand.
+  The Windows runner now returns `ProcessError::Ungranted` with the refused
+  entry, its path, the access it needs, and the access the container has.
+  Core matches the path against the paths it listed and returns
+  `RunError::NotGranted`, whose text names the role: root N of toolchain
+  profile `NAME` (numbered from 1 as `profile-show` and the `settings`
+  window list them), the workspace's package cache root, the workspace
+  folder, or the program file. The text gives the needed and held access and
+  says where to grant it, but never includes the path. The command tool sends
+  that text to the model, and a path under the user's folder can name the
+  account. The trusted CLI's `run` error keeps the same message and adds
+  `refused_path` with the role, `needed`, `granted`, and the path as `path`,
+  `path_display`, and `path_native`. The checked paths, their order, the
+  levels, the `not_started` record, and the tool's `command_failed` code are
+  unchanged. Windows platform and CLI tests apply real grants to temporary
+  folders; the desktop shell was not driven.
+
 - Version 0.69.0 makes the read-write container grant say what it does
   (ADR-0104). In the desktop `settings` window, **Grant a folder** with read
   and write no longer opens a folder dialog: core accepts that access only on

@@ -21,6 +21,7 @@
 //! Other platforms have no AppContainer; every operation there returns
 //! [`io::ErrorKind::Unsupported`].
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -76,6 +77,16 @@ pub enum ContainerAccess {
     /// Also create, write, rename, and delete. No `WRITE_DAC` or
     /// `WRITE_OWNER`, so the container cannot change ACLs it does not own.
     ReadWrite,
+}
+
+impl fmt::Display for ContainerAccess {
+    /// The spelling the CLI's `--access` option takes.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ReadExecute => "read-execute",
+            Self::ReadWrite => "read-write",
+        })
+    }
 }
 
 /// The container SID for `name`, in string form such as `S-1-15-2-…`.
