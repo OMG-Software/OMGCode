@@ -122,7 +122,10 @@ The Linux credential tests need an unlocked Secret Service.
 background subshell that writes the daemon's output and exit status to
 `$RUNNER_TEMP/secret-service/daemon.log`. It waits through the D-Bus driver,
 which never starts a service, until that daemon owns
-`org.freedesktop.secrets`, and fails if another process owns the name. When a
+`org.freedesktop.secrets`, and fails if another process owns the name. It
+then requires the default collection's `Locked` property to be false, and
+checks the owner again after that last Secret Service call, because a call
+made after the daemon left the bus would have started a replacement. When a
 later step fails, `.github/scripts/secret-service-diagnostics.sh` prints that
 log, whether the daemon still runs, the current name owner, journal entries
 for gnome-keyring, the session bus, and systemd-oomd, the daemon's core dumps

@@ -372,8 +372,10 @@ Changes are recorded here before a release version is assigned.
   2026-11-27 `packages.microsoft.com` returned `403` and failed PR 79's zfs
   job before its tests (run 46051772270). A Secret Service failure in CI now
   leaves evidence: `.github/scripts/start-secret-service.sh` keeps the
-  gnome-keyring daemon's output and exit status and checks that the daemon
-  it started owns `org.freedesktop.secrets`. After a failed Linux step,
+  gnome-keyring daemon's output and exit status, requires the default
+  collection to be unlocked, and checks that the daemon it started owns
+  `org.freedesktop.secrets` both before and after its last Secret Service
+  call. After a failed Linux step,
   `.github/scripts/secret-service-diagnostics.sh` prints that record, the
   journal for gnome-keyring and the session bus, the daemon's core dumps, and
   kernel OOM and crash lines. In that run's second attempt the daemon left the session bus and 28
