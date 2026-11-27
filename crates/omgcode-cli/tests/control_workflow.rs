@@ -13,6 +13,7 @@ use uuid::Uuid;
 use omgcode_core::control::ControlStore;
 #[cfg(unix)]
 use support::CLI_DEADLINE;
+use support::spawn_gate::without_child_spawns;
 use support::{
     GRANT_CLI_DEADLINE, HANG_FIXTURE_ENV, assert_control_error, assert_error_code, assert_success,
     json_output, path_arg, revoke_recorded_grants, run_cli, run_cli_for, run_with_deadline,
@@ -914,17 +915,21 @@ fn approvals_are_requested_decided_and_consumed_once() {
 /// Windows container its folder (ADR-0107); tests of other commands use this
 /// so their revisions match on every platform and no AppContainer state
 /// outlives them. `workspace_commands_persist_cas_permissions_policy_and_audit_results`
-/// covers the command itself.
+/// covers the command itself. The store is opened and closed while no test
+/// thread can start a child, which would otherwise share its lock on Unix
+/// and make the next open report `Busy`.
 fn register(data_root: &Path, workspace: &Path, revision: u64) -> String {
-    let mut store = ControlStore::open_existing(data_root)
-        .expect("open settings")
-        .expect("settings exist");
-    store
-        .register_workspace(workspace, revision)
-        .expect("register workspace")
-        .id()
-        .as_uuid()
-        .to_string()
+    without_child_spawns(|| {
+        let mut store = ControlStore::open_existing(data_root)
+            .expect("open settings")
+            .expect("settings exist");
+        store
+            .register_workspace(workspace, revision)
+            .expect("register workspace")
+            .id()
+            .as_uuid()
+            .to_string()
+    })
 }
 
 /// Revokes every recorded container grant when dropped, so a test that

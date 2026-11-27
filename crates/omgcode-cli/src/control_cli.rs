@@ -5,8 +5,8 @@
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
     AssignmentFailure, ContainerGrantAccess, ContainerGrantState, ControlError, ControlStore,
-    CredentialId, PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration,
-    Revocations,
+    CredentialId, FolderGrant, PackageProfileDeclaration, ProfileDeclaration,
+    ProviderProfileDeclaration, Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -50,7 +50,9 @@ pub(crate) enum WorkspaceCommand {
     /// On Windows, registering is also the consent to grant the workspace's
     /// AppContainer read and write access to its folder (ADR-0107), when this
     /// account can change the folder's access. Registering a folder again
-    /// keeps its identifier and grants that access if it is missing.
+    /// keeps its identifier and grants that access if it is missing. A folder
+    /// only an administrator can grant, or whose access could not be read, is
+    /// listed under `not_granted`, and runs in the workspace are refused.
     Register {
         path: PathBuf,
         #[arg(long)]
@@ -598,8 +600,15 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 "registration_id": registered.registration.id(),
                 "snapshot": store.snapshot(),
             });
-            if let Some(grant) = grant {
-                output["grant_id"] = json!(grant.id());
+            match grant {
+                FolderGrant::Granted(grant) => output["grant_id"] = json!(grant.id()),
+                FolderGrant::Skipped(skipped) => {
+                    output["not_granted"] = json!({
+                        "path": registered.registration.directory_display(),
+                        "reason": skipped.as_str(),
+                    });
+                }
+                FolderGrant::NotNeeded => {}
             }
             print_json(&output)
         }
@@ -1080,11 +1089,39 @@ fn finish_revocations(
                 "Every container grant of the workspace was revoked, but its removal could not be recorded: {error}. The workspace stays registered; unregister it again."
             ),
         );
+    } else if !problems.is_empty() {
+        // The JSON naming what was revoked is not printed after a failure.
+        problems.insert(0, completed_change(change, revocations));
     }
     if problems.is_empty() {
         Ok(())
     } else {
         Err(CliError::new(kind, problems.join(" ")))
+    }
+}
+
+/// What a change whose every revocation succeeded did, for an error raised
+/// after it: the change and each grant it revoked.
+fn completed_change(change: RevokingChange<'_>, revocations: &Revocations) -> String {
+    let (done, grants) = match change {
+        RevokingChange::Recorded => (
+            "The change was recorded",
+            "every container grant it releases was revoked",
+        ),
+        RevokingChange::Unregistration(_) => (
+            "The workspace was unregistered",
+            "every container grant of it was revoked",
+        ),
+    };
+    let revoked: Vec<String> = revocations
+        .revoked
+        .iter()
+        .map(|revocation| revocation.grant_id.to_string())
+        .collect();
+    match revoked.as_slice() {
+        [] => format!("{done}."),
+        [grant] => format!("{done}, and {grants} (grant {grant})."),
+        _ => format!("{done}, and {grants} (grants {}).", revoked.join(", ")),
     }
 }
 
@@ -1437,5 +1474,45 @@ mod tests {
             Uuid::new_v4(),
             ControlError::Container(io::Error::other("denied")),
         )]));
+    }
+
+    fn revoked(grants: &[Uuid]) -> Revocations {
+        Revocations {
+            revoked: grants
+                .iter()
+                .map(|&grant_id| omgcode_core::control::ContainerRevocation {
+                    grant_id,
+                    profile_deleted: false,
+                })
+                .collect(),
+            ..Revocations::default()
+        }
+    }
+
+    /// An error raised after every revocation succeeded, such as an
+    /// unreadable run journal, names the change and each grant it revoked,
+    /// because the JSON that lists them is not printed.
+    #[test]
+    fn a_completed_change_names_each_grant_it_revoked() {
+        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+        assert_eq!(
+            completed_change(RevokingChange::Recorded, &revoked(&[first])),
+            format!(
+                "The change was recorded, and every container grant it releases was revoked (grant {first})."
+            )
+        );
+        assert_eq!(
+            completed_change(
+                RevokingChange::Unregistration(None),
+                &revoked(&[first, second])
+            ),
+            format!(
+                "The workspace was unregistered, and every container grant of it was revoked (grants {first}, {second})."
+            )
+        );
+        assert_eq!(
+            completed_change(RevokingChange::Recorded, &revoked(&[])),
+            "The change was recorded."
+        );
     }
 }

@@ -129,10 +129,58 @@ pub struct ProfileAssignment {
 pub struct RegisteredWorkspace {
     /// The registration, new or the existing one for the same folder.
     pub registration: WorkspaceRegistration,
-    /// The read-write grant on its folder applied now, if one was needed.
-    /// A failed grant leaves the workspace registered; a grant whose
-    /// access-control change failed stays `pending` until it is revoked.
-    pub grant: Result<Option<ContainerGrant>, ControlError>,
+    /// What became of the read-write grant on its folder. A failed grant
+    /// leaves the workspace registered; a grant whose access-control change
+    /// failed stays `pending` until it is revoked.
+    pub grant: Result<FolderGrant, ControlError>,
+}
+
+/// The read-write grant on a workspace's folder that registering it applied,
+/// or why it applied none.
+#[derive(Debug)]
+pub enum FolderGrant {
+    /// Granted now.
+    Granted(ContainerGrant),
+    /// None was needed: container grants exist only on Windows, or a grant of
+    /// the workspace is recorded on the folder already.
+    NotNeeded,
+    /// The folder needs a grant that was not attempted. A run in the
+    /// workspace is refused until it has one.
+    Skipped(SkippedGrant),
+}
+
+/// Why a folder that needs a grant was left without one, as
+/// [`root_grant_need`](super::root_grant_need) classifies it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SkippedGrant {
+    /// This account cannot change the folder's access-control list; only an
+    /// administrator can grant it.
+    NeedsAdministrator,
+    /// Whether this account can change the folder's access-control list
+    /// could not be read.
+    AccessUnknown,
+}
+
+impl SkippedGrant {
+    /// The reason `skipped` from whether this account can change a folder's
+    /// access-control list, or `None` when it can.
+    #[must_use]
+    pub fn from_check(can_change: &std::io::Result<bool>) -> Option<Self> {
+        match can_change {
+            Ok(true) => None,
+            Ok(false) => Some(Self::NeedsAdministrator),
+            Err(_) => Some(Self::AccessUnknown),
+        }
+    }
+
+    /// The stable reason code, as `profile-assign` lists its folders.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsAdministrator => "needs_administrator",
+            Self::AccessUnknown => "access_unknown",
+        }
+    }
 }
 
 /// The revocations an operator change made after it was recorded.
@@ -593,7 +641,9 @@ impl ControlStore {
     /// grant the workspace's container read-write on its folder when no grant
     /// of the workspace is recorded on that folder and this account can change
     /// its access-control list. Registering a folder again that has no such
-    /// grant grants it.
+    /// grant grants it. A grant this account cannot apply, or whose need
+    /// could not be read, is not attempted and is reported as
+    /// [`FolderGrant::Skipped`].
     ///
     /// # Errors
     ///
@@ -616,7 +666,7 @@ impl ControlStore {
     fn grant_own_folder(
         &mut self,
         registration: &WorkspaceRegistration,
-    ) -> Result<Option<ContainerGrant>, ControlError> {
+    ) -> Result<FolderGrant, ControlError> {
         if !CONTAINER_GRANTS_SUPPORTED
             || self.container_grants().iter().any(|status| {
                 status.grant().workspace_id() == registration.id
@@ -626,11 +676,11 @@ impl ControlStore {
                         .same_directory(&registration.directory)
             })
         {
-            return Ok(None);
+            return Ok(FolderGrant::NotNeeded);
         }
         let live = registration.directory.live_path()?;
-        if !platform::can_change_access(&live).unwrap_or(false) {
-            return Ok(None);
+        if let Some(skipped) = SkippedGrant::from_check(&platform::can_change_access(&live)) {
+            return Ok(FolderGrant::Skipped(skipped));
         }
         self.grant_container_access(
             registration.id,
@@ -638,7 +688,7 @@ impl ControlStore {
             ContainerGrantAccess::ReadWrite,
             self.revision(),
         )
-        .map(Some)
+        .map(FolderGrant::Granted)
     }
 
     /// Revoke every grant of `id`, in any state, then, when every revocation

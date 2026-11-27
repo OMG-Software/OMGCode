@@ -45,8 +45,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
     AssignmentFailure, CONTAINER_GRANTS_SUPPORTED, ControlError, ControlStore, CredentialId,
-    CredentialStore, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth, ProviderCredentialError,
-    ProviderKind, ProviderProfileDeclaration, Revocations, delete_unbound_credential,
+    CredentialStore, FolderGrant, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth,
+    ProviderCredentialError, ProviderKind, ProviderProfileDeclaration, Revocations, SkippedGrant,
+    delete_unbound_credential,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::provider::ModelEndpoint;
@@ -617,7 +618,10 @@ impl DesktopService {
     ///
     /// `no_development_root` before any dialog when no root is set;
     /// `workspace_grant_failed` when the workspace was registered but its
-    /// folder was not granted; otherwise as
+    /// folder's grant failed; `workspace_grant_skipped` when it was
+    /// registered but only an administrator can grant its folder, or this
+    /// account's access to the folder's access list could not be read;
+    /// otherwise as
     /// [`settings_choose_root`](Self::settings_choose_root).
     pub fn settings_register_workspace(
         &self,
@@ -651,13 +655,14 @@ impl DesktopService {
             let registered = store
                 .register_workspace_with_access(&folder, request.revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
-            Ok((
-                AlsoWithdrawn::default(),
-                registered
-                    .grant
-                    .err()
-                    .map(|error| DesktopError::workspace_grant_failed(&error)),
-            ))
+            let unfinished = match registered.grant {
+                Ok(FolderGrant::Granted(_) | FolderGrant::NotNeeded) => None,
+                Ok(FolderGrant::Skipped(reason)) => {
+                    Some(DesktopError::workspace_grant_skipped(reason))
+                }
+                Err(error) => Some(DesktopError::workspace_grant_failed(&error)),
+            };
+            Ok((AlsoWithdrawn::default(), unfinished))
         })
     }
 
@@ -1629,6 +1634,27 @@ impl DesktopError {
         )
     }
 
+    /// The workspace was registered, but its folder needs a grant that was
+    /// not attempted (ADR-0107). A run in it is refused until it has one.
+    fn workspace_grant_skipped(reason: SkippedGrant) -> Self {
+        let (reason, recovery) = match reason {
+            SkippedGrant::NeedsAdministrator => (
+                "only an administrator can change its folder's access list",
+                "Its runs are refused until an administrator grants the folder.",
+            ),
+            SkippedGrant::AccessUnknown => (
+                "whether this account can change its folder's access list could not be read",
+                "Its runs are refused until it has that grant: grant the folder read and write under Container grants.",
+            ),
+        };
+        Self::execution(
+            "workspace_grant_skipped",
+            format!(
+                "The workspace was registered, but its sandbox was not granted its folder: {reason}. {recovery}"
+            ),
+        )
+    }
+
     /// Revocations the change made did not all complete; every grant was
     /// attempted. After a recorded change the change stands; after an
     /// unregistration the workspace stays registered. A grant revoked whose
@@ -1867,6 +1893,31 @@ mod tests {
 
     /// A grant left revoking is still reported beside one whose profile
     /// could not be deleted.
+    /// A folder grant registration did not attempt is reported with its
+    /// reason, so the operator does not learn of it from a refused run.
+    #[test]
+    fn a_skipped_folder_grant_is_reported_with_its_reason() {
+        let error = DesktopError::workspace_grant_skipped(SkippedGrant::NeedsAdministrator);
+        assert_eq!(error.code(), "workspace_grant_skipped");
+        assert_eq!(
+            error.message(),
+            "The workspace was registered, but its sandbox was not granted its folder: only an administrator can change its folder's access list. Its runs are refused until an administrator grants the folder."
+        );
+        let error = DesktopError::workspace_grant_skipped(SkippedGrant::AccessUnknown);
+        assert!(
+            error
+                .message()
+                .contains("could not be read. Its runs are refused until it has that grant"),
+            "{}",
+            error.message()
+        );
+        assert!(
+            error.message().ends_with("under Container grants."),
+            "{}",
+            error.message()
+        );
+    }
+
     #[test]
     fn a_grant_left_revoking_is_reported_beside_a_failed_profile_deletion() {
         let failures = [

@@ -84,7 +84,10 @@ per-call approval of a command, which is a different decision.
    such grant grants it, which is how a workspace registered before this
    change gets it. A failed grant leaves the workspace registered and is
    reported; a grant left `pending` is named, with how to revoke it and
-   register the folder again.
+   register the folder again. A folder only an administrator can grant, or
+   whose access could not be read, is not attempted, and registering reports
+   it with that reason, as an assignment's plan lists such folders, instead
+   of leaving the operator to learn of it from a refused run.
 5. **Removing revokes what is no longer needed.** Unassigning a profile, and
    removing an assigned profile, revoke the workspace's read-execute grants
    on that profile's roots, or on a folder that holds one of them, that

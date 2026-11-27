@@ -1035,3 +1035,79 @@ fn a_failed_assignment_returns_the_grants_it_could_not_release() {
         "a grant a profile still needs is kept"
     );
 }
+
+/// A folder grant registration does not attempt keeps the reason
+/// [`root_grant_need`] gives the same check, so neither surface reports it as
+/// granted or as not needed: an account that cannot change the folder's
+/// access-control list needs an administrator, and a check that failed
+/// leaves the access unknown.
+#[test]
+fn a_skipped_folder_grant_keeps_its_reason() {
+    assert_eq!(SkippedGrant::from_check(&Ok(true)), None);
+    assert_eq!(
+        SkippedGrant::from_check(&Ok(false)),
+        Some(SkippedGrant::NeedsAdministrator)
+    );
+    assert_eq!(
+        SkippedGrant::from_check(&Err(std::io::Error::other("unreadable"))),
+        Some(SkippedGrant::AccessUnknown)
+    );
+    assert_eq!(
+        SkippedGrant::NeedsAdministrator.as_str(),
+        "needs_administrator"
+    );
+    assert_eq!(SkippedGrant::AccessUnknown.as_str(), "access_unknown");
+}
+
+/// Off Windows, registering needs no folder grant.
+#[cfg(not(windows))]
+#[test]
+fn registering_off_windows_needs_no_folder_grant() {
+    let mut scene = scene();
+    let folder = scene.root.join("app");
+    fs::create_dir(&folder).expect("workspace directory");
+    let revision = scene.store.revision();
+    let registered = scene
+        .store
+        .register_workspace_with_access(&folder, revision)
+        .expect("registered");
+    assert!(
+        matches!(registered.grant, Ok(FolderGrant::NotNeeded)),
+        "{:?}",
+        registered.grant
+    );
+    assert!(scene.store.container_grants().is_empty());
+}
+
+/// On Windows, registering a folder this account owns grants it, and
+/// registering it again finds the grant and needs none.
+#[cfg(windows)]
+#[test]
+fn registering_grants_the_folder_once() {
+    let mut scene = scene();
+    let folder = scene.root.join("app");
+    fs::create_dir(&folder).expect("workspace directory");
+    let revision = scene.store.revision();
+    let first = scene
+        .store
+        .register_workspace_with_access(&folder, revision);
+    let again = first.as_ref().ok().map(|_| {
+        let revision = scene.store.revision();
+        scene
+            .store
+            .register_workspace_with_access(&folder, revision)
+            .map(|registered| registered.grant)
+    });
+    let (left, failures) = revoke_left(&mut scene.store);
+    let first = first.expect("registered");
+    let Ok(FolderGrant::Granted(grant)) = &first.grant else {
+        panic!("the folder was not granted: {:?}", first.grant);
+    };
+    assert_eq!(grant.access(), ContainerGrantAccess::ReadWrite);
+    assert_eq!(left, vec![grant.id()]);
+    assert!(
+        matches!(again, Some(Ok(Ok(FolderGrant::NotNeeded)))),
+        "{again:?}"
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+}

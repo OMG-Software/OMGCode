@@ -316,7 +316,9 @@ fn toolchain_add_confirmation(
 
 /// The native confirmation for the read-write grant on the workspace's own
 /// folder. It says who gets the access (the workspace's sandbox) because the
-/// workspace and the folder are the same path (ADR-0104).
+/// workspace and the folder are the same path (ADR-0104), and that
+/// registering normally grants it (ADR-0107), since this dialog restores a
+/// grant that registration skipped or that was revoked later.
 fn workspace_folder_grant_confirmation(workspace_folder: &str) -> Confirmation {
     Confirmation {
         title: "Let a workspace's commands use its folder",
@@ -325,7 +327,7 @@ fn workspace_folder_grant_confirmation(workspace_folder: &str) -> Confirmation {
 {workspace_folder}
 read and write that folder and everything beneath it?
 
-OMGCode runs each of the workspace's commands in the workspace's own AppContainer, a Windows sandbox that starts with no access to your files; registering the folder gave it none. This adds the sandbox to the folder's access-control list on disk, and it stays until you revoke it. Every run in the workspace needs it."
+OMGCode runs each of the workspace's commands in the workspace's own AppContainer, a Windows sandbox that starts with no access to your files. Registering a folder normally grants it this access, but the sandbox has no read-write grant on this folder now. This adds the sandbox to the folder's access-control list on disk, and it stays until you revoke it. Every run in the workspace needs it."
         ),
     }
 }
@@ -1148,7 +1150,8 @@ mod tests {
             "read and write that folder",
             "AppContainer",
             "Windows sandbox",
-            "registering the folder gave it none",
+            "Registering a folder normally grants it this access",
+            "has no read-write grant on this folder now",
             "access-control list",
             "until you revoke it",
             "Every run in the workspace needs it",

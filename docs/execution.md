@@ -435,7 +435,11 @@ Rules:
   that is registered already grants it if that grant is missing, which is how
   a workspace registered before 0.70.0 gets it. A failed grant leaves the
   workspace registered and is reported; `register` prints `grant_id` when it
-  granted.
+  granted. When only an administrator can change the folder's
+  access-control list, or whether this account can could not be read, no
+  grant is attempted, and `register` prints `not_granted` with the folder and
+  the reason, `needs_administrator` or `access_unknown`, as `profile-assign`
+  does. Runs in that workspace are refused until it has the grant.
 
 ## Trusted runs
 
@@ -553,8 +557,9 @@ first too. `profile-unassign`, `profile-remove`, and `unregister` list every
 pending run under the lock before the change, and also wait for those of each
 workspace whose grant they tried to revoke, because any revocation withdraws
 the workspace's runs (ADR-0107). If the run journal cannot be read, for
-example after an interrupted append, it still revokes the grant, then fails
-with code `run` and says that the grant was revoked.
+example after an interrupted append, they still revoke the grants, then fail
+with code `run`, say that the change was recorded and every grant it
+released was revoked, and name each grant, since their JSON is not printed.
 
 A run counts as stopped only when its owner lock is free and an outcome other
 than `cleanup_unconfirmed` is recorded. These runs are reported as not stopped,

@@ -621,7 +621,12 @@ Changes are recorded here before a release version is assigned.
   need an administrator, or whose access could not be read, are listed and
   not granted. Registering a
   workspace grants its container read-write on its folder, and registering an
-  existing folder again grants it if that grant is missing. Unassigning or
+  existing folder again grants it if that grant is missing. A folder only an
+  administrator can grant, or whose access could not be read, is not
+  granted and is reported with its reason: `register` prints it under
+  `not_granted`, and the `settings` window returns `workspace_grant_skipped`.
+  The read-write folder grant's confirmation no longer says registering gave
+  the sandbox no access; it says registering normally grants it. Unassigning or
   removing a profile revokes the workspace's read-execute grants on its roots,
   or on a folder that holds one, that no other assigned profile and not the
   package cache root needs, never the workspace folder's grant; a grant on a
@@ -633,7 +638,10 @@ Changes are recorded here before a release version is assigned.
   attempted, and each one not revoked is named. Unregistering revokes every
   grant of the workspace first and leaves it registered if a revocation
   fails or its removal cannot be recorded. Each caller waits only for the
-  runs of the workspaces whose grants it revoked. The
+  runs of the workspaces whose grants it revoked. When the run journal cannot
+  be read after every revocation succeeded, `profile-unassign`,
+  `profile-remove`, and `unregister` fail with code `run` and name each
+  grant they revoked, since their JSON is not printed. The
   trusted CLI adds `workspace profile-assign` and `workspace
   profile-unassign`, and `register`, `unregister`, and `profile-remove` report
   what they granted or revoked. The desktop `settings` window shows one
