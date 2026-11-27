@@ -365,6 +365,12 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- Four CodeQL alerts in the desktop UI are resolved. The text-append helper
+  (`append` in `dom.ts`) now handles a string child and a node child in
+  separate branches (alert 21). Two security-test script end-tag patterns
+  now accept whitespace or attributes before `>` (alerts 12 and 13), and one
+  test's key prefix strip is anchored to a single leading `../` (alert 11).
+  No shipped behaviour or version changed.
 - The guides now match the code at version 0.69.0. PRs #69 to #76 merged
   in parallel, so statements one change made were left stale by another.
   No behaviour or version changed; the only code changes are help text and

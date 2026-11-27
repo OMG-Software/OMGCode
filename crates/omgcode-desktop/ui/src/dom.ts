@@ -53,7 +53,11 @@ export function append(parent: Node, ...children: Child[]): void {
     if (child === null || child === undefined || child === false) {
       continue;
     }
-    parent.appendChild(typeof child === "string" ? text(child) : child);
+    if (typeof child === "string") {
+      parent.appendChild(text(child));
+    } else {
+      parent.appendChild(child);
+    }
   }
 }
 
