@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { el, neutralise } from "../src/dom";
+import { append, el, neutralise } from "../src/dom";
 import { iconButton, setIconButton } from "../src/ui/icons";
 
 const OVERRIDE = String.fromCharCode(0x202e);
@@ -36,6 +36,25 @@ describe("el attributes", () => {
     for (const name of ["onclick", "style", "href", "src", "srcdoc"]) {
       expect(() => el("a", { attrs: { [name]: "x" } })).toThrow(/not allowed/);
     }
+  });
+});
+
+describe("append", () => {
+  it("keeps a string child as one literal text node", () => {
+    const parent = document.createElement("div");
+    append(parent, "<img src=x onerror=1>");
+    expect(parent.childNodes).toHaveLength(1);
+    expect(parent.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+    expect(parent.firstChild?.textContent).toBe("<img src=x onerror=1>");
+    expect(parent.querySelector("img")).toBeNull();
+  });
+
+  it("appends a node child as given and skips empty children", () => {
+    const parent = document.createElement("div");
+    const child = document.createElement("span");
+    append(parent, child, null, undefined, false);
+    expect(parent.childNodes).toHaveLength(1);
+    expect(parent.firstChild).toBe(child);
   });
 });
 

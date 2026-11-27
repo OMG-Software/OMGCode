@@ -135,7 +135,7 @@ suite(
       for (const entry of ["index.html", "approvals.html", "settings.html"]) {
         const html = byPath.get(entry) ?? "";
         expect(html, entry).not.toBe("");
-        for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+        for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)) {
           expect(match[1]?.trim(), entry).toBe("");
         }
         expect(html, entry).not.toMatch(/<style\b|\sstyle\s*=|https?:/i);
