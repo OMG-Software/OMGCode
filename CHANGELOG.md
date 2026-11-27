@@ -365,6 +365,21 @@ Changes are recorded here before a release version is assigned.
 
 ### Fixed
 
+- A third-party apt repository on a Linux CI runner can no longer fail a job.
+  Every apt step in `rust.yml` and `testing-build.yml` now runs
+  `.github/scripts/apt-install-ubuntu.sh`, which reads only the image's
+  Ubuntu source file. An Ubuntu archive error still fails the step. On
+  2026-11-27 `packages.microsoft.com` returned `403` and failed PR 79's zfs
+  job before its tests (run 46051772270). A Secret Service failure in CI now
+  leaves evidence: `.github/scripts/start-secret-service.sh` keeps the
+  gnome-keyring daemon's output and exit status and checks that the daemon
+  it started owns `org.freedesktop.secrets`. After a failed Linux step,
+  `.github/scripts/secret-service-diagnostics.sh` prints that record, the
+  journal for gnome-keyring and the session bus, and kernel OOM and crash
+  lines. In that run's second attempt the daemon left the session bus and 28
+  credential tests failed with `Locked`. The cause is still unknown; this
+  change adds diagnostics only and retries or serialises no test. No
+  application behaviour or version changed.
 - Version 0.71.0 names a reasoning effort that the server refused; it is a
   minor version because the public `ProviderError` enum gains the variant
   `EffortRefused`, which breaks an exhaustive `match` on it. A chat
