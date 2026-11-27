@@ -1336,7 +1336,9 @@ waits. The window shows:
   confirmation that names the workspace folder, the profile, each folder the
   workspace's sandbox is granted read and execute, and the folders that need
   an administrator or whose access could not be read, then grants and assigns
-  with the confirmed plan. Turning one off calls
+  with the confirmed plan. When the assignment fails after granting, the
+  grants it made that no assigned profile needs are revoked, and the error
+  counts any that could not be, for their **Revoke**. Turning one off calls
   `settings_unassign_toolchain_profile`, whose confirmation names the grants
   it revokes and says the workspace's running commands stop. A declined
   confirmation or a refusal shows the recorded state again. Then the
@@ -1394,7 +1396,8 @@ waits. The window shows:
   `revocation_incomplete`, saying how many grants were not revoked, to retry
   each one's **Revoke**, and to remove the workspace again; a grant revoked
   whose AppContainer profile could not be deleted is reported apart, because
-  it is no longer listed. When every grant was revoked but the removal
+  it is no longer listed, and when that is the only failure the message says
+  every grant was revoked. When every grant was revoked but the removal
   cannot be recorded, the workspace stays registered and the command fails
   with `revocation_incomplete` after the same wait. If that file cannot
   be deleted, the command still stops and waits for the runs the removal

@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -420,8 +421,12 @@ pub(crate) fn run_command(data_root: &Path, args: &[&str]) -> Command {
 impl Drop for Scene {
     fn drop(&mut self) {
         // Fallback for a test that failed before `close`; it must not panic.
+        // A failed write to stderr is ignored, so that report is lost then.
         for failure in self.revoke_grants() {
-            eprintln!("grant revocation failed during cleanup: {failure}");
+            let _ = writeln!(
+                io::stderr(),
+                "grant revocation failed during cleanup: {failure}"
+            );
         }
     }
 }

@@ -281,7 +281,7 @@ does not; assigning also refuses a profile declared on another platform.
 none. Removing a profile ends every assignment of it, and so does
 unregistering the workspace. On Windows assigning grants the folders the
 workspace's container needs, and unassigning revokes those no other assigned
-profile lists; the [execution guide](execution.md#toolchain-profiles) owns
+profile needs; the [execution guide](execution.md#toolchain-profiles) owns
 those rules. The `settings` window assigns and unassigns with a switch per
 profile on the workspace's page, after a native confirmation. Existing
 profiles start assigned to no workspace. Version 0.69.0 refuses a settings

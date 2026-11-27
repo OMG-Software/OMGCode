@@ -971,24 +971,31 @@ consent to give that workspace's sandbox the profile's folders.
   assignment cannot be recorded, the profile stays unassigned and core
   revokes the grants this call made that no assigned profile needs, which
   withdraws the workspace's runs; a grant whose revocation fails stays
-  recorded, `pending` or `revoking`, until it is revoked. `profile-assign` is itself the consent,
+  recorded, `pending` or `revoking`, until it is revoked. Core returns those
+  revocations with the error: `profile-assign` names each grant not revoked
+  with its `container-revoke` command, and the `settings` window counts them
+  and points to each one's **Revoke**. `profile-assign` is itself the consent,
   so it plans and assigns in one call, and prints `assigned_profile_id`,
   `granted` (each `grant_id` with its folder), and `not_granted` with the
   reason.
 - **Unassigning and removing:** the change is recorded first. Then core
   revokes the workspace's read-execute grants whose folder is one of the
-  profile's roots, that no profile still assigned to the workspace needs, and
-  that are not on the workspace's package cache root. A profile still
-  assigned needs a grant on one of its roots, and a grant on a folder that
-  holds one of its roots when no other grant of the workspace is on that root
-  or above it: a root inside a granted folder was readable when it was
-  planned, so it got no grant of its own. A folder whose containment cannot
-  be read counts as not needing the grant. The workspace folder's read-write
+  profile's roots or holds one of them, that neither a profile still assigned
+  to the workspace nor the workspace's package cache root needs. A profile
+  still assigned, and the cache root, need a grant on their folder, and a
+  grant on a folder that holds it when no other grant of the workspace is on
+  that folder or above it: a root inside a granted folder was readable when
+  it was planned, so it got no grant of its own. So a grant on an outer
+  profile's root, kept while a nested root of another profile relies on it,
+  is revoked when that other profile is unassigned too. A folder whose
+  containment cannot be read is not a candidate, and counts as not needing
+  the grant. The workspace folder's read-write
   grant is never revoked here. Every grant is attempted, even after one
   fails. `profile-unassign` and `profile-remove` print what they revoked
   under `revoked`; a failed revocation leaves the change recorded, each grant
   not revoked is named with its `container-revoke` command, and a grant whose
-  AppContainer profile could not be deleted afterwards is named as revoked.
+  AppContainer profile could not be deleted afterwards is named as revoked;
+  when that is the only failure, the message says every grant was revoked.
 - **Unregistering:** `workspace unregister` revokes every grant of the
   workspace first and unregisters it only when every revocation was
   confirmed; otherwise the workspace stays registered with the grants not yet

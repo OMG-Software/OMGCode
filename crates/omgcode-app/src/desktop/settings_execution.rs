@@ -40,11 +40,11 @@
 use std::path::PathBuf;
 
 use omgcode_core::control::{
-    CONTAINER_GRANTS_SUPPORTED, ContainerGrantAccess, ControlError, ControlStore, CredentialStore,
-    MAX_PACKAGE_ORIGIN_BYTES, MAX_PACKAGE_ORIGINS, MAX_PROFILE_PATH_ENTRIES, MAX_PROFILE_ROOTS,
-    MAX_PROFILE_VARIABLES, MAX_VARIABLE_NAME_BYTES, MAX_VARIABLE_VALUE_BYTES,
-    PackageProfileDeclaration, PlannedFolder, ProfileAccessPlan, ProfileDeclaration,
-    delete_unbound_credential, parse_origin,
+    AssignmentFailure, CONTAINER_GRANTS_SUPPORTED, ContainerGrantAccess, ControlError,
+    ControlStore, CredentialStore, MAX_PACKAGE_ORIGIN_BYTES, MAX_PACKAGE_ORIGINS,
+    MAX_PROFILE_PATH_ENTRIES, MAX_PROFILE_ROOTS, MAX_PROFILE_VARIABLES, MAX_VARIABLE_NAME_BYTES,
+    MAX_VARIABLE_VALUE_BYTES, PackageProfileDeclaration, PlannedFolder, ProfileAccessPlan,
+    ProfileDeclaration, delete_unbound_credential, parse_origin,
 };
 use omgcode_core::run;
 use omgcode_core::turn::display_safe_line;
@@ -207,6 +207,31 @@ impl DesktopError {
             ),
             other => Self::from_control(other),
         }
+    }
+
+    /// An assignment that failed, as [`Self::from_grant`] reports its cause,
+    /// with the count of grants it made that could not be revoked afterwards;
+    /// the settings list each one, and **Revoke** tries again. A grant revoked
+    /// whose AppContainer profile alone could not be deleted holds no access
+    /// and is not counted.
+    pub(super) fn assignment_failed(failure: &AssignmentFailure) -> Self {
+        let cause = Self::from_grant(&failure.error);
+        let left = failure
+            .released
+            .failures
+            .iter()
+            .filter(|(_, error)| !matches!(error, ControlError::ProfileRemoval(_)))
+            .count();
+        if left == 0 {
+            return cause;
+        }
+        Self::execution(
+            cause.code(),
+            format!(
+                "{}. {left} container grant(s) the failed assignment made could not be revoked; the settings list each one, and Revoke tries again.",
+                cause.message().trim_end_matches('.')
+            ),
+        )
     }
 
     /// The package profile was removed, but credentials bound to it were not
@@ -647,7 +672,7 @@ impl DesktopService {
         let mut store = self.inner.open_or_create_control()?;
         store
             .assign_profile_with_access(workspace_id, &request.name, &plan, request.revision)
-            .map_err(|error| DesktopError::from_grant(&error))?;
+            .map_err(|failure| DesktopError::assignment_failed(&failure))?;
         Ok(overview_of(&self.inner, store))
     }
 
@@ -995,6 +1020,51 @@ impl DesktopService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omgcode_core::control::Revocations;
+
+    fn failure(error: ControlError, failures: Vec<(Uuid, ControlError)>) -> AssignmentFailure {
+        AssignmentFailure {
+            error,
+            released: Revocations {
+                failures,
+                ..Revocations::default()
+            },
+        }
+    }
+
+    /// A failed assignment that left no grant reports its cause as a grant
+    /// failure does; one that left grants also counts them, without the
+    /// operating system's text, and a grant whose profile alone could not
+    /// be deleted is not counted.
+    #[test]
+    fn a_failed_assignment_counts_the_grants_it_left() {
+        let os = || std::io::Error::other("operating system text");
+        let alone = DesktopError::assignment_failed(&failure(
+            ControlError::LimitReached,
+            vec![(Uuid::new_v4(), ControlError::ProfileRemoval(os()))],
+        ));
+        let cause = DesktopError::from_grant(&ControlError::LimitReached);
+        assert_eq!(alone.code(), cause.code());
+        assert_eq!(alone.message(), cause.message());
+
+        let left = DesktopError::assignment_failed(&failure(
+            ControlError::Container(os()),
+            vec![
+                (Uuid::new_v4(), ControlError::Container(os())),
+                (Uuid::new_v4(), ControlError::ProfileRemoval(os())),
+            ],
+        ));
+        assert_eq!(left.code(), "container_access_failed");
+        let message = left.message();
+        assert!(
+            message.contains(
+                " 1 container grant(s) the failed assignment made could not be revoked; the settings list each one, and Revoke tries again."
+            ),
+            "{message}"
+        );
+        assert!(!message.contains(".."), "{message}");
+        assert!(!message.contains("operating system text"), "{message}");
+    }
 
     #[test]
     fn the_grant_and_revoke_confirmations_name_everything_they_change() {

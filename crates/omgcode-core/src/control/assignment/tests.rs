@@ -326,7 +326,13 @@ fn an_assignment_applies_only_the_confirmed_plan() {
         .assign_profile_with_access(app, "rust", &confirmed, revision);
     if CONTAINER_GRANTS_SUPPORTED {
         assert!(
-            matches!(result, Err(ControlError::ProfileRefused(_))),
+            matches!(
+                &result,
+                Err(AssignmentFailure {
+                    error: ControlError::ProfileRefused(_),
+                    released,
+                }) if released.workspaces.is_empty()
+            ),
             "{result:?}"
         );
         assert_eq!(scene.store.revision(), revision);
@@ -505,6 +511,54 @@ fn a_grant_a_nested_root_relies_on_is_kept() {
     assert_eq!(released(&scene.store), [sdk]);
 }
 
+/// When the outer profile is unassigned first, its grant is kept for the
+/// nested root; unassigning or removing the inner profile then releases it,
+/// so the grant does not outlive both assignments. A package cache root
+/// inside the outer folder keeps the grant until the cache has its own.
+#[test]
+fn an_outer_grant_kept_for_a_nested_root_is_released_with_it() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("outer", &["sdk"]);
+    scene.profile("inner", &["sdk/bin"]);
+    scene.assign(app, "outer").expect("assign outer");
+    scene.assign(app, "inner").expect("assign inner");
+    let read = ContainerGrantAccess::ReadExecute;
+    let sdk = scene
+        .store
+        .test_record_grant(app, &scene.outside.join("sdk"), read);
+    let revision = scene.store.revision();
+    scene
+        .store
+        .unassign_profile(app, "outer", revision)
+        .expect("unassign outer");
+    let released = |store: &ControlStore| {
+        store
+            .grants_released_by_unassignment(app, "inner")
+            .expect("preview")
+    };
+
+    assert_eq!(released(&scene.store), [sdk]);
+    assert_eq!(
+        scene
+            .store
+            .grants_released_by_removal("inner")
+            .expect("removal preview"),
+        [(app, vec![sdk])]
+    );
+
+    let cache = scene.outside.join("sdk/cache");
+    fs::create_dir_all(&cache).expect("cache folder");
+    let revision = scene.store.revision();
+    scene
+        .store
+        .set_package_cache_root(app, &cache, revision)
+        .expect("cache root");
+    assert!(released(&scene.store).is_empty());
+    scene.store.test_record_grant(app, &cache, read);
+    assert_eq!(released(&scene.store), [sdk]);
+}
+
 /// A workspace whose container grant is pending, or being revoked, is refused
 /// a plan, because its runs are refused until that grant is settled. Another
 /// workspace is not affected.
@@ -538,7 +592,10 @@ fn a_pending_grant_refuses_an_assignment_plan() {
             &ProfileAccessPlan::default(),
             revision
         ),
-        Err(ControlError::GrantRefused(_))
+        Err(AssignmentFailure {
+            error: ControlError::GrantRefused(_),
+            ..
+        })
     ));
     assert!(scene.store.assigned_profiles(app).is_empty());
     scene
@@ -668,10 +725,68 @@ fn an_assignment_that_cannot_be_recorded_revokes_its_grant() {
     for grant in &left {
         let _ = scene.store.revoke_container_grant(*grant);
     }
+    let failure = result.expect_err("the assignment cannot be recorded");
     assert!(
-        matches!(result, Err(ControlError::LimitReached)),
-        "{result:?}"
+        matches!(failure.error, ControlError::LimitReached),
+        "{failure:?}"
     );
+    // The grant it made is revoked and named, with its workspace.
+    assert_eq!(failure.released.revoked.len(), 1, "{failure:?}");
+    assert!(failure.released.failures.is_empty(), "{failure:?}");
+    assert_eq!(failure.released.workspaces, [app]);
     assert!(left.is_empty(), "a grant outlived the failed assignment");
     assert!(scene.store.assigned_profiles(app).is_empty());
+}
+
+/// A failed assignment's release returns each revocation it attempted, and
+/// a revocation that fails is returned rather than dropped; a grant a
+/// still-assigned profile needs is not attempted, and a package cache root
+/// inside a grant it made does not keep that grant. On Windows the recorded
+/// grant has no real access-control entry and is revoked; elsewhere its
+/// revocation fails and is reported with its grant.
+#[test]
+fn a_failed_assignment_returns_the_grants_it_could_not_release() {
+    let mut scene = scene();
+    let app = scene.register("app");
+    scene.profile("kept", &["kept"]);
+    scene.assign(app, "kept").expect("assign kept");
+    let read = ContainerGrantAccess::ReadExecute;
+    let needed = scene
+        .store
+        .test_record_grant(app, &scene.outside.join("kept"), read);
+    let path = scene.outside.join("made");
+    let cache = path.join("cache");
+    fs::create_dir_all(&cache).expect("grant folder");
+    let made = scene.store.test_record_grant(app, &path, read);
+    let revision = scene.store.revision();
+    scene
+        .store
+        .set_package_cache_root(app, &cache, revision)
+        .expect("cache root");
+
+    let released = scene.store.release_unneeded(app, &[needed, made]);
+
+    assert_eq!(released.workspaces, [app]);
+    if CONTAINER_GRANTS_SUPPORTED {
+        assert!(released.failures.is_empty(), "{:?}", released.failures);
+        assert_eq!(released.revoked.len(), 1);
+    } else {
+        assert!(released.revoked.is_empty());
+        assert!(
+            matches!(
+                released.failures.as_slice(),
+                [(grant, ControlError::Container(_))] if *grant == made
+            ),
+            "{:?}",
+            released.failures
+        );
+    }
+    assert!(
+        scene
+            .store
+            .container_grants()
+            .iter()
+            .any(|status| status.grant().id() == needed),
+        "a grant a profile still needs is kept"
+    );
 }

@@ -508,7 +508,7 @@ impl DesktopService {
             }
             if let Some((workspace_id, _, plan)) = &assign {
                 let names: Vec<&str> = chosen.iter().map(ToolchainProposal::name).collect();
-                if let Err(error) =
+                if let Err(failure) =
                     store.assign_profiles_with_access(*workspace_id, &names, plan, expected)
                 {
                     // Assignments recorded before the failure stand.
@@ -522,7 +522,7 @@ impl DesktopService {
                     return Err(DesktopError::not_assigned(
                         chosen.len(),
                         assigned,
-                        &DesktopError::from_grant(&error),
+                        &DesktopError::assignment_failed(&failure),
                     ));
                 }
             }

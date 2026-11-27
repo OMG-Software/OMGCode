@@ -4,8 +4,9 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    ContainerGrantAccess, ContainerGrantState, ControlError, ControlStore, CredentialId,
-    PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
+    AssignmentFailure, ContainerGrantAccess, ContainerGrantState, ControlError, ControlStore,
+    CredentialId, PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration,
+    Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -925,7 +926,7 @@ fn profile_assign(
         .map_err(control_error)?;
     let assignment = store
         .assign_profile_with_access(workspace_id, name, &plan, revision)
-        .map_err(control_error)?;
+        .map_err(assignment_failed)?;
     let not_granted: Vec<_> = assignment
         .plan
         .needs_administrator()
@@ -949,6 +950,51 @@ fn profile_assign(
         "not_granted": not_granted,
         "snapshot": store.snapshot(),
     }))
+}
+
+/// The error of a failed assignment, naming each grant it made that could
+/// not be revoked afterwards, with the command that retries it.
+fn assignment_failed(failure: AssignmentFailure) -> CliError {
+    let mut error = control_error(failure.error);
+    let failures = &failure.released.failures;
+    if !failures.is_empty() {
+        if !error.message.ends_with('.') {
+            error.message.push('.');
+        }
+        error.message.push_str(if all_revoked(failures) {
+            " The profile was not assigned, and every container grant the assignment made was revoked."
+        } else {
+            " The profile was not assigned, but not every container grant the assignment made was revoked."
+        });
+        error.message.push_str(&unrevoked_grants(failures));
+    }
+    error
+}
+
+/// Whether every failure is a grant revoked whose AppContainer profile alone
+/// could not be deleted, so no grant keeps its access.
+fn all_revoked(failures: &[(Uuid, ControlError)]) -> bool {
+    failures
+        .iter()
+        .all(|(_, error)| matches!(error, ControlError::ProfileRemoval(_)))
+}
+
+/// One sentence per failed revocation: a grant not revoked, with the command
+/// that retries it, or a grant revoked whose profile could not be deleted.
+fn unrevoked_grants(failures: &[(Uuid, ControlError)]) -> String {
+    let mut text = String::new();
+    for (grant, error) in failures {
+        if matches!(error, ControlError::ProfileRemoval(_)) {
+            // The grant is revoked; only the container's profile, which
+            // holds no grant now, could not be deleted.
+            text.push_str(&format!(" Grant {grant}: {error}."));
+        } else {
+            text.push_str(&format!(
+                " Grant {grant} could not be revoked: {error}; retry with `workspace container-revoke {grant}`."
+            ));
+        }
+    }
+    text
 }
 
 /// The change [`finish_revocations`] reports on.
@@ -989,27 +1035,29 @@ fn finish_revocations(
     let mut kind = "run";
     if !revocations.failures.is_empty() {
         kind = "control";
-        let mut message = match change {
-            RevokingChange::Recorded => {
-                "The change was recorded, but not every container grant it releases was revoked.".to_owned()
+        let revoked = all_revoked(&revocations.failures);
+        let mut message = match (change, revoked) {
+            (RevokingChange::Recorded, false) => {
+                "The change was recorded, but not every container grant it releases was revoked."
             }
-            RevokingChange::Unregistration(_) => {
-                "The workspace stays registered, because not every container grant of it was revoked.".to_owned()
+            (RevokingChange::Recorded, true) => {
+                "The change was recorded, and every container grant it releases was revoked."
             }
-        };
-        for (grant, error) in &revocations.failures {
-            if matches!(error, ControlError::ProfileRemoval(_)) {
-                // The grant is revoked; only the container's profile, which
-                // holds no grant now, could not be deleted.
-                message.push_str(&format!(" Grant {grant}: {error}."));
-            } else {
-                message.push_str(&format!(
-                    " Grant {grant} could not be revoked: {error}; retry with `workspace container-revoke {grant}`."
-                ));
+            (RevokingChange::Unregistration(_), false) => {
+                "The workspace stays registered, because not every container grant of it was revoked."
+            }
+            (RevokingChange::Unregistration(_), true) => {
+                "The workspace stays registered: every container grant of it was revoked, but its removal was not attempted."
             }
         }
+        .to_owned();
+        message.push_str(&unrevoked_grants(&revocations.failures));
         if matches!(change, RevokingChange::Unregistration(_)) {
-            message.push_str(" Then unregister it again.");
+            message.push_str(if revoked {
+                " Unregister it again."
+            } else {
+                " Then unregister it again."
+            });
         }
         problems.insert(0, message);
     } else if let RevokingChange::Unregistration(Some(error)) = change {
@@ -1265,4 +1313,93 @@ fn parse_workspace_id(value: &str) -> Result<WorkspaceId, CliError> {
 
 pub(crate) fn control_error(error: ControlError) -> CliError {
     CliError::new("control", error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    fn failure(released: Vec<(Uuid, ControlError)>) -> AssignmentFailure {
+        AssignmentFailure {
+            error: ControlError::LimitReached,
+            released: Revocations {
+                failures: released,
+                ..Revocations::default()
+            },
+        }
+    }
+
+    /// A failed assignment whose grants were all revoked reports only its
+    /// cause.
+    #[test]
+    fn a_failed_assignment_with_nothing_left_reports_its_cause() {
+        let error = assignment_failed(failure(Vec::new()));
+        assert_eq!(error.code, "control");
+        assert_eq!(error.message, "control journal capacity reached");
+    }
+
+    /// A grant a failed assignment could not revoke is named with the
+    /// command that retries it; one whose profile alone could not be deleted
+    /// is named as revoked.
+    #[test]
+    fn a_failed_assignment_names_each_grant_it_left() {
+        let (left, removed) = (Uuid::new_v4(), Uuid::new_v4());
+        let error = assignment_failed(failure(vec![
+            (left, ControlError::Container(io::Error::other("denied"))),
+            (
+                removed,
+                ControlError::ProfileRemoval(io::Error::other("busy")),
+            ),
+        ]));
+        assert!(
+            error.message.starts_with(
+                "control journal capacity reached. The profile was not assigned, but not every container grant the assignment made was revoked."
+            ),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&format!(
+                "Grant {left} could not be revoked: container access change failed: denied; retry with `workspace container-revoke {left}`."
+            )),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&format!(
+                "Grant {removed}: the grant was revoked, but the container profile could not be deleted: busy."
+            )),
+            "{}",
+            error.message
+        );
+    }
+
+    /// When every failure is a profile that could not be deleted, the
+    /// message says every grant was revoked.
+    #[test]
+    fn a_failed_profile_deletion_alone_says_every_grant_was_revoked() {
+        let failures = vec![(
+            Uuid::new_v4(),
+            ControlError::ProfileRemoval(io::Error::other("busy")),
+        )];
+        assert!(all_revoked(&failures));
+        let error = assignment_failed(failure(failures));
+        assert!(
+            error
+                .message
+                .contains("every container grant the assignment made was revoked."),
+            "{}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("container-revoke"),
+            "{}",
+            error.message
+        );
+        assert!(!all_revoked(&[(
+            Uuid::new_v4(),
+            ControlError::Container(io::Error::other("denied")),
+        )]));
+    }
 }

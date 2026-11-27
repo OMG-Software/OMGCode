@@ -614,16 +614,18 @@ Changes are recorded here before a release version is assigned.
   refuses the assignment if the plan changed, then applies the grants and
   records the assignment last, granting only a folder that is still the
   confirmed directory. An assignment whose grant fails, or that cannot be
-  recorded, revokes the grants it made that no assigned profile needs, and a
+  recorded, revokes the grants it made that no assigned profile needs and
+  reports each one it could not revoke, and a
   workspace with a pending or revoking grant is refused a plan. Folders that
   need an administrator, or whose access could not be read, are listed and
   not granted. Registering a
   workspace grants its container read-write on its folder, and registering an
   existing folder again grants it if that grant is missing. Unassigning or
-  removing a profile revokes the workspace's read-execute grants on its roots
-  that no other assigned profile needs, never the workspace folder's grant or
-  the package cache root's; a grant on a folder that holds a still-assigned
-  profile's root, which got no grant of its own, is kept. Every grant is
+  removing a profile revokes the workspace's read-execute grants on its roots,
+  or on a folder that holds one, that no other assigned profile and not the
+  package cache root needs, never the workspace folder's grant; a grant on a
+  folder that holds a still-assigned profile's root, which got no grant of
+  its own, is kept until that profile is unassigned too. Every grant is
   attempted, and each one not revoked is named. Unregistering revokes every
   grant of the workspace first and leaves it registered if a revocation
   fails or its removal cannot be recorded. Each caller waits only for the

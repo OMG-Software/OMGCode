@@ -1595,25 +1595,33 @@ impl DesktopError {
     /// attempted. After a recorded change the change stands; after an
     /// unregistration the workspace stays registered. A grant revoked whose
     /// container profile could not be deleted is not listed for **Revoke**,
-    /// because it is gone. The operating system's own text is never shown.
+    /// because it is gone, and when no other grant failed the message says
+    /// every grant was revoked. The operating system's own text is never
+    /// shown.
     pub(super) fn revocation_incomplete(
         failures: &[(uuid::Uuid, ControlError)],
         change: RevokingChange,
     ) -> Self {
-        let mut message = match change {
-            RevokingChange::Recorded => {
-                "The change was recorded, but not every container grant it releases was revoked."
-            }
-            RevokingChange::Unregistration => {
-                "The workspace stays registered, because not every container grant of it was revoked."
-            }
-        }
-        .to_owned();
         let unrevoked: Vec<&ControlError> = failures
             .iter()
             .map(|(_, error)| error)
             .filter(|error| !matches!(error, ControlError::ProfileRemoval(_)))
             .collect();
+        let mut message = match (change, unrevoked.is_empty()) {
+            (RevokingChange::Recorded, false) => {
+                "The change was recorded, but not every container grant it releases was revoked."
+            }
+            (RevokingChange::Recorded, true) => {
+                "The change was recorded, and every container grant it releases was revoked."
+            }
+            (RevokingChange::Unregistration, false) => {
+                "The workspace stays registered, because not every container grant of it was revoked."
+            }
+            (RevokingChange::Unregistration, true) => {
+                "The workspace stays registered: every container grant of it was revoked, but its removal was not attempted."
+            }
+        }
+        .to_owned();
         let access = unrevoked
             .iter()
             .any(|error| matches!(error, ControlError::Container(_)));
@@ -1636,9 +1644,11 @@ impl DesktopError {
             message.push_str(" The settings list each one, and Revoke tries again.");
         }
         if unrevoked.len() < failures.len() {
-            message.push_str(
-                " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now.",
-            );
+            message.push_str(if unrevoked.is_empty() {
+                " The workspace's AppContainer profile could not be deleted afterwards; it holds no access now."
+            } else {
+                " A grant was revoked, but the workspace's AppContainer profile could not be deleted; it holds no access now."
+            });
         }
         if change == RevokingChange::Unregistration {
             message.push_str(if unrevoked.is_empty() {
@@ -1745,6 +1755,73 @@ mod tests {
                 .message
                 .contains("- delete tool: prompt to allow.")
         );
+    }
+
+    fn removal_failed() -> ControlError {
+        ControlError::ProfileRemoval(std::io::Error::other("operating system text"))
+    }
+
+    /// A grant revoked whose AppContainer profile could not be deleted is
+    /// not reported as a grant left to revoke.
+    #[test]
+    fn a_failed_profile_deletion_alone_says_every_grant_was_revoked() {
+        let failures = [(uuid::Uuid::new_v4(), removal_failed())];
+        for (change, lead) in [
+            (
+                RevokingChange::Recorded,
+                "The change was recorded, and every container grant it releases was revoked.",
+            ),
+            (
+                RevokingChange::Unregistration,
+                "The workspace stays registered: every container grant of it was revoked",
+            ),
+        ] {
+            let error = DesktopError::revocation_incomplete(&failures, change);
+            let message = error.message();
+            assert_eq!(error.code(), "revocation_incomplete");
+            assert!(message.starts_with(lead), "{message}");
+            assert!(message.contains("could not be deleted"), "{message}");
+            assert!(!message.contains("not revoked"), "{message}");
+            assert!(!message.contains("Revoke tries again"), "{message}");
+            assert!(!message.contains("operating system text"), "{message}");
+            assert_eq!(
+                message.ends_with(" Remove the workspace again."),
+                change == RevokingChange::Unregistration,
+                "{message}"
+            );
+        }
+    }
+
+    /// A grant left revoking is still reported beside one whose profile
+    /// could not be deleted.
+    #[test]
+    fn a_grant_left_revoking_is_reported_beside_a_failed_profile_deletion() {
+        let failures = [
+            (uuid::Uuid::new_v4(), removal_failed()),
+            (
+                uuid::Uuid::new_v4(),
+                ControlError::Container(std::io::Error::other("operating system text")),
+            ),
+        ];
+        let error = DesktopError::revocation_incomplete(&failures, RevokingChange::Unregistration);
+        let message = error.message();
+        assert_eq!(error.code(), "container_access_failed");
+        assert!(
+            message.starts_with(
+                "The workspace stays registered, because not every container grant of it was revoked."
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains(" 1 grant(s) could not be removed"),
+            "{message}"
+        );
+        assert!(message.contains("A grant was revoked, but"), "{message}");
+        assert!(
+            message.ends_with(" Then remove the workspace again."),
+            "{message}"
+        );
+        assert!(!message.contains("operating system text"), "{message}");
     }
 
     #[test]

@@ -41,8 +41,8 @@ pub use approval::{
 };
 
 pub use assignment::{
-    PlannedFolder, ProfileAccessPlan, ProfileAssignment, RegisteredWorkspace, Revocations,
-    Unregistration,
+    AssignmentFailure, PlannedFolder, ProfileAccessPlan, ProfileAssignment, RegisteredWorkspace,
+    Revocations, Unregistration,
 };
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,

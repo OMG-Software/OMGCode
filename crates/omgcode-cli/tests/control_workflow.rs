@@ -936,9 +936,13 @@ impl Drop for RevokeGrantsOnDrop<'_> {
     fn drop(&mut self) {
         // The helpers report a failed status read, a timeout, and a failed
         // revocation instead of panicking, which would abort a run that is
-        // already unwinding, and every grant is attempted.
+        // already unwinding, and every grant is attempted. A failed write to
+        // stderr is ignored, so that report is lost then.
         for problem in revoke_recorded_grants(self.0) {
-            eprintln!("grant revocation failed during cleanup: {problem}");
+            let _ = writeln!(
+                io::stderr(),
+                "grant revocation failed during cleanup: {problem}"
+            );
         }
     }
 }

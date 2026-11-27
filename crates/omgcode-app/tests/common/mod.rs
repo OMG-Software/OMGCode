@@ -531,8 +531,9 @@ pub struct Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Err(problem) = self.revoke_grants() {
-            // Never panic in drop: a second panic would abort the run.
-            eprintln!("fixture cleanup: {problem}");
+            // Never panic in drop: a second panic would abort the run. A
+            // failed write to stderr is ignored, so the report is lost then.
+            let _ = writeln!(std::io::stderr(), "fixture cleanup: {problem}");
         }
     }
 }

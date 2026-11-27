@@ -69,7 +69,9 @@ per-call approval of a command, which is a different decision.
    cannot be recorded, the profile stays unassigned and core revokes the
    grants that call made that no assigned profile needs, so no access
    outlives a consent that did not take effect; a grant whose revocation
-   fails stays recorded, `pending` or `revoking`, until it is revoked. A
+   fails stays recorded, `pending` or `revoking`, until it is revoked, and
+   the failure returns those revocations so the operator is told which
+   grants are left. A
    workspace with a grant that is pending or being revoked is refused a plan,
    because its runs are refused until that grant is settled. Off Windows the
    plan is empty and assigning records only the event.
@@ -83,12 +85,14 @@ per-call approval of a command, which is a different decision.
    register the folder again.
 5. **Removing revokes what is no longer needed.** Unassigning a profile, and
    removing an assigned profile, revoke the workspace's read-execute grants
-   on that profile's roots that no profile still assigned to the workspace
-   needs and that are not the workspace's package cache root. A profile still
-   assigned needs a grant on one of its roots, and a grant on a folder that
-   holds one of its roots that no other grant reaches: a root inside a
-   granted folder was readable when it was planned and got no grant of its
-   own. The workspace folder's read-write grant is never revoked by these.
+   on that profile's roots, or on a folder that holds one of them, that
+   neither a profile still assigned to the workspace nor the workspace's
+   package cache root needs. A profile still assigned, and the cache root,
+   need a grant on their folder, and a grant on a folder that holds it that
+   no other grant reaches: a root inside a granted folder was readable when it
+   was planned and got no grant of its own. A grant kept that way is revoked
+   with the last profile inside it, whichever is unassigned first. The
+   workspace folder's read-write grant is never revoked by these.
    Every grant is attempted even after one fails, and each grant not revoked
    is reported. Unregistering a workspace revokes every grant of the
    workspace first and unregisters it only when every revocation was
