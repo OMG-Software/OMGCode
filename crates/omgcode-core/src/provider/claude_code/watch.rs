@@ -161,7 +161,15 @@ impl Watcher {
     /// settings. A thread that panicked counts as a withdrawal, so the turn
     /// fails closed.
     pub(super) fn stop(&mut self) {
+        self.stop_observed(|| {});
+    }
+
+    /// [`Self::stop`], calling `done_set` once the thread was told to stop
+    /// and before it is woken and joined, so a test can hold the thread
+    /// until then.
+    fn stop_observed(&mut self, done_set: impl FnOnce()) {
         self.done.store(true, Ordering::SeqCst);
+        done_set();
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
             if thread.join().is_err() {
@@ -257,7 +265,10 @@ mod tests {
 
     /// A withdrawal recorded after the watcher's last poll, which the loop
     /// never checks because the watcher stops first, is still seen by the
-    /// check at the stop: the turn is withdrawn and its tree stopped.
+    /// check at the stop: the turn is withdrawn and its tree stopped. The
+    /// watcher waits after its first poll until it was told to stop, on a
+    /// channel rather than in its timed park, so no poll of the loop, also
+    /// after a spurious wake, can see the withdrawal first.
     #[test]
     fn a_withdrawal_recorded_after_the_last_poll_is_seen_at_the_stop() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -265,16 +276,23 @@ mod tests {
 
         let tree = CancelSignal::new();
         let (polled, polls) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let (waited, waits) = mpsc::channel();
         let cursor = watch.cursor();
-        // The loop polls once and then not again for an hour, so only the
-        // check at the stop can see the change below.
+        // The hook holds the loop, so its poll can be short. A long one could
+        // outlast the test: the channel's own wait can take the wake that
+        // `stop` sends, and the loop's park would then wait the whole poll.
         let mut watcher = Watcher::start_observed(
             watch,
             cursor,
             tree.clone(),
-            Duration::from_secs(3600),
+            Duration::from_millis(10),
             move || {
                 let _ = polled.send(());
+                // Bounded, so a failed test cannot leave the thread behind;
+                // a timeout is reported rather than raised, since a watcher
+                // that panicked counts as withdrawn.
+                let _ = waited.send(released.recv_timeout(Duration::from_secs(30)).is_ok());
             },
         )
         .expect("watcher");
@@ -292,7 +310,14 @@ mod tests {
                 .expect("removed");
         }
         drop(store);
-        watcher.stop();
+        watcher.stop_observed(|| {
+            let _ = release.send(());
+        });
+        assert_eq!(
+            waits.try_iter().collect::<Vec<_>>(),
+            [true],
+            "the loop polled once and was held until the stop"
+        );
         assert!(watcher.withdrawn(), "the change after the last poll");
         assert!(tree.is_cancelled(), "the tree is stopped");
     }

@@ -152,8 +152,24 @@ const SUPERVISED_ENV: &str = "OMGCODE_SUPERVISED_TEST";
 /// Makes a supervised copy abandon one turn, for the supervisor's own test.
 const ABANDON_ARGUMENT: &str = "--abandon-one-turn";
 
-/// The supervisor's own test, which runs in the supervising process.
-const SUPERVISOR_TEST: &str = "a_supervisor_stops_and_cleans_up_after_an_abandoned_turn";
+/// One of the supervisor's own tests: `Err` names its failure.
+type SupervisorTest = fn() -> Result<(), String>;
+
+/// The supervisor's own tests, which run in the supervising process.
+const SUPERVISOR_TESTS: [(&str, SupervisorTest); 3] = [
+    (
+        "a_supervisor_stops_and_cleans_up_after_an_abandoned_turn",
+        supervisor_test,
+    ),
+    (
+        "a_supervisor_keeps_the_folder_when_the_scope_stop_fails",
+        a_supervisor_keeps_the_folder_when_the_scope_stop_fails,
+    ),
+    (
+        "a_supervisor_keeps_the_folder_when_a_revocation_fails",
+        a_supervisor_keeps_the_folder_when_a_revocation_fails,
+    ),
+];
 
 /// The exit code of a copy that ended with a turn still running.
 const ABANDONED_EXIT: u8 = 70;
@@ -164,23 +180,29 @@ struct Cleaned {
     scenes: usize,
     /// The fakes and relays of those scenes whose end was observed.
     ended: usize,
-    /// The grants revoked for those scenes' connections.
-    #[cfg(windows)]
+    /// The grants revoked for those scenes' connections; none on Linux.
     revoked: usize,
-    /// The container profiles deleted for those scenes' connections.
-    #[cfg(windows)]
+    /// The container profiles deleted for those scenes' connections; none
+    /// on Linux.
     profiles_deleted: usize,
 }
 
+/// What revoking a scene's connection that outlived its copy did.
+struct Revoked {
+    grants: usize,
+    profile_deleted: bool,
+}
+
 /// Run the tests in a supervised copy of this binary, clean up after it,
-/// and then run the supervisor's own test.
+/// and then run the supervisor's own tests.
 ///
 /// A test that abandons a turn ([`abandon`]) ends its copy, and no drop of
 /// the copy runs, so its scene's fixtures and, on Linux, the relay outlive
 /// it. Every temporary folder of a copy lies in one folder of this process,
 /// so once the copy ended, [`clean_up_after`] can stop what it left
-/// running, observe the end of each fake and relay it started, delete each
-/// connection's container profile on Windows, and remove that folder.
+/// running, observe the end of each fake and relay it started, on Windows
+/// revoke each connection, which deletes its container profile, and remove
+/// that folder, which it keeps and names when any of those steps failed.
 fn supervise(arguments: &[OsString], filter: Option<&str>) -> ExitCode {
     let mut passed = match supervised_copy(0, &arguments[1..]) {
         Ok((status, cleaned)) => {
@@ -197,23 +219,27 @@ fn supervise(arguments: &[OsString], filter: Option<&str>) -> ExitCode {
             false
         }
     };
-    if filter.is_none_or(|filter| SUPERVISOR_TEST.contains(filter)) {
-        let outcome = supervisor_test();
+    let (mut ran, mut failed) = (0, 0);
+    for (name, test) in SUPERVISOR_TESTS {
+        if !filter.is_none_or(|filter| name.contains(filter)) {
+            continue;
+        }
+        let outcome = test();
         if let Err(error) = &outcome {
-            eprintln!("{SUPERVISOR_TEST}: {error}");
+            eprintln!("{name}: {error}");
         }
         let ok = outcome.is_ok();
+        println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
+        ran += 1;
+        failed += usize::from(!ok);
+    }
+    if ran > 0 {
         println!(
-            "test {SUPERVISOR_TEST} ... {}",
-            if ok { "ok" } else { "FAILED" }
+            "\ntest result: {}. {} passed; {failed} failed",
+            if failed == 0 { "ok" } else { "FAILED" },
+            ran - failed
         );
-        println!(
-            "\ntest result: {}. {} passed; {} failed",
-            if ok { "ok" } else { "FAILED" },
-            usize::from(ok),
-            usize::from(!ok)
-        );
-        passed &= ok;
+        passed &= failed == 0;
     }
     if passed {
         ExitCode::SUCCESS
@@ -237,14 +263,90 @@ fn supervisor_test() -> Result<(), String> {
             cleaned.scenes, cleaned.ended
         ));
     }
-    #[cfg(windows)]
-    if cleaned.profiles_deleted != 1 || cleaned.revoked == 0 {
+    // Linux has no grant or container profile to remove.
+    let revoked_as_expected = if cfg!(windows) {
+        cleaned.revoked > 0 && cleaned.profiles_deleted == 1
+    } else {
+        cleaned.revoked == 0 && cleaned.profiles_deleted == 0
+    };
+    if !revoked_as_expected {
         return Err(format!(
             "{} grants revoked and {} container profiles deleted",
             cleaned.revoked, cleaned.profiles_deleted
         ));
     }
     Ok(())
+}
+
+/// A supervision folder holding one scene's data and sign-in folders, with
+/// nothing running, as a copy that ended cleanly leaves its scene.
+fn idle_supervision_folder() -> Result<(TempDir, PathBuf), String> {
+    let folder = TempDir::new().map_err(|error| format!("the supervision folder: {error}"))?;
+    let (data, sign_in) = Scene::folders(&folder.path().join("scene"));
+    for path in [&data, &sign_in] {
+        fs::create_dir_all(path).map_err(|error| format!("the scene folder: {error}"))?;
+    }
+    let path = folder.path().to_owned();
+    Ok((folder, path))
+}
+
+/// The cleanup failed for `cause`, named the folder at `path`, and kept it;
+/// the folder is then removed here, as the operator would once satisfied.
+fn expect_kept(outcome: Result<Cleaned, String>, path: &Path, cause: &str) -> Result<(), String> {
+    let kept = path.is_dir();
+    if kept {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("remove the kept folder {}: {error}", path.display()))?;
+    }
+    match outcome {
+        Err(error)
+            if kept && error.contains(cause) && error.contains(&path.display().to_string()) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!("kept: {kept}; {error}")),
+        Ok(_) => Err(format!("the cleanup reported success; kept: {kept}")),
+    }
+}
+
+/// A scope stop that fails, as when `systemctl` cannot stop the copy's
+/// scope, keeps and names the folder before anything in it is read, since
+/// processes of the copy may still run there.
+fn a_supervisor_keeps_the_folder_when_the_scope_stop_fails() -> Result<(), String> {
+    let (folder, path) = idle_supervision_folder()?;
+    let mut revoked = 0;
+    let outcome = clean_up_with(
+        folder,
+        || Err("the injected scope stop failed".to_owned()),
+        |_| {
+            revoked += 1;
+            Ok(None)
+        },
+    );
+    if revoked != 0 {
+        return Err(format!("{revoked} revocations ran after the failed stop"));
+    }
+    expect_kept(outcome, &path, "the injected scope stop failed")
+}
+
+/// A revocation that fails, as when a container grant cannot be removed,
+/// keeps and names the folder, whose settings a retry of the revocation
+/// needs.
+fn a_supervisor_keeps_the_folder_when_a_revocation_fails() -> Result<(), String> {
+    let (folder, path) = idle_supervision_folder()?;
+    let mut asked = 0;
+    let outcome = clean_up_with(
+        folder,
+        || Ok(()),
+        |_| {
+            asked += 1;
+            Err("the injected revocation failed".to_owned())
+        },
+    );
+    if asked != 1 {
+        return Err(format!("{asked} revocations were asked for one scene"));
+    }
+    expect_kept(outcome, &path, "the injected revocation failed")
 }
 
 /// Run a copy of this binary with `arguments`, its temporary folders in a
@@ -298,23 +400,49 @@ fn copy_command(program: &Path, _scope: &str) -> Command {
 /// pipes, the relay, but nothing ends a descendant that ignores them, so
 /// the copy's scope is stopped, which ends every process left in it.
 /// Either way an end counts only once each fake's, relay's, and linger's
-/// alive lock is seen free, and a folder whose processes were not seen to
-/// end is kept and named.
+/// alive lock is seen free. A folder whose scope could not be stopped,
+/// whose processes were not seen to end, or whose connection could not be
+/// revoked is kept and named, so nothing a retry or the operator needs is
+/// removed before the cleanup was confirmed.
 fn clean_up_after(folder: TempDir, scope: &str) -> Result<Cleaned, String> {
-    #[cfg(target_os = "linux")]
-    stop_scope(scope)?;
-    #[cfg(not(target_os = "linux"))]
-    let _ = scope;
+    clean_up_with(folder, || stop_scope(scope), revoke_left_connection)
+}
+
+/// [`clean_up_after`] with its platform steps passed in, so the
+/// supervisor's own tests can make them fail: `stop` ends what the copy
+/// left running, and `revoke` revokes the connection of a scene's data
+/// folder. The folder is removed only once every step succeeded.
+fn clean_up_with(
+    folder: TempDir,
+    stop: impl FnOnce() -> Result<(), String>,
+    revoke: impl FnMut(&Path) -> Result<Option<Revoked>, String>,
+) -> Result<Cleaned, String> {
+    match clean_up_in(folder.path(), stop, revoke) {
+        Ok(cleaned) => {
+            folder
+                .close()
+                .map_err(|error| format!("remove the supervision folder: {error}"))?;
+            Ok(cleaned)
+        }
+        Err(error) => Err(format!("{error}; kept {}", folder.keep().display())),
+    }
+}
+
+/// The steps of [`clean_up_with`] in `folder`, which they never remove.
+fn clean_up_in(
+    folder: &Path,
+    stop: impl FnOnce() -> Result<(), String>,
+    mut revoke: impl FnMut(&Path) -> Result<Option<Revoked>, String>,
+) -> Result<Cleaned, String> {
+    stop()?;
     let mut cleaned = Cleaned {
         scenes: 0,
         ended: 0,
-        #[cfg(windows)]
         revoked: 0,
-        #[cfg(windows)]
         profiles_deleted: 0,
     };
     let entries =
-        fs::read_dir(folder.path()).map_err(|error| format!("the supervision folder: {error}"))?;
+        fs::read_dir(folder).map_err(|error| format!("the supervision folder: {error}"))?;
     for entry in entries {
         let base = entry
             .map_err(|error| format!("the supervision folder: {error}"))?
@@ -324,28 +452,17 @@ fn clean_up_after(folder: TempDir, scope: &str) -> Result<Cleaned, String> {
             continue;
         }
         cleaned.scenes += 1;
-        match fake_claude::alive_ended(&sign_in, EXIT_PROBE) {
-            Ok(ended) => cleaned.ended += ended,
-            Err(error) => {
-                let kept = folder.keep();
-                return Err(format!(
-                    "a process of the scene in {} was not seen to end: {error}; kept {}",
-                    base.display(),
-                    kept.display()
-                ));
-            }
-        }
-        #[cfg(windows)]
-        if let Some(revocation) = revoke_left_connection(&data)? {
-            cleaned.revoked += revocation.revoked;
+        cleaned.ended += fake_claude::alive_ended(&sign_in, EXIT_PROBE).map_err(|error| {
+            format!(
+                "a process of the scene in {} was not seen to end: {error}",
+                base.display()
+            )
+        })?;
+        if let Some(revocation) = revoke(&data)? {
+            cleaned.revoked += revocation.grants;
             cleaned.profiles_deleted += usize::from(revocation.profile_deleted);
         }
-        #[cfg(not(windows))]
-        let _ = data;
     }
-    folder
-        .close()
-        .map_err(|error| format!("remove the supervision folder: {error}"))?;
     Ok(cleaned)
 }
 
@@ -376,12 +493,20 @@ fn stop_scope(scope: &str) -> Result<(), String> {
     }
 }
 
+/// No scope exists here: on Windows each tree's job ends with the copy.
+#[cfg(not(target_os = "linux"))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the Linux stop can fail, and both are passed as one step"
+)]
+fn stop_scope(_scope: &str) -> Result<(), String> {
+    Ok(())
+}
+
 /// Revoke the grants of a scene's connection that outlived its copy, which
 /// deletes its container profile, as the scene's drop would have.
 #[cfg(windows)]
-fn revoke_left_connection(
-    data: &Path,
-) -> Result<Option<omgcode_core::control::ClaudeCodeRevocation>, String> {
+fn revoke_left_connection(data: &Path) -> Result<Option<Revoked>, String> {
     if !data.is_dir() {
         return Ok(None);
     }
@@ -392,7 +517,12 @@ fn revoke_left_connection(
     }
     control
         .revoke_claude_code_grants("claude")
-        .map(Some)
+        .map(|revocation| {
+            Some(Revoked {
+                grants: revocation.revoked,
+                profile_deleted: revocation.profile_deleted,
+            })
+        })
         .map_err(|failure| {
             format!(
                 "revoke the connection in {}: {}",
@@ -400,6 +530,17 @@ fn revoke_left_connection(
                 failure.error
             )
         })
+}
+
+/// No grant or container profile exists here: removing the scene's
+/// folder removes its connection.
+#[cfg(not(windows))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the Windows revocation can fail, and both are passed as one step"
+)]
+fn revoke_left_connection(_data: &Path) -> Result<Option<Revoked>, String> {
+    Ok(None)
 }
 
 /// In a supervised copy, for the supervisor's own test: start a turn whose
@@ -986,8 +1127,8 @@ struct FloodEnd {
     /// Whether the exit probe saw the fake and its relay running while the
     /// write stalled.
     seen_running: bool,
-    /// On Linux, whether the turn's thread was seen asleep in its reply
-    /// write to the relay; `None` where no such probe exists.
+    /// Where [`WRITE_PROBE`] exists, whether the turn's thread was seen
+    /// asleep in its reply write to the relay; `None` elsewhere.
     seen_blocked: Option<bool>,
     /// When the turn was cancelled, for a flood asked to cancel it.
     cancelled_at: Option<Instant>,
@@ -996,15 +1137,19 @@ struct FloodEnd {
 /// A flood turn running on its own thread.
 struct FloodStart {
     turn: std::thread::JoinHandle<(bool, Option<ProviderError>)>,
-    /// On Linux, the identifier of the turn's thread.
+    /// Where [`WRITE_PROBE`] exists, the identifier of the turn's thread,
+    /// which is then always known; `None` elsewhere.
     thread: Option<String>,
     started: Instant,
 }
 
 /// Start, on its own thread, a turn whose fake floods the relay with
 /// requests and reads none of the replies, so OMGCode's write of a reply
-/// blocks. `prompt` names the flood scenario.
+/// blocks. `prompt` names the flood scenario. Where [`WRITE_PROBE`]
+/// exists, a turn whose thread names no identifier is abandoned
+/// ([`abandon`]) and fails the test, so the probe cannot be skipped.
 fn start_flood(scene: &Scene, cancel: CancelToken, prompt: &'static str) -> FloodStart {
+    let stop = cancel.clone();
     let client = scene.client();
     let (data, workspace, workspace_id) = (
         scene.data.clone(),
@@ -1035,6 +1180,14 @@ fn start_flood(scene: &Scene, cancel: CancelToken, prompt: &'static str) -> Floo
         .recv_timeout(Duration::from_secs(30))
         .ok()
         .flatten();
+    if WRITE_PROBE && thread.is_none() {
+        abandon(
+            turn,
+            &stop,
+            &scene.sign_in,
+            "the turn's thread named no identifier for the write probe",
+        );
+    }
     FloodStart {
         turn,
         thread,
@@ -1045,8 +1198,8 @@ fn start_flood(scene: &Scene, cancel: CancelToken, prompt: &'static str) -> Floo
 /// Run a flood turn ([`start_flood`]). The turn runs on its own thread, so
 /// one that never ends fails the test after `limit`. With
 /// `cancel_once_blocked`, the turn is cancelled once the fake marked the
-/// stall, both processes were seen running, and, on Linux, the turn's
-/// thread was seen asleep in its reply write.
+/// stall, both processes were seen running, and, where [`WRITE_PROBE`]
+/// exists, the turn's thread was seen asleep in its reply write.
 fn flood_turn(
     scene: &Scene,
     cancel: CancelToken,
@@ -1060,11 +1213,16 @@ fn flood_turn(
         started,
     } = start_flood(scene, cancel, "SCENARIO:flood");
     let mut seen_running = false;
-    let mut seen_blocked = turn_thread.as_ref().map(|_| false);
+    let mut seen_blocked = false;
     let mut cancelled_at = None;
     while !turn.is_finished() {
         if started.elapsed() >= limit {
-            abandon(turn, &stop, &scene.sign_in, limit);
+            abandon(
+                turn,
+                &stop,
+                &scene.sign_in,
+                &format!("the turn did not end in {limit:?}"),
+            );
         }
         let stalled = fake_claude::stalled(&scene.sign_in);
         // While the reply write stalls, both processes run, so the exit
@@ -1073,16 +1231,16 @@ fn flood_turn(
             seen_running = fake_claude::processes_running(&scene.sign_in);
         }
         if let Some(thread) = &turn_thread
-            && seen_blocked == Some(false)
+            && !seen_blocked
             && asleep_in_socket_write(thread)
         {
-            seen_blocked = Some(true);
+            seen_blocked = true;
         }
         if cancel_once_blocked
             && cancelled_at.is_none()
             && stalled
             && seen_running
-            && seen_blocked != Some(false)
+            && (seen_blocked || !WRITE_PROBE)
         {
             // Taken first, so a delay after the request counts against the
             // turn.
@@ -1098,9 +1256,25 @@ fn flood_turn(
         error,
         took,
         seen_running,
-        seen_blocked,
+        seen_blocked: WRITE_PROBE.then_some(seen_blocked),
         cancelled_at,
     }
+}
+
+/// Whether this platform can see a thread asleep in a socket write
+/// ([`asleep_in_socket_write`]). Elsewhere the fake's stall marker is the
+/// only evidence of a blocked reply write, and the launch tests prove a
+/// blocked write's release with a controlled writer.
+const WRITE_PROBE: bool = cfg!(target_os = "linux");
+
+/// Where [`WRITE_PROBE`] exists, the turn's thread was seen asleep in its
+/// reply write; elsewhere no probe ran.
+fn assert_seen_blocked(seen_blocked: Option<bool>) {
+    assert_eq!(
+        seen_blocked,
+        WRITE_PROBE.then_some(true),
+        "the reply write was never seen asleep"
+    );
 }
 
 /// This thread's identifier, which `/proc` names its system calls by.
@@ -1144,7 +1318,8 @@ fn asleep_in_socket_write(thread: &str) -> bool {
         })
 }
 
-/// Never called where [`this_thread_id`] names no thread.
+/// Never called without [`WRITE_PROBE`], where [`this_thread_id`] names
+/// no thread.
 #[cfg(not(target_os = "linux"))]
 fn asleep_in_socket_write(_thread: &str) -> bool {
     false
@@ -1153,17 +1328,18 @@ fn asleep_in_socket_write(_thread: &str) -> bool {
 /// How long a turn that overran its limit has, once cancelled, to end.
 const ABANDON_BOUND: Duration = Duration::from_secs(30);
 
-/// End a turn that overran `limit` and fail the test: cancel the turn and
-/// wait at most [`ABANDON_BOUND`] for its thread, so no turn is left using
-/// the scene while later tests run. A thread that does not end even then
-/// ends this copy of the tests ([`end_test_process`]), which ends the thread
-/// with it; the supervisor ([`clean_up_after`]) then stops the process tree
-/// the turn left, observes its end, and removes the scene's fixtures.
+/// End a turn that cannot go on, for `reason`, and fail the test: cancel
+/// the turn and wait at most [`ABANDON_BOUND`] for its thread, so no turn
+/// is left using the scene while later tests run. A thread that does not
+/// end even then ends this copy of the tests ([`end_test_process`]), which
+/// ends the thread with it; the supervisor ([`clean_up_after`]) then stops
+/// the process tree the turn left, observes its end, and removes the
+/// scene's fixtures.
 fn abandon<T>(
     turn: std::thread::JoinHandle<T>,
     stop: &CancelToken,
     sign_in: &Path,
-    limit: Duration,
+    reason: &str,
 ) -> ! {
     stop.cancel();
     let until = Instant::now() + ABANDON_BOUND;
@@ -1174,10 +1350,10 @@ fn abandon<T>(
     if turn.is_finished() {
         // The turn's own result does not matter once it overran.
         let _ = turn.join();
-        panic!("the turn did not end in {limit:?}, only once cancelled; {diagnosis}");
+        panic!("{reason}; the turn ended once cancelled; {diagnosis}");
     }
     end_test_process(&format!(
-        "the turn did not end in {limit:?}, nor within {ABANDON_BOUND:?} of its cancellation; {diagnosis}"
+        "{reason}; the turn did not end within {ABANDON_BOUND:?} of its cancellation; {diagnosis}"
     ));
 }
 
@@ -1187,9 +1363,9 @@ const EXIT_PROBE: Duration = Duration::from_secs(10);
 
 /// A reply write that the relay never reads ends at the request timeout:
 /// the turn fails with `claude_code_failed` instead of waiting for the
-/// relay. On Linux the turn's thread is seen asleep in that write first;
-/// elsewhere the fake's stall marker is the only evidence of it, and the
-/// launch tests prove a blocked write's release with a controlled writer.
+/// relay. Where [`WRITE_PROBE`] exists the turn's thread is seen asleep
+/// in that write first; elsewhere the fake's stall marker is the only
+/// evidence of it.
 fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
     let mut scene = Scene::new();
     let timeout = Duration::from_secs(15);
@@ -1200,11 +1376,7 @@ fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
         "{}",
         fake_claude::diagnosis(&scene.sign_in)
     );
-    assert_ne!(
-        end.seen_blocked,
-        Some(false),
-        "the reply write was never seen asleep"
-    );
+    assert_seen_blocked(end.seen_blocked);
     assert!(!end.cancelled);
     assert_eq!(
         end.error,
@@ -1221,9 +1393,9 @@ fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
 }
 
 /// A reply write that the relay never reads ends promptly when the turn is
-/// cancelled, which happens only once the write is blocked: on Linux once
-/// the turn's thread is seen asleep in it, elsewhere once the fake marked
-/// the stall.
+/// cancelled, which happens only once the write is blocked: where
+/// [`WRITE_PROBE`] exists once the turn's thread is seen asleep in it,
+/// elsewhere once the fake marked the stall.
 fn a_reply_the_relay_does_not_read_ends_on_cancellation() {
     let scene = Scene::new();
     let end = flood_turn(&scene, CancelToken::new(), Duration::from_secs(120), true);
@@ -1239,11 +1411,7 @@ fn a_reply_the_relay_does_not_read_ends_on_cancellation() {
         "{}",
         fake_claude::diagnosis(&scene.sign_in)
     );
-    assert_ne!(
-        end.seen_blocked,
-        Some(false),
-        "the reply write was never seen asleep"
-    );
+    assert_seen_blocked(end.seen_blocked);
     assert!(end.cancelled, "{:?}", end.error);
     let stopping = returned.saturating_duration_since(cancelled_at);
     assert!(stopping < Duration::from_secs(10), "{stopping:?}");

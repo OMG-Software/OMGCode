@@ -16,7 +16,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -137,8 +137,10 @@ impl McpClient {
     /// this fake's writes block. The writer names the request it is writing
     /// for as long as that write has not returned, so the stall is marked in
     /// `folder` only when one write was still in progress for
-    /// [`STALL_QUIET`], and a writer whose write failed is marked as failed
-    /// instead. The writer names a request just before its write starts, so
+    /// [`STALL_QUIET`]. A writer that ended is joined first, and its own
+    /// outcome marks the flood as failed or as fully written, so a write
+    /// that failed just before the writer ended is never reported as
+    /// accepted. The writer names a request just before its write starts, so
     /// the marker is evidence of the stall, not proof: on Linux the process
     /// tests also see OMGCode's reply write asleep in its system call, and
     /// the launch tests prove a blocked write's release with a controlled
@@ -146,11 +148,11 @@ impl McpClient {
     fn flood(&mut self, folder: &Path) {
         // The request whose write is in progress, or 0 between writes.
         let writing = AtomicU64::new(0);
-        let failed = AtomicBool::new(false);
         let input = &mut self.input;
         let pad = "x".repeat(FLOOD_PAD_BYTES);
         std::thread::scope(|scope| {
-            let (writing, failed) = (&writing, &failed);
+            let writing = &writing;
+            // Whether every request was written.
             let writer = scope.spawn(move || {
                 for id in FLOOD_IDS {
                     let mut line = json!({
@@ -165,20 +167,22 @@ impl McpClient {
                         .and_then(|()| input.flush());
                     writing.store(0, Ordering::SeqCst);
                     if written.is_err() {
-                        failed.store(true, Ordering::SeqCst);
-                        return;
+                        return false;
                     }
                 }
+                true
             });
             let mut last = (0, Instant::now());
             loop {
                 std::thread::sleep(Duration::from_millis(50));
-                if failed.load(Ordering::SeqCst) {
-                    let _ = fs::write(folder.join(FLOOD_FAILED_FILE), b"a flood write failed");
-                    break;
-                }
                 if writer.is_finished() {
-                    let _ = fs::write(folder.join(FLOODED_FILE), b"no write blocked");
+                    // A writer that panicked wrote nothing it can vouch for.
+                    let (marker, note) = if writer.join().unwrap_or(false) {
+                        (FLOODED_FILE, "no write blocked")
+                    } else {
+                        (FLOOD_FAILED_FILE, "a flood write failed")
+                    };
+                    let _ = fs::write(folder.join(marker), note);
                     break;
                 }
                 let pending = writing.load(Ordering::SeqCst);

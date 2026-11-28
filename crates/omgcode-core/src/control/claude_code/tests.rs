@@ -765,6 +765,138 @@ fn a_program_folder_overlapping_another_sign_in_folder_is_refused() {
     assert_eq!(store.entries.len(), events);
 }
 
+/// A program at `folder/claude`, made for a test.
+fn program_in(folder: &Path) -> PathBuf {
+    fs::create_dir_all(folder).expect("program folder");
+    let program = folder.join(PROGRAM_NAME);
+    fs::write(&program, b"not a real program").expect("program");
+    program
+}
+
+/// A sign-in folder that equals, lies inside, or holds another connection's
+/// program folder is refused on every platform, also where no grant records
+/// that folder, because that connection's run reads its whole program
+/// folder.
+#[test]
+fn a_sign_in_folder_overlapping_another_connections_program_folder_is_refused() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    let kit = scene.data.with_file_name("kit");
+    let tools = kit.join("tools");
+    let declaration = ClaudeCodeDeclaration {
+        name: "claude".to_owned(),
+        program: program_in(&tools),
+        config_folder: scene.sign_in.clone(),
+    };
+    store
+        .add_claude_code_profile(&declaration, store.revision())
+        .expect("profile");
+    let inside = tools.join("sign-in");
+    let apart = scene.data.with_file_name("apart");
+    for folder in [&inside, &apart] {
+        fs::create_dir(folder).expect("folder");
+    }
+    let second = |config_folder: &Path| ClaudeCodeDeclaration {
+        name: "second".to_owned(),
+        program: scene.program.clone(),
+        config_folder: config_folder.to_owned(),
+    };
+    for (case, folder) in [("equal", &tools), ("inside", &inside), ("holding", &kit)] {
+        assert!(
+            matches!(
+                store.check_claude_code_profile(&second(folder)),
+                Err(ControlError::ProviderRefused(
+                    "the Claude sign-in folder must not overlap another Claude Code connection's program folder"
+                ))
+            ),
+            "{case}"
+        );
+    }
+    store
+        .check_claude_code_profile(&second(&apart))
+        .expect("a separate sign-in folder");
+}
+
+/// Resolving refuses a connection whose program folder holds another
+/// connection's sign-in folder, and that other connection, also when the
+/// two were recorded before the check existed.
+#[test]
+fn resolving_refuses_a_program_folder_that_holds_another_sign_in_folder() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let tools = scene.program.parent().expect("program folder").to_owned();
+    let inside = tools.join("second-sign-in");
+    fs::create_dir(&inside).expect("sign-in folder inside the first program folder");
+    // Recorded canonical, as an add records it.
+    let program = fs::canonicalize(program_in(&scene.data.with_file_name("second-tools")))
+        .expect("canonical program");
+    let setup = ClaudeCodeSetup {
+        program: NativePath::from_path(&program).expect("program path"),
+        program_folder: DirectoryRecord::capture(program.parent().expect("folder"))
+            .expect("program folder"),
+        config_folder: DirectoryRecord::capture(&inside).expect("sign-in folder"),
+    };
+    let profile = ProviderProfile::claude_code(Uuid::new_v4(), "second".to_owned(), setup);
+    store
+        .append(
+            Action::ProviderProfileAdded { profile },
+            store.next_revision().expect("revision"),
+        )
+        .expect("a connection recorded before the check existed");
+    let relay = scene.relay.join(PROGRAM_NAME);
+    fs::write(&relay, b"not a real relay").expect("relay");
+    assert!(matches!(
+        store.resolve_claude_code("claude", &relay),
+        Err(ControlError::GrantRefused(
+            "a Claude Code folder must not overlap another Claude Code connection's sign-in folder"
+        ))
+    ));
+    let second = store.resolve_claude_code("second", &relay);
+    assert!(
+        matches!(
+            second,
+            Err(ControlError::ProviderRefused(
+                "the Claude sign-in folder must not overlap another Claude Code connection's program folder"
+            ))
+        ),
+        "{second:?}"
+    );
+}
+
+/// Resolving refuses a relay folder that holds another connection's
+/// sign-in folder, because the run reads its whole relay folder and, on
+/// Linux, no grant records it.
+#[test]
+fn resolving_refuses_a_relay_folder_that_holds_another_sign_in_folder() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let relay_folder = scene.data.with_file_name("other-relay");
+    let inside = relay_folder.join("sign-in");
+    fs::create_dir_all(&inside).expect("sign-in folder inside a relay folder");
+    let declaration = ClaudeCodeDeclaration {
+        name: "second".to_owned(),
+        program: program_in(&scene.data.with_file_name("second-tools")),
+        config_folder: inside,
+    };
+    store
+        .add_claude_code_profile(&declaration, store.revision())
+        .expect("no recorded folder holds it");
+    let relay = relay_folder.join(PROGRAM_NAME);
+    fs::write(&relay, b"not a real relay").expect("relay");
+    assert!(matches!(
+        store.resolve_claude_code("claude", &relay),
+        Err(ControlError::GrantRefused(
+            "a Claude Code folder must not overlap another Claude Code connection's sign-in folder"
+        ))
+    ));
+}
+
 /// Record an applied grant for every role without changing an ACL, so a
 /// connection resolves on Windows, and return the grant identifiers by role.
 fn record_claude_code_grants(
@@ -1114,6 +1246,83 @@ fn a_removed_connections_turn_record_reserves_its_sign_in_folder() {
     store
         .add_claude_code_profile(&scene.declaration("again"), store.revision())
         .expect("nothing is reserved");
+}
+
+/// At most [`MAX_TURN_RECORDS`] turn records are kept. Once that many exist
+/// no turn records another, so none can start; beyond them, as after two
+/// connections recorded at once, a sign-in folder check is refused before
+/// any more is read. Acknowledging a connection still clears its records
+/// while the inventory is full, and a turn records again once there is room.
+#[test]
+fn a_full_turn_record_inventory_refuses_turns_but_not_acknowledgement() {
+    let scene = Scene::new();
+    let (profile_id, _, watch) = resolved_turn(&scene);
+    let _own = watch.record_turn().expect("record");
+    let other = Uuid::new_v4();
+    let others = ClaudeCodeWatch::for_tests(scene.data.clone(), other, &scene.root);
+    for _ in 1..MAX_TURN_RECORDS {
+        let _left = others.record_turn().expect("record below the limit");
+    }
+    for full in [&watch, &others] {
+        let refused = full.record_turn().expect_err("no record at the limit");
+        assert!(refused.to_string().contains("full"), "{refused}");
+    }
+    let records = scene.data.join(RUNTIME_PARENT);
+    let count = || {
+        fs::read_dir(&records)
+            .expect("records")
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".unconfirmed")
+            })
+            .count()
+    };
+    assert_eq!(count(), MAX_TURN_RECORDS);
+
+    // One more, as a concurrent recorder of the other connection could leave.
+    let prefix = format!("{}.", other.simple());
+    let copied = fs::read_dir(&records)
+        .expect("records")
+        .map(|entry| entry.expect("entry").path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        })
+        .expect("a record of the other connection");
+    fs::copy(
+        copied,
+        records.join(format!("{prefix}{}.unconfirmed", Uuid::new_v4().simple())),
+    )
+    .expect("one record beyond the limit");
+    let fresh = scene.root.with_file_name("fresh-sign-in");
+    fs::create_dir(&fresh).expect("fresh sign-in folder");
+    let declaration = ClaudeCodeDeclaration {
+        name: "fresh".to_owned(),
+        program: scene.program.clone(),
+        config_folder: fresh,
+    };
+    let store = ControlStore::open(&scene.data).expect("store");
+    assert!(matches!(
+        store.check_claude_code_profile(&declaration),
+        Err(ControlError::ClaudeCodeTurnRecordsFull)
+    ));
+
+    assert!(
+        acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("acknowledged"),
+        "acknowledging works while the inventory is full"
+    );
+    assert_eq!(count(), MAX_TURN_RECORDS);
+    store
+        .check_claude_code_profile(&declaration)
+        .expect("every record is read once none is beyond the limit");
+    let _ = watch.record_turn().expect_err("still at the limit");
+    assert!(acknowledge_claude_code_cleanup(&scene.data, other).expect("acknowledged"));
+    assert_eq!(count(), 0);
+    let _again = watch.record_turn().expect("room again");
 }
 
 #[cfg(not(windows))]

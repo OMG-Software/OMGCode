@@ -84,7 +84,10 @@ Haiku request with one tool call.
    Recording the connection, granting it, changing the development root,
    adding a workspace container grant, and every turn check this, and a
    program or relay folder must not overlap another connection's sign-in
-   folder either. A grant or sign-in record whose folder changed proves no
+   folder either. The sign-in folder is also kept apart from every other
+   connection's program folder, and each turn checks its own program and
+   relay folders against every other sign-in folder, on Linux too, where no
+   grant records them. A grant or sign-in record whose folder changed proves no
    separation: a moved folder can keep its access-control entries and lie
    anywhere, so the check refuses until that grant is revoked or that
    connection removed. On Windows a connection with grants cannot be
@@ -155,7 +158,13 @@ Haiku request with one tool call.
    connection's records under the exclusive lock, so it is refused with a
    lock error while a turn holds the lock. It records nothing about the
    operator's check, as `runs acknowledge` claims nothing about a run's
-   processes. While the process runs, a watcher thread checks each
+   processes. At most 256 turn records are kept across every connection.
+   A turn that finds that many writes no record and starts nothing, and a
+   sign-in folder check that finds more, as two connections recording at
+   once can leave, is refused with a `control` error that names the
+   acknowledgement before it reads any of them. The acknowledgement visits
+   the records one at a time without that limit, so it still clears a
+   connection's records while the inventory is full. While the process runs, a watcher thread checks each
    later state every 100 ms, and once more as it stops, so the turn's
    result counts only after every state up to its end was checked. A state
    that removes the connection or, on Windows, leaves one of its roles
@@ -212,14 +221,24 @@ Haiku request with one tool call.
    compare-and-swap, so a write that finished first is never reported as
    stopped. A write counts as finished only once the writer recorded it,
    after its flush returned: one whose bytes went out but that the watcher
-   stopped first still fails the turn and ends the tree. The writer records
-   first and checks after: once recorded, the watcher can no longer stop the
-   write, so the writer fails it, and ends the tree, when its cancellation or
-   deadline came before the record, also one the watcher had not yet seen.
+   stopped first still fails the turn and ends the tree. Once the flush
+   returned, the writer reads the cancellation and the clock once, just
+   before the record, and that one sample decides: a write sampled late
+   fails and ends the tree, also when the watcher had not yet seen it late,
+   and one sampled in time is recorded finished unless the watcher stopped
+   it first. A cancellation or deadline after that sample does not fail a
+   write recorded in time, so a writer delayed after its record cannot fail
+   a write that reached the relay. A deadline that falls between the sample
+   and the record does not fail the write either; that gap is the
+   compare-and-swap's own.
    Before an answer is written, the relay's events already queued
    are handled and the process's output is kept, in order, for the next
    round, so a cancellation sent while the runtime ran the call withholds
-   the answer.
+   the answer. Calls are not handed to the runtime while output kept back
+   there ends the turn (a line that is not a stream event, the end of the
+   output, or input that did not fully reach the process): the round fails
+   on it first. Informational output kept there does not hold the calls
+   back.
    The main agent's streamed and final text share an 8 MiB budget, and more
    fails the turn as too large. A `result` counts only after the whole prompt
    was written. After the tree ends, each worker thread is joined within five

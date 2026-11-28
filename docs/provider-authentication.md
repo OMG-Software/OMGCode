@@ -649,11 +649,15 @@ Anthropic approval, and the Claude subscription requirement stays open.
   their descendants, and keep the record while that cannot be confirmed.
   The command only removes the connection's turn records; it records
   nothing about that check and is refused while a turn holds the
-  connection's turn lock. On Linux no grant exists, so only removing the
-  connection withdraws it.
+  connection's turn lock. At most 256 turn records are kept: past that no
+  turn starts and a sign-in folder check is refused until records are
+  acknowledged, which still works while the inventory is full. On Linux no
+  grant exists, so only removing the connection withdraws it.
 - **Use.** `chat --provider-profile NAME` and `session compact
   --provider-profile NAME` resolve the connection. Every turn re-checks the
-  recorded folder identities and, on Windows, each grant. Every other route,
+  recorded folder identities and, on Windows, each grant, and checks that
+  neither its program folder nor its relay folder overlaps another
+  connection's sign-in folder, on Linux too. Every other route,
   including the desktop shell, the active selection, and `models`, refuses
   the profile with `claude_code_cli_only`. A request manifest records the
   endpoint label `claude-code:NAME`.

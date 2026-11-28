@@ -526,6 +526,18 @@ enum Event {
     McpFailed,
 }
 
+impl Event {
+    /// Whether the round fails on this output whatever came before it: a
+    /// line that is not a stream event, the end of the process's output, or
+    /// input that never fully reached it.
+    const fn ends_the_turn(&self) -> bool {
+        matches!(
+            self,
+            Self::Stdout(Err(_)) | Self::StdoutEnded | Self::InputWritten(false)
+        )
+    }
+}
+
 /// What [`Session::next_event`] found.
 enum Next {
     Event(Event),
@@ -847,7 +859,9 @@ impl Session {
     /// The calls to hand to the runtime, when some are ready once the
     /// relay's events already queued were handled. Those events can retire a
     /// ready call or add another; the process's output among them waits for
-    /// the next batch, in arrival order.
+    /// the next batch, in arrival order. Output kept back that ends the turn
+    /// holds the calls back, so the round fails on it before any call
+    /// reaches the runtime.
     fn hand_off(
         &mut self,
         cancel: &CancelToken,
@@ -857,7 +871,7 @@ impl Session {
             return Ok(None);
         }
         self.absorb_relay_events(cancel, deadline)?;
-        if !self.calls_ready() {
+        if !self.calls_ready() || self.deferred.iter().any(Event::ends_the_turn) {
             return Ok(None);
         }
         let count = self.unreturned.len().min(MAX_CALLS_PER_ROUND);
@@ -1110,7 +1124,7 @@ impl Session {
                     tree.cancel();
                 }
             },
-            || {},
+            |_| {},
         )
     }
 
@@ -1320,16 +1334,30 @@ fn spawned(
     })
 }
 
+/// Where a relay write's writer is between its I/O and its result, for
+/// tests that move a deadline or a cancellation to that point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WritePoint {
+    /// The I/O returned; the writer has not yet sampled the cancellation and
+    /// the deadline.
+    BeforeRecord,
+    /// The writer recorded the write's end.
+    AfterRecord,
+}
+
 /// Run `write` on this thread while a watcher calls `stop`, once, when
 /// `cancel` is set or `expired` turns `true` before the write is recorded
 /// finished. The write is recorded finished after `write` returns, so one
 /// whose bytes went out but that is recorded only after the stop still fails.
-/// A write already cancelled or expired never starts, and the writer checks
-/// both again after it recorded the write finished, so neither a watcher
-/// that has not run yet nor a writer delayed before its record can let an
-/// overdue write succeed. Every write refused for either reason calls `stop`
-/// before this returns. `recording` runs just before the record; tests use
-/// it to pass a deadline there, and every other caller passes nothing.
+/// A write already cancelled or expired never starts. Once `write` returns,
+/// the writer samples both once, just before the record, and that one sample
+/// decides: a write sampled late is stopped and fails, also when the watcher
+/// never saw it late, and one sampled in time is recorded finished unless the
+/// watcher stopped it first. A cancellation or a deadline after that sample
+/// does not fail a write recorded in time. Every write refused for either
+/// reason calls `stop` before this returns. `observe` is told each
+/// [`WritePoint`]; tests use it to move a deadline there, and every other
+/// caller passes nothing.
 ///
 /// # Errors
 ///
@@ -1342,7 +1370,7 @@ fn raced_write(
     cancel: &CancelToken,
     expired: impl Fn() -> bool + Sync,
     stop: impl Fn() + Sync,
-    recording: impl FnOnce(),
+    mut observe: impl FnMut(WritePoint),
 ) -> Result<(), ProviderError> {
     let refused = || {
         if cancel.is_cancelled() {
@@ -1376,18 +1404,20 @@ fn raced_write(
             return Err(failure(ClaudeCodeFailure::Failed));
         };
         let written = write();
-        recording();
-        // Recorded first and checked after: once recorded, the watcher can
-        // no longer stop the write, so a cancellation or a deadline that came
-        // at any point before the record, also one the watcher never saw,
-        // fails the write here.
-        let finished = race.finish() && {
-            let late = cancel.is_cancelled() || expired();
-            if late {
+        observe(WritePoint::BeforeRecord);
+        // One sample, taken just before the record, decides the write. A
+        // late one stops the write here, also when the watcher never saw it;
+        // the stop is called once, by whichever of the two recorded it.
+        let late = cancel.is_cancelled() || expired();
+        let finished = if late {
+            if race.stop() {
                 stop();
             }
-            !late
+            false
+        } else {
+            race.finish()
         };
+        observe(WritePoint::AfterRecord);
         watcher.thread().unpark();
         Ok((written, finished))
     })?;

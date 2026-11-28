@@ -945,7 +945,8 @@ pub(super) fn binding_write_uncertain(error: &ControlError) -> bool {
         | ControlError::ClaudeCodeCleanupUnconfirmed(_)
         | ControlError::ClaudeCodeTurnLockHeld
         | ControlError::ClaudeCodeTurnRecordUnreadable(_)
-        | ControlError::ClaudeCodeSignInReserved(_) => false,
+        | ControlError::ClaudeCodeSignInReserved(_)
+        | ControlError::ClaudeCodeTurnRecordsFull => false,
     }
 }
 

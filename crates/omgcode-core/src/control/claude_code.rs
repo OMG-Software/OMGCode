@@ -661,8 +661,11 @@ impl ControlStore {
     /// when a recorded folder changed, [`ControlError::ProviderRefused`] when
     /// the sign-in folder now overlaps application storage, the development
     /// root, a workspace, a workspace container grant, or another connection's
-    /// sign-in folder, [`ControlError::GrantRefused`] when a grant is missing, pending, or for another folder, and the I/O error
-    /// that stopped a check.
+    /// sign-in or program folder, [`ControlError::GrantRefused`] when a grant
+    /// is missing, pending, or for another folder, or when the program or
+    /// relay folder is too broad, holds application storage, the development
+    /// root, or a workspace, or overlaps another connection's sign-in folder,
+    /// and the I/O error that stopped a check.
     pub fn resolve_claude_code(
         &self,
         name: &str,
@@ -679,6 +682,13 @@ impl ControlStore {
         let relay_folder = relay_program.parent().ok_or(ControlError::GrantRefused(
             "the relay program has no folder",
         ))?;
+        // The run can read its whole program and relay folders, so neither
+        // may hold another connection's sign-in folder, also one recorded
+        // after this connection was or before this check existed. On Linux
+        // no grant records them, so only this check does.
+        let relay = DirectoryRecord::capture(relay_folder)?;
+        self.check_readable_folder(&setup.program_folder, Some(profile_id))?;
+        self.check_readable_folder(&relay, Some(profile_id))?;
         let data_root = self.data_directory.live_path()?;
         let runtime_folder = claude_code_runtime_folder(&data_root, profile_id);
         // Taken under the settings lock, so the watcher sees every later change.
@@ -711,7 +721,6 @@ impl ControlStore {
                 return Err(MISSING);
             }
             let runtime = DirectoryRecord::capture(&runtime_folder)?;
-            let relay = DirectoryRecord::capture(relay_folder)?;
             for (role, expected) in [
                 (ClaudeCodeGrantRole::Program, &setup.program_folder),
                 (ClaudeCodeGrantRole::Configuration, &setup.config_folder),
@@ -799,11 +808,11 @@ impl ControlStore {
     /// Refuse a sign-in folder that is too broad or that any other part of
     /// OMGCode can reach: it must not overlap application storage, the
     /// development root, any workspace, any workspace container grant, or the
-    /// sign-in folder or a program or relay grant of a Claude Code connection
-    /// other than `profile`, so no model file tool, model-run program, or
-    /// other connection's process can read it. A grant record whose folder
-    /// changed proves nothing about where its access-control entry now is,
-    /// so it is refused until revoked.
+    /// sign-in folder, program folder, or a program or relay grant of a
+    /// Claude Code connection other than `profile`, so no model file tool,
+    /// model-run program, or other connection's process can read it. A grant
+    /// record whose folder changed proves nothing about where its
+    /// access-control entry now is, so it is refused until revoked.
     fn check_config_folder(
         &self,
         directory: &DirectoryRecord,
@@ -830,6 +839,12 @@ impl ControlStore {
                     "the Claude sign-in folder must not overlap a workspace",
                 ));
             }
+        }
+        // On every platform, also on Linux where no grant is recorded.
+        if self.overlaps_claude_code_program(directory, profile)? {
+            return Err(ControlError::ProviderRefused(
+                "the Claude sign-in folder must not overlap another Claude Code connection's program folder",
+            ));
         }
         for status in &self.snapshot.container_grants {
             let granted = status.grant().directory();
@@ -874,6 +889,39 @@ impl ControlStore {
             ));
         }
         Ok(())
+    }
+
+    /// Whether `directory` equals, contains, or lies inside the program
+    /// folder of a recorded Claude Code connection other than `except`. That
+    /// connection's run can read its whole program folder (through Landlock
+    /// on Linux and its program grant on Windows), so no sign-in folder may
+    /// lie there. A program folder that changed since it was recorded counts
+    /// as apart: its connection cannot launch until the folder is restored,
+    /// and resolving that connection checks its program folder against every
+    /// other sign-in folder.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error that stopped a comparison.
+    fn overlaps_claude_code_program(
+        &self,
+        directory: &DirectoryRecord,
+        except: Option<Uuid>,
+    ) -> Result<bool, ControlError> {
+        for status in self.provider_profiles() {
+            if Some(status.profile().id()) == except {
+                continue;
+            }
+            let Some(setup) = status.profile().claude_code_setup() else {
+                continue;
+            };
+            if directory.contains(&setup.program_folder)?
+                || setup.program_folder.contains(directory)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Whether `directory` equals, contains, or lies inside the sign-in
@@ -1139,7 +1187,7 @@ fn transition(
 mod turns;
 
 pub use turns::{
-    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeWatch, acknowledge_claude_code_cleanup,
+    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeWatch, MAX_TURN_RECORDS, acknowledge_claude_code_cleanup,
     wait_for_claude_code_turns,
 };
 pub(crate) use turns::{Recheck, TurnRecord, WatchCursor};

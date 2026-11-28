@@ -21,10 +21,13 @@
 //! connection exists, until the operator acknowledges it, as
 //! `runs acknowledge` does for a run. The record names the turn's sign-in
 //! folder, which stays reserved while it exists, also once the connection is
-//! removed.
+//! removed. At most [`MAX_TURN_RECORDS`] records are kept: a turn starts no
+//! process once that many exist, and a reservation check refuses beyond
+//! them, while an acknowledgement still clears its connection's records.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -52,6 +55,10 @@ const TURN_RECORD_SUFFIX: &str = ".unconfirmed";
 /// The longest turn record read back; one holds a profile identifier and a
 /// folder record.
 const MAX_TURN_RECORD_BYTES: u64 = 64 * 1024;
+
+/// The most turn records kept in application storage, across every
+/// connection. Each is a turn whose tree was not observed ended.
+pub const MAX_TURN_RECORDS: usize = 256;
 
 /// The settings one turn of a Claude Code connection was resolved from: the
 /// application storage, the connection and its sign-in folder, and how many
@@ -150,9 +157,24 @@ impl ClaudeCodeWatch {
     ///
     /// # Errors
     ///
-    /// The I/O error that stopped writing or syncing the record. No process
-    /// may start then.
+    /// The I/O error that stopped writing or syncing the record, or one that
+    /// says [`MAX_TURN_RECORDS`] records already exist. No process may start
+    /// then.
     pub(crate) fn record_turn(&self) -> io::Result<TurnRecord> {
+        let mut kept = 0;
+        each_turn_record(&self.data_root, |_, _| {
+            kept += 1;
+            Ok(if kept >= MAX_TURN_RECORDS {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            })
+        })?;
+        if kept >= MAX_TURN_RECORDS {
+            return Err(io::Error::other(
+                "the Claude Code turn records are full; acknowledge the ones left behind first",
+            ));
+        }
         let body = serde_json::to_vec(&TurnRecordBody {
             profile_id: self.profile_id,
             config_folder: self.config_folder.clone(),
@@ -367,13 +389,15 @@ pub fn acknowledge_claude_code_cleanup(
         Err(TryLockError::WouldBlock) => return Err(ControlError::ClaudeCodeTurnLockHeld),
         Err(TryLockError::Error(error)) => return Err(ControlError::Io(error)),
     }
+    // Visited one at a time, so a full inventory does not stop it.
     let mut removed = false;
-    for (owner, path) in turn_records(data_root)? {
+    each_turn_record(data_root, |owner, path| {
         if owner == profile_id {
             fs::remove_file(path)?;
             removed = true;
         }
-    }
+        Ok(ControlFlow::Continue(()))
+    })?;
     drop(lock);
     Ok(removed)
 }
@@ -386,8 +410,9 @@ pub fn acknowledge_claude_code_cleanup(
 ///
 /// [`ControlError::ClaudeCodeTurnRecordUnreadable`] for a record that cannot
 /// be read or that names another connection than its file name: it proves
-/// nothing about where its folder is. [`ControlError::Io`] when the records
-/// cannot be listed.
+/// nothing about where its folder is. [`ControlError::ClaudeCodeTurnRecordsFull`]
+/// beyond [`MAX_TURN_RECORDS`] records, and [`ControlError::Io`] when the
+/// records cannot be listed.
 pub(super) fn reserved_sign_in_folders(
     data_root: &Path,
     skip: impl Fn(Uuid) -> bool,
@@ -409,25 +434,60 @@ pub(super) fn reserved_sign_in_folders(
 /// [`ControlError::ClaudeCodeCleanupUnconfirmed`] while a record of the
 /// connection exists.
 fn refuse_unconfirmed(data_root: &Path, profile_id: Uuid) -> Result<(), ControlError> {
-    if turn_records(data_root)?
-        .iter()
-        .any(|(owner, _)| *owner == profile_id)
-    {
+    let mut found = false;
+    each_turn_record(data_root, |owner, _| {
+        found = owner == profile_id;
+        Ok(if found {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        })
+    })?;
+    if found {
         Err(ControlError::ClaudeCodeCleanupUnconfirmed(profile_id))
     } else {
         Ok(())
     }
 }
 
-/// Every turn record in `data_root`, with the connection its name gives. A
-/// name of another shape is no record.
-fn turn_records(data_root: &Path) -> io::Result<Vec<(Uuid, PathBuf)>> {
+/// Every turn record in `data_root`, with the connection its name gives.
+///
+/// # Errors
+///
+/// [`ControlError::ClaudeCodeTurnRecordsFull`] beyond [`MAX_TURN_RECORDS`]
+/// records, before any more is kept, and [`ControlError::Io`] when the
+/// records cannot be listed.
+fn turn_records(data_root: &Path) -> Result<Vec<(Uuid, PathBuf)>, ControlError> {
+    let mut records = Vec::new();
+    let mut full = false;
+    each_turn_record(data_root, |owner, path| {
+        if records.len() == MAX_TURN_RECORDS {
+            full = true;
+            return Ok(ControlFlow::Break(()));
+        }
+        records.push((owner, path));
+        Ok(ControlFlow::Continue(()))
+    })?;
+    if full {
+        Err(ControlError::ClaudeCodeTurnRecordsFull)
+    } else {
+        Ok(records)
+    }
+}
+
+/// Visit each turn record in `data_root`, with the connection its name
+/// gives, until `visit` breaks or fails. A name of another shape is no
+/// record. Only the current entry is held, so the visit costs no memory
+/// per record.
+fn each_turn_record(
+    data_root: &Path,
+    mut visit: impl FnMut(Uuid, PathBuf) -> io::Result<ControlFlow<()>>,
+) -> io::Result<()> {
     let entries = match fs::read_dir(data_root.join(RUNTIME_PARENT)) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
@@ -438,11 +498,13 @@ fn turn_records(data_root: &Path) -> io::Result<Vec<(Uuid, PathBuf)>> {
         else {
             continue;
         };
-        if let (Ok(profile), Ok(_)) = (Uuid::try_parse(profile), Uuid::try_parse(turn)) {
-            records.push((profile, entry.path()));
+        if let (Ok(profile), Ok(_)) = (Uuid::try_parse(profile), Uuid::try_parse(turn))
+            && visit(profile, entry.path())?.is_break()
+        {
+            break;
         }
     }
-    Ok(records)
+    Ok(())
 }
 
 fn read_turn_record(path: &Path) -> io::Result<TurnRecordBody> {

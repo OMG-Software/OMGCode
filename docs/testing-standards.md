@@ -65,11 +65,17 @@ supervisor then stops what the copy left running: the copy's scope on
 Linux, where the copy's exit ends the fake and, through its closed pipes,
 the relay but no descendant that ignores them, while on Windows each tree's
 job ends with the copy. It waits until every fake's, relay's, and linger's
-alive lock is free, revokes each connection left
-behind, which deletes its AppContainer profile, and removes the folder. A
-scene whose processes were not seen to end is kept and named.
+alive lock is free, on Windows revokes each connection left behind, which
+deletes its AppContainer profile (Linux has no grant or container profile
+to remove), and removes the folder. A folder whose scope could not be
+stopped, whose processes were not seen to end, or whose connection could
+not be revoked is kept and named, so nothing a retry or the operator needs
+is removed before the cleanup was confirmed.
 `a_supervisor_stops_and_cleans_up_after_an_abandoned_turn` makes a copy end
-while its turn's fake, relay, and a linger run and checks that path. The
+while its turn's fake, relay, and a linger run and checks that path;
+`a_supervisor_keeps_the_folder_when_the_scope_stop_fails` and
+`a_supervisor_keeps_the_folder_when_a_revocation_fails` inject each failure
+and check that the folder is kept and named. The
 linger is a descendant of the fake that ignores its closed pipes and ends
 itself only after five minutes, so on Linux only the scope's stop ends it.
 

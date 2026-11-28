@@ -972,7 +972,11 @@ and a tool turn keeps that process for all its rounds.
   their descendants; if you cannot confirm that the tree ended, keep the
   record. The command removes the connection's records under the exclusive
   lock, is refused while a turn holds the lock, and records nothing about
-  that check. After it wrote its record and before the launch, the turn
+  that check. At most 256 records are kept across every connection: a turn
+  that finds that many starts nothing, a sign-in folder check that finds
+  more fails with a `control` error that names the acknowledgement, and the
+  acknowledgement still clears a connection's records while the inventory
+  is full. After it wrote its record and before the launch, the turn
   checks every settings state recorded since it resolved the connection, so
   a removal that this check misses finds the record. While the
   process runs a watcher checks each later state every 100 ms and once more
@@ -996,9 +1000,13 @@ and a tool turn keeps that process for all its rounds.
   holds back the process's output. Each write to the relay ends at the
   request timeout or on cancellation; it counts as finished only once its
   writer recorded it after the flush, so one stopped first fails the turn
-  even if its bytes went out. The writer checks the cancellation and the
-  deadline again after its record, so either one that came first, also one
-  the watcher had not yet seen, fails the write. The main agent's text has an 8 MiB budget. The Linux folder has a random
+  even if its bytes went out. The writer samples the cancellation and the
+  deadline once, just before its record, and that sample decides: either
+  one that came first, also one the watcher had not yet seen, fails the
+  write, and neither one after it fails a write recorded in time. Calls go
+  to the turn runtime only while no queued output that ends the turn (a
+  malformed line, the end of the output, or input that never fully
+  arrived) waits behind them. The main agent's text has an 8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
   that is unset, relative, or too long, because a socket path must fit in
   107 bytes and one beneath application storage does not.

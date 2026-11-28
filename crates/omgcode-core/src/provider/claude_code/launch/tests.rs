@@ -17,7 +17,7 @@ use super::super::ClaudeCodeFailure;
 use super::super::mcp::{McpServer, McpTool};
 use super::{
     EVENT_QUEUE, Event, Next, Progress, SERVER_NAME, Session, TOOL_PREFIX, TurnFolder,
-    UNCONFIRMED_TURNS, WriteRace, raced_write, spawned,
+    UNCONFIRMED_TURNS, WritePoint, WriteRace, raced_write, spawned,
 };
 use crate::control::{ClaudeCodeWatch, ControlError, wait_for_claude_code_turns};
 use crate::provider::ProviderError;
@@ -291,6 +291,70 @@ fn a_cancellation_right_behind_a_batchs_last_event_retires_its_call() {
     drop(sender);
 }
 
+/// A call that is ready at a batch's end is not handed off while output
+/// that ends the turn waits behind the batch: the round handles that output
+/// first and fails, and the call never reaches the runtime. Informational
+/// output waiting there does not hold the call back.
+#[test]
+fn queued_output_that_ends_the_turn_fails_it_before_a_ready_call_is_handed_off() {
+    let status = json!({ "type": "system", "subtype": "status" });
+    let cases = [
+        (
+            "malformed",
+            Event::Stdout(parse_line(b"{not json")),
+            Some(ClaudeCodeFailure::Protocol),
+        ),
+        ("ended", Event::StdoutEnded, Some(ClaudeCodeFailure::Failed)),
+        (
+            "input lost",
+            Event::InputWritten(false),
+            Some(ClaudeCodeFailure::Failed),
+        ),
+        ("status", stdout(&status), None),
+    ];
+    for (label, output, failure) in cases {
+        assert_eq!(output.ends_the_turn(), failure.is_some(), "{label}");
+        let runtime = TempDir::new().expect("runtime folder");
+        let (mut session, sender) = session(runtime.path());
+        let cancel = CancelToken::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        queue_announced_call(&sender);
+        for _ in 0..2 {
+            let Next::Event(event) = session.next_event(&cancel, deadline).expect("next") else {
+                panic!("the message and the call come first");
+            };
+            match event {
+                Event::Stdout(Ok(event)) => {
+                    let _ = session.stream_event(event, &mut None).expect("output");
+                }
+                Event::Mcp(Ok(line)) => session
+                    .mcp_line(&line, &cancel, deadline)
+                    .expect("the call is accepted"),
+                _ => panic!("unexpected event"),
+            }
+        }
+        assert!(session.calls_ready(), "every announced call arrived");
+        // The batch ends with output queued behind it.
+        session.batch_left = 0;
+        sender.send(stdout(&status)).expect("queue the status");
+        sender.send(output).expect("queue the output");
+
+        let progress = session.run_round(&cancel, None);
+        match (failure, progress) {
+            (None, Ok(Progress::Calls(calls))) => {
+                assert_eq!(calls.len(), 1, "{label}");
+                assert_eq!(calls[0].tool_use_id.as_deref(), Some("toolu_1"));
+            }
+            (Some(expected), Err(ProviderError::ClaudeCode(kind))) => {
+                assert_eq!(kind, expected, "{label}");
+                assert_eq!(session.unreturned.len(), 1, "{label}: the call stays");
+            }
+            (_, other) => panic!("{label}: {other:?}"),
+        }
+        drop(sender);
+    }
+}
+
 #[test]
 fn a_write_that_finished_first_is_not_reported_as_stopped() {
     let race = WriteRace::new();
@@ -338,7 +402,7 @@ fn a_write_recorded_after_its_deadline_fails_and_stops_the_tree() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
-        || {},
+        |_| {},
     );
     assert!(
         stopped_after_io,
@@ -372,7 +436,7 @@ fn a_write_recorded_after_a_cancellation_is_cancelled_and_stops_the_tree() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
-        || {},
+        |_| {},
     );
     assert!(
         stopped_after_io,
@@ -403,7 +467,7 @@ fn a_write_whose_deadline_the_watcher_missed_still_fails() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
-        || {},
+        |_| {},
     );
     assert_eq!(
         stops.load(Ordering::SeqCst),
@@ -421,8 +485,8 @@ fn a_write_whose_deadline_the_watcher_missed_still_fails() {
 
 /// A write whose deadline passes after its I/O and just before its record,
 /// as when the writer is descheduled there, fails and stops the tree once
-/// although the watcher never sees the expiry: the writer checks the
-/// deadline again after the record, which the watcher can no longer undo.
+/// although the watcher never sees the expiry: the writer's own sample,
+/// taken just before the record, decides the write.
 #[test]
 fn a_write_whose_deadline_passes_just_before_its_record_fails() {
     let expired = AtomicBool::new(false);
@@ -434,7 +498,11 @@ fn a_write_whose_deadline_passes_just_before_its_record_fails() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
-        || expired.store(true, Ordering::SeqCst),
+        |point| {
+            if point == WritePoint::BeforeRecord {
+                expired.store(true, Ordering::SeqCst);
+            }
+        },
     );
     assert_eq!(
         stops.load(Ordering::SeqCst),
@@ -448,6 +516,46 @@ fn a_write_whose_deadline_passes_just_before_its_record_fails() {
         ),
         "{result:?}"
     );
+}
+
+/// A write recorded in time succeeds without stopping the tree when its
+/// deadline passes, or the turn is cancelled, just after the record, as when
+/// the writer is descheduled there: the sample taken before the record
+/// decided the write, and a later reading of the clock does not undo it.
+/// The watcher sees the expiry too, and cannot stop a recorded write.
+#[test]
+fn a_write_whose_deadline_or_cancellation_comes_just_after_its_record_succeeds() {
+    for by_cancellation in [false, true] {
+        let cancel = CancelToken::new();
+        let expired = AtomicBool::new(false);
+        let stops = AtomicUsize::new(0);
+        let mut seen = Vec::new();
+        let result = raced_write(
+            || Ok(()),
+            &cancel,
+            || expired.load(Ordering::SeqCst),
+            || {
+                stops.fetch_add(1, Ordering::SeqCst);
+            },
+            |point| {
+                seen.push(point);
+                if point == WritePoint::AfterRecord {
+                    if by_cancellation {
+                        cancel.cancel();
+                    } else {
+                        expired.store(true, Ordering::SeqCst);
+                    }
+                }
+            },
+        );
+        assert!(result.is_ok(), "{by_cancellation}: {result:?}");
+        assert_eq!(
+            stops.load(Ordering::SeqCst),
+            0,
+            "{by_cancellation}: the tree was never stopped"
+        );
+        assert_eq!(seen, [WritePoint::BeforeRecord, WritePoint::AfterRecord]);
+    }
 }
 
 /// A write blocked in its I/O, as when the relay reads nothing, is released
@@ -486,7 +594,7 @@ fn a_write_blocked_in_its_io_is_released_by_a_cancellation_or_its_deadline() {
                 || {
                     stops.fetch_add(1, Ordering::SeqCst);
                 },
-                || {},
+                |_| {},
             )
         });
         assert!(released, "the stop released the blocked write");
@@ -529,7 +637,7 @@ fn a_write_already_cancelled_or_late_never_starts() {
             || {
                 stops.fetch_add(1, Ordering::SeqCst);
             },
-            || {},
+            |_| {},
         );
         assert!(!started, "the I/O never started");
         assert_eq!(stops.load(Ordering::SeqCst), 1, "stopped once");
@@ -559,13 +667,13 @@ fn a_write_recorded_in_time_succeeds_without_stopping_the_tree() {
     let stop = || {
         stops.fetch_add(1, Ordering::SeqCst);
     };
-    raced_write(|| Ok(()), &cancel, || false, stop, || {}).expect("written");
+    raced_write(|| Ok(()), &cancel, || false, stop, |_| {}).expect("written");
     let failed = raced_write(
         || Err(std::io::Error::other("broken channel")),
         &cancel,
         || false,
         stop,
-        || {},
+        |_| {},
     );
     assert!(
         matches!(

@@ -56,7 +56,11 @@ Changes are recorded here before a release version is assigned.
   descendants, and keeps the record while that cannot be confirmed; the
   command records nothing about that check and is refused with a lock error
   while a turn holds the lock. A revocation that stopped on such a record
-  names the acknowledgement before advising a retry.
+  names the acknowledgement before advising a retry. At most 256 turn
+  records are kept: a turn that finds that many starts nothing, a sign-in
+  folder check that finds more is refused with a `control` error that names
+  the acknowledgement, and the acknowledgement still clears a connection's
+  records while the inventory is full.
   `workspace claude-code-revoke`, `workspace provider-profile-remove`, and
   the `settings` window's removal wait up to 30 seconds for those processes
   to end, or fail with a `control` error that says the change is recorded;
@@ -66,8 +70,10 @@ Changes are recorded here before a release version is assigned.
   `provider-profile-remove` withdraws a connection. The sign-in folder stays
   apart from every workspace container grant, every other connection's
   sign-in folder, and every other
-  connection's program and relay grants, and a program or relay folder
-  stays apart from every other connection's sign-in folder. A grant or
+  connection's program and relay grants, and every other connection's
+  program folder, and a program or relay folder stays apart from every
+  other connection's sign-in folder, which each turn checks again, on Linux
+  too. A grant or
   sign-in record whose folder changed proves no separation, so it is
   refused until that grant is revoked or that connection removed; on
   Windows a moved, granted sign-in folder is restored to its recorded path,
@@ -81,8 +87,12 @@ Changes are recorded here before a release version is assigned.
   tree ended, and a write that finished first is never reported as
   stopped. A write counts as finished only once its writer recorded it, so
   one stopped first fails the turn even if its bytes went out; the writer
-  checks the cancellation and deadline again after the record, so either
-  one that came first fails the write. The main agent's text has an 8 MiB
+  samples the cancellation and deadline once, just before the record, and
+  that sample decides, so either one that came first fails the write and
+  neither one after it fails a write recorded in time. Calls are not handed
+  to the turn runtime while queued output that ends the turn (a malformed
+  line, the end of the output, or input that never fully arrived) waits
+  behind them. The main agent's text has an 8 MiB
   budget, a sub-agent's text
   delta is checked before it is ignored, a reused MCP request identifier is
   refused, the rendered prompt's size is checked before it is copied, a
@@ -106,8 +116,10 @@ Changes are recorded here before a release version is assigned.
   runs its tests in a supervised copy of itself; when a test ends that copy
   with a turn still running, the supervisor stops what it left, observes
   the ends of the fake, its relay, and a descendant that ignores its closed
-  pipes, deletes the connection's container profile,
-  and removes the fixtures, which its own test checks. It is a minor
+  pipes, on Windows revokes the connection, which deletes its container
+  profile, and removes the fixtures, which its own test checks. A failed
+  scope stop, an end not observed, or a failed revocation keeps and names
+  the folder instead, which two more of its tests check. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain
   variants. Both binaries also passed on Linux under WSL 2 in a delegated
   cgroup. No signed-in turn of the real `claude` ran on either platform,
