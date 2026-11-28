@@ -10,11 +10,12 @@
 //! [`super::stream`] and [`super::mcp`], checks the lockdown, and ends the
 //! tree on any surprise.
 
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -538,6 +539,12 @@ pub(super) struct Session {
     input_written: bool,
     /// Text-delta bytes forwarded during the whole process.
     streamed_bytes: u64,
+    /// The process's events an answer kept back, in arrival order; the
+    /// round handles them before reading the queue again.
+    deferred: VecDeque<Event>,
+    /// Events left in the round's current batch; calls are handed off
+    /// only between batches.
+    batch_left: usize,
     /// Calls received and not yet returned to the runtime.
     unreturned: Vec<PendingCall>,
     /// Calls returned to the runtime, with the identifier it was given.
@@ -579,6 +586,8 @@ impl Session {
             init_seen: false,
             input_written: false,
             streamed_bytes: 0,
+            deferred: VecDeque::new(),
+            batch_left: 0,
             unreturned: Vec::new(),
             held: Vec::new(),
             announced: Vec::new(),
@@ -646,6 +655,10 @@ impl Session {
         text: &str,
         cancel: &CancelToken,
     ) -> Result<(), ProviderError> {
+        let deadline = deadline_after(self.request_timeout);
+        // A cancellation already waiting marks the call cancelled first, so
+        // its answer is withheld.
+        self.absorb_relay_events(cancel, deadline)?;
         let server = self
             .server
             .as_mut()
@@ -654,10 +667,7 @@ impl Session {
             .answer(&call.key, text, false)
             .map_err(|_| failure(ClaudeCodeFailure::Protocol))?
         {
-            super::mcp::Answer::Line(line) => {
-                let deadline = deadline_after(self.request_timeout);
-                self.write(&line, cancel, deadline)
-            }
+            super::mcp::Answer::Line(line) => self.write(&line, cancel, deadline),
             super::mcp::Answer::Cancelled => Ok(()),
         }
     }
@@ -730,19 +740,37 @@ impl Session {
         }
     }
 
-    /// The next thing the round acts on. An event already queued comes
-    /// first, and calls are handed to the runtime only once the queue is
-    /// empty, so a cancellation the relay sent before the hand-off is
-    /// processed first and its call never reaches the runtime.
+    /// The next thing the round acts on. Events come in arrival order, in
+    /// batches: a batch is at most the events kept back by an answer and a
+    /// full queue, which is everything already waiting when it began. Calls
+    /// are handed to the runtime only between batches, so a cancellation the
+    /// relay sent before the hand-off is processed first and its call never
+    /// reaches the runtime, and a steady stream of events cannot hold back a
+    /// ready call.
     fn next_event(&mut self) -> Next {
+        if self.batch_left == 0 {
+            if let Some(calls) = self.ready_calls() {
+                return Next::Calls(calls);
+            }
+            self.batch_left = self.deferred.len() + EVENT_QUEUE;
+        }
+        if let Some(event) = self.deferred.pop_front() {
+            self.batch_left -= 1;
+            return Next::Event(event);
+        }
         let Some(events) = &self.events else {
             return Next::Ended;
         };
         match events.try_recv() {
-            Ok(event) => return Next::Event(event),
+            Ok(event) => {
+                self.batch_left -= 1;
+                return Next::Event(event);
+            }
             Err(TryRecvError::Disconnected) => return Next::Ended,
             Err(TryRecvError::Empty) => {}
         }
+        // Nothing is waiting: the batch ends, and ready calls go first.
+        self.batch_left = 0;
         if let Some(calls) = self.ready_calls() {
             return Next::Calls(calls);
         }
@@ -750,10 +778,45 @@ impl Session {
             return Next::Ended;
         };
         match events.recv_timeout(POLL) {
-            Ok(event) => Next::Event(event),
+            Ok(event) => {
+                // A new batch starts with this event, so whatever queued
+                // behind it is handled before the next hand-off.
+                self.batch_left = EVENT_QUEUE;
+                Next::Event(event)
+            }
             Err(RecvTimeoutError::Timeout) => Next::Idle,
             Err(RecvTimeoutError::Disconnected) => Next::Ended,
         }
+    }
+
+    /// Handle the relay's events already waiting, at most a full queue, and
+    /// keep the process's output for the next round in arrival order. A
+    /// cancellation the relay sent before an answer then withholds it. The
+    /// two sources share the queue only by arrival, so handling the relay's
+    /// events first changes no meaningful order.
+    fn absorb_relay_events(
+        &mut self,
+        cancel: &CancelToken,
+        deadline: Instant,
+    ) -> Result<(), ProviderError> {
+        for _ in 0..EVENT_QUEUE {
+            let Some(events) = &self.events else {
+                return Ok(());
+            };
+            let Ok(event) = events.try_recv() else {
+                return Ok(());
+            };
+            match event {
+                Event::McpConnected(writer) => self.writer = Some(*writer),
+                Event::Mcp(Ok(line)) => self.mcp_line(&line, cancel, deadline)?,
+                Event::Mcp(Err(_)) | Event::McpFailed => {
+                    return Err(failure(ClaudeCodeFailure::Protocol));
+                }
+                Event::McpEnded => {}
+                output => self.deferred.push_back(output),
+            }
+        }
+        Ok(())
     }
 
     /// Calls ready to return: the lockdown was checked, and either the
@@ -955,22 +1018,23 @@ impl Session {
         let (Some(writer), Some(shutdown)) = (self.writer.as_mut(), shutdown) else {
             return Err(failure(ClaudeCodeFailure::Protocol));
         };
-        let done = AtomicBool::new(false);
-        let stopped = AtomicBool::new(false);
-        let written = thread::scope(|scope| {
-            let (done, stopped) = (&done, &stopped);
+        let race = WriteRace::new();
+        let (written, finished) = thread::scope(|scope| {
+            let race = &race;
             let watcher = thread::Builder::new()
                 .name("claude-code-write".into())
                 .spawn_scoped(scope, move || {
-                    while !done.load(Ordering::SeqCst) {
+                    while race.running() {
                         if cancel.is_cancelled() || Instant::now() >= deadline {
-                            stopped.store(true, Ordering::SeqCst);
-                            // The turn fails either way, so the tree ends
-                            // now rather than after the write returns: an
-                            // ignored shutdown failure cannot hold it.
-                            let _ = shutdown.shutdown();
-                            if let Some(tree) = &tree {
-                                tree.cancel();
+                            // Only a write still running is stopped. The turn
+                            // fails then, so the tree ends now rather than
+                            // after the write returns: an ignored shutdown
+                            // failure cannot hold it.
+                            if race.stop() {
+                                let _ = shutdown.shutdown();
+                                if let Some(tree) = &tree {
+                                    tree.cancel();
+                                }
                             }
                             return;
                         }
@@ -981,11 +1045,11 @@ impl Session {
                 return Err(failure(ClaudeCodeFailure::Failed));
             };
             let written = writer.write_all(line).and_then(|()| writer.flush());
-            done.store(true, Ordering::SeqCst);
+            let finished = race.finish();
             watcher.thread().unpark();
-            Ok(written)
+            Ok((written, finished))
         })?;
-        if stopped.load(Ordering::SeqCst) {
+        if !finished {
             return Err(if cancel.is_cancelled() {
                 ProviderError::Cancelled
             } else {
@@ -1010,7 +1074,7 @@ impl Session {
             .take()
             .is_none_or(|child| child.finish(EXIT_GRACE).is_ok());
         let joined = self.stop_workers();
-        self.release_turn();
+        self.release_turn(ended);
         if self.withdrawn {
             Err(failure(ClaudeCodeFailure::Withdrawn))
         } else if ended && joined {
@@ -1022,29 +1086,39 @@ impl Session {
 
     /// End the tree at once and wait for the workers. The caller already
     /// returns an error, so an unconfirmed end only leaves the platform's
-    /// own fallback termination.
+    /// own fallback termination, and the turn lock stays held.
     pub(super) fn kill(&mut self) {
         if let Some(child) = &self.child {
             child.cancel_signal().cancel();
         }
         self.close_channel();
-        if let Some(child) = self.child.take() {
-            // An unconfirmed end has already dropped the tree, whose own
-            // fallback termination ran before this returns.
-            let _ = child.finish(Duration::ZERO);
-        }
+        // An unconfirmed end has already dropped the tree, whose own
+        // fallback termination ran before this returns.
+        let ended = self
+            .child
+            .take()
+            .is_none_or(|child| child.finish(Duration::ZERO).is_ok());
         let _ = self.stop_workers();
-        self.release_turn();
+        self.release_turn(ended);
     }
 
-    /// Stop the watcher and release the turn lock. Called only once the tree
-    /// was finished, so a revocation waiting for the lock sees it ended.
-    fn release_turn(&mut self) {
+    /// Stop the watcher, then release the turn lock if the tree was
+    /// observed `ended`. The lock of a tree whose end was not confirmed is
+    /// kept until this process exits, so a revocation's wait reports the
+    /// turn as running instead of ended.
+    fn release_turn(&mut self, ended: bool) {
         if let Some(mut watcher) = self.watcher.take() {
             watcher.stop();
             self.withdrawn |= watcher.withdrawn();
         }
-        self.turn_lock = None;
+        if let Some(lock) = self.turn_lock.take()
+            && !ended
+        {
+            UNCONFIRMED_TURNS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(lock);
+        }
     }
 
     fn close_channel(&mut self) {
@@ -1083,6 +1157,46 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+/// The turn locks of trees whose end could not be confirmed. They stay held
+/// until this process exits, so no revocation reports those turns ended.
+static UNCONFIRMED_TURNS: Mutex<Vec<File>> = Mutex::new(Vec::new());
+
+/// Which of a relay write and its watcher ended the write: the writer by
+/// finishing it, or the watcher by stopping it. The first to record wins,
+/// so a write recorded as finished is never reported as stopped.
+struct WriteRace(AtomicU8);
+
+impl WriteRace {
+    const RUNNING: u8 = 0;
+    const FINISHED: u8 = 1;
+    const STOPPED: u8 = 2;
+
+    const fn new() -> Self {
+        Self(AtomicU8::new(Self::RUNNING))
+    }
+
+    fn running(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::RUNNING
+    }
+
+    /// Record the write as finished. `false` when the watcher stopped it
+    /// first.
+    fn finish(&self) -> bool {
+        self.record(Self::FINISHED)
+    }
+
+    /// Record the write as stopped. `false` when it already finished.
+    fn stop(&self) -> bool {
+        self.record(Self::STOPPED)
+    }
+
+    fn record(&self, end: u8) -> bool {
+        self.0
+            .compare_exchange(Self::RUNNING, end, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
 }
 
@@ -1173,16 +1287,20 @@ const MAX_SOCKET_PARENT_BYTES: usize =
     107 - 1 - SOCKET_FOLDER_PREFIX.len() - 16 - 1 - SOCKET_NAME.len();
 
 /// The folder that holds the relay socket's folder on Linux: the canonical
-/// `runtime` folder (`XDG_RUNTIME_DIR`) when it is absolute and short enough,
-/// or `/tmp`. The application data folder is not used, because a socket path
-/// beneath it does not fit in `sun_path`.
+/// `runtime` folder (`XDG_RUNTIME_DIR`) when it is absolute, short enough,
+/// and UTF-8, or `/tmp`. The relay configuration is JSON, so a socket path
+/// that is not UTF-8 cannot reach the relay. The application data folder is
+/// not used, because a socket path beneath it does not fit in `sun_path`.
 #[cfg(target_os = "linux")]
 fn socket_parent(runtime: Option<OsString>) -> PathBuf {
     runtime
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .and_then(|path| fs::canonicalize(path).ok())
-        .filter(|path| path.as_os_str().len() <= MAX_SOCKET_PARENT_BYTES)
+        .filter(|path| {
+            path.to_str()
+                .is_some_and(|text| text.len() <= MAX_SOCKET_PARENT_BYTES)
+        })
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
@@ -1250,6 +1368,24 @@ mod socket_tests {
         fs::create_dir_all(&long).expect("long folder");
         assert_eq!(
             socket_parent(Some(long.into_os_string())),
+            PathBuf::from("/tmp")
+        );
+    }
+
+    #[test]
+    fn a_runtime_folder_that_is_not_utf8_falls_back_to_tmp() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let base = tempfile::tempdir().expect("base");
+        let mut name = b"run-".to_vec();
+        name.push(0xFF);
+        let folder = fs::canonicalize(base.path())
+            .expect("canonical")
+            .join(OsString::from_vec(name));
+        fs::create_dir(&folder).expect("folder");
+        assert!(folder.as_os_str().len() <= MAX_SOCKET_PARENT_BYTES);
+        assert_eq!(
+            socket_parent(Some(folder.into_os_string())),
             PathBuf::from("/tmp")
         );
     }

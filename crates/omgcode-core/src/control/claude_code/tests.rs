@@ -441,13 +441,17 @@ fn revoking_refuses_other_profiles_and_retries_deletion_without_grants() {
         .expect("other profile");
     let events = store.entries.len();
     assert!(matches!(
-        store.revoke_claude_code_grants("local"),
+        store
+            .revoke_claude_code_grants("local")
+            .map_err(|failure| failure.error),
         Err(ControlError::ProviderRefused(
             "this provider profile is not a claude_code connection"
         ))
     ));
     assert!(matches!(
-        store.revoke_claude_code_grants("missing"),
+        store
+            .revoke_claude_code_grants("missing")
+            .map_err(|failure| failure.error),
         Err(ControlError::UnknownProvider)
     ));
     for _ in 0..2 {
@@ -570,6 +574,33 @@ fn a_sign_in_folder_overlapping_a_container_grant_is_refused() {
         .expect("a separate sign-in folder");
 }
 
+/// A workspace container grant whose folder moved may still carry its
+/// access-control entry wherever the folder went, so no sign-in folder is
+/// accepted until that grant is revoked.
+#[test]
+fn a_stale_container_grant_record_refuses_every_sign_in_folder() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    let granted = scene.data.with_file_name("granted");
+    fs::create_dir(&granted).expect("granted folder");
+    let workspace = store.workspaces().next().expect("workspace").id();
+    let grant = store.test_record_grant(workspace, &granted, ContainerGrantAccess::ReadExecute);
+    store
+        .check_claude_code_profile(&scene.declaration("claude"))
+        .expect("a current, separate grant");
+    fs::rename(&granted, scene.data.with_file_name("moved")).expect("move the folder");
+    assert!(matches!(
+        store.check_claude_code_profile(&scene.declaration("claude")),
+        Err(ControlError::ProviderRefused(
+            "a workspace container grant's folder changed since it was granted; revoke that grant first"
+        ))
+    ));
+    store.test_record_revocation(grant);
+    store
+        .check_claude_code_profile(&scene.declaration("claude"))
+        .expect("accepted once the stale grant is revoked");
+}
+
 /// Two connections cannot record the same or nested sign-in folders, and an
 /// unchanged connection still passes its own check.
 #[test]
@@ -617,6 +648,121 @@ fn connections_keep_separate_sign_in_folders() {
             .is_err(),
         "without the exception the connection's own folder overlaps"
     );
+}
+
+/// A sign-in folder that moved could lie anywhere now, so no development root
+/// or other connection's sign-in folder is accepted until its connection is
+/// removed.
+#[test]
+fn a_stale_sign_in_record_keeps_every_scope_unproven() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let apart = scene.data.with_file_name("apart");
+    let other = scene.data.with_file_name("other-sign-in");
+    for folder in [&apart, &other] {
+        fs::create_dir(folder).expect("separate folder");
+    }
+    fs::rename(&scene.sign_in, scene.data.with_file_name("moved")).expect("move the folder");
+    let stale = |result: Result<(), ControlError>| {
+        matches!(
+            result,
+            Err(ControlError::GrantRefused(reason))
+                if reason.starts_with("a Claude Code connection's sign-in folder changed since it was recorded")
+        )
+    };
+    let events = store.entries.len();
+    assert!(stale(store.set_development_root(&apart, store.revision())));
+    let declaration = ClaudeCodeDeclaration {
+        name: "second".to_owned(),
+        program: scene.program.clone(),
+        config_folder: other,
+    };
+    assert!(stale(store.check_claude_code_profile(&declaration)));
+    assert_eq!(store.entries.len(), events);
+
+    let _ = store
+        .remove_provider_profile("claude", store.revision())
+        .expect("the stale connection is removed");
+    store
+        .set_development_root(&apart, store.revision())
+        .expect("a separate root once the record is gone");
+    store
+        .check_claude_code_profile(&declaration)
+        .expect("a separate sign-in folder once the record is gone");
+}
+
+/// A sign-in folder equal to or inside another connection's program or
+/// relay grant is refused, and a separate folder is accepted.
+#[test]
+fn a_sign_in_folder_inside_another_connections_readable_grant_is_refused() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    let profile = store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    record_claude_code_grants(&mut store, &scene, profile.id());
+    let inside = scene.relay.join("sign-in");
+    let apart = scene.data.with_file_name("apart");
+    for folder in [&inside, &apart] {
+        fs::create_dir(folder).expect("folder");
+    }
+    for (case, folder) in [("equal", &scene.relay), ("inside", &inside)] {
+        let declaration = ClaudeCodeDeclaration {
+            name: "second".to_owned(),
+            program: scene.program.clone(),
+            config_folder: folder.clone(),
+        };
+        assert!(
+            matches!(
+                store.check_claude_code_profile(&declaration),
+                Err(ControlError::ProviderRefused(
+                    "the Claude sign-in folder must not overlap another Claude Code connection's program or relay grant"
+                ))
+            ),
+            "{case}"
+        );
+    }
+    let declaration = ClaudeCodeDeclaration {
+        name: "second".to_owned(),
+        program: scene.program.clone(),
+        config_folder: apart,
+    };
+    store
+        .check_claude_code_profile(&declaration)
+        .expect("a separate sign-in folder");
+}
+
+/// A program folder that overlaps another connection's sign-in folder is
+/// refused before it is recorded.
+#[test]
+fn a_program_folder_overlapping_another_sign_in_folder_is_refused() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let tools = scene.sign_in.join("bin");
+    fs::create_dir(&tools).expect("program folder");
+    let program = tools.join(PROGRAM_NAME);
+    fs::write(&program, b"not a real program").expect("program");
+    let apart = scene.data.with_file_name("apart");
+    fs::create_dir(&apart).expect("separate sign-in folder");
+    let events = store.entries.len();
+    let declaration = ClaudeCodeDeclaration {
+        name: "second".to_owned(),
+        program,
+        config_folder: apart,
+    };
+    assert!(matches!(
+        store.add_claude_code_profile(&declaration, store.revision()),
+        Err(ControlError::GrantRefused(
+            "a Claude Code folder must not overlap another Claude Code connection's sign-in folder"
+        ))
+    ));
+    assert_eq!(store.entries.len(), events);
 }
 
 /// Record an applied grant for every role without changing an ACL, so a
@@ -802,6 +948,38 @@ fn a_revocation_waits_for_every_running_turn() {
         .expect("lock file");
     revocation.try_lock().expect("exclusive");
     assert!(watch.lock_turn().expect("lock").is_none());
+}
+
+/// A wait that found a turn running succeeds once that last turn releases
+/// its lock during the same wait.
+#[test]
+fn a_wait_succeeds_once_the_last_turn_ends_during_it() {
+    let scene = Scene::new();
+    let (profile_id, _, watch) = resolved_turn(&scene);
+    let turn = watch.lock_turn().expect("lock").expect("free");
+    let (contended, observed) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let seen = observed
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .is_ok();
+        drop(turn);
+        seen
+    });
+    let mut signalled = false;
+    super::turns::wait_for_turns_observed(
+        &scene.data,
+        profile_id,
+        std::time::Duration::from_secs(30),
+        || {
+            if !signalled {
+                signalled = true;
+                let _ = contended.send(());
+            }
+        },
+    )
+    .expect("the wait ends once the last turn released its lock");
+    assert!(signalled, "the wait first found the turn running");
+    assert!(holder.join().expect("holder"), "released after contention");
 }
 
 #[cfg(not(windows))]
@@ -1009,8 +1187,10 @@ mod windows {
         store
             .add_claude_code_profile(&declaration, store.revision())
             .expect("nested profile");
+        let below = inside.join("child");
+        fs::create_dir(&below).expect("folder below a sign-in folder");
         let reason = "a container grant must not overlap a Claude Code sign-in folder";
-        for folder in [&scene.sign_in, &above, &inside] {
+        for folder in [&scene.sign_in, &above, &inside, &below] {
             assert!(
                 matches!(
                     store.check_container_grants(
@@ -1031,5 +1211,87 @@ mod windows {
                 ContainerGrantAccess::ReadExecute,
             )
             .expect("an unrelated external folder");
+    }
+
+    /// A relay folder that equals, contains, or lies inside another
+    /// connection's sign-in folder is refused before anything is recorded.
+    #[test]
+    fn a_relay_grant_overlapping_another_sign_in_folder_is_refused() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let outer = scene.data.with_file_name("outer");
+        let sign_in = outer.join("sign-in");
+        let below = sign_in.join("bin");
+        let apart = scene.data.with_file_name("apart");
+        for folder in [&below, &apart] {
+            fs::create_dir_all(folder).expect("folder");
+        }
+        let first = ClaudeCodeDeclaration {
+            name: "first".to_owned(),
+            program: scene.program.clone(),
+            config_folder: sign_in.clone(),
+        };
+        store
+            .add_claude_code_profile(&first, store.revision())
+            .expect("first profile");
+        let second = ClaudeCodeDeclaration {
+            name: "second".to_owned(),
+            program: scene.program.clone(),
+            config_folder: apart,
+        };
+        store
+            .add_claude_code_profile(&second, store.revision())
+            .expect("second profile");
+        let events = store.entries.len();
+        for (case, relay) in [
+            ("contains", &outer),
+            ("equal", &sign_in),
+            ("inside", &below),
+        ] {
+            assert!(
+                matches!(
+                    store.grant_claude_code("second", relay, store.revision()),
+                    Err(ControlError::GrantRefused(
+                        "a Claude Code folder must not overlap another Claude Code connection's sign-in folder"
+                    ))
+                ),
+                "{case}"
+            );
+        }
+        assert_eq!(store.entries.len(), events);
+        assert!(store.claude_code_grants().is_empty());
+    }
+
+    /// A revocation that fails after it recorded a withdrawal names the
+    /// connection, so the caller still waits for its turns; a refusal
+    /// before any withdrawal does not.
+    #[test]
+    fn a_revocation_that_fails_after_withdrawing_reports_the_withdrawal() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let profile = store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        let refused = store
+            .revoke_claude_code_grants("missing")
+            .expect_err("unknown connection");
+        assert!(refused.withdrawn.is_none());
+        // Recorded grants without ACL changes: revoking an absent entry
+        // succeeds, and the moved relay folder's revocation fails last.
+        record_claude_code_grants(&mut store, &scene, profile.id());
+        fs::rename(&scene.relay, scene.relay.with_file_name("relay-moved")).expect("move");
+        let failure = store
+            .revoke_claude_code_grants("claude")
+            .expect_err("the relay revocation fails");
+        assert_eq!(failure.withdrawn, Some(profile.id()), "{:?}", failure.error);
+        assert!(store.claude_code_withdrawn(profile.id()).is_some());
+        let again = store
+            .revoke_claude_code_grants("claude")
+            .expect_err("still fails");
+        assert_eq!(
+            again.withdrawn,
+            Some(profile.id()),
+            "the earlier withdrawal still counts"
+        );
     }
 }

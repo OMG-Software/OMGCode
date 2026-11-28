@@ -79,10 +79,15 @@ Haiku request with one tool call.
 2. **The operator signs in, and OMGCode stays out of it.** The operator runs
    `claude auth login` with `CLAUDE_CONFIG_DIR` set to a folder used only for
    OMGCode, outside application storage, the development root, every
-   workspace, every workspace container grant, and every other connection's
-   sign-in folder. Recording the connection, granting it, changing the
-   development root, adding a workspace container grant, and every turn
-   check this. OMGCode has no Claude sign-in command. It never opens, reads,
+   workspace, every workspace container grant, every other connection's
+   sign-in folder, and every other connection's program and relay grants.
+   Recording the connection, granting it, changing the development root,
+   adding a workspace container grant, and every turn check this, and a
+   program or relay folder must not overlap another connection's sign-in
+   folder either. A grant or sign-in record whose folder changed proves no
+   separation: a moved folder can keep its access-control entries and lie
+   anywhere, so the check refuses until that grant is revoked or that
+   connection removed. OMGCode has no Claude sign-in command. It never opens, reads,
    copies, stores, or passes a file or token from that folder. It only checks
    the folder's identity, sets `CLAUDE_CONFIG_DIR` for the child, and, on
    Windows, grants the child's container access to the folder.
@@ -123,16 +128,24 @@ Haiku request with one tool call.
    beside the runtime folder and outside every grant. Before the per-turn
    folder is made, the turn takes that lock and checks every settings state
    recorded since it resolved the connection. It releases the lock only after
-   the tree was observed ended. While the process runs, a watcher thread
-   checks each later state every 100 ms. A state that removes the connection
-   or, on Windows, leaves one of its roles without an active grant ends the
-   tree, and the turn fails with `claude_code_withdrawn`. Unreadable settings
-   withdraw the turn too; settings that another command holds are read on the
-   next poll. `workspace claude-code-revoke`, `workspace
+   the tree was observed ended; when the end cannot be confirmed, the lock
+   stays held until the OMGCode process exits, so a revocation reports the
+   turn as running. While the process runs, a watcher thread checks each
+   later state every 100 ms, and once more as it stops, so the turn's
+   result counts only after every state up to its end was checked. A state
+   that removes the connection or, on Windows, leaves one of its roles
+   without an active grant ends the tree, and the turn fails with
+   `claude_code_withdrawn`. Unreadable settings and a watcher that panicked
+   withdraw the turn too; settings that another command holds are read on
+   the next poll. `workspace claude-code-revoke`, `workspace
    provider-profile-remove`, and the `settings` window's removal record their
    change, release the settings, and then wait up to 30 seconds for an
    exclusive lock. When a turn does not end in time, the command fails with a
-   `control` error that says the change is recorded.
+   `control` error that says the change is recorded. A revocation that fails
+   after it recorded a withdrawal waits the same way and reports both its
+   error and the wait's outcome. On Linux no grant exists, so
+   `claude-code-revoke` changes nothing there and `provider-profile-remove`
+   withdraws a connection.
 4. **One process per model request, launched locked down.** A tool turn
    keeps one `claude` process for all its rounds; a text turn and each
    compaction summary start their own. Each run writes a fresh per-turn
@@ -170,6 +183,12 @@ Haiku request with one tool call.
    Every write to the relay ends at the request timeout or on cancellation:
    the channel is shut and the process tree ended, and the tree's end closes
    the relay's side, so the write ends even when the shutdown request fails.
+   The writer and its watcher record the write's end with one
+   compare-and-swap, so a write that finished first is never reported as
+   stopped. Before an answer is written, the relay's events already queued
+   are handled and the process's output is kept, in order, for the next
+   round, so a cancellation sent while the runtime ran the call withholds
+   the answer.
    The main agent's streamed and final text share an 8 MiB budget, and more
    fails the turn as too large. A `result` counts only after the whole prompt
    was written. After the tree ends, each worker thread is joined within five
@@ -197,7 +216,8 @@ Haiku request with one tool call.
    the server accepts a client only after the client's token shows that
    container's SID. On Linux it is a socket in a per-turn `0700` folder
    with a random name, created exclusively under `XDG_RUNTIME_DIR`, or under
-   `/tmp` when that variable is unset, relative, or too long. A socket path
+   `/tmp` when that variable is unset, relative, too long, or not UTF-8, since
+   the relay's configuration is JSON. A socket path
    must fit in the 107 bytes of `sun_path`, and one beneath the runtime
    folder in application storage does not. All
    MCP handling stays in the trusted process. It answers `server/discover`
@@ -214,9 +234,11 @@ Haiku request with one tool call.
    round uses), the name is the MCP name, and the
    arguments are re-serialised. A round holds at most eight calls and
    returns once it is full, once every announced tool block has arrived, or
-   200 ms after the last call, and only once every queued event was read,
-   so a call whose `notifications/cancelled` is already queued is retired
-   and never reaches the runtime. The MCP request stays open while the turn
+   200 ms after the last call. Calls are returned only at the end of a
+   batch, which is every event already queued when it began, so a call whose
+   `notifications/cancelled` is already queued is retired and never reaches
+   the runtime, and a steady stream of events cannot hold a ready call
+   back. The MCP request stays open while the turn
    runtime parses the call, applies the workspace policy, waits for any
    approval, dispatches, filters, and journals it, exactly as for every
    other provider. The next round answers each held request with the result
@@ -240,7 +262,9 @@ Haiku request with one tool call.
    in a chat turn and in compaction alike. Cancellation and the deadlines
    terminate the tree, and its end is observed before the turn returns. A
    failed termination or emptiness check counts as unconfirmed cleanup, so
-   the tree's own fallback kill still runs. Each request manifest records the endpoint label
+   the tree's own fallback kill still runs. A streaming child reports itself
+   ended once its tree was observed empty, also when the usage or disk
+   accounting after that fails. Each request manifest records the endpoint label
    `claude-code:<profile>`, which is not a URL.
 10. **The trusted CLI only, for now.** `chat --provider-profile` and
     `session compact --provider-profile` resolve a `claude_code` profile.

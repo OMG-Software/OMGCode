@@ -268,6 +268,37 @@ fn a_malformed_stream_event_is_an_error() {
     );
 }
 
+#[test]
+fn a_sub_agent_delta_is_checked_before_it_is_ignored() {
+    for (line, field) in [
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":null}},"parent_tool_use_id":"toolu_01X"}"#,
+            "type",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{}},"parent_tool_use_id":"toolu_01X"}"#,
+            "type",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":"text"},"parent_tool_use_id":"toolu_01X"}"#,
+            "delta",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta"},"parent_tool_use_id":"toolu_01X"}"#,
+            "delta",
+        ),
+    ] {
+        assert_eq!(
+            parse_line(line.as_bytes()),
+            Err(StreamError::Shape(field)),
+            "{line}"
+        );
+    }
+    // A well-formed sub-agent delta of any kind is still ignored.
+    let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hm"}},"parent_tool_use_id":"toolu_01X"}"#;
+    assert_eq!(event(thinking), StreamEvent::Ignored);
+}
+
 fn assistant(content: &str) -> StreamEvent {
     event(&format!(
         r#"{{"type":"assistant","message":{{"id":"msg_x","model":"claude-haiku-5-5","role":"assistant","content":[{content}],"stop_reason":null}},"parent_tool_use_id":null,"session_id":"s","uuid":"u"}}"#

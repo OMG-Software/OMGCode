@@ -83,6 +83,13 @@ impl Watcher {
                         }
                         thread::park_timeout(WATCH_POLL);
                     }
+                    // A state recorded after the last poll still counts, so
+                    // the turn's result is accepted only once every state up
+                    // to the stop was checked. Busy settings fail closed.
+                    if !matches!(watch.recheck_waiting(&mut cursor), Recheck::Allowed) {
+                        withdrawn.store(true, Ordering::SeqCst);
+                        stop.cancel();
+                    }
                 })
                 .map_err(|_| failure(ClaudeCodeFailure::Failed))?
         };
@@ -98,12 +105,16 @@ impl Watcher {
         self.withdrawn.load(Ordering::SeqCst)
     }
 
-    /// Stop watching and join the thread.
+    /// Stop watching and join the thread, after its final check of the
+    /// settings. A thread that panicked counts as a withdrawal, so the turn
+    /// fails closed.
     pub(super) fn stop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
-            let _ = thread.join();
+            if thread.join().is_err() {
+                self.withdrawn.store(true, Ordering::SeqCst);
+            }
         }
     }
 }

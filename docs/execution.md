@@ -931,9 +931,12 @@ and a tool turn keeps that process for all its rounds.
   holds an active grant for the folder it names. A folder that holds the
   development root, a workspace, or application storage, or is a drive root
   or the home folder or its ancestor, is refused. The sign-in folder must
-  also stay apart from every workspace container grant and every other
-  connection's sign-in folder, and a new development root or workspace
-  container grant may not overlap it.
+  also stay apart from every workspace container grant, every other
+  connection's sign-in folder, and every other connection's program and
+  relay grants, and a new development root, workspace container grant, or
+  other connection's program or relay folder may not overlap it. A grant or
+  sign-in record whose folder changed is refused until that grant is
+  revoked or that connection removed, because it proves no separation.
 - **Linux.** Landlock allows reading the program and relay folders, the
   per-turn folder, `/usr`, `/lib`, `/lib64`, `/bin`, the network support
   files, and `/dev/zero`, `/dev/random`, and `/dev/urandom`, and writing the
@@ -950,16 +953,21 @@ and a tool turn keeps that process for all its rounds.
 - **Withdrawal.** Each process holds a shared lock on
   `claude-code/<profile id>.turns` in application storage, outside every
   grant, from before its per-turn folder is made until its tree was
-  observed ended. Before the launch the turn checks every settings state
-  recorded since it resolved the connection, and while the process runs a
-  watcher checks each later state every 100 ms. A state that removes the
-  connection or, on Windows, leaves a role without an active grant ends the
-  tree, and the turn fails with `claude_code_withdrawn`; unreadable settings
+  observed ended; a lock whose tree's end was not confirmed stays held until
+  the OMGCode process exits. Before the launch the turn checks every
+  settings state recorded since it resolved the connection, and while the
+  process runs a watcher checks each later state every 100 ms and once more
+  as it stops. A state that removes the connection or, on Windows, leaves a
+  role without an active grant ends the tree, and the turn fails with
+  `claude_code_withdrawn`; unreadable settings and a watcher that panicked
   do the same. `workspace claude-code-revoke`, `workspace
   provider-profile-remove`, and the `settings` window's removal record the
   change, release the settings, and wait up to 30 seconds for an exclusive
   lock. A turn that does not end in time fails the command with a `control`
-  error that says the change is recorded.
+  error that says the change is recorded. A revocation that fails after it
+  recorded a withdrawal also waits, and reports both outcomes. On Linux
+  `claude-code-revoke` changes nothing, because no grant exists, and
+  `provider-profile-remove` is what withdraws a connection.
 - **Standard streams.** Standard input carries the rendered conversation
   and is then closed. Standard output is read as bounded stream-json lines;
   nothing it says is trusted. The tool channel is a named pipe (Windows) or a

@@ -47,8 +47,9 @@ pub use assignment::{
 };
 pub use claude_code::{
     CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole,
-    ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeSetup, ClaudeCodeWatch,
-    claude_code_container, claude_code_runtime_folder, wait_for_claude_code_turns,
+    ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeRevokeFailure,
+    ClaudeCodeSetup, ClaudeCodeWatch, claude_code_container, claude_code_runtime_folder,
+    wait_for_claude_code_turns,
 };
 pub(crate) use claude_code::{Recheck, WatchCursor};
 pub use container::{

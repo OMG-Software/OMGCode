@@ -177,6 +177,17 @@ pub fn wait_for_claude_code_turns(
     profile_id: Uuid,
     timeout: Duration,
 ) -> Result<(), ControlError> {
+    wait_for_turns_observed(data_root, profile_id, timeout, || {})
+}
+
+/// [`wait_for_claude_code_turns`], calling `contended` after each attempt
+/// that found a turn holding the lock, before it waits for the next.
+pub(super) fn wait_for_turns_observed(
+    data_root: &Path,
+    profile_id: Uuid,
+    timeout: Duration,
+    mut contended: impl FnMut(),
+) -> Result<(), ControlError> {
     // A missing file means no turn ever started; one that starts now finds
     // the recorded change when it checks the settings before its launch.
     let file = match open_turn_lock(data_root, profile_id, false) {
@@ -194,7 +205,10 @@ pub fn wait_for_claude_code_turns(
                 let _ = file.unlock();
                 return Ok(());
             }
-            Err(TryLockError::WouldBlock) if Instant::now() < until => thread::sleep(POLL),
+            Err(TryLockError::WouldBlock) if Instant::now() < until => {
+                contended();
+                thread::sleep(POLL);
+            }
             Err(TryLockError::WouldBlock) => return Err(ControlError::ClaudeCodeTurnsRunning),
             Err(TryLockError::Error(error)) => return Err(ControlError::Io(error)),
         }

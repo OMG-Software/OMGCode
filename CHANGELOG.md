@@ -40,19 +40,34 @@ Changes are recorded here before a release version is assigned.
   `claude-code:<profile>`. Each process holds a shared turn lock beside the
   runtime folder, checks every settings state since its turn resolved the
   connection before it starts, and is ended by a watcher when a later state
-  revokes one of its grants or removes it. `workspace claude-code-revoke`,
-  `workspace provider-profile-remove`, and the `settings` window's removal
-  wait up to 30 seconds for those processes to end, or fail with a
-  `control` error that says the change is recorded. The sign-in folder
-  stays apart from every workspace container grant and every other
-  connection's sign-in folder, a grant checks its whole plan before it
-  records anything, and revoking retries a container profile deletion that
-  was interrupted. At most eight output events queue for the turn, every
+  revokes one of its grants or removes it. The watcher checks once more as
+  it stops, a watcher that panicked fails the turn, and the turn lock of a
+  process whose end was not confirmed stays held until OMGCode exits.
+  `workspace claude-code-revoke`, `workspace provider-profile-remove`, and
+  the `settings` window's removal wait up to 30 seconds for those processes
+  to end, or fail with a `control` error that says the change is recorded;
+  a revocation that fails after it recorded a withdrawal also waits and
+  reports both outcomes. On Linux no grant exists, so `claude-code-revoke`
+  changes nothing there and `provider-profile-remove` withdraws a
+  connection. The sign-in folder stays apart from every workspace container
+  grant, every other connection's sign-in folder, and every other
+  connection's program and relay grants, and a program or relay folder
+  stays apart from every other connection's sign-in folder. A grant or
+  sign-in record whose folder changed proves no separation, so it is
+  refused until that grant is revoked or that connection removed. A grant
+  checks its whole plan before it records anything, and revoking retries a
+  container profile deletion that was interrupted. At most eight output
+  events queue for the turn, and calls are handed off at the end of each
+  batch of queued events, so a steady stream cannot hold one back. Every
   relay write has a deadline at which the channel is shut and the process
-  tree ended, the main agent's text has an 8 MiB budget,
-  a reused MCP request identifier is refused, the rendered prompt's
-  size is checked before it is copied, and a call whose cancellation is
-  already queued is retired before any call is handed to the turn runtime.
+  tree ended, and a write that finished first is never reported as
+  stopped. The main agent's text has an 8 MiB budget, a sub-agent's text
+  delta is checked before it is ignored, a reused MCP request identifier is
+  refused, the rendered prompt's size is checked before it is copied, a
+  call whose cancellation is already queued is retired before any call is
+  handed to the turn runtime, and a cancellation queued while the runtime
+  runs a call withholds its answer. On Linux a runtime folder that is not
+  UTF-8 falls back to `/tmp`, since the relay configuration is JSON.
   The desktop shell, the active selection, and `models` refuse the profile
   with `claude_code_cli_only`; the `settings` window names a recorded one
   **Claude Code**, marks it CLI only with no key field, can remove it, and
@@ -61,7 +76,9 @@ Changes are recorded here before a release version is assigned.
   container-only local pipe and private Unix socket, and
   `ProcessError::CleanupUnconfirmed` now carries an `UnconfirmedCleanup`
   with the native cause: a failed termination or emptiness check no longer
-  counts as a confirmed cleanup, so the tree's fallback kill still runs. Two harnessless test
+  counts as a confirmed cleanup, so the tree's fallback kill still runs. A
+  streaming child's `has_ended` turns true once its tree is observed empty,
+  also when the accounting after that fails. Two harnessless test
   binaries use a fake `claude`, on Windows inside the real AppContainer with
   real grants, through the core runtime and the CLI commands. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain

@@ -4,9 +4,10 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    AssignmentFailure, CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ContainerGrantAccess,
-    ControlError, ControlStore, CredentialId, FolderGrant, PackageProfileDeclaration,
-    ProfileDeclaration, ProviderProfileDeclaration, Revocations, wait_for_claude_code_turns,
+    AssignmentFailure, CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeRevokeFailure,
+    ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
+    PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
+    wait_for_claude_code_turns,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -288,10 +289,12 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
-    /// Revoke every grant of a Claude Code connection and delete its
+    /// Revoke every Windows grant of a Claude Code connection and delete its
     /// AppContainer profile, then wait up to 30 seconds until every running
-    /// turn of the connection has ended. A connection is removed with
-    /// `provider-profile-remove` only after this.
+    /// turn of the connection has ended. On Windows a connection is removed
+    /// with `provider-profile-remove` only after this. Linux records no
+    /// grants, so there this changes nothing and running turns continue;
+    /// `provider-profile-remove` is what withdraws a connection there.
     ClaudeCodeRevoke { name: String },
 }
 
@@ -948,16 +951,20 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::ClaudeCodeRevoke { name } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
-            let revocation = store
-                .revoke_claude_code_grants(&name)
-                .map_err(control_error)?;
+            // The running turns' watchers read the revocation only once the
+            // settings are released; the command reports success only after
+            // every process of the connection was observed ended.
+            let revocation = match store.revoke_claude_code_grants(&name) {
+                Ok(revocation) => revocation,
+                Err(failure) => {
+                    drop(store);
+                    return Err(partial_claude_code_revocation(data_root, failure));
+                }
+            };
             let output = json!({
                 "revocation": revocation,
                 "snapshot": store.snapshot(),
             });
-            // The running turns' watchers read the revocation only once the
-            // settings are released; the command reports success only after
-            // every process of the connection was observed ended.
             drop(store);
             if revocation.turns_withdrawn {
                 wait_for_claude_code_turns(
@@ -1006,6 +1013,27 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             print_json(&output)
         }
     }
+}
+
+/// The error of a revocation that failed. When it had already recorded a
+/// withdrawal, the connection's running turns are ending, so the error is
+/// reported only after waiting for them, together with the wait's outcome.
+fn partial_claude_code_revocation(data_root: &Path, failure: ClaudeCodeRevokeFailure) -> CliError {
+    let Some(profile_id) = failure.withdrawn else {
+        return control_error(failure.error);
+    };
+    let turns = match wait_for_claude_code_turns(data_root, profile_id, CLAUDE_CODE_TURN_STOP_WAIT)
+    {
+        Ok(()) => "every running turn of the connection ended".to_owned(),
+        Err(error) => format!("its running turns were not observed ended: {error}"),
+    };
+    CliError::new(
+        "control",
+        format!(
+            "The revocation stopped after withdrawing the connection: {}; {turns}. Run the command again.",
+            failure.error
+        ),
+    )
 }
 
 fn container_grant(args: ContainerGrantArgs, data_root: &Path) -> Result<(), CliError> {
@@ -1641,6 +1669,46 @@ mod tests {
         assert_eq!(
             completed_change(RevokingChange::Recorded, &revoked(&[])),
             "The change was recorded."
+        );
+    }
+
+    /// A failed revocation that recorded no withdrawal reports its error at
+    /// once; one that did reports it only after the connection's turns were
+    /// waited for, with the wait's outcome.
+    #[test]
+    fn a_partial_claude_code_revocation_reports_the_turns_it_waited_for() {
+        let data = tempfile::tempdir().expect("data folder");
+        let refused = partial_claude_code_revocation(
+            data.path(),
+            ClaudeCodeRevokeFailure {
+                error: ControlError::UnknownProvider,
+                withdrawn: None,
+            },
+        );
+        assert_eq!(refused.message, ControlError::UnknownProvider.to_string());
+
+        // No turn ever started, so the wait ends at once.
+        let partial = partial_claude_code_revocation(
+            data.path(),
+            ClaudeCodeRevokeFailure {
+                error: ControlError::LimitReached,
+                withdrawn: Some(Uuid::new_v4()),
+            },
+        );
+        assert!(
+            partial.message.starts_with(&format!(
+                "The revocation stopped after withdrawing the connection: {}",
+                ControlError::LimitReached
+            )),
+            "{}",
+            partial.message
+        );
+        assert!(
+            partial
+                .message
+                .contains("every running turn of the connection ended"),
+            "{}",
+            partial.message
         );
     }
 }

@@ -528,8 +528,10 @@ fn cancellation_ends_the_process_promptly() {
     // bound so a fake that never starts still ends the test.
     let timer = std::thread::spawn(move || {
         let started = running.recv_timeout(Duration::from_secs(60)).is_ok();
+        // Taken first, so a delay after the request counts against the turn.
+        let cancelled = Instant::now();
         trigger.cancel();
-        (started, Instant::now())
+        (started, cancelled)
     });
     let result = scene.client().complete_streaming(
         &messages("hang"),
@@ -684,8 +686,10 @@ fn a_reply_the_relay_does_not_read_ends_on_cancellation() {
             std::thread::sleep(Duration::from_millis(10));
         }
         let stalled = fake_claude::stalled(&sign_in);
+        // Taken first, so a delay after the request counts against the turn.
+        let cancelled = Instant::now();
         trigger.cancel();
-        (stalled, Instant::now())
+        (stalled, cancelled)
     });
     let end = flood_turn(&scene, cancel, Duration::from_secs(120));
     let returned = Instant::now();

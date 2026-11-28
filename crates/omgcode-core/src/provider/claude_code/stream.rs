@@ -394,14 +394,14 @@ fn parse_stream_event(top: &Map<String, Value>) -> Result<StreamEvent, StreamErr
         "content_block_delta" => {}
         _ => return Ok(StreamEvent::Ignored),
     }
-    if optional_name(top, "parent_tool_use_id")?.is_some() {
-        return Ok(StreamEvent::Ignored);
-    }
+    // The delta's shape is checked before the sub-agent filter, so a
+    // malformed delta fails whoever wrote it.
     let delta = as_object(
         event.get("delta").ok_or(StreamError::Shape("delta"))?,
         "delta",
     )?;
-    if discriminator(delta, "type")? != "text_delta" {
+    let kind = discriminator(delta, "type")?;
+    if optional_name(top, "parent_tool_use_id")?.is_some() || kind != "text_delta" {
         return Ok(StreamEvent::Ignored);
     }
     match delta.get("text") {

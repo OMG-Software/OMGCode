@@ -10,7 +10,7 @@
 //! Ownership: the caller owns the stdin write end and the stdout read end once
 //! it takes them; [`StreamingChild`] owns the supervisor thread, which owns
 //! the tree and the standard-error reader thread's receiver. Nothing is shared
-//! except the cancel flag and the "ended" flag, both atomics.
+//! except the cancel flag and the "emptied" flag, both atomics.
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -104,7 +104,6 @@ pub struct StreamingChild {
     stdin: Option<ChildInput>,
     stdout: Option<ChildOutput>,
     cancel: CancelSignal,
-    ended: Arc<AtomicBool>,
     /// Set by the supervisor as soon as it observes the tree empty, before the
     /// usage, final disk accounting, and standard-error capture.
     emptied: Arc<AtomicBool>,
@@ -137,9 +136,11 @@ impl StreamingChild {
     }
 
     /// Whether the supervisor observed the whole tree empty. It stays `false`
-    /// when cleanup could not be confirmed.
+    /// when cleanup could not be confirmed, and turns `true` before the usage,
+    /// final disk accounting, and standard-error capture, also when one of
+    /// those then fails.
     pub fn has_ended(&self) -> bool {
-        self.ended.load(Ordering::SeqCst)
+        self.emptied.load(Ordering::SeqCst)
     }
 
     /// Close standard input if the caller still holds it, wait up to `grace`
@@ -316,14 +317,12 @@ where
         Err(error) => return Err(terminate_unsupervised(&mut tree, limits, error)),
     };
     let cancel = CancelSignal::new();
-    let ended = Arc::new(AtomicBool::new(false));
     let emptied = Arc::new(AtomicBool::new(false));
     // The thread receives the tree only after it exists, so a failed start
     // leaves the owner here to terminate and reap it.
     let (hand_over, received) = mpsc::sync_channel::<T>(1);
     let spawned = {
         let cancel = cancel.clone();
-        let ended = Arc::clone(&ended);
         let emptied = Arc::clone(&emptied);
         thread::Builder::new()
             .name("omgcode-supervisor".to_owned())
@@ -334,7 +333,7 @@ where
                     )));
                 };
                 supervise_streaming(
-                    tree, &stderr, started, limits, &cancel, applied, disk, &ended, &emptied,
+                    tree, &stderr, started, limits, &cancel, applied, disk, &emptied,
                 )
             })
     };
@@ -355,7 +354,6 @@ where
         stdin: Some(ChildInput(stdin)),
         stdout: Some(ChildOutput(stdout)),
         cancel,
-        ended,
         emptied,
         supervisor: Some(supervisor),
         settle_bound: limits
@@ -400,7 +398,6 @@ fn supervise_streaming(
     cancel: &CancelSignal,
     confinement: AppliedConfinement,
     disk: Option<DiskMonitor>,
-    ended: &AtomicBool,
     emptied: &AtomicBool,
 ) -> Result<StreamingOutcome, ProcessError> {
     let watched = watch(&mut tree, started, limits.deadline, cancel, disk.as_ref());
@@ -408,7 +405,6 @@ fn supervise_streaming(
         emptied.store(true, Ordering::SeqCst);
     });
     let result = settled.and_then(|settled| {
-        ended.store(true, Ordering::SeqCst);
         let stderr = receive(stderr, Instant::now() + limits.cleanup_timeout)?;
         Ok(StreamingOutcome {
             termination: settled.termination,
@@ -422,4 +418,128 @@ fn supervise_streaming(
         tree.cleanup_confirmed();
     }
     result
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::{StreamingChild, supervise_streaming};
+    use crate::process::{
+        AppliedConfinement, CancelSignal, CapturedOutput, ProcessError, ProcessLimits, ProcessTree,
+        Termination, TreeUsage,
+    };
+
+    /// A tree that exited and is empty at once, whose usage `fails`.
+    struct ExitedTree {
+        usage_fails: bool,
+        empty: bool,
+    }
+
+    impl ProcessTree for ExitedTree {
+        fn try_exit(&mut self) -> io::Result<Option<Termination>> {
+            Ok(Some(Termination::Exited { code: 0 }))
+        }
+
+        fn terminate(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn is_empty(&mut self) -> io::Result<bool> {
+            Ok(self.empty)
+        }
+
+        fn usage(&mut self) -> io::Result<Option<TreeUsage>> {
+            if self.usage_fails {
+                Err(io::Error::other("usage failed"))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    /// `tree` under a supervisor, once the supervisor has returned.
+    fn supervised(tree: ExitedTree) -> StreamingChild {
+        let limits = ProcessLimits {
+            cleanup_timeout: Duration::from_millis(100),
+            ..ProcessLimits::default()
+        };
+        let (sender, stderr) = mpsc::channel();
+        sender
+            .send(Ok(CapturedOutput::default()))
+            .expect("standard error");
+        let cancel = CancelSignal::new();
+        let emptied = Arc::new(AtomicBool::new(false));
+        let supervisor = {
+            let cancel = cancel.clone();
+            let emptied = Arc::clone(&emptied);
+            thread::spawn(move || {
+                supervise_streaming(
+                    tree,
+                    &stderr,
+                    Instant::now(),
+                    limits,
+                    &cancel,
+                    AppliedConfinement::Unconfined,
+                    None,
+                    &emptied,
+                )
+            })
+        };
+        let until = Instant::now() + Duration::from_secs(10);
+        while !supervisor.is_finished() {
+            assert!(Instant::now() < until, "the supervisor did not return");
+            thread::sleep(Duration::from_millis(10));
+        }
+        StreamingChild {
+            stdin: None,
+            stdout: None,
+            cancel,
+            emptied,
+            supervisor: Some(supervisor),
+            settle_bound: Duration::from_secs(5),
+            accounting_bound: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_tree_observed_empty_has_ended_though_its_accounting_failed() {
+        let child = supervised(ExitedTree {
+            usage_fails: true,
+            empty: true,
+        });
+        assert!(child.has_ended());
+        let error = child.finish(Duration::ZERO).expect_err("usage failed");
+        assert!(matches!(error, ProcessError::Supervision(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_tree_never_observed_empty_has_not_ended() {
+        let child = supervised(ExitedTree {
+            usage_fails: false,
+            empty: false,
+        });
+        assert!(!child.has_ended());
+        let error = child.finish(Duration::ZERO).expect_err("never empty");
+        assert!(
+            matches!(error, ProcessError::CleanupUnconfirmed(_)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_tree_that_ended_cleanly_has_ended() {
+        let child = supervised(ExitedTree {
+            usage_fails: false,
+            empty: true,
+        });
+        assert!(child.has_ended());
+        let outcome = child.finish(Duration::ZERO).expect("outcome");
+        assert_eq!(outcome.termination, Termination::Exited { code: 0 });
+    }
 }

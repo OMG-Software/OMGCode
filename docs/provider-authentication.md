@@ -638,7 +638,8 @@ Anthropic approval, and the Claude subscription requirement stays open.
   revokes every grant and deletes the container profile; a profile with
   grants cannot be removed. Revoking, and removing the connection with
   `provider-profile-remove` or the `settings` window, ends its running turns
-  and waits up to 30 seconds for their processes to end.
+  and waits up to 30 seconds for their processes to end. On Linux no grant
+  exists, so only removing the connection withdraws it.
 - **Use.** `chat --provider-profile NAME` and `session compact
   --provider-profile NAME` resolve the connection. Every turn re-checks the
   recorded folder identities and, on Windows, each grant. Every other route,
