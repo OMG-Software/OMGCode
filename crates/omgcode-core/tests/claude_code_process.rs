@@ -462,25 +462,40 @@ enum Overdue {
     Running(String),
 }
 
+/// How long a killed child may take to exit before it counts as still
+/// running, as one in an uninterruptible wait in the kernel would.
+const REAP_WAIT: Duration = Duration::from_secs(30);
+
 /// Wait at most `limit` for `child`, named `what`; one still running then
-/// is ended and reaped.
+/// is killed and reaped within [`REAP_WAIT`].
 fn wait_within(child: &mut Child, limit: Duration, what: &str) -> Result<ExitStatus, Overdue> {
+    let late = |still| format!("{what} ran past its deadline of {limit:?}{still}");
+    match poll_exit(child, limit) {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => Err(match child.kill() {
+            Err(error) => Overdue::Running(late(format!(", and killing it failed: {error}"))),
+            Ok(()) => match poll_exit(child, REAP_WAIT) {
+                Ok(Some(_)) => Overdue::Ended(late(" and was ended".to_owned())),
+                Ok(None) => Overdue::Running(late(format!(
+                    " and was killed, but had not exited {REAP_WAIT:?} later"
+                ))),
+                Err(error) => Overdue::Running(late(format!(
+                    " and was killed, but waiting for its exit failed: {error}"
+                ))),
+            },
+        }),
+        Err(error) => Err(Overdue::Running(format!("wait for {what}: {error}"))),
+    }
+}
+
+/// Poll `child` for its exit for at most `limit`: `None` if it still runs.
+fn poll_exit(child: &mut Child, limit: Duration) -> std::io::Result<Option<ExitStatus>> {
     let until = Instant::now() + limit;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => {
-                return Err(match child.kill().and_then(|()| child.wait()) {
-                    Ok(_) => Overdue::Ended(format!(
-                        "{what} ran past its deadline of {limit:?} and was ended"
-                    )),
-                    Err(error) => Overdue::Running(format!(
-                        "{what} ran past its deadline of {limit:?}, and ending it failed: {error}"
-                    )),
-                });
-            }
-            Err(error) => return Err(Overdue::Running(format!("wait for {what}: {error}"))),
+        match child.try_wait()? {
+            Some(status) => return Ok(Some(status)),
+            None if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
+            None => return Ok(None),
         }
     }
 }

@@ -131,8 +131,10 @@ Changes are recorded here before a release version is assigned.
   scope stop, an end not observed, an alive file that names no holder, or a
   failed revocation keeps and names the folder instead, which three more of
   its tests check. A copy still running after 20 minutes is ended and
-  reaped before that cleanup and fails the run, which a fifth test checks;
-  each `systemctl` command of the scope's stop is bounded, and on Windows a
+  reaped before that cleanup and fails the run, which a fifth test checks,
+  and one that has not exited 30 seconds after it was killed keeps its
+  folder; each `systemctl` command of the scope's stop is bounded, its reap
+  too, and on Windows a
   scene whose drop cannot revoke its connection keeps its folders for the
   supervisor. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain

@@ -73,7 +73,8 @@ end, or whose connection could not be revoked is kept and named, so nothing
 a retry or the operator needs is removed before the cleanup was confirmed.
 A copy still running after 20 minutes, as one whose test never returns
 would be, is ended and reaped before that cleanup, and fails the run; one
-that cannot be ended leaves its folder kept and named. Each `systemctl`
+that cannot be killed, or that has not exited 30 seconds after it was
+killed, leaves its folder kept and named. Each `systemctl`
 command of the scope's stop is bounded to two minutes, and one that runs
 longer fails the stop. On Windows a scene whose connection cannot be
 revoked when it is dropped keeps its folders for the supervisor's retry.
