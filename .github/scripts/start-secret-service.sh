@@ -32,13 +32,23 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) starting gnome-keyring-daemon" >"$log"
 ) </dev/null >>"$log" 2>&1 &
 wrapper_pid=$!
 
-# Wait up to $1 tenths of a second for the daemon, the wrapper's child, to end.
-daemon_ended_within() {
-  for _ in $(seq 1 "$1"); do
-    pgrep -P "$wrapper_pid" >/dev/null || return 0
+# Retry "$@" every 0.1 seconds until it succeeds, for at most $1 tenths.
+within() {
+  local tenths=$1
+  shift
+  for _ in $(seq 1 "$tenths"); do
+    "$@" && return 0
     sleep 0.1
   done
-  ! pgrep -P "$wrapper_pid" >/dev/null
+  "$@"
+}
+# The daemon is the wrapper's child.
+daemon_gone() { ! pgrep -P "$wrapper_pid" >/dev/null; }
+# A finished wrapper stays a zombie until reaped, so `wait` returns at once.
+wrapper_finished() {
+  local state
+  state=$(ps -o stat= -p "$wrapper_pid") || return 0
+  case "$state" in Z*) return 0 ;; *) return 1 ;; esac
 }
 on_exit() {
   local status=$? shown
@@ -47,16 +57,19 @@ on_exit() {
     cat "$log" >&2
     shown=$(wc -l <"$log")
     # Stop the daemon started here, so it cannot take the name later: TERM,
-    # then KILL after 5 seconds. Every wait is bounded.
+    # then KILL after 5 seconds. Every wait is bounded, and `wait` reaps only
+    # a wrapper that has already finished writing its exit line.
     pkill -P "$wrapper_pid" || true
-    if ! daemon_ended_within 50; then
+    if ! within 50 daemon_gone; then
       pkill -KILL -P "$wrapper_pid" || true
     fi
-    if daemon_ended_within 10; then
+    if within 10 daemon_gone && within 10 wrapper_finished; then
       wait "$wrapper_pid" || true
       tail -n "+$((shown + 1))" "$log" >&2
     else
-      echo "::warning::gnome-keyring-daemon under PID $wrapper_pid did not stop after SIGKILL." >&2
+      echo "::warning::The daemon wrapper (PID $wrapper_pid) did not finish; killing it." >&2
+      pkill -KILL -P "$wrapper_pid" || true
+      kill -KILL "$wrapper_pid" 2>/dev/null || true
     fi
   fi
 }
