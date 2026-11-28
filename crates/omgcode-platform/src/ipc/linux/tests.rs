@@ -432,6 +432,51 @@ fn the_peer_credentials_of_an_accepted_client_are_this_users() {
     drop(join_within(connecting, LONG));
 }
 
+/// A full accept queue makes a nonblocking Unix-socket `connect` fail with
+/// `EAGAIN`, not `EINPROGRESS`: `connect` retries it until its deadline, and
+/// a retrying client connects once the queue has room.
+#[test]
+fn a_full_accept_queue_is_retried_until_there_is_room() {
+    let directory = private_directory();
+    let listener = bind_in(directory.path());
+    let address = listener.address().to_owned();
+    let socket_address = SocketAddrUnix::new(Path::new(&address)).expect("address");
+    // Queue clients nobody accepts until the kernel turns one away.
+    let mut queued = Vec::new();
+    let refusal = loop {
+        let socket = socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+            None,
+        )
+        .expect("socket");
+        match connect_socket(&socket, &socket_address) {
+            Ok(()) => queued.push(socket),
+            Err(error) => break error,
+        }
+        assert!(queued.len() < 64, "the queue never filled");
+    };
+    assert_eq!(refusal, Errno::AGAIN, "a full queue is reported as EAGAIN");
+
+    let started = Instant::now();
+    let error =
+        connect(&address, started + Duration::from_millis(300)).expect_err("the queue stays full");
+    assert!(matches!(error, IpcError::Deadline), "{error:?}");
+    assert!(started.elapsed() >= Duration::from_millis(300));
+
+    let (report, pending) = mpsc::channel();
+    let connecting = thread::spawn(move || {
+        report.send(thread_id()).expect("report the connect");
+        connect(&address, Instant::now() + LONG)
+    });
+    // The client sleeps between its attempts while the queue is full.
+    await_blocked(&pending);
+    let first = accept_with(&listener.0.socket, SocketFlags::CLOEXEC).expect("accept one");
+    let stream = join_within(connecting, LONG).expect("connects once there is room");
+    drop((stream, first, queued));
+}
+
 #[test]
 fn connecting_to_a_missing_socket_fails_at_once() {
     let directory = private_directory();

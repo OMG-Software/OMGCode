@@ -346,7 +346,11 @@ pub(super) fn connect(address: &OsStr, deadline: Instant) -> Result<Stream, IpcE
                 return Ok(Stream { stream });
             }
             Err(Errno::AGAIN | Errno::INTR) => {
-                // The accept queue is full or the call was interrupted.
+                // The accept queue is full or the call was interrupted. A
+                // nonblocking Unix stream socket reports a full queue as
+                // `EAGAIN` and otherwise connects at once; Linux never
+                // returns `EINPROGRESS` for one, so no connect is left in
+                // progress here.
                 thread::sleep(
                     deadline
                         .saturating_duration_since(Instant::now())
