@@ -390,9 +390,10 @@ fn a_tool_call_runs_through_the_turn_runtime() {
     );
 }
 
-/// Every model action record. A missing journal means none.
+/// Every model action record. The journal reads a missing file as empty, so
+/// any error here is a real failure.
 fn actions(data: &Path) -> Vec<ActionRecord> {
-    ActionJournal::recent(data, 1000).unwrap_or_default()
+    ActionJournal::recent(data, 1000).expect("read the action journal")
 }
 
 /// An init event that offers a tool OMGCode did not offer fails closed.
@@ -476,28 +477,36 @@ fn a_relay_with_the_wrong_nonce_is_refused() {
     assert!(actions(&scene.data).is_empty());
 }
 
+/// A cancel sent once the process has streamed text ends the turn and its
+/// process promptly.
 fn cancellation_ends_the_process_promptly() {
     let scene = Scene::new();
     let cancel = CancelToken::new();
     let trigger = cancel.clone();
+    let (ready, running) = std::sync::mpsc::channel::<()>();
+    // The trigger cancels once the fake reports it is running, or after a
+    // bound so a fake that never starts still ends the test.
     let timer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1500));
+        let started = running.recv_timeout(Duration::from_secs(60)).is_ok();
         trigger.cancel();
+        (started, Instant::now())
     });
-    let started = Instant::now();
-    let result = scene
-        .client()
-        .complete_streaming(&messages("hang"), &mut |_| {}, &cancel);
-    timer.join().expect("timer");
+    let result = scene.client().complete_streaming(
+        &messages("hang"),
+        &mut |_| {
+            let _ = ready.send(());
+        },
+        &cancel,
+    );
+    let returned = Instant::now();
+    let (started, cancelled) = timer.join().expect("timer");
+    assert!(started, "the fake process never streamed its ready text");
     assert!(
         matches!(result, Err(ProviderError::Cancelled)),
         "{result:?}"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "{:?}",
-        started.elapsed()
-    );
+    let stopping = returned.saturating_duration_since(cancelled);
+    assert!(stopping < Duration::from_secs(10), "{stopping:?}");
 }
 
 fn fake_relay(arguments: &[OsString]) -> ExitCode {

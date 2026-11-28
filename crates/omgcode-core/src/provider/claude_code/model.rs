@@ -14,7 +14,7 @@ use super::ClaudeCodeFailure;
 use super::launch::{ClaudeCodeClient, Progress, Session, failure};
 use crate::prompt::{ModelMessage, ModelRole};
 use crate::provider::ProviderError;
-use crate::turn::{ModelError, ToolModel, ToolModelReply, ToolModelRequest};
+use crate::turn::{CancelToken, ModelError, ToolModel, ToolModelReply, ToolModelRequest};
 
 /// One turn's Claude Code process, started by the first round.
 pub struct ClaudeCodeModel<'a> {
@@ -51,11 +51,16 @@ impl<'a> ClaudeCodeModel<'a> {
     }
 
     fn step(&mut self, request: &ToolModelRequest<'_>) -> Result<ToolModelReply, ProviderError> {
+        // Neither a process nor a held answer may start once the turn is
+        // cancelled; the caller drops any running session on this error.
+        if request.cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
         match self.session.as_mut() {
             None => {
                 self.session = Some(self.client.start(request.messages, request.tools)?);
             }
-            Some(session) => answer_held(session, request.messages)?,
+            Some(session) => answer_held(session, request.messages, request.cancel)?,
         }
         let on_text = self
             .on_text
@@ -67,8 +72,9 @@ impl<'a> ClaudeCodeModel<'a> {
             .ok_or(failure(ClaudeCodeFailure::Failed))?;
         match session.run(request.cancel, on_text)? {
             Progress::Finished(text) => {
-                session.finish();
+                let finished = session.finish();
                 self.session = None;
+                finished?;
                 Ok(ToolModelReply {
                     content: text,
                     tool_calls: Vec::new(),
@@ -77,15 +83,27 @@ impl<'a> ClaudeCodeModel<'a> {
             }
             Progress::Calls(calls) => {
                 let content = session.take_text();
-                let mut held = Vec::with_capacity(calls.len());
+                let supplied: Vec<String> = calls
+                    .iter()
+                    .filter_map(|call| call.tool_use_id.clone())
+                    .collect();
+                let mut held: Vec<(String, _)> = Vec::with_capacity(calls.len());
                 let mut tool_calls = Vec::with_capacity(calls.len());
                 for call in calls {
+                    // A generated identifier skips every identifier the
+                    // process supplied in this round and every one already
+                    // given, so it never makes the round's calls ambiguous.
                     let id = match &call.tool_use_id {
                         Some(id) => id.clone(),
-                        None => {
+                        None => loop {
                             self.generated_ids = self.generated_ids.saturating_add(1);
-                            format!("omgcode_call_{}", self.generated_ids)
-                        }
+                            let candidate = format!("omgcode_call_{}", self.generated_ids);
+                            if !supplied.contains(&candidate)
+                                && !held.iter().any(|(given, _)| *given == candidate)
+                            {
+                                break candidate;
+                            }
+                        },
                     };
                     tool_calls.push(tool_call(&id, &call.name, &call.arguments_json));
                     held.push((id, call));
@@ -114,7 +132,11 @@ impl ToolModel for ClaudeCodeModel<'_> {
 
 /// Answer every call the last round held with the matching result among the
 /// messages after the last assistant or user message.
-fn answer_held(session: &mut Session, messages: &[ModelMessage]) -> Result<(), ProviderError> {
+fn answer_held(
+    session: &mut Session,
+    messages: &[ModelMessage],
+    cancel: &CancelToken,
+) -> Result<(), ProviderError> {
     let trailing = messages
         .iter()
         .rposition(|message| !matches!(message.role, ModelRole::ToolResult(_)))
@@ -135,7 +157,7 @@ fn answer_held(session: &mut Session, messages: &[ModelMessage]) -> Result<(), P
                 _ => None,
             })
             .ok_or(failure(ClaudeCodeFailure::Protocol))?;
-        session.answer(call, text)?;
+        session.answer(call, text, cancel)?;
     }
     session.hold(Vec::new());
     Ok(())

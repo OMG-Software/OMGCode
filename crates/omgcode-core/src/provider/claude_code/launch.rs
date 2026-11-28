@@ -14,8 +14,10 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use omgcode_platform::container::ContainerName;
@@ -33,7 +35,7 @@ use super::stream::{
     check_toolless_lockdown, parse_line,
 };
 use crate::prompt::ModelMessage;
-use crate::provider::{ModelReply, ProviderError, ReasoningEffort};
+use crate::provider::{MAX_STREAM_BYTES, ModelReply, ProviderError, ReasoningEffort};
 use crate::turn::{CancelToken, ToolDefinition};
 
 /// The MCP server name, so every tool is `mcp__omgcode__<name>`.
@@ -52,6 +54,13 @@ const CONNECT_WINDOW: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(25);
 /// How long the process may take to exit after its final result.
 const EXIT_GRACE: Duration = Duration::from_secs(10);
+/// How long the worker threads may take to end once their reads and writes
+/// were unblocked.
+const WORKER_GRACE: Duration = Duration::from_secs(5);
+/// Events the readers may queue while the turn runtime runs calls or waits
+/// for an approval. A full queue blocks the readers, which in turn blocks
+/// the process's output; one event holds at most one bounded line.
+const EVENT_QUEUE: usize = 8;
 /// The settings that switch off the built-in plugins Claude Code 2.1.325
 /// loads even with `--setting-sources ""`. A plugin this list misses is
 /// still refused by the lockdown check.
@@ -100,7 +109,8 @@ impl ClaudeCodeClient {
     ///
     /// # Errors
     ///
-    /// [`ProviderError::InvalidConfiguration`] for a relative path, a model
+    /// [`ProviderError::InvalidConfiguration`] for a relative path, a relay
+    /// path that is not UTF-8 (the MCP configuration is JSON text), a model
     /// name that is empty, too long, starts with anything but a letter or
     /// digit, or holds other than letters, digits, `.`, `-`, `_`, `:`, `[`,
     /// or `]`, a zero output budget, or a timeout outside one second to an
@@ -116,6 +126,7 @@ impl ClaudeCodeClient {
         .iter()
         .all(|path| path.is_absolute());
         if !paths_absolute
+            || config.relay_program.to_str().is_none()
             || !valid_model(&config.model)
             || config.max_output_tokens == 0
             || config.request_timeout < Duration::from_secs(1)
@@ -180,10 +191,13 @@ impl ClaudeCodeClient {
         on_text: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<ModelReply, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
         let mut session = self.start(messages, &[])?;
         match session.run(cancel, Some(on_text))? {
             Progress::Finished(content) => {
-                session.finish();
+                session.finish()?;
                 Ok(ModelReply {
                     content,
                     finish_reason: "stop".to_owned(),
@@ -206,7 +220,7 @@ impl ClaudeCodeClient {
             RenderError::TooLarge => ProviderError::RequestTooLarge,
             RenderError::Empty => ProviderError::InvalidConfiguration,
         })?;
-        let mut turn = TurnFolder::create(&self.config.runtime_folder)?;
+        let turn = TurnFolder::create(&self.config.runtime_folder)?;
         fs::write(turn.path.join("system.txt"), rendered.system.as_bytes())
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         let settings = json!({
@@ -218,75 +232,73 @@ impl ClaudeCodeClient {
         fs::write(turn.path.join("settings.json"), settings.to_string())
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
 
-        let (sender, events) = mpsc::channel();
-        let accept_cancel = CancelSignal::new();
-        let mut server = None;
-        let mut expected_tools = Vec::new();
+        let (sender, events) = mpsc::sync_channel(EVENT_QUEUE);
+        // The session owns every worker and the tree from here on, so an
+        // early return drops it, and its `Drop` ends and joins them all.
+        let mut session = Session::new(events, turn, self.config.request_timeout);
         let mcp_config = if tools.is_empty() {
             json!({ "mcpServers": {} })
         } else {
-            let listener = bind_listener(&mut turn, self.config.container.as_ref())?;
+            let listener = bind_listener(&mut session.turn, self.config.container.as_ref())?;
+            let address = listener
+                .address()
+                .to_str()
+                .ok_or(failure(ClaudeCodeFailure::Failed))?
+                .to_owned();
             let nonce = random_hex(32)?;
+            let relay = self
+                .config
+                .relay_program
+                .to_str()
+                .ok_or(ProviderError::InvalidConfiguration)?;
             let config = json!({
                 "mcpServers": {
                     SERVER_NAME: {
                         "type": "stdio",
-                        "command": self.config.relay_program,
-                        "args": [RELAY_SUBCOMMAND, listener.address().to_string_lossy()],
+                        "command": relay,
+                        "args": [RELAY_SUBCOMMAND, address],
                         "env": { RELAY_NONCE_VARIABLE: nonce },
                     }
                 }
             });
-            spawn_acceptor(listener, nonce, accept_cancel.clone(), sender.clone())?;
-            server = Some(McpServer::new(
+            let acceptor = spawn_acceptor(
+                listener,
+                nonce,
+                session.accept_cancel.clone(),
+                Arc::clone(&session.shutdown),
+                sender.clone(),
+            )?;
+            session.workers.push(acceptor);
+            session.server = Some(McpServer::new(
                 SERVER_NAME,
                 env!("CARGO_PKG_VERSION"),
                 tools.iter().map(mcp_tool).collect(),
             ));
-            expected_tools = tools
+            session.expected_tools = tools
                 .iter()
                 .map(|tool| format!("{TOOL_PREFIX}{}", tool.name))
                 .collect();
             config
         };
-        let launched = self.launch(turn, &mcp_config, rendered.input, tools, sender);
-        let Ok((child, turn)) = launched else {
-            accept_cancel.cancel();
-            return Err(launched.err().unwrap_or(failure(ClaudeCodeFailure::Failed)));
-        };
-        Ok(Session {
-            child: Some(child),
-            events,
-            writer: None,
-            shutdown: None,
-            accept_cancel,
-            server,
-            expected_tools,
-            init_seen: false,
-            unreturned: Vec::new(),
-            held: Vec::new(),
-            announced: Vec::new(),
-            last_call: None,
-            text: String::new(),
-            request_timeout: self.config.request_timeout,
-            _turn: turn,
-        })
+        self.launch(&mut session, &mcp_config, rendered.input, tools, sender)?;
+        Ok(session)
     }
 
     /// Write the MCP configuration, start the process, and start the threads
-    /// that feed its input and read its output.
+    /// that feed its input and read its output, all owned by `session`.
     fn launch(
         &self,
-        turn: TurnFolder,
+        session: &mut Session,
         mcp_config: &serde_json::Value,
         input: String,
         tools: &[ToolDefinition],
-        sender: Sender<Event>,
-    ) -> Result<(StreamingChild, TurnFolder), ProviderError> {
+        sender: SyncSender<Event>,
+    ) -> Result<(), ProviderError> {
+        let turn = &session.turn;
         fs::write(turn.path.join("mcp.json"), mcp_config.to_string())
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
-        let spec = self.spec(&turn, tools)?;
-        let confinement = self.confinement(&turn)?;
+        let spec = self.spec(turn, tools)?;
+        let confinement = self.confinement(turn)?;
         let limits = ProcessLimits {
             deadline: platform::MAX_DEADLINE,
             max_stdout_bytes: 1,
@@ -303,33 +315,41 @@ impl ClaudeCodeClient {
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         let stdin = child.take_stdin();
         let stdout = child.take_stdout();
+        // From here a failure drops the session, which ends the tree.
+        session.child = Some(child);
         let (Some(mut stdin), Some(stdout)) = (stdin, stdout) else {
             return Err(failure(ClaudeCodeFailure::Failed));
         };
         let input = input.into_bytes();
-        thread::Builder::new()
+        let input_sender = sender.clone();
+        let feeder = thread::Builder::new()
             .name("claude-code-stdin".into())
             .spawn(move || {
-                // A failed write shows up as a missing result.
-                let _ = stdin.write_all(&input);
-                let _ = stdin.flush();
+                let written = stdin.write_all(&input).and_then(|()| stdin.flush());
+                // Reported before the input closes, so the result, which
+                // the process writes only after reading its whole input,
+                // always comes later. A closed queue means the turn ended.
+                let _ = input_sender.send(Event::InputWritten(written.is_ok()));
+                drop(stdin);
             })
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
-        let stdout_sender = sender;
-        thread::Builder::new()
+        session.workers.push(feeder);
+        let reader = thread::Builder::new()
             .name("claude-code-stdout".into())
             .spawn(move || {
                 for line in BoundedLines::new(stdout) {
                     let event = line.and_then(|bytes| parse_line(&bytes));
                     let failed = event.is_err();
-                    if stdout_sender.send(Event::Stdout(event)).is_err() || failed {
+                    if sender.send(Event::Stdout(event)).is_err() || failed {
                         return;
                     }
                 }
-                let _ = stdout_sender.send(Event::StdoutEnded);
+                // A closed queue means the turn already ended.
+                let _ = sender.send(Event::StdoutEnded);
             })
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
-        Ok((child, turn))
+        session.workers.push(reader);
+        Ok(())
     }
 
     fn spec(
@@ -457,27 +477,37 @@ pub(super) enum Progress {
 enum Event {
     Stdout(Result<StreamEvent, StreamError>),
     StdoutEnded,
-    McpConnected(Box<McpChannel>),
+    /// Whether the whole conversation reached the process's input.
+    InputWritten(bool),
+    McpConnected(Box<omgcode_platform::ipc::LocalWriter>),
     Mcp(Result<Vec<u8>, StreamError>),
     McpEnded,
     McpFailed,
 }
 
-struct McpChannel {
-    writer: omgcode_platform::ipc::LocalWriter,
-    shutdown: omgcode_platform::ipc::ShutdownHandle,
-}
+/// The channel's shutdown, published by the acceptor before its first
+/// blocking read, so ending the turn can unblock every read and write.
+type ShutdownSlot = Arc<Mutex<Option<omgcode_platform::ipc::ShutdownHandle>>>;
 
 /// A running process and the state of its turn.
 pub(super) struct Session {
     child: Option<StreamingChild>,
-    events: Receiver<Event>,
+    /// `None` once the turn ended, so a reader blocked on the full queue
+    /// wakes and ends.
+    events: Option<Receiver<Event>>,
     writer: Option<omgcode_platform::ipc::LocalWriter>,
-    shutdown: Option<omgcode_platform::ipc::ShutdownHandle>,
+    shutdown: ShutdownSlot,
     accept_cancel: CancelSignal,
+    /// The acceptor, input, and output threads, joined when the turn ends.
+    workers: Vec<JoinHandle<()>>,
     server: Option<McpServer>,
     expected_tools: Vec<String>,
     init_seen: bool,
+    /// Whether the whole conversation was written; a result before that is
+    /// refused.
+    input_written: bool,
+    /// Text-delta bytes forwarded during the whole process.
+    streamed_bytes: u64,
     /// Calls received and not yet returned to the runtime.
     unreturned: Vec<PendingCall>,
     /// Calls returned to the runtime, with the identifier it was given.
@@ -488,7 +518,8 @@ pub(super) struct Session {
     /// Main-agent text since the last round.
     text: String,
     request_timeout: Duration,
-    _turn: TurnFolder,
+    /// Removed after the tree and the workers ended.
+    turn: TurnFolder,
 }
 
 /// How long to wait for more calls of the same response after one arrives
@@ -498,6 +529,29 @@ const SETTLE: Duration = Duration::from_millis(200);
 pub(super) const MAX_CALLS_PER_ROUND: usize = 8;
 
 impl Session {
+    fn new(events: Receiver<Event>, turn: TurnFolder, request_timeout: Duration) -> Self {
+        Self {
+            child: None,
+            events: Some(events),
+            writer: None,
+            shutdown: Arc::new(Mutex::new(None)),
+            accept_cancel: CancelSignal::new(),
+            workers: Vec::new(),
+            server: None,
+            expected_tools: Vec::new(),
+            init_seen: false,
+            input_written: false,
+            streamed_bytes: 0,
+            unreturned: Vec::new(),
+            held: Vec::new(),
+            announced: Vec::new(),
+            last_call: None,
+            text: String::new(),
+            request_timeout,
+            turn,
+        }
+    }
+
     /// Text the model wrote since the last round.
     pub(super) fn take_text(&mut self) -> String {
         std::mem::take(&mut self.text)
@@ -514,8 +568,14 @@ impl Session {
         self.held = held;
     }
 
-    /// Answer one held call with its result text.
-    pub(super) fn answer(&mut self, call: &PendingCall, text: &str) -> Result<(), ProviderError> {
+    /// Answer one held call with its result text. The write ends at the
+    /// request timeout or when `cancel` is set.
+    pub(super) fn answer(
+        &mut self,
+        call: &PendingCall,
+        text: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), ProviderError> {
         let server = self
             .server
             .as_mut()
@@ -524,7 +584,10 @@ impl Session {
             .answer(&call.key, text, false)
             .map_err(|_| failure(ClaudeCodeFailure::Protocol))?
         {
-            super::mcp::Answer::Line(line) => self.write(&line),
+            super::mcp::Answer::Line(line) => {
+                let deadline = deadline_after(self.request_timeout);
+                self.write(&line, cancel, deadline)
+            }
             super::mcp::Answer::Cancelled => Ok(()),
         }
     }
@@ -535,20 +598,23 @@ impl Session {
         cancel: &CancelToken,
         mut on_text: Option<&mut dyn FnMut(&str)>,
     ) -> Result<Progress, ProviderError> {
-        let waited = Instant::now();
+        let deadline = deadline_after(self.request_timeout);
         loop {
             if cancel.is_cancelled() {
                 self.kill();
                 return Err(ProviderError::Cancelled);
             }
-            if waited.elapsed() > self.request_timeout {
+            if Instant::now() > deadline {
                 self.kill();
                 return Err(failure(ClaudeCodeFailure::Failed));
             }
             if let Some(calls) = self.ready_calls() {
                 return Ok(Progress::Calls(calls));
             }
-            let event = match self.events.recv_timeout(POLL) {
+            let Some(events) = &self.events else {
+                return Err(failure(ClaudeCodeFailure::Failed));
+            };
+            let event = match events.recv_timeout(POLL) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
@@ -559,13 +625,18 @@ impl Session {
             let result = match event {
                 Event::Stdout(Ok(event)) => self.stream_event(event, &mut on_text),
                 Event::Stdout(Err(_)) => Err(failure(ClaudeCodeFailure::Protocol)),
-                Event::StdoutEnded => Err(failure(ClaudeCodeFailure::Failed)),
-                Event::McpConnected(channel) => {
-                    self.writer = Some(channel.writer);
-                    self.shutdown = Some(channel.shutdown);
+                Event::StdoutEnded | Event::InputWritten(false) => {
+                    Err(failure(ClaudeCodeFailure::Failed))
+                }
+                Event::InputWritten(true) => {
+                    self.input_written = true;
                     Ok(None)
                 }
-                Event::Mcp(Ok(line)) => self.mcp_line(&line).map(|()| None),
+                Event::McpConnected(writer) => {
+                    self.writer = Some(*writer);
+                    Ok(None)
+                }
+                Event::Mcp(Ok(line)) => self.mcp_line(&line, cancel, deadline).map(|()| None),
                 Event::Mcp(Err(_)) | Event::McpFailed => Err(failure(ClaudeCodeFailure::Protocol)),
                 // The relay closed; a later call would fail, and the result
                 // decides the turn.
@@ -612,6 +683,12 @@ impl Session {
             StreamEvent::Init(report) => self.init(&report).map(|()| None),
             StreamEvent::ToolUseStart(name) => self.check_tool(&name).map(|()| None),
             StreamEvent::TextDelta(text) => {
+                // The process's output budget is its own; the host keeps one
+                // of its own for everything it forwards.
+                self.streamed_bytes = self.streamed_bytes.saturating_add(byte_count(&text));
+                if self.streamed_bytes > MAX_STREAM_BYTES {
+                    return Err(ProviderError::ResponseTooLarge);
+                }
                 if let Some(on_text) = on_text {
                     on_text(&text);
                 }
@@ -629,12 +706,7 @@ impl Session {
                             self.check_tool(name)?;
                             announced.push(id.clone());
                         }
-                        AssistantBlock::Text(text) if main => {
-                            if !self.text.is_empty() {
-                                self.text.push_str("\n\n");
-                            }
-                            self.text.push_str(text);
-                        }
+                        AssistantBlock::Text(text) if main => self.append_text(text)?,
                         AssistantBlock::Text(_) | AssistantBlock::Other => {}
                     }
                 }
@@ -644,21 +716,41 @@ impl Session {
                 Ok(None)
             }
             StreamEvent::Result(report) => {
-                if report.is_error {
+                if report.is_error || !self.input_written {
                     return Err(failure(ClaudeCodeFailure::Failed));
                 }
                 if !self.init_seen || !self.unreturned.is_empty() || !self.held.is_empty() {
                     return Err(failure(ClaudeCodeFailure::Protocol));
                 }
                 let text = self.take_text();
-                Ok(Some(if text.is_empty() {
-                    report.result.unwrap_or_default()
-                } else {
-                    text
-                }))
+                if !text.is_empty() {
+                    return Ok(Some(text));
+                }
+                // With no streamed text the result must carry the reply; an
+                // explicitly empty one is a valid empty reply.
+                report
+                    .result
+                    .map(Some)
+                    .ok_or(failure(ClaudeCodeFailure::Protocol))
             }
             StreamEvent::Ignored => Ok(None),
         }
+    }
+
+    /// Append one text block of the main agent, within the host's budget.
+    fn append_text(&mut self, text: &str) -> Result<(), ProviderError> {
+        let separator = if self.text.is_empty() { 0 } else { 2 };
+        let total = byte_count(&self.text)
+            .saturating_add(separator)
+            .saturating_add(byte_count(text));
+        if total > MAX_STREAM_BYTES {
+            return Err(ProviderError::ResponseTooLarge);
+        }
+        if separator > 0 {
+            self.text.push_str("\n\n");
+        }
+        self.text.push_str(text);
+        Ok(())
     }
 
     fn init(&mut self, report: &InitReport) -> Result<(), ProviderError> {
@@ -688,7 +780,12 @@ impl Session {
         }
     }
 
-    fn mcp_line(&mut self, line: &[u8]) -> Result<(), ProviderError> {
+    fn mcp_line(
+        &mut self,
+        line: &[u8],
+        cancel: &CancelToken,
+        deadline: Instant,
+    ) -> Result<(), ProviderError> {
         let server = self
             .server
             .as_mut()
@@ -698,7 +795,7 @@ impl Session {
             .map_err(|_| failure(ClaudeCodeFailure::Protocol))?;
         for output in outputs {
             match output {
-                super::mcp::McpOutput::Reply(reply) => self.write(&reply)?,
+                super::mcp::McpOutput::Reply(reply) => self.write(&reply, cancel, deadline)?,
                 super::mcp::McpOutput::Call(call) => {
                     let offered = self
                         .expected_tools
@@ -710,37 +807,108 @@ impl Session {
                     self.unreturned.push(call);
                     self.last_call = Some(Instant::now());
                 }
-                // A cancelled call stays held until the runtime answers it;
-                // the answer is then dropped.
-                super::mcp::McpOutput::Cancelled(_) => {}
+                super::mcp::McpOutput::Cancelled(key) => self.retire_cancelled(&key)?,
             }
         }
         Ok(())
     }
 
-    fn write(&mut self, line: &[u8]) -> Result<(), ProviderError> {
-        let writer = self
-            .writer
+    /// A call cancelled before it was returned never reaches the runtime:
+    /// it leaves the round and its pending request is retired. A call
+    /// already returned stays held until the runtime answers it, and that
+    /// answer is dropped.
+    fn retire_cancelled(&mut self, key: &super::mcp::RequestKey) -> Result<(), ProviderError> {
+        let Some(index) = self.unreturned.iter().position(|call| call.key == *key) else {
+            return Ok(());
+        };
+        let call = self.unreturned.remove(index);
+        let server = self
+            .server
             .as_mut()
             .ok_or(failure(ClaudeCodeFailure::Protocol))?;
-        writer
-            .write_all(line)
-            .and_then(|()| writer.flush())
-            .map_err(|_| failure(ClaudeCodeFailure::Protocol))
-    }
-
-    /// End the run after its result: close the channel, let the process
-    /// exit, and end the tree if it does not.
-    pub(super) fn finish(&mut self) {
-        self.close_channel();
-        if let Some(child) = self.child.take() {
-            // The result is already decided; a slow or failed exit only ends
-            // the tree, which `finish` confirms.
-            let _ = child.finish(EXIT_GRACE);
+        match server.answer(&call.key, "", false) {
+            Ok(super::mcp::Answer::Cancelled) => Ok(()),
+            Ok(super::mcp::Answer::Line(_)) | Err(_) => Err(failure(ClaudeCodeFailure::Protocol)),
         }
     }
 
-    /// End the tree at once.
+    /// Write one line to the relay. A watcher shuts the channel when
+    /// `cancel` is set or `deadline` passes, which ends a write the relay
+    /// does not read on either platform.
+    fn write(
+        &mut self,
+        line: &[u8],
+        cancel: &CancelToken,
+        deadline: Instant,
+    ) -> Result<(), ProviderError> {
+        let shutdown = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let (Some(writer), Some(shutdown)) = (self.writer.as_mut(), shutdown) else {
+            return Err(failure(ClaudeCodeFailure::Protocol));
+        };
+        let done = AtomicBool::new(false);
+        let stopped = AtomicBool::new(false);
+        let written = thread::scope(|scope| {
+            let (done, stopped) = (&done, &stopped);
+            let watcher = thread::Builder::new()
+                .name("claude-code-write".into())
+                .spawn_scoped(scope, move || {
+                    while !done.load(Ordering::SeqCst) {
+                        if cancel.is_cancelled() || Instant::now() >= deadline {
+                            stopped.store(true, Ordering::SeqCst);
+                            // A failed shutdown leaves the write to the
+                            // tree's end, which closes the other side.
+                            let _ = shutdown.shutdown();
+                            return;
+                        }
+                        thread::park_timeout(POLL);
+                    }
+                });
+            let Ok(watcher) = watcher else {
+                return Err(failure(ClaudeCodeFailure::Failed));
+            };
+            let written = writer.write_all(line).and_then(|()| writer.flush());
+            done.store(true, Ordering::SeqCst);
+            watcher.thread().unpark();
+            Ok(written)
+        })?;
+        if stopped.load(Ordering::SeqCst) {
+            return Err(if cancel.is_cancelled() {
+                ProviderError::Cancelled
+            } else {
+                failure(ClaudeCodeFailure::Failed)
+            });
+        }
+        written.map_err(|_| failure(ClaudeCodeFailure::Protocol))
+    }
+
+    /// End the run after its result: close the channel, let the process
+    /// exit, end the tree if it does not, and wait for the workers.
+    ///
+    /// # Errors
+    ///
+    /// [`ClaudeCodeFailure::Failed`] when the end of the tree or of a worker
+    /// could not be confirmed.
+    pub(super) fn finish(&mut self) -> Result<(), ProviderError> {
+        self.close_channel();
+        let ended = self
+            .child
+            .take()
+            .is_none_or(|child| child.finish(EXIT_GRACE).is_ok());
+        let joined = self.stop_workers();
+        if ended && joined {
+            Ok(())
+        } else {
+            Err(failure(ClaudeCodeFailure::Failed))
+        }
+    }
+
+    /// End the tree at once and wait for the workers. The caller already
+    /// returns an error, so an unconfirmed end only leaves the platform's
+    /// own fallback termination.
     pub(super) fn kill(&mut self) {
         if let Some(child) = &self.child {
             child.cancel_signal().cancel();
@@ -749,14 +917,39 @@ impl Session {
         if let Some(child) = self.child.take() {
             let _ = child.finish(Duration::ZERO);
         }
+        let _ = self.stop_workers();
     }
 
     fn close_channel(&mut self) {
         self.accept_cancel.cancel();
-        if let Some(shutdown) = self.shutdown.take() {
+        let shutdown = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(shutdown) = shutdown {
+            // A failed shutdown leaves the reads to the tree's end, which
+            // closes the relay's side.
             let _ = shutdown.shutdown();
         }
         self.writer = None;
+    }
+
+    /// Drop the queue, which wakes a reader blocked on it, then wait for
+    /// every worker for at most [`WORKER_GRACE`]. Returns whether all ended.
+    fn stop_workers(&mut self) -> bool {
+        self.events = None;
+        let deadline = deadline_after(WORKER_GRACE);
+        let mut all_ended = true;
+        for worker in std::mem::take(&mut self.workers) {
+            while !worker.is_finished() && Instant::now() < deadline {
+                thread::sleep(POLL);
+            }
+            // A worker still running is left detached; its reads and writes
+            // were already unblocked, so it ends with the tree.
+            all_ended &= worker.is_finished() && worker.join().is_ok();
+        }
+        all_ended
     }
 }
 
@@ -764,6 +957,17 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.kill();
     }
+}
+
+/// `now + limit`, or now when that does not fit.
+fn deadline_after(limit: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(limit).unwrap_or(now)
+}
+
+/// The length of `text` in bytes, as the budgets count it.
+fn byte_count(text: &str) -> u64 {
+    u64::try_from(text.len()).unwrap_or(u64::MAX)
 }
 
 /// A per-turn folder under the runtime folder, removed when dropped.
@@ -778,16 +982,17 @@ impl TurnFolder {
     fn create(runtime: &Path) -> Result<Self, ProviderError> {
         let name = random_hex(16)?;
         let path = runtime.join("turns").join(name);
-        let made = fs::create_dir_all(runtime.join("turns"))
+        // The creation is exclusive, so an existing entry is never adopted
+        // and removed; once it succeeds the guard owns the folder, and a
+        // later failure removes it.
+        fs::create_dir_all(runtime.join("turns"))
             .and_then(|()| fs::create_dir(&path))
-            .and_then(|()| fs::create_dir(path.join("work")));
-        if made.is_err() {
-            return Err(failure(ClaudeCodeFailure::Failed));
-        }
+            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         let folder = Self {
             path,
             socket_folder: None,
         };
+        fs::create_dir(folder.path.join("work")).map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -933,35 +1138,49 @@ mod socket_tests {
     }
 }
 
-/// Accept the relay, check its nonce, then forward its lines.
+/// Accept the relay, publish the channel's shutdown, check its nonce, then
+/// forward its lines. Every send fails once the turn dropped its queue, and
+/// a failed send ends the worker.
 fn spawn_acceptor(
     listener: omgcode_platform::ipc::LocalListener,
     nonce: String,
     cancel: CancelSignal,
-    sender: Sender<Event>,
-) -> Result<(), ProviderError> {
+    slot: ShutdownSlot,
+    sender: SyncSender<Event>,
+) -> Result<JoinHandle<()>, ProviderError> {
     thread::Builder::new()
         .name("claude-code-mcp".into())
         .spawn(move || {
             let accepted = listener
-                .accept(Instant::now() + CONNECT_WINDOW, &cancel)
+                .accept(deadline_after(CONNECT_WINDOW), &cancel)
                 .and_then(|stream| stream.split());
             let Ok((reader, writer, shutdown)) = accepted else {
                 let _ = sender.send(Event::McpFailed);
                 return;
             };
+            {
+                // `Session::close_channel` sets `cancel` before it takes the
+                // slot, so under the lock either it sees this handle or this
+                // worker sees the cancellation.
+                let mut published = slot.lock().unwrap_or_else(PoisonError::into_inner);
+                if cancel.is_cancelled() {
+                    let _ = shutdown.shutdown();
+                    return;
+                }
+                *published = Some(shutdown.clone());
+            }
             let mut lines = BoundedLines::with_limit(reader, MAX_MCP_LINE_BYTES);
             let presented = match lines.next() {
                 Some(Ok(line)) => line,
                 _ => Vec::new(),
             };
             if !constant_time_eq(&presented, nonce.as_bytes()) {
+                // The turn fails on `McpFailed`, which also ends the tree.
                 let _ = shutdown.shutdown();
                 let _ = sender.send(Event::McpFailed);
                 return;
             }
-            let channel = Box::new(McpChannel { writer, shutdown });
-            if sender.send(Event::McpConnected(channel)).is_err() {
+            if sender.send(Event::McpConnected(Box::new(writer))).is_err() {
                 return;
             }
             for line in lines {
@@ -972,7 +1191,6 @@ fn spawn_acceptor(
             }
             let _ = sender.send(Event::McpEnded);
         })
-        .map(|_| ())
         .map_err(|_| failure(ClaudeCodeFailure::Failed))
 }
 

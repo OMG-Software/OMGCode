@@ -13,6 +13,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,9 @@ mod fake_claude;
 /// The longest any one CLI command here may run. Grants create and delete
 /// an AppContainer profile on Windows.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(120);
+
+/// The count of Linux scopes started, which makes each scope name unique.
+static SCOPES: AtomicUsize = AtomicUsize::new(0);
 
 fn main() -> ExitCode {
     let arguments: Vec<OsString> = env::args_os().collect();
@@ -109,7 +113,11 @@ impl Scene {
     /// Linux, tree limits need a delegated cgroup, so the CLI starts in a
     /// scope of its own, as an operator starts it.
     fn run(&self, arguments: &[&str]) -> Output {
-        let mut command = if cfg!(target_os = "linux") {
+        let scope = cfg!(target_os = "linux").then(|| {
+            let count = SCOPES.fetch_add(1, Ordering::SeqCst);
+            format!("omgcode-claude-code-cli-{}-{count}", std::process::id())
+        });
+        let mut command = if let Some(scope) = &scope {
             let mut command = Command::new("systemd-run");
             command
                 .args([
@@ -119,8 +127,9 @@ impl Scene {
                     "--expand-environment=no",
                     "-p",
                     "Delegate=yes",
-                    "--",
                 ])
+                .arg(format!("--unit={scope}"))
+                .arg("--")
                 .arg(&self.omgcode);
             command
         } else {
@@ -137,7 +146,7 @@ impl Scene {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        finish(command.spawn().expect("start omgcode"))
+        finish(command.spawn().expect("start omgcode"), scope.as_deref())
     }
 
     fn revision(&self) -> String {
@@ -175,8 +184,12 @@ impl Drop for Scene {
     }
 }
 
-/// Wait for `child` within [`COMMAND_DEADLINE`], reading both streams.
-fn finish(mut child: std::process::Child) -> Output {
+/// Wait for `child` within [`COMMAND_DEADLINE`], reading both streams. A
+/// command that overruns is stopped with its whole tree before the test
+/// fails: on Linux by killing its scope, the cgroup that holds every
+/// descendant; on Windows, ending `omgcode` closes its job object, whose
+/// kill-on-close limit ends the confined tree.
+fn finish(mut child: std::process::Child, scope: Option<&str>) -> Output {
     let mut stdout = child.stdout.take().expect("stdout");
     let mut stderr = child.stderr.take().expect("stderr");
     let out = thread::spawn(move || {
@@ -195,8 +208,18 @@ fn finish(mut child: std::process::Child) -> Output {
             break status;
         }
         if started.elapsed() > COMMAND_DEADLINE {
-            let _ = child.kill();
-            panic!("omgcode exceeded {COMMAND_DEADLINE:?}");
+            let scope_killed = scope.map(|scope| {
+                Command::new("systemctl")
+                    .args(["--user", "kill", "--signal=SIGKILL"])
+                    .arg(format!("{scope}.scope"))
+                    .status()
+            });
+            let killed = child.kill();
+            let reaped = child.wait();
+            panic!(
+                "omgcode exceeded {COMMAND_DEADLINE:?}; scope kill: {scope_killed:?}, \
+                 kill: {killed:?}, exit: {reaped:?}"
+            );
         }
         thread::sleep(Duration::from_millis(20));
     };

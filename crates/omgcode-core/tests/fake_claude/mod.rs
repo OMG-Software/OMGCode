@@ -320,7 +320,19 @@ pub fn run(arguments: &[OsString]) -> ExitCode {
             );
             emit(&mut output, &result("Not logged in", true));
         }
-        "hang" => std::thread::sleep(Duration::from_secs(120)),
+        "hang" => {
+            // The delta tells the test the process is running, so it can
+            // cancel a live turn rather than one still starting.
+            emit(
+                &mut output,
+                &json!({
+                    "type": "stream_event", "parent_tool_use_id": null,
+                    "event": { "type": "content_block_delta", "index": 0,
+                               "delta": { "type": "text_delta", "text": "ready" } },
+                }),
+            );
+            std::thread::sleep(Duration::from_secs(120));
+        }
         _ => {
             emit(&mut output, &result("unknown scenario", true));
         }
