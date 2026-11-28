@@ -108,6 +108,36 @@ On Ubuntu, the Rust workflow enables lingering for the runner user and waits
 for its user service manager before the tests. The run and tree-limit tests
 start delegated `systemd-run --user` scopes and fail without one.
 
+Every apt step in `rust.yml` and `testing-build.yml` runs
+`.github/scripts/apt-install-ubuntu.sh`, which points apt at the image's
+`/etc/apt/sources.list.d/ubuntu.sources` and no other source file. A
+third-party repository that the runner image adds, such as
+`packages.microsoft.com`, cannot fail the step; it returned `403` and failed
+a zfs job before its tests on 2026-11-27 (run 46051772270). Any error from
+the Ubuntu archive fails the step, including a transient index fetch failure
+that `apt-get update` would otherwise only warn about (`--error-on=any`), and
+so does a missing source file.
+
+The Linux credential tests need an unlocked Secret Service.
+`.github/scripts/start-secret-service.sh` installs gnome-keyring and runs
+`gnome-keyring-daemon --foreground --unlock --components=secrets` under a
+background subshell that writes the daemon's output and exit status to
+`$RUNNER_TEMP/secret-service/daemon.log`. It waits through the D-Bus driver,
+which never starts a service, until that daemon owns
+`org.freedesktop.secrets`, and fails if another process owns the name. It
+then requires the default collection's `Locked` property to be false, and
+checks the owner again after that last Secret Service call, because a call
+made after the daemon left the bus would have started a replacement. When a
+later step fails, `.github/scripts/secret-service-diagnostics.sh` prints that
+log, whether the daemon still runs, the current name owner, journal entries
+for gnome-keyring, the session bus, and systemd-oomd, the daemon's core dumps
+through `coredumpctl` (the runner's `core_pattern` is systemd-coredump), and
+kernel OOM and crash lines. In the second attempt of that run the daemon left the session bus
+partway through the core tests, D-Bus activated the packaged
+`gnome-keyring-daemon.service` with a locked login collection, and 28
+credential tests failed with `Locked`. Its cause is unknown. The scripts only
+record evidence; no test is retried or serialised.
+
 ## Testing build workflow
 
 `.github/workflows/testing-build.yml` runs on every push to main and on manual

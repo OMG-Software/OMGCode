@@ -43,9 +43,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # The Tauri prerequisites for Debian and Ubuntu. They are needed to
-          # compile the desktop crate; no test here starts a webview.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # compile the desktop crate; no test here starts a webview. Every
+          # apt step reads only the Ubuntu archive's sources.
+          bash .github/scripts/apt-install-ubuntu.sh \
             libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
             libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -74,25 +74,14 @@ jobs:
           XDG_RUNTIME_DIR="$runtime_dir" systemd-run --user --scope --quiet -p Delegate=yes -- cat /proc/self/cgroup
       - name: Start an unlocked Secret Service for credential tests
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gnome-keyring
-          # One empty line is an empty password. It creates and unlocks the
-          # login collection, which becomes the default alias; empty input
-          # (no newline) creates no collection.
-          printf '\n' | gnome-keyring-daemon --unlock --components=secrets
-          for _ in $(seq 1 50); do
-            busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
-              org.freedesktop.Secret.Service ReadAlias s default 2>/dev/null \
-              | grep -q '/collection/' && break
-            sleep 0.2
-          done
-          busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
-            org.freedesktop.Secret.Service ReadAlias s default | grep '/collection/'
+        run: bash .github/scripts/start-secret-service.sh
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
       - name: Run documentation tests
         run: cargo test --workspace --doc --locked
+      - name: Show Secret Service diagnostics
+        if: failure() && runner.os == 'Linux'
+        run: bash .github/scripts/secret-service-diagnostics.sh
 
   # ADR-0069: rerun the file-access suites with the temporary directory, and so
   # every fixture's data root and workspace, on each accepted filesystem. The
@@ -152,15 +141,13 @@ jobs:
           image="$RUNNER_TEMP/fs.img"
           case "$FILESYSTEM" in
             btrfs|xfs)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends btrfs-progs xfsprogs
+              bash .github/scripts/apt-install-ubuntu.sh btrfs-progs xfsprogs
               truncate -s 4G "$image"
               "mkfs.$FILESYSTEM" -q "$image"
               sudo mount -o loop "$image" /mnt/fs
               ;;
             zfs)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends zfsutils-linux
+              bash .github/scripts/apt-install-ubuntu.sh zfsutils-linux
               truncate -s 4G "$image"
               sudo zpool create -m /mnt/fs omgcode "$image"
               ;;
@@ -186,21 +173,7 @@ jobs:
       # The core unit tests include credential tests that need it.
       - name: Start an unlocked Secret Service for credential tests
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gnome-keyring
-          # One empty line is an empty password. It creates and unlocks the
-          # login collection, which becomes the default alias; empty input
-          # (no newline) creates no collection.
-          printf '\n' | gnome-keyring-daemon --unlock --components=secrets
-          for _ in $(seq 1 50); do
-            busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
-              org.freedesktop.Secret.Service ReadAlias s default 2>/dev/null \
-              | grep -q '/collection/' && break
-            sleep 0.2
-          done
-          busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
-            org.freedesktop.Secret.Service ReadAlias s default | grep '/collection/'
+        run: bash .github/scripts/start-secret-service.sh
       - name: Check that the temporary directory is on ${{ matrix.filesystem }}
         shell: bash
         run: |
@@ -226,3 +199,6 @@ jobs:
           cargo test -p omgcode-cli --locked
           --test replacement_apply --test checkpoint_lifecycle --test checkpoint_recovery
           --test file_workflow --test model_tools
+      - name: Show Secret Service diagnostics
+        if: failure() && runner.os == 'Linux'
+        run: bash .github/scripts/secret-service-diagnostics.sh
