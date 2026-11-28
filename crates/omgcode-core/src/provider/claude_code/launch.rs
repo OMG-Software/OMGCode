@@ -935,9 +935,11 @@ impl Session {
         }
     }
 
-    /// Write one line to the relay. A watcher shuts the channel when
-    /// `cancel` is set or `deadline` passes, which ends a write the relay
-    /// does not read on either platform.
+    /// Write one line to the relay. When `cancel` is set or `deadline`
+    /// passes, a watcher shuts the channel, which ends a write the relay
+    /// does not read on either platform, and ends the process tree. The
+    /// tree's end closes the relay's side of the channel, which ends the
+    /// write even when the shutdown request fails.
     fn write(
         &mut self,
         line: &[u8],
@@ -949,6 +951,7 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let tree = self.child.as_ref().map(StreamingChild::cancel_signal);
         let (Some(writer), Some(shutdown)) = (self.writer.as_mut(), shutdown) else {
             return Err(failure(ClaudeCodeFailure::Protocol));
         };
@@ -962,9 +965,13 @@ impl Session {
                     while !done.load(Ordering::SeqCst) {
                         if cancel.is_cancelled() || Instant::now() >= deadline {
                             stopped.store(true, Ordering::SeqCst);
-                            // A failed shutdown leaves the write to the
-                            // tree's end, which closes the other side.
+                            // The turn fails either way, so the tree ends
+                            // now rather than after the write returns: an
+                            // ignored shutdown failure cannot hold it.
                             let _ = shutdown.shutdown();
+                            if let Some(tree) = &tree {
+                                tree.cancel();
+                            }
                             return;
                         }
                         thread::park_timeout(POLL);

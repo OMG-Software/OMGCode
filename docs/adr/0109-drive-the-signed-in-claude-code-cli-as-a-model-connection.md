@@ -167,7 +167,9 @@ Haiku request with one tool call.
    (`session compact`). A cancelled turn starts no process. The reader
    threads hand the turn at most eight queued events, so a turn that is
    running a call or waiting for an approval holds back the process's output.
-   Every write to the relay ends at the request timeout or on cancellation.
+   Every write to the relay ends at the request timeout or on cancellation:
+   the channel is shut and the process tree ended, and the tree's end closes
+   the relay's side, so the write ends even when the shutdown request fails.
    The main agent's streamed and final text share an 8 MiB budget, and more
    fails the turn as too large. A `result` counts only after the whole prompt
    was written. After the tree ends, each worker thread is joined within five

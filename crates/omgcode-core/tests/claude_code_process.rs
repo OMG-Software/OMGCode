@@ -82,7 +82,7 @@ fn main() -> ExitCode {
         .filter_map(|argument| argument.to_str())
         .find(|argument| !argument.starts_with('-'))
         .map(str::to_owned);
-    let tests: [(&str, fn()); 8] = [
+    let tests: [(&str, fn()); 10] = [
         (
             "a_text_reply_streams_and_finishes",
             a_text_reply_streams_and_finishes,
@@ -111,6 +111,14 @@ fn main() -> ExitCode {
         (
             "a_withdrawn_connection_ends_its_running_turn",
             a_withdrawn_connection_ends_its_running_turn,
+        ),
+        (
+            "a_reply_the_relay_does_not_read_ends_at_the_request_timeout",
+            a_reply_the_relay_does_not_read_ends_at_the_request_timeout,
+        ),
+        (
+            "a_reply_the_relay_does_not_read_ends_on_cancellation",
+            a_reply_the_relay_does_not_read_ends_on_cancellation,
         ),
     ];
     let mut failed = 0;
@@ -587,6 +595,105 @@ fn a_withdrawn_connection_ends_its_running_turn() {
         &CancelToken::new(),
     ));
     assert_eq!(failure, ClaudeCodeFailure::Withdrawn);
+}
+
+/// How a flood turn ended: whether it was cancelled, and the model's last
+/// failure.
+struct FloodEnd {
+    cancelled: bool,
+    error: Option<ProviderError>,
+    took: Duration,
+}
+
+/// Run a turn whose fake floods the relay with requests and reads none of
+/// the replies, so OMGCode's write of a reply blocks. The turn runs on its
+/// own thread, so one that never ends fails the test after `limit`.
+fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
+    let client = scene.client();
+    let (data, workspace, workspace_id) = (
+        scene.data.clone(),
+        scene.workspace.clone(),
+        scene.workspace_id,
+    );
+    let started = Instant::now();
+    let turn = std::thread::spawn(move || {
+        let mut model = ClaudeCodeModel::new(&client);
+        let mut journal =
+            SessionJournal::create_with_workspace_id(&data, &workspace, "Claude", workspace_id)
+                .expect("session");
+        let outcome = TurnRuntime::new(&mut journal, &data, workspace_id, TurnLimits::default())
+            .expect("runtime")
+            .with_cancel_token(cancel)
+            .run(&mut model, "SCENARIO:flood", "", manifest());
+        assert!(outcome.is_err(), "a flooded turn cannot finish");
+        (
+            matches!(outcome, Err(TurnError::Cancelled)),
+            model.last_error(),
+        )
+    });
+    while !turn.is_finished() {
+        assert!(
+            started.elapsed() < limit,
+            "the turn did not end in {limit:?}; {}",
+            fake_claude::diagnosis(&scene.sign_in)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let took = started.elapsed();
+    let (cancelled, error) = turn.join().expect("the turn thread");
+    FloodEnd {
+        cancelled,
+        error,
+        took,
+    }
+}
+
+/// A reply write that the relay never reads ends at the request timeout:
+/// the turn fails with `claude_code_failed` instead of waiting for the
+/// relay.
+fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
+    let mut scene = Scene::new();
+    let timeout = Duration::from_secs(15);
+    scene.config.request_timeout = timeout;
+    let end = flood_turn(&scene, CancelToken::new(), Duration::from_secs(120));
+    // The stall, marked before the deadline, shows the write was blocked
+    // when the deadline passed.
+    assert!(
+        fake_claude::stalled(&scene.sign_in),
+        "{}",
+        fake_claude::diagnosis(&scene.sign_in)
+    );
+    assert!(!end.cancelled);
+    assert_eq!(
+        end.error,
+        Some(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+    );
+    assert!(end.took >= timeout, "{:?}", end.took);
+}
+
+/// A reply write that the relay never reads ends promptly when the turn is
+/// cancelled, which happens only once the write is blocked.
+fn a_reply_the_relay_does_not_read_ends_on_cancellation() {
+    let scene = Scene::new();
+    let cancel = CancelToken::new();
+    let trigger = cancel.clone();
+    let sign_in = scene.sign_in.clone();
+    let canceller = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !fake_claude::stalled(&sign_in) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stalled = fake_claude::stalled(&sign_in);
+        trigger.cancel();
+        (stalled, Instant::now())
+    });
+    let end = flood_turn(&scene, cancel, Duration::from_secs(120));
+    let returned = Instant::now();
+    let (stalled, cancelled_at) = canceller.join().expect("canceller");
+    assert!(stalled, "{}", fake_claude::diagnosis(&scene.sign_in));
+    assert!(end.cancelled, "{:?}", end.error);
+    let stopping = returned.saturating_duration_since(cancelled_at);
+    assert!(stopping < Duration::from_secs(10), "{stopping:?}");
 }
 
 fn fake_relay(arguments: &[OsString]) -> ExitCode {

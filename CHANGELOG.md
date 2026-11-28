@@ -48,7 +48,8 @@ Changes are recorded here before a release version is assigned.
   connection's sign-in folder, a grant checks its whole plan before it
   records anything, and revoking retries a container profile deletion that
   was interrupted. At most eight output events queue for the turn, every
-  relay write has a deadline, the main agent's text has an 8 MiB budget,
+  relay write has a deadline at which the channel is shut and the process
+  tree ended, the main agent's text has an 8 MiB budget,
   a reused MCP request identifier is refused, the rendered prompt's
   size is checked before it is copied, and a call whose cancellation is
   already queued is retired before any call is handed to the turn runtime.

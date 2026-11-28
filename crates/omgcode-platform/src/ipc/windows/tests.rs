@@ -46,6 +46,7 @@ fn fixture() {
         "exchange" => child_exchange(&address),
         "duplex" => child_duplex(&address),
         "hold" => child_hold(&address),
+        "stall" => child_stall(&address),
         "try-connect" => child_try_connect(&address),
         _ => 99,
     };
@@ -110,6 +111,19 @@ fn child_hold(address: &OsStr) -> i32 {
             println!("child expected end of stream, got {other:?}");
             4
         }
+    }
+}
+
+/// Announce, then read nothing until the test ends this process.
+fn child_stall(address: &OsStr) -> i32 {
+    let Some((_reader, mut writer, _shutdown)) = child_connect(address) else {
+        return 2;
+    };
+    if writer.write_all(b"ready\n").is_err() {
+        return 3;
+    }
+    loop {
+        thread::park();
     }
 }
 
@@ -201,6 +215,18 @@ impl Scene {
         mode: &str,
         address: &OsStr,
     ) -> JoinHandle<ProcessOutcome> {
+        self.start_ending_on(container, mode, address, &CancelSignal::new())
+    }
+
+    /// [`Self::start`], with a signal that ends the child's tree.
+    fn start_ending_on(
+        &self,
+        container: &ContainerName,
+        mode: &str,
+        address: &OsStr,
+        end: &CancelSignal,
+    ) -> JoinHandle<ProcessOutcome> {
+        let end = end.clone();
         let spec = self.spec(mode, address);
         let confinement = Confinement {
             read_only: vec![self.bin.clone()],
@@ -214,7 +240,7 @@ impl Scene {
             ..ProcessLimits::default()
         };
         thread::spawn(move || {
-            run_confined(&spec, &confinement, &limits, &CancelSignal::new()).expect("confined run")
+            run_confined(&spec, &confinement, &limits, &end).expect("confined run")
         })
     }
 }
@@ -403,6 +429,40 @@ fn shutdown_ends_a_blocked_read_and_the_peer_sees_the_close() {
     drop(writer);
     drop(shutdown);
     exited_ok(&join_within(child, LONG));
+}
+
+/// A pending write the client does not read fails once the client process
+/// ends, without a shutdown on this side.
+#[test]
+fn a_blocked_write_fails_once_the_client_process_ends() {
+    let name = unique_name();
+    let scene = Scene::new(&name);
+    let listener = listener_for(&name);
+    let address = listener.address().to_owned();
+    let accepting = accept_in_thread(listener, &CancelSignal::new(), LONG);
+    let end_child = CancelSignal::new();
+    let child = scene.start_ending_on(&name, "stall", &address, &end_child);
+    let stream = join_within(accepting, LONG).expect("accept");
+    let (reader, mut writer, _shutdown) = stream.split().expect("split");
+    let mut line = String::new();
+    BufReader::new(reader)
+        .read_line(&mut line)
+        .expect("ready line");
+    assert_eq!(line, "ready\n");
+    let (started, pending) = mpsc::channel();
+    let payload = vec![b'x'; PAYLOAD_BYTES];
+    let writing = thread::spawn(move || {
+        report_next_pending(started);
+        writer.write_all(&payload)
+    });
+    // The child reads nothing, so the write is pending once the pipe's
+    // buffer is full, and only the child's end can finish it.
+    await_pending(&pending);
+    end_child.cancel();
+    let error = join_within(writing, Duration::from_secs(20))
+        .expect_err("the write fails once the client is gone");
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{error:?}");
+    assert_eq!(join_within(child, LONG).termination, Termination::Cancelled);
 }
 
 #[test]

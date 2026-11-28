@@ -15,6 +15,8 @@ use crate::ipc::{IpcError, ListenerTarget, LocalListener, LocalStream, ShutdownH
 
 const LONG: Duration = Duration::from_secs(30);
 const PAYLOAD_BYTES: usize = 512 * 1024;
+/// Far more than a socket's buffers hold, so a write nobody reads blocks.
+const FILLING_BYTES: usize = 16 * 1024 * 1024;
 
 fn private_directory() -> tempfile::TempDir {
     let directory = tempfile::Builder::new()
@@ -344,6 +346,40 @@ fn shutdown_ends_a_blocked_read_and_the_peer_sees_the_close() {
         peer_reader.read(&mut buffer)
     });
     assert_eq!(join_within(peer_reading, LONG).expect("peer read"), 0);
+}
+
+/// A write the peer does not read fails once the peer's socket is closed,
+/// as an ended process's is, without a shutdown on this side.
+#[test]
+fn a_blocked_write_fails_once_the_peer_is_gone() {
+    let directory = private_directory();
+    let listener = bind_in(directory.path());
+    let connecting = client(listener.address());
+    let stream = listener
+        .accept(Instant::now() + LONG, &CancelSignal::new())
+        .expect("accept");
+    let peer = join_within(connecting, LONG);
+    let (_reader, mut writer, shutdown) = stream.split().expect("split");
+    let (started, pending) = mpsc::channel();
+    let payload = vec![b'x'; FILLING_BYTES];
+    let writing = thread::spawn(move || {
+        started
+            .send(thread_id())
+            .expect("report that the write is starting");
+        writer.write_all(&payload)
+    });
+    // The peer reads nothing, so the write sleeps once the socket is full.
+    await_blocked(&pending);
+    drop(peer);
+    let error = join_or_shut(writing, Duration::from_secs(10), &shutdown)
+        .expect_err("the write fails once the peer is gone");
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        ),
+        "{error:?}"
+    );
 }
 
 #[test]
