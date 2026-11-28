@@ -14,6 +14,11 @@ use crate::prompt::{ModelMessage, ModelRole};
 /// The largest rendered prompt, system and input together.
 pub const MAX_RENDERED_BYTES: usize = 4 * 1024 * 1024;
 
+/// The start of a message label line, before the marker.
+const LABEL_OPEN: &str = "<<<omgcode ";
+/// The end of a message label line.
+const LABEL_CLOSE: &str = ">>>\n";
+
 /// Appended to the system prompt: what differs when Claude Code carries the
 /// turn. It grants nothing.
 const CLAUDE_CODE_NOTE: &str = "\n\nOMGCode offers its tools through the MCP server `omgcode`, so each \
@@ -50,25 +55,33 @@ pub fn render(messages: &[ModelMessage], marker: &str) -> Result<RenderedPrompt,
     let mut system = String::new();
     let mut input = String::new();
     let mut conversation = 0_usize;
+    let mut used = 0_usize;
     for message in messages {
         let label = match &message.role {
             ModelRole::System => {
-                if !system.is_empty() {
+                let separator = if system.is_empty() { 0 } else { 2 };
+                used = grow(used, &[separator, message.content.len()])?;
+                if separator > 0 {
                     system.push_str("\n\n");
                 }
                 system.push_str(&message.content);
-                check(&system, &input)?;
                 continue;
             }
             ModelRole::User => "user".to_owned(),
             ModelRole::Assistant => "assistant".to_owned(),
             ModelRole::ToolResult(call) => format!("tool result for {}", call.name()),
         };
+        // The label line, the text, and a newline, checked before any copy.
+        let header = LABEL_OPEN.len() + marker.len() + 1 + label.len() + LABEL_CLOSE.len();
+        used = grow(used, &[header, message.content.len(), 1])?;
         conversation += 1;
-        input.push_str(&format!("<<<omgcode {marker} {label}>>>\n"));
+        input.push_str(LABEL_OPEN);
+        input.push_str(marker);
+        input.push(' ');
+        input.push_str(&label);
+        input.push_str(LABEL_CLOSE);
         input.push_str(&message.content);
         input.push('\n');
-        check(&system, &input)?;
     }
     if conversation == 0 {
         return Err(RenderError::Empty);
@@ -82,17 +95,32 @@ pub fn render(messages: &[ModelMessage], marker: &str) -> Result<RenderedPrompt,
         "<<<omgcode {marker} end>>>\nContinue this conversation: answer its last user message, \
          using the OMGCode tools where they help.\n"
     );
-    let input = format!("{preface}{input}{closing}");
+    // Check the whole cost before the wrapper copies the transcript.
+    grow(
+        used,
+        &[preface.len(), closing.len(), CLAUDE_CODE_NOTE.len()],
+    )?;
+    let mut wrapped = String::with_capacity(preface.len() + input.len() + closing.len());
+    wrapped.push_str(&preface);
+    wrapped.push_str(&input);
+    wrapped.push_str(&closing);
     system.push_str(CLAUDE_CODE_NOTE);
-    check(&system, &input)?;
-    Ok(RenderedPrompt { system, input })
+    Ok(RenderedPrompt {
+        system,
+        input: wrapped,
+    })
 }
 
-fn check(system: &str, input: &str) -> Result<(), RenderError> {
-    if system.len().saturating_add(input.len()) > MAX_RENDERED_BYTES {
+/// Add `parts` to `used` bytes, refusing a total over [`MAX_RENDERED_BYTES`].
+fn grow(used: usize, parts: &[usize]) -> Result<usize, RenderError> {
+    let mut total = used;
+    for part in parts {
+        total = total.checked_add(*part).ok_or(RenderError::TooLarge)?;
+    }
+    if total > MAX_RENDERED_BYTES {
         return Err(RenderError::TooLarge);
     }
-    Ok(())
+    Ok(total)
 }
 
 #[cfg(test)]
@@ -149,6 +177,23 @@ mod tests {
         let large = "x".repeat(MAX_RENDERED_BYTES);
         assert_eq!(
             render(&[message(ModelRole::User, &large)], "m"),
+            Err(RenderError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_prompt_of_exactly_the_limit_is_accepted_and_one_byte_more_is_not() {
+        let base = render(&[message(ModelRole::User, "")], "m").expect("rendered");
+        let fixed = base.system.len() + base.input.len();
+        let fit = "x".repeat(MAX_RENDERED_BYTES - fixed);
+        let at_limit = render(&[message(ModelRole::User, &fit)], "m").expect("at the limit");
+        assert_eq!(
+            at_limit.system.len() + at_limit.input.len(),
+            MAX_RENDERED_BYTES
+        );
+        let over = "x".repeat(MAX_RENDERED_BYTES - fixed + 1);
+        assert_eq!(
+            render(&[message(ModelRole::User, &over)], "m"),
             Err(RenderError::TooLarge)
         );
     }

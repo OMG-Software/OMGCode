@@ -15,7 +15,7 @@
 
 use crate::storage::parse_strict_json;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// The longest accepted input line. A `tools/call` carries up to 32 KiB of
@@ -24,6 +24,10 @@ pub const MAX_MCP_LINE_BYTES: usize = 64 * 1024;
 /// The most calls that may be unanswered at once, cancelled ones included
 /// until their answer is dropped.
 pub const MAX_PENDING_CALLS: usize = 16;
+/// The most request ids one session records as used. MCP forbids reusing an
+/// id within a session, so a full record refuses further requests instead of
+/// forgetting an id.
+pub const MAX_USED_REQUEST_IDS: usize = 4096;
 /// The longest accepted string request id, in bytes.
 pub const MAX_ID_BYTES: usize = 256;
 /// The longest accepted tool-use id, in bytes.
@@ -68,6 +72,12 @@ pub enum McpError {
     /// A call reused the id of an unanswered call.
     #[error("a call reused the id of an unanswered call")]
     DuplicatePending,
+    /// A request reused the id of an earlier request in this session.
+    #[error("a request reused an id already used in this session")]
+    RequestIdReused,
+    /// The record of used request ids is full.
+    #[error("more than {MAX_USED_REQUEST_IDS} request ids were used in this session")]
+    TooManyRequestIds,
     /// Too many calls are unanswered.
     #[error("more than {MAX_PENDING_CALLS} calls are unanswered")]
     TooManyPending,
@@ -169,6 +179,7 @@ pub struct McpServer {
     tools: Vec<McpTool>,
     initialized: bool,
     pending: HashMap<RequestKey, CallState>,
+    used_ids: HashSet<RequestKey>,
 }
 
 impl McpServer {
@@ -180,6 +191,7 @@ impl McpServer {
             tools,
             initialized: false,
             pending: HashMap::new(),
+            used_ids: HashSet::new(),
         }
     }
 
@@ -198,8 +210,8 @@ impl McpServer {
     /// # Errors
     ///
     /// Returns a fatal [`McpError`] for an over-long, invalid, batched, or
-    /// malformed message, a response, a duplicate pending id, or too many
-    /// pending calls. Recoverable client mistakes (unknown method, request
+    /// malformed message, a response, a reused request id, a full record of
+    /// used ids, or too many pending calls. Recoverable client mistakes (unknown method, request
     /// before `initialize`, bad parameters) are JSON-RPC error replies.
     pub fn handle_line(&mut self, line: &[u8]) -> Result<Vec<McpOutput>, McpError> {
         if line.len() > MAX_MCP_LINE_BYTES {
@@ -258,6 +270,7 @@ impl McpServer {
         method: &str,
         params: Option<&Value>,
     ) -> Result<Vec<McpOutput>, McpError> {
+        self.record_id(&key)?;
         let reply = match method {
             "server/discover" => error_reply(&key, METHOD_NOT_FOUND, "method not found")?,
             "ping" => result_reply(&key, json!({}))?,
@@ -268,6 +281,21 @@ impl McpServer {
             _ => error_reply(&key, METHOD_NOT_FOUND, "method not found")?,
         };
         Ok(vec![McpOutput::Reply(reply)])
+    }
+
+    /// Record `key` as used, before any method dispatch or validation.
+    fn record_id(&mut self, key: &RequestKey) -> Result<(), McpError> {
+        if self.pending.contains_key(key) {
+            return Err(McpError::DuplicatePending);
+        }
+        if self.used_ids.contains(key) {
+            return Err(McpError::RequestIdReused);
+        }
+        if self.used_ids.len() >= MAX_USED_REQUEST_IDS {
+            return Err(McpError::TooManyRequestIds);
+        }
+        self.used_ids.insert(key.clone());
+        Ok(())
     }
 
     fn initialize(
@@ -329,9 +357,6 @@ impl McpServer {
                 "invalid tools/call parameters",
             )?)]);
         };
-        if self.pending.contains_key(&key) {
-            return Err(McpError::DuplicatePending);
-        }
         if self.pending.len() >= MAX_PENDING_CALLS {
             return Err(McpError::TooManyPending);
         }

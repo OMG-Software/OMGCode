@@ -246,21 +246,26 @@ pub enum StreamEvent {
 ///
 /// # Errors
 ///
-/// Returns an error for invalid or duplicate-key JSON, and for a known
-/// message type whose shape is wrong or whose values exceed a limit. An
-/// unknown top-level `type` is [`StreamEvent::Ignored`].
+/// Returns [`StreamError::LineTooLong`] for a line over
+/// [`MAX_STREAM_LINE_BYTES`], an error for invalid or duplicate-key JSON, and
+/// an error for a known message type whose shape is wrong, whose
+/// discriminator (`type` or `subtype`) is missing or not a string, or whose
+/// values exceed a limit. An unknown string `type` is
+/// [`StreamEvent::Ignored`].
 pub fn parse_line(line: &[u8]) -> Result<StreamEvent, StreamError> {
+    if line.len() > MAX_STREAM_LINE_BYTES {
+        return Err(StreamError::LineTooLong {
+            limit: MAX_STREAM_LINE_BYTES,
+        });
+    }
     if line.is_empty() {
         return Ok(StreamEvent::Ignored);
     }
     let value = parse_strict_json(line).map_err(|_| StreamError::InvalidJson)?;
     let top = as_object(&value, "line")?;
-    let Some(kind) = top.get("type").and_then(Value::as_str) else {
-        return Err(StreamError::Shape("type"));
-    };
-    match kind {
-        "system" => match top.get("subtype").and_then(Value::as_str) {
-            Some("init") => parse_init(top).map(StreamEvent::Init),
+    match discriminator(top, "type")? {
+        "system" => match discriminator(top, "subtype")? {
+            "init" => parse_init(top).map(StreamEvent::Init),
             _ => Ok(StreamEvent::Ignored),
         },
         "stream_event" => parse_stream_event(top),
@@ -268,6 +273,16 @@ pub fn parse_line(line: &[u8]) -> Result<StreamEvent, StreamError> {
         "result" => parse_result(top).map(StreamEvent::Result),
         _ => Ok(StreamEvent::Ignored),
     }
+}
+
+/// A discriminator member that must be present and a string.
+fn discriminator<'a>(
+    map: &'a Map<String, Value>,
+    field: &'static str,
+) -> Result<&'a str, StreamError> {
+    map.get(field)
+        .and_then(Value::as_str)
+        .ok_or(StreamError::Shape(field))
 }
 
 fn as_object<'a>(
@@ -374,9 +389,9 @@ fn parse_stream_event(top: &Map<String, Value>) -> Result<StreamEvent, StreamErr
         top.get("event").ok_or(StreamError::Shape("event"))?,
         "event",
     )?;
-    match event.get("type").and_then(Value::as_str) {
-        Some("content_block_start") => return parse_block_start(event),
-        Some("content_block_delta") => {}
+    match discriminator(event, "type")? {
+        "content_block_start" => return parse_block_start(event),
+        "content_block_delta" => {}
         _ => return Ok(StreamEvent::Ignored),
     }
     if optional_name(top, "parent_tool_use_id")?.is_some() {
@@ -386,7 +401,7 @@ fn parse_stream_event(top: &Map<String, Value>) -> Result<StreamEvent, StreamErr
         event.get("delta").ok_or(StreamError::Shape("delta"))?,
         "delta",
     )?;
-    if delta.get("type").and_then(Value::as_str) != Some("text_delta") {
+    if discriminator(delta, "type")? != "text_delta" {
         return Ok(StreamEvent::Ignored);
     }
     match delta.get("text") {
@@ -404,7 +419,7 @@ fn parse_block_start(event: &Map<String, Value>) -> Result<StreamEvent, StreamEr
             .ok_or(StreamError::Shape("content_block"))?,
         "content_block",
     )?;
-    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+    if discriminator(block, "type")? != "tool_use" {
         return Ok(StreamEvent::Ignored);
     }
     let name = required_name(block, "name")?;

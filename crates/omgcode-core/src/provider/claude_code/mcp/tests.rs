@@ -14,7 +14,7 @@ fn server() -> McpServer {
 
 fn initialized() -> McpServer {
     let mut s = server();
-    s.handle_line(br#"{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"claude-code","version":"2.1.325"}},"jsonrpc":"2.0","id":0}"#)
+    s.handle_line(br#"{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"claude-code","version":"2.1.325"}},"jsonrpc":"2.0","id":900000}"#)
         .expect("initialize");
     s
 }
@@ -125,14 +125,17 @@ fn ping_works_before_and_after_initialize() {
 #[test]
 fn tools_list_returns_the_tools_and_ignores_a_cursor() {
     let mut s = initialized();
-    for line in [
-        &br#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#[..],
-        br#"{"method":"tools/list","jsonrpc":"2.0","id":1,"params":{"cursor":"abc"}}"#,
+    for (id, line) in [
+        (1, &br#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#[..]),
+        (
+            2,
+            br#"{"method":"tools/list","jsonrpc":"2.0","id":2,"params":{"cursor":"abc"}}"#,
+        ),
     ] {
         let out = s.handle_line(line).expect("handled");
         assert_eq!(
             reply_json(&out),
-            json!({"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"workspace_read_file","description":"Read a file","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}]}})
+            json!({"jsonrpc":"2.0","id":id,"result":{"tools":[{"name":"workspace_read_file","description":"Read a file","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}]}})
         );
     }
 }
@@ -233,8 +236,8 @@ fn a_tools_call_with_bad_parameters_is_an_error_reply_and_not_pending() {
     let mut s = initialized();
     for line in [
         &br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#[..],
-        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":3}}"#,
-        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":[]}"#,
+        br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":3}}"#,
+        br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":[]}"#,
     ] {
         let out = s.handle_line(line).expect("handled");
         assert_eq!(reply_json(&out)["error"]["code"], -32602);
@@ -321,11 +324,45 @@ fn a_duplicate_pending_id_is_fatal_and_a_string_id_differs_from_an_integer() {
 }
 
 #[test]
-fn an_answered_id_may_be_reused() {
+fn an_answered_id_may_not_be_reused() {
     let mut s = initialized();
     let call = only_call(s.handle_line(&call_line("5", "t", "{}")).expect("first"));
     s.answer(&call.key, "ok", false).expect("answered");
-    assert!(s.handle_line(&call_line("5", "t", "{}")).is_ok());
+    assert_eq!(
+        s.handle_line(&call_line("5", "t", "{}")),
+        Err(McpError::RequestIdReused)
+    );
+    assert!(s.handle_line(&call_line("\"5\"", "t", "{}")).is_ok());
+}
+
+#[test]
+fn a_ping_may_not_reuse_an_unanswered_call_id() {
+    let mut s = initialized();
+    s.handle_line(&call_line("5", "t", "{}")).expect("first");
+    let ping = br#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#;
+    assert_eq!(s.handle_line(ping), Err(McpError::DuplicatePending));
+}
+
+#[test]
+fn any_request_method_may_not_reuse_an_id() {
+    let mut s = initialized();
+    let ping = br#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#;
+    assert!(s.handle_line(ping).is_ok());
+    assert_eq!(s.handle_line(ping), Err(McpError::RequestIdReused));
+    let bad = br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}"#;
+    assert_eq!(s.handle_line(bad), Err(McpError::RequestIdReused));
+}
+
+#[test]
+fn a_full_record_of_used_ids_refuses_further_requests() {
+    let mut s = initialized();
+    let used = MAX_USED_REQUEST_IDS - 1;
+    for id in 0..used {
+        let line = format!(r#"{{"jsonrpc":"2.0","id":{},"method":"ping"}}"#, id + 1000);
+        assert!(s.handle_line(line.as_bytes()).is_ok());
+    }
+    let next = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    assert_eq!(s.handle_line(next), Err(McpError::TooManyRequestIds));
 }
 
 #[test]
@@ -464,5 +501,6 @@ fn a_thirty_two_kib_argument_call_is_carried_whole() {
         &format!(r#"{{"content":"{payload}"}}"#),
     );
     let call = only_call(s.handle_line(&line).expect("handled"));
-    assert!(call.arguments_json.len() > 32 * 1024);
+    let arguments: Value = serde_json::from_str(&call.arguments_json).expect("arguments");
+    assert_eq!(arguments["content"], payload);
 }

@@ -559,3 +559,50 @@ fn lockdown_refuses_any_api_key_source_but_none() {
         );
     }
 }
+
+#[test]
+fn a_missing_or_non_string_discriminator_is_an_error() {
+    for (line, field) in [
+        (r#"{"type":"system"}"#, "subtype"),
+        (r#"{"type":"system","subtype":3}"#, "subtype"),
+        (r#"{"type":5}"#, "type"),
+        (r#"{"type":"stream_event","event":{}}"#, "type"),
+        (r#"{"type":"stream_event","event":{"type":7}}"#, "type"),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{}}}"#,
+            "type",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":null}}}"#,
+            "type",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{}}}"#,
+            "type",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":false}}}"#,
+            "type",
+        ),
+    ] {
+        assert_eq!(
+            parse_line(line.as_bytes()),
+            Err(StreamError::Shape(field)),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_line_over_the_limit_is_refused_before_parsing() {
+    let line = vec![b' '; MAX_STREAM_LINE_BYTES + 1];
+    assert_eq!(
+        parse_line(&line),
+        Err(StreamError::LineTooLong {
+            limit: MAX_STREAM_LINE_BYTES
+        })
+    );
+    let mut at_limit = br#"{"type":"future_thing"}"#.to_vec();
+    at_limit.resize(MAX_STREAM_LINE_BYTES, b' ');
+    assert_eq!(parse_line(&at_limit), Ok(StreamEvent::Ignored));
+}
