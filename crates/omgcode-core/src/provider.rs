@@ -1,4 +1,5 @@
 pub mod chatgpt;
+pub mod claude_code;
 mod effort;
 mod hosted;
 mod models;
