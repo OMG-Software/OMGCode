@@ -47,7 +47,8 @@ pub use assignment::{
 };
 pub use claude_code::{
     ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole, ClaudeCodeGrantStatus,
-    ClaudeCodeRevocation, ClaudeCodeSetup, claude_code_container, claude_code_runtime_folder,
+    ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeSetup, claude_code_container,
+    claude_code_runtime_folder,
 };
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,

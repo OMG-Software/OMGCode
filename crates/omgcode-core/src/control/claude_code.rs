@@ -564,6 +564,72 @@ impl ControlStore {
         })
     }
 
+    /// Resolve the paths one Claude Code run uses, after checking that the
+    /// recorded folders are still the same folders and, on Windows, that
+    /// the connection's container holds an active grant for each role,
+    /// including the folder that holds `relay_program`.
+    ///
+    /// On Linux the runtime folder is created, private to the user, when
+    /// missing; no grant exists there.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlError::UnknownProvider`] or [`ControlError::ProviderRefused`]
+    /// for an unknown or other profile, [`ControlError::DirectoryChanged`]
+    /// when a recorded folder changed, [`ControlError::GrantRefused`] when a
+    /// grant is missing, pending, or for another folder, and the I/O error
+    /// that stopped a check.
+    pub fn resolve_claude_code(
+        &self,
+        name: &str,
+        relay_program: &Path,
+    ) -> Result<ClaudeCodePaths, ControlError> {
+        self.ensure_healthy()?;
+        let (profile_id, setup) = self.claude_code_setup(name)?;
+        let program = setup.live_program()?;
+        let config_folder = setup.live_config_folder()?;
+        let relay_program = std::fs::canonicalize(relay_program)?;
+        let relay_folder = relay_program.parent().ok_or(ControlError::GrantRefused(
+            "the relay program has no folder",
+        ))?;
+        let runtime_folder =
+            claude_code_runtime_folder(&self.data_directory.live_path()?, profile_id);
+        let container = if platform_grants_supported() {
+            let runtime = DirectoryRecord::capture(&runtime_folder)?;
+            let relay = DirectoryRecord::capture(relay_folder)?;
+            for (role, expected) in [
+                (ClaudeCodeGrantRole::Program, &setup.program_folder),
+                (ClaudeCodeGrantRole::Configuration, &setup.config_folder),
+                (ClaudeCodeGrantRole::Runtime, &runtime),
+                (ClaudeCodeGrantRole::Relay, &relay),
+            ] {
+                let granted = self.snapshot.claude_code_grants.iter().any(|status| {
+                    status.grant.profile_id == profile_id
+                        && status.grant.role == role
+                        && status.state == ContainerGrantState::Active
+                        && status.grant.directory.same_directory(expected)
+                });
+                if !granted {
+                    return Err(ControlError::GrantRefused(
+                        "the Claude Code connection's container lacks an active grant for one of its folders; run `workspace claude-code-grant` first",
+                    ));
+                }
+            }
+            Some(claude_code_container(profile_id)?)
+        } else {
+            create_private_folder(&runtime_folder)?;
+            None
+        };
+        Ok(ClaudeCodePaths {
+            profile_id,
+            program,
+            config_folder,
+            runtime_folder,
+            relay_program,
+            container,
+        })
+    }
+
     /// The profile ID and setup of a recorded Claude Code connection.
     ///
     /// # Errors
@@ -638,6 +704,46 @@ impl ControlStore {
             }
         }
         Ok(())
+    }
+}
+
+/// The paths one Claude Code run uses, resolved and checked by
+/// [`ControlStore::resolve_claude_code`]. They are live paths for one launch,
+/// not authority.
+#[derive(Clone, Debug)]
+pub struct ClaudeCodePaths {
+    /// The connection's profile identifier.
+    pub profile_id: Uuid,
+    /// The canonical `claude` program.
+    pub program: PathBuf,
+    /// The sign-in folder.
+    pub config_folder: PathBuf,
+    /// The connection's runtime folder in application storage.
+    pub runtime_folder: PathBuf,
+    /// The canonical relay program.
+    pub relay_program: PathBuf,
+    /// The connection's AppContainer, on Windows.
+    pub container: Option<ContainerName>,
+}
+
+const fn platform_grants_supported() -> bool {
+    omgcode_platform::container::CONTAINER_GRANTS_SUPPORTED
+}
+
+/// Create `path` and its parents with mode `0700` on Unix, or plainly
+/// elsewhere, when missing.
+fn create_private_folder(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
     }
 }
 

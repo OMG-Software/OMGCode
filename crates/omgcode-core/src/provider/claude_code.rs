@@ -16,5 +16,59 @@
 //! this code does not recognise is ignored only where documented; a known
 //! message with the wrong shape is an error. Nothing here grants authority.
 
+pub mod history;
+pub mod launch;
 pub mod mcp;
+pub mod model;
 pub mod stream;
+
+pub use launch::{
+    ClaudeCodeClient, ClaudeCodeConfig, RELAY_NONCE_VARIABLE, RELAY_SUBCOMMAND, relay,
+};
+pub use model::ClaudeCodeModel;
+
+/// Why a Claude Code run failed (ADR-0109). No text from the process is
+/// kept: its output is untrusted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaudeCodeFailure {
+    /// The process reported that its sign-in failed or is missing.
+    NotSignedIn,
+    /// The process offered a tool, MCP server, plugin, skill, slash command,
+    /// or API-key source OMGCode did not choose, or named another tool.
+    Lockdown,
+    /// The process's output or MCP traffic did not have the supported shape.
+    Protocol,
+    /// The process could not start, ended, failed, or timed out before its
+    /// result.
+    Failed,
+}
+
+impl ClaudeCodeFailure {
+    /// The stable failure code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotSignedIn => "claude_code_not_signed_in",
+            Self::Lockdown => "claude_code_lockdown",
+            Self::Protocol => "claude_code_protocol",
+            Self::Failed => "claude_code_failed",
+        }
+    }
+
+    /// A fixed description for people.
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::NotSignedIn => {
+                "Claude Code is not signed in for this connection; run `claude auth login` with CLAUDE_CONFIG_DIR set to the connection's sign-in folder"
+            }
+            Self::Lockdown => {
+                "Claude Code started with a tool, MCP server, plugin, skill, slash command, or API-key source OMGCode did not choose, or named another tool; the process was ended"
+            }
+            Self::Protocol => {
+                "Claude Code sent output or MCP traffic OMGCode could not accept; the process was ended"
+            }
+            Self::Failed => {
+                "the Claude Code process could not start, or failed, exited, or timed out before its result"
+            }
+        }
+    }
+}

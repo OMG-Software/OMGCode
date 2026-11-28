@@ -565,6 +565,36 @@ pub fn check_lockdown(
 
 /// A copy cut at a character boundary within [`MAX_NAME_BYTES`], for a name
 /// the caller (not Claude) supplied.
+/// Check an init report of a run that offers no tools: no tool and no MCP
+/// server at all, and otherwise the rules of [`check_lockdown`].
+///
+/// # Errors
+///
+/// The first violated rule, in the order of [`check_lockdown`].
+pub fn check_toolless_lockdown(init: &InitReport) -> Result<(), LockdownViolation> {
+    if init.api_key_source != "none" {
+        return Err(LockdownViolation::ApiKeySource(init.api_key_source.clone()));
+    }
+    if let Some(tool) = init.tools.first() {
+        return Err(LockdownViolation::UnexpectedTool(tool.clone()));
+    }
+    if !init.mcp_servers.is_empty() {
+        return Err(LockdownViolation::McpServerCount(init.mcp_servers.len()));
+    }
+    if !init.plugins.is_empty() {
+        return Err(LockdownViolation::PluginsPresent(init.plugins.len()));
+    }
+    if !init.skills.is_empty() {
+        return Err(LockdownViolation::SkillsPresent(init.skills.len()));
+    }
+    if !init.slash_commands.is_empty() {
+        return Err(LockdownViolation::SlashCommandsPresent(
+            init.slash_commands.len(),
+        ));
+    }
+    Ok(())
+}
+
 fn bounded_copy(text: &str) -> String {
     text.chars()
         .scan(0usize, |used, ch| {
