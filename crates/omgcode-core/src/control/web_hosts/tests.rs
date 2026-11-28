@@ -2,7 +2,10 @@ use super::*;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::control::FILE_NAME;
+use crate::control::{
+    ApprovalBinding, ApprovalDeclaration, ApprovalOperation, ApprovalState, ApprovalStatus,
+    FILE_NAME, now_unix,
+};
 use crate::policy::{Access, PermissionSet};
 
 fn refusal(text: &str) -> WebHostRefusal {
@@ -404,9 +407,11 @@ fn refused_changes_leave_the_settings_unchanged() {
     assert_eq!(scene.store.web_fetch_hosts(id).len(), 1);
 }
 
-/// A workspace holds at most 32 patterns; another workspace has its own cap.
+/// A workspace holds at most 100 patterns (ADR-0110); another workspace has
+/// its own cap.
 #[test]
 fn the_cap_is_per_workspace() {
+    assert_eq!(MAX_WEB_FETCH_HOSTS, 100);
     let mut scene = scene();
     let id = scene.register("app");
     let other = scene.register("other");
@@ -415,7 +420,7 @@ fn the_cap_is_per_workspace() {
             .add(id, &format!("h{index}.example.com"))
             .expect("add");
     }
-    scene.add(id, "last.example.com").expect("the 32nd");
+    scene.add(id, "last.example.com").expect("the 100th");
     assert_eq!(scene.store.web_fetch_hosts(id).len(), MAX_WEB_FETCH_HOSTS);
     let revision = scene.store.revision();
     assert!(matches!(
@@ -537,4 +542,276 @@ fn permissions_changes_keep_the_allowlist() {
     let workspace = store.workspace(id).expect("workspace");
     assert_eq!(workspace.permissions().web_fetch, Access::Allow);
     assert_eq!(store.web_fetch_hosts(id).len(), 1);
+}
+
+// ------------------------------------------------- Allow host (ADR-0110)
+
+const FETCH_DIGEST: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const OTHER_DIGEST: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+/// Model tools on and `web_fetch` in the given state.
+fn fetch_permissions(web_fetch: Access) -> PermissionSet {
+    PermissionSet {
+        model_tools: true,
+        web_fetch,
+        ..PermissionSet::default()
+    }
+}
+
+impl Scene {
+    fn permit(&mut self, id: WorkspaceId, permissions: PermissionSet) {
+        let revision = self.store.revision();
+        self.store
+            .set_permissions(id, permissions, revision)
+            .expect("permissions");
+    }
+
+    /// Record one pending approval of `operation` and return its status.
+    fn request(&mut self, id: WorkspaceId, operation: ApprovalOperation) -> ApprovalStatus {
+        self.store
+            .request_approval(
+                &ApprovalDeclaration {
+                    session_id: Uuid::new_v4(),
+                    workspace_id: id,
+                    operation,
+                    request_sha256: FETCH_DIGEST.into(),
+                    summary: "Fetch https://docs.example.com/guide".into(),
+                    ttl_secs: 600,
+                },
+                now_unix(),
+            )
+            .expect("request")
+    }
+}
+
+fn reviewed(status: &ApprovalStatus, host: &str) -> ReviewedHost {
+    ReviewedHost::of_review(status.id, &status.request_sha256, host).expect("a listable host")
+}
+
+/// A reviewed host is an exact, canonical pattern; a wildcard or a name the
+/// allowlist refuses is never offered.
+#[test]
+fn a_reviewed_host_is_one_exact_canonical_pattern() {
+    let id = Uuid::new_v4();
+    let host = ReviewedHost::of_review(id, FETCH_DIGEST, "Docs.Example.com").expect("host");
+    assert_eq!(host.pattern().as_str(), "docs.example.com");
+    assert!(!host.pattern().is_wildcard());
+    assert_eq!(host.approval_id(), id);
+    assert_eq!(
+        ReviewedHost::of_review(id, FETCH_DIGEST, "*.example.com"),
+        Err(WebHostRefusal::BadCharacter)
+    );
+    assert_eq!(
+        ReviewedHost::of_review(id, FETCH_DIGEST, "printer.local"),
+        Err(WebHostRefusal::Reserved)
+    );
+}
+
+/// The offer needs an effective `allow`, an unlisted host, and room.
+#[test]
+fn allow_host_needs_allow_an_unlisted_host_and_room() {
+    let mut scene = scene();
+    let id = scene.register("app");
+    let host = pattern("docs.example.com");
+    assert_eq!(
+        scene.store.allow_host_refusal(id, &host),
+        Some(WebHostRefusal::FetchNotAllow),
+        "the default is deny"
+    );
+    scene.permit(id, fetch_permissions(Access::Prompt));
+    assert_eq!(
+        scene.store.allow_host_refusal(id, &host),
+        Some(WebHostRefusal::FetchNotAllow)
+    );
+    scene.permit(
+        id,
+        PermissionSet {
+            model_tools: false,
+            ..fetch_permissions(Access::Allow)
+        },
+    );
+    assert_eq!(
+        scene.store.allow_host_refusal(id, &host),
+        Some(WebHostRefusal::FetchNotAllow),
+        "without model tools the effective state is deny"
+    );
+    scene.permit(id, fetch_permissions(Access::Allow));
+    assert_eq!(scene.store.allow_host_refusal(id, &host), None);
+    assert_eq!(
+        scene.store.allow_host_refusal(WorkspaceId::fresh(), &host),
+        Some(WebHostRefusal::FetchNotAllow),
+        "an unknown workspace counts as deny"
+    );
+    // A wildcard that covers the host does not list it exactly.
+    scene.add(id, "*.example.com").expect("wildcard");
+    assert_eq!(scene.store.allow_host_refusal(id, &host), None);
+    scene.add(id, "docs.example.com").expect("exact");
+    assert_eq!(
+        scene.store.allow_host_refusal(id, &host),
+        Some(WebHostRefusal::Duplicate)
+    );
+    for index in 2..MAX_WEB_FETCH_HOSTS {
+        scene
+            .add(id, &format!("h{index}.example.org"))
+            .expect("add");
+    }
+    assert_eq!(
+        scene
+            .store
+            .allow_host_refusal(id, &pattern("new.example.net")),
+        Some(WebHostRefusal::TooMany)
+    );
+}
+
+/// The approval and the host are appended together; the approval keeps the
+/// old revision, so it can never be consumed, and both replay.
+#[test]
+fn approve_and_allow_appends_the_approval_then_the_host() {
+    let mut scene = scene();
+    let id = scene.register("app");
+    scene.permit(id, fetch_permissions(Access::Allow));
+    let status = scene.request(id, ApprovalOperation::Network);
+    let revision = scene.store.revision();
+    assert_eq!(status.settings_revision, revision);
+
+    scene
+        .store
+        .approve_and_allow_web_host(&reviewed(&status, "docs.example.com"), now_unix())
+        .expect("approve and allow");
+
+    assert_eq!(scene.store.revision(), revision + 1);
+    let approved = scene
+        .store
+        .approval_status(status.id, now_unix())
+        .expect("status");
+    assert_eq!(approved.state, ApprovalState::Approved);
+    assert!(!approved.writers_stopped);
+    assert_eq!(
+        scene.store.web_fetch_hosts(id),
+        [pattern("docs.example.com")]
+    );
+    let refused = scene.store.consume_approval(
+        status.id,
+        &ApprovalBinding {
+            session_id: status.session_id,
+            workspace_id: id,
+            operation: ApprovalOperation::Network,
+            request_sha256: FETCH_DIGEST.into(),
+        },
+        now_unix(),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(ControlError::ApprovalRefused(
+                "the settings changed after the approval was requested"
+            ))
+        ),
+        "{refused:?}"
+    );
+
+    let data = scene.data.clone();
+    drop(scene.store);
+    let store = ControlStore::open(&data).expect("replay");
+    assert_eq!(store.revision(), revision + 1);
+    assert_eq!(store.web_fetch_hosts(id), [pattern("docs.example.com")]);
+    assert_eq!(
+        store
+            .approval_status(status.id, now_unix())
+            .expect("status")
+            .state,
+        ApprovalState::Approved
+    );
+}
+
+/// Every refusal leaves the approval pending and the settings unchanged.
+#[test]
+fn approve_and_allow_refuses_and_changes_nothing() {
+    let mut scene = scene();
+    let id = scene.register("app");
+    scene.permit(id, fetch_permissions(Access::Allow));
+    let fetch = scene.request(id, ApprovalOperation::Network);
+    let command = scene.request(id, ApprovalOperation::Command);
+    let revision = scene.store.revision();
+    let now = now_unix();
+
+    let check = |store: &mut ControlStore, host: &ReviewedHost, expected: &str| {
+        let refused = store
+            .approve_and_allow_web_host(host, now)
+            .expect_err(expected);
+        assert_eq!(refused.to_string(), expected);
+        assert_eq!(store.revision(), revision);
+        assert!(store.web_fetch_hosts(id).is_empty());
+    };
+    check(
+        &mut scene.store,
+        &reviewed(&command, "docs.example.com"),
+        "approval refused: only a network approval can allow its host",
+    );
+    let foreign =
+        ReviewedHost::of_review(fetch.id, OTHER_DIGEST, "docs.example.com").expect("host");
+    check(
+        &mut scene.store,
+        &foreign,
+        "approval refused: the request does not match the approval",
+    );
+    let unknown =
+        ReviewedHost::of_review(Uuid::new_v4(), FETCH_DIGEST, "docs.example.com").expect("host");
+    check(&mut scene.store, &unknown, "approval is not recorded");
+    assert_eq!(
+        scene
+            .store
+            .approval_status(fetch.id, now)
+            .expect("status")
+            .state,
+        ApprovalState::Pending
+    );
+
+    // Under `prompt` the host would still ask, so it is not listed.
+    scene.permit(id, fetch_permissions(Access::Prompt));
+    let prompted = scene.request(id, ApprovalOperation::Network);
+    let refused = scene
+        .store
+        .approve_and_allow_web_host(&reviewed(&prompted, "docs.example.com"), now)
+        .expect_err("prompt");
+    assert!(
+        matches!(
+            refused,
+            ControlError::WebHost(WebHostRefusal::FetchNotAllow)
+        ),
+        "{refused:?}"
+    );
+
+    // A settings change since the request makes the approval stale.
+    scene.permit(id, fetch_permissions(Access::Allow));
+    let stale = scene
+        .store
+        .approve_and_allow_web_host(&reviewed(&prompted, "docs.example.com"), now)
+        .expect_err("stale");
+    assert!(
+        matches!(
+            stale,
+            ControlError::ApprovalRefused("the settings changed after the approval was requested")
+        ),
+        "{stale:?}"
+    );
+
+    // A decided record cannot be approved again.
+    let fresh = scene.request(id, ApprovalOperation::Network);
+    scene
+        .store
+        .decide_approval(fresh.id, false, now)
+        .expect("deny");
+    let decided = scene
+        .store
+        .approve_and_allow_web_host(&reviewed(&fresh, "docs.example.com"), now)
+        .expect_err("decided");
+    assert!(
+        matches!(
+            decided,
+            ControlError::ApprovalRefused("this approval already has a decision")
+        ),
+        "{decided:?}"
+    );
+    assert!(scene.store.web_fetch_hosts(id).is_empty());
 }

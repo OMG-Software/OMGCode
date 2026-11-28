@@ -22,9 +22,9 @@ use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole};
 use omgcode_core::session::{CompactionRecord, MessageRole, RequestManifest, SessionJournal};
 use omgcode_core::turn::{
-    ApprovalWaitSlot, AwaitedCall, CancelToken, ModelError, TOOL_SCHEMA_VERSION, ToolCall,
-    ToolCallError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimits, TurnReport,
-    TurnRuntime, WITHHELD_TOOL_RESULT,
+    ApprovalReview, ApprovalWaitSlot, AwaitedCall, CancelToken, ModelError, ReviewCandidate,
+    TOOL_SCHEMA_VERSION, ToolCall, ToolCallError, ToolModel, ToolModelReply, ToolModelRequest,
+    TurnError, TurnLimits, TurnReport, TurnRuntime, WITHHELD_TOOL_RESULT, review_approval,
 };
 use omgcode_core::web_fetch::{
     DEFAULT_RESULT_BYTES, FetchError, FetchOutcome, FetchUrl, FetchedPage, MAX_RESULT_BYTES,
@@ -937,6 +937,105 @@ fn an_allowed_fetch_to_an_allowlisted_host_runs_with_a_standing_allow() {
     assert_eq!(
         finish.as_ref().map(|finish| finish.outcome),
         Some(ActionOutcome::Succeeded)
+    );
+}
+
+/// Once the turn waits, review the call it waits on as the approvals window
+/// would, then approve it and list its host in one settings hold (ADR-0110).
+/// Returns the host the review offered.
+fn allow_host_when_waiting(
+    data: PathBuf,
+    slot: ApprovalWaitSlot,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let waiting = loop {
+            if let Some(waiting) = slot.current() {
+                break waiting;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the turn never waited"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let status = ControlStore::open_existing_waiting(&data)
+            .expect("open control")
+            .expect("control store")
+            .approval_status(waiting.approval_id, now_unix())
+            .expect("the awaited approval");
+        let candidate = ReviewCandidate {
+            tool: &waiting.tool,
+            arguments: &waiting.arguments,
+        };
+        let ApprovalReview::Exact(reviewed) =
+            review_approval(&data, &status, &[candidate]).expect("review")
+        else {
+            panic!("the awaited call reproduces its digest");
+        };
+        let host = reviewed
+            .allow_host
+            .expect("a web fetch review")
+            .expect("allow host is offered under allow");
+        ControlStore::open_existing_waiting(&data)
+            .expect("open control")
+            .expect("control store")
+            .approve_and_allow_web_host(&host, now_unix())
+            .expect("approve and allow");
+        host.pattern().as_str().to_owned()
+    })
+}
+
+#[test]
+fn allow_host_lists_the_host_and_the_waiting_fetch_runs_under_the_standing_allow() {
+    let mut fixture = Fixture::new();
+    fixture.set(fetching(Access::Allow));
+    let fetcher = FakeFetcher::serving("allowed after review");
+    let slot = ApprovalWaitSlot::new();
+    let operator = allow_host_when_waiting(fixture.data.clone(), slot.clone());
+    let mut model = fetching_model("https://Docs.Example.com/guide");
+    let report = fixture
+        .run_with(
+            &fetcher,
+            &mut model,
+            Options {
+                slot: Some(slot),
+                ..Options::default()
+            },
+        )
+        .expect("turn completes");
+    let host = operator.join().expect("operator thread");
+
+    assert_eq!(host, HOST);
+    assert_eq!(report.reply, "done");
+    assert_eq!(model.requests.len(), 2, "the model never repeated the call");
+    assert_eq!(fetcher.calls(), [URL.to_owned()], "fetched once");
+    assert!(model.result_for("fetch-1").contains("allowed after review"));
+    // One approval was asked for and approved. The host advanced the
+    // revision, so the record is never consumed and nothing asks again.
+    let approvals = fixture.network_approvals();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].state, ApprovalState::Approved);
+    fixture.control_open();
+    let control = fixture.control.as_ref().expect("control store");
+    assert_eq!(
+        control
+            .web_fetch_hosts(fixture.workspace_id)
+            .iter()
+            .map(|pattern| pattern.as_str())
+            .collect::<Vec<_>>(),
+        [HOST]
+    );
+    fixture.control = None;
+    fixture.close_journal();
+    let actions = fixture.actions();
+    assert_eq!(actions.len(), 1);
+    let ActionDisposition::Executed { authorization, .. } = &actions[0].disposition else {
+        panic!("the fetch started: {actions:?}");
+    };
+    assert!(
+        matches!(authorization, Authorization::StandingAllow { .. }),
+        "{authorization:?}"
     );
 }
 

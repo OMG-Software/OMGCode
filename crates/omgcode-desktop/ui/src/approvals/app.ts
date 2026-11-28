@@ -106,6 +106,8 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   let pendingOrder: string[] = [];
   let focusedOnce = false;
   let decidedId: string | null = null;
+  // The decided review's result, repeated as the notice when the window moves on.
+  let decidedMessage: string | null = null;
 
   const badge = el("span", { class: "badge", attrs: { "aria-label": "Pending approvals" } });
   badge.hidden = true;
@@ -153,8 +155,9 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
   noticeLine.hidden = true;
   const review = createReviewPanel({
     reload: (id, notice) => loadDetail(id, { notice, focus: true }),
-    onDecided: (view) => {
+    onDecided: (view, message) => {
       decidedId = view.id;
+      decidedMessage = message;
       void poller.tick();
     },
   });
@@ -394,7 +397,8 @@ export function startApprovals(root: HTMLElement): ApprovalsApp {
         return;
       }
       decidedId = null;
-      showNotice(`Decision recorded: ${selected?.state ?? "recorded"}.`);
+      showNotice(decidedMessage ?? `Decision recorded: ${selected?.state ?? "recorded"}.`);
+      decidedMessage = null;
       selectApproval(first, { focus: true });
       return;
     }

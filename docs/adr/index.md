@@ -112,7 +112,7 @@ meaningful alternative does not need an ADR.
 | [0095: Use the OMG Software palette and OMGCode icons in the desktop](0095-use-the-omg-software-palette-and-omgcode-icons-in-the-desktop.md) | Accepted | 2026-11-24 |
 | [0096: Accept a plan-route stream without a Content-Type](0096-accept-a-plan-route-stream-without-a-content-type.md) | Accepted; amended by ADR-0097 | 2026-11-24 |
 | [0097: Send a tool result as its call and output on the plan route](0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md) | Accepted; amended by ADR-0099 | 2026-11-24 |
-| [0098: Add a model web fetch tool behind a host allowlist](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) | Accepted | 2026-11-25 |
+| [0098: Add a model web fetch tool behind a host allowlist](0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md) | Accepted; amended by ADR-0110 | 2026-11-25 |
 | [0099: Recover from rejected tool calls and raise write-tool argument limits](0099-recover-from-rejected-tool-calls-and-raise-write-tool-argument-limits.md) | Accepted | 2026-11-25 |
 | [0100: List the recorded toolchain profiles in the command tool](0100-list-the-recorded-toolchain-profiles-in-the-command-tool.md) | Accepted | 2026-11-26 |
 | [0101: Make every section divider movable](0101-make-every-section-divider-movable.md) | Accepted | 2026-11-26 |
@@ -123,3 +123,4 @@ meaningful alternative does not need an ADR.
 | [0106: Name the ungranted run path by its role](0106-name-the-ungranted-run-path-by-its-role.md) | Accepted | 2026-11-26 |
 | [0107: Assign toolchain profiles to workspaces and grant on assignment](0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md) | Accepted | 2026-11-27 |
 | [0108: Report a refused reasoning effort by name](0108-report-a-refused-reasoning-effort-by-name.md) | Accepted | 2026-11-27 |
+| [0110: Allow a web host from a fetch approval and list 100 hosts](0110-allow-a-web-host-from-a-fetch-approval-and-list-100-hosts.md) | Accepted | 2026-11-28 |

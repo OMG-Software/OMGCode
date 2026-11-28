@@ -5,9 +5,14 @@
 //! lives for [`TOKEN_LIFETIME`], and is removed by the first attempt to redeem
 //! it, successful or not. Tokens live in memory only. This module is pure: the
 //! caller supplies every `Instant`, so expiry is testable without sleeping.
+//!
+//! A token for a web fetch also keeps the host core's review offered for
+//! **Allow host** (ADR-0110). Redeeming returns it, so that decision uses the
+//! host core found and never one a webview sends.
 
 use std::time::{Duration, Instant};
 
+use omgcode_core::control::ReviewedHost;
 use uuid::Uuid;
 
 /// How long a token stays valid. A token is expired at exactly this age.
@@ -30,6 +35,8 @@ struct Entry {
     approval: Uuid,
     token: String,
     digest: String,
+    /// The host Allow host would list, when the review offered it.
+    host: Option<ReviewedHost>,
     issued: Instant,
 }
 
@@ -41,11 +48,18 @@ pub(super) struct ReviewTokens {
 }
 
 impl ReviewTokens {
-    /// Issue a fresh token for `approval`, replacing any earlier one.
+    /// Issue a fresh token for `approval`, replacing any earlier one. `host`
+    /// is the host the review offered for Allow host, if any.
     ///
     /// Expired tokens are dropped first, then the oldest is evicted while the
     /// table would exceed [`MAX_OUTSTANDING_TOKENS`].
-    pub(super) fn issue(&mut self, approval: Uuid, digest: &str, now: Instant) -> String {
+    pub(super) fn issue(
+        &mut self,
+        approval: Uuid,
+        digest: &str,
+        host: Option<ReviewedHost>,
+        now: Instant,
+    ) -> String {
         self.entries.retain(|entry| entry.approval != approval);
         self.entries.retain(|entry| !is_expired(entry, now));
         while self.entries.len() >= MAX_OUTSTANDING_TOKENS {
@@ -56,12 +70,14 @@ impl ReviewTokens {
             approval,
             token: token.clone(),
             digest: digest.to_owned(),
+            host,
             issued: now,
         });
         token
     }
 
     /// Use the token for `approval`. The entry is removed on every attempt.
+    /// On success, returns the host the review offered for Allow host.
     ///
     /// `presented` is `None` when the caller sent no token, which is `Expired`.
     pub(super) fn redeem(
@@ -70,7 +86,7 @@ impl ReviewTokens {
         presented: Option<&str>,
         digest: &str,
         now: Instant,
-    ) -> Result<(), RedeemError> {
+    ) -> Result<Option<ReviewedHost>, RedeemError> {
         let position = self
             .entries
             .iter()
@@ -88,7 +104,7 @@ impl ReviewTokens {
         let token_matches = constant_time_equal(presented.as_bytes(), entry.token.as_bytes());
         let digest_matches = constant_time_equal(digest.as_bytes(), entry.digest.as_bytes());
         if token_matches && digest_matches {
-            Ok(())
+            Ok(entry.host)
         } else {
             Err(RedeemError::Mismatch)
         }
@@ -135,8 +151,11 @@ mod tests {
         let mut tokens = ReviewTokens::default();
         let start = Instant::now();
         let approval = id();
-        let token = tokens.issue(approval, DIGEST, start);
-        assert_eq!(tokens.redeem(approval, Some(&token), DIGEST, start), Ok(()));
+        let token = tokens.issue(approval, DIGEST, None, start);
+        assert_eq!(
+            tokens.redeem(approval, Some(&token), DIGEST, start),
+            Ok(None)
+        );
         assert_eq!(
             tokens.redeem(approval, Some(&token), DIGEST, start),
             Err(RedeemError::Expired)
@@ -148,14 +167,14 @@ mod tests {
         let start = Instant::now();
         let approval = id();
         let mut tokens = ReviewTokens::default();
-        let token = tokens.issue(approval, DIGEST, start);
+        let token = tokens.issue(approval, DIGEST, None, start);
         let almost = start + TOKEN_LIFETIME - Duration::from_millis(1);
         assert_eq!(
             tokens.redeem(approval, Some(&token), DIGEST, almost),
-            Ok(())
+            Ok(None)
         );
 
-        let token = tokens.issue(approval, DIGEST, start);
+        let token = tokens.issue(approval, DIGEST, None, start);
         assert_eq!(
             tokens.redeem(approval, Some(&token), DIGEST, start + TOKEN_LIFETIME),
             Err(RedeemError::Expired)
@@ -167,8 +186,8 @@ mod tests {
         let start = Instant::now();
         let approval = id();
         let mut tokens = ReviewTokens::default();
-        let first = tokens.issue(approval, DIGEST, start);
-        let second = tokens.issue(approval, DIGEST, start);
+        let first = tokens.issue(approval, DIGEST, None, start);
+        let second = tokens.issue(approval, DIGEST, None, start);
         assert_ne!(first, second);
         assert_eq!(tokens.len(), 1);
         assert_eq!(
@@ -187,7 +206,7 @@ mod tests {
         let start = Instant::now();
         let approval = id();
         let mut tokens = ReviewTokens::default();
-        let token = tokens.issue(approval, DIGEST, start);
+        let token = tokens.issue(approval, DIGEST, None, start);
         assert_eq!(
             tokens.redeem(approval, Some("not-the-token"), DIGEST, start),
             Err(RedeemError::Mismatch)
@@ -197,7 +216,7 @@ mod tests {
             Err(RedeemError::Expired)
         );
 
-        let token = tokens.issue(approval, DIGEST, start);
+        let token = tokens.issue(approval, DIGEST, None, start);
         assert_eq!(
             tokens.redeem(approval, Some(&token), "bb", start),
             Err(RedeemError::Mismatch)
@@ -210,7 +229,7 @@ mod tests {
         let start = Instant::now();
         let approval = id();
         let mut tokens = ReviewTokens::default();
-        let token = tokens.issue(approval, DIGEST, start);
+        let token = tokens.issue(approval, DIGEST, None, start);
         assert_eq!(
             tokens.redeem(approval, None, DIGEST, start),
             Err(RedeemError::Expired)
@@ -226,12 +245,12 @@ mod tests {
         let start = Instant::now();
         let (a, b) = (id(), id());
         let mut tokens = ReviewTokens::default();
-        let token_a = tokens.issue(a, DIGEST, start);
+        let token_a = tokens.issue(a, DIGEST, None, start);
         assert_eq!(
             tokens.redeem(b, Some(&token_a), DIGEST, start),
             Err(RedeemError::Expired)
         );
-        assert_eq!(tokens.redeem(a, Some(&token_a), DIGEST, start), Ok(()));
+        assert_eq!(tokens.redeem(a, Some(&token_a), DIGEST, start), Ok(None));
     }
 
     #[test]
@@ -241,7 +260,7 @@ mod tests {
         let approvals: Vec<Uuid> = (0..=MAX_OUTSTANDING_TOKENS).map(|_| id()).collect();
         let issued: Vec<String> = approvals
             .iter()
-            .map(|approval| tokens.issue(*approval, DIGEST, start))
+            .map(|approval| tokens.issue(*approval, DIGEST, None, start))
             .collect();
         assert_eq!(tokens.len(), MAX_OUTSTANDING_TOKENS);
         assert_eq!(
@@ -250,7 +269,7 @@ mod tests {
         );
         assert_eq!(
             tokens.redeem(approvals[1], Some(&issued[1]), DIGEST, start),
-            Ok(())
+            Ok(None)
         );
     }
 
@@ -259,9 +278,9 @@ mod tests {
         let start = Instant::now();
         let mut tokens = ReviewTokens::default();
         for _ in 0..10 {
-            tokens.issue(id(), DIGEST, start);
+            tokens.issue(id(), DIGEST, None, start);
         }
-        tokens.issue(id(), DIGEST, start + TOKEN_LIFETIME);
+        tokens.issue(id(), DIGEST, None, start + TOKEN_LIFETIME);
         assert_eq!(tokens.len(), 1);
     }
 
@@ -269,7 +288,7 @@ mod tests {
     fn tokens_are_random_version_four_identifiers() {
         let start = Instant::now();
         let mut tokens = ReviewTokens::default();
-        let token = tokens.issue(id(), DIGEST, start);
+        let token = tokens.issue(id(), DIGEST, None, start);
         let parsed = Uuid::try_parse(&token).expect("a uuid token");
         assert_eq!(parsed.get_version_num(), 4);
     }

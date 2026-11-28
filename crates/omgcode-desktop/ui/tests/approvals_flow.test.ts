@@ -35,6 +35,19 @@ function view(overrides: Partial<ApprovalView> = {}): ApprovalView {
   };
 }
 
+/** A web fetch review that offers Allow host for docs.example.com (ADR-0110). */
+function fetchDetailFor(id: string): ApprovalDetail {
+  return {
+    approval: view({ id, operation: "network" }),
+    binding: "exact",
+    tool: "web_fetch",
+    fields: [{ label: "URL", value: "https://docs.example.com/guide", multiline: false }],
+    review_token: `tok-${id}`,
+    waiting: true,
+    allow_host: { state: "offered", host: "docs.example.com" },
+  };
+}
+
 function detailFor(id: string): ApprovalDetail {
   const approval = view({ id });
   return {
@@ -44,6 +57,7 @@ function detailFor(id: string): ApprovalDetail {
     fields: [{ label: "Program", value: `program-${id}`, multiline: false }],
     review_token: `tok-${id}`,
     waiting: true,
+    allow_host: null,
   };
 }
 
@@ -52,6 +66,8 @@ describe("approvals window flow", () => {
   let root: HTMLElement;
   let ipc: FakeIpc;
   let approvals: ApprovalView[];
+  // The approval whose review is a web fetch offering Allow host, if any.
+  let fetchId: string | null;
 
   async function start(): Promise<void> {
     ipc = installFakeIpc({
@@ -59,11 +75,12 @@ describe("approvals window flow", () => {
       approval_detail: (args) => {
         const id = String(args.id);
         const listed = approvals.find((a) => a.id === id);
-        return { ...detailFor(id), approval: listed ?? view({ id }) };
+        const shown = id === fetchId ? fetchDetailFor(id) : detailFor(id);
+        return { ...shown, approval: listed ?? shown.approval };
       },
       approval_decide: (args) => {
         const id = String(args.id);
-        const state = args.decision === "approve" ? "approved" : "denied";
+        const state = args.decision === "deny" ? "denied" : "approved";
         approvals = approvals.map((a) => (a.id === id ? { ...a, state } : a));
         return { ...view({ id }), state };
       },
@@ -97,6 +114,7 @@ describe("approvals window flow", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    fetchId = null;
     approvals = [
       view({ id: "late", expires_unix: 3000 }),
       view({ id: "soon", expires_unix: 1100 }),
@@ -320,6 +338,20 @@ describe("approvals window flow", () => {
       expect(heading.getAttribute("tabindex")).toBe("-1");
       expect(document.activeElement).toBe(heading);
       expect(document.activeElement).not.toBe(buttonByText(root, "Approve"));
+    });
+
+    it("names the allowed host in the notice after Allow host moves on (ADR-0110)", async () => {
+      approvals = approvals.map((a) => (a.id === "soon" ? { ...a, operation: "network" } : a));
+      fetchId = "soon";
+      await start();
+      await settle(1000);
+      buttonByText(root, "Allow host").click();
+      await settle();
+      expect(ipc.callsTo("approval_decide")[0]?.args.decision).toBe("allow_host");
+      expect(pressedIds()).toEqual(["mid"]);
+      expect(root.querySelector(".notice")?.textContent).toBe(
+        "Decision recorded: approved. docs.example.com is now an allowed web host.",
+      );
     });
 
     it("keeps showing the decided record when nothing else is pending", async () => {

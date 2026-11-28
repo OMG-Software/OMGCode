@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ApprovalsApp, LIST_POLL_MS, startApprovals } from "../src/approvals/app";
 import {
+  ALLOW_HOST_CANCELLED_TEXT,
+  ALLOW_HOST_FULL_TEXT,
+  ALLOW_HOST_LABEL,
+  ALLOW_HOST_NOT_ALLOW_TEXT,
+  allowHostOffer,
+  allowHostText,
   approvalEffect,
   approveGate,
   decisionArgs,
@@ -8,10 +14,12 @@ import {
   NOT_ON_ALLOWLIST_TEXT,
   operationLabel,
   orderApprovals,
+  REVIEW_AGAIN_TEXT,
   remainingSeconds,
+  reviewAgainNotice,
 } from "../src/approvals/model";
 import { setInvoker } from "../src/ipc/client";
-import type { ApprovalDetail, ApprovalView } from "../src/ipc/types";
+import type { AllowHostView, ApprovalDetail, ApprovalView } from "../src/ipc/types";
 import {
   buttonByText,
   type FakeIpc,
@@ -54,6 +62,7 @@ function detail(
     ],
     review_token: "tok-1",
     waiting: true,
+    allow_host: null,
     ...overrides,
   };
 }
@@ -112,6 +121,40 @@ describe("approval model", () => {
     expect(
       decisionArgs("approve", detail({}, { operation: "file_write" }), input).writersStopped,
     ).toBe(true);
+    // Allow host carries the token and never the acknowledgement or a host.
+    expect(decisionArgs("allow_host", detail({}, { operation: "network" }), input)).toEqual({
+      decision: "allow_host",
+      writersStopped: false,
+      reviewToken: "tok-1",
+    });
+  });
+
+  it("offers Allow host only for a pending, exact web fetch review that Rust offered", () => {
+    const offered = detail(
+      { allow_host: { state: "offered", host: "docs.example.com" } },
+      { operation: "network" },
+    );
+    expect(allowHostOffer(offered)).toBe("docs.example.com");
+    expect(allowHostOffer({ ...offered, allow_host: { state: "not_allow" } })).toBeNull();
+    expect(allowHostOffer({ ...offered, allow_host: null })).toBeNull();
+    expect(allowHostOffer({ ...offered, binding: "stale" })).toBeNull();
+    expect(
+      allowHostOffer({ ...offered, approval: view({ operation: "network", state: "approved" }) }),
+    ).toBeNull();
+    expect(allowHostOffer({ ...offered, approval: view({ operation: "command" }) })).toBeNull();
+  });
+
+  it("reviews again after every failed Allow host and after an expired review", () => {
+    const failure = (code: string) => ({ code, message: "Gone." });
+    for (const decision of ["approve", "deny", "allow_host"] as const) {
+      expect(reviewAgainNotice(decision, failure("review_expired"))).toBe(REVIEW_AGAIN_TEXT);
+      expect(reviewAgainNotice(decision, failure("review_mismatch"))).toBe(REVIEW_AGAIN_TEXT);
+    }
+    expect(reviewAgainNotice("allow_host", failure("cancelled"))).toBe(ALLOW_HOST_CANCELLED_TEXT);
+    expect(reviewAgainNotice("allow_host", failure("web_host_too_many"))).toBe(
+      "Gone. (web_host_too_many)",
+    );
+    expect(reviewAgainNotice("approve", failure("approval_not_pending"))).toBeNull();
   });
 });
 
@@ -130,7 +173,7 @@ describe("approvals window", () => {
       approval_detail: () => current,
       approval_decide: (args) => ({
         ...view(),
-        state: args.decision === "approve" ? "approved" : "denied",
+        state: args.decision === "deny" ? "denied" : "approved",
       }),
     });
     root = mountRoot();
@@ -375,9 +418,15 @@ describe("approvals window", () => {
   });
 
   describe("a web fetch approval", () => {
-    function fetchDetail(listed: "yes" | "no", approval: Partial<ApprovalView> = {}) {
+    function fetchDetail(
+      listed: "yes" | "no",
+      approval: Partial<ApprovalView> = {},
+      // `unavailable` adds no note and no button, so the tests above see only the caution.
+      allowHost: AllowHostView | null = { state: "unavailable" },
+    ) {
       return detail(
         {
+          allow_host: allowHost,
           tool: "web_fetch",
           fields: [
             { label: "URL", value: "https://docs.example.com/guide?page=2", multiline: false },
@@ -488,6 +537,98 @@ describe("approvals window", () => {
         decision: "approve",
         writers_stopped: false,
         review_token: "tok-1",
+      });
+    });
+
+    describe("Allow host (ADR-0110)", () => {
+      const offered: AllowHostView = { state: "offered", host: "docs.example.com" };
+
+      function decisionButtons(): string[] {
+        return Array.from(root.querySelectorAll(".decision button")).map(
+          (button) => button.textContent ?? "",
+        );
+      }
+
+      it("offers a third button between Deny and Approve, gated like Approve", async () => {
+        approvals = [view({ operation: "network" })];
+        current = fetchDetail("no", {}, offered);
+        await start();
+        await select();
+
+        expect(ALLOW_HOST_LABEL).toBe("Allow host");
+        expect(decisionButtons()).toEqual(["Deny", "Allow host", "Approve"]);
+        const allowHost = buttonByText(root, ALLOW_HOST_LABEL);
+        expect(allowHost.disabled).toBe(true);
+        expect(allowHost.title).toBe("Approve, and add docs.example.com to the allowed web hosts");
+        expect(
+          Array.from(root.querySelectorAll(".network-note")).map((n) => n.textContent),
+        ).toEqual([NETWORK_CAUTION, NOT_ON_ALLOWLIST_TEXT, allowHostText("docs.example.com")]);
+        await settle(1000);
+        expect(allowHost.disabled).toBe(false);
+      });
+
+      it("sends the token and no host, and says the host is now allowed", async () => {
+        approvals = [view({ operation: "network" })];
+        current = fetchDetail("no", {}, offered);
+        await start();
+        await select();
+        await settle(1000);
+        buttonByText(root, ALLOW_HOST_LABEL).click();
+        await settle();
+
+        expect(ipc.callsTo("approval_decide")[0]?.args).toEqual({
+          id: "a1",
+          decision: "allow_host",
+          writers_stopped: false,
+          review_token: "tok-1",
+        });
+        expect(root.querySelector(".result")?.textContent).toBe(
+          "Decision recorded: approved. docs.example.com is now an allowed web host.",
+        );
+        for (const label of ["Deny", "Allow host", "Approve"]) {
+          expect(buttonByText(root, label).disabled).toBe(true);
+        }
+      });
+
+      it("reviews again with a fresh token after the system dialog is declined", async () => {
+        approvals = [view({ operation: "network" })];
+        current = fetchDetail("no", {}, offered);
+        await start();
+        ipc.on("approval_decide", () => rejection("cancelled", "No change was made."));
+        await select();
+        await settle(1000);
+        buttonByText(root, ALLOW_HOST_LABEL).click();
+        await settle();
+
+        expect(ipc.callsTo("approval_detail")).toHaveLength(3);
+        expect(root.querySelector(".result")?.textContent).toBe(ALLOW_HOST_CANCELLED_TEXT);
+        expect(buttonByText(root, "Approve").disabled).toBe(true);
+        await settle(1000);
+        expect(buttonByText(root, "Approve").disabled).toBe(false);
+      });
+
+      it.each([
+        [{ state: "not_allow" } as AllowHostView, ALLOW_HOST_NOT_ALLOW_TEXT],
+        [{ state: "full" } as AllowHostView, ALLOW_HOST_FULL_TEXT],
+      ])("shows no Allow host for %o and says why", async (allowHost, note) => {
+        approvals = [view({ operation: "network" })];
+        current = fetchDetail("no", {}, allowHost);
+        await start();
+        await select();
+        await settle(1000);
+
+        expect(decisionButtons()).toEqual(["Deny", "Approve"]);
+        expect(root.querySelector(".review")?.textContent).toContain(note);
+      });
+
+      it("renders a hostile host as text only", async () => {
+        approvals = [view({ operation: "network" })];
+        current = fetchDetail("no", {}, { state: "offered", host: HOSTILE_IMG });
+        await start();
+        await select();
+
+        expect(root.querySelector(".review img")).toBeNull();
+        expect(root.querySelector(".review")?.textContent).toContain(HOSTILE_IMG);
       });
     });
   });

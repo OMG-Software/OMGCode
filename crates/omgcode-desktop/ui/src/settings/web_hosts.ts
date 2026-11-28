@@ -3,8 +3,8 @@ import type { WorkspaceSettingsView } from "../ipc/types";
 import { iconButton } from "../ui/icons";
 import type { SectionContext } from "./context";
 
-/** The most host patterns one workspace may list. Core enforces it; the form shows it. */
-export const MAX_WEB_HOSTS = 32;
+/** The most host patterns one workspace may list (ADR-0110). Core enforces it; the form shows it. */
+export const MAX_WEB_HOSTS = 100;
 
 /** Shown above the list: what a listed host changes and what it does not. */
 export const WEB_HOSTS_HELP =
@@ -40,7 +40,7 @@ export function webHostMessage(code: string): string | null {
   return Object.hasOwn(WEB_HOST_MESSAGES, code) ? (WEB_HOST_MESSAGES[code] ?? null) : null;
 }
 
-/** Text the list shows for the number of hosts, such as `3 of 32`. */
+/** Text the list shows for the number of hosts, such as `3 of 100`. */
 export function hostCount(count: number): string {
   return `${count} of ${MAX_WEB_HOSTS}`;
 }

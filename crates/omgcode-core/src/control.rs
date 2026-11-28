@@ -80,7 +80,9 @@ pub use provider::{
     ProviderKind, ProviderProfile, ProviderProfileDeclaration, ProviderProfileStatus,
 };
 
-pub use web_hosts::{MAX_WEB_FETCH_HOSTS, MAX_WEB_HOST_BYTES, WebHostPattern, WebHostRefusal};
+pub use web_hosts::{
+    MAX_WEB_FETCH_HOSTS, MAX_WEB_HOST_BYTES, ReviewedHost, WebHostPattern, WebHostRefusal,
+};
 
 pub use subscription::{SubscriptionConnection, SubscriptionRegistration, SubscriptionSignOut};
 

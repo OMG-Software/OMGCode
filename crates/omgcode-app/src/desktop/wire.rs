@@ -165,6 +165,11 @@ pub enum Decision {
     Approve,
     /// Refuse the approval.
     Deny,
+    /// Grant a `network` approval and add the exact host its review found to
+    /// the workspace's `web_fetch` allowlist, after a native confirmation
+    /// (ADR-0110). Offered only where [`ApprovalDetail::allow_host`] is
+    /// [`AllowHostView::Offered`].
+    AllowHost,
 }
 
 /// Arguments of `approval_decide`.
@@ -728,6 +733,30 @@ pub struct ApprovalDetail {
     /// then runs the call in that turn; otherwise it only lets a later
     /// identical call run once.
     pub waiting: bool,
+    /// Whether **Allow host** can approve this `web_fetch` request and list
+    /// its exact host (ADR-0110). Present only for a pending, `exact` network
+    /// review that carries a token; `null` otherwise. Advisory: the decision
+    /// checks again in core.
+    pub allow_host: Option<AllowHostView>,
+}
+
+/// Whether **Allow host** is offered for a reviewed web fetch, and why not
+/// when it is not (ADR-0110).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AllowHostView {
+    /// Allow host would approve the fetch and list this exact host.
+    Offered {
+        /// The canonical host name, such as `docs.example.com`.
+        host: String,
+    },
+    /// The workspace's `web_fetch` is not `allow`, so a listed host would
+    /// still ask.
+    NotAllow,
+    /// The workspace already lists the most hosts allowed.
+    Full,
+    /// The host is listed already or is not a valid host pattern.
+    Unavailable,
 }
 
 /// Chat defaults the `main` window may save (ADR-0059 decision 8). They grant

@@ -6,6 +6,40 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.72.0 adds **Allow host** to a web fetch review in the desktop
+  approvals window and raises each workspace's host allowlist from 32 to 100
+  patterns (ADR-0110, amending ADR-0098). It is a minor version because the
+  public enums `WebHostRefusal` and the desktop `Decision` gain variants, and
+  `ReviewedRequest` gains a field. The button sits between **Deny** and
+  **Approve** and waits the same second as **Approve**. It is offered only
+  for an exact, pending `network` review whose workspace's `web_fetch` is
+  `allow`, whose host is not listed, and whose list has room; the approval
+  detail reports this as `allow_host` (`offered` with the host, `not_allow`,
+  `full`, or `unavailable`), and the window explains `not_allow` and `full`.
+  Core's review builds the exact host of the reviewed URL as a
+  `ReviewedHost`, never a wildcard, and the desktop keeps it with the
+  single-use review token. `approval_decide` takes the new decision
+  `allow_host` with that token and no host; a request with a host field is
+  refused. Rust spends the token, shows a native confirmation modal to the
+  approvals window that names the host and the workspace folder, and then
+  calls the new `ControlStore::approve_and_allow_web_host`, which appends the
+  approval at the current revision and then the host, in one hold of the
+  settings store. The waiting turn dispatches the fetch again, and it runs
+  under the standing allow of the listed host; the approved record is never
+  consumed, and other pending approvals become stale. A declined dialog
+  changes nothing and the window reviews again. New error codes are
+  `allow_host_unavailable` and `web_host_fetch_not_allow`. The CLI keeps
+  `approvals approve` and `workspace web-host-add` as separate steps; its
+  `web-host-add` help now says 100. A build before 0.72.0 refuses a settings
+  log in which a workspace lists more than 32 hosts. Tests cover core's
+  offer, decision, and replay, a waiting fetch that runs under the standing
+  allow, the desktop service with a scripted dialog (approve and list,
+  declined, refused before any dialog, a concurrent settings change, a full
+  list), the wire contract, and the window against a mocked backend,
+  including the notice that names the host after the window moves on. The
+  desktop layer test now allows exactly one dialog-opening handler in the
+  approvals commands, `approval_decide`. The native dialog in a running
+  desktop shell was not exercised.
 - Version 0.68.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window. The
   local packages are the toolchains installed on this computer, and it

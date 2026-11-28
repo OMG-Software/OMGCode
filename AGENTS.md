@@ -88,9 +88,14 @@ checked addresses, and a redirect to another host is not followed. A
 refused URL is answered with a recoverable `url_refused` result and recorded
 as refused with the URL withheld by its digest, and the turn continues. Under
 `prompt` every fetch needs an approval; under `allow` only a host on the
-workspace's allowlist of at most 32 patterns runs without one. The settings
+workspace's allowlist of at most 100 patterns runs without one. The settings
 lock is released before the request
 ([ADR-0098](docs/adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+Under `allow` the approvals window also offers **Allow host** for an unlisted
+host: after a native confirmation, core approves the fetch and adds the
+exact host that its review found, never a wildcard and never a host from the
+webview, and the fetch runs under the standing allow
+([ADR-0110](docs/adr/0110-allow-a-web-host-from-a-fetch-approval-and-list-100-hosts.md)).
 No other model network tool, and no Git or MCP tool, exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. A model write or command
 runs without a per-call approval only where the operator set it to `allow`.

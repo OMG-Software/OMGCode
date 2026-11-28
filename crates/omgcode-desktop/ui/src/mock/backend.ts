@@ -107,8 +107,8 @@ function clone<T>(value: T): T {
 const MOCK_PATH_DEPTH_MAX = 32;
 const MOCK_COMPONENT_CHARS_MAX = 255;
 
-/** Rust's bound on the patterns in a workspace's host allowlist (ADR-0098). */
-const MOCK_WEB_HOSTS_MAX = 32;
+/** Rust's bound on the patterns in a workspace's host allowlist (ADR-0098, ADR-0110). */
+const MOCK_WEB_HOSTS_MAX = 100;
 
 /**
  * The platform the mock's toolchain profiles name. It matches its container grants, which exist
@@ -790,6 +790,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       fields: stale ? [] : fields,
       review_token: token,
       waiting: !stale && (view.operation === "command" || view.operation === "network"),
+      // As if Web fetch were Allow and the host unlisted, so Allow host shows (ADR-0110).
+      allow_host:
+        issueToken && view.operation === "network"
+          ? { state: "offered", host: "docs.example.com" }
+          : null,
     });
   }
 
@@ -810,10 +815,19 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     if (token.expires <= now()) {
       fail("review_expired", "The review token expired.");
     }
+    tokens.delete(str(args, "review_token"));
+    if (args.decision === "allow_host") {
+      // Rust spends the token first, then needs the host its review kept; the mock has no
+      // native dialog and records no host.
+      if (view.operation !== "network") {
+        fail("allow_host_unavailable", "This review offered no host to allow.");
+      }
+      view.state = "approved";
+      return clone(view);
+    }
     if (view.operation === "file_write" && args.writers_stopped !== true) {
       fail("writers_not_stopped", "Confirm that other writers are stopped.");
     }
-    tokens.delete(str(args, "review_token"));
     view.state = "approved";
     view.writers_stopped = args.writers_stopped === true;
     return clone(view);

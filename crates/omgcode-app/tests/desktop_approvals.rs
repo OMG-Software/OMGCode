@@ -3,12 +3,15 @@
 //! operator reviews and decides through the service, and the same call then
 //! completes in the same turn.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use omgcode_app::desktop::{
-    ApprovalOperationDto, ApprovalStateDto, ApprovalView, Binding, ChatState, ChatStatus,
-    DesktopService,
+    AllowHostView, ApprovalOperationDto, ApprovalStateDto, ApprovalView, Binding, ChatState,
+    ChatStatus, Confirmation, DesktopService, FolderPurpose, SettingsPrompt,
 };
 use omgcode_core::control::{ApprovalDeclaration, ApprovalOperation, ControlStore, now_unix};
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
@@ -154,6 +157,7 @@ impl Setup {
             .expect("detail")
     }
 
+    /// Decide with a prompt that fails the test if any dialog opens.
     fn decide(
         &self,
         id: Uuid,
@@ -161,12 +165,26 @@ impl Setup {
         writers_stopped: bool,
         token: Option<&str>,
     ) -> Result<ApprovalView, omgcode_app::desktop::DesktopError> {
-        self.service.approval_decide(wire(json!({
-            "id": id,
-            "decision": decision,
-            "writers_stopped": writers_stopped,
-            "review_token": token,
-        })))
+        self.decide_with(id, decision, writers_stopped, token, &Prompt::silent())
+    }
+
+    fn decide_with(
+        &self,
+        id: Uuid,
+        decision: &str,
+        writers_stopped: bool,
+        token: Option<&str>,
+        prompt: &Prompt,
+    ) -> Result<ApprovalView, omgcode_app::desktop::DesktopError> {
+        self.service.approval_decide(
+            wire(json!({
+                "id": id,
+                "decision": decision,
+                "writers_stopped": writers_stopped,
+                "review_token": token,
+            })),
+            prompt,
+        )
     }
 
     fn state_of(&self, id: Uuid) -> ApprovalStateDto {
@@ -194,6 +212,71 @@ impl Setup {
             })
             .collect()
     }
+}
+
+/// Answers native confirmations from a script and records them. A dialog
+/// beyond the script, or any folder dialog, fails the test.
+#[derive(Default)]
+struct Prompt {
+    answers: RefCell<VecDeque<bool>>,
+    asked: RefCell<Vec<Confirmation>>,
+    /// Runs while the confirmation is open, to change state meanwhile.
+    during: RefCell<Option<Box<dyn FnOnce()>>>,
+}
+
+impl Prompt {
+    /// A prompt that must not be asked anything.
+    fn silent() -> Self {
+        Self::default()
+    }
+
+    fn answering(confirmed: bool) -> Self {
+        let prompt = Self::default();
+        prompt.answers.borrow_mut().push_back(confirmed);
+        prompt
+    }
+
+    fn meanwhile(self, action: impl FnOnce() + 'static) -> Self {
+        *self.during.borrow_mut() = Some(Box::new(action));
+        self
+    }
+
+    fn asked(&self) -> Vec<Confirmation> {
+        self.asked.take()
+    }
+}
+
+impl SettingsPrompt for Prompt {
+    fn pick_folder(&self, _purpose: FolderPurpose, _start: Option<&Path>) -> Option<PathBuf> {
+        panic!("an approval never opens a folder dialog");
+    }
+
+    fn confirm(&self, confirmation: &Confirmation) -> bool {
+        self.asked.borrow_mut().push(confirmation.clone());
+        if let Some(action) = self.during.borrow_mut().take() {
+            action();
+        }
+        self.answers
+            .borrow_mut()
+            .pop_front()
+            .expect("an unexpected confirmation")
+    }
+}
+
+/// The host patterns a workspace lists now, as text.
+fn listed_hosts(data: &Path, workspace: Uuid) -> Vec<String> {
+    let control = ControlStore::open_existing(data)
+        .expect("open control")
+        .expect("control store");
+    let id = control
+        .registered_workspace(workspace)
+        .expect("registered workspace")
+        .id();
+    control
+        .web_fetch_hosts(id)
+        .iter()
+        .map(|pattern| pattern.as_str().to_owned())
+        .collect()
 }
 
 #[test]
@@ -407,6 +490,8 @@ fn a_command_approval_is_decided_while_the_turn_waits() {
     assert_eq!(value_of("Profile"), Some("system"));
     assert_eq!(value_of("Program"), Some("echo"));
     assert_eq!(value_of("Arguments"), Some("1: hello"));
+    // Allow host belongs to web fetches only (ADR-0110).
+    assert_eq!(detail.allow_host, None);
 
     // `writers_stopped` is ignored for a command.
     let token = detail.review_token.expect("a token");
@@ -838,12 +923,17 @@ fn without_a_settings_store_there_are_no_approvals() {
         .approval_detail(wire(json!({"id": Uuid::new_v4()})))
         .expect_err("no such approval");
     assert_eq!(missing.code(), "not_found");
-    let missing = service
-        .approval_decide(wire(json!({
-            "id": Uuid::new_v4(), "decision": "deny", "writers_stopped": false, "review_token": null
-        })))
-        .expect_err("no such approval");
-    assert_eq!(missing.code(), "not_found");
+    for decision in ["deny", "allow_host"] {
+        let missing = service
+            .approval_decide(
+                wire(json!({
+                    "id": Uuid::new_v4(), "decision": decision, "writers_stopped": false, "review_token": null
+                })),
+                &Prompt::silent(),
+            )
+            .expect_err("no such approval");
+        assert_eq!(missing.code(), "not_found");
+    }
     assert!(json_of(&listed).get("now_unix").is_some());
 }
 
@@ -1157,6 +1247,9 @@ fn a_network_approval_is_reviewed_while_the_turn_waits_and_a_denial_ends_the_cal
     assert_eq!(field_value(&detail, "Offset"), "10");
     assert_eq!(field_value(&detail, "Maximum bytes"), "12288");
     assert!(detail.review_token.is_some());
+    // Under `prompt` a listed host would still ask, so Allow host is not
+    // offered, and the review says why (ADR-0110).
+    assert_eq!(detail.allow_host, Some(AllowHostView::NotAllow));
 
     // A denial needs no token and ends the wait without a fetch.
     setup.deny_and_finish(id, session);
@@ -1201,5 +1294,204 @@ fn a_network_approval_is_approved_with_a_review_token_and_no_writers_stopped_ack
     assert_eq!(approved.state, ApprovalStateDto::Approved);
     assert_eq!(approved.operation, ApprovalOperationDto::Network);
     assert!(!approved.writers_stopped);
+    assert_eq!(setup.server.finish(), 1);
+}
+
+/// Model tools with `web_fetch` at `allow`: a listed host runs without an
+/// approval, and any other host asks (ADR-0098).
+fn fetching_allowed() -> PermissionSet {
+    PermissionSet {
+        web_fetch: Access::Allow,
+        ..all_tools()
+    }
+}
+
+/// Start a turn whose one fetch asks for approval, then cancel it so the
+/// record stays pending and nothing can be fetched (see above). Returns the
+/// setup, the approval, and a fresh exact review of it.
+fn cancelled_fetch(
+    permissions: PermissionSet,
+    url: &str,
+    before: impl FnOnce(&Setup),
+) -> (Setup, Uuid, omgcode_app::desktop::ApprovalDetail) {
+    let args = json!({ "url": url });
+    let setup = setup_with(
+        permissions,
+        vec![Step::reply(tool_call("fetch-1", WEB_FETCH_TOOL, &args))],
+    );
+    before(&setup);
+    let session = setup.session("Fetch");
+    setup.start(session, "read the docs");
+    let id = setup.await_pending(session);
+    setup
+        .service
+        .chat_cancel(wire(json!({"session_id": session})))
+        .expect("cancel");
+    assert_eq!(
+        wait_finished(&setup.service, session).state,
+        ChatState::Failed
+    );
+    let detail = setup.detail(id);
+    assert_eq!(detail.binding, Binding::Exact);
+    (setup, id, detail)
+}
+
+/// Add a host pattern through the trusted store, as the CLI would.
+fn add_host(data: &Path, workspace: Uuid, pattern: &str) {
+    let mut control = ControlStore::open_existing(data)
+        .expect("open control")
+        .expect("control store");
+    let id = control
+        .registered_workspace(workspace)
+        .expect("registered workspace")
+        .id();
+    control
+        .add_web_fetch_host(id, pattern, control.revision())
+        .expect("add host");
+}
+
+#[test]
+fn allow_host_approves_the_fetch_and_lists_its_exact_host_after_a_native_confirmation() {
+    let (setup, id, detail) = cancelled_fetch(
+        fetching_allowed(),
+        "https://Docs.Example.com/guide?page=2",
+        |setup| add_host(&setup.fixture.data, setup.workspace.id, "other.example.org"),
+    );
+    assert_eq!(field_value(&detail, "Host on the allowlist now"), "no");
+    assert_eq!(
+        detail.allow_host,
+        Some(AllowHostView::Offered {
+            host: "docs.example.com".to_owned()
+        })
+    );
+    let token = detail.review_token.expect("a token");
+
+    let prompt = Prompt::answering(true);
+    let approved = setup
+        .decide_with(id, "allow_host", true, Some(&token), &prompt)
+        .expect("allow host");
+    assert_eq!(approved.state, ApprovalStateDto::Approved);
+    // The acknowledgement belongs to file writes and is ignored here.
+    assert!(!approved.writers_stopped);
+    assert_eq!(
+        listed_hosts(&setup.fixture.data, setup.workspace.id),
+        ["other.example.org", "docs.example.com"],
+        "the exact host, appended, and no wildcard"
+    );
+
+    let asked = prompt.asked();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].title, "Allow a web host");
+    let message = &asked[0].message;
+    assert!(message.contains("docs.example.com"), "{message}");
+    // The workspace folder, named `project` by the fixture.
+    assert!(message.contains("project"), "{message}");
+    assert!(!message.contains("Docs.Example"), "{message}");
+    assert!(
+        message.contains("whatever their path or query"),
+        "{message}"
+    );
+    assert!(message.contains("subdomains are not included"), "{message}");
+
+    // The record was approved under the revision before the host was listed,
+    // so a later review finds it decided and offers nothing.
+    let again = setup.detail(id);
+    assert_eq!(again.binding, Binding::Stale);
+    assert_eq!(again.allow_host, None);
+    assert_eq!(setup.server.finish(), 1);
+}
+
+#[test]
+fn allow_host_without_an_offer_is_refused_before_any_dialog() {
+    let (setup, id, detail) = cancelled_fetch(fetching(), "https://docs.example.com/guide", |_| ());
+    assert_eq!(detail.allow_host, Some(AllowHostView::NotAllow));
+    let token = detail.review_token.expect("a token");
+
+    let refused = setup
+        .decide(id, "allow_host", false, Some(&token))
+        .expect_err("prompt offers no host");
+    assert_eq!(refused.code(), "allow_host_unavailable");
+    // A missing token is refused the same way as for Approve.
+    let refused = setup
+        .decide(id, "allow_host", false, None)
+        .expect_err("no token");
+    assert_eq!(refused.code(), "review_expired");
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+    assert!(listed_hosts(&setup.fixture.data, setup.workspace.id).is_empty());
+    assert_eq!(setup.server.finish(), 1);
+}
+
+#[test]
+fn a_declined_allow_host_changes_nothing_and_spends_the_token() {
+    let (setup, id, detail) =
+        cancelled_fetch(fetching_allowed(), "https://docs.example.com/guide", |_| ());
+    let token = detail.review_token.expect("a token");
+
+    let prompt = Prompt::answering(false);
+    let refused = setup
+        .decide_with(id, "allow_host", false, Some(&token), &prompt)
+        .expect_err("declined");
+    assert_eq!(refused.code(), "cancelled");
+    assert_eq!(prompt.asked().len(), 1);
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+    assert!(listed_hosts(&setup.fixture.data, setup.workspace.id).is_empty());
+
+    // The token was spent before the dialog, so neither decision reuses it.
+    for decision in ["allow_host", "approve"] {
+        let reused = setup
+            .decide(id, decision, false, Some(&token))
+            .expect_err("a spent token");
+        assert_eq!(reused.code(), "review_expired", "{decision}");
+    }
+    assert_eq!(setup.server.finish(), 1);
+}
+
+#[test]
+fn a_settings_change_while_allow_host_asks_refuses_the_change() {
+    let (setup, id, detail) =
+        cancelled_fetch(fetching_allowed(), "https://docs.example.com/guide", |_| ());
+    let token = detail.review_token.expect("a token");
+
+    // The store is released while the dialog is open, so another trusted
+    // writer can change the settings meanwhile.
+    let data = setup.fixture.data.clone();
+    let workspace = setup.workspace.id;
+    let prompt =
+        Prompt::answering(true).meanwhile(move || add_host(&data, workspace, "other.example.org"));
+    let refused = setup
+        .decide_with(id, "allow_host", false, Some(&token), &prompt)
+        .expect_err("the review went out of date");
+    assert_eq!(refused.code(), "review_mismatch");
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
+    assert_eq!(
+        listed_hosts(&setup.fixture.data, setup.workspace.id),
+        ["other.example.org"]
+    );
+    assert_eq!(setup.detail(id).binding, Binding::Stale);
+    assert_eq!(setup.server.finish(), 1);
+}
+
+#[test]
+fn a_full_allowlist_is_reported_and_offers_no_host() {
+    let (setup, id, detail) = cancelled_fetch(
+        fetching_allowed(),
+        "https://docs.example.com/guide",
+        |setup| {
+            for index in 0..omgcode_core::control::MAX_WEB_FETCH_HOSTS {
+                add_host(
+                    &setup.fixture.data,
+                    setup.workspace.id,
+                    &format!("host{index}.example.org"),
+                );
+            }
+        },
+    );
+    assert_eq!(detail.allow_host, Some(AllowHostView::Full));
+    let token = detail.review_token.expect("a token");
+    let refused = setup
+        .decide(id, "allow_host", false, Some(&token))
+        .expect_err("full");
+    assert_eq!(refused.code(), "allow_host_unavailable");
+    assert_eq!(setup.state_of(id), ApprovalStateDto::Pending);
     assert_eq!(setup.server.finish(), 1);
 }

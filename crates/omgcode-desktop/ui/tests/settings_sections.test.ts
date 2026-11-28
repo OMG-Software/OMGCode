@@ -14,6 +14,7 @@ import {
   ADD_HOST_LABEL,
   HOST_INPUT_LABEL,
   HOSTS_FULL,
+  MAX_WEB_HOSTS,
   WEB_HOSTS_EMPTY,
   WEB_HOSTS_HELP,
   webHostMessage,
@@ -1201,7 +1202,7 @@ describe("web fetch", () => {
       }),
     );
     expect(listed()).toEqual(["docs.example.com", "*.example.org"]);
-    expect(root.querySelector(".web-host-count")?.textContent).toBe("2 of 32");
+    expect(root.querySelector(".web-host-count")?.textContent).toBe("2 of 100");
     const remove = buttonByLabel(root, "Remove *.example.org");
     expect(remove.title).toBe("Remove *.example.org");
     expect(root.textContent).toContain(WEB_HOSTS_HELP);
@@ -1211,7 +1212,7 @@ describe("web fetch", () => {
     await start(() => overview());
     expect(listed()).toEqual([]);
     expect(root.textContent).toContain(WEB_HOSTS_EMPTY);
-    expect(root.querySelector(".web-host-count")?.textContent).toBe("0 of 32");
+    expect(root.querySelector(".web-host-count")?.textContent).toBe("0 of 100");
   });
 
   it("adds the typed pattern with the revision, then clears the field", async () => {
@@ -1303,12 +1304,13 @@ describe("web fetch", () => {
     expect(root.querySelector(".notice[role=status]")?.textContent).toBe(NOTHING_CHANGED);
   });
 
-  it("disables adding at 32 hosts and says why", async () => {
-    const full = Array.from({ length: 32 }, (_, index) => `h${index}.example.com`);
+  it("disables adding at 100 hosts and says why", async () => {
+    expect(MAX_WEB_HOSTS).toBe(100);
+    const full = Array.from({ length: MAX_WEB_HOSTS }, (_, index) => `h${index}.example.com`);
     await start(() =>
       overview({ workspaces: [workspace(A, "/home/dev/a", { web_fetch_hosts: full })] }),
     );
-    expect(root.querySelector(".web-host-count")?.textContent).toBe("32 of 32");
+    expect(root.querySelector(".web-host-count")?.textContent).toBe("100 of 100");
     expect(hostInput().disabled).toBe(true);
     expect(buttonByText(root, ADD_HOST_LABEL).disabled).toBe(true);
     expect(root.textContent).toContain(HOSTS_FULL);
