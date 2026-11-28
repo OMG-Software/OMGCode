@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -104,6 +105,41 @@ fn asleep(id: u32) -> bool {
             .and_then(|(_, rest)| rest.split_whitespace().next())
             == Some("S")
     })
+}
+
+/// Whether thread `id` of this process is in a read of the socket `fd`: its
+/// `syscall` file names a call of the read family whose first argument is
+/// `fd`. A thread that runs, or that waits anywhere else, is not.
+fn reading(id: u32, fd: RawFd) -> bool {
+    let Ok(text) = fs::read_to_string(format!("/proc/self/task/{id}/syscall")) else {
+        return false;
+    };
+    let mut fields = text.split_whitespace();
+    let (Some(number), Some(first)) = (fields.next(), fields.next()) else {
+        return false;
+    };
+    let read_family = [libc::SYS_read, libc::SYS_recvfrom, libc::SYS_recvmsg];
+    number
+        .parse::<libc::c_long>()
+        .is_ok_and(|number| read_family.contains(&number))
+        && u64::from_str_radix(first.trim_start_matches("0x"), 16)
+            .is_ok_and(|argument| u64::try_from(fd).is_ok_and(|fd| fd == argument))
+}
+
+/// Wait, bounded, until the thread that sent its id is asleep in a read of
+/// the socket `fd`.
+fn await_reading(pending: &Receiver<u32>, fd: RawFd) {
+    let id = pending
+        .recv_timeout(LONG)
+        .expect("the thread never reached its read");
+    let deadline = Instant::now() + LONG;
+    while !(asleep(id) && reading(id, fd)) {
+        assert!(
+            Instant::now() < deadline,
+            "the thread never blocked in the read"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Wait, bounded, for a thread that sent its id immediately before a
@@ -288,19 +324,23 @@ fn a_blocked_read_does_not_block_a_write_on_the_same_stream() {
         .accept(Instant::now() + LONG, &CancelSignal::new())
         .expect("accept");
     let (reader, mut writer, shutdown) = stream.split().expect("split");
+    let fd = reader.0.stream.as_raw_fd();
     // The peer answers only after the whole payload, so this read is blocked
     // for the whole write.
     let (started, pending) = mpsc::channel();
     let reading = thread::spawn(move || {
+        // Everything but the read is ready before the id is sent.
         let mut line = String::new();
+        let mut reader = BufReader::new(reader);
         started
             .send(thread_id())
             .expect("report that the read is starting");
-        BufReader::new(reader).read_line(&mut line).map(|_| line)
+        reader.read_line(&mut line).map(|_| line)
     });
-    // The write starts only once the read is blocked in the kernel, so a
-    // stream that serialised reads and writes would hold the write here.
-    await_blocked(&pending);
+    // The write starts only once the read of this socket is blocked in the
+    // kernel, so a stream that serialised reads and writes would hold the
+    // write here.
+    await_reading(&pending, fd);
     let writing = thread::spawn(move || writer.write_all(&vec![b'x'; PAYLOAD_BYTES]));
     join_or_shut(writing, LONG, &shutdown).expect("the write finished");
     assert_eq!(

@@ -570,10 +570,7 @@ impl ControlStore {
             .filter(|status| status.grant.profile_id == profile_id)
             .cloned()
             .collect();
-        // An interrupted earlier revocation already withdrew the connection.
-        let mut recorded = grants
-            .iter()
-            .any(|status| status.state == ContainerGrantState::Revoking);
+        let mut recorded = self.claude_code_withdrawal_recorded(profile_id, &grants);
         self.revoke_each_claude_code_grant(&grants, &mut recorded)
             .and_then(|revoked| {
                 // Deleting an absent container profile succeeds, so a retry
@@ -600,9 +597,24 @@ impl ControlStore {
             })
     }
 
+    /// Whether an earlier revocation already withdrew the connection
+    /// `profile_id`, whose grants are `grants`: one of them is being revoked,
+    /// or none is active, as after a revocation that revoked the last grant
+    /// and then failed to delete the container profile.
+    fn claude_code_withdrawal_recorded(
+        &self,
+        profile_id: Uuid,
+        grants: &[ClaudeCodeGrantStatus],
+    ) -> bool {
+        grants
+            .iter()
+            .any(|status| status.state == ContainerGrantState::Revoking)
+            || self.claude_code_withdrawn(profile_id).is_some()
+    }
+
     /// Revoke each of `grants` in turn and count them. `recorded` turns
-    /// `true` once a withdrawal is recorded, so a later error still reports
-    /// it.
+    /// `true` once a withdrawal may be recorded, so a later error still
+    /// reports it.
     fn revoke_each_claude_code_grant(
         &mut self,
         grants: &[ClaudeCodeGrantStatus],
@@ -614,11 +626,16 @@ impl ControlStore {
             let container = ContainerName::new(&status.grant.container)
                 .map_err(|_| ControlError::Invalid("recorded container name is invalid"))?;
             if status.state != ContainerGrantState::Revoking {
-                self.append(
+                let appended = self.append(
                     Action::ClaudeCodeRevokeRequested { grant_id },
                     self.revision(),
-                )?;
-                *recorded = true;
+                );
+                // Every append error but a failed write or sync comes before
+                // any byte is written. A failed write or sync can still have
+                // left the event in the journal, which a running turn's
+                // watcher reads, so it counts as recorded.
+                *recorded |= matches!(appended, Ok(()) | Err(ControlError::Io(_)));
+                appended?;
             }
             let live = status.grant.directory.live_path()?;
             platform::revoke(&live, status.grant.directory.native_identity(), &container)
@@ -665,7 +682,12 @@ impl ControlStore {
         let data_root = self.data_directory.live_path()?;
         let runtime_folder = claude_code_runtime_folder(&data_root, profile_id);
         // Taken under the settings lock, so the watcher sees every later change.
-        let watch = ClaudeCodeWatch::new(data_root, profile_id, self.event_count());
+        let watch = ClaudeCodeWatch::new(
+            data_root,
+            profile_id,
+            setup.config_folder.clone(),
+            self.event_count(),
+        );
         let container = if platform_grants_supported() {
             const MISSING: ControlError = ControlError::GrantRefused(
                 "the Claude Code connection's container lacks an active grant for one of its folders; run `workspace claude-code-grant` first",
@@ -858,16 +880,31 @@ impl ControlStore {
     /// folder of a recorded Claude Code connection, leaving out the one with
     /// the identifier `except`.
     ///
+    /// A removed connection's turn whose tree was not observed ended keeps
+    /// its sign-in folder reserved until the operator acknowledges it, so its
+    /// processes cannot share the folder with a new connection or reach a
+    /// new scope through it.
+    ///
     /// # Errors
     ///
     /// [`ControlError::GrantRefused`] when a sign-in folder changed since it
     /// was recorded: a moved folder could now lie anywhere, so no scope is
     /// proven separate from it until that connection is removed.
+    /// [`ControlError::ClaudeCodeSignInReserved`] when a removed connection's
+    /// turn record reserves the folder, also when that folder changed, and
+    /// [`ControlError::ClaudeCodeTurnRecordUnreadable`] for a record that
+    /// cannot be read.
     pub(super) fn overlaps_claude_code_sign_in(
         &self,
         directory: &DirectoryRecord,
         except: Option<Uuid>,
     ) -> Result<bool, ControlError> {
+        let recorded = |profile_id: Uuid| {
+            self.provider_profiles().iter().any(|status| {
+                status.profile().id() == profile_id
+                    && status.profile().claude_code_setup().is_some()
+            })
+        };
         for status in self.provider_profiles() {
             if Some(status.profile().id()) == except {
                 continue;
@@ -884,6 +921,20 @@ impl ControlStore {
                 || setup.config_folder.contains(directory)?
             {
                 return Ok(true);
+            }
+        }
+        // A recorded connection's folder was checked above.
+        let data_root = self.data_directory.live_path()?;
+        let reserved = turns::reserved_sign_in_folders(&data_root, |profile_id| {
+            Some(profile_id) == except || recorded(profile_id)
+        })?;
+        for (profile_id, folder) in reserved {
+            // A moved folder could now lie anywhere.
+            if !folder.is_current().unwrap_or(false)
+                || directory.contains(&folder)?
+                || folder.contains(directory)?
+            {
+                return Err(ControlError::ClaudeCodeSignInReserved(profile_id));
             }
         }
         Ok(false)
@@ -1091,7 +1142,7 @@ pub use turns::{
     CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeWatch, acknowledge_claude_code_cleanup,
     wait_for_claude_code_turns,
 };
-pub(crate) use turns::{Recheck, WatchCursor};
+pub(crate) use turns::{Recheck, TurnRecord, WatchCursor};
 
 #[cfg(test)]
 mod tests;

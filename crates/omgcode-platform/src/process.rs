@@ -42,7 +42,7 @@ pub use confinement::{
     AppliedConfinement, Confinement, ConfinementEntry, MAX_CONFINEMENT_PATHS, NetworkAccess,
     UngrantedPath, UnixSocketAccess,
 };
-pub use streaming::{ChildInput, ChildOutput, StreamingChild, StreamingOutcome};
+pub use streaming::{ChildInput, ChildOutput, StreamingChild, StreamingOutcome, TreeEnd};
 
 /// Largest accepted run deadline.
 pub const MAX_DEADLINE: Duration = Duration::from_secs(60 * 60);

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::PoisonError;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -205,7 +205,7 @@ fn a_ready_call_is_handed_off_while_events_keep_arriving() {
     // Each event taken is replaced at once, so the queue is never found
     // empty: the hand-off must come at a batch's end.
     for _ in 0..4 * EVENT_QUEUE {
-        match session.next_event() {
+        match session.next_event(&cancel, deadline).expect("next") {
             Next::Calls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].tool_use_id.as_deref(), Some("toolu_1"));
@@ -229,6 +229,67 @@ fn a_ready_call_is_handed_off_while_events_keep_arriving() {
     panic!("a steady stream of events held back the ready call");
 }
 
+/// A call that is ready when a batch's last slot goes to an event is not
+/// handed off before a cancellation queued right behind that event: the
+/// hand-off handles the relay's queued events first, and the call never
+/// reaches the runtime.
+#[test]
+fn a_cancellation_right_behind_a_batchs_last_event_retires_its_call() {
+    let runtime = TempDir::new().expect("runtime folder");
+    let (mut session, sender) = session(runtime.path());
+    let cancel = CancelToken::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    queue_announced_call(&sender);
+    for _ in 0..2 {
+        let Next::Event(event) = session.next_event(&cancel, deadline).expect("next") else {
+            panic!("the message and the call come first");
+        };
+        match event {
+            Event::Stdout(Ok(event)) => {
+                let _ = session.stream_event(event, &mut None).expect("output");
+            }
+            Event::Mcp(Ok(line)) => session
+                .mcp_line(&line, &cancel, deadline)
+                .expect("the call is accepted"),
+            _ => panic!("unexpected event"),
+        }
+    }
+    assert!(session.calls_ready(), "every announced call arrived");
+    // One slot is left in the batch: a status event takes it, and the
+    // relay's cancellation waits right behind it.
+    session.batch_left = 1;
+    sender
+        .send(stdout(&json!({ "type": "system", "subtype": "status" })))
+        .expect("queue the status");
+    sender
+        .send(mcp(&json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": { "requestId": 7, "reason": "user interrupt" },
+        })))
+        .expect("queue the cancellation");
+    let Next::Event(Event::Stdout(Ok(status))) =
+        session.next_event(&cancel, deadline).expect("next")
+    else {
+        panic!("the status event takes the last slot");
+    };
+    let _ = session.stream_event(status, &mut None).expect("output");
+    assert_eq!(session.batch_left, 0, "the batch ended");
+
+    match session.next_event(&cancel, deadline).expect("next") {
+        Next::Calls(calls) => panic!("a cancelled call reached the runtime: {calls:?}"),
+        Next::Idle => {}
+        Next::Event(_) | Next::Ended => panic!("nothing else was queued"),
+    }
+    assert!(session.unreturned.is_empty());
+    let server = session.server.as_ref().expect("server");
+    assert_eq!(
+        server.pending_calls(),
+        0,
+        "the cancelled request is retired"
+    );
+    drop(sender);
+}
+
 #[test]
 fn a_write_that_finished_first_is_not_reported_as_stopped() {
     let race = WriteRace::new();
@@ -242,9 +303,9 @@ fn a_write_that_finished_first_is_not_reported_as_stopped() {
 /// The writer is held after its I/O until the watcher stopped the write,
 /// as when it is descheduled between its flush and the record, for at most
 /// 30 seconds. Returns whether the stop came.
-fn held_until(stopped: &AtomicBool) -> bool {
+fn held_until(stops: &AtomicUsize) -> bool {
     let until = Instant::now() + Duration::from_secs(30);
-    while !stopped.load(Ordering::SeqCst) {
+    while stops.load(Ordering::SeqCst) == 0 {
         if Instant::now() >= until {
             return false;
         }
@@ -253,25 +314,35 @@ fn held_until(stopped: &AtomicBool) -> bool {
     true
 }
 
+/// The name of the thread that watches a relay write.
+const WATCHER: &str = "claude-code-write";
+
 /// A write whose bytes went out but that is recorded finished only after
-/// its deadline passed fails the turn and stops the tree: a write counts as
-/// finished only once the writer recorded it.
+/// its deadline passed fails the turn and stops the tree once: a write
+/// counts as finished only once the writer recorded it. The deadline passes
+/// only once the I/O completed, so the watcher cannot stop the write before.
 #[test]
 fn a_write_recorded_after_its_deadline_fails_and_stops_the_tree() {
-    let stopped = AtomicBool::new(false);
-    let mut sent = false;
-    let mut stop_came = false;
+    let expired = AtomicBool::new(false);
+    let stops = AtomicUsize::new(0);
+    let mut stopped_after_io = false;
     let result = raced_write(
         || {
-            sent = true;
-            stop_came = held_until(&stopped);
+            expired.store(true, Ordering::SeqCst);
+            stopped_after_io = held_until(&stops);
             Ok(())
         },
         &CancelToken::new(),
-        Instant::now() + Duration::from_millis(50),
-        || stopped.store(true, Ordering::SeqCst),
+        || expired.load(Ordering::SeqCst),
+        || {
+            stops.fetch_add(1, Ordering::SeqCst);
+        },
     );
-    assert!(sent && stop_came, "the I/O finished before the stop");
+    assert!(
+        stopped_after_io,
+        "the watcher stopped the write after its I/O"
+    );
+    assert_eq!(stops.load(Ordering::SeqCst), 1, "stopped once");
     assert!(
         matches!(
             result,
@@ -281,42 +352,124 @@ fn a_write_recorded_after_its_deadline_fails_and_stops_the_tree() {
     );
 }
 
-/// As above for a cancellation, which the turn reports as cancelled.
+/// As above for a cancellation raised once the I/O completed, which the
+/// turn reports as cancelled.
 #[test]
 fn a_write_recorded_after_a_cancellation_is_cancelled_and_stops_the_tree() {
-    let stopped = AtomicBool::new(false);
+    let stops = AtomicUsize::new(0);
     let cancel = CancelToken::new();
-    cancel.cancel();
-    let mut stop_came = false;
+    let mut stopped_after_io = false;
     let result = raced_write(
         || {
-            stop_came = held_until(&stopped);
+            cancel.cancel();
+            stopped_after_io = held_until(&stops);
             Ok(())
         },
         &cancel,
-        Instant::now() + Duration::from_secs(3600),
-        || stopped.store(true, Ordering::SeqCst),
+        || false,
+        || {
+            stops.fetch_add(1, Ordering::SeqCst);
+        },
     );
-    assert!(stop_came);
+    assert!(
+        stopped_after_io,
+        "the watcher stopped the write after its I/O"
+    );
+    assert_eq!(stops.load(Ordering::SeqCst), 1, "stopped once");
     assert!(
         matches!(result, Err(ProviderError::Cancelled)),
         "{result:?}"
     );
 }
 
+/// A write whose deadline passed during its I/O fails and stops the tree
+/// although the watcher never sees the expiry, as when it is not scheduled
+/// in time: the writer checks the deadline itself before it records the
+/// write finished.
+#[test]
+fn a_write_whose_deadline_the_watcher_missed_still_fails() {
+    let expired = AtomicBool::new(false);
+    let stops = AtomicUsize::new(0);
+    let result = raced_write(
+        || {
+            expired.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        &CancelToken::new(),
+        || expired.load(Ordering::SeqCst) && thread::current().name() != Some(WATCHER),
+        || {
+            stops.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        1,
+        "the writer stopped the tree"
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+        ),
+        "{result:?}"
+    );
+}
+
+/// A write already cancelled or past its deadline never starts, and still
+/// stops the tree.
+#[test]
+fn a_write_already_cancelled_or_late_never_starts() {
+    for (cancelled, late) in [(true, false), (false, true)] {
+        let cancel = CancelToken::new();
+        if cancelled {
+            cancel.cancel();
+        }
+        let stops = AtomicUsize::new(0);
+        let mut started = false;
+        let result = raced_write(
+            || {
+                started = true;
+                Ok(())
+            },
+            &cancel,
+            || late,
+            || {
+                stops.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert!(!started, "the I/O never started");
+        assert_eq!(stops.load(Ordering::SeqCst), 1, "stopped once");
+        if cancelled {
+            assert!(
+                matches!(result, Err(ProviderError::Cancelled)),
+                "{result:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+                ),
+                "{result:?}"
+            );
+        }
+    }
+}
+
 /// A write recorded before its deadline succeeds and never stops the tree,
 /// and a failed one is a protocol failure.
 #[test]
 fn a_write_recorded_in_time_succeeds_without_stopping_the_tree() {
-    let stopped = AtomicBool::new(false);
-    let deadline = Instant::now() + Duration::from_secs(3600);
+    let stops = AtomicUsize::new(0);
     let cancel = CancelToken::new();
-    let stop = || stopped.store(true, Ordering::SeqCst);
-    raced_write(|| Ok(()), &cancel, deadline, stop).expect("written");
+    let stop = || {
+        stops.fetch_add(1, Ordering::SeqCst);
+    };
+    raced_write(|| Ok(()), &cancel, || false, stop).expect("written");
     let failed = raced_write(
         || Err(std::io::Error::other("broken channel")),
         &cancel,
-        deadline,
+        || false,
         stop,
     );
     assert!(
@@ -326,39 +479,49 @@ fn a_write_recorded_in_time_succeeds_without_stopping_the_tree() {
         ),
         "{failed:?}"
     );
-    assert!(
-        !stopped.load(Ordering::SeqCst),
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        0,
         "the tree was never stopped"
     );
 }
 
+/// A session holding the connection's turn lock and its turn record, as a
+/// launch leaves it.
+fn held_session(data: &Path, runtime: &Path) -> (Session, SyncSender<Event>, Uuid) {
+    let profile_id = Uuid::new_v4();
+    let watch = ClaudeCodeWatch::for_tests(data.to_owned(), profile_id, data);
+    let (mut session, sender) = session(runtime);
+    session.turn_lock = Some(watch.lock_turn().expect("lock").expect("free"));
+    session.turn_record = Some(watch.record_turn().expect("record"));
+    session.turn_watch = Some(watch);
+    (session, sender, profile_id)
+}
+
 /// A session whose tree was not observed ended keeps the connection's turn
-/// lock and records the marker, so a revocation fails while this process
-/// runs and also after it exits: both for a tree whose end its session
-/// could not confirm and for one the launch could not stop before the
-/// session owned it. A session whose tree ended releases the lock and
-/// records nothing.
+/// lock and its turn record, so a revocation fails while this process runs
+/// and also after it exits: both for a tree whose end its session could not
+/// confirm and for one the launch could not stop before the session owned
+/// it. A session whose tree ended clears its record and releases the lock.
 #[test]
-fn an_unconfirmed_tree_end_keeps_the_turn_lock_and_records_the_marker() {
+fn an_unconfirmed_tree_end_keeps_the_turn_lock_and_its_record() {
     let data = TempDir::new().expect("data folder");
     fs::create_dir(data.path().join("claude-code")).expect("runtime parent");
     let short = Duration::from_millis(200);
     // (the tree was observed ended, the launch could not stop a tree)
     for (ended, unstopped) in [(true, false), (false, false), (true, true)] {
-        let profile_id = Uuid::new_v4();
-        let watch = ClaudeCodeWatch::for_tests(data.path().to_owned(), profile_id);
         let runtime = TempDir::new().expect("runtime folder");
-        let (mut session, _sender) = session(runtime.path());
-        session.turn_lock = Some(watch.lock_turn().expect("lock").expect("free"));
-        session.turn_watch = Some(watch);
+        let (mut session, _sender, profile_id) = held_session(data.path(), runtime.path());
         session.unconfirmed = unstopped;
-        session.release_turn(ended);
+        let released = session.release_turn(ended, Vec::new());
         drop(session);
         let waited = wait_for_claude_code_turns(data.path(), profile_id, short);
         if ended && !unstopped {
-            waited.expect("an observed end releases the lock");
+            assert!(released);
+            waited.expect("an observed end clears the record and releases the lock");
             continue;
         }
+        assert!(!released);
         assert!(
             matches!(waited, Err(ControlError::ClaudeCodeTurnsRunning)),
             "the lock is held while this process runs: {waited:?}"
@@ -374,9 +537,54 @@ fn an_unconfirmed_tree_end_keeps_the_turn_lock_and_records_the_marker() {
         let waited = wait_for_claude_code_turns(data.path(), profile_id, short);
         assert!(
             matches!(waited, Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == profile_id),
-            "the marker outlives the lock: {waited:?}"
+            "the record outlives the lock: {waited:?}"
         );
     }
+}
+
+/// A tree observed ended clears its record at once, but the turn lock waits
+/// for a worker still running after the grace, so a revocation's wait ends
+/// only once that worker ended too, and then finds no record.
+#[test]
+fn an_outstanding_worker_keeps_the_turn_lock_until_it_ends() {
+    let data = TempDir::new().expect("data folder");
+    fs::create_dir(data.path().join("claude-code")).expect("runtime parent");
+    let runtime = TempDir::new().expect("runtime folder");
+    let (mut session, _sender, profile_id) = held_session(data.path(), runtime.path());
+    let (release, released) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        // Bounded, so a failed test cannot leave it behind.
+        let _ended = released.recv_timeout(Duration::from_secs(30));
+    });
+    assert!(
+        !session.release_turn(true, vec![worker]),
+        "the lock is still held"
+    );
+    drop(session);
+    let waited = wait_for_claude_code_turns(data.path(), profile_id, Duration::from_millis(200));
+    assert!(
+        matches!(waited, Err(ControlError::ClaudeCodeTurnsRunning)),
+        "the worker keeps the lock: {waited:?}"
+    );
+    release.send(()).expect("end the worker");
+    wait_for_claude_code_turns(data.path(), profile_id, Duration::from_secs(30))
+        .expect("the lock is released once the worker ended");
+}
+
+/// A worker that panicked has ended: it is reported, but nothing waits for
+/// it.
+#[test]
+fn a_worker_that_panicked_counts_as_ended() {
+    let runtime = TempDir::new().expect("runtime folder");
+    let (mut session, _sender) = session(runtime.path());
+    let worker = thread::Builder::new()
+        .name("a worker that panics on purpose".into())
+        .spawn(|| panic!("on purpose"))
+        .expect("worker");
+    session.workers.push(worker);
+    let stopped = session.stop_workers();
+    assert!(stopped.panicked);
+    assert!(stopped.outstanding.is_empty());
 }
 
 #[test]

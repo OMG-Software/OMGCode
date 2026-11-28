@@ -132,19 +132,28 @@ Haiku request with one tool call.
    connection's turn lock file, `claude-code/<profile id>.turns`, which lies
    beside the runtime folder and outside every grant. Before the per-turn
    folder is made, the turn takes that lock and checks every settings state
-   recorded since it resolved the connection. It releases the lock only after
-   the tree was observed ended. When the end cannot be confirmed, and when a
-   launch started a tree that it could not stop, the lock stays held until
-   the OMGCode process exits, so a revocation reports the turn as running,
-   and a marker, `claude-code/<profile id>.unconfirmed`, is synced beside
-   it. The end of the OMGCode process proves nothing about the tree, so the
-   marker outlives it: every later wait for the connection's turns fails
-   with a `control` error that names `workspace claude-code-acknowledge
-   <profile id>`. That command removes the marker under the exclusive lock,
-   so it is refused while a turn runs, and claims nothing about the
-   processes, as `runs acknowledge` claims nothing about a run's; the
-   operator first checks that no `claude` process of the connection
-   remains. While the process runs, a watcher thread checks each
+   recorded since it resolved the connection. Before the launch it also
+   writes and syncs a turn record,
+   `claude-code/<profile id>.<turn id>.unconfirmed`, that names the
+   connection and its sign-in folder. The turn removes its record and
+   releases the lock only after its whole tree was observed ended and its
+   relay workers stopped; a worker still running then keeps the lock until
+   it ends. When the tree's end cannot be
+   confirmed, and when a launch started a tree that it could not stop, the
+   record stays and the lock stays held until the OMGCode process exits, so
+   a revocation reports the turn as running. The end of the OMGCode process
+   proves nothing about the tree, so the record outlives it: every later
+   wait for the connection's turns fails with a `control` error that names
+   `workspace claude-code-acknowledge <profile id>`, and the record keeps
+   the sign-in folder reserved, also once the connection is removed, so no
+   new connection can record an overlapping folder. Before acknowledging,
+   the operator checks the connection's entire `claude` process tree,
+   including its MCP relays and their descendants, and keeps the record
+   while they cannot confirm that the tree ended. The command removes the
+   connection's records under the exclusive lock, so it is refused with a
+   lock error while a turn holds the lock. It records nothing about the
+   operator's check, as `runs acknowledge` claims nothing about a run's
+   processes. While the process runs, a watcher thread checks each
    later state every 100 ms, and once more as it stops, so the turn's
    result counts only after every state up to its end was checked. A state
    that removes the connection or, on Windows, leaves one of its roles
@@ -156,10 +165,10 @@ Haiku request with one tool call.
    change, release the settings, and then wait up to 30 seconds for an
    exclusive lock. When a turn does not end in time, the command fails with a
    `control` error that says the change is recorded. A revocation that fails
-   after it recorded a withdrawal waits the same way and reports both its
-   error and the wait's outcome. On Linux no grant exists, so
-   `claude-code-revoke` changes nothing there and `provider-profile-remove`
-   withdraws a connection.
+   after it recorded, or may have recorded, a withdrawal waits the same way
+   and reports both its error and the wait's outcome. On Linux no grant
+   exists, so `claude-code-revoke` changes nothing there and
+   `provider-profile-remove` withdraws a connection.
 4. **One process per model request, launched locked down.** A tool turn
    keeps one `claude` process for all its rounds; a text turn and each
    compaction summary start their own. Each run writes a fresh per-turn
@@ -337,8 +346,13 @@ Haiku request with one tool call.
   recorded program stale; the connection is then refused until it is
   revoked, removed, and recorded again.
 - A turn whose tree was not observed ended blocks every revocation and
-  removal of its connection until the operator acknowledges it, also after
-  OMGCode restarts. The acknowledgement rests on the operator's own check.
+  removal of its connection, and reserves its sign-in folder, until the
+  operator acknowledges it, also after OMGCode restarts. The
+  acknowledgement rests on the operator's own check of the whole tree, which
+  OMGCode does not record.
+- A turn record is written before the launch, so a turn that cannot write
+  it does not start. A record whose removal fails after an observed end
+  stays, and the operator acknowledges it like an unconfirmed end.
 - A revocation or removal waits up to 30 seconds for running turns. The
   wait proves the processes ended, not that their effects were undone: text
   streamed before the change was already shown, and tool calls that ran

@@ -956,16 +956,23 @@ and a tool turn keeps that process for all its rounds.
   cleanup, so the tree's own fallback kill still runs.
 - **Withdrawal.** Each process holds a shared lock on
   `claude-code/<profile id>.turns` in application storage, outside every
-  grant, from before its per-turn folder is made until its tree was
-  observed ended. A lock whose tree's end was not confirmed, also of a tree
-  the launch could not stop, stays held until the OMGCode process exits,
-  and a marker, `claude-code/<profile id>.unconfirmed`, is synced beside it
-  and outlives that process. While the marker exists, every wait below
-  fails with a `control` error, until `omgcode workspace
-  claude-code-acknowledge <profile id>` removes it under the exclusive
-  lock; that command is refused while a turn runs and claims nothing about
-  the processes, so check first that no `claude` process of the connection
-  remains. Before the launch the turn checks every
+  grant, from before its per-turn folder is made until its whole tree was
+  observed ended and its relay workers stopped; a worker still running
+  then keeps the lock until it ends. Before the launch the turn writes and
+  syncs a turn record, `claude-code/<profile id>.<turn id>.unconfirmed`,
+  that names the connection and its sign-in folder, and it removes the
+  record only after that observed end. A lock whose tree's end was not
+  confirmed, also of a tree the launch could not stop, stays held until the
+  OMGCode process exits, and its record outlives that process. While a
+  record exists, every wait below fails with a `control` error, and the
+  record reserves the sign-in folder, also once the connection is removed,
+  so no new connection can record an overlapping folder. Before running
+  `omgcode workspace claude-code-acknowledge <profile id>`, check the
+  connection's entire `claude` process tree, including its MCP relays and
+  their descendants; if you cannot confirm that the tree ended, keep the
+  record. The command removes the connection's records under the exclusive
+  lock, is refused while a turn holds the lock, and records nothing about
+  that check. Before the launch the turn checks every
   settings state recorded since it resolved the connection, and while the
   process runs a watcher checks each later state every 100 ms and once more
   as it stops. A state that removes the connection or, on Windows, leaves a

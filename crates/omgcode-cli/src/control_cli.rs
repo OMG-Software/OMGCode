@@ -296,12 +296,15 @@ pub(crate) enum WorkspaceCommand {
     /// grants, so there this changes nothing and running turns continue;
     /// `provider-profile-remove` is what withdraws a connection there.
     ClaudeCodeRevoke { name: String },
-    /// Clear the record that a turn of the Claude Code connection with this
-    /// profile identifier ended without its process tree being observed
-    /// ended. Until then every revocation and removal of the connection
-    /// fails. Check first that no `claude` process of the connection
-    /// remains: this claims nothing about them. Refused while a turn of the
-    /// connection still runs.
+    /// Remove the records that turns of the Claude Code connection with this
+    /// profile identifier left because their whole process tree was not
+    /// observed to end. Until then every revocation and removal of the
+    /// connection fails, and a removed connection's sign-in folder stays
+    /// reserved. Check first that no `claude` process of the connection
+    /// remains, including its MCP relays and their descendants, and keep the
+    /// records while that cannot be confirmed: this only removes them and
+    /// records nothing about the check. Refused while a turn of the
+    /// connection holds its turn lock.
     ClaudeCodeAcknowledge { profile_id: String },
 }
 
@@ -1033,24 +1036,39 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
     }
 }
 
-/// The error of a revocation that failed. When it had already recorded a
-/// withdrawal, the connection's running turns are ending, so the error is
-/// reported only after waiting for them, together with the wait's outcome.
+/// The error of a revocation that failed. When it had already recorded, or
+/// may have recorded, a withdrawal, the connection's running turns are
+/// ending, so the error is reported only after waiting for them, together
+/// with the wait's outcome.
 fn partial_claude_code_revocation(data_root: &Path, failure: ClaudeCodeRevokeFailure) -> CliError {
     let Some(profile_id) = failure.withdrawn else {
         return control_error(failure.error);
     };
-    let turns = match wait_for_claude_code_turns(data_root, profile_id, CLAUDE_CODE_TURN_STOP_WAIT)
-    {
-        Ok(()) => "every running turn of the connection ended".to_owned(),
-        Err(error) => format!("its running turns were not observed ended: {error}"),
-    };
-    CliError::new(
-        "control",
-        format!(
-            "The revocation stopped after withdrawing the connection: {}; {turns}. Run the command again.",
-            failure.error
+    let turns = wait_for_claude_code_turns(data_root, profile_id, CLAUDE_CODE_TURN_STOP_WAIT);
+    CliError::new("control", partial_revocation_message(&failure.error, turns))
+}
+
+/// The message of a revocation that stopped with `error` after a withdrawal,
+/// given how the wait for the connection's turns ended. A retry clears no
+/// turn record, so a wait that found one names the check and the
+/// acknowledgement before any retry.
+fn partial_revocation_message(error: &ControlError, turns: Result<(), ControlError>) -> String {
+    let (turns, next) = match turns {
+        Ok(()) => (
+            "every running turn of the connection ended".to_owned(),
+            "Run the command again.",
         ),
+        Err(unconfirmed @ ControlError::ClaudeCodeCleanupUnconfirmed(_)) => (
+            format!("its running turns were not observed ended: {unconfirmed}"),
+            "A retry cannot clear that record, so run the command again only after that check and acknowledgement.",
+        ),
+        Err(error) => (
+            format!("its running turns were not observed ended: {error}"),
+            "Run the command again.",
+        ),
+    };
+    format!(
+        "The revocation stopped after it recorded, or may have recorded, the connection's withdrawal: {error}; {turns}. {next}"
     )
 }
 
@@ -1715,7 +1733,7 @@ mod tests {
         );
         assert!(
             partial.message.starts_with(&format!(
-                "The revocation stopped after withdrawing the connection: {}",
+                "The revocation stopped after it recorded, or may have recorded, the connection's withdrawal: {}",
                 ControlError::LimitReached
             )),
             "{}",
@@ -1728,5 +1746,31 @@ mod tests {
             "{}",
             partial.message
         );
+    }
+
+    /// A wait that found a turn record left behind names the check and the
+    /// acknowledgement and advises a retry only after them; any other wait
+    /// outcome keeps the direct retry advice.
+    #[test]
+    fn a_partial_revocation_with_an_unconfirmed_turn_names_the_acknowledgement_before_a_retry() {
+        let profile_id = Uuid::new_v4();
+        let unconfirmed = partial_revocation_message(
+            &ControlError::LimitReached,
+            Err(ControlError::ClaudeCodeCleanupUnconfirmed(profile_id)),
+        );
+        assert!(
+            unconfirmed.contains(&format!("workspace claude-code-acknowledge {profile_id}")),
+            "{unconfirmed}"
+        );
+        assert!(
+            unconfirmed.ends_with(
+                "A retry cannot clear that record, so run the command again only after that check and acknowledgement."
+            ),
+            "{unconfirmed}"
+        );
+        for turns in [Ok(()), Err(ControlError::ClaudeCodeTurnsRunning)] {
+            let direct = partial_revocation_message(&ControlError::LimitReached, turns);
+            assert!(direct.ends_with(". Run the command again."), "{direct}");
+        }
     }
 }

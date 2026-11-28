@@ -282,6 +282,18 @@ fn join_within<T>(handle: JoinHandle<T>, limit: Duration) -> T {
     handle.join().expect("thread panicked")
 }
 
+/// Join `handle` if it finishes within `limit`; `None` leaves it running.
+fn join_within_or_none<T>(handle: JoinHandle<T>, limit: Duration) -> Option<thread::Result<T>> {
+    let deadline = Instant::now() + limit;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Some(handle.join())
+}
+
 fn listener_for(container: &ContainerName) -> LocalListener {
     LocalListener::bind(ListenerTarget::Container {
         container: container.clone(),
@@ -443,12 +455,28 @@ fn a_blocked_write_fails_once_the_client_process_ends() {
     let end_child = CancelSignal::new();
     let child = scene.start_ending_on(&name, "stall", &address, &end_child);
     let stream = join_within(accepting, LONG).expect("accept");
-    let (reader, mut writer, _shutdown) = stream.split().expect("split");
-    let mut line = String::new();
-    BufReader::new(reader)
-        .read_line(&mut line)
-        .expect("ready line");
-    assert_eq!(line, "ready\n");
+    let (reader, mut writer, shutdown) = stream.split().expect("split");
+    // A worker reads the ready line, so a read that never ends fails the
+    // test instead of holding it.
+    let (ready_sender, ready) = mpsc::channel();
+    let reading = thread::spawn(move || {
+        let mut line = String::new();
+        let read = BufReader::new(reader).read_line(&mut line).map(|_| line);
+        // A test that gave up on the line no longer receives it.
+        let _ = ready_sender.send(read);
+    });
+    let Ok(line) = ready.recv_timeout(LONG) else {
+        // End the read and the child before failing, each within a bound.
+        let shut = shutdown.shutdown();
+        end_child.cancel();
+        let read_ended = join_within_or_none(reading, Duration::from_secs(10)).is_some();
+        let child_ended = join_within_or_none(child, LONG).is_some();
+        panic!(
+            "the ready line never arrived; shutdown: {shut:?}, read ended: {read_ended}, child ended: {child_ended}"
+        );
+    };
+    assert_eq!(line.expect("ready line"), "ready\n");
+    join_within(reading, LONG);
     let (started, pending) = mpsc::channel();
     let payload = vec![b'x'; PAYLOAD_BYTES];
     let writing = thread::spawn(move || {

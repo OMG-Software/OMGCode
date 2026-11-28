@@ -605,12 +605,16 @@ struct FloodEnd {
     cancelled: bool,
     error: Option<ProviderError>,
     took: Duration,
+    /// Whether the exit probe saw the fake and its relay running while the
+    /// write stalled.
+    seen_running: bool,
 }
 
 /// Run a turn whose fake floods the relay with requests and reads none of
 /// the replies, so OMGCode's write of a reply blocks. The turn runs on its
 /// own thread, so one that never ends fails the test after `limit`.
 fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
+    let stop = cancel.clone();
     let client = scene.client();
     let (data, workspace, workspace_id) = (
         scene.data.clone(),
@@ -633,12 +637,16 @@ fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
             model.last_error(),
         )
     });
+    let mut seen_running = false;
     while !turn.is_finished() {
-        assert!(
-            started.elapsed() < limit,
-            "the turn did not end in {limit:?}; {}",
-            fake_claude::diagnosis(&scene.sign_in)
-        );
+        if started.elapsed() >= limit {
+            abandon(turn, &stop, &scene.sign_in, limit);
+        }
+        // While the reply write stalls, both processes run, so the exit
+        // probe used after the turn must see them running here.
+        if !seen_running && fake_claude::stalled(&scene.sign_in) {
+            seen_running = fake_claude::processes_running(&scene.sign_in);
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     let took = started.elapsed();
@@ -647,8 +655,43 @@ fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
         cancelled,
         error,
         took,
+        seen_running,
     }
 }
+
+/// How long a turn that overran its limit has, once cancelled, to end.
+const ABANDON_BOUND: Duration = Duration::from_secs(30);
+
+/// End a turn that overran `limit` and fail the test: cancel the turn and
+/// wait at most [`ABANDON_BOUND`] for its thread, so no turn is left using
+/// the scene while later tests run. A thread that does not end even then
+/// ends the whole test process, which ends the thread with it.
+fn abandon<T>(
+    turn: std::thread::JoinHandle<T>,
+    stop: &CancelToken,
+    sign_in: &Path,
+    limit: Duration,
+) -> ! {
+    stop.cancel();
+    let until = Instant::now() + ABANDON_BOUND;
+    while !turn.is_finished() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let diagnosis = fake_claude::diagnosis(sign_in);
+    if turn.is_finished() {
+        // The turn's own result does not matter once it overran.
+        let _ = turn.join();
+        panic!("the turn did not end in {limit:?}, only once cancelled; {diagnosis}");
+    }
+    eprintln!(
+        "the turn did not end in {limit:?}, nor within {ABANDON_BOUND:?} of its cancellation; {diagnosis}; ending the test process"
+    );
+    std::process::exit(1);
+}
+
+/// How long the fake and its relay may take to be seen ended once the turn
+/// returned.
+const EXIT_PROBE: Duration = Duration::from_secs(10);
 
 /// A reply write that the relay never reads ends at the request timeout:
 /// the turn fails with `claude_code_failed` instead of waiting for the
@@ -671,6 +714,13 @@ fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
         Some(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
     );
     assert!(end.took >= timeout, "{:?}", end.took);
+    assert!(
+        end.seen_running,
+        "{}",
+        fake_claude::diagnosis(&scene.sign_in)
+    );
+    // The error proves nothing about the processes: both must be seen gone.
+    fake_claude::processes_ended(&scene.sign_in, EXIT_PROBE).expect("the fake and its relay ended");
 }
 
 /// A reply write that the relay never reads ends promptly when the turn is
@@ -686,18 +736,22 @@ fn a_reply_the_relay_does_not_read_ends_on_cancellation() {
             std::thread::sleep(Duration::from_millis(10));
         }
         let stalled = fake_claude::stalled(&sign_in);
+        // Probed here, before the cancellation ends both processes.
+        let running = fake_claude::processes_running(&sign_in);
         // Taken first, so a delay after the request counts against the turn.
         let cancelled = Instant::now();
         trigger.cancel();
-        (stalled, cancelled)
+        (stalled, running, cancelled)
     });
     let end = flood_turn(&scene, cancel, Duration::from_secs(120));
     let returned = Instant::now();
-    let (stalled, cancelled_at) = canceller.join().expect("canceller");
+    let (stalled, running, cancelled_at) = canceller.join().expect("canceller");
     assert!(stalled, "{}", fake_claude::diagnosis(&scene.sign_in));
+    assert!(running, "{}", fake_claude::diagnosis(&scene.sign_in));
     assert!(end.cancelled, "{:?}", end.error);
     let stopping = returned.saturating_duration_since(cancelled_at);
     assert!(stopping < Duration::from_secs(10), "{stopping:?}");
+    fake_claude::processes_ended(&scene.sign_in, EXIT_PROBE).expect("the fake and its relay ended");
 }
 
 fn fake_relay(arguments: &[OsString]) -> ExitCode {
@@ -705,6 +759,9 @@ fn fake_relay(arguments: &[OsString]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let nonce = env::var(RELAY_NONCE_VARIABLE).unwrap_or_default();
+    if let Some(folder) = env::var_os(fake_claude::ALIVE_FOLDER_VARIABLE) {
+        fake_claude::hold_alive(Path::new(&folder), fake_claude::RELAY_ALIVE_FILE);
+    }
     match relay(address, &nonce, io::stdin(), io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,

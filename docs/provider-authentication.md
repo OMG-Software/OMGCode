@@ -638,12 +638,18 @@ Anthropic approval, and the Claude subscription requirement stays open.
   revokes every grant and deletes the container profile; a profile with
   grants cannot be removed. Revoking, and removing the connection with
   `provider-profile-remove` or the `settings` window, ends its running turns
-  and waits up to 30 seconds for their processes to end. A turn whose
-  process tree was not observed ended makes every such wait fail, also
-  after OMGCode restarts, until `workspace claude-code-acknowledge PROFILE_ID`
-  records the operator's check that no `claude` process of the connection
-  remains. On Linux no grant exists, so only removing the connection
-  withdraws it.
+  and waits up to 30 seconds for their processes to end. Each turn writes
+  a record before its launch and removes it only once its whole process
+  tree was observed ended. A record left behind makes every such wait fail,
+  also after OMGCode restarts, and keeps the connection's sign-in folder
+  reserved, also once the connection is removed. Before running `workspace
+  claude-code-acknowledge PROFILE_ID`, the operator must check that no
+  `claude` process of the connection remains, including its MCP relays and
+  their descendants, and keep the record while that cannot be confirmed.
+  The command only removes the connection's turn records; it records
+  nothing about that check and is refused while a turn holds the
+  connection's turn lock. On Linux no grant exists, so only removing the
+  connection withdraws it.
 - **Use.** `chat --provider-profile NAME` and `session compact
   --provider-profile NAME` resolve the connection. Every turn re-checks the
   recorded folder identities and, on Windows, each grant. Every other route,

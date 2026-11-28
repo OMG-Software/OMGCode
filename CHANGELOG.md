@@ -43,19 +43,28 @@ Changes are recorded here before a release version is assigned.
   revokes one of its grants or removes it. The watcher checks once more as
   it stops, a watcher that panicked fails the turn, and the turn lock of a
   process whose end was not confirmed, also of a tree the launch could not
-  stop, stays held until OMGCode exits. Such an end also syncs a marker
-  beside the lock that outlives OMGCode, and every later revocation and
-  removal of the connection fails until `workspace claude-code-acknowledge
-  <profile id>` removes it; that command is refused while a turn runs and
-  claims nothing about the processes.
+  stop, stays held until OMGCode exits; a relay worker still running after
+  the tree ended keeps it until that worker ends. Each turn writes and syncs
+  a record, `claude-code/<profile id>.<turn id>.unconfirmed`, before its
+  launch and removes it only after its whole tree was observed ended. A
+  record left behind outlives OMGCode, makes every later revocation and
+  removal of the connection fail, and keeps its sign-in folder reserved, also
+  once the connection is removed, until `workspace claude-code-acknowledge
+  <profile id>` removes the connection's records. The operator first checks
+  the entire `claude` process tree, including its MCP relays and their
+  descendants, and keeps the record while that cannot be confirmed; the
+  command records nothing about that check and is refused with a lock error
+  while a turn holds the lock. A revocation that stopped on such a record
+  names the acknowledgement before advising a retry.
   `workspace claude-code-revoke`, `workspace provider-profile-remove`, and
   the `settings` window's removal wait up to 30 seconds for those processes
   to end, or fail with a `control` error that says the change is recorded;
-  a revocation that fails after it recorded a withdrawal also waits and
-  reports both outcomes. On Linux no grant exists, so `claude-code-revoke`
-  changes nothing there and `provider-profile-remove` withdraws a
-  connection. The sign-in folder stays apart from every workspace container
-  grant, every other connection's sign-in folder, and every other
+  a revocation that fails after it recorded, or may have recorded, a
+  withdrawal also waits and reports both outcomes. On Linux no grant
+  exists, so `claude-code-revoke` changes nothing there and
+  `provider-profile-remove` withdraws a connection. The sign-in folder stays
+  apart from every workspace container grant, every other connection's
+  sign-in folder, and every other
   connection's program and relay grants, and a program or relay folder
   stays apart from every other connection's sign-in folder. A grant or
   sign-in record whose folder changed proves no separation, so it is

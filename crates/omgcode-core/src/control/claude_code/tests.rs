@@ -982,17 +982,25 @@ fn a_wait_succeeds_once_the_last_turn_ends_during_it() {
     assert!(holder.join().expect("holder"), "released after contention");
 }
 
-/// A turn whose tree was not observed ended leaves a marker that fails every
-/// wait, also once its lock is gone, as after its host exited, until the
-/// operator acknowledges it. Acknowledging is refused while a turn holds the
-/// lock. A marker fails a wait even where no turn lock was ever made.
+/// A turn's record fails every wait once its lock is gone, as after its host
+/// exited before the tree was observed ended, until the operator
+/// acknowledges it; a cleared record leaves nothing. Acknowledging is
+/// refused, as lock contention, while a turn holds the lock, and removes
+/// every record of the connection and no other. A record fails a wait even
+/// where no turn lock was ever made.
 #[test]
-fn an_unconfirmed_turn_end_fails_every_wait_until_acknowledged() {
+fn a_turn_record_left_behind_fails_every_wait_until_acknowledged() {
     let scene = Scene::new();
     let (profile_id, _, watch) = resolved_turn(&scene);
     let short = std::time::Duration::from_millis(200);
     let turn = watch.lock_turn().expect("lock").expect("free");
-    watch.record_unconfirmed_cleanup().expect("marker");
+    watch
+        .record_turn()
+        .expect("record")
+        .clear()
+        .expect("an observed end clears its record");
+    let _left = watch.record_turn().expect("record");
+    let _also_left = watch.record_turn().expect("a second turn's record");
     assert!(matches!(
         wait_for_claude_code_turns(&scene.data, profile_id, short),
         Err(ControlError::ClaudeCodeTurnsRunning)
@@ -1000,7 +1008,7 @@ fn an_unconfirmed_turn_end_fails_every_wait_until_acknowledged() {
     assert!(
         matches!(
             acknowledge_claude_code_cleanup(&scene.data, profile_id),
-            Err(ControlError::ClaudeCodeTurnsRunning)
+            Err(ControlError::ClaudeCodeTurnLockHeld)
         ),
         "refused while a turn holds the lock"
     );
@@ -1009,22 +1017,103 @@ fn an_unconfirmed_turn_end_fails_every_wait_until_acknowledged() {
         wait_for_claude_code_turns(&scene.data, profile_id, short),
         Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == profile_id
     ));
+
+    let other = Uuid::new_v4();
+    let _other_left = ClaudeCodeWatch::for_tests(scene.data.clone(), other, &scene.root)
+        .record_turn()
+        .expect("record");
     assert!(acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("acknowledged"));
     wait_for_claude_code_turns(&scene.data, profile_id, short).expect("acknowledged");
     assert!(
         !acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("again"),
         "nothing is left to acknowledge"
     );
+    assert!(
+        matches!(
+            wait_for_claude_code_turns(&scene.data, other, short),
+            Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == other
+        ),
+        "another connection's record stays"
+    );
+    assert!(acknowledge_claude_code_cleanup(&scene.data, other).expect("acknowledged"));
+    wait_for_claude_code_turns(&scene.data, other, short).expect("acknowledged");
+}
 
-    let unlocked = Uuid::new_v4();
-    ClaudeCodeWatch::for_tests(scene.data.clone(), unlocked)
-        .record_unconfirmed_cleanup()
-        .expect("marker");
+/// Acknowledging where no turn ever ran finds nothing, without making the
+/// runtime folder.
+#[test]
+fn acknowledging_without_any_turn_finds_nothing() {
+    let scene = Scene::new();
+    let _store = scene.store();
+    assert!(!acknowledge_claude_code_cleanup(&scene.data, Uuid::new_v4()).expect("nothing"));
+    assert!(!scene.data.join(RUNTIME_PARENT).exists());
+}
+
+/// A removed connection's turn record keeps its sign-in folder reserved: a
+/// new connection cannot record the same folder, or one around it, until the
+/// record is acknowledged. A record that cannot be read reserves an unknown
+/// folder, so every sign-in folder is refused until it is acknowledged.
+#[test]
+fn a_removed_connections_turn_record_reserves_its_sign_in_folder() {
+    let scene = Scene::new();
+    let (profile_id, grants, watch) = resolved_turn(&scene);
+    let left = watch.record_turn().expect("record");
+    let mut store = ControlStore::open(&scene.data).expect("store");
+    for (_, grant_id) in grants {
+        record_claude_code_revocation(&mut store, grant_id);
+    }
+    let removed = store
+        .remove_provider_profile("claude", store.revision())
+        .expect("removed");
+    assert_eq!(removed.profile_id, profile_id);
+    let events = store.entries.len();
+    let below = scene.sign_in.join("below");
+    fs::create_dir(&below).expect("folder below");
+    let inside = ClaudeCodeDeclaration {
+        name: "inside".to_owned(),
+        program: scene.program.clone(),
+        config_folder: below,
+    };
+    for declaration in [scene.declaration("again"), inside] {
+        assert!(
+            matches!(
+                store.add_claude_code_profile(&declaration, store.revision()),
+                Err(ControlError::ClaudeCodeSignInReserved(id)) if id == profile_id
+            ),
+            "{}",
+            declaration.name
+        );
+    }
+    assert_eq!(store.entries.len(), events);
+    drop(store);
+    assert!(acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("acknowledged"));
+    drop(left);
+
+    let mut store = ControlStore::open(&scene.data).expect("store");
+    store
+        .add_claude_code_profile(&scene.declaration("again"), store.revision())
+        .expect("the folder is free once acknowledged");
+    let _ = store
+        .remove_provider_profile("again", store.revision())
+        .expect("removed");
+    let unreadable = Uuid::new_v4();
+    fs::write(
+        scene.data.join(RUNTIME_PARENT).join(format!(
+            "{}.{}.unconfirmed",
+            unreadable.simple(),
+            Uuid::new_v4().simple()
+        )),
+        b"not a record",
+    )
+    .expect("unreadable record");
     assert!(matches!(
-        wait_for_claude_code_turns(&scene.data, unlocked, short),
-        Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == unlocked
+        store.add_claude_code_profile(&scene.declaration("again"), store.revision()),
+        Err(ControlError::ClaudeCodeTurnRecordUnreadable(id)) if id == unreadable
     ));
-    assert!(acknowledge_claude_code_cleanup(&scene.data, unlocked).expect("acknowledged"));
+    assert!(acknowledge_claude_code_cleanup(&scene.data, unreadable).expect("acknowledged"));
+    store
+        .add_claude_code_profile(&scene.declaration("again"), store.revision())
+        .expect("nothing is reserved");
 }
 
 #[cfg(not(windows))]
@@ -1338,6 +1427,56 @@ mod windows {
             Some(profile.id()),
             "the earlier withdrawal still counts"
         );
+    }
+
+    /// A withdrawal append whose sync failed may have written the event,
+    /// which a later open replays and a running turn's watcher reads, so the
+    /// failed revocation names the connection.
+    #[test]
+    fn a_withdrawal_append_that_failed_its_sync_names_the_connection() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let profile = store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        record_claude_code_grants(&mut store, &scene, profile.id());
+        store.fail_next_sync = true;
+        let failure = store
+            .revoke_claude_code_grants("claude")
+            .expect_err("the append's sync fails");
+        assert!(
+            matches!(failure.error, ControlError::Io(_)),
+            "{:?}",
+            failure.error
+        );
+        assert_eq!(failure.withdrawn, Some(profile.id()));
+        drop(store);
+        let store = ControlStore::open(&scene.data).expect("store");
+        assert_eq!(
+            store.claude_code_withdrawn(profile.id()),
+            Some("a grant of the Claude Code connection was revoked"),
+            "the written event withdrew the connection"
+        );
+    }
+
+    /// A retry after an earlier revocation revoked the last grant still
+    /// counts that withdrawal: no grant is active then. Every grant active
+    /// means none was withdrawn yet.
+    #[test]
+    fn a_retry_with_no_grant_left_counts_the_earlier_withdrawal() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let profile = store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        let grants = record_claude_code_grants(&mut store, &scene, profile.id());
+        let active = store.snapshot.claude_code_grants.clone();
+        assert!(!store.claude_code_withdrawal_recorded(profile.id(), &active));
+        for (_, grant_id) in grants {
+            record_claude_code_revocation(&mut store, grant_id);
+        }
+        assert!(store.snapshot.claude_code_grants.is_empty());
+        assert!(store.claude_code_withdrawal_recorded(profile.id(), &[]));
     }
 
     /// A granted sign-in folder that moved keeps every scope unproven and

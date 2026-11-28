@@ -36,7 +36,7 @@ use super::stream::{
     check_toolless_lockdown, parse_line,
 };
 use super::watch::{self, Watcher};
-use crate::control::{ClaudeCodeWatch, WatchCursor};
+use crate::control::{ClaudeCodeWatch, TurnRecord, WatchCursor};
 use crate::prompt::ModelMessage;
 use crate::provider::{MAX_STREAM_BYTES, ModelReply, ProviderError, ReasoningEffort};
 use crate::turn::{CancelToken, ToolDefinition};
@@ -247,6 +247,15 @@ impl ClaudeCodeClient {
         let mut session = Session::new(events, turn, self.config.request_timeout);
         session.turn_lock = Some(lock);
         session.turn_watch = Some(self.config.watch.clone());
+        // Written under the lock and before any process starts, so an
+        // OMGCode process that exits or fails before the tree was observed
+        // ended leaves it behind.
+        session.turn_record = Some(
+            self.config
+                .watch
+                .record_turn()
+                .map_err(|_| failure(ClaudeCodeFailure::Failed))?,
+        );
         let mcp_config = if tools.is_empty() {
             json!({ "mcpServers": {} })
         } else {
@@ -567,8 +576,11 @@ pub(super) struct Session {
     /// The shared turn lock, held from before the launch until the tree and
     /// the workers ended, so a revocation's wait sees the process gone.
     turn_lock: Option<File>,
-    /// The connection the lock belongs to, which records an unconfirmed end.
+    /// The connection the lock belongs to.
     turn_watch: Option<ClaudeCodeWatch>,
+    /// The turn's durable record, written before the launch and cleared only
+    /// once the tree was observed ended.
+    turn_record: Option<TurnRecord>,
     /// Whether a tree of this session was not observed ended, also one the
     /// launch could not stop before the session owned it.
     unconfirmed: bool,
@@ -610,6 +622,7 @@ impl Session {
             request_timeout,
             turn_lock: None,
             turn_watch: None,
+            turn_record: None,
             unconfirmed: false,
             watcher: None,
             withdrawn: false,
@@ -716,7 +729,14 @@ impl Session {
                 self.kill();
                 return Err(failure(ClaudeCodeFailure::Failed));
             }
-            let event = match self.next_event() {
+            let next = match self.next_event(cancel, deadline) {
+                Ok(next) => next,
+                Err(error) => {
+                    self.kill();
+                    return Err(error);
+                }
+            };
+            let event = match next {
                 Next::Event(event) => event,
                 Next::Calls(calls) => return Ok(Progress::Calls(calls)),
                 Next::Idle => continue,
@@ -759,50 +779,86 @@ impl Session {
     /// The next thing the round acts on. Events come in arrival order, in
     /// batches: a batch is at most the events kept back by an answer and a
     /// full queue, which is everything already waiting when it began. Calls
-    /// are handed to the runtime only between batches, so a cancellation the
-    /// relay sent before the hand-off is processed first and its call never
-    /// reaches the runtime, and a steady stream of events cannot hold back a
-    /// ready call.
-    fn next_event(&mut self) -> Next {
-        if self.batch_left == 0 {
-            if let Some(calls) = self.ready_calls() {
-                return Next::Calls(calls);
+    /// are handed to the runtime only between batches, so a steady stream of
+    /// events cannot hold back a ready call, and only after the relay's
+    /// events already queued were handled, so a cancellation the relay sent
+    /// before the hand-off retires its call first, also one queued right
+    /// behind a batch's last event.
+    ///
+    /// # Errors
+    ///
+    /// The error of a relay event handled at the hand-off.
+    fn next_event(
+        &mut self,
+        cancel: &CancelToken,
+        deadline: Instant,
+    ) -> Result<Next, ProviderError> {
+        loop {
+            if self.batch_left == 0 {
+                if let Some(calls) = self.hand_off(cancel, deadline)? {
+                    return Ok(Next::Calls(calls));
+                }
+                self.batch_left = self.deferred.len() + EVENT_QUEUE;
             }
-            self.batch_left = self.deferred.len() + EVENT_QUEUE;
-        }
-        if let Some(event) = self.deferred.pop_front() {
-            self.batch_left -= 1;
-            return Next::Event(event);
-        }
-        let Some(events) = &self.events else {
-            return Next::Ended;
-        };
-        match events.try_recv() {
-            Ok(event) => {
+            if let Some(event) = self.deferred.pop_front() {
                 self.batch_left -= 1;
-                return Next::Event(event);
+                return Ok(Next::Event(event));
             }
-            Err(TryRecvError::Disconnected) => return Next::Ended,
-            Err(TryRecvError::Empty) => {}
-        }
-        // Nothing is waiting: the batch ends, and ready calls go first.
-        self.batch_left = 0;
-        if let Some(calls) = self.ready_calls() {
-            return Next::Calls(calls);
-        }
-        let Some(events) = &self.events else {
-            return Next::Ended;
-        };
-        match events.recv_timeout(POLL) {
-            Ok(event) => {
-                // A new batch starts with this event, so whatever queued
-                // behind it is handled before the next hand-off.
-                self.batch_left = EVENT_QUEUE;
-                Next::Event(event)
+            let Some(events) = &self.events else {
+                return Ok(Next::Ended);
+            };
+            match events.try_recv() {
+                Ok(event) => {
+                    self.batch_left -= 1;
+                    return Ok(Next::Event(event));
+                }
+                Err(TryRecvError::Disconnected) => return Ok(Next::Ended),
+                Err(TryRecvError::Empty) => {}
             }
-            Err(RecvTimeoutError::Timeout) => Next::Idle,
-            Err(RecvTimeoutError::Disconnected) => Next::Ended,
+            // Nothing is waiting: the batch ends, and ready calls go first.
+            self.batch_left = 0;
+            if let Some(calls) = self.hand_off(cancel, deadline)? {
+                return Ok(Next::Calls(calls));
+            }
+            if !self.deferred.is_empty() {
+                // The hand-off kept back output that arrived before what the
+                // queue holds now; the next batch starts with it.
+                continue;
+            }
+            let Some(events) = &self.events else {
+                return Ok(Next::Ended);
+            };
+            return Ok(match events.recv_timeout(POLL) {
+                Ok(event) => {
+                    // A new batch starts with this event, so whatever queued
+                    // behind it is handled before the next hand-off.
+                    self.batch_left = EVENT_QUEUE;
+                    Next::Event(event)
+                }
+                Err(RecvTimeoutError::Timeout) => Next::Idle,
+                Err(RecvTimeoutError::Disconnected) => Next::Ended,
+            });
         }
+    }
+
+    /// The calls to hand to the runtime, when some are ready once the
+    /// relay's events already queued were handled. Those events can retire a
+    /// ready call or add another; the process's output among them waits for
+    /// the next batch, in arrival order.
+    fn hand_off(
+        &mut self,
+        cancel: &CancelToken,
+        deadline: Instant,
+    ) -> Result<Option<Vec<PendingCall>>, ProviderError> {
+        if !self.calls_ready() {
+            return Ok(None);
+        }
+        self.absorb_relay_events(cancel, deadline)?;
+        if !self.calls_ready() {
+            return Ok(None);
+        }
+        let count = self.unreturned.len().min(MAX_CALLS_PER_ROUND);
+        Ok(Some(self.unreturned.drain(..count).collect()))
     }
 
     /// Handle the relay's events already waiting, at most a full queue, and
@@ -835,12 +891,12 @@ impl Session {
         Ok(())
     }
 
-    /// Calls ready to return: the lockdown was checked, and either the
-    /// round is full, every announced call has arrived, or no further call
-    /// arrived for [`SETTLE`].
-    fn ready_calls(&mut self) -> Option<Vec<PendingCall>> {
+    /// Whether calls are ready to return: the lockdown was checked, and
+    /// either the round is full, every announced call has arrived, or no
+    /// further call arrived for [`SETTLE`].
+    fn calls_ready(&self) -> bool {
         if self.unreturned.is_empty() || !self.init_seen {
-            return None;
+            return false;
         }
         let announced = !self.announced.is_empty()
             && self.announced.iter().all(|id| {
@@ -849,11 +905,7 @@ impl Session {
                     .any(|call| call.tool_use_id.as_deref() == Some(id.as_str()))
             });
         let settled = self.last_call.is_some_and(|at| at.elapsed() >= SETTLE);
-        if self.unreturned.len() < MAX_CALLS_PER_ROUND && !announced && !settled {
-            return None;
-        }
-        let count = self.unreturned.len().min(MAX_CALLS_PER_ROUND);
-        Some(self.unreturned.drain(..count).collect())
+        self.unreturned.len() >= MAX_CALLS_PER_ROUND || announced || settled
     }
 
     fn stream_event(
@@ -1046,8 +1098,10 @@ impl Session {
         raced_write(
             || writer.write_all(line).and_then(|()| writer.flush()),
             cancel,
-            deadline,
-            move || {
+            || Instant::now() >= deadline,
+            || {
+                // A failed shutdown leaves the tree's end, raised next,
+                // which closes the relay's side of the channel.
                 let _ = shutdown.shutdown();
                 if let Some(tree) = &tree {
                     tree.cancel();
@@ -1063,18 +1117,18 @@ impl Session {
     ///
     /// [`ClaudeCodeFailure::Withdrawn`] when the settings withdrew the
     /// connection before the process ended, and [`ClaudeCodeFailure::Failed`]
-    /// when the end of the tree or of a worker could not be confirmed.
+    /// when the end of the tree or of a worker could not be confirmed, when
+    /// the tree's outcome could not be read, or when the turn's record could
+    /// not be cleared.
     pub(super) fn finish(&mut self) -> Result<(), ProviderError> {
         self.close_channel();
-        let ended = self
-            .child
-            .take()
-            .is_none_or(|child| child.finish(EXIT_GRACE).is_ok());
-        let joined = self.stop_workers();
-        self.release_turn(ended);
+        let (ended, read) = self.end_tree(EXIT_GRACE);
+        let workers = self.stop_workers();
+        let joined = !workers.panicked && workers.outstanding.is_empty();
+        let released = self.release_turn(ended, workers.outstanding);
         if self.withdrawn {
             Err(failure(ClaudeCodeFailure::Withdrawn))
-        } else if ended && joined {
+        } else if ended && read && joined && released {
             Ok(())
         } else {
             Err(failure(ClaudeCodeFailure::Failed))
@@ -1091,36 +1145,62 @@ impl Session {
         self.close_channel();
         // An unconfirmed end has already dropped the tree, whose own
         // fallback termination ran before this returns.
-        let ended = self
-            .child
-            .take()
-            .is_none_or(|child| child.finish(Duration::ZERO).is_ok());
-        let _ = self.stop_workers();
-        self.release_turn(ended);
+        let (ended, _read) = self.end_tree(Duration::ZERO);
+        let workers = self.stop_workers();
+        // The caller reports its own error; the turn's hold on the
+        // connection still follows what was observed.
+        let _released = self.release_turn(ended, workers.outstanding);
     }
 
-    /// Stop the watcher, then release the turn lock if the tree was
-    /// observed `ended`. For a tree whose end was not confirmed, the lock is
-    /// kept until this process exits and a marker that outlives it is
-    /// recorded, so a revocation's wait never reports that turn ended.
-    fn release_turn(&mut self, ended: bool) {
+    /// Finish the tree, waiting up to `grace` for it to end on its own.
+    /// Returns whether the whole tree was observed ended, and whether its
+    /// outcome was read: the platform can observe the tree empty and then
+    /// fail its usage accounting or standard-error capture, which fails the
+    /// turn but proves the tree's end.
+    fn end_tree(&mut self, grace: Duration) -> (bool, bool) {
+        let Some(child) = self.child.take() else {
+            return (true, true);
+        };
+        let end = child.tree_end();
+        let read = child.finish(grace).is_ok();
+        (end.observed(), read)
+    }
+
+    /// Stop the watcher, then end the turn's hold on the connection by what
+    /// was observed. A tree observed `ended` clears the turn's record; the
+    /// lock is then released once every worker in `outstanding` ended, by a
+    /// thread of its own, or at once when none is. A tree whose end was not
+    /// confirmed keeps its record, which outlives this process, and its
+    /// lock, until this process exits, so a revocation's wait never reports
+    /// that turn ended. Returns whether the record was cleared and nothing
+    /// was left held.
+    fn release_turn(&mut self, ended: bool, outstanding: Vec<JoinHandle<()>>) -> bool {
         if let Some(mut watcher) = self.watcher.take() {
             watcher.stop();
             self.withdrawn |= watcher.withdrawn();
         }
         self.unconfirmed |= !ended;
-        if let Some(lock) = self.turn_lock.take()
-            && self.unconfirmed
-        {
-            // A marker that cannot be written leaves the held lock, which
-            // still fails every wait while this process runs.
-            if let Some(watch) = &self.turn_watch {
-                let _ = watch.record_unconfirmed_cleanup();
-            }
-            UNCONFIRMED_TURNS
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(lock);
+        let record = self.turn_record.take();
+        let Some(lock) = self.turn_lock.take() else {
+            return !self.unconfirmed && outstanding.is_empty();
+        };
+        if self.unconfirmed {
+            // The record stays where it is; only an acknowledgement removes
+            // it.
+            drop(record);
+            hold_until_exit(lock);
+            return false;
+        }
+        // The record goes before the lock, so a revocation that takes the
+        // lock next finds none. One that cannot be removed stays and fails
+        // every later wait until acknowledged.
+        let cleared = record.is_none_or(|record| record.clear().is_ok());
+        if outstanding.is_empty() {
+            drop(lock);
+            cleared
+        } else {
+            hold_until_ended(lock, outstanding);
+            false
         }
     }
 
@@ -1140,21 +1220,37 @@ impl Session {
     }
 
     /// Drop the queue, which wakes a reader blocked on it, then wait for
-    /// every worker for at most [`WORKER_GRACE`]. Returns whether all ended.
-    fn stop_workers(&mut self) -> bool {
+    /// every worker for at most [`WORKER_GRACE`].
+    fn stop_workers(&mut self) -> WorkersStopped {
         self.events = None;
         let deadline = deadline_after(WORKER_GRACE);
-        let mut all_ended = true;
+        let mut stopped = WorkersStopped {
+            panicked: false,
+            outstanding: Vec::new(),
+        };
         for worker in std::mem::take(&mut self.workers) {
             while !worker.is_finished() && Instant::now() < deadline {
                 thread::sleep(POLL);
             }
-            // A worker still running is left detached; its reads and writes
-            // were already unblocked, so it ends with the tree.
-            all_ended &= worker.is_finished() && worker.join().is_ok();
+            if worker.is_finished() {
+                // A worker that panicked has ended too.
+                stopped.panicked |= worker.join().is_err();
+            } else {
+                // Its reads and writes were already unblocked, so it ends
+                // with the tree; the turn's lock waits for it.
+                stopped.outstanding.push(worker);
+            }
         }
-        all_ended
+        stopped
     }
+}
+
+/// How the workers of one session ended.
+struct WorkersStopped {
+    /// Whether a worker that ended had panicked.
+    panicked: bool,
+    /// The workers still running after [`WORKER_GRACE`].
+    outstanding: Vec<JoinHandle<()>>,
 }
 
 impl Drop for Session {
@@ -1165,34 +1261,87 @@ impl Drop for Session {
 
 /// The turn locks of trees whose end could not be confirmed. They stay held
 /// until this process exits, so no revocation reports those turns ended; the
-/// marker each one recorded keeps failing revocations after that.
+/// record each one left keeps failing revocations after that.
 static UNCONFIRMED_TURNS: Mutex<Vec<File>> = Mutex::new(Vec::new());
 
+/// Keep `lock` held until this process exits.
+fn hold_until_exit(lock: File) {
+    UNCONFIRMED_TURNS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(lock);
+}
+
+/// Keep `lock` held until every one of `workers` ended, on a thread that
+/// joins them and then releases it, or until this process exits when that
+/// thread cannot start. The thread is the workers' supervisor and needs none
+/// of its own: it holds nothing but the lock, which this process's exit
+/// releases together with every thread.
+fn hold_until_ended(lock: File, workers: Vec<JoinHandle<()>>) {
+    let (sender, received) = mpsc::channel::<(File, Vec<JoinHandle<()>>)>();
+    let spawned = thread::Builder::new()
+        .name("claude-code-turn-end".into())
+        .spawn(move || {
+            if let Ok((lock, workers)) = received.recv() {
+                for worker in workers {
+                    // A worker that panicked has ended too.
+                    let _ended = worker.join();
+                }
+                drop(lock);
+            }
+        });
+    // The lock goes to the thread only once it runs, so a failed start
+    // cannot release it.
+    let held = (lock, workers);
+    let unsent = match spawned {
+        Ok(_supervisor) => sender.send(held).err().map(|unsent| unsent.0),
+        Err(_) => Some(held),
+    };
+    if let Some((lock, _workers)) = unsent {
+        hold_until_exit(lock);
+    }
+}
+
 /// Run `write` on this thread while a watcher calls `stop`, once, when
-/// `cancel` is set or `deadline` passes before the write is recorded
+/// `cancel` is set or `expired` turns `true` before the write is recorded
 /// finished. The write is recorded finished after `write` returns, so one
 /// whose bytes went out but that is recorded only after the stop still fails.
+/// A write already cancelled or expired never starts, and the writer checks
+/// both again before it records the write finished, so a watcher that has
+/// not run yet cannot let an overdue write succeed. Every write refused for
+/// either reason calls `stop` before this returns.
 ///
 /// # Errors
 ///
 /// [`ProviderError::Cancelled`] or [`ClaudeCodeFailure::Failed`] when the
-/// watcher stopped the write first, [`ClaudeCodeFailure::Failed`] when the
-/// watcher cannot start, and [`ClaudeCodeFailure::Protocol`] when `write`
-/// failed.
+/// write was refused or stopped for a cancellation or its expiry,
+/// [`ClaudeCodeFailure::Failed`] when the watcher cannot start, and
+/// [`ClaudeCodeFailure::Protocol`] when `write` failed.
 fn raced_write(
     write: impl FnOnce() -> io::Result<()>,
     cancel: &CancelToken,
-    deadline: Instant,
-    stop: impl FnOnce() + Send,
+    expired: impl Fn() -> bool + Sync,
+    stop: impl Fn() + Sync,
 ) -> Result<(), ProviderError> {
+    let refused = || {
+        if cancel.is_cancelled() {
+            ProviderError::Cancelled
+        } else {
+            failure(ClaudeCodeFailure::Failed)
+        }
+    };
+    if cancel.is_cancelled() || expired() {
+        stop();
+        return Err(refused());
+    }
     let race = WriteRace::new();
     let (written, finished) = thread::scope(|scope| {
-        let race = &race;
+        let (race, expired, stop) = (&race, &expired, &stop);
         let watcher = thread::Builder::new()
             .name("claude-code-write".into())
             .spawn_scoped(scope, move || {
                 while race.running() {
-                    if cancel.is_cancelled() || Instant::now() >= deadline {
+                    if cancel.is_cancelled() || expired() {
                         // Only a write still running is stopped.
                         if race.stop() {
                             stop();
@@ -1206,16 +1355,19 @@ fn raced_write(
             return Err(failure(ClaudeCodeFailure::Failed));
         };
         let written = write();
-        let finished = race.finish();
+        let finished = if cancel.is_cancelled() || expired() {
+            if race.stop() {
+                stop();
+            }
+            false
+        } else {
+            race.finish()
+        };
         watcher.thread().unpark();
         Ok((written, finished))
     })?;
     if !finished {
-        return Err(if cancel.is_cancelled() {
-            ProviderError::Cancelled
-        } else {
-            failure(ClaudeCodeFailure::Failed)
-        });
+        return Err(refused());
     }
     written.map_err(|_| failure(ClaudeCodeFailure::Protocol))
 }
@@ -1432,7 +1584,12 @@ mod socket_tests {
     fn a_runtime_folder_that_is_not_utf8_falls_back_to_tmp() {
         use std::os::unix::ffi::OsStringExt;
 
-        let base = tempfile::tempdir().expect("base");
+        // Beneath `/tmp` itself, not `TMPDIR`, which can be too long for
+        // the socket path on its own and would hide the encoding check.
+        let base = tempfile::Builder::new()
+            .prefix("enc-")
+            .tempdir_in("/tmp")
+            .expect("base");
         let mut name = b"run-".to_vec();
         name.push(0xFF);
         let folder = fs::canonicalize(base.path())

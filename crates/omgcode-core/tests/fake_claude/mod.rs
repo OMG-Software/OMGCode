@@ -16,7 +16,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use omgcode_core::provider::claude_code::RELAY_NONCE_VARIABLE;
@@ -71,6 +71,10 @@ impl McpClient {
             if let Some(value) = env::var_os(name) {
                 builder.env(name, value);
             }
+        }
+        // The core tests' relay holds its alive lock in the sign-in folder.
+        if let Some(folder) = env::var_os("CLAUDE_CONFIG_DIR") {
+            builder.env(ALIVE_FOLDER_VARIABLE, folder);
         }
         let mut child = builder.spawn().expect("relay");
         let input = child.stdin.take().expect("relay stdin");
@@ -129,16 +133,21 @@ impl McpClient {
     /// The replies soon fill the relay's pipes and the channel, so OMGCode's
     /// write of the next one blocks. Only then does OMGCode stop reading
     /// requests, and the padded requests fill the other direction until
-    /// this fake's writes block. Once none was accepted for
-    /// [`STALL_QUIET`], the stall is marked in `folder`; the fake then waits
-    /// to be ended.
+    /// this fake's writes block. The writer names the request it is writing
+    /// for as long as that write has not returned, so the stall is marked in
+    /// `folder` only when one write was still in progress for
+    /// [`STALL_QUIET`]: a writer that is not running names none, and a
+    /// writer whose write failed is marked as failed instead. The fake then
+    /// waits to be ended.
     fn flood(&mut self, folder: &Path) {
-        let sent = AtomicU64::new(0);
+        // The request whose write is in progress, or 0 between writes.
+        let writing = AtomicU64::new(0);
+        let failed = AtomicBool::new(false);
         let input = &mut self.input;
         let pad = "x".repeat(FLOOD_PAD_BYTES);
         std::thread::scope(|scope| {
-            let sent = &sent;
-            scope.spawn(move || {
+            let (writing, failed) = (&writing, &failed);
+            let writer = scope.spawn(move || {
                 for id in FLOOD_IDS {
                     let mut line = json!({
                         "jsonrpc": "2.0", "id": id, "method": "tools/list",
@@ -146,28 +155,33 @@ impl McpClient {
                     })
                     .to_string();
                     line.push('\n');
-                    if input
+                    writing.store(id, Ordering::SeqCst);
+                    let written = input
                         .write_all(line.as_bytes())
-                        .and_then(|()| input.flush())
-                        .is_err()
-                    {
+                        .and_then(|()| input.flush());
+                    writing.store(0, Ordering::SeqCst);
+                    if written.is_err() {
+                        failed.store(true, Ordering::SeqCst);
                         return;
                     }
-                    sent.store(id, Ordering::SeqCst);
                 }
             });
             let mut last = (0, Instant::now());
             loop {
                 std::thread::sleep(Duration::from_millis(50));
-                let now = sent.load(Ordering::SeqCst);
-                if now + 1 == FLOOD_IDS.end {
+                if failed.load(Ordering::SeqCst) {
+                    let _ = fs::write(folder.join(FLOOD_FAILED_FILE), b"a flood write failed");
+                    break;
+                }
+                if writer.is_finished() {
                     let _ = fs::write(folder.join(FLOODED_FILE), b"no write blocked");
                     break;
                 }
-                if now != last.0 {
-                    last = (now, Instant::now());
+                let pending = writing.load(Ordering::SeqCst);
+                if pending == 0 || pending != last.0 {
+                    last = (pending, Instant::now());
                 } else if last.1.elapsed() >= STALL_QUIET {
-                    let _ = fs::write(folder.join(STALLED_FILE), now.to_string());
+                    let _ = fs::write(folder.join(STALLED_FILE), pending.to_string());
                     break;
                 }
             }
@@ -180,12 +194,21 @@ impl McpClient {
 const FLOOD_IDS: std::ops::Range<u64> = 2..4000;
 /// Padding in each flood request, ignored by `tools/list`.
 const FLOOD_PAD_BYTES: usize = 16 * 1024;
-/// How long the relay must accept no request before the stall is marked.
+/// How long one flood write must stay in progress before the stall is
+/// marked.
 const STALL_QUIET: Duration = Duration::from_secs(1);
-/// Written to the sign-in folder once a flood's writes stopped.
+/// Written to the sign-in folder once a flood's write stayed in progress.
 const STALLED_FILE: &str = "fake-stalled.txt";
 /// Written to the sign-in folder when every flood request was accepted.
 const FLOODED_FILE: &str = "fake-flooded.txt";
+/// Written to the sign-in folder when a flood's write failed.
+const FLOOD_FAILED_FILE: &str = "fake-flood-failed.txt";
+/// Locked by the fake for as long as it runs.
+const FAKE_ALIVE_FILE: &str = "fake-alive.lock";
+/// Locked by the core tests' relay for as long as it runs.
+pub const RELAY_ALIVE_FILE: &str = "relay-alive.lock";
+/// The variable that names the folder for the relay's file.
+pub const ALIVE_FOLDER_VARIABLE: &str = "FAKE_CLAUDE_ALIVE_FOLDER";
 
 impl Drop for McpClient {
     fn drop(&mut self) {
@@ -199,12 +222,89 @@ const STARTED_FILE: &str = "fake-started.txt";
 /// Written to the sign-in folder when the fake panics.
 const PANIC_FILE: &str = "fake-panic.txt";
 
-/// Mark the start in the sign-in folder and record a later panic there.
+/// Hold an exclusive lock on `folder/name` until this process exits, and
+/// write this process's identifier into the file once it is locked. The
+/// system releases the lock only when the process ends, so a test that then
+/// takes the lock knows the process no longer runs.
+pub fn hold_alive(folder: &Path, name: &str) {
+    let Ok(mut file) = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(folder.join(name))
+    else {
+        return;
+    };
+    if file.lock().is_err() {
+        return;
+    }
+    let _ = file.write_all(std::process::id().to_string().as_bytes());
+    // Never closed, so the lock lasts as long as the process.
+    std::mem::forget(file);
+}
+
+/// Wait up to `limit` for the fake and the relay that left their files in
+/// `sign_in` to end: each file must have been locked and written by its
+/// process, and its lock must now be free.
+///
+/// # Errors
+///
+/// What was not observed, by process.
+#[allow(dead_code, reason = "only the core process tests flood the relay")]
+pub fn processes_ended(sign_in: &Path, limit: Duration) -> Result<(), String> {
+    let until = Instant::now() + limit;
+    for name in [FAKE_ALIVE_FILE, RELAY_ALIVE_FILE] {
+        let path = sign_in.join(name);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("{name} was never made: {error}"))?;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => return Err(format!("the process of {name} still runs: {error}")),
+            }
+        }
+        // Read only once locked: the holder's lock also covers reads.
+        let mut holder = String::new();
+        (&file)
+            .read_to_string(&mut holder)
+            .map_err(|error| format!("{name} cannot be read: {error}"))?;
+        if holder.is_empty() {
+            return Err(format!("{name} was never locked by its process"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the fake and the relay that left their files in `sign_in` both
+/// hold their alive locks now. A missing file counts as not running, so a
+/// probe that could see nothing cannot pass for one that saw them run.
+#[allow(dead_code, reason = "only the core process tests flood the relay")]
+#[must_use]
+pub fn processes_running(sign_in: &Path) -> bool {
+    [FAKE_ALIVE_FILE, RELAY_ALIVE_FILE].into_iter().all(|name| {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(sign_in.join(name))
+            .is_ok_and(|file| matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock)))
+    })
+}
+
+/// Mark the start in the sign-in folder, hold the fake's alive lock there,
+/// and record a later panic there.
 fn record_start() {
     let Some(folder) = env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from) else {
         return;
     };
     let _ = fs::write(folder.join(STARTED_FILE), b"started");
+    hold_alive(&folder, FAKE_ALIVE_FILE);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = fs::write(folder.join(PANIC_FILE), info.to_string());
@@ -215,7 +315,15 @@ fn record_start() {
 /// Remove what an earlier run left in `sign_in`, so [`diagnosis`] describes
 /// the next run only.
 pub fn forget_runs(sign_in: &Path) {
-    for name in [STARTED_FILE, PANIC_FILE, STALLED_FILE, FLOODED_FILE] {
+    for name in [
+        STARTED_FILE,
+        PANIC_FILE,
+        STALLED_FILE,
+        FLOODED_FILE,
+        FLOOD_FAILED_FILE,
+        FAKE_ALIVE_FILE,
+        RELAY_ALIVE_FILE,
+    ] {
         match fs::remove_file(sign_in.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -235,6 +343,8 @@ pub fn diagnosis(sign_in: &Path) -> String {
     };
     if sign_in.join(FLOODED_FILE).is_file() {
         format!("{run}; its flood was accepted whole, so no write blocked")
+    } else if sign_in.join(FLOOD_FAILED_FILE).is_file() {
+        format!("{run}; a write of its flood failed")
     } else {
         run
     }

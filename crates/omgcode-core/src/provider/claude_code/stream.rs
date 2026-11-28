@@ -400,14 +400,17 @@ fn parse_stream_event(top: &Map<String, Value>) -> Result<StreamEvent, StreamErr
         event.get("delta").ok_or(StreamError::Shape("delta"))?,
         "delta",
     )?;
-    let kind = discriminator(delta, "type")?;
-    if optional_name(top, "parent_tool_use_id")?.is_some() || kind != "text_delta" {
+    if discriminator(delta, "type")? != "text_delta" {
         return Ok(StreamEvent::Ignored);
     }
-    match delta.get("text") {
-        Some(Value::String(text)) => Ok(StreamEvent::TextDelta(text.clone())),
-        _ => Err(StreamError::Shape("text")),
+    // A text delta's text is checked for every agent too.
+    let Some(Value::String(text)) = delta.get("text") else {
+        return Err(StreamError::Shape("text"));
+    };
+    if optional_name(top, "parent_tool_use_id")?.is_some() {
+        return Ok(StreamEvent::Ignored);
     }
+    Ok(StreamEvent::TextDelta(text.clone()))
 }
 
 /// A `content_block_start` reports a `tool_use` block's name; any other

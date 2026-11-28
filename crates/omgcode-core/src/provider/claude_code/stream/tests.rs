@@ -287,6 +287,19 @@ fn a_sub_agent_delta_is_checked_before_it_is_ignored() {
             r#"{"type":"stream_event","event":{"type":"content_block_delta"},"parent_tool_use_id":"toolu_01X"}"#,
             "delta",
         ),
+        // A text delta's text is checked as the main agent's is.
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":null}},"parent_tool_use_id":"toolu_01X"}"#,
+            "text",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta"}},"parent_tool_use_id":"toolu_01X"}"#,
+            "text",
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":null}},"parent_tool_use_id":null}"#,
+            "text",
+        ),
     ] {
         assert_eq!(
             parse_line(line.as_bytes()),

@@ -143,6 +143,13 @@ impl StreamingChild {
         self.emptied.load(Ordering::SeqCst)
     }
 
+    /// A handle that reports [`Self::has_ended`] also after `finish` or
+    /// `Drop` consumed the child, so a caller can tell an accounting failure
+    /// after an observed end from an unconfirmed cleanup.
+    pub fn tree_end(&self) -> TreeEnd {
+        TreeEnd(Arc::clone(&self.emptied))
+    }
+
     /// Close standard input if the caller still holds it, wait up to `grace`
     /// for the tree to end on its own, then terminate it; observe the tree
     /// empty, join the supervisor, and return the outcome.
@@ -199,6 +206,19 @@ impl StreamingChild {
 
     fn supervisor_done(&self) -> bool {
         self.has_ended() || self.supervisor.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+}
+
+/// Whether the supervisor of one [`StreamingChild`] observed its whole tree
+/// empty, readable after the child is gone.
+#[derive(Clone, Debug)]
+pub struct TreeEnd(Arc<AtomicBool>);
+
+impl TreeEnd {
+    /// `true` once the supervisor observed the whole tree empty. It never
+    /// turns `false` again.
+    pub fn observed(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
     }
 }
 
@@ -514,8 +534,10 @@ mod supervision_tests {
             empty: true,
         });
         assert!(child.has_ended());
+        let end = child.tree_end();
         let error = child.finish(Duration::ZERO).expect_err("usage failed");
         assert!(matches!(error, ProcessError::Supervision(_)), "{error:?}");
+        assert!(end.observed(), "the end outlives the child");
     }
 
     #[test]
@@ -525,11 +547,13 @@ mod supervision_tests {
             empty: false,
         });
         assert!(!child.has_ended());
+        let end = child.tree_end();
         let error = child.finish(Duration::ZERO).expect_err("never empty");
         assert!(
             matches!(error, ProcessError::CleanupUnconfirmed(_)),
             "{error:?}"
         );
+        assert!(!end.observed());
     }
 
     #[test]

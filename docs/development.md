@@ -526,10 +526,15 @@ run them inside `systemd-run --user --scope -p Delegate=yes`, as for `run`.
 takes `low` to `max`. A turn that the CLI reports as not signed in fails with
 `claude_code_not_signed_in`. `models`, the desktop shell, and the active
 selection refuse the profile with `claude_code_cli_only`. When a revocation
-or removal reports that a turn ended without its process tree being
-observed ended, check that no `claude` process of the connection remains,
-then run `workspace claude-code-acknowledge <profile id>` with the
-identifier the error names. On Windows a moved sign-in folder must be
+or removal reports that a turn was not observed to end with its whole
+process tree, check that tree before anything else: no `claude` process of
+the connection, none of its MCP relays, and none of their descendants may
+remain. Only then run `workspace claude-code-acknowledge <profile id>` with
+the identifier the error names; if you cannot confirm that the tree ended,
+keep the record, which also keeps the sign-in folder reserved. The command
+removes the record only and records nothing about your check. A revocation
+that stopped on such a record is retried only after that acknowledgement.
+On Windows a moved sign-in folder must be
 moved back before `claude-code-revoke` can revoke its grant. See
 [provider authentication](provider-authentication.md#claude-code-connection-adr-0109).
 No signed-in turn of the real `claude` has run inside the AppContainer.

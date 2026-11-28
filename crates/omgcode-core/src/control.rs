@@ -51,7 +51,7 @@ pub use claude_code::{
     ClaudeCodeSetup, ClaudeCodeWatch, acknowledge_claude_code_cleanup, claude_code_container,
     claude_code_runtime_folder, wait_for_claude_code_turns,
 };
-pub(crate) use claude_code::{Recheck, WatchCursor};
+pub(crate) use claude_code::{Recheck, TurnRecord, WatchCursor};
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
     ContainerRevocation, RootGrantNeed, container_name, root_grant_need,
@@ -206,13 +206,33 @@ pub enum ControlError {
     )]
     ClaudeCodeTurnsRunning,
     /// A turn of the Claude Code connection with this profile identifier
-    /// ended without its process tree being observed ended, so its
-    /// processes may remain. Every wait for the connection's turns fails
-    /// until the operator acknowledges it.
+    /// left its record: its process tree was not observed ended, or the
+    /// OMGCode process that ran it ended first, so its processes may remain.
+    /// Every wait for the connection's turns fails until the operator
+    /// acknowledges it.
     #[error(
-        "the change is recorded, but a Claude Code turn of this connection ended without its process tree being observed ended; check that no `claude` process of the connection remains, then run `workspace claude-code-acknowledge {0}`"
+        "the change is recorded, but a Claude Code turn of this connection was not observed to end with its whole process tree; check that no `claude` process of the connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
     )]
     ClaudeCodeCleanupUnconfirmed(uuid::Uuid),
+    /// An acknowledgement found a running turn of the Claude Code connection
+    /// holding its turn lock; nothing was changed.
+    #[error(
+        "a turn of this Claude Code connection holds its turn lock, so nothing was acknowledged; the lock is released when that turn ends or, for a turn whose end was not confirmed, when the `omgcode` process running it exits"
+    )]
+    ClaudeCodeTurnLockHeld,
+    /// A turn record of the Claude Code connection with this profile
+    /// identifier cannot be read, so the sign-in folder it reserves is
+    /// unknown.
+    #[error(
+        "a turn record of the Claude Code connection {0} cannot be read, so the sign-in folder it reserves is unknown; check that no `claude` process of that connection remains, then run `workspace claude-code-acknowledge {0}`"
+    )]
+    ClaudeCodeTurnRecordUnreadable(uuid::Uuid),
+    /// A removed Claude Code connection's turn whose end was not confirmed
+    /// reserves an overlapping sign-in folder, or one that moved since.
+    #[error(
+        "the folder overlaps the sign-in folder of the removed Claude Code connection {0}, whose turn was not observed to end, or that folder moved since the turn started; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`"
+    )]
+    ClaudeCodeSignInReserved(uuid::Uuid),
 }
 
 impl From<StorageError> for ControlError {
