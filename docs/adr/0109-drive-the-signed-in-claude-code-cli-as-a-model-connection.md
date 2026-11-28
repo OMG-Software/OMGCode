@@ -212,7 +212,9 @@ Haiku request with one tool call.
    round uses), the name is the MCP name, and the
    arguments are re-serialised. A round holds at most eight calls and
    returns once it is full, once every announced tool block has arrived, or
-   200 ms after the last call. The MCP request stays open while the turn
+   200 ms after the last call, and only once every queued event was read,
+   so a call whose `notifications/cancelled` is already queued is retired
+   and never reaches the runtime. The MCP request stays open while the turn
    runtime parses the call, applies the workspace policy, waits for any
    approval, dispatches, filters, and journals it, exactly as for every
    other provider. The next round answers each held request with the result

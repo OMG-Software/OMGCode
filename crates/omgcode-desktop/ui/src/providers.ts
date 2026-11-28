@@ -1,10 +1,16 @@
-import type { FixedHostedKind, LocalProviderKind, NewConnectionKind } from "./ipc/types";
+import type {
+  FixedHostedKind,
+  LocalProviderKind,
+  NewConnectionKind,
+  ProgramProviderKind,
+  ProviderKind,
+} from "./ipc/types";
 
 /**
- * How every window names the provider kinds the core reports (ADR-0064, ADR-0092). Shared by the
- * main window's model box and the settings window, so it imports no window code.
+ * How every window names the provider kinds the core reports (ADR-0064, ADR-0092, ADR-0109).
+ * Shared by the main window's model box and the settings window, so it imports no window code.
  */
-export const PROVIDER_NAMES: Readonly<Record<NewConnectionKind, string>> = {
+export const PROVIDER_NAMES: Readonly<Record<ProviderKind, string>> = {
   lm_studio: "LM Studio",
   ollama_local: "Ollama",
   ollama_cloud: "Ollama Cloud",
@@ -21,9 +27,13 @@ export const PROVIDER_NAMES: Readonly<Record<NewConnectionKind, string>> = {
   deepseek: "DeepSeek",
   xai: "xAI (Grok)",
   openai_compatible: "OpenAI compatible",
+  claude_code: "Claude Code",
 };
 
-/** Every provider the settings window can add, in the order its dropdown lists them. */
+/**
+ * Every provider the settings window can add, in the order its dropdown lists them. A
+ * `claude_code` connection is not one: only the trusted CLI records it (ADR-0109).
+ */
 export const NEW_CONNECTION_KINDS: readonly NewConnectionKind[] = [
   "ollama_local",
   "lm_studio",
@@ -48,7 +58,7 @@ export function providerName(kind: string | null): string {
   if (kind === null) {
     return "LM Studio";
   }
-  return Object.hasOwn(PROVIDER_NAMES, kind) ? PROVIDER_NAMES[kind as NewConnectionKind] : kind;
+  return Object.hasOwn(PROVIDER_NAMES, kind) ? PROVIDER_NAMES[kind as ProviderKind] : kind;
 }
 
 /** The address each local server listens on by default. The core validates whatever is sent. */
@@ -82,9 +92,17 @@ export function isLocalKind(kind: string | null): kind is LocalProviderKind {
   return kind === "lm_studio" || kind === "ollama_local";
 }
 
-/** Whether `kind` is a hosted service, which sends every turn off this computer. */
+/** Whether `kind` drives a program on this computer rather than a server (ADR-0109). */
+export function isProgramKind(kind: string | null): kind is ProgramProviderKind {
+  return kind === "claude_code";
+}
+
+/**
+ * Whether `kind` is a hosted service, which OMGCode sends every turn to over HTTPS. Like core's
+ * `ProviderKind::is_hosted`, this excludes a program connection, which sends its own requests.
+ */
 export function isHostedKind(kind: string | null): boolean {
-  return kind !== null && !isLocalKind(kind);
+  return kind !== null && !isLocalKind(kind) && !isProgramKind(kind);
 }
 
 /** Whether `kind` is a named hosted provider with one fixed endpoint. */

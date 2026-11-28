@@ -1732,8 +1732,12 @@ revision check and validation (ADR-0064, ADR-0071).
   [provider authentication](provider-authentication.md#hosted-providers-adr-0092).
   A request that gives a local kind a key, gives a named hosted kind an
   endpoint, or omits the field its kind needs is refused as
-  `invalid_request` before anything is recorded. A new profile is not used
-  until it is selected.
+  `invalid_request` before anything is recorded. A `claude_code` kind is
+  refused the same way before its key is read: only the trusted CLI records
+  that connection (ADR-0109). The window names a recorded one **Claude
+  Code**, marks it **CLI only** with no key field or hosted notice, never
+  offers the kind in its add dropdown, and can remove it. A new profile is
+  not used until it is selected.
 - **The API key is write-only** (ADR-0059 decision 6, ADR-0071 decision 5).
   The key is typed into a password field, sent once in `settings_add_connection` or
   `settings_set_api_key`, and the field is emptied as the button is pressed,

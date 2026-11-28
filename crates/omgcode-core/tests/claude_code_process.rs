@@ -245,7 +245,10 @@ impl Scene {
         }
     }
 
+    /// A client for the next turn. The fake's marks of an earlier run are
+    /// removed, so a failure's diagnosis describes the next one.
     fn client(&self) -> ClaudeCodeClient {
+        fake_claude::forget_runs(&self.sign_in);
         ClaudeCodeClient::new(self.config.clone()).expect("client")
     }
 }
@@ -344,7 +347,9 @@ fn a_text_reply_streams_and_finishes() {
             &mut on_text,
             &CancelToken::new(),
         )
-        .expect("reply")
+        .unwrap_or_else(|error| {
+            panic!("reply: {error}; {}", fake_claude::diagnosis(&scene.sign_in))
+        })
         .content;
     assert_eq!(deltas, "hello world");
     assert!(reply.starts_with("hello world"), "{reply}");
@@ -381,7 +386,7 @@ fn a_tool_call_runs_through_the_turn_runtime() {
     )
     .expect("runtime")
     .run(&mut model, "SCENARIO:tool", "", manifest())
-    .expect("turn");
+    .unwrap_or_else(|error| panic!("turn: {error}; {}", fake_claude::diagnosis(&scene.sign_in)));
     assert_eq!(report.tool_calls, 1);
     assert_eq!(report.rounds, 2);
     assert!(report.reply.starts_with("listed:"), "{}", report.reply);

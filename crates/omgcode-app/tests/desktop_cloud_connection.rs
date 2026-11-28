@@ -375,6 +375,11 @@ fn a_refused_add_records_nothing_and_never_repeats_the_key() {
             json!({"name": "o", "kind": "openai_compatible", "endpoint": "https://provider-api.example.org/v1"}),
             KEY,
         ),
+        (
+            "a Claude Code connection, which only the trusted CLI records",
+            json!({"name": "c", "kind": "claude_code", "endpoint": "https://provider-api.example.org/v1", "api_key": KEY}),
+            KEY,
+        ),
     ];
     for (label, body, secret) in cases {
         let error = add(&service, &fixture, body).expect_err(label);

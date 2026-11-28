@@ -154,7 +154,10 @@ impl Scene {
         succeeded(&status)["revision"].to_string()
     }
 
+    /// Run `chat` with the connection. The fake's marks of an earlier run
+    /// are removed first, so [`Scene::chatted`] describes this one.
     fn chat(&self, session: &[&str], message: &str, extra: &[&str]) -> Output {
+        fake_claude::forget_runs(&self.sign_in);
         let mut arguments = vec!["chat"];
         arguments.extend_from_slice(session);
         arguments.extend_from_slice(&[
@@ -168,6 +171,21 @@ impl Scene {
         arguments.extend_from_slice(extra);
         arguments.push(message);
         self.run(&arguments)
+    }
+}
+
+impl Scene {
+    /// The JSON of a `chat` that must succeed. A failure also says whether
+    /// the fake `claude` ran and how it failed.
+    fn chatted(&self, output: &Output) -> Value {
+        assert!(
+            output.status.success(),
+            "omgcode failed: stdout={} stderr={}; {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            fake_claude::diagnosis(&self.sign_in)
+        );
+        serde_json::from_slice(&output.stdout).expect("JSON output")
     }
 }
 
@@ -320,7 +338,7 @@ fn a_claude_code_connection_runs_through_the_cli() {
         );
     }
 
-    let first = succeeded(&scene.chat(&workspace, "SCENARIO:tool", &[]));
+    let first = scene.chatted(&scene.chat(&workspace, "SCENARIO:tool", &[]));
     let reply = first["reply"]["content"].as_str().unwrap_or_default();
     assert!(reply.starts_with("listed:"), "{first}");
     assert!(reply.contains("notes.txt"), "{first}");
@@ -332,7 +350,7 @@ fn a_claude_code_connection_runs_through_the_cli() {
         text(&scene.workspace.join("notes.txt"))
     );
     let resumed = scene.chat(&["--journal", &journal], &probe, &["--stream"]);
-    let second = succeeded(&resumed);
+    let second = scene.chatted(&resumed);
     let reply = second["reply"]["content"].as_str().unwrap_or_default();
     assert!(reply.contains("workspace=denied"), "{second}");
     assert!(reply.contains("anthropic=absent"), "{second}");

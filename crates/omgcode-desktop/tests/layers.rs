@@ -868,17 +868,26 @@ fn internal_error_is_fixed_and_carries_no_detail() {
 /// The settings window names every provider kind core records and shows each
 /// named hosted provider's fixed endpoint exactly as core enforces it
 /// (ADR-0092). Rust supplies the endpoint; a drift would only mislead the
-/// operator, so this keeps the display honest.
+/// operator, so this keeps the display honest. A kind that runs a program,
+/// `claude_code`, is named so a profile the trusted CLI recorded shows by
+/// name, and is never offered in the add dropdown, since only the trusted
+/// CLI records one (ADR-0109).
 #[test]
 fn the_frontend_names_every_provider_and_shows_core_endpoints() {
     let source = read(&crate_dir().join("ui/src/providers.ts"));
     let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let offered = flat
+        .split_once("export const NEW_CONNECTION_KINDS")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(list, _)| list)
+        .expect("the add dropdown's kinds");
     for kind in omgcode_app::desktop::NewConnectionKind::ALL {
         let name = kind.as_str();
         assert!(flat.contains(&format!("{name}: \"")), "{name} is not named");
-        assert!(
-            flat.contains(&format!("\"{name}\",")),
-            "{name} is not listed"
+        assert_eq!(
+            offered.contains(&format!("\"{name}\",")),
+            !kind.runs_program(),
+            "{name} is offered only when the desktop can add it"
         );
         if let Some(endpoint) = kind.fixed_endpoint() {
             assert!(

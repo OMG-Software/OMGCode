@@ -15,7 +15,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -504,6 +504,17 @@ enum Event {
     McpFailed,
 }
 
+/// What [`Session::next_event`] found.
+enum Next {
+    Event(Event),
+    /// Calls to return to the runtime; the queue was empty.
+    Calls(Vec<PendingCall>),
+    /// Nothing arrived within one poll.
+    Idle,
+    /// The queue is gone or every sender ended.
+    Ended,
+}
+
 /// The channel's shutdown, published by the acceptor before its first
 /// blocking read, so ending the turn can unblock every read and write.
 type ShutdownSlot = Arc<Mutex<Option<omgcode_platform::ipc::ShutdownHandle>>>;
@@ -679,16 +690,11 @@ impl Session {
                 self.kill();
                 return Err(failure(ClaudeCodeFailure::Failed));
             }
-            if let Some(calls) = self.ready_calls() {
-                return Ok(Progress::Calls(calls));
-            }
-            let Some(events) = &self.events else {
-                return Err(failure(ClaudeCodeFailure::Failed));
-            };
-            let event = match events.recv_timeout(POLL) {
-                Ok(event) => event,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => {
+            let event = match self.next_event() {
+                Next::Event(event) => event,
+                Next::Calls(calls) => return Ok(Progress::Calls(calls)),
+                Next::Idle => continue,
+                Next::Ended => {
                     self.kill();
                     return Err(failure(ClaudeCodeFailure::Failed));
                 }
@@ -721,6 +727,32 @@ impl Session {
                     return Err(error);
                 }
             }
+        }
+    }
+
+    /// The next thing the round acts on. An event already queued comes
+    /// first, and calls are handed to the runtime only once the queue is
+    /// empty, so a cancellation the relay sent before the hand-off is
+    /// processed first and its call never reaches the runtime.
+    fn next_event(&mut self) -> Next {
+        let Some(events) = &self.events else {
+            return Next::Ended;
+        };
+        match events.try_recv() {
+            Ok(event) => return Next::Event(event),
+            Err(TryRecvError::Disconnected) => return Next::Ended,
+            Err(TryRecvError::Empty) => {}
+        }
+        if let Some(calls) = self.ready_calls() {
+            return Next::Calls(calls);
+        }
+        let Some(events) = &self.events else {
+            return Next::Ended;
+        };
+        match events.recv_timeout(POLL) {
+            Ok(event) => Next::Event(event),
+            Err(RecvTimeoutError::Timeout) => Next::Idle,
+            Err(RecvTimeoutError::Disconnected) => Next::Ended,
         }
     }
 
@@ -1478,3 +1510,6 @@ pub fn relay(
     drop(upstream);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

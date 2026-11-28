@@ -5,12 +5,16 @@
 //! like those Claude Code 2.1.325 was observed to write. The scenario is the
 //! word after the last `SCENARIO:` in the prompt. Both the core and the CLI
 //! tests include this file.
+//!
+//! It also leaves a start marker and any panic message in its sign-in
+//! folder, which [`diagnosis`] reads, so a failed turn in CI says whether
+//! the process ran at all.
 
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
@@ -125,8 +129,49 @@ impl Drop for McpClient {
     }
 }
 
+/// Written to the sign-in folder when the fake starts.
+const STARTED_FILE: &str = "fake-started.txt";
+/// Written to the sign-in folder when the fake panics.
+const PANIC_FILE: &str = "fake-panic.txt";
+
+/// Mark the start in the sign-in folder and record a later panic there.
+fn record_start() {
+    let Some(folder) = env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let _ = fs::write(folder.join(STARTED_FILE), b"started");
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = fs::write(folder.join(PANIC_FILE), info.to_string());
+        previous(info);
+    }));
+}
+
+/// Remove what an earlier run left in `sign_in`, so [`diagnosis`] describes
+/// the next run only.
+pub fn forget_runs(sign_in: &Path) {
+    for name in [STARTED_FILE, PANIC_FILE] {
+        match fs::remove_file(sign_in.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove {name}: {error}"),
+        }
+    }
+}
+
+/// What the fake left in `sign_in`: whether it started, and its panic.
+pub fn diagnosis(sign_in: &Path) -> String {
+    let started = sign_in.join(STARTED_FILE).is_file();
+    match (started, fs::read_to_string(sign_in.join(PANIC_FILE))) {
+        (false, _) => "the fake claude never started".into(),
+        (true, Ok(panic)) => format!("the fake claude panicked: {panic}"),
+        (true, Err(_)) => "the fake claude started and did not panic".into(),
+    }
+}
+
 /// Act as `claude -p` with `arguments`, the whole command line.
 pub fn run(arguments: &[OsString]) -> ExitCode {
+    record_start();
     let mut prompt = String::new();
     io::stdin().read_to_string(&mut prompt).expect("stdin");
     let mut output = io::stdout().lock();

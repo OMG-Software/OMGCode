@@ -1111,8 +1111,9 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `invalid_request` for an oversized value, a mismatched field, or a key
-    /// that is empty, too long, or has a control character; `control` with
+    /// `invalid_request` for an oversized value, a mismatched field, a
+    /// `claude_code` kind, which only the trusted CLI records (ADR-0109), or
+    /// a key that is empty, too long, or has a control character; `control` with
     /// core's reason (a bad name, a duplicate, or an endpoint its kind's rule
     /// refuses); `credential_unavailable`,
     /// `credential_locked`, `credential_io`, `credential_orphaned`,
@@ -1135,6 +1136,13 @@ impl DesktopService {
                 .is_some_and(|text| text.len() > MAX_PROVIDER_ENDPOINT_BYTES)
         {
             return Err(DesktopError::invalid_request("A value is too long."));
+        }
+        // Only the trusted CLI records a program connection (ADR-0109), so
+        // the request is refused before its key is read.
+        if kind.runs_program() {
+            return Err(DesktopError::invalid_request(
+                "A Claude Code connection is added with the trusted CLI.",
+            ));
         }
         let fixed = kind.fixed_endpoint();
         let (endpoint, auth, secret) = match (kind.is_local(), fixed, endpoint, api_key) {

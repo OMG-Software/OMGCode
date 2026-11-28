@@ -49,9 +49,13 @@ Changes are recorded here before a release version is assigned.
   records anything, and revoking retries a container profile deletion that
   was interrupted. At most eight output events queue for the turn, every
   relay write has a deadline, the main agent's text has an 8 MiB budget,
-  a reused MCP request identifier is refused, and the rendered prompt's
-  size is checked before it is copied. The desktop shell, the active selection, and
-  `models` refuse the profile with `claude_code_cli_only`. The platform crate
+  a reused MCP request identifier is refused, the rendered prompt's
+  size is checked before it is copied, and a call whose cancellation is
+  already queued is retired before any call is handed to the turn runtime.
+  The desktop shell, the active selection, and `models` refuse the profile
+  with `claude_code_cli_only`; the `settings` window names a recorded one
+  **Claude Code**, marks it CLI only with no key field, can remove it, and
+  refuses to add one. The platform crate
   gains a confined spawn with streamed standard input and output and a
   container-only local pipe and private Unix socket, and
   `ProcessError::CleanupUnconfirmed` now carries an `UnconfirmedCleanup`
