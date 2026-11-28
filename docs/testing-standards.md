@@ -55,7 +55,21 @@ limit ends the whole run as `LimitExceeded`. Since 0.19.0 the disk test writes
 past a 16 MiB limit and expects the `disk` result; the platform tests also
 exercise the sampler directly, including, on Unix, a link that must not be
 followed and a ceiling reached during a measured scan. Windows scenes grant
-the workspace and revoke every grant when dropped. The `toolchain_acceptance` tests run real toolchains. They are
+the workspace and revoke every grant when dropped.
+
+The `claude_code_process` tests run in a supervised copy of their binary,
+on Linux in its own delegated scope, with every temporary folder inside one
+folder of the supervising process. A test whose turn does not end even
+after its cancellation ends that copy, and no drop of the copy runs. The
+supervisor then stops what the copy left running: the copy's scope on
+Linux, while on Windows each tree's job ends with the copy. It waits until
+every fake's and relay's alive lock is free, revokes each connection left
+behind, which deletes its AppContainer profile, and removes the folder. A
+scene whose processes were not seen to end is kept and named.
+`a_supervisor_stops_and_cleans_up_after_an_abandoned_turn` makes a copy end
+while its turn's fake and relay run and checks that path.
+
+The `toolchain_acceptance` tests run real toolchains. They are
 `#[ignore]` because they need host toolchains named by `OMGCODE_ACCEPT_*`
 variables. Run them explicitly with `--ignored` on both platforms and report
 each language that did not run. A missing variable fails the case rather than

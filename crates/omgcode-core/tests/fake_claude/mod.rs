@@ -295,6 +295,41 @@ pub fn processes_ended(sign_in: &Path, limit: Duration) -> Result<(), String> {
     Ok(())
 }
 
+/// Wait up to `limit` for every fake and relay that left its alive file in
+/// `sign_in` to end, and count the files seen free. A missing file means
+/// that process never made it, so nothing of it is left to observe.
+///
+/// # Errors
+///
+/// The first file that could not be opened or whose lock stayed held.
+#[allow(dead_code, reason = "only the core process tests supervise a copy")]
+pub fn alive_ended(sign_in: &Path, limit: Duration) -> Result<usize, String> {
+    let until = Instant::now() + limit;
+    let mut ended = 0;
+    for name in [FAKE_ALIVE_FILE, RELAY_ALIVE_FILE] {
+        let file = match fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(sign_in.join(name))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{name} cannot be opened: {error}")),
+        };
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => return Err(format!("the process of {name} still runs: {error}")),
+            }
+        }
+        ended += 1;
+    }
+    Ok(ended)
+}
+
 /// Whether the fake and the relay that left their files in `sign_in` both
 /// hold their alive locks now. A missing file counts as not running, so a
 /// probe that could see nothing cannot pass for one that saw them run.

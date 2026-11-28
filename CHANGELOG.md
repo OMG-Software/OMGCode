@@ -102,7 +102,11 @@ Changes are recorded here before a release version is assigned.
   streaming child's `has_ended` turns true once its tree is observed empty,
   also when the accounting after that fails. Two harnessless test
   binaries use a fake `claude`, on Windows inside the real AppContainer with
-  real grants, through the core runtime and the CLI commands. It is a minor
+  real grants, through the core runtime and the CLI commands. The core one
+  runs its tests in a supervised copy of itself; when a test ends that copy
+  with a turn still running, the supervisor stops what it left, observes
+  the fake's and relay's ends, deletes the connection's container profile,
+  and removes the fixtures, which its own test checks. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain
   variants. Both binaries also passed on Linux under WSL 2 in a delegated
   cgroup. No signed-in turn of the real `claude` ran on either platform,

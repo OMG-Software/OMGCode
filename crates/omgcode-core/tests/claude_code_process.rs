@@ -4,7 +4,9 @@
 //! fake `claude`: it reads its prompt, starts the MCP relay named in its MCP
 //! configuration, speaks MCP to OMGCode through it, and writes stream-json
 //! lines shaped like those Claude Code 2.1.325 was observed to write. Started
-//! with `mcp-relay` it is the relay. Otherwise it runs the tests below.
+//! with `mcp-relay` it is the relay. Otherwise it supervises a copy of
+//! itself that runs the tests below, and cleans up after that copy even when
+//! a test ended it with a turn still running.
 //!
 //! Everything else is real: the recorded connection and, on Windows, its
 //! AppContainer grants; the confined launch; the named pipe or private
@@ -16,7 +18,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, ExitStatus};
 use std::time::{Duration, Instant};
 
 use omgcode_core::action_journal::{ActionDisposition, ActionJournal, ActionRecord, ActionTool};
@@ -38,10 +40,6 @@ mod fake_claude;
 
 const SECRET: &str = "workspace secret 7c1f";
 
-/// Set in the copy of this binary that runs in a delegated cgroup on Linux.
-#[cfg(target_os = "linux")]
-const DELEGATED_ENV: &str = "OMGCODE_DELEGATED_TEST";
-
 fn main() -> ExitCode {
     let arguments: Vec<OsString> = env::args_os().collect();
     match arguments.get(1).and_then(|argument| argument.to_str()) {
@@ -49,39 +47,21 @@ fn main() -> ExitCode {
         Some(command) if command == RELAY_SUBCOMMAND => return fake_relay(&arguments),
         _ => {}
     }
-    // A Claude Code run has tree limits, which need a delegated cgroup on
-    // Linux: unless this process already runs in one, the tests re-run under
-    // `systemd-run --user --scope -p Delegate=yes`. A missing user service
-    // manager fails them rather than skipping them.
-    #[cfg(target_os = "linux")]
-    if env::var_os(DELEGATED_ENV).is_none() {
-        let status = Command::new("systemd-run")
-            .args([
-                "--user",
-                "--scope",
-                "--quiet",
-                "--expand-environment=no",
-                "-p",
-                "Delegate=yes",
-                "--",
-            ])
-            .arg(env::current_exe().expect("test executable"))
-            .args(arguments.iter().skip(1))
-            .env(DELEGATED_ENV, "1")
-            .status()
-            .expect("start systemd-run; these tests need a user service manager");
-        return if status.success() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        };
-    }
     let filter = arguments
         .iter()
         .skip(1)
         .filter_map(|argument| argument.to_str())
         .find(|argument| !argument.starts_with('-'))
         .map(str::to_owned);
+    if env::var_os(SUPERVISED_ENV).is_none() {
+        return supervise(&arguments, filter.as_deref());
+    }
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == ABANDON_ARGUMENT)
+    {
+        return abandon_one_turn();
+    }
     #[cfg_attr(not(unix), allow(unused_mut, reason = "one test is Unix only"))]
     let mut tests: Vec<(&str, fn())> = vec![
         (
@@ -162,6 +142,290 @@ fn main() -> ExitCode {
 }
 
 // ---------------------------------------------------------------------------
+// The supervisor: the tests run in a copy of this binary, cleaned up after.
+// ---------------------------------------------------------------------------
+
+/// Set in the copy of this binary that runs the tests under a supervisor.
+const SUPERVISED_ENV: &str = "OMGCODE_SUPERVISED_TEST";
+
+/// Makes a supervised copy abandon one turn, for the supervisor's own test.
+const ABANDON_ARGUMENT: &str = "--abandon-one-turn";
+
+/// The supervisor's own test, which runs in the supervising process.
+const SUPERVISOR_TEST: &str = "a_supervisor_stops_and_cleans_up_after_an_abandoned_turn";
+
+/// The exit code of a copy that ended with a turn still running.
+const ABANDONED_EXIT: u8 = 70;
+
+/// What the supervisor cleaned up after a copy ended.
+struct Cleaned {
+    /// The scenes whose fixtures outlived the copy.
+    scenes: usize,
+    /// The fakes and relays of those scenes whose end was observed.
+    ended: usize,
+    /// The grants revoked for those scenes' connections.
+    #[cfg(windows)]
+    revoked: usize,
+    /// The container profiles deleted for those scenes' connections.
+    #[cfg(windows)]
+    profiles_deleted: usize,
+}
+
+/// Run the tests in a supervised copy of this binary, clean up after it,
+/// and then run the supervisor's own test.
+///
+/// A test that abandons a turn ([`abandon`]) ends its copy, and no drop of
+/// the copy runs, so its scene's fixtures and, on Linux, the relay outlive
+/// it. Every temporary folder of a copy lies in one folder of this process,
+/// so once the copy ended, [`clean_up_after`] can stop what it left
+/// running, observe the end of each fake and relay it started, delete each
+/// connection's container profile on Windows, and remove that folder.
+fn supervise(arguments: &[OsString], filter: Option<&str>) -> ExitCode {
+    let mut passed = match supervised_copy(0, &arguments[1..]) {
+        Ok((status, cleaned)) => {
+            if cleaned.scenes > 0 {
+                eprintln!(
+                    "the supervisor stopped and cleaned up {} abandoned scenes",
+                    cleaned.scenes
+                );
+            }
+            status.success()
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            false
+        }
+    };
+    if filter.is_none_or(|filter| SUPERVISOR_TEST.contains(filter)) {
+        let outcome = supervisor_test();
+        if let Err(error) = &outcome {
+            eprintln!("{SUPERVISOR_TEST}: {error}");
+        }
+        let ok = outcome.is_ok();
+        println!(
+            "test {SUPERVISOR_TEST} ... {}",
+            if ok { "ok" } else { "FAILED" }
+        );
+        println!(
+            "\ntest result: {}. {} passed; {} failed",
+            if ok { "ok" } else { "FAILED" },
+            usize::from(ok),
+            usize::from(!ok)
+        );
+        passed &= ok;
+    }
+    if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The supervisor's own test: a copy that ends while its turn's fake and
+/// relay run, its writes blocked, leaves nothing once cleaned up.
+fn supervisor_test() -> Result<(), String> {
+    let (status, cleaned) = supervised_copy(1, &[OsString::from(ABANDON_ARGUMENT)])?;
+    if status.code() != Some(i32::from(ABANDONED_EXIT)) {
+        return Err(format!("the copy did not abandon its turn: {status}"));
+    }
+    if cleaned.scenes != 1 || cleaned.ended != 2 {
+        return Err(format!(
+            "{} scenes left, {} processes seen ended; expected 1 and 2",
+            cleaned.scenes, cleaned.ended
+        ));
+    }
+    #[cfg(windows)]
+    if cleaned.profiles_deleted != 1 || cleaned.revoked == 0 {
+        return Err(format!(
+            "{} grants revoked and {} container profiles deleted",
+            cleaned.revoked, cleaned.profiles_deleted
+        ));
+    }
+    Ok(())
+}
+
+/// Run a copy of this binary with `arguments`, its temporary folders in a
+/// folder of this process, and clean up after it. `run` keeps its scope's
+/// name unique.
+fn supervised_copy(run: u32, arguments: &[OsString]) -> Result<(ExitStatus, Cleaned), String> {
+    let folder = TempDir::new().map_err(|error| format!("the supervision folder: {error}"))?;
+    let scope = format!(
+        "omgcode-claude-code-test-{}-{run}.scope",
+        std::process::id()
+    );
+    let program = env::current_exe().map_err(|error| format!("the test executable: {error}"))?;
+    let status = copy_command(&program, &scope)
+        .args(arguments)
+        .env(SUPERVISED_ENV, "1")
+        .env("TMPDIR", folder.path())
+        .env("TMP", folder.path())
+        .env("TEMP", folder.path())
+        .status()
+        .map_err(|error| format!("start the supervised copy: {error}"))?;
+    let cleaned = clean_up_after(folder, &scope)?;
+    Ok((status, cleaned))
+}
+
+/// A copy of this binary in its own scope with a delegated cgroup, which a
+/// Claude Code run's tree limits need. A missing user service manager fails
+/// the tests rather than skipping them.
+#[cfg(target_os = "linux")]
+fn copy_command(program: &Path, scope: &str) -> Command {
+    let mut command = Command::new("systemd-run");
+    command
+        .args(["--user", "--scope", "--quiet", "--expand-environment=no"])
+        .arg(format!("--unit={scope}"))
+        .args(["-p", "Delegate=yes", "--"])
+        .arg(program);
+    command
+}
+
+/// A copy of this binary.
+#[cfg(not(target_os = "linux"))]
+fn copy_command(program: &Path, _scope: &str) -> Command {
+    Command::new(program)
+}
+
+/// Stop what a copy left running in `folder`, observe the end of every fake
+/// and relay it started, and remove its fixtures.
+///
+/// On Windows the kernel ends a copy's process trees when the copy exits,
+/// because each tree's job ends when its last handle closes. On Linux the
+/// copy's exit ends the fake but not its relay, so the copy's scope is
+/// stopped, which ends every process left in it. Either way an end counts
+/// only once each fake's and relay's alive lock is seen free, and a folder
+/// whose processes were not seen to end is kept and named.
+fn clean_up_after(folder: TempDir, scope: &str) -> Result<Cleaned, String> {
+    #[cfg(target_os = "linux")]
+    stop_scope(scope)?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = scope;
+    let mut cleaned = Cleaned {
+        scenes: 0,
+        ended: 0,
+        #[cfg(windows)]
+        revoked: 0,
+        #[cfg(windows)]
+        profiles_deleted: 0,
+    };
+    let entries =
+        fs::read_dir(folder.path()).map_err(|error| format!("the supervision folder: {error}"))?;
+    for entry in entries {
+        let base = entry
+            .map_err(|error| format!("the supervision folder: {error}"))?
+            .path();
+        let (data, sign_in) = Scene::folders(&base);
+        if !sign_in.is_dir() {
+            continue;
+        }
+        cleaned.scenes += 1;
+        match fake_claude::alive_ended(&sign_in, EXIT_PROBE) {
+            Ok(ended) => cleaned.ended += ended,
+            Err(error) => {
+                let kept = folder.keep();
+                return Err(format!(
+                    "a process of the scene in {} was not seen to end: {error}; kept {}",
+                    base.display(),
+                    kept.display()
+                ));
+            }
+        }
+        #[cfg(windows)]
+        if let Some(revocation) = revoke_left_connection(&data)? {
+            cleaned.revoked += revocation.revoked;
+            cleaned.profiles_deleted += usize::from(revocation.profile_deleted);
+        }
+        #[cfg(not(windows))]
+        let _ = data;
+    }
+    folder
+        .close()
+        .map_err(|error| format!("remove the supervision folder: {error}"))?;
+    Ok(cleaned)
+}
+
+/// Stop a copy's scope, which ends every process still in it, and check
+/// that it is inactive. A scope whose processes all ended is already gone.
+#[cfg(target_os = "linux")]
+fn stop_scope(scope: &str) -> Result<(), String> {
+    let state = || {
+        Command::new("systemctl")
+            .args(["--user", "show", "--property=ActiveState", "--value", scope])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .map_err(|error| format!("read the state of {scope}: {error}"))
+    };
+    if state()? != "inactive" {
+        // `stop` returns once the scope's processes ended or were killed.
+        let stopped = Command::new("systemctl")
+            .args(["--user", "stop", scope])
+            .status()
+            .map_err(|error| format!("stop {scope}: {error}"))?;
+        if !stopped.success() {
+            return Err(format!("stop {scope}: {stopped}"));
+        }
+    }
+    match state()?.as_str() {
+        "inactive" => Ok(()),
+        other => Err(format!("{scope} is {other} after its stop")),
+    }
+}
+
+/// Revoke the grants of a scene's connection that outlived its copy, which
+/// deletes its container profile, as the scene's drop would have.
+#[cfg(windows)]
+fn revoke_left_connection(
+    data: &Path,
+) -> Result<Option<omgcode_core::control::ClaudeCodeRevocation>, String> {
+    if !data.is_dir() {
+        return Ok(None);
+    }
+    let mut control = ControlStore::open(data)
+        .map_err(|error| format!("the settings in {}: {error}", data.display()))?;
+    if control.claude_code_setup("claude").is_err() {
+        return Ok(None);
+    }
+    control
+        .revoke_claude_code_grants("claude")
+        .map(Some)
+        .map_err(|failure| {
+            format!(
+                "revoke the connection in {}: {}",
+                data.display(),
+                failure.error
+            )
+        })
+}
+
+/// In a supervised copy, for the supervisor's own test: start a turn whose
+/// reply write blocks and, once both the fake and its relay were seen
+/// running, end the copy as [`abandon`] does, with the turn, its process
+/// tree, and the scene's fixtures left behind.
+fn abandon_one_turn() -> ExitCode {
+    let scene = Scene::new();
+    let flood = start_flood(&scene, CancelToken::new());
+    let until = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < until && !flood.turn.is_finished() {
+        if fake_claude::stalled(&scene.sign_in) && fake_claude::processes_running(&scene.sign_in) {
+            end_test_process("the supervisor's own test abandons its turn");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "the turn never stalled with both processes running; {}",
+        fake_claude::diagnosis(&scene.sign_in)
+    );
+    ExitCode::FAILURE
+}
+
+/// End this copy of the tests with a turn still running. No drop runs, so
+/// the supervisor stops and observes what is left and removes the fixtures.
+fn end_test_process(message: &str) -> ! {
+    eprintln!("{message}; ending this copy of the tests for its supervisor to clean up");
+    std::process::exit(i32::from(ABANDONED_EXIT));
+}
+
+// ---------------------------------------------------------------------------
 // The scene: a recorded connection whose program and relay are this binary.
 // ---------------------------------------------------------------------------
 
@@ -175,19 +439,26 @@ struct Scene {
 }
 
 impl Scene {
+    /// A scene's data root and sign-in folder in its temporary folder
+    /// `base`. The data root is shaped like an operator's own, so a socket
+    /// kept in the runtime folder could not fit `sun_path` on Linux.
+    fn folders(base: &Path) -> (PathBuf, PathBuf) {
+        let home = base.join("home").join("operator");
+        (
+            home.join(".local").join("share").join("omgcode"),
+            base.join("claude-sign-in"),
+        )
+    }
+
     fn new() -> Self {
         let temporary = TempDir::new().expect("temporary directory");
         let base = temporary.path();
-        // A data root shaped like an operator's own, so a socket kept in the
-        // runtime folder could not fit `sun_path` on Linux.
-        let home = base.join("home").join("operator");
-        let data = home.join(".local").join("share").join("omgcode");
+        let (data, sign_in) = Self::folders(base);
         fs::create_dir_all(data.parent().expect("data parent")).expect("home folders");
         let root = base.join("development-root");
         let workspace = root.join("workspace");
         let tools = base.join("tools");
         let relay_folder = base.join("relay");
-        let sign_in = base.join("claude-sign-in");
         for path in [&root, &workspace, &tools, &relay_folder, &sign_in] {
             fs::create_dir(path).expect("scene folder");
         }
@@ -713,19 +984,18 @@ struct FloodEnd {
     cancelled_at: Option<Instant>,
 }
 
-/// Run a turn whose fake floods the relay with requests and reads none of
-/// the replies, so OMGCode's write of a reply blocks. The turn runs on its
-/// own thread, so one that never ends fails the test after `limit`. With
-/// `cancel_once_blocked`, the turn is cancelled once the fake marked the
-/// stall, both processes were seen running, and, on Linux, the turn's
-/// thread was seen asleep in its reply write.
-fn flood_turn(
-    scene: &Scene,
-    cancel: CancelToken,
-    limit: Duration,
-    cancel_once_blocked: bool,
-) -> FloodEnd {
-    let stop = cancel.clone();
+/// A flood turn running on its own thread.
+struct FloodStart {
+    turn: std::thread::JoinHandle<(bool, Option<ProviderError>)>,
+    /// On Linux, the identifier of the turn's thread.
+    thread: Option<String>,
+    started: Instant,
+}
+
+/// Start, on its own thread, a turn whose fake floods the relay with
+/// requests and reads none of the replies, so OMGCode's write of a reply
+/// blocks.
+fn start_flood(scene: &Scene, cancel: CancelToken) -> FloodStart {
     let client = scene.client();
     let (data, workspace, workspace_id) = (
         scene.data.clone(),
@@ -752,10 +1022,34 @@ fn flood_turn(
             model.last_error(),
         )
     });
-    let turn_thread = thread_id
+    let thread = thread_id
         .recv_timeout(Duration::from_secs(30))
         .ok()
         .flatten();
+    FloodStart {
+        turn,
+        thread,
+        started,
+    }
+}
+
+/// Run a flood turn ([`start_flood`]). The turn runs on its own thread, so
+/// one that never ends fails the test after `limit`. With
+/// `cancel_once_blocked`, the turn is cancelled once the fake marked the
+/// stall, both processes were seen running, and, on Linux, the turn's
+/// thread was seen asleep in its reply write.
+fn flood_turn(
+    scene: &Scene,
+    cancel: CancelToken,
+    limit: Duration,
+    cancel_once_blocked: bool,
+) -> FloodEnd {
+    let stop = cancel.clone();
+    let FloodStart {
+        turn,
+        thread: turn_thread,
+        started,
+    } = start_flood(scene, cancel);
     let mut seen_running = false;
     let mut seen_blocked = turn_thread.as_ref().map(|_| false);
     let mut cancelled_at = None;
@@ -853,7 +1147,9 @@ const ABANDON_BOUND: Duration = Duration::from_secs(30);
 /// End a turn that overran `limit` and fail the test: cancel the turn and
 /// wait at most [`ABANDON_BOUND`] for its thread, so no turn is left using
 /// the scene while later tests run. A thread that does not end even then
-/// ends the whole test process, which ends the thread with it.
+/// ends this copy of the tests ([`end_test_process`]), which ends the thread
+/// with it; the supervisor ([`clean_up_after`]) then stops the process tree
+/// the turn left, observes its end, and removes the scene's fixtures.
 fn abandon<T>(
     turn: std::thread::JoinHandle<T>,
     stop: &CancelToken,
@@ -871,10 +1167,9 @@ fn abandon<T>(
         let _ = turn.join();
         panic!("the turn did not end in {limit:?}, only once cancelled; {diagnosis}");
     }
-    eprintln!(
-        "the turn did not end in {limit:?}, nor within {ABANDON_BOUND:?} of its cancellation; {diagnosis}; ending the test process"
-    );
-    std::process::exit(1);
+    end_test_process(&format!(
+        "the turn did not end in {limit:?}, nor within {ABANDON_BOUND:?} of its cancellation; {diagnosis}"
+    ));
 }
 
 /// How long the fake and its relay may take to be seen ended once the turn
