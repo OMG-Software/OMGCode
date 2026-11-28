@@ -1974,46 +1974,80 @@ fn program_candidates_follow_the_path_then_the_installer_folders() {
     assert!(claude_code_program_candidates(None, None).is_empty());
 }
 
-/// A `PATH` of thousands of folders yields a bounded list.
+/// A `PATH` of thousands of folders yields a bounded list that still ends
+/// with the installer's folders.
 #[test]
-fn program_candidates_are_bounded() {
+fn program_candidates_are_bounded_and_keep_the_installer_folders() {
     let directory = tempfile::tempdir().expect("temporary directory");
+    let home = directory.path().join("home");
     let folders = (0..1000).map(|index| directory.path().join(index.to_string()));
     let search = std::env::join_paths(folders).expect("search path");
+    let candidates = claude_code_program_candidates(Some(&search), Some(&home));
+    let installed = if cfg!(windows) { 1 } else { 2 };
+    assert_eq!(candidates.len(), MAX_PATH_CANDIDATES + installed);
     assert_eq!(
-        claude_code_program_candidates(Some(&search), None).len(),
-        MAX_PROGRAM_CANDIDATES
+        candidates[MAX_PATH_CANDIDATES - 1],
+        directory.path().join("127").join(PROGRAM_NAME)
+    );
+    assert_eq!(
+        candidates[MAX_PATH_CANDIDATES],
+        home.join(".local").join("bin").join(PROGRAM_NAME)
     );
 }
 
-/// Discovery keeps a candidate only when core accepts it: a `claude` in a
-/// workspace is skipped even when it comes first on `PATH`.
+/// Discovery never proposes a `claude` in application storage, the
+/// development root, or a workspace, also one in a folder below a
+/// workspace that core would accept if the operator chose it, even when it
+/// comes first on `PATH`.
 #[test]
 fn a_program_in_a_workspace_is_never_a_usable_candidate() {
     let scene = Scene::new();
     let store = scene.store();
-    let planted = scene.workspace.join(PROGRAM_NAME);
-    fs::write(&planted, b"").expect("planted program");
-    let search = std::env::join_paths([
+    let nested = scene.workspace.join("bin");
+    let outside_workspaces = scene.root.join("tools");
+    for folder in [&nested, &outside_workspaces] {
+        fs::create_dir(folder).expect("planted folder");
+    }
+    let planted_folders = [
         scene.workspace.clone(),
-        scene
-            .program
-            .parent()
-            .expect("program folder")
-            .to_path_buf(),
-    ])
+        nested.clone(),
+        outside_workspaces.clone(),
+        scene.data.clone(),
+    ];
+    for folder in &planted_folders {
+        fs::write(folder.join(PROGRAM_NAME), b"").expect("planted program");
+    }
+    let declaration = |program: &Path| ClaudeCodeDeclaration {
+        name: "claude".to_owned(),
+        program: program.to_owned(),
+        config_folder: scene.sign_in.clone(),
+    };
+    // Core alone accepts the nested program, which only discovery skips.
+    store
+        .check_claude_code_profile(&declaration(&nested.join(PROGRAM_NAME)))
+        .expect("an operator may choose the nested program");
+    let program_folder = scene
+        .program
+        .parent()
+        .expect("program folder")
+        .to_path_buf();
+    let search = std::env::join_paths(
+        planted_folders
+            .iter()
+            .cloned()
+            .chain([program_folder, scene.relay.clone()]),
+    )
     .expect("search path");
     let usable: Vec<PathBuf> = claude_code_program_candidates(Some(&search), None)
         .into_iter()
         .filter(|program| {
-            store
-                .check_claude_code_profile(&ClaudeCodeDeclaration {
-                    name: "claude".to_owned(),
-                    program: program.clone(),
-                    config_folder: scene.sign_in.clone(),
-                })
-                .is_ok()
+            store.claude_code_program_discoverable(program)
+                && store
+                    .check_claude_code_profile(&declaration(program))
+                    .is_ok()
         })
         .collect();
     assert_eq!(usable, vec![scene.program.clone()]);
+    // A missing program is not proposed either.
+    assert!(!store.claude_code_program_discoverable(&scene.relay.join(PROGRAM_NAME)));
 }

@@ -51,10 +51,13 @@ Changes are recorded here before a release version is assigned.
   selectable check still keeps it from being the global selection. The `settings` window offers Claude Code last in its add
   dropdown, hides the endpoint and key fields for it, and says what Add
   does. The new `settings_add_claude_code` takes the revision and a name.
-  Rust takes the first `claude` (`claude.exe` on Windows) on the operator's
-  `PATH`, then in the native installer's `~/.local/bin`, that core accepts,
-  and opens a native file dialog (filtered to `.exe` on Windows) only when
-  no such file exists; it creates a new, empty sign-in folder with a random
+  Rust takes the first `claude` (`claude.exe` on Windows) in at most 128
+  folders of the operator's `PATH`, then in the native installer's
+  `~/.local/bin`, that core accepts. Core's new
+  `claude_code_program_discoverable` skips one whose folder is, or lies
+  inside, application storage, the development root, or a workspace, where
+  a model could have written it. Rust opens a native file dialog (filtered
+  to `.exe` on Windows) only when no other file exists; it creates a new, empty sign-in folder with a random
   name under `omgcode-claude-code` in the per-user local data folder and
   removes it again when the add is cancelled or refused. Core's checks run
   before the confirmation, and one confirmation names the program, the
@@ -66,9 +69,12 @@ Changes are recorded here before a release version is assigned.
   from nothing that sets `CLAUDE_CODE_SAFE_MODE`; OMGCode waits for nothing
   and never reads the folder. Elsewhere the confirmation names the terminal
   command. A grant that fails, or a sign-in that does not start, leaves the
-  connection recorded and names that command. The sign-in starts only for
-  that new folder, so signing in again is removing and adding the
-  connection. On Windows `settings_grant_claude_code` grants the
+  connection recorded and names that command. A failed write of the
+  settings journal, which may still have recorded the connection, keeps the
+  folder and fails with the new `connection_uncertain`, naming the folder
+  and that command. The sign-in starts only for that new folder, so signing
+  in again is removing and adding the connection, after revoking its
+  folders on Windows; the row says which. On Windows `settings_grant_claude_code` grants the
   connection's AppContainer its program, sign-in, runtime, and relay
   folders again after a confirmation that names all four, and
   `settings_revoke_claude_code` revokes them after a confirmation and waits
@@ -81,7 +87,7 @@ Changes are recorded here before a release version is assigned.
   commands, and the `settings` capability allows the three. Tests cover the
   desktop service with a scripted prompt that records each sign-in and an
   empty program file (adding a program found on the search path, skipping
-  one in a workspace, with one confirmation, a new empty folder, and on
+  one in a workspace and one in a folder below it, with one confirmation, a new empty folder, and on
   Windows four active grants and one recorded sign-in with its environment,
   revoked again; the file dialog when nothing is found; a cancelled dialog,
   a declined confirmation, and core's refusals, which record nothing and
@@ -95,8 +101,11 @@ Changes are recorded here before a release version is assigned.
   missing grant; elsewhere, the grant's platform refusal), the revocation
   error text, the session record's `profile_id` shape, the add
   confirmation, the sign-in environment built from nothing, the terminal
-  command's quoting, the new folder's removal, core's program search order,
-  bound, and workspace refusal, the console start of a fixture on Windows,
+  command's quoting, the new folder's removal, the uncertain add's message,
+  core's program search order, its bound that keeps the installer's
+  folders, and discovery skipping storage, the root, a workspace, and a
+  folder below one, the console start on Windows of a fixture that waits
+  for a release sent only after the start returned,
   core's effort list, the policy and layer tests, and the
   windows against a fake transport and the mock backend. `claude auth
   status --json` of `claude` 2.1.325 with the sign-in's environment and a

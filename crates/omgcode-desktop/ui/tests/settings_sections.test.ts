@@ -11,6 +11,7 @@ import { NOTHING_CHANGED, type SettingsApp, startSettings } from "../src/setting
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
 import {
   CLAUDE_CODE_SIGN_IN_AGAIN_NOTE,
+  CLAUDE_CODE_SIGN_IN_AGAIN_TERMINAL_NOTE,
   NO_ENDPOINT_NOTE,
   PROGRAM_CONNECTION_NOTE,
   UNSUPPORTED_AUTH_NOTE,
@@ -810,6 +811,42 @@ describe("advanced section", () => {
       root.querySelectorAll<HTMLOptionElement>("#new-connection-provider option"),
     ).map((option) => option.value);
     expect(kinds).toContain("claude_code");
+  });
+
+  it("tells how to sign a Claude Code connection in again where no folder is granted", async () => {
+    await start(() =>
+      overview({
+        container_grants_supported: false,
+        provider_profiles: [
+          profile({
+            name: "claude",
+            kind: "claude_code",
+            auth: "subscription",
+            endpoint: null,
+            credential_bound: false,
+            selectable: false,
+            claude_code: {
+              program: "/home/you/.local/bin/claude",
+              config_folder: "/home/you/.local/share/omgcode-claude-code/1f0c",
+              grants: [],
+            },
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const row = Array.from(root.querySelectorAll<HTMLElement>(".row")).find(
+      (candidate) => candidate.querySelector(".row-title")?.textContent === "claude",
+    );
+    expect(row?.textContent).toContain(CLAUDE_CODE_SIGN_IN_AGAIN_TERMINAL_NOTE);
+    expect(row?.textContent).not.toContain(CLAUDE_CODE_SIGN_IN_AGAIN_NOTE);
+    // There is nothing to revoke, so the note does not ask for it.
+    expect(row?.textContent).not.toContain("revoke");
+    const labels = Array.from(row?.querySelectorAll("button") ?? []).map(
+      (candidate) => candidate.textContent,
+    );
+    expect(labels).not.toContain("Revoke folders");
+    expect(labels).not.toContain("Grant folders");
   });
 
   it("gives each empty group one line", async () => {

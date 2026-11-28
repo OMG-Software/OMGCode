@@ -167,8 +167,9 @@ its running turns before the command reports success. It is personal use,
 not evidence of Anthropic approval, and was tested with a fake `claude` only
 ([ADR-0109](docs/adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
 The `settings` window adds one by finding `claude` on `PATH` or in the
-native installer's folder, or through a native file dialog when none is
-there, creating the connection's own empty sign-in folder, and one native
+native installer's folder, never inside application storage, the
+development root, or a workspace, or through a native file dialog when
+none is there, creating the connection's own empty sign-in folder, and one native
 confirmation that names them; on Windows the same Add grants its folders and
 then starts Claude's own `claude auth login` for that new folder in a
 console window outside the sandbox, and the window grants and revokes its

@@ -620,6 +620,46 @@ describe("mock backend", () => {
     ).rejects.toMatchObject({ code: "control" });
   });
 
+  it("keeps a Claude Code choice stale when its connection is added again under the same name", async () => {
+    // Given a session that chose a Claude Code connection, which was then removed and added again.
+    const { invoke } = createMockBackend();
+    const id = "00000000-0000-4000-8000-000000000001";
+    let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    ({ revision } = (await invoke("settings_add_claude_code", {
+      revision,
+      name: "claude",
+    })) as SettingsOverview);
+    await invoke("connection_select", { session_id: id, profile: "claude" });
+    ({ revision } = (await invoke("settings_revoke_claude_code", {
+      revision,
+      name: "claude",
+    })) as SettingsOverview);
+    ({ revision } = (await invoke("settings_remove_connection", {
+      revision,
+      name: "claude",
+    })) as SettingsOverview);
+    await invoke("settings_add_claude_code", { revision, name: "claude" });
+
+    // Then the same label is not the confirmed connection: turns are refused until it is chosen.
+    type Status = { stale: boolean; choices: Array<{ name: string; active: boolean }> };
+    const replaced = (await invoke("connection_status", { session_id: id })) as Status;
+    expect(replaced.stale).toBe(true);
+    expect(replaced.choices).toContainEqual(
+      expect.objectContaining({ name: "claude", active: false }),
+    );
+    await expect(invoke("chat_models", { session_id: id })).rejects.toMatchObject({
+      code: "session_connection_stale",
+    });
+    const chosen = (await invoke("connection_select", {
+      session_id: id,
+      profile: "claude",
+    })) as Status;
+    expect(chosen.stale).toBe(false);
+    expect(chosen.choices).toContainEqual(
+      expect.objectContaining({ name: "claude", active: true }),
+    );
+  });
+
   it("adds Ollama Cloud with a key, replaces the key, and removes a bound profile", async () => {
     const { invoke } = createMockBackend();
     let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;

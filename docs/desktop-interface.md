@@ -1860,10 +1860,13 @@ revision check and validation (ADR-0064, ADR-0071).
   Rust first refuses it with `invalid_request` when no `omgcode` executable
   sits beside the desktop application. Rust takes the first `claude`
   (`claude.exe` on Windows) in the absolute folders of the operator's
-  `PATH`, then in the native installer's `~/.local/bin` (and
-  `~/.claude/local` outside Windows), that core accepts; it opens a native
-  file dialog only when no such file exists, and reports core's first
-  refusal when files exist but each is refused. It creates a new, empty
+  `PATH`, at most 128, then in the native installer's `~/.local/bin` (and
+  `~/.claude/local` outside Windows), that core accepts. It skips one whose
+  folder is, or lies inside, application storage, the development root, or
+  a workspace, where a model could have written it, through core's
+  `claude_code_program_discoverable`. It opens a native file dialog only
+  when no other file exists, and reports core's first refusal when files
+  exist but each is refused. It creates a new, empty
   sign-in folder with a random name under `omgcode-claude-code` in the
   per-user local data folder. Core applies every check of `omgcode
   workspace claude-code-add` before the operator is asked: a regular program
@@ -1883,9 +1886,14 @@ revision check and validation (ADR-0064, ADR-0071).
   OMGCode waits for nothing and does not read the folder's files. Elsewhere
   the confirmation names the terminal command instead. A failed grant or a
   sign-in that does not start fails the command with `control` after the
-  connection was recorded, and the message names the terminal command. The
-  sign-in starts only for the folder Add just created, so the row says that
-  signing in again is revoking, removing, and adding the connection again.
+  connection was recorded, and the message names the terminal command. A
+  failed write of the settings journal fails it with `connection_uncertain`:
+  the connection may be recorded, so the folder is kept, and the message
+  names the folder and the terminal command; the window then reads the
+  settings again. The sign-in starts only for the folder Add just created,
+  so on Windows the row says that signing in again is revoking, removing,
+  and adding the connection again, and elsewhere removing and adding it and
+  running the command its confirmation shows.
   On Windows the row lists the connection's grants and offers **Grant
   folders**, which sends `settings_grant_claude_code` to grant them again
   after a revocation. Rust refuses it with `invalid_request` when no
@@ -2576,8 +2584,8 @@ ACLs the private store refuses, see the notes in
   `crates/omgcode-app/tests/desktop_claude_code.rs` covers a Claude Code
   connection (ADR-0111) with a scripted prompt that records each sign-in
   instead of starting it and an empty program file: adding one found on the
-  search path, skipping one in a workspace, with one confirmation and a new
-  empty folder; the file dialog when nothing is found; a cancelled dialog, a
+  search path, skipping one in a workspace and one in a folder below it,
+  with one confirmation and a new empty folder; the file dialog when nothing is found; a cancelled dialog, a
   declined confirmation, and core's refusals before the confirmation, which
   record nothing and leave no folder; a session's choice, its dialog, label,
   aliases, and efforts; a declined choice; the global selection's refusal; a
@@ -2593,8 +2601,13 @@ ACLs the private store refuses, see the notes in
   refused for a missing grant; elsewhere, the add's terminal command and the
   grant's platform refusal. Unit tests in `claude_code_sign_in.rs` cover the
   environment built from nothing, the terminal command's quoting, and the
-  new folder's removal, and a platform test starts a fixture in a console
-  window of its own. No test starts a `claude` process.
+  new folder's removal; one in `settings_claude_code.rs` covers the
+  uncertain add's message. A platform test starts a fixture in a console
+  window of its own that waits for a release sent only after the start
+  returned. Core tests cover the program search order, its bound of 128
+  `PATH` folders before the installer's folders, and discovery skipping
+  application storage, the development root, a workspace, and a folder
+  below one. No test starts a `claude` process.
   `crates/omgcode-app/tests/desktop_cloud_connection.rs` covers adding Ollama
   Cloud with a key against the real settings and native credential stores
   (the profile, the fixed endpoint, the bound item, selectability), refusals
@@ -2726,7 +2739,7 @@ ACLs the private store refuses, see the notes in
 - ADR-0111: the Claude Code connection in the desktop was checked by service
   tests with a scripted prompt, by layer and bundle tests, and by Vitest
   against a fake transport and the mock backend. No desktop turn of the real
-  or the fake `claude` ran, no test granted its folders from the desktop, the
-  native file dialog and the real shell's windows were not driven by
+  or the fake `claude` ran, the desktop's grants were made only for
+  temporary folders, the native file dialog and the real shell's windows were not driven by
   automation, and a Linux desktop turn, which needs a delegated cgroup v2,
   is not verified.

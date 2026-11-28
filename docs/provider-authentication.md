@@ -643,7 +643,8 @@ Anthropic approval, and the Claude subscription requirement stays open.
   and read-write on the sign-in folder. `workspace claude-code-revoke NAME`
   revokes every grant and deletes the container profile;
   since ADR-0111 the desktop `settings` window adds a connection by finding
-  `claude` on `PATH` or in the native installer's folder (or through a
+  `claude` on `PATH` or in the native installer's folder, never one inside
+  application storage, the development root, or a workspace (or through a
   native file dialog when neither has it), creating a new, empty sign-in
   folder, and one native confirmation; on Windows the same Add grants the
   same folders, using the `omgcode` executable beside the desktop

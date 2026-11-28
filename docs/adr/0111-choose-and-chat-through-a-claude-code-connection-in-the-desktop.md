@@ -100,15 +100,19 @@ program and let them sign in, as the `settings` window does for ChatGPT
    sign-in.** **Add connection** for Claude Code in the `settings` window
    takes only a name.
    - *The program.* Rust looks for `claude` (`claude.exe` on Windows) in
-     each absolute folder of the operator's `PATH`, in order, and then in
-     the native installer's folder `~/.local/bin` (and `~/.claude/local`
-     outside Windows), through core's `claude_code_program_candidates`,
-     which opens and runs nothing. It keeps the first file that core's
-     `check_claude_code_profile` accepts, so a `claude` in the development
-     root or a workspace is skipped. Only when no such file exists does a
-     native file dialog ask for the program. When files exist but core
-     refuses each, the first refusal is reported, so an invalid name is not
-     hidden behind a dialog.
+     each absolute folder of the operator's `PATH`, in order, at most 128,
+     and then in the native installer's folder `~/.local/bin` (and
+     `~/.claude/local` outside Windows), through core's
+     `claude_code_program_candidates`, which opens and runs nothing. Core's
+     `claude_code_program_discoverable` skips a `claude` whose folder is, or
+     lies inside, application storage, the development root, or a
+     workspace: a model file tool or a model-run command can write inside a
+     workspace, and Add runs the program it finds outside the sandbox for
+     the sign-in. Rust keeps the first remaining file that core's
+     `check_claude_code_profile` accepts. Only when no such file exists does
+     a native file dialog ask for the program, which keeps the rules of
+     ADR-0109 decision 2. When files exist but core refuses each, the first
+     refusal is reported, so an invalid name is not hidden behind a dialog.
    - *The sign-in folder.* Rust creates the connection's own folder, new,
      empty, and named at random, under `omgcode-claude-code` in the
      per-user local data folder (`%LOCALAPPDATA%` on Windows), which is not
@@ -120,7 +124,11 @@ program and let them sign in, as the `settings` window does for ChatGPT
      `grant_claude_code` grants the four folders with the relay of decision
      3. On Windows Add is refused before anything is created when there is
      no relay. A grant that fails leaves the connection recorded, and the
-     error names the command that signs in from a terminal.
+     error names the command that signs in from a terminal. A failed write
+     of the settings journal can still leave a complete event that replay
+     accepts, so then the folder is kept and the error,
+     `connection_uncertain`, names it and that command; the window reads the
+     settings again, which shows whether the connection was recorded.
    - *Claude's own sign-in.* On Windows Rust then starts the recorded
      program as `claude auth login` in a console window of its own, outside
      the container, with no inherited handle, the folder as its working
@@ -138,7 +146,9 @@ program and let them sign in, as the `settings` window does for ChatGPT
      just created. Once a turn has run, the container could have written the
      folder, and the sign-in runs outside the container. To sign in again,
      the operator revokes the grants, removes the connection, and adds it
-     again.
+     again. Outside Windows no folder is granted: the operator removes the
+     connection, adds it again, and runs the command its confirmation shows,
+     for the same reason.
    - *Grant and revoke.* **Grant folders** grants the four folders again
      after a revocation, after a confirmation that names them. **Revoke
      folders** revokes them through `revoke_claude_code_grants` after a
@@ -157,6 +167,21 @@ program and let them sign in, as the `settings` window does for ChatGPT
   settings file naming a command that a sign-in outside the container would
   run. Safe mode switches off hooks and plugins, but it is not documented to
   ignore every setting.
+- **Keep only discovery's candidates that `check_claude_code_profile`
+  accepts.** The first form of the program search. Rejected: that check
+  refuses a folder that is or holds a workspace, but accepts one inside a
+  workspace, where a model could have written a `claude`.
+- **Refuse a program inside a workspace in core's add check too.** Not done
+  here: it would change ADR-0109's rule for a program the operator chooses
+  on the CLI or in the file dialog, and the same check allows a relay in a
+  build output folder inside a workspace. Discovery's own rule covers the
+  program OMGCode chooses itself.
+- **Bound the whole candidate list at 128.** Rejected: a long `PATH` would
+  crowd out the installer's folders, where the native installer puts
+  `claude`.
+- **Remove the folder whenever the add returns an error.** Rejected: a
+  failed journal write can leave a complete event that replay accepts, and
+  the connection would then name a deleted folder.
 - **Run the sign-in in the connection's container.** Rejected: the sign-in
   needs the operator's browser, and a browser sign-in that returns to a
   local callback is not received by an AppContainer without a loopback

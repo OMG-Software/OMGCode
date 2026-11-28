@@ -206,11 +206,18 @@ export const CLAUDE_CODE_GRANT_NOTE =
   "On Windows the claude program runs in its own sandbox. Add grants its folders; after revoking them, grant them again before a session uses it. The relay is the omgcode program beside this application.";
 
 /**
- * How to sign a Claude Code connection in again. OMGCode opens Claude's sign-in only for the
- * folder Add has just created, because the sign-in runs outside the sandbox (ADR-0111).
+ * How to sign a Claude Code connection in again on Windows. OMGCode opens Claude's sign-in only
+ * for the folder Add has just created, because the sign-in runs outside the sandbox (ADR-0111).
  */
 export const CLAUDE_CODE_SIGN_IN_AGAIN_NOTE =
   "To sign in again, revoke its folders, remove the connection, and add it again: OMGCode opens Claude's sign-in only for a new sign-in folder, because the sign-in runs outside the sandbox.";
+
+/**
+ * How to sign a Claude Code connection in again where no folder is granted: a new connection
+ * and folder, then the terminal command its confirmation shows (ADR-0111).
+ */
+export const CLAUDE_CODE_SIGN_IN_AGAIN_TERMINAL_NOTE =
+  "To sign in again, remove the connection, add it again, and sign in from a terminal with the command the confirmation shows. Use a new sign-in folder, because the sign-in runs outside the sandbox.";
 
 const GRANT_ROLE_NAMES: Readonly<Record<ClaudeCodeView["grants"][number]["role"], string>> = {
   program: "Program folder",
@@ -228,7 +235,12 @@ function claudeCodeDetails(
   const lines = [
     el("div", { class: "row-meta", text: `Program: ${setup.program}` }),
     el("div", { class: "row-meta", text: `Sign-in folder: ${setup.config_folder}` }),
-    el("div", { class: "row-meta", text: CLAUDE_CODE_SIGN_IN_AGAIN_NOTE }),
+    el("div", {
+      class: "row-meta",
+      text: overview.container_grants_supported
+        ? CLAUDE_CODE_SIGN_IN_AGAIN_NOTE
+        : CLAUDE_CODE_SIGN_IN_AGAIN_TERMINAL_NOTE,
+    }),
   ];
   if (!overview.container_grants_supported) {
     return lines;

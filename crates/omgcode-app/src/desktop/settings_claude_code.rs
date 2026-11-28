@@ -62,7 +62,9 @@ impl DesktopService {
     /// broad or overlaps application storage, the development root, or a
     /// workspace), or, after the connection was recorded, a grant that
     /// failed or a sign-in that did not start, each with the command that
-    /// signs in from a terminal.
+    /// signs in from a terminal; `connection_uncertain` when the settings
+    /// store could not be written, which keeps the folder and names it and
+    /// that command.
     pub fn settings_add_claude_code(
         &self,
         request: ClaudeCodeAddRequest,
@@ -97,13 +99,23 @@ impl DesktopService {
             prompt,
             &add_confirmation(&declaration, relay_folder.as_deref(), &self.inner.data_root),
         )?;
-        let mut added = false;
+        let mut recorded = Recorded::No;
         let mut program: Option<PathBuf> = None;
         let outcome = self.apply_reporting(|store| {
             let profile = store
                 .add_claude_code_profile(&declaration, request.revision)
-                .map_err(|error| DesktopError::from_control(&error))?;
-            added = true;
+                .map_err(|error| {
+                    // Only the journal write returns `Io` once the checks
+                    // passed, and a failed write or sync can leave a
+                    // complete event that replay accepts, as core treats a
+                    // credential binding. An `Io` from a check is counted
+                    // too, which only keeps an unused empty folder.
+                    if matches!(error, ControlError::Io(_)) {
+                        recorded = Recorded::Uncertain;
+                    }
+                    DesktopError::from_control(&error)
+                })?;
+            recorded = Recorded::Yes;
             program = profile
                 .claude_code_setup()
                 .and_then(|setup| setup.live_program().ok());
@@ -117,9 +129,16 @@ impl DesktopService {
             });
             Ok((AlsoWithdrawn::default(), ungranted))
         });
-        if !added {
+        match recorded {
             // Dropping the folder removes it, because nothing records it.
-            return outcome;
+            Recorded::No => return outcome,
+            Recorded::Uncertain => {
+                let folder = folder.keep();
+                return Err(add_uncertain(&declaration.program, &folder));
+            }
+            // Kept before any later error is reported, because the
+            // connection records it.
+            Recorded::Yes => {}
         }
         let folder = folder.keep();
         let command = terminal_command(program.as_deref().unwrap_or(&declaration.program), &folder);
@@ -152,9 +171,11 @@ impl DesktopService {
     /// core accepts, checked against `revision`: the first program found on
     /// `PATH` or in the installer's folder that core accepts, or, when no
     /// program file is found there at all, the one the operator chooses in a
-    /// native file dialog. When files are found but core refuses each, the
-    /// first refusal is returned, so an invalid name or folder is reported
-    /// rather than hidden behind a dialog.
+    /// native file dialog. A program in application storage, the development
+    /// root, or a workspace is never proposed and does not count as found.
+    /// When files are found but core refuses each, the first refusal is
+    /// returned, so an invalid name or folder is reported rather than hidden
+    /// behind a dialog.
     fn claude_code_declaration(
         &self,
         name: String,
@@ -175,7 +196,9 @@ impl DesktopService {
             for candidate in
                 claude_code_program_candidates(host.search_path.as_deref(), host.home.as_deref())
             {
-                if !candidate.is_file() {
+                // A program a model could have written is never proposed,
+                // and does not count as found.
+                if !candidate.is_file() || !store.claude_code_program_discoverable(&candidate) {
                     continue;
                 }
                 declaration.program = candidate;
@@ -337,6 +360,33 @@ impl DesktopService {
     }
 }
 
+/// Whether an add recorded the connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Recorded {
+    /// Core refused it before writing, or the add never ran.
+    No,
+    /// Core returned the recorded profile.
+    Yes,
+    /// The journal write failed, so the profile may be recorded.
+    Uncertain,
+}
+
+/// The error of an add whose journal write failed (ADR-0111). The sign-in
+/// folder was kept, because a recorded connection may name it. The window
+/// reads the settings again, which shows whether the connection is listed.
+fn add_uncertain(program: &Path, folder: &Path) -> DesktopError {
+    let grant = if CONTAINER_GRANTS_SUPPORTED {
+        "grant its folders and then "
+    } else {
+        ""
+    };
+    DesktopError::claude_code_add_uncertain(format!(
+        "The settings store could not be written, so whether the connection was added is uncertain, and its new sign-in folder was kept. If the settings now list it, {grant}sign in from a terminal: {}. If they do not, the folder is unused: {}",
+        terminal_command(program, folder),
+        display_safe_line(&folder.to_string_lossy()),
+    ))
+}
+
 /// The confirmation for adding a Claude Code connection: its program, its
 /// new sign-in folder, on Windows the folders its sandbox is granted (the
 /// relay folder `relay` and a runtime folder under `data_root`), and how the
@@ -489,6 +539,25 @@ mod tests {
             !terminal.message.contains("sandbox may read"),
             "{}",
             terminal.message
+        );
+    }
+
+    /// An uncertain add names the kept folder and the terminal command, and
+    /// on Windows the grant that comes first.
+    #[test]
+    fn an_uncertain_add_names_the_kept_folder_and_the_sign_in_command() {
+        let root = std::env::temp_dir();
+        let folder = root.join("omgcode-claude-code").join("kept");
+        let error = add_uncertain(&root.join("bin").join("claude"), &folder);
+        assert_eq!(error.code(), "connection_uncertain");
+        let message = error.message();
+        assert!(message.contains("uncertain"), "{message}");
+        assert!(message.contains("auth login"), "{message}");
+        assert!(message.ends_with(&*folder.to_string_lossy()), "{message}");
+        assert_eq!(
+            message.contains("grant its folders"),
+            CONTAINER_GRANTS_SUPPORTED,
+            "{message}"
         );
     }
 

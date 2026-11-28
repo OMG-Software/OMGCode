@@ -434,17 +434,33 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   };
   /**
    * Each session's own provider (a profile name, `null` for the default), the endpoint confirmed
-   * for it, as Rust records it, and its model.
+   * for it, as Rust records it, the identity of the profile it confirmed, and its model.
    */
   const sessionChoices = new Map<
     string,
     {
       profile: string | null | typeof FOLLOW;
       endpoint: string | null;
+      profileId: number | null;
       model: string;
       effort: ReasoningEffort | null;
     }
   >();
+  /**
+   * Each recorded profile's identity, as core's profile identifier: a profile removed and added
+   * again under the same name is another object, so another identity.
+   */
+  const profileIds = new WeakMap<object, number>();
+  let lastProfileId = 0;
+  function identityOf(profile: object): number {
+    let id = profileIds.get(profile);
+    if (id === undefined) {
+      lastProfileId += 1;
+      id = lastProfileId;
+      profileIds.set(profile, id);
+    }
+    return id;
+  }
   /** The workspace each session created here belongs to, as core records it. */
   const sessionWorkspaces = new Map<string, string>();
   const settings: SettingsOverview = initialSettings();
@@ -1352,6 +1368,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         sessionChoices.set(id, {
           profile: wanted,
           endpoint: profile === null ? MOCK_ENDPOINT : sessionEndpoint(profile),
+          profileId: profile === null ? null : identityOf(profile),
           model: "",
           effort: null,
         });
@@ -1369,6 +1386,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         sessionChoices.set(id, {
           profile: existing === undefined ? FOLLOW : existing.profile,
           endpoint: existing === undefined ? null : existing.endpoint,
+          profileId: existing === undefined ? null : existing.profileId,
           model,
           effort: existing?.effort ?? null,
         });
@@ -1392,6 +1410,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         sessionChoices.set(id, {
           profile: existing === undefined ? FOLLOW : existing.profile,
           endpoint: existing === undefined ? null : existing.endpoint,
+          profileId: existing === undefined ? null : existing.profileId,
           model: existing === undefined ? chatDefaults().settings.model : existing.model,
           effort,
         });
@@ -1995,7 +2014,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
 
   /**
    * Whether a session's own choice can no longer be used as recorded: its profile is gone, cannot
-   * be chosen, or has another endpoint (ADR-0071 decision 7). Rust then refuses its turns.
+   * be chosen, or has another endpoint (ADR-0071 decision 7), or, for a Claude Code connection,
+   * is another profile under the same name (ADR-0111). Rust then refuses its turns.
    */
   function staleChoice(sessionId: string | null): boolean {
     const choice = sessionId === null ? undefined : sessionChoices.get(sessionId);
@@ -2009,7 +2029,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     return (
       profile === undefined ||
       !sessionSelectable(profile) ||
-      sessionEndpoint(profile) !== choice.endpoint
+      sessionEndpoint(profile) !== choice.endpoint ||
+      (isProgramKind(profile.kind) && identityOf(profile) !== choice.profileId)
     );
   }
 

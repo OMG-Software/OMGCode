@@ -324,24 +324,27 @@ const SIGN_IN_VARIABLES: [&str; 16] = [
 ];
 
 /// Adding finds the program on the search path, skipping one in a workspace
-/// that core refuses, creates a new empty sign-in folder, and asks one
-/// confirmation. On Windows it also grants the four folders and starts
-/// Claude's sign-in once, with `CLAUDE_CONFIG_DIR` set to that folder;
-/// elsewhere the confirmation names the terminal command instead.
+/// and one in a folder below it, which a model could have written, creates
+/// a new empty sign-in folder, and asks one confirmation. On Windows it also
+/// grants the four folders and starts Claude's sign-in once, with
+/// `CLAUDE_CONFIG_DIR` set to that folder; elsewhere the confirmation names
+/// the terminal command instead.
 #[test]
 fn a_claude_code_connection_is_found_created_granted_and_signed_in_after_one_confirmation() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let outside = Outside::new();
-    let planted = workspace
-        .path
-        .join(outside.program.file_name().expect("name"));
-    fs::write(&planted, b"").expect("planted program");
+    let nested = workspace.path.join("planted");
+    fs::create_dir(&nested).expect("nested folder");
+    for folder in [&workspace.path, &nested] {
+        let planted = folder.join(outside.program.file_name().expect("name"));
+        fs::write(&planted, b"").expect("planted program");
+    }
     let default = NoCallServer::start();
     let service = open_host(
         &fixture,
         &default.endpoint,
-        outside.host(&[&workspace.path, outside.bin()]),
+        outside.host(&[&workspace.path, &nested, outside.bin()]),
     );
     let before = revision(&fixture);
 
@@ -378,6 +381,7 @@ fn a_claude_code_connection_is_found_created_granted_and_signed_in_after_one_con
     assert!(!profile.selectable);
     let setup = profile.claude_code.as_ref().expect("its setup is shown");
     assert!(setup.program.contains("bin"), "{}", setup.program);
+    assert!(!setup.program.contains("planted"), "{}", setup.program);
     let name = folder.file_name().expect("folder name").to_string_lossy();
     assert!(
         setup.config_folder.contains(name.as_ref()),
