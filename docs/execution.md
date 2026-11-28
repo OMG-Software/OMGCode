@@ -1024,9 +1024,10 @@ and a tool turn keeps that process for all its rounds.
   calls back. The main agent's streamed text and its final text, which
   repeats it, each have an 8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
-  that is unset, relative, not UTF-8, or longer than 73 bytes once
-  encoded, because a socket path must fit in 107 bytes and one beneath
-  application storage does not.
+  that is unset, relative, cannot be resolved to its canonical path (as
+  when it does not exist), not UTF-8, or longer than 73 bytes once
+  resolved and encoded, because a socket path must fit in 107 bytes and
+  one beneath application storage does not.
 
 ### Toolchain profiles
 

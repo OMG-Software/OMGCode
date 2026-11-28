@@ -290,8 +290,10 @@ Haiku request with one tool call.
    the server accepts a client only after the client's token shows that
    container's SID. On Linux it is a socket in a per-turn `0700` folder
    with a random name, created exclusively under `XDG_RUNTIME_DIR`, or under
-   `/tmp` when that variable is unset, relative, longer than 73 bytes once
-   encoded, or not UTF-8, since the relay's configuration is JSON. A socket path
+   `/tmp` when that variable is unset, relative, cannot be resolved to its
+   canonical path (as when it does not exist), longer than 73 bytes once
+   resolved and encoded, or not UTF-8, since the relay's configuration is
+   JSON. A socket path
    must fit in the 107 bytes of `sun_path`, and one beneath the runtime
    folder in application storage does not. All
    MCP handling stays in the trusted process. It answers `server/discover`
